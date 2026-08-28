@@ -1,0 +1,47 @@
+=====================================================================
+PLACEHOLDER END-USER LICENSE AGREEMENT
+THIS TEXT IS A STUB. Replace with the final NVIDIA EULA before
+any external release. Legal review and approval are still required.
+=====================================================================
+
+NVIDIA Personal AI Router - End-User License Agreement (PLACEHOLDER)
+
+By installing or using NVIDIA Personal AI Router ("the Software"), you agree
+to the terms below. If you do not agree, decline these terms and do not
+install or use the Software.
+
+1. License Grant.
+   Subject to the terms of this Agreement, you are granted a personal,
+   non-exclusive, non-transferable license to install and use the
+   Software on computers you own or control.
+
+2. Restrictions.
+   You may not redistribute, sell, sublicense, or modify the Software,
+   or remove or alter any proprietary notices contained in it, except
+   to the extent that applicable law expressly permits despite this
+   limitation.
+
+3. Network Behavior.
+   You acknowledge that the Software discovers and communicates with
+   peer machines on your local network using mDNS, and that it
+   advertises information about your local Ollama instance (including
+   the names of installed models) to other peers on the same network.
+
+4. No Warranty.
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NONINFRINGEMENT.
+
+5. Limitation of Liability.
+   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR
+   ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+6. Governing Law.
+   To be specified in the final EULA.
+
+This is a placeholder license used during development and internal
+QA builds only. The final NVIDIA End-User License Agreement will
+replace this file prior to any external release.

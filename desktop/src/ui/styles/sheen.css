@@ -1,0 +1,176 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+.app-bg {
+    background-size: 100% 100%;
+    background-position: 0 0;
+    background-image: radial-gradient(142% 91% at 0% 0%, #1f1f1f 0%, #000000ff 100%);
+}
+
+.pair-paper,
+.pair-paper.workload-card > .workload-card-content {
+    border-radius: 6px;
+    box-shadow:
+        inset 0px 0px 0px 1px #ffffff14,
+        inset 3px 3px 2px -3px #ffffff29,
+        0px 0px 10px -10px #00000022,
+        0px 0px 2px 0px #00000022,
+        0px 3px 15px 0px #00000033,
+        0px 10px 45px 0px #00000046,
+        0px 27px 15px -23px #00000051;
+    --border-color-base: transparent;
+    background-size:
+        100% 100%,
+        200% 200%;
+    background-image:
+        linear-gradient(138deg, #ffffff0f 0%, transparent 50%),
+        radial-gradient(100% 100%, #00000000 0%, #00000020 50%);
+    background-color: #1a1a1a;
+    background-repeat: no-repeat;
+    background-position:
+        0% 0%,
+        70% 100%;
+}
+
+.pair-paper.card-high,
+.pair-paper.workload-card.card-high > .workload-card-content {
+    box-shadow:
+        inset 0px 0px 0px 1px #ffffff16,
+        inset 3px 3px 2px -3px #ffffff2b,
+        0px 0px 10px -10px #00000022,
+        0px 0px 2px 0px #00000022,
+        0px 3px 15px 0px #00000033,
+        0px 10px 45px 0px #00000046,
+        0px 27px 15px -23px #00000051;
+
+    background-image:
+        linear-gradient(138deg, #ffffff11 0%, transparent 50%),
+        radial-gradient(100% 100%, #00000000 0%, #00000020 50%);
+    background-color: #313131;
+}
+
+.pair-paper.card-low:not(.workload-card),
+.pair-paper.workload-card.card-low > .workload-card-content {
+    box-shadow:
+        inset 0px 0px 0px 1px #ffffff0d,
+        inset 3px 3px 2px -3px #ffffff22,
+        0px 0px 10px -10px #00000022,
+        0px 0px 2px 0px #00000022,
+        0px 3px 15px 0px #00000033,
+        0px 10px 45px 0px #00000046,
+        0px 27px 15px -23px #00000051;
+
+    background-image:
+        linear-gradient(138deg, #ffffff0d 0%, transparent 50%),
+        radial-gradient(100% 100%, #00000000 0%, #00000020 50%);
+    background-color: #0c0c0c;
+}
+
+.no-px-tabs-content .nv-tabs-list {
+    box-shadow: inset 0 -1px 0 0 var(--border-color-base);
+    --border-color-base: #ffffff22;
+}
+
+/* ContentBar tabs: size to their content so the right-side buttons stay
+   visible in the justify-between row, and drop the underline border. */
+.content-bar-tabs.nv-tabs-root,
+.content-bar-tabs .nv-tabs-list {
+    width: auto;
+}
+
+.content-bar-tabs .nv-tabs-list {
+    box-shadow: none;
+}
+
+.line-chart-container-bg {
+    background-color: #000;
+}
+
+.line-chart-container-shadow {
+    box-shadow:
+        inset 0 0 0 1px #fff5,
+        inset 0 0 2px 1px #000,
+        inset 5px 5px 20px -5px #000,
+        inset 0 0 30px #000;
+}
+
+.no-bg-nav,
+.gradient-column {
+    background-color: transparent;
+    border-color: #fff1;
+}
+
+.no-bg-nav,
+.gradient-column,
+.grad-bg {
+    background-size: 100% 100%;
+    background-position: 0 0;
+    background-image: radial-gradient(142% 142% at 0% 0%, #00000000 36%, #000000dd 100%);
+    /* radial-gradient(100% 163% at 0% 0%, #00000000 80%, #00000055 100%) */
+}
+
+.translucent-bg-accordion {
+    background: #4446 !important;
+    box-shadow: inset 0 0 0 1px #5555;
+    border-radius: 5px;
+    margin: 0;
+}
+
+.translucent-bg-accordion[open] .pair-accordion-summary:not(:hover) {
+    background-color: #4446 !important;
+}
+
+.translucent-bg-accordion > div {
+    box-shadow:
+        inset 0 15px 30px -15px #0003,
+        inset 0 1px 0 0 #0005;
+}
+
+.pair-paper.workload-card-failed {
+    background-image: radial-gradient(
+        143% 109% at 0% 73%,
+        transparent 62%,
+        var(--color-red-500) 105%
+    );
+}
+
+.pair-paper.workload-card-running {
+    background-image: radial-gradient(
+        143% 109% at 0% 73%,
+        transparent 62%,
+        var(--color-blue-500) 105%
+    );
+}
+
+.pair-paper.workload-card-queued {
+    background-image: radial-gradient(
+        143% 109% at 0% 73%,
+        transparent 62%,
+        var(--color-yellow-500) 105%
+    );
+}
+
+.pair-paper.workload-card-completed {
+    background-image: none;
+}
+
+.pair-paper.workload-card {
+    border-radius: 6px;
+    background-color: transparent;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    background-position: 0 0;
+    box-shadow: none;
+    overflow: hidden;
+}
+
+.pair-paper.workload-card > .workload-card-content {
+    border-radius: 6px 27px 6px 6px;
+}
+
+.pair-paper.workload-card.workload-card-completed,
+.pair-paper.workload-card.workload-card-completed > .workload-card-content {
+    border-radius: 6px;
+}

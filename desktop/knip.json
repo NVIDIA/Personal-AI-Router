@@ -1,0 +1,26 @@
+{
+    "$schema": "https://unpkg.com/knip@latest/schema.json",
+    "entry": [
+        "src/electron/index.ts",
+        "src/preload/index.ts",
+        "src/ui/main.tsx",
+        "scripts/*.ts",
+        "electron.vite.config.ts",
+        "electron-builder.config.ts",
+        "vite.renderer.config.ts",
+        "eslint.config.ts",
+        "tests/**/*.test.ts"
+    ],
+    "project": [
+        "src/electron/**/*.{ts,tsx}",
+        "src/preload/**/*.{ts,tsx}",
+        "src/shared/**/*.{ts,tsx}",
+        "src/ui/**/*.{ts,tsx}",
+        "scripts/**/*.{ts,js}"
+    ],
+    "ignore": ["src/**/*.d.ts", "src/**/generated/**", "scripts/windows-sign.js"],
+    "ignoreDependencies": ["@electron-toolkit/tsconfig", "postcss"],
+    "paths": {
+        "@/*": ["src/*"]
+    }
+}

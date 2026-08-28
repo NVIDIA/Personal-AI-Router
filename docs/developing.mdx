@@ -1,0 +1,197 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Developer Guide
+
+This is the orientation document: what lives where, how a change travels through
+the layers, and which document to read next. It assumes you have read
+[Overview](overview.mdx) for the vocabulary and can build Personal AI Router
+(PAIR) by following [Building and Running](building.mdx).
+
+For contribution policy, refer to [CONTRIBUTING.md](../CONTRIBUTING.md). It
+covers branch and pull-request expectations, what to discuss first, and the
+testing and documentation requirements. This guide is about the code.
+
+## The Two Trees
+
+```text
+desktop/     The Electron + React application
+services/    The Go services: broker, workers, proxies, terminal interface
+```
+
+`services/` is the source of truth for runtime behavior. `desktop/` is a client
+of it. If you are changing what PAIR *does*, you are usually in `services/`. If
+you are changing how a user sees or controls it, you are in `desktop/`.
+
+A rule worth internalizing before your first change: **the desktop application
+does not reimplement service behavior.** It relays commands and renders reported
+state. If you find yourself writing routing, scheduling, discovery, or
+cryptography in TypeScript, the change belongs in a Go service instead.
+
+## Where Things Are
+
+### `desktop/`
+
+| Path | What it owns |
+| --- | --- |
+| `src/ui/` | The React renderer: components, stores, and the renderer-side API |
+| `src/ui/stores/` | One store per domain — nodes, engines, models, workloads, errors, and metrics |
+| `src/ui/api/pair-api.ts` | The renderer's view of the service surface |
+| `src/preload/` | The typed bridge exposing `window.pairApi` and `window.windowApi` |
+| `src/electron/` | Main process: broker supervision, service bridge, and interprocess communication (IPC) |
+| `src/electron/service-bridge/` | Dispatches service calls and projects backend state |
+| `src/electron/ipc/` | Electron-native operations (windows, tray, clipboard, and logs) |
+| `src/shared/` | Types, constants, and utilities shared by all of the above |
+| `scripts/` | Build, license, and contract tooling |
+| `tests/` | Vitest unit tests |
+
+The files you touch most often:
+
+| File | Why |
+| --- | --- |
+| `src/shared/types/ws-channels.ts` | Every logical service channel: `WsInvokeChannelMap` for requests, `WsPushChannelMap` for pushes |
+| `src/shared/types/ipc-channels.ts` | `IpcChannelMap`, the contract for Electron-native IPC |
+| `src/electron/service-bridge/empty-handlers.ts` | `handleServiceBridgeInvoke`, the single dispatch every service call goes through |
+| `src/electron/service-bridge/modular-state.ts` | `ModularBridgeState` — backend notifications become renderer push events here |
+| `src/electron/service-bridge/modular-supervisor.ts` | The broker process and its JSON-RPC link |
+| `src/shared/constants/modular-binaries.ts` | The canonical inventory of shipped binaries and who launches them |
+| `src/shared/constants/modular-runtime.ts` | Backend-coupled constants — the only place a port or path literal belongs |
+
+### `services/`
+
+Each component is its own Go module in its own directory, with its tests beside
+its source and a `README.md` describing its JSON-RPC surface. Shared code lives
+in `shared/`, and `tests/` holds cross-process tests that drive real binaries.
+
+Start with [`services/readme.md`](../services/readme.md) for the component
+inventory, then the component's own README. The broker's
+[`nvpair-ui-broker/README.md`](../services/nvpair-ui-broker/README.md) is the most
+useful single document, because every client talks to it.
+
+## How a Change Travels
+
+Most changes take one of a few shapes. These are the paths through the layers.
+
+### Adding or Changing a Service Capability
+
+A capability starts in Go and ends in the interface. Skipping a layer causes
+drift:
+
+1. Implement it in the owning Go component, with tests beside the source.
+2. Expose it over that component's JSON-RPC surface and update its README.
+3. Relay it in `nvpair-ui-broker` if a client needs to reach it.
+4. Add the channel to `WsInvokeChannelMap` or `WsPushChannelMap`.
+5. Handle it in `handleServiceBridgeInvoke`, and project any notification through
+   `ModularBridgeState`.
+6. Consume it in the owning renderer store, and render from that store.
+7. Run `npm run service-contracts:check` and update the affected docs.
+
+If the capability matters on a headless machine, add it to the terminal interface
+under `services/nvpair-tui/` as well. That is a separate client with its own
+views, so nothing reaches it automatically.
+
+### Changing an Existing JSON-RPC Method or Payload
+
+Update the producer, the broker relay, every consumer, the tests, and the
+documentation **in the same change**. Then regenerate and verify:
+
+```bash
+cd desktop
+npm run service-contracts:write   # regenerate docs/services-api.md
+npm run service-contracts:check   # fails on drift or stale generated output
+```
+
+Handling a method is not the same as covering it. Check the Go struct's JSON
+fields and confirm each one you care about reaches the consumer.
+
+### Adding Renderer State
+
+State flows one way: the service is authoritative, stores hold snapshots, and
+push events update them.
+
+- Fetch an initial snapshot, then subscribe to that domain's pushes.
+- Treat commands as fire-and-forget. Do not populate durable state from a
+  mutation's response.
+- Do not add per-component loading flags for engine or model operations.
+  `src/ui/stores/pending-actions.store.ts` is the one sanctioned optimistic
+  store, and backend state always supersedes it.
+
+### Adding an Electron-Native Operation
+
+Window, tray, clipboard, log, and updater operations are IPC, not service calls.
+Add the channel to `IpcChannelMap`, then implement it with `safeHandle()` so it
+returns the typed result envelope instead of throwing across the boundary.
+
+## Enforced Conventions
+
+These are not style preferences. Reviews and tooling catch them.
+
+- **No type casting.** No `as Type`, `as any`, `as unknown`, or `: any`, and no
+  `unknown` in signatures. If a cast seems necessary, the types are wrong.
+- **Absolute imports across directories.** Use the `@/...` alias for anything
+  that would need `../`. Within one directory, `./sibling` is correct.
+- **Static imports only.** No `await import()`.
+- **No renderer imports from `src/electron/`.** If a renderer file needs
+  something from the main process, it belongs in `src/shared/` or behind the
+  preload bridge.
+- **Say engine, not backend,** in user-facing copy and new code. Existing wire
+  names and Go symbols keep their spelling, because they are external contracts.
+- **No legacy fallbacks.** One canonical path. Delete what you replace rather
+  than leaving a compatibility branch.
+- **Keep prompts, messages, response bodies, PINs, and key material out of
+  logs.** Never log inference content. Log operational metadata such as engine,
+  model, job ID, and node ID instead.
+
+The pairing PIN is the one exception that needs explaining. The cluster manager
+returns it in results and notifications that travel the broker's stdout, so it
+*does* reach the log path. `src/electron/service-bridge/json-rpc-subprocess.ts`
+strips it with `redactSensitiveLogText` from `src/shared/utils/redact-log.ts`
+before any sink sees it. That choke point makes the guarantee hold, so a new path
+from subprocess output to a log or export must go through it.
+
+## Checks
+
+On Linux and macOS, the `Makefile` at the repository root wraps everything, and
+it is the shortest path to a clean run:
+
+```bash
+make check    # build-script verify, lint, typecheck, contracts, desktop tests
+make test     # desktop unit tests plus go test in every services module
+```
+
+Run `make` on its own to list the targets. Run the underlying commands directly
+on Windows, or when you are iterating on a single check. From `desktop/`:
+
+```bash
+npm run lint
+npm run typecheck
+npm run test:unit
+npm run service-contracts:check
+```
+
+Run the Go tests from a Go component directory, and from `services/tests` for
+cross-process coverage:
+
+```bash
+go test ./...
+```
+
+Use `npm run typecheck` rather than `tsc` directly, because the project has split
+Node and web targets. Refer to
+[`services/readme.md`](../services/readme.md#testing) for which Go tests skip
+themselves and why a skip is not a pass.
+
+## Where to Read Next
+
+- [Architecture](architecture.mdx) — process model, node-to-node transport,
+  discovery, routing, and trust boundaries
+- [`desktop/docs/architecture.md`](../desktop/docs/architecture.md) — the
+  application's internals, and `desktop/README.md` indexes its other documents
+- [`desktop/docs/services-api.md`](../desktop/docs/services-api.md) — the
+  generated JSON-RPC surface, never edited by hand
+- [`desktop/docs/services-backend.md`](../desktop/docs/services-backend.md) — how
+  desktop consumes the services and how to update that integration
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — policy, pull requests, and review
+- [SECURITY.md](../SECURITY.md) — what PAIR does and does not defend against

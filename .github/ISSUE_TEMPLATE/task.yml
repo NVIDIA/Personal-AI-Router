@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Documentation or maintenance task
+description: Request documentation, testing, build, or repository maintenance
+title: "[Task]: "
+labels:
+  - documentation
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Task type
+      options:
+        - Documentation addition
+        - Documentation correction
+        - Test coverage
+        - Build or developer tooling
+        - Dependency maintenance
+        - Repository hygiene
+        - Release preparation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current state
+      description: What exists today, and where?
+    validations:
+      required: true
+
+  - type: textarea
+    id: desired
+    attributes:
+      label: Desired result
+      description: Define a concrete completion condition.
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: Relevant paths or references
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: How should the completed task be checked?
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: I agree to follow the Code of Conduct.
+          required: true

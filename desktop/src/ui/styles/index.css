@@ -1,0 +1,570 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+@import 'tailwindcss/theme.css';
+@import '../lib/kaizen-ui-foundations/base-external.css';
+@import '../lib/kaizen-ui-foundations/components.css';
+
+@import './sheen.css';
+
+@source "../components";
+@source "../constants";
+
+#style-root {
+    @tailwind utilities;
+}
+
+/**
+ * BASE STYLES
+ */
+
+html,
+body {
+    background-color: var(--color-black);
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    overflow: hidden;
+    font-family:
+        -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell',
+        'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    --color-green-400: #a5de15;
+}
+
+:root {
+    background-color: var(--color-black);
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-subtle-foreground) transparent;
+    scrollbar-gutter: auto;
+}
+
+#root {
+    @apply h-full w-full;
+    background-color: var(--color-black);
+    transform: translateZ(0); /* Force GPU acceleration */
+    backface-visibility: hidden; /* Optimize rendering */
+}
+
+.text-subtle-color {
+    color: var(--color-translucent-white-600);
+}
+
+.text-subtle2 {
+    color: var(--color-translucent-white-400);
+}
+
+/**
+ * SCROLLBARS
+ */
+
+/* OverlayScrollbars Dark Theme Customization */
+body .os-scrollbar {
+    /* z-index: 100 !important; */
+    --os-track-bg: #ffffff11 !important;
+    --os-track-bg-hover: #ffffff16 !important;
+    --os-track-bg-active: #ffffff16 !important;
+    --os-handle-bg: #ffffff16 !important;
+    --os-handle-bg-hover: #ffffff1a !important;
+    --os-handle-bg-active: #ffffff1a !important;
+
+    /* --os-scroll-direction:1 !important; */
+
+    /* // The size of the scrollbar */
+    --os-size: 12px;
+    /* // The axis-perpendicular padding of the scrollbar (horizontal: padding-y, vertical: padding-x) */
+    /* --os-padding-perpendicular: 0; */
+    /* // The axis padding of the scrollbar (horizontal: padding-x, vertical: padding-y) */
+    /* --os-padding-axis: 0; */
+    /* // The border radius of the scrollbar track */
+    /* --os-track-border-radius: 0; */
+    /* // The background of the scrollbar track */
+    /* --os-track-bg: none; */
+    /* // The :hover background of the scrollbar track */
+    /* --os-track-bg-hover: none; */
+    /* // The :active background of the scrollbar track */
+    /* --os-track-bg-active: none; */
+    /* // The border of the scrollbar track */
+    --os-track-border: none;
+    /* // The :hover background of the scrollbar track */
+    --os-track-border-hover: none;
+    /* // The :active background of the scrollbar track */
+    --os-track-border-active: none;
+    /* // The border radius of the scrollbar handle */
+    /* --os-handle-border-radius: 0; */
+    /* // The background of the scrollbar handle */
+    /* --os-handle-bg: none; */
+    /* // The :hover background of the scrollbar handle */
+    /* --os-handle-bg-hover: none; */
+    /* // The :active background of the scrollbar handle */
+    /* --os-handle-bg-active: none; */
+    /* // The border of the scrollbar handle */
+    --os-handle-border: none;
+    /* // The :hover border of the scrollbar handle */
+    --os-handle-border-hover: none;
+    /* // The :active border of the scrollbar handle */
+    --os-handle-border-active: none;
+    /* // The min size of the scrollbar handle */
+    /* --os-handle-min-size: 40px; */
+    /* // The max size of the scrollbar handle */
+    /* --os-handle-max-size: 40px; */
+    /* // The axis-perpendicular size of the scrollbar handle (horizontal: height, vertical: width) */
+    /* --os-handle-perpendicular-size: 8px; */
+    /* // The :hover axis-perpendicular size of the scrollbar handle (horizontal: height, vertical: width) */
+    /* --os-handle-perpendicular-size-hover: 100%; */
+    /* // The :active axis-perpendicular size of the scrollbar handle (horizontal: height, vertical: width) */
+    /* --os-handle-perpendicular-size-active: 100%; */
+    /* // Increases the interactive area of the scrollbar handle. */
+    --os-handle-interactive-area-offset: 8px;
+}
+
+/* Webkit Scrollbar */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    -webkit-box-shadow: inset 0 0 0px 6px var(--color-surface-overlay-background);
+}
+
+::-webkit-scrollbar-thumb {
+    background-color: var(--background-color-component-track);
+    outline: 0px solid var(--outline-color-component-track);
+}
+
+::-webkit-scrollbar-corner {
+    background-color: var(--color-surface-overlay-background);
+}
+
+.model-hub-scroll {
+    scrollbar-color: #ffffff3d #ffffff0a;
+    scrollbar-gutter: stable;
+}
+
+.model-hub-scroll::-webkit-scrollbar {
+    width: 12px;
+}
+
+.model-hub-scroll::-webkit-scrollbar-track {
+    background-color: #ffffff0a;
+    border-radius: 999px;
+}
+
+.model-hub-scroll::-webkit-scrollbar-thumb {
+    background-color: #ffffff3d;
+    border: 3px solid #ffffff0a;
+    border-radius: 999px;
+}
+
+.model-hub-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: #ffffff52;
+}
+
+.model-hub-scroll::-webkit-scrollbar-button {
+    width: 0;
+    height: 0;
+    display: none;
+    background: transparent;
+}
+
+/**
+ * DRAG REGION (for custom title bar)
+ */
+
+.drag-region {
+    -webkit-app-region: drag;
+}
+
+.no-drag {
+    -webkit-app-region: no-drag;
+}
+
+/**
+ * ANIMATIONS
+ */
+
+/* Workload Item Card Animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+.workload-item-card {
+    /* Fade in on enter */
+    animation: fadeIn 0.3s ease-out;
+    /* Smooth transition for exit (triggered by onExit callback) */
+}
+
+.node-item-accordion {
+    margin-left: -0.75rem;
+    margin-right: -0.75rem;
+}
+
+.no-bg-link {
+    background-color: transparent !important;
+}
+
+.compact-dropdown {
+    padding: 0.25rem 0.5rem;
+}
+
+.jobs-filter-dropdown-content {
+    border: 1px solid;
+    --border-color-base: var(--color-translucent-white-200);
+    border-color: var(--border-color-base);
+}
+
+.no-padding-dropdown {
+    padding: 0 !important;
+    background: transparent !important;
+}
+
+.no-padding-accordion,
+.no-bg-accordion {
+    background-color: transparent !important;
+}
+
+.no-padding-accordion .pair-accordion-summary {
+    background-color: transparent !important;
+    padding: 0 8px;
+}
+
+.no-padding-accordion,
+.no-border-accordion {
+    border: none !important;
+}
+
+.no-padding-accordion .pair-accordion-summary {
+    padding: 0px;
+}
+
+.no-padding-accordion .pair-accordion-details {
+    padding: 4px 10px 10px 10px;
+}
+
+.no-padding-accordion .pair-accordion-summary {
+    width: 100%;
+    text-align: left;
+}
+
+.zero-padding-accordion .pair-accordion-details {
+    padding: 0;
+}
+
+.log-grid {
+    display: grid;
+    grid-template-columns: 70px 70px 120px 120px 1fr;
+    align-items: center;
+}
+
+.no-drag-elements,
+.no-drag-elements * {
+    -webkit-app-region: no-drag;
+}
+
+:root {
+    --pair-overlay-backdrop-color: rgb(0 0 0 / 45%);
+    --pair-overlay-backdrop-filter: blur(0.5px) saturate(0.25) brightness(0.75);
+}
+
+.pair-dropdown-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    pointer-events: auto;
+    background-color: var(--pair-overlay-backdrop-color);
+    backdrop-filter: var(--pair-overlay-backdrop-filter);
+    -webkit-backdrop-filter: var(--pair-overlay-backdrop-filter);
+}
+
+.nv-modal-overlay::backdrop,
+.nv-dropdown-content::backdrop,
+.nv-select-content::backdrop {
+    background-color: var(--pair-overlay-backdrop-color);
+    backdrop-filter: var(--pair-overlay-backdrop-filter);
+    -webkit-backdrop-filter: var(--pair-overlay-backdrop-filter);
+}
+
+.pair-link {
+    color: var(--color-brand, #76b900);
+    text-decoration: none;
+}
+
+.pair-link:hover {
+    text-decoration: underline;
+}
+
+.pair-accordion {
+    background: transparent;
+    border: 0;
+}
+
+.pair-accordion-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.pair-accordion-summary::-webkit-details-marker {
+    display: none;
+}
+
+.pair-accordion-details {
+    padding: 4px 10px 10px;
+}
+
+.translucent-bg-accordion > .pair-accordion-summary {
+    min-height: 32px;
+    padding: 0 8px;
+}
+
+.snug-arrow-accordion .pair-accordion-summary {
+    justify-content: start;
+}
+
+.snug-arrow-accordion .pair-accordion-summary {
+    flex-grow: 0;
+    width: auto;
+}
+
+.no-bg-nav {
+    padding-top: 18px;
+    width: 180px;
+    min-width: 180px;
+}
+
+.no-bg-nav .nv-vertical-nav-item:not([aria-disabled='true']) {
+    justify-content: flex-start;
+    min-height: 30px;
+    padding-left: 14px;
+    padding-right: 10px;
+    color: var(--color-translucent-white-600);
+    font-weight: 400;
+    background-color: transparent;
+    box-shadow: inset 0 0 0 0 transparent;
+    transition: all 0.2s ease-in-out;
+}
+
+.no-bg-nav .nv-vertical-nav-item:not([aria-disabled='true']):hover {
+    color: var(--color-white);
+    background-color: #ffffff0a;
+}
+
+.no-bg-nav .nv-vertical-nav-item--active:not([aria-disabled='true']) {
+    background-color: #ffffff0a;
+    box-shadow: inset 5px 0 #76b900;
+    font-weight: 700;
+    color: var(--color-white);
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+.settings-card {
+    flex: 1 1 400px;
+    min-width: min(100%, 280px);
+    max-width: 400px;
+    height: auto;
+}
+
+.settings-card.settings-card-compact {
+    flex: 0 1 400px;
+    align-self: flex-start;
+}
+
+.settings-card.node-item-card {
+    flex: unset;
+    padding: 16px;
+}
+
+.settings-card.settings-card-stacked {
+    flex: unset;
+}
+
+.spinner-element {
+    display: inline-block;
+    width: 16px;
+    min-width: 16px;
+    max-width: 16px;
+    height: 16px;
+    min-height: 16px;
+    max-height: 16px;
+    margin: 0 8px;
+    vertical-align: middle;
+    border: 2px solid var(--pair-color-brand, #76b900);
+    border-top-color: color-mix(in srgb, var(--pair-color-brand, #76b900) 20%, transparent);
+    border-radius: 50%;
+    animation: spinner-rotate 0.65s linear infinite;
+}
+
+.spinner-element-small {
+    display: inline-block;
+    width: 12px;
+    min-width: 12px;
+    max-width: 12px;
+    height: 12px;
+    min-height: 12px;
+    max-height: 12px;
+    margin: 0;
+    vertical-align: middle;
+    border: 2px solid var(--pair-color-brand, #76b900);
+    border-top-color: color-mix(in srgb, var(--pair-color-brand, #76b900) 20%, transparent);
+    border-radius: 50%;
+    animation: spinner-rotate 0.65s linear infinite;
+}
+
+.spinner-element-medium {
+    display: inline-block;
+    width: 16px;
+    min-width: 16px;
+    max-width: 16px;
+    height: 16px;
+    min-height: 16px;
+    max-height: 16px;
+    margin: 0;
+    vertical-align: middle;
+    border: 2.5px solid var(--pair-color-brand, #76b900);
+    border-top-color: color-mix(in srgb, var(--pair-color-brand, #76b900) 20%, transparent);
+    border-radius: 50%;
+    animation: spinner-rotate 0.65s linear infinite;
+}
+
+.spinner-element-large {
+    display: inline-block;
+    width: 32px;
+    min-width: 32px;
+    max-width: 32px;
+    height: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    margin: 0;
+    vertical-align: middle;
+    border: 3px solid var(--pair-color-brand, #76b900);
+    border-top-color: color-mix(in srgb, var(--pair-color-brand, #76b900) 20%, transparent);
+    border-radius: 50%;
+    animation: spinner-rotate 0.65s linear infinite;
+}
+
+@keyframes spinner-rotate {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes pulsing {
+    0% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.pulsing {
+    animation: pulsing 1.2s ease-in-out infinite;
+}
+
+.slim-vertical-nav {
+    width: 180px;
+    min-width: 180px;
+}
+
+.max-w-tooltip-content {
+    max-width: 10rem;
+    font-size: var(--text-10);
+    display: block;
+    line-height: var(--leading-lh-175);
+}
+
+.workload-badge {
+    position: absolute;
+    height: 100%;
+    width: 2px;
+    top: 0;
+    left: 0;
+}
+
+.node-list-scroll-container {
+    width: calc(100% + 45px);
+}
+
+.node-list-scroll-container .os-scrollbar.os-scrollbar-vertical {
+    right: 15px;
+}
+
+.workloads-list-container {
+    width: 21rem;
+    min-width: 21rem;
+    max-width: 21rem;
+
+    @media (max-width: 1000px) {
+        width: 14rem;
+        min-width: 14rem;
+        max-width: 14rem;
+    }
+
+    @media (max-width: 600px) {
+        width: 11rem;
+        min-width: 11rem;
+        max-width: 11rem;
+    }
+}
+
+.line-chart-container {
+    border-radius: 5px;
+}
+
+.line-chart-container-bg {
+    border-radius: 5px;
+}
+
+.line-chart-container-shadow {
+    pointer-events: none;
+    border-radius: 5px;
+}
+
+.responsive-nav-layout .nv-tabs-list {
+    gap: 0;
+}
+
+.responsive-nav-divider {
+    border-color: #ffffff14;
+    margin: 0;
+}
+
+.responsive-nav-content-wide {
+    padding-left: 16px;
+}
+
+.max-content-modal {
+    width: max-content;
+    min-width: min(420px, 80vw);
+    max-width: 80vw;
+}
+
+.fix-overflow-banner {
+    min-width: 0;
+}
+
+.node-card {
+    @apply h-auto;
+    @apply w-full;
+    @apply min-w-0;
+    @apply max-w-full;
+    @apply p-4;
+}
+
+.pair-engines-inline
+    .nv-switch-input:is(:disabled, [data-disabled]):is(:checked, [data-state='checked']):after {
+    background-color: var(--background-color-interaction-primary-base);
+    opacity: 0.42;
+}

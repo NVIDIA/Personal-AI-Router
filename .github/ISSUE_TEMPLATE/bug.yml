@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Bug report
+description: Report reproducible incorrect behavior in PAIR
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve PAIR. Do not include credentials, private prompts, personal data, or cluster secrets.
+        Report suspected vulnerabilities through SECURITY.md instead of a public issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: PAIR version or commit
+      placeholder: "Example: 0.82.0 or commit SHA"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Desktop application
+        - Services / broker
+        - Discovery or pairing
+        - Ollama proxy
+        - LM Studio proxy
+        - Engine or model management
+        - Terminal UI
+        - Installer or update
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS/version, architecture, GPU, driver, engine/version, model, and cluster size where relevant.
+      placeholder: |
+        OS:
+        Architecture:
+        GPU and driver:
+        Engine and version:
+        Model:
+        Cluster size:
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable reproduction.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove credentials, prompts, personal information, node identities, and private network details.
+      render: shell
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I agree to follow the Code of Conduct.
+          required: true

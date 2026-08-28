@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://www.nvidia.com/en-us/security/report-vulnerability/
+    about: Report vulnerabilities privately to NVIDIA PSIRT. Do not open a public issue.
+  - name: Support policy
+    url: https://github.com/NVIDIA/Personal-AI-Router/blob/main/SUPPORT.md
+    about: Review support scope and the correct public channel before filing.

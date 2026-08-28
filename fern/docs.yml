@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# yaml-language-server: $schema=https://schema.buildwithfern.dev/docs-yml.json
+
+instances:
+  - url: nvidia-personal-ai-router.docs.buildwithfern.com
+    custom-domain: docs.nvidia.com/personal-ai-router
+
+title: NVIDIA Personal AI Router
+
+global-theme: nvidia
+
+navbar-links:
+  - type: github
+    value: https://github.com/NVIDIA/Personal-AI-Router
+
+logo:
+  right-text: Personal AI Router
+
+navigation:
+  - page: Overview
+    path: ../docs/overview.mdx
+    slug: /
+  - section: Guides
+    skip-slug: true
+    contents:
+      - page: Getting Started
+        path: ../docs/getting-started.mdx
+        slug: getting-started
+      - page: Managing Engines
+        path: ../docs/engine-lifecycle.mdx
+        slug: engine-lifecycle
+      - page: Terminal Interface
+        path: ../docs/terminal-interface.mdx
+        slug: terminal-interface
+      - page: Building and Running
+        path: ../docs/building.mdx
+        slug: building
+      - page: Troubleshooting
+        path: ../docs/troubleshooting.mdx
+        slug: troubleshooting
+      - page: Known Issues
+        path: ../docs/known-issues.mdx
+        slug: known-issues
+  - section: Reference
+    skip-slug: true
+    contents:
+      - page: Architecture
+        path: ../docs/architecture.mdx
+        slug: architecture
+      - page: Developer Guide
+        path: ../docs/developing.mdx
+        slug: developing
+      - page: Log Collection
+        path: ../docs/log-collection.mdx
+        slug: log-collection
+      - page: Inference Dispatcher
+        path: ../docs/inference-dispatcher.mdx
+        slug: inference-dispatcher
+  - section: API Reference
+    skip-slug: true
+    contents:
+      - api: PAIR API

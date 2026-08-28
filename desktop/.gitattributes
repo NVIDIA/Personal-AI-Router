@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Normalize text files on checkout/commit. Installer scripts must stay LF so
+# Linux postinst/postrm and macOS uninstall.sh work when CI and end users run them.
+* text=auto
+
+*.sh   text eol=lf
+*.nsh  text eol=lf

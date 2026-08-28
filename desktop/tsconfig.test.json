@@ -1,0 +1,22 @@
+{
+    "$schema": "https://json.schemastore.org/tsconfig",
+    "extends": ["@electron-toolkit/tsconfig/tsconfig.node.json", "./tsconfig.paths.json"],
+    "include": [
+        "src/shared/**/*.ts",
+        "tests/modular/**/*.test.ts",
+        "vitest.config.ts",
+        "scripts/test-clean.ts"
+    ],
+    // Renderer store tests import `src/ui/**`, whose files reference the
+    // `window.pairApi` / `window.windowApi` augmentation declared in
+    // `src/ui/globals.d.ts`. `files` bypasses the `src/ui/**` exclude below so
+    // the augmentation is part of the program without opening the whole UI tree
+    // to the default include set.
+    "files": ["src/ui/globals.d.ts"],
+    "exclude": ["src/ui/**", "node_modules", "dist", "out", "src/**/*.tsx"],
+    "compilerOptions": {
+        "composite": false,
+        "moduleResolution": "bundler",
+        "types": ["node", "vitest/globals"]
+    }
+}

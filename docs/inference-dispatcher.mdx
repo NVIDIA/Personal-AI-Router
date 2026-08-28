@@ -1,0 +1,106 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Inference dispatcher
+
+`scripts/inference-dispatcher` is a standalone HTTP client for exercising Ollama
+and LM Studio-compatible servers. It deliberately has no knowledge of Personal
+AI Router, its broker, Electron, JSON-RPC, discovery, or proxy implementation.
+Pointing it at a compatible proxy is indistinguishable from pointing it at a
+native model server, which is what makes it useful: the request enters the
+cluster router exactly the way a real third-party client's would.
+
+The executable uses only the Go standard library.
+
+```bash
+./scripts/inference-dispatcher.sh                                    # one prompt, default Ollama port
+./scripts/inference-dispatcher.sh --count 5 --mode parallel          # five concurrent prompts
+./scripts/inference-dispatcher.sh --backend lmstudio                 # LM Studio's OpenAI-compatible API
+./scripts/inference-dispatcher.sh --list-models                      # live inventory as JSON
+./scripts/inference-dispatcher.sh --help
+```
+
+```powershell
+.\scripts\inference-dispatcher.ps1 --backend lmstudio --count 5 --mode parallel
+```
+
+Both wrappers require `go` on `PATH` — the same toolchain `services/build.sh`
+already needs. Node is not required. They compile the module to a temporary
+directory and run it from the caller's working directory, so a relative
+`--result-log` path means what you expect.
+
+The desktop app ships its own prebuilt copy for the Inference Demo; see
+[architecture.mdx](architecture.mdx). The wrappers exist so the same tool can be
+driven by hand.
+
+## Model selection
+
+No model name is compiled into the program. When `--model` is omitted (or set to
+`auto`), the dispatcher queries the live model inventory, filters out models
+that explicitly advertise a non-generation type or capability, sorts the
+remaining names, and chooses the first one. This makes the default available,
+deterministic, and independent of what is installed.
+
+Use `--list-models` to inspect the inventory as JSON.
+
+## Configuration
+
+Options can come from a JSON configuration file, environment variables, or CLI
+flags. Precedence is CLI flags, environment, configuration file, then built-in
+non-model defaults.
+
+```json
+{
+  "backend": "ollama",
+  "port": 11434,
+  "model": "",
+  "count": 4,
+  "mode": "parallel",
+  "concurrency": 2,
+  "prompts": ["Explain unified memory in two sentences."],
+  "timeout_seconds": 120,
+  "max_tokens": 256
+}
+```
+
+Pass the file with `--config path/to/config.json` or
+`INFERENCE_DISPATCHER_CONFIG`. Every scalar option also has an
+`INFERENCE_DISPATCHER_*` environment equivalent.
+
+The client always connects to `127.0.0.1`. The default ports are `11434` for
+Ollama and `1234` for LM Studio. Both are the ports the router's proxies claim,
+so requests enter the cluster router rather than a single engine. Use `--port`
+to select another local port.
+
+## API behavior
+
+- Ollama inventory: `GET /api/tags`
+- Ollama inference: `POST /api/generate`
+- LM Studio inventory: `GET /v1/models`, enriched from `GET /api/v1/models` when
+  that endpoint answers
+- LM Studio inference: `POST /v1/chat/completions`
+
+`/v1/models` is queried first because the LM Studio proxy answers it by fanning
+out across the cluster, while `/api/v1/models` is forwarded to a single node.
+The OpenAI-shaped list carries no capability metadata, so the native list is
+still consulted afterwards to recover the type and capability fields the
+generation filter needs.
+
+Responses are bounded to 16 MiB. Requests honor the configured timeout and
+process cancellation. Parallel dispatch uses a configurable concurrency bound.
+`--result-log` appends JSON Lines records, while `--debug-error-log` writes a
+compact tab-separated error trail.
+
+## What is never recorded
+
+Neither log, nor stdout, ever contains prompt text or response bodies. Prompts
+are identified by a `sha256:<prefix> len=<n>` digest and responses by their byte
+count and their own digest, which is enough to correlate and compare jobs
+without putting inference content on disk. An upstream failure is recorded as
+its HTTP status plus the size and digest of the body, never the body text — a
+non-2xx body from an OpenAI-compatible endpoint can echo the request back.
+
+This is a hard rule for every Personal AI Router component, not a setting. There
+is no flag that turns it off.

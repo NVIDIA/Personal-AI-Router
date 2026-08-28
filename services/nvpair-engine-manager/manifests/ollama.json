@@ -1,0 +1,113 @@
+{
+  "engine": "ollama",
+  "display_name": "Ollama",
+  "manifest_version": 1,
+  "install": { "mode": "user" },
+  "runtime": {
+    "args": ["serve"],
+    "env": { "OLLAMA_HOST": "{host}:{port}" },
+    "bind": "127.0.0.1",
+    "port": 11434,
+    "ready": { "http": "http://127.0.0.1:{port}/api/version", "status": 200, "timeout_s": 600 },
+    "stop": { "signal": "term", "grace_s": 5 },
+    "health": { "http": "http://127.0.0.1:{port}/api/version", "status": 200, "interval_s": 5 }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "detect": ["{install_dir}\\ollama.exe", "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"],
+      "install": {
+        "fetch": { "url": "https://ollama.com/download/ollama-windows-amd64.zip" },
+        "run": ["tar", "-xf", "{download}", "-C", "{install_dir}"]
+      },
+      "uninstall": { "run": ["cmd", "/c", "rmdir", "/s", "/q", "{install_dir}"] },
+      "runtime": { "bin": "{install_dir}\\ollama.exe" }
+    },
+    "windows/arm64": {
+      "detect": ["{install_dir}\\ollama.exe", "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"],
+      "install": {
+        "fetch": { "url": "https://ollama.com/download/ollama-windows-arm64.zip" },
+        "run": ["tar", "-xf", "{download}", "-C", "{install_dir}"]
+      },
+      "uninstall": { "run": ["cmd", "/c", "rmdir", "/s", "/q", "{install_dir}"] },
+      "runtime": { "bin": "{install_dir}\\ollama.exe" }
+    },
+    "darwin/arm64": {
+      "detect": [
+        "/Applications/Ollama.app/Contents/Resources/ollama",
+        "~/Applications/Ollama.app/Contents/Resources/ollama",
+        "{install_dir}/Ollama.app/Contents/Resources/ollama"
+      ],
+      "install": {
+        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip" },
+        "run": ["unzip", "-o", "{download}", "-d", "{install_dir}"]
+      },
+      "uninstall": { "run": ["rm", "-rf", "{install_dir}/Ollama.app"] },
+      "runtime": { "bin": "{install_dir}/Ollama.app/Contents/Resources/ollama" }
+    },
+    "darwin/amd64": {
+      "detect": [
+        "/Applications/Ollama.app/Contents/Resources/ollama",
+        "~/Applications/Ollama.app/Contents/Resources/ollama",
+        "{install_dir}/Ollama.app/Contents/Resources/ollama"
+      ],
+      "install": {
+        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip" },
+        "run": ["unzip", "-o", "{download}", "-d", "{install_dir}"]
+      },
+      "uninstall": { "run": ["rm", "-rf", "{install_dir}/Ollama.app"] },
+      "runtime": { "bin": "{install_dir}/Ollama.app/Contents/Resources/ollama" }
+    },
+    "linux/amd64": {
+      "detect": ["{install_dir}/bin/ollama"],
+      "install": {
+        "fetch": { "url": "https://ollama.com/download/ollama-linux-amd64.tar.zst" },
+        "run": ["tar", "--zstd", "-xf", "{download}", "-C", "{install_dir}"]
+      },
+      "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
+      "runtime": {
+        "bin": "{install_dir}/bin/ollama",
+        "env": { "LD_LIBRARY_PATH": "{install_dir}/lib/ollama" }
+      }
+    },
+    "linux/arm64": {
+      "detect": ["{install_dir}/bin/ollama"],
+      "install": {
+        "fetch": { "url": "https://ollama.com/download/ollama-linux-arm64.tar.zst" },
+        "run": ["tar", "--zstd", "-xf", "{download}", "-C", "{install_dir}"]
+      },
+      "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
+      "runtime": {
+        "bin": "{install_dir}/bin/ollama",
+        "env": { "LD_LIBRARY_PATH": "{install_dir}/lib/ollama" }
+      }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List models installed on this engine.",
+      "http": { "method": "GET", "path": "/api/tags" },
+      "result": { "array": "models", "field": "name" }
+    },
+    "loaded_models": {
+      "description": "List models currently loaded in memory (every /api/ps entry is resident).",
+      "http": { "method": "GET", "path": "/api/ps" },
+      "result": { "array": "models", "field": "name" }
+    },
+    "pull_model": {
+      "description": "Pull a model by name (params: {\"name\": \"<model>\"}).",
+      "http": { "method": "POST", "path": "/api/pull", "body_schema": { "name": "string" } }
+    },
+    "run_model": {
+      "description": "Run a one-shot generation (params: {\"model\": \"<model>\", \"prompt\": \"<text>\", \"stream\": false}).",
+      "http": { "method": "POST", "path": "/api/generate", "body_schema": { "model": "string", "prompt": "string", "stream": "bool" } }
+    },
+    "unload_model": {
+      "description": "Unload a model from memory (params: {\"model\": \"<model>\", \"keep_alive\": 0}).",
+      "http": { "method": "POST", "path": "/api/generate", "body_schema": { "model": "string", "keep_alive": "number" } }
+    },
+    "delete_model": {
+      "description": "Delete a model by name (params: {\"name\": \"<model>\"}).",
+      "http": { "method": "DELETE", "path": "/api/delete", "body_schema": { "name": "string" } }
+    }
+  }
+}

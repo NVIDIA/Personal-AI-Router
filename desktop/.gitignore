@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+release
+*.local
+out
+notes.txt
+vault-notes.txt
+coverage
+cli-bin
+
+# Compiled inference-dispatcher client (built from ../scripts/inference-dispatcher
+# by `npm run build:tools`; the Go sources are tracked at the monorepo root).
+tools
+
+# Generated app-icon artifacts (build/runtime containers derived from the master
+# artwork in resources/app-icon/ by `npm run generate:icons`, which runs
+# automatically via prebuild:electron / prestart). Source of truth is app-icon/.
+resources/icons/
+
+# Compiled macOS privileged-helper binaries (built on the mac runner by
+# scripts/build/macos/build-helper.ts; Swift sources in native/ are tracked).
+native/build
+
+docs/_docx-staging
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables
+.env
+.env.local
+.env.production.local
+.env.development.local
+.env.test.local
+
+# Ephemeral Docker test machine IDs (see testing/README.md)
+testing/docker/machine-ids/node-a
+testing/docker/machine-ids/node-b
+
+# Cursor hook runtime state (per-session read tracking)
+.cursor/hooks/state/
+
+dead-code-report.md
+tsconfig.deadcode.node.json
+tsconfig.deadcode.web.json
+sea-config.json
+
+review.diff

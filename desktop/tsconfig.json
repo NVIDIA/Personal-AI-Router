@@ -1,0 +1,15 @@
+{
+    "$schema": "https://json.schemastore.org/tsconfig",
+    // Solution config. `tsx` reads the nearest tsconfig for `@/*`, so the path
+    // mapping must be reachable from here as well as from the leaf projects.
+    "extends": "./tsconfig.paths.json",
+    "files": [],
+    "references": [
+        {
+            "path": "./tsconfig.node.json"
+        },
+        {
+            "path": "./tsconfig.web.json"
+        }
+    ]
+}

@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Installer output
+dist/
+
+# Windows build artifacts
+*.exe
+
+# Linux/macOS subprocess build artifacts. Explicit per-component patterns
+# instead of a broader glob so we never accidentally ignore source files that
+# happen to share a name with a component directory.
+ollama-proxy/ollama-proxy
+lmstudio-proxy/lmstudio-proxy
+nvpair-node-info/nvpair-node-info
+nvpair-node-scanner/nvpair-node-scanner
+nvpair-manual-nodes/nvpair-manual-nodes
+nvpair-errors/nvpair-errors
+nvpair-node-settings/nvpair-node-settings
+nvpair-engine-manager/nvpair-engine-manager
+nvpair-workload-manager/nvpair-workload-manager
+nvpair-cluster-manager/nvpair-cluster-manager
+nvpair-ui-broker/nvpair-ui-broker
+nvpair-job-scheduler/nvpair-job-scheduler
+nvpair-tui/nvpair-tui
+
+# Staged binary bundle produced by build.bat / build.sh (all worker binaries
+# copied here for packaging). Windows .exe files are already ignored above; this
+# also covers the Linux/macOS binaries that land here.
+build/bin/
+
+# macOS Finder metadata
+.DS_Store
+
+# Local caches
+.cache/
+.npm/

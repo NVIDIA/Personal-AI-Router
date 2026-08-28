@@ -1,0 +1,28 @@
+# Personal AI Router Logs
+
+## Metadata
+{
+  "generatedAt": "2026-07-21T22:55:03.001Z",
+  "sessionStartedAt": "2026-07-21T22:31:40.939Z",
+  "appName": "nvpair",
+  "appVersion": "0.0.60-dev",
+  "platform": "linux",
+  "hostname": "TESTHOST-B",
+  "userDataPath": "/home/otheruser/.config/Nvidia Corporation/Personal AI Router"
+}
+
+## Current Modular State
+{
+  "selfId": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+  "nodesInitial": {
+    "66666666-7777-4888-8999-aaaaaaaaaaaa": {
+      "id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+      "name": "TESTHOST-B",
+      "ipAddress": "192.168.50.11"
+    }
+  }
+}
+
+## Structured App Log JSONL
+{"level":"verbose","time":"2026-07-21T22:31:41.100Z","source":"service-bridge","sublevel":"broker","message":"{\"jsonrpc\":\"2.0\",\"method\":\"discovery:nodes-changed\",\"params\":[{\"id\":\"TESTHOST-A\",\"name\":\"TESTHOST-A\",\"hostUuid\":\"11111111-2222-4333-8444-555555555555\",\"ipAddress\":\"192.168.50.10\",\"port\":14318,\"trusted\":true}]}","data":{"stream":"stdout"}}
+{"level":"info","time":"2026-07-21T22:31:42.000Z","source":"service-bridge","sublevel":"poll","message":"polling node","data":{"host":"192.168.50.10","port":14318}}

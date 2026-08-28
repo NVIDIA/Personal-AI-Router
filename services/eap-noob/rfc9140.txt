@@ -1,0 +1,2889 @@
+﻿
+
+
+
+Internet Engineering Task Force (IETF)                           T. Aura
+Request for Comments: 9140                              Aalto University
+Category: Standards Track                                       M. Sethi
+ISSN: 2070-1721                                                 Ericsson
+                                                             A. Peltonen
+                                                        Aalto University
+                                                           December 2021
+
+
+          Nimble Out-of-Band Authentication for EAP (EAP-NOOB)
+
+Abstract
+
+   The Extensible Authentication Protocol (EAP) provides support for
+   multiple authentication methods.  This document defines the EAP-NOOB
+   authentication method for nimble out-of-band (OOB) authentication and
+   key derivation.  The EAP method is intended for bootstrapping all
+   kinds of Internet-of-Things (IoT) devices that have no preconfigured
+   authentication credentials.  The method makes use of a user-assisted,
+   one-directional, out-of-band (OOB) message between the peer device
+   and authentication server to authenticate the in-band key exchange.
+   The device must have a nonnetwork input or output interface, such as
+   a display, microphone, speaker, or blinking light, that can send or
+   receive dynamically generated messages of tens of bytes in length.
+
+Status of This Memo
+
+   This is an Internet Standards Track document.
+
+   This document is a product of the Internet Engineering Task Force
+   (IETF).  It represents the consensus of the IETF community.  It has
+   received public review and has been approved for publication by the
+   Internet Engineering Steering Group (IESG).  Further information on
+   Internet Standards is available in Section 2 of RFC 7841.
+
+   Information about the current status of this document, any errata,
+   and how to provide feedback on it may be obtained at
+   https://www.rfc-editor.org/info/rfc9140.
+
+Copyright Notice
+
+   Copyright (c) 2021 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (https://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with respect
+   to this document.  Code Components extracted from this document must
+   include Revised BSD License text as described in Section 4.e of the
+   Trust Legal Provisions and are provided without warranty as described
+   in the Revised BSD License.
+
+Table of Contents
+
+   1.  Introduction
+   2.  Terminology
+   3.  EAP-NOOB Method
+     3.1.  Protocol Overview
+     3.2.  Protocol Messages and Sequences
+       3.2.1.  Common Handshake in All EAP-NOOB Exchanges
+       3.2.2.  Initial Exchange
+       3.2.3.  OOB Step
+       3.2.4.  Completion Exchange
+       3.2.5.  Waiting Exchange
+     3.3.  Protocol Data Fields
+       3.3.1.  Peer Identifier and NAI
+       3.3.2.  Message Data Fields
+     3.4.  Fast Reconnect and Rekeying
+       3.4.1.  Persistent EAP-NOOB Association
+       3.4.2.  Reconnect Exchange
+       3.4.3.  User Reset
+     3.5.  Key Derivation
+     3.6.  Error Handling
+       3.6.1.  Invalid Messages
+       3.6.2.  Unwanted Peer
+       3.6.3.  State Mismatch
+       3.6.4.  Negotiation Failure
+       3.6.5.  Cryptographic Verification Failure
+       3.6.6.  Application-Specific Failure
+   4.  ServerInfo and PeerInfo Contents
+   5.  IANA Considerations
+     5.1.  Cryptosuites
+     5.2.  Message Types
+     5.3.  Error Codes
+     5.4.  ServerInfo Data Fields
+     5.5.  PeerInfo Data Fields
+     5.6.  Domain Name Reservation
+     5.7.  Guidance for Designated Experts
+   6.  Security Considerations
+     6.1.  Authentication Principle
+     6.2.  Identifying Correct Endpoints
+     6.3.  Trusted Path Issues and Misbinding Attacks
+     6.4.  Peer Identifiers and Attributes
+     6.5.  Downgrading Threats
+     6.6.  Protected Success and Failure Indications
+     6.7.  Channel Binding
+     6.8.  Denial of Service
+     6.9.  Recovery from Loss of Last Message
+     6.10. Privacy Considerations
+     6.11. EAP Security Claims
+   7.  References
+     7.1.  Normative References
+     7.2.  Informative References
+   Appendix A.  Exchanges and Events per State
+   Appendix B.  Application-Specific Parameters
+   Appendix C.  EAP-NOOB Roaming
+   Appendix D.  OOB Message as a URL
+   Acknowledgments
+   Authors' Addresses
+
+1.  Introduction
+
+   This document describes a method for registration, authentication,
+   and key derivation for network-connected smart devices, such as
+   consumer and enterprise appliances that are part of the Internet of
+   Things (IoT).  These devices may be off-the-shelf hardware that is
+   sold and distributed without any prior registration or credential-
+   provisioning process, or they may be recycled devices after a hard
+   reset.  Thus, the device registration in a server database, ownership
+   of the device, and the authentication credentials for both network
+   access and application-level security must all be established at the
+   time of the device deployment.  Furthermore, many such devices have
+   only limited user interfaces that could be used for their
+   configuration.  Often, the user interfaces are limited to either only
+   input (e.g., a camera) or output (e.g., a display screen).  The
+   device configuration is made more challenging by the fact that the
+   devices may exist in large numbers and may have to be deployed or
+   reconfigured nimbly based on user needs.
+
+   To summarize, devices may have the following characteristics:
+
+   *  no preestablished relation with the intended server or user,
+
+   *  no preprovisioned device identifier or authentication credentials,
+      or
+
+   *  an input or output interface that may be capable of only one-
+      directional out-of-band communication.
+
+   Many proprietary out-of-band (OOB) configuration methods exist for
+   specific IoT devices.  The goal of this specification is to provide
+   an open standard and a generic protocol for bootstrapping the
+   security of network-connected appliances, such as displays, printers,
+   speakers, and cameras.  The security bootstrapping in this
+   specification makes use of a user-assisted OOB channel.  The device
+   authentication relies on a user having physical access to the device,
+   and the key exchange security is based on the assumption that
+   attackers are not able to observe or modify the messages conveyed
+   through the OOB channel.  We follow the common approach taken in
+   pairing protocols: performing a Diffie-Hellman key exchange over the
+   insecure network and authenticating the established key with the help
+   of the OOB channel in order to prevent impersonation attacks.
+
+   The solution presented here is intended for devices that have either
+   a nonnetwork input or output interface, such as a camera, microphone,
+   display screen, speaker, or blinking Light Emitting Diode (LED)
+   light, that is able to send or receive dynamically generated messages
+   of tens of bytes in length.  Naturally, this solution may not be
+   appropriate for very small sensors or actuators that have no user
+   interface at all or for devices that are inaccessible to the user.
+   We also assume that the OOB channel is at least partly automated
+   (e.g., a camera scanning a bar code); thus, there is no need to
+   absolutely minimize the length of the data transferred through the
+   OOB channel.  This differs, for example, from Bluetooth pairing
+   [Bluetooth], where it is essential to minimize the length of the
+   manually transferred or compared codes.  The OOB messages in this
+   specification are dynamically generated.  Thus, we do not support
+   static printed registration codes.  One reason for requiring dynamic
+   OOB messages is that the receipt of the OOB message authorizes the
+   server to take ownership of the device.  Dynamic OOB messages are
+   more secure than static printed codes, which could be leaked and
+   later misused.
+
+2.  Terminology
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and
+   "OPTIONAL" in this document are to be interpreted as described in
+   BCP 14 [RFC2119] [RFC8174] when, and only when, they appear in all
+   capitals, as shown here.
+
+   In addition, this document frequently uses the following terms as
+   they have been defined in [RFC5216]:
+
+   authenticator
+         The entity initiating EAP authentication.
+
+   peer
+         The entity that responds to the authenticator.  In
+         [IEEE-802.1X], this entity is known as the supplicant.  (We use
+         the terms peer, device, and peer device interchangeably.)
+
+   server
+         The entity that terminates the EAP authentication method with
+         the peer.  In the case where no backend authentication server
+         is used, the EAP server is part of the authenticator.  In the
+         case where the authenticator operates in pass-through mode, the
+         EAP server is located on the backend authentication server.
+
+3.  EAP-NOOB Method
+
+   This section defines the EAP-NOOB method.  The protocol is a
+   generalized version of the original idea presented by Sethi et al.
+   [Sethi14].
+
+3.1.  Protocol Overview
+
+   One EAP-NOOB method execution spans two or more EAP conversations,
+   called Exchanges in this specification.  Each Exchange consists of
+   several EAP request-response pairs.  At least two separate EAP
+   conversations are needed to give the human user time to deliver the
+   OOB message between them.
+
+   The overall protocol starts with the Initial Exchange, which
+   comprises four EAP request-response pairs.  In the Initial Exchange,
+   the server allocates an identifier to the peer, and the server and
+   peer negotiate the protocol version and cryptosuite (i.e.,
+   cryptographic algorithm suite), exchange nonces, and perform an
+   Ephemeral Elliptic Curve Diffie-Hellman (ECDHE) key exchange.  The
+   user-assisted OOB Step then takes place.  This step requires only one
+   out-of-band message, either from the peer to the server or from the
+   server to the peer.  While waiting for the OOB Step action, the peer
+   MAY probe the server by reconnecting to it with EAP-NOOB.  If the OOB
+   Step has already taken place, the probe leads to the Completion
+   Exchange, which completes the mutual authentication and key
+   confirmation.  On the other hand, if the OOB Step has not yet taken
+   place, the probe leads to the Waiting Exchange, and the peer will
+   perform another probe after a server-defined minimum waiting time.
+   The Initial Exchange and Waiting Exchange always end in EAP-Failure,
+   while the Completion Exchange may result in EAP-Success.  Once the
+   peer and server have performed a successful Completion Exchange, both
+   endpoints store the created association in persistent storage, and
+   the OOB Step is not repeated.  Thereafter, creation of new temporal
+   keys, ECDHE rekeying, and updates of cryptographic algorithms can be
+   achieved with the Reconnect Exchange.
+
+                                       OOB Output/Initial Exchange/
+                                                  Waiting Exchange
+                                                    .-----.
+                                                    |     v
+        .------------------.   Initial       .------------------.
+        |                  |   Exchange      |                  |
+     .->| Unregistered (0) |---------------->|Waiting for OOB(1)|
+     |  |   (ephemeral)    |                 |   (ephemeral)    |
+     |  |                  |                 |                  |
+     |  '------------------'                 '------------------'
+     |                                         |      |      ^
+    User Reset                 Completion      |      |      |
+     |                         Exchange        |     OOB   OOB
+     |<-------.      .-------------------------'    Input  Reject/
+     |        |      |                                |    Initial
+     |        |      |                                |    Exchange
+     |        |      v                                v      |
+     |  .------------------.   Completion    .------------------.
+     |  |                  |   Exchange      |                  |
+     |  |  Registered (4)  |<----------------| OOB Received (2) |
+     |  |   (persistent)   |                 |   (ephemeral)    |
+     |  |                  |                 |                  |
+     |  '------------------'                 '------------------'
+     |        |      ^
+     |  Mobility/    |
+     |  Timeout/   Reconnect
+     |  Failure    Exchange
+     |        |      |
+     |        v      |
+     |  .------------------.
+     |  |                  |
+     '--| Reconnecting (3) |
+        |   (persistent)   |
+        |                  |
+        '------------------'
+
+          Figure 1: EAP-NOOB Server-Peer Association State Machine
+
+   Figure 1 shows the association state machine, which is the same for
+   the server and for the peer.  (For readability, only the main state
+   transitions are shown.  The complete table of transitions can be
+   found in Appendix A.)  When the peer initiates the EAP-NOOB method,
+   the server chooses the ensuing message exchange based on the
+   combination of the server and peer states.  The EAP server and peer
+   are initially in the Unregistered (0) state, in which no state
+   information needs to be stored.  Before a successful Completion
+   Exchange, the server-peer association state is ephemeral in both the
+   server and peer (ephemeral states 0..2), and a timeout or error may
+   cause one or both endpoints to go back to the Unregistered (0) state
+   so that the Initial Exchange is repeated.  After the Completion
+   Exchange has resulted in EAP-Success, the association state becomes
+   persistent (persistent states 3..4).  Only user reset or memory
+   failure can cause the return of the server or the peer from the
+   persistent states to the ephemeral states and to the Initial
+   Exchange.
+
+   The server MUST NOT repeat a successful OOB Step with the same peer
+   except if the association with the peer is explicitly reset by the
+   user or lost due to failure of the persistent storage in the server.
+   More specifically, once the association has entered the Registered
+   (4) state, the server MUST NOT delete the association or go back to
+   the ephemeral states 0..2 without explicit user approval.  Similarly,
+   the peer MUST NOT repeat the OOB Step unless the user explicitly
+   deletes the association with the server from the peer or resets the
+   peer to the Unregistered (0) state.  The server and peer MAY
+   implement user reset of the association by deleting the state data
+   from that endpoint.  If an endpoint continues to store data about the
+   association after the user reset, its behavior MUST be equivalent to
+   having deleted the association data.
+
+   It can happen that the peer accidentally (or through user reset)
+   loses its persistent state and reconnects to the server without a
+   previously allocated peer identifier.  In that case, the server MUST
+   treat the peer as a new peer.  The server MAY use auxiliary
+   information, such as the PeerInfo field received in the Initial
+   Exchange, to detect multiple associations with the same peer.
+   However, it MUST NOT delete or merge redundant associations without
+   user or application approval because EAP-NOOB internally has no
+   secure way of verifying that the two peers are the same physical
+   device.  Similarly, the server might lose the association state
+   because of a memory failure or user reset.  In that case, the only
+   way to recover is that the user also resets the peer.
+
+   A special feature of the EAP-NOOB method is that the server is not
+   assumed to have any a priori knowledge of the peer.  Therefore, the
+   peer initially uses the generic identity string "noob@eap-noob.arpa"
+   as its Network Access Identifier (NAI).  The server then allocates a
+   server-specific identifier to the peer.  The generic NAI serves two
+   purposes: firstly, it tells the server that the peer supports and
+   expects the EAP-NOOB method; secondly, it allows routing of the EAP-
+   NOOB sessions to a specific authentication server in an
+   Authentication, Authorization, and Accounting (AAA) architecture.
+
+   EAP-NOOB is an unusual EAP method in that the peer has to have
+   multiple EAP conversations with the server before it can receive EAP-
+   Success.  The reason is that, while EAP allows delays between the
+   request-response pairs, e.g., for repeated password entry, the user
+   delays in OOB authentication can be much longer than in password
+   trials.  Moreover, EAP-NOOB supports peers with no input capability
+   in the user interface (e.g., LED light bulbs).  Since users cannot
+   initiate the protocol in these devices, the devices have to perform
+   the Initial Exchange opportunistically and hope for the OOB Step to
+   take place within a timeout period (NoobTimeout), which is why the
+   timeout needs to be several minutes rather than seconds.  To support
+   such high-latency OOB channels, the peer and server perform the
+   Initial Exchange in one EAP conversation, then allow time for the OOB
+   message to be delivered, and later perform the Waiting Exchange and
+   Completion Exchange in different EAP conversations.
+
+3.2.  Protocol Messages and Sequences
+
+   This section defines the EAP-NOOB exchanges, which correspond to EAP
+   conversations.  The exchanges start with a common handshake, which
+   determines the type of the following exchange.  The common handshake
+   messages and the subsequent messages for each exchange type are
+   listed in the diagrams below.  The diagrams also specify the data
+   fields present in each message.  Each exchange comprises multiple EAP
+   request-response pairs and ends in either EAP-Failure, indicating
+   that authentication is not (yet) successful, or in EAP-Success.
+
+3.2.1.  Common Handshake in All EAP-NOOB Exchanges
+
+   All EAP-NOOB exchanges start with common handshake messages.  The
+   handshake begins with the identity request and response that are
+   common to all EAP methods.  Their purpose is to enable the AAA
+   architecture to route the EAP conversation to the EAP server and to
+   enable the EAP server to select the EAP method.  The handshake then
+   continues with one EAP-NOOB request-response pair in which the server
+   discovers the peer identifier used in EAP-NOOB and the peer state.
+
+   In more detail, each EAP-NOOB exchange begins with the authenticator
+   sending an EAP-Request/Identity packet to the peer.  From this point
+   on, the EAP conversation occurs between the server and the peer, and
+   the authenticator acts as a pass-through device.  The peer responds
+   to the authenticator with an EAP-Response/Identity packet, which
+   contains the Network Access Identifier (NAI).  The authenticator,
+   acting as a pass-through device, forwards this response and the
+   following EAP conversation between the peer and the AAA architecture.
+   The AAA architecture routes the conversation to a specific AAA server
+   (called "EAP server" or simply "server" in this specification) based
+   on the realm part of the NAI.  The server selects the EAP-NOOB method
+   based on the user part of the NAI, as defined in Section 3.3.1.
+
+   After receiving the EAP-Response/Identity message, the server sends
+   the first EAP-NOOB request (Type=1) to the peer, which responds with
+   the peer identifier (PeerId) and state (PeerState) in the range 0..3.
+   However, the peer SHOULD omit the PeerId from the response (Type=1)
+   when PeerState=0.  The server then chooses the EAP-NOOB exchange,
+   i.e., the ensuing message sequence, as explained below.  The peer
+   recognizes the exchange based on the message type field (Type) of the
+   next EAP-NOOB request received from the server.
+
+   The server MUST determine the exchange type based on the combination
+   of the peer and server states as follows (also summarized in
+   Table 14).  If either the peer or server is in the Unregistered (0)
+   state and the other is in one of the ephemeral states (0..2), the
+   server chooses the Initial Exchange.  If either the peer or server is
+   in the OOB Received (2) state and the other is either in the Waiting
+   for OOB (1) or OOB Received (2) state, the OOB Step has taken place
+   and the server chooses the Completion Exchange.  If both the server
+   and peer are in the Waiting for OOB (1) state, the server chooses the
+   Waiting Exchange.  If the peer is in the Reconnecting (3) state and
+   the server is in the Registered (4) or Reconnecting (3) state, the
+   server chooses the Reconnect Exchange.  All other state combinations
+   are error situations where user action is required, and the server
+   SHOULD indicate such errors to the peer with the error code 2002 (see
+   Section 3.6.3).  Note also that the peer MUST NOT initiate EAP-NOOB
+   when the peer is in the Registered (4) state.
+
+
+         EAP Peer                      Authenticator    EAP Server
+           |                                   |              |
+           |<----------- EAP-Request/Identity -|              |
+           |                                                  |
+           |                                                  |
+           |------------ EAP-Response/Identity -------------->|
+           |      (NAI=noob@eap-noob.arpa)                    |
+           |                                                  |
+           |                                                  |
+           |<----------- EAP-Request/EAP-NOOB ----------------|
+           |      (Type=1)                                    |
+           |                                                  |
+           |                                                  |
+           |------------ EAP-Response/EAP-NOOB -------------->|
+           |      (Type=1,[PeerId],PeerState=1)               |
+           |                                                  |
+           |  continuing with exchange-specific messages...   |
+
+            Figure 2: Common Handshake in All EAP-NOOB Exchanges
+
+3.2.2.  Initial Exchange
+
+   The Initial Exchange comprises the common handshake and two further
+   EAP-NOOB request-response pairs: one for version, cryptosuite, and
+   parameter negotiation and the other for the ECDHE key exchange.  The
+   first EAP-NOOB request (Type=2) from the server contains a newly
+   allocated PeerId for the peer and an optional NewNAI for assigning a
+   new NAI to the peer.  The server allocates a new PeerId in the
+   Initial Exchange regardless of any old PeerId received in the
+   previous response (Type=1).  The server also sends in the request a
+   list of the protocol versions (Vers) and cryptosuites (Cryptosuites)
+   it supports, an indicator of the OOB channel directions it supports
+   (Dirs), and a ServerInfo object.  The peer chooses one of the
+   versions and cryptosuites.  The peer sends a response (Type=2) with
+   the selected protocol version (Verp), the received PeerId, the
+   selected cryptosuite (Cryptosuitep), an indicator of the OOB channel
+   direction(s) selected by the peer (Dirp), and a PeerInfo object.  In
+   the second EAP-NOOB request and response (Type=3), the server and
+   peer exchange the public components of their ECDHE keys and nonces
+   (PKs, Ns, PKp, and Np).  The ECDHE keys MUST be based on the
+   negotiated cryptosuite, i.e., Cryptosuitep.  The Initial Exchange
+   always ends with EAP-Failure from the server because the
+   authentication cannot yet be completed.
+
+        EAP Peer                                        EAP Server
+          |       ...continuing from common handshake        |
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |      (Type=2,Vers,PeerId,[NewNAI],               |
+          |       Cryptosuites,Dirs,ServerInfo)              |
+          |                                                  |
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |      (Type=2,Verp,PeerId,Cryptosuitep,           |
+          |        Dirp,PeerInfo)                            |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |      (Type=3,PeerId,PKs,Ns,[SleepTime])          |
+          |                                                  |
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |      (Type=3,PeerId,PKp,Np)                      |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Failure -------------------------|
+          |                                                  |
+
+                         Figure 3: Initial Exchange
+
+   At the conclusion of the Initial Exchange, both the server and the
+   peer move to the Waiting for OOB (1) state.
+
+3.2.3.  OOB Step
+
+   The OOB Step, labeled as OOB Output and OOB Input in Figure 1, takes
+   place after the Initial Exchange.  Depending on the negotiated OOB
+   channel direction, the peer or the server outputs the OOB message as
+   shown in Figures 4 or 5, respectively.  The data fields are the
+   PeerId, the secret nonce Noob, and the cryptographic fingerprint
+   Hoob.  The contents of the data fields are defined in Section 3.3.2.
+   The OOB message is delivered to the other endpoint via a user-
+   assisted OOB channel.
+
+   For brevity, we will use the terms OOB sender and OOB receiver in
+   addition to the already familiar EAP server and EAP peer.  If the OOB
+   message is sent in the server-to-peer direction, the OOB sender is
+   the server and the OOB receiver is the peer.  On the other hand, if
+   the OOB message is sent in the peer-to-server direction, the OOB
+   sender is the peer and the OOB receiver is the server.
+
+        EAP Peer                                        EAP Server
+          |                                                  |
+          |=================OOB=============================>|
+          |             (PeerId,Noob,Hoob)                   |
+          |                                                  |
+
+                Figure 4: OOB Step, from Peer to EAP Server
+
+
+        EAP Peer                                        EAP Server
+          |                                                  |
+          |<================OOB==============================|
+          |             (PeerId,Noob,Hoob)                   |
+          |                                                  |
+
+                Figure 5: OOB Step, from EAP Server to Peer
+
+   The OOB receiver MUST compare the received value of the fingerprint
+   Hoob (see Section 3.3.2) with a value that it computed locally for
+   the PeerID received.  This integrity check ensures that the endpoints
+   agree on contents of the Initial Exchange.  If the values are equal,
+   the receiver moves to the OOB Received (2) state.  Otherwise, the
+   receiver MUST reject the OOB message.  For usability reasons, the OOB
+   receiver SHOULD indicate the acceptance or rejection of the OOB
+   message to the user.  The receiver SHOULD reject invalid OOB messages
+   without changing its state in the association state machine until an
+   application-specific number of invalid messages (OobRetries) has been
+   reached; after which, the receiver SHOULD consider it an error and go
+   back to the Unregistered (0) state.
+
+   The server or peer MAY send multiple OOB messages with different Noob
+   values while in the Waiting for OOB (1) state.  The OOB sender SHOULD
+   remember the Noob values until they expire and accept any one of them
+   in the following Completion Exchange.  The Noob values sent by the
+   server expire after an application-dependent timeout (NoobTimeout),
+   and the server MUST NOT accept Noob values older than that in the
+   Completion Exchange.  The RECOMMENDED value for NoobTimeout is 3600
+   seconds if there are no application-specific reasons for making it
+   shorter or longer.  The Noob values sent by the peer expire, as
+   defined in Section 3.2.5.
+
+   The OOB receiver does not accept further OOB messages after it has
+   accepted one and moved to the OOB Received (2) state.  However, the
+   receiver MAY buffer redundant OOB messages in case an OOB message
+   expiry or similar error detected in the Completion Exchange causes it
+   to return to the Waiting for OOB (1) state.  It is RECOMMENDED that
+   the OOB receiver notifies the user about redundant OOB messages, but
+   it MAY instead discard them silently.
+
+   The sender will typically generate a new Noob, and therefore a new
+   OOB message, at constant time intervals (NoobInterval).  The
+   RECOMMENDED interval is
+
+      NoobInterval = NoobTimeout / 2
+
+   in which case, the receiver of the OOB will at any given time accept
+   either of the two latest Noob values.  However, the timing of the
+   Noob generation may also be based on user interaction or on
+   implementation considerations.
+
+   Even though not recommended (see Section 3.3), this specification
+   allows both directions to be negotiated (Dirp=3) for the OOB channel.
+   In that case, both sides SHOULD output the OOB message, and it is up
+   to the user to deliver at least one of them.
+
+   The details of the OOB channel implementation including the message
+   encoding are defined by the application.  Appendix D gives an example
+   of how the OOB message can be encoded as a URL that may be embedded
+   in a dynamic QR code or NFC (Near Field Communication) tag.
+
+3.2.4.  Completion Exchange
+
+   After the Initial Exchange, if the OOB channel directions selected by
+   the peer include the peer-to-server direction, the peer SHOULD
+   initiate the EAP-NOOB method again after an applications-specific
+   waiting time in order to probe for completion of the OOB Step.  If
+   the OOB channel directions selected by the peer include the server-
+   to-peer direction and the peer receives the OOB message, it SHOULD
+   initiate the EAP-NOOB method immediately.  Depending on the
+   combination of the peer and server states, the server continues with
+   the Completion Exchange or Waiting Exchange (see Section 3.2.1 on how
+   the server makes this decision).
+
+   The Completion Exchange comprises the common handshake and one or two
+   further EAP-NOOB request-response pairs.  If the peer is in the
+   Waiting for OOB (1) state, the OOB message has been sent in the peer-
+   to-server direction.  In that case, only one request-response pair
+   (Type=6) takes place.  In the request, the server sends the NoobId
+   value (see Section 3.3.2), which the peer uses to identify the exact
+   OOB message received by the server.  On the other hand, if the peer
+   is in the OOB Received (2) state, the direction of the OOB message is
+   from server to peer.  In this case, two request-response pairs
+   (Type=5 and Type=6) are needed.  The purpose of the first request-
+   response pair (Type=5) is that it enables the server to discover
+   NoobId, which identifies the exact OOB message received by the peer.
+   The server returns the same NoobId to the peer in the latter request.
+
+   In the last request-response pair (Type=6) of the Completion
+   Exchange, the server and peer exchange message authentication codes.
+   Both sides MUST compute the keys Kms and Kmp, as defined in
+   Section 3.5, and the message authentication codes MACs and MACp, as
+   defined in Section 3.3.2.  Both sides MUST compare the received
+   message authentication code with a locally computed value.  If the
+   peer finds that it has received the correct value of MACs and the
+   server finds that it has received the correct value of MACp, the
+   Completion Exchange ends in EAP-Success.  Otherwise, the endpoint
+   where the comparison fails indicates this with an error message
+   (error code 4001, see Section 3.6.5), and the Completion Exchange
+   ends in EAP-Failure.
+
+   After the successful Completion Exchange, both the server and the
+   peer move to the Registered (4) state.  They also derive the output
+   keying material and store the persistent EAP-NOOB association state,
+   as defined in Sections 3.4 and 3.5.
+
+   It is possible that the OOB message expires before it is received.
+   In that case, the sender of the OOB message no longer recognizes the
+   NoobId that it receives in the Completion Exchange.  Another reason
+   why the OOB sender might not recognize the NoobId is if the received
+   OOB message was spoofed and contained an attacker-generated Noob
+   value.  The recipient of an unrecognized NoobId indicates this with
+   an error message (error code 2003, see Section 3.6.1), and the
+   Completion Exchange ends in EAP-Failure.  The recipient of the error
+   message 2003 moves back to the Waiting for OOB (1) state.  This state
+   transition is called OOB Reject in Figure 1 (even though it really is
+   a specific type of failed Completion Exchange).  On the other hand,
+   the sender of the error message stays in its previous state.
+
+   Although it is not expected to occur in practice, poor user interface
+   design could lead to two OOB messages delivered simultaneously, one
+   from the peer to the server and the other from the server to the
+   peer.  The server detects this event in the beginning of the
+   Completion Exchange by observing that both the server and peer are in
+   the OOB Received (2) state.  In that case, as a tiebreaker, the
+   server MUST behave as if only the server-to-peer message had been
+   delivered.
+
+
+        EAP Peer                                        EAP Server
+          |       ...continuing from common handshake        |
+          |                                                  |
+          |<----------- [ EAP-Request/EAP-NOOB ] ------------|
+          |      (Type=5,PeerId)                             |
+          |                                                  |
+          |                                                  |
+          |------------ [ EAP-Response/EAP-NOOB ] ---------->|
+          |      (Type=5,PeerId,NoobId)                      |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |      (Type=6,PeerId,NoobId,MACs)                 |
+          |                                                  |
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |      (Type=6,PeerId,MACp)                        |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Success -------------------------|
+          |                                                  |
+
+                       Figure 6: Completion Exchange
+
+3.2.5.  Waiting Exchange
+
+   As explained in Section 3.2.4, the peer SHOULD probe the server for
+   completion of the OOB Step.  When the combination of the peer and
+   server states indicates that the OOB message has not yet been
+   delivered, the server chooses the Waiting Exchange (see Section 3.2.1
+   on how the server makes this decision).  The Waiting Exchange
+   comprises the common handshake and one further request-response pair,
+   and it always ends in EAP-Failure.
+
+   In order to limit the rate at which peers probe the server, the
+   server MAY send to the peer either in the Initial Exchange or in the
+   Waiting Exchange a minimum time to wait before probing the server
+   again.  A peer that has not received an OOB message SHOULD wait at
+   least the server-specified minimum waiting time in seconds
+   (SleepTime) before initiating EAP again with the same server.  The
+   peer uses the latest SleepTime value that it has received in or after
+   the Initial Exchange.  If the server has not sent any SleepTime
+   value, the peer MUST wait for an application-specified minimum time
+   (SleepTimeDefault).
+
+   After the Waiting Exchange, the peer MUST discard (from its local
+   ephemeral storage) Noob values that it has sent to the server in OOB
+   messages that are older than the application-defined timeout
+   NoobTimeout (see Section 3.2.3).  The peer SHOULD discard such
+   expired Noob values even if the probing failed because of, e.g.,
+   failure to connect to the EAP server or an incorrect message
+   authentication code.  The timeout of peer-generated Noob values is
+   defined like this in order to allow the peer to probe the server once
+   after it has waited for the server-specified SleepTime.
+
+   If the server and peer have negotiated to use only the server-to-peer
+   direction for the OOB channel (Dirp=2), the peer SHOULD nevertheless
+   probe the server.  The purpose of this is to keep the server informed
+   about the peers that are still waiting for OOB messages.  The server
+   MAY set SleepTime to a high number (e.g., 3600) to prevent the peer
+   from probing the server frequently.
+
+
+        EAP Peer                                        EAP Server
+          |       ...continuing from common handshake        |
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |      (Type=4,PeerId,[SleepTime])                 |
+          |                                                  |
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |      (Type=4,PeerId)                             |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Failure -------------------------|
+          |                                                  |
+
+                         Figure 7: Waiting Exchange
+
+3.3.  Protocol Data Fields
+
+   This section defines the various identifiers and data fields used in
+   the EAP-NOOB method.
+
+3.3.1.  Peer Identifier and NAI
+
+   The server allocates a new peer identifier (PeerId) for the peer in
+   the Initial Exchange.  The peer identifier MUST follow the syntax of
+   the utf8-username specified in [RFC7542].  The server MUST generate
+   the identifiers in such a way that they do not repeat and cannot be
+   guessed by the peer or third parties before the server sends them to
+   the peer in the Initial Exchange.  One way to generate the
+   identifiers is to choose a random 16-byte identifier and to base64url
+   encode it without padding [RFC4648] into a 22-character ASCII string.
+   Another way to generate the identifiers is to choose a random
+   22-character alphanumeric ASCII string.  It is RECOMMENDED to not use
+   identifiers longer than this because they result in longer OOB
+   messages.
+
+   The peer uses the allocated PeerId to identify itself to the server
+   in the subsequent exchanges.  The peer MUST copy the PeerId byte by
+   byte from the message where it was allocated, and the server MUST
+   perform a byte-by-byte comparison between the received and the
+   previously allocated PeerID.  The peer sets the PeerId value in
+   response type 1 as follows.  As stated in Section 3.2.1, when the
+   peer is in the Unregistered (0) state, it SHOULD omit the PeerId from
+   response type 1.  When the peer is in one of the states 1..2, it MUST
+   use the PeerId that the server assigned to it in the latest Initial
+   Exchange.  When the peer is in one of the persistent states 3..4, it
+   MUST use the PeerId from its persistent EAP-NOOB association.  (The
+   PeerId is written to the association when the peer moves to the
+   Registered (4) state after a Completion Exchange.)
+
+   The default NAI for the peer is "noob@eap-noob.arpa".  The peer
+   implementation MAY allow the user or application to configure a
+   different NAI, which overrides the default NAI.  Furthermore, the
+   server MAY assign a new NAI to the peer in the Initial Exchange or
+   Reconnect Exchange in the NewNAI field of request types 2 and 7 to
+   override any previous NAI value.  When the peer is in the
+   Unregistered (0) state, or when the peer is in one of the states 1..2
+   and the server did not send a NewNAI in the latest Initial Exchange,
+   the peer MUST use the configured NAI or, if it does not exist, the
+   default NAI.  When the peer is in one of the states 1..2 and the
+   server sent a NewNAI in the latest Initial Exchange, the peer MUST
+   use this server-assigned NAI.  When the peer moves to the Registered
+   (4) state after the Completion Exchange, it writes to the persistent
+   EAP-NOOB association the same NAI value that it used in the
+   Completion Exchange.  When the peer is in the Reconnecting (3) or
+   Registered (4) state, it MUST use the NAI from its persistent EAP-
+   NOOB association.  When the server sends NewNAI in the Reconnect
+   Exchange, the peer writes its value to the persistent EAP-NOOB
+   association when it moves from the Reconnecting (3) state to the
+   Registered (4) state.  All the NAI values MUST follow the syntax
+   specified in [RFC7542].
+
+   The purpose of the server-assigned NAI is to enable more flexible
+   routing of the EAP sessions over the AAA infrastructure, including
+   roaming scenarios (see Appendix C).  Moreover, some authenticators or
+   AAA servers use the realm part of the assigned NAI to determine peer-
+   specific connection parameters, such as isolating the peer to a
+   specific VLAN.  On the other hand, the user- or application-
+   configured NAI enables registration of new devices while roaming.  It
+   also enables manufacturers to set up their own AAA servers for
+   bootstrapping of new peer devices.
+
+   The peer's PeerId and server-assigned NAI are ephemeral until a
+   successful Completion Exchange takes place.  Thereafter, the values
+   become parts of the persistent EAP-NOOB association until the user
+   resets the peer and server or until a new NAI is assigned in the
+   Reconnect Exchange.
+
+3.3.2.  Message Data Fields
+
+   Table 1 defines the data fields in the protocol messages.  The in-
+   band messages are formatted as JSON objects [RFC8259] in UTF-8
+   encoding.  The JSON member names are in the left-hand column of the
+   table.
+
+    +===============+=================================================+
+    | Data Field    | Description                                     |
+    +===============+=================================================+
+    | Vers, Verp    | EAP-NOOB protocol versions supported by the EAP |
+    |               | server and the protocol version chosen by the   |
+    |               | peer.  Vers is a JSON array of unsigned         |
+    |               | integers, and Verp is an unsigned integer.      |
+    |               | Example values are "[1]" and "1", respectively. |
+    +---------------+-------------------------------------------------+
+    | PeerId        | Peer identifier, as defined in Section 3.3.1.   |
+    +---------------+-------------------------------------------------+
+    | NAI, NewNAI   | Peer NAI and server-assigned new peer NAI, as   |
+    |               | defined in Section 3.3.1.                       |
+    +---------------+-------------------------------------------------+
+    | Type          | EAP-NOOB message type.  The type is an integer  |
+    |               | in the range 0..9.  EAP-NOOB requests and the   |
+    |               | corresponding responses share the same type     |
+    |               | value.                                          |
+    +---------------+-------------------------------------------------+
+    | PeerState     | Peer state is an integer in the range 0..4 (see |
+    |               | Figure 1).  However, only values 0..3 are ever  |
+    |               | sent in the protocol messages.                  |
+    +---------------+-------------------------------------------------+
+    | PKs, PKp      | The public components of the ECDHE keys of the  |
+    |               | server and peer.  PKs and PKp are sent in the   |
+    |               | JSON Web Key (JWK) format [RFC7517].  The       |
+    |               | detailed format of the JWK object is defined by |
+    |               | the cryptosuite.                                |
+    +---------------+-------------------------------------------------+
+    | Cryptosuites, | The identifiers of cryptosuites supported by    |
+    | Cryptosuitep  | the server and of the cryptosuite selected by   |
+    |               | the peer.  The server-supported cryptosuites in |
+    |               | Cryptosuites are formatted as a JSON array of   |
+    |               | the identifier integers.  The server MUST send  |
+    |               | a nonempty array with no repeating elements,    |
+    |               | ordered by decreasing priority.  The peer MUST  |
+    |               | respond with exactly one suite in the           |
+    |               | Cryptosuitep value, formatted as an identifier  |
+    |               | integer.  Mandatory-to-implement cryptosuites   |
+    |               | and the registration procedure for new          |
+    |               | cryptosuites are specified in Section 5.1.      |
+    |               | Example values are "[1]" and "1", respectively. |
+    +---------------+-------------------------------------------------+
+    | Dirs, Dirp    | An integer indicating the OOB channel           |
+    |               | directions supported by the server and the      |
+    |               | directions selected by the peer.  The possible  |
+    |               | values are 1=peer-to-server, 2=server-to-peer,  |
+    |               | and 3=both directions.                          |
+    +---------------+-------------------------------------------------+
+    | Dir           | The actual direction of the OOB message         |
+    |               | (1=peer-to-server, 2=server-to-peer).  This     |
+    |               | value is not sent over any communication        |
+    |               | channel, but it is included in the computation  |
+    |               | of the cryptographic fingerprint Hoob.          |
+    +---------------+-------------------------------------------------+
+    | Ns, Np        | 32-byte nonces for the Initial Exchange.        |
+    +---------------+-------------------------------------------------+
+    | ServerInfo    | This field contains information about the       |
+    |               | server to be passed from the EAP method to the  |
+    |               | application layer in the peer.  The information |
+    |               | is specific to the application or to the OOB    |
+    |               | channel, and it is encoded as a JSON object of  |
+    |               | at most 500 bytes.  It could include, for       |
+    |               | example, the access-network name and server     |
+    |               | name, a Uniform Resource Locator (URL)          |
+    |               | [RFC3986], or some other information that helps |
+    |               | the user deliver the OOB message to the server  |
+    |               | through the out-of-band channel.                |
+    +---------------+-------------------------------------------------+
+    | PeerInfo      | This field contains information about the peer  |
+    |               | to be passed from the EAP method to the         |
+    |               | application layer in the server.  The           |
+    |               | information is specific to the application or   |
+    |               | to the OOB channel, and it is encoded as a JSON |
+    |               | object of at most 500 bytes.  It could include, |
+    |               | for example, the peer brand, model, and serial  |
+    |               | number, which help the user distinguish between |
+    |               | devices and deliver the OOB message to the      |
+    |               | correct peer through the out-of-band channel.   |
+    +---------------+-------------------------------------------------+
+    | SleepTime     | The number of seconds for which the peer MUST   |
+    |               | NOT start a new execution of the EAP-NOOB       |
+    |               | method with the authenticator, unless the peer  |
+    |               | receives the OOB message or the sending is      |
+    |               | triggered by an application-specific user       |
+    |               | action.  The server can use this field to limit |
+    |               | the rate at which peers probe it.  SleepTime is |
+    |               | an unsigned integer in the range 0..3600.       |
+    +---------------+-------------------------------------------------+
+    | Noob          | 16-byte secret nonce sent through the OOB       |
+    |               | channel and used for the session key            |
+    |               | derivation.  The endpoint that received the OOB |
+    |               | message uses this secret in the Completion      |
+    |               | Exchange to authenticate the exchanged key to   |
+    |               | the endpoint that sent the OOB message.         |
+    +---------------+-------------------------------------------------+
+    | Hoob          | 16-byte cryptographic fingerprint (i.e., hash   |
+    |               | value) computed from all the parameters         |
+    |               | exchanged in the Initial Exchange and in the    |
+    |               | OOB message.  Receiving this fingerprint over   |
+    |               | the OOB channel guarantees the integrity of the |
+    |               | key exchange and parameter negotiation.  Hence, |
+    |               | it authenticates the exchanged key to the       |
+    |               | endpoint that receives the OOB message.         |
+    +---------------+-------------------------------------------------+
+    | NoobId        | 16-byte identifier for the OOB message,         |
+    |               | computed with a one-way function from the nonce |
+    |               | Noob in the message.                            |
+    +---------------+-------------------------------------------------+
+    | MACs, MACp    | Message authentication codes (HMAC) for mutual  |
+    |               | authentication, key confirmation, and integrity |
+    |               | check on the exchanged information.  The input  |
+    |               | to the HMAC is defined below, and the key for   |
+    |               | the HMAC is defined in Section 3.5.             |
+    +---------------+-------------------------------------------------+
+    | Ns2, Np2      | 32-byte nonces for the Reconnect Exchange.      |
+    +---------------+-------------------------------------------------+
+    | KeyingMode    | Integer indicating the key derivation method. 0 |
+    |               | in the Completion Exchange, and 1..3 in the     |
+    |               | Reconnect Exchange.                             |
+    +---------------+-------------------------------------------------+
+    | PKs2, PKp2    | The public components of the ECDHE keys of the  |
+    |               | server and peer for the Reconnect Exchange.     |
+    |               | PKp2 and PKs2 are sent in the JSON Web Key      |
+    |               | (JWK) format [RFC7517].  The detailed format of |
+    |               | the JWK object is defined by the cryptosuite.   |
+    +---------------+-------------------------------------------------+
+    | MACs2, MACp2  | Message authentication codes (HMAC) for mutual  |
+    |               | authentication, key confirmation, and integrity |
+    |               | check on the Reconnect Exchange.  The input to  |
+    |               | the HMAC is defined below, and the key for the  |
+    |               | HMAC is defined in Section 3.5.                 |
+    +---------------+-------------------------------------------------+
+    | ErrorCode     | Integer indicating an error condition.  Defined |
+    |               | in Section 5.3.                                 |
+    +---------------+-------------------------------------------------+
+    | ErrorInfo     | Textual error message for logging and debugging |
+    |               | purposes.  A UTF-8 string of at most 500 bytes. |
+    +---------------+-------------------------------------------------+
+
+                        Table 1: Message Data Fields
+
+   It is RECOMMENDED for servers to support both OOB channel directions
+   (Dirs=3) unless the type of the OOB channel limits them to one
+   direction (Dirs=1 or Dirs=2).  On the other hand, it is RECOMMENDED
+   that the peer selects only one direction (Dirp=1 or Dirp=2) even when
+   both directions (Dirp=3) would be technically possible.  The reason
+   is that, if value 3 is negotiated, the user may be presented with two
+   OOB messages, one for each direction, even though only one of them
+   needs to be delivered.  This can be confusing to the user.
+   Nevertheless, the EAP-NOOB protocol is designed to also cope with the
+   value 3; in which case, it uses the first delivered OOB message.  In
+   the unlikely case of simultaneously delivered OOB messages, the
+   protocol prioritizes the server-to-peer direction.
+
+   The nonces in the in-band messages (Ns, Np, Ns2, Np2) are 32-byte
+   fresh random byte strings, and the secret nonce Noob is a 16-byte
+   fresh random byte string.  All the nonces are generated by the
+   endpoint that sends the message.
+
+   The fingerprint Hoob and the identifier NoobId are computed with the
+   cryptographic hash function H, which is specified in the negotiated
+   cryptosuite and truncated to the 16 leftmost bytes of the output.
+   The message authentication codes (MACs, MACp, MACs2, MACp2) are
+   computed with the function HMAC, which is the hashed message
+   authentication code [RFC2104] based on the cryptographic hash
+   function H and truncated to the 32 leftmost bytes of the output.
+
+   The inputs to the hash function for computing the fingerprint Hoob
+   and to the HMAC for computing MACs, MACp, MACs2, and MACp2 are JSON
+   arrays containing a fixed number (17) of elements.  The array
+   elements MUST be copied to the array verbatim from the sent and
+   received in-band messages.  When the element is a JSON object, its
+   members MUST NOT be reordered or reencoded.  White space MUST NOT be
+   added anywhere in the JSON structure.  Implementers should check that
+   their JSON library copies the elements as UTF-8 strings, does not
+   modify them in any way, and does not add white space to the HMAC
+   input.
+
+   The inputs for computing the fingerprint and message authentication
+   codes are the following:
+
+   Hoob = H(Dir,Vers,Verp,PeerId,Cryptosuites,Dirs,ServerInfo,
+   Cryptosuitep,Dirp,NAI,PeerInfo,0,PKs,Ns,PKp,Np,Noob).
+
+   NoobId = H("NoobId",Noob).
+
+   MACs = HMAC(Kms; 2,Vers,Verp,PeerId,Cryptosuites,Dirs,ServerInfo,
+   Cryptosuitep,Dirp,NAI,PeerInfo,0,PKs,Ns,PKp,Np,Noob).
+
+   MACp = HMAC(Kmp; 1,Vers,Verp,PeerId,Cryptosuites,Dirs,ServerInfo,
+   Cryptosuitep,Dirp,NAI,PeerInfo,0,PKs,Ns,PKp,Np,Noob).
+
+   MACs2 = HMAC(Kms2; 2,Vers,Verp,PeerId,Cryptosuites,"",[ServerInfo],
+   Cryptosuitep,"",NAI,[PeerInfo],KeyingMode,[PKs2],Ns2,[PKp2],Np2,"")
+
+   MACp2 = HMAC(Kmp2; 1,Vers,Verp,PeerId,Cryptosuites,"",[ServerInfo],
+   Cryptosuitep,"",NAI,[PeerInfo],KeyingMode,[PKs2],Ns2,[PKp2],Np2,"")
+
+   The inputs denoted with "" above are not present, and the values in
+   brackets [] are optional.  Both kinds of missing input values are
+   represented by empty strings "" in the HMAC input (JSON array).  The
+   NAI included in the inputs is the NAI value that will be in the
+   persistent EAP-NOOB association if the Completion Exchange or
+   Reconnect Exchange succeeds.  In the Completion Exchange, the NAI is
+   the NewNAI value assigned by the server in the preceding Initial
+   Exchange or, if no NewNAI was sent, the NAI used by the client in the
+   Initial Exchange.  In the Reconnect Exchange, the NAI is the NewNAI
+   value assigned by the server in the same Reconnect Exchange or, if no
+   NewNAI was sent, the unchanged NAI from the persistent EAP-NOOB
+   association.  Each of the values in brackets for the computation of
+   Macs2 and Macp2 MUST be included if it was sent or received in the
+   same Reconnect Exchange; otherwise, the value is replaced by an empty
+   string "".
+
+   The parameter Dir indicates the direction in which the OOB message
+   containing the Noob value is being sent (1=peer-to-server, 2=server-
+   to-peer).  This field is included in the Hoob input to prevent the
+   user from accidentally delivering the OOB message back to its
+   originator in the rare cases where both OOB directions have been
+   negotiated.  The keys (Kms, Kmp, Kms2, and Kmp2) for the HMACs are
+   defined in Section 3.5.
+
+   The nonces (Ns, Np, Ns2, Np2, and Noob) and the hash value (NoobId)
+   MUST be base64url encoded [RFC4648] when they are used as input to
+   the cryptographic functions H or HMAC.  These values and the message
+   authentication codes (MACs, MACp, MACs2, and MACp2) MUST also be
+   base64url encoded when they are sent as JSON strings in the in-band
+   messages.  The values Noob and Hoob in the OOB channel MAY be
+   base64url encoded if that is appropriate for the application and the
+   OOB channel.  All base64url encoding is done without padding.  The
+   base64url-encoded values will naturally consume more space than the
+   number of bytes specified above (e.g., a 22-character string for a
+   16-byte nonce and a 43-character string for a 32-byte nonce or
+   message authentication code).  In the key derivation in Section 3.5,
+   on the other hand, the unencoded nonces (raw bytes) are used as input
+   to the key derivation function.
+
+   The ServerInfo and PeerInfo are JSON objects with UTF-8 encoding.
+   The length of either encoded object as a byte array MUST NOT exceed
+   500 bytes.  The format and semantics of these objects MUST be defined
+   by the application that uses the EAP-NOOB method.
+
+3.4.  Fast Reconnect and Rekeying
+
+   EAP-NOOB implements fast reconnect ([RFC3748], Section 7.2.1), which
+   avoids repeated use of the user-assisted OOB channel.
+
+   The rekeying and the Reconnect Exchange may be needed for several
+   reasons.  New EAP output values Main Session Key (MSK) and Extended
+   Main Session Key (EMSK) may be needed because of mobility or timeout
+   of session keys.  Software or hardware failure or user action may
+   also cause the authenticator, EAP server, or peer to lose its
+   nonpersistent state data.  The failure would typically be detected by
+   the peer or authenticator when session keys are no longer accepted by
+   the other endpoint.  Changes in the supported cryptosuites in the EAP
+   server or peer may also cause the need for a new key exchange.  When
+   the EAP server or peer detects any one of these events, it MUST
+   change from the Registered (4) state to the Reconnecting (3) state.
+   These state transitions are labeled Mobility/Timeout/Failure in
+   Figure 1.  The EAP-NOOB method will then perform the Reconnect
+   Exchange the next time when EAP is triggered.
+
+3.4.1.  Persistent EAP-NOOB Association
+
+   To enable rekeying, the EAP server and peer store the session state
+   in persistent memory after a successful Completion Exchange.  This
+   state data, called "persistent EAP-NOOB association", MUST include at
+   least the data fields shown in Table 2.  They are used for
+   identifying and authenticating the peer in the Reconnect Exchange.
+   When a persistent EAP-NOOB association exists, the EAP server and
+   peer are in the Registered (4) state or Reconnecting (3) state, as
+   shown in Figure 1.
+
+    +==================+==========================+===================+
+    | Data Field       | Value                    | Type              |
+    +==================+==========================+===================+
+    | PeerId           | Peer identifier          | UTF-8 string      |
+    |                  | allocated by server      | (typically 22     |
+    |                  |                          | ASCII characters) |
+    +------------------+--------------------------+-------------------+
+    | Verp             | Negotiated protocol      | integer           |
+    |                  | version                  |                   |
+    +------------------+--------------------------+-------------------+
+    | Cryptosuitep     | Negotiated cryptosuite   | integer           |
+    +------------------+--------------------------+-------------------+
+    | CryptosuitepPrev | Previous cryptosuite     | integer           |
+    | (at peer only)   |                          |                   |
+    +------------------+--------------------------+-------------------+
+    | NAI              | NAI assigned by the      | UTF-8 string      |
+    |                  | server or configured by  |                   |
+    |                  | the user or the default  |                   |
+    |                  | NAI "noob@eap-noob.arpa" |                   |
+    +------------------+--------------------------+-------------------+
+    | Kz               | Persistent key material  | 32 bytes          |
+    +------------------+--------------------------+-------------------+
+    | KzPrev (at peer  | Previous Kz value        | 32 bytes          |
+    | only)            |                          |                   |
+    +------------------+--------------------------+-------------------+
+
+                  Table 2: Persistent EAP-NOOB Association
+
+3.4.2.  Reconnect Exchange
+
+   The server chooses the Reconnect Exchange when both the peer and the
+   server are in a persistent state and fast reconnection is needed (see
+   Section 3.2.1 for details).
+
+   The Reconnect Exchange comprises the common handshake and three
+   further EAP-NOOB request-response pairs: one for cryptosuite and
+   parameter negotiation, another for the nonce and ECDHE key exchange,
+   and the last one for exchanging message authentication codes.  In the
+   first request and response (Type=7), the server and peer negotiate a
+   protocol version and cryptosuite in the same way as in the Initial
+   Exchange.  The server SHOULD NOT offer and the peer MUST NOT accept
+   protocol versions or cryptosuites that it knows to be weaker than the
+   one currently in the Cryptosuitep field of the persistent EAP-NOOB
+   association.  The server SHOULD NOT needlessly change the
+   cryptosuites it offers to the same peer because peer devices may have
+   limited ability to update their persistent storage.  However, if the
+   peer has different values in the Cryptosuitep and CryptosuitepPrev
+   fields, it SHOULD also accept offers that are not weaker than
+   CryptosuitepPrev.  Note that Cryptosuitep and CryptosuitePrev from
+   the persistent EAP-NOOB association are only used to support the
+   negotiation as described above; all actual cryptographic operations
+   use the newly negotiated cryptosuite.  The request and response
+   (Type=7) MAY additionally contain PeerInfo and ServerInfo objects.
+
+   The server then determines the KeyingMode (defined in Section 3.5)
+   based on changes in the negotiated cryptosuite and whether it desires
+   to achieve forward secrecy or not.  The server SHOULD only select
+   KeyingMode 3 when the negotiated cryptosuite differs from the
+   Cryptosuitep in the server's persistent EAP-NOOB association,
+   although it is technically possible to select this value without
+   changing the cryptosuite.  In the second request and response
+   (Type=8), the server informs the peer about the KeyingMode and the
+   server and peer exchange nonces (Ns2, Np2).  When KeyingMode is 2 or
+   3 (rekeying with ECDHE), they also exchange public components of
+   ECDHE keys (PKs2, PKp2).  The server ECDHE key MUST be fresh, i.e.,
+   not previously used with the same peer, and the peer ECDHE key SHOULD
+   be fresh, i.e., not previously used.
+
+   In the third and final request and response (Type=9), the server and
+   peer exchange message authentication codes.  Both sides MUST compute
+   the keys Kms2 and Kmp2, as defined in Section 3.5, and the message
+   authentication codes MACs2 and MACp2, as defined in Section 3.3.2.
+   Both sides MUST compare the received message authentication code with
+   a locally computed value.
+
+   The rules by which the peer compares the received MACs2 are
+   nontrivial because, in addition to authenticating the current
+   exchange, MACs2 may confirm the success or failure of a recent
+   cryptosuite upgrade.  The peer processes the final request (Type=9)
+   as follows:
+
+   1.  The peer first compares the received MACs2 value with one it
+       computed using the Kz stored in the persistent EAP-NOOB
+       association.  If the received and computed values match, the peer
+       deletes any data stored in the CryptosuitepPrev and KzPrev fields
+       of the persistent EAP-NOOB association.  It does this because the
+       received MACs2 confirms that the peer and server share the same
+       Cryptosuitep and Kz, and any previous values must no longer be
+       accepted.
+
+   2.  On the other hand, if the peer finds that the received MACs2
+       value does not match the one it computed locally with Kz, the
+       peer checks whether the KzPrev field in the persistent EAP-NOOB
+       association stores a key.  If it does, the peer repeats the key
+       derivation (Section 3.5) and local MACs2 computation
+       (Section 3.3.2) using KzPrev in place of Kz.  If this second
+       computed MACs2 matches the received value, the match indicates
+       synchronization failure caused by the loss of the last response
+       (Type=9) in a previously attempted cryptosuite upgrade.  In this
+       case, the peer rolls back that upgrade by overwriting
+       Cryptosuitep with CryptosuitepPrev and Kz with KzPrev in the
+       persistent EAP-NOOB association.  It also clears the
+       CryptosuitepPrev and KzPrev fields.
+
+   3.  If the received MACs2 matched one of the locally computed values,
+       the peer proceeds to send the final response (Type=9).  The peer
+       also moves to the Registered (4) state.  When KeyingMode is 1 or
+       2, the peer stops here.  When KeyingMode is 3, the peer also
+       updates the persistent EAP-NOOB association with the negotiated
+       Cryptosuitep and the newly derived Kz value.  To prepare for
+       possible synchronization failure caused by the loss of the final
+       response (Type=9) during cryptosuite upgrade, the peer copies the
+       old Cryptosuitep and Kz values in the persistent EAP-NOOB
+       association to the CryptosuitepPrev and KzPrev fields.
+
+   4.  Finally, if the peer finds that the received MACs2 does not match
+       either of the two values that it computed locally (or one value
+       if no KzPrev was stored), the peer sends an error message (error
+       code 4001, see Section 3.6.5), which causes the Reconnect
+       Exchange to end in EAP-Failure.
+
+   The server rules for processing the final message are simpler than
+   the peer rules because the server does not store previous keys and it
+   never rolls back a cryptosuite upgrade.  Upon receiving the final
+   response (Type=9), the server compares the received value of MACp2
+   with one it computes locally.  If the values match, the Reconnect
+   Exchange ends in EAP-Success.  When KeyingMode is 3, the server also
+   updates Cryptosuitep and Kz in the persistent EAP-NOOB association.
+   On the other hand, if the server finds that the values do not match,
+   it sends an error message (error code 4001), and the Reconnect
+   Exchange ends in EAP-Failure.
+
+   The endpoints MAY send updated NewNAI, ServerInfo, and PeerInfo
+   objects in the Reconnect Exchange.  When there is no update to the
+   values, they SHOULD omit this information from the messages.  If the
+   NewNAI was sent, each side updates NAI in the persistent EAP-NOOB
+   association when moving to the Registered (4) state.
+
+        EAP Peer                                        EAP Server
+          |       ...continuing from common handshake        |
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |      (Type=7,Vers,PeerId,Cryptosuites,           |
+          |       [NewNAI],[ServerInfo])                     |
+          |                                                  |
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |      (Type=7,Verp,PeerId,Cryptosuitep,[PeerInfo])|
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |      (Type=8,PeerId,KeyingMode,[PKs2],Ns2)       |
+          |                                                  |
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |      (Type=8,PeerId,[PKp2],Np2)                  |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |      (Type=9,PeerId,MACs2)                       |
+          |                                                  |
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |      (Type=9,PeerId,MACp2)                       |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Success -------------------------|
+          |                                                  |
+
+                        Figure 8: Reconnect Exchange
+
+3.4.3.  User Reset
+
+   As shown in the association state machine in Figure 1, the only
+   specified way for the association to return from the Registered (4)
+   state to the Unregistered (0) state is through user-initiated reset.
+   After the reset, a new OOB message will be needed to establish a new
+   association between the EAP server and peer.  Typical situations in
+   which the user reset is required are when the other side has
+   accidentally lost the persistent EAP-NOOB association data or when
+   the peer device is decommissioned.
+
+   The server could detect that the peer is in the Registered or
+   Reconnecting state, but the server itself is in one of the ephemeral
+   states 0..2 (including situations where the server does not recognize
+   the PeerId).  In this case, effort should be made to recover the
+   persistent server state, for example, from a backup storage --
+   especially if many peer devices are similarly affected.  If that is
+   not possible, the EAP server SHOULD log the error or notify an
+   administrator.  The only way to continue from such a situation is by
+   having the user reset the peer device.
+
+   On the other hand, if the peer is in any of the ephemeral states
+   0..2, including the Unregistered state, the server will treat the
+   peer as a new peer device and allocate a new PeerId to it.  The
+   PeerInfo can be used by the user as a clue to which physical device
+   has lost its state.  However, there is no secure way of matching the
+   "new" peer with the old PeerId without repeating the OOB Step.  This
+   situation will be resolved when the user performs the OOB Step and
+   thus identifies the physical peer device.  The server user interface
+   MAY support situations where the "new" peer is actually a previously
+   registered peer that has been reset by a user or otherwise lost its
+   persistent data.  In those cases, the user could choose to merge the
+   new peer identity with the old one in the server.  The alternative is
+   to treat the device just like a new peer.
+
+3.5.  Key Derivation
+
+   EAP-NOOB derives the EAP output values MSK and EMSK and other secret
+   keying material from the output of an Ephemeral Elliptic Curve
+   Diffie-Hellman (ECDHE) algorithm following the NIST specification
+   [NIST-DH].  In NIST terminology, we use a C(2e, 0s, ECC CDH) scheme,
+   i.e., two ephemeral keys and no static keys.  In the Initial Exchange
+   and Reconnect Exchange, the server and peer compute the ECDHE shared
+   secret Z, as defined in Section 6.1.2 of the NIST specification
+   [NIST-DH].  In the Completion Exchange and Reconnect Exchange, the
+   server and peer compute the secret keying material from Z with the
+   one-step key derivation function (KDF) defined in Section 5.8.2.1 of
+   the NIST specification.  The auxiliary function H is a hash function,
+   and it is taken from the negotiated cryptosuite.
+
+        +============+============================================+
+        | KeyingMode | Description                                |
+        +============+============================================+
+        | 0          | Completion Exchange (always with ECDHE)    |
+        +------------+--------------------------------------------+
+        | 1          | Reconnect Exchange, rekeying without ECDHE |
+        +------------+--------------------------------------------+
+        | 2          | Reconnect Exchange, rekeying with ECHDE,   |
+        |            | no change in cryptosuite                   |
+        +------------+--------------------------------------------+
+        | 3          | Reconnect Exchange, rekeying with ECDHE,   |
+        |            | new cryptosuite negotiated                 |
+        +------------+--------------------------------------------+
+
+                           Table 3: Keying Modes
+
+   The key derivation has four different modes (KeyingMode), which are
+   specified in Table 3.  Table 4 defines the inputs to KDF in each
+   KeyingMode.
+
+   In the Completion Exchange (KeyingMode=0), the input Z comes from the
+   preceding Initial exchange.  The KDF takes some additional inputs
+   (FixedInfo), for which we use the concatenation format defined in
+   Section 5.8.2.1.1 of the NIST specification [NIST-DH].  FixedInfo
+   consists of the AlgorithmId, PartyUInfo, PartyVInfo, and SuppPrivInfo
+   fields.  The first three fields are fixed-length bit strings, and
+   SuppPrivInfo is a variable-length string with a one-byte Datalength
+   counter.  AlgorithmId is the fixed-length, 8-byte ASCII string "EAP-
+   NOOB".  The other input values are the server and peer nonces.  In
+   the Completion Exchange, the inputs also include the secret nonce
+   Noob from the OOB message.
+
+   In the simplest form of the Reconnect Exchange (KeyingMode=1), fresh
+   nonces are exchanged, but no ECDHE keys are sent.  In this case,
+   input Z to the KDF is replaced with the shared key Kz from the
+   persistent EAP-NOOB association.  The result is rekeying without the
+   computational cost of the ECDHE exchange but also without forward
+   secrecy.
+
+   When forward secrecy is desired in the Reconnect Exchange
+   (KeyingMode=2 or KeyingMode=3), both nonces and ECDHE keys are
+   exchanged.  Input Z is the fresh shared secret from the ECDHE
+   exchange with PKs2 and PKp2.  The inputs also include the shared
+   secret Kz from the persistent EAP-NOOB association.  This binds the
+   rekeying output to the previously authenticated keys.
+
+   +=========================+==============+===============+==========+
+   | KeyingMode              | KDF input    | Value         | Length   |
+   |                         | field        |               | (bytes)  |
+   +=========================+==============+===============+==========+
+   | 0 Completion            | Z            | ECDHE shared  | variable |
+   |                         |              | secret from   |          |
+   |                         |              | PKs and PKp   |          |
+   |                         +--------------+---------------+----------+
+   |                         | AlgorithmId  | "EAP-NOOB"    | 8        |
+   |                         +--------------+---------------+----------+
+   |                         | PartyUInfo   | Np            | 32       |
+   |                         +--------------+---------------+----------+
+   |                         | PartyVInfo   | Ns            | 32       |
+   |                         +--------------+---------------+----------+
+   |                         | SuppPubInfo  | (not          |          |
+   |                         |              | allowed)      |          |
+   |                         +--------------+---------------+----------+
+   |                         | SuppPrivInfo | Noob          | 16       |
+   +-------------------------+--------------+---------------+----------+
+   | 1 Reconnect, rekeying   | Z            | Kz            | 32       |
+   | without ECDHE           +--------------+---------------+----------+
+   |                         | AlgorithmId  | "EAP-NOOB"    | 8        |
+   |                         +--------------+---------------+----------+
+   |                         | PartyUInfo   | Np2           | 32       |
+   |                         +--------------+---------------+----------+
+   |                         | PartyVInfo   | Ns2           | 32       |
+   |                         +--------------+---------------+----------+
+   |                         | SuppPubInfo  | (not          |          |
+   |                         |              | allowed)      |          |
+   |                         +--------------+---------------+----------+
+   |                         | SuppPrivInfo | (null)        | 0        |
+   +-------------------------+--------------+---------------+----------+
+   | 2 or 3 Reconnect,       | Z            | ECDHE shared  | variable |
+   | rekeying, with ECDHE,   |              | secret from   |          |
+   | same or new cryptosuite |              | PKs2 and      |          |
+   |                         |              | PKp2          |          |
+   |                         +--------------+---------------+----------+
+   |                         | AlgorithmId  | "EAP-NOOB"    | 8        |
+   |                         +--------------+---------------+----------+
+   |                         | PartyUInfo   | Np2           | 32       |
+   |                         +--------------+---------------+----------+
+   |                         | PartyVInfo   | Ns2           | 32       |
+   |                         +--------------+---------------+----------+
+   |                         | SuppPubInfo  | (not          |          |
+   |                         |              | allowed)      |          |
+   |                         +--------------+---------------+----------+
+   |                         | SuppPrivInfo | Kz            | 32       |
+   +-------------------------+--------------+---------------+----------+
+
+                       Table 4: Key Derivation Input
+
+   Table 5 defines how the output bytes of the KDF are used.  In
+   addition to the EAP output values MSK and EMSK, the server and peer
+   derive another shared secret key AMSK (Application Main Session Key),
+   which MAY be used for application-layer security.  Further output
+   bytes are used internally by EAP-NOOB for the message authentication
+   keys (Kms, Kmp, Kms2, and Kmp2).
+
+   The Completion Exchange (KeyingMode=0) produces the shared secret Kz,
+   which the server and peer store in the persistent EAP-NOOB
+   association.  When a new cryptosuite is negotiated in the Reconnect
+   Exchange (KeyingMode=3), it similarly produces a new Kz.  In that
+   case, the server and peer update both the cryptosuite and Kz in the
+   persistent EAP-NOOB association.  Additionally, the peer stores the
+   previous Cryptosuitep and Kz values in the CryptosuitepPrev and
+   KzPrev fields of the persistent EAP-NOOB association.
+
+    +==============================+============+==========+=========+
+    | KeyingMode                   | KDF output | Used as  | Length  |
+    |                              | bytes      |          | (bytes) |
+    +==============================+============+==========+=========+
+    | 0 Completion                 | 0..63      | MSK      | 64      |
+    |                              +------------+----------+---------+
+    |                              | 64..127    | EMSK     | 64      |
+    |                              +------------+----------+---------+
+    |                              | 128..191   | AMSK     | 64      |
+    |                              +------------+----------+---------+
+    |                              | 192..223   | MethodId | 32      |
+    |                              +------------+----------+---------+
+    |                              | 224..255   | Kms      | 32      |
+    |                              +------------+----------+---------+
+    |                              | 256..287   | Kmp      | 32      |
+    |                              +------------+----------+---------+
+    |                              | 288..319   | Kz       | 32      |
+    +------------------------------+------------+----------+---------+
+    | 1 or 2 Reconnect, rekeying   | 0..63      | MSK      | 64      |
+    | without ECDHE, or with ECDHE +------------+----------+---------+
+    | and unchanged cryptosuite    | 64..127    | EMSK     | 64      |
+    |                              +------------+----------+---------+
+    |                              | 128..191   | AMSK     | 64      |
+    |                              +------------+----------+---------+
+    |                              | 192..223   | MethodId | 32      |
+    |                              +------------+----------+---------+
+    |                              | 224..255   | Kms2     | 32      |
+    |                              +------------+----------+---------+
+    |                              | 256..287   | Kmp2     | 32      |
+    +------------------------------+------------+----------+---------+
+    | 3 Reconnect, rekeying with   | 0..63      | MSK      | 64      |
+    | ECDHE, new cryptosuite       +------------+----------+---------+
+    |                              | 64..127    | EMSK     | 64      |
+    |                              +------------+----------+---------+
+    |                              | 128..191   | AMSK     | 64      |
+    |                              +------------+----------+---------+
+    |                              | 192..223   | MethodId | 32      |
+    |                              +------------+----------+---------+
+    |                              | 224..255   | Kms2     | 32      |
+    |                              +------------+----------+---------+
+    |                              | 256..287   | Kmp2     | 32      |
+    |                              +------------+----------+---------+
+    |                              | 288..319   | Kz       | 32      |
+    +------------------------------+------------+----------+---------+
+
+                      Table 5: Key Derivation Output
+
+   Finally, every EAP method must export a Server-Id, Peer-Id, and
+   Session-Id [RFC5247].  In EAP-NOOB, the exported Peer-Id is the
+   PeerId that the server has assigned to the peer.  The exported
+   Server-Id is a zero-length string (i.e., null string) because EAP-
+   NOOB neither knows nor assigns any server identifier.  The exported
+   Session-Id is created by concatenating the one-byte Type-Code 0x38
+   (decimal value 56) with the MethodId, which is obtained from the KDF
+   output, as shown in Table 5.
+
+3.6.  Error Handling
+
+   Various error conditions in EAP-NOOB are handled by sending an error
+   notification message (Type=0) instead of a next EAP request or
+   response message.  Both the EAP server and the peer may send the
+   error notification, as shown in Figures 9 and 10.  After sending or
+   receiving an error notification, the server MUST send an EAP-Failure
+   (as required by [RFC3748], Section 4.2).  The notification MAY
+   contain an ErrorInfo field, which is a UTF-8-encoded text string with
+   a maximum length of 500 bytes.  It is used for sending descriptive
+   information about the error for logging and debugging purposes.
+
+        EAP Peer                                        EAP Server
+          ...                                                ...
+          |                                                  |
+          |<----------- EAP-Request/EAP-NOOB ----------------|
+          |        (Type=0,[PeerId],ErrorCode,[ErrorInfo])   |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Failure -------------------------|
+          |                                                  |
+
+              Figure 9: Error Notification from Server to Peer
+
+        EAP Peer                                        EAP Server
+          ...                                                ...
+          |                                                  |
+          |------------ EAP-Response/EAP-NOOB -------------->|
+          |        (Type=0,[PeerId],ErrorCode,[ErrorInfo])   |
+          |                                                  |
+          |                                                  |
+          |<----------- EAP-Failure -------------------------|
+          |                                                  |
+
+             Figure 10: Error Notification from Peer to Server
+
+   After the exchange fails due to an error notification, the server and
+   peer set the association state as follows.  In the Initial Exchange,
+   both the sender and recipient of the error notification MUST set the
+   association state to the Unregistered (0) state.  In the Waiting
+   Exchange and Completion Exchange, each side MUST remain in its old
+   state as if the failed exchange had not taken place, with the
+   exception that the recipient of error code 2003 processes it as
+   specified in Section 3.2.4.  In the Reconnect Exchange, both sides
+   MUST set the association state to the Reconnecting (3) state.
+
+   Errors that occur in the OOB channel are not explicitly notified in-
+   band.
+
+3.6.1.  Invalid Messages
+
+   If the NAI structure is invalid, the server SHOULD send the error
+   code 1001 to the peer.  The recipient of an EAP-NOOB request or
+   response SHOULD send the following error codes back to the sender:
+   1002 if it cannot parse the message as a JSON object or the top-level
+   JSON object has missing or unrecognized members; 1003 if a data field
+   has an invalid value, such as an integer out of range, and there is
+   no more specific error code available; 1004 if the received message
+   type was unexpected in the current state; 2004 if the PeerId has an
+   unexpected value; 2003 if the NoobId is not recognized; and 1005 if
+   the ECDHE key is invalid.
+
+3.6.2.  Unwanted Peer
+
+   The preferred way for the EAP server to rate limit EAP-NOOB
+   connections from a peer is to use the SleepTime parameter in the
+   Waiting Exchange.  However, if the EAP server receives repeated EAP-
+   NOOB connections from a peer that apparently should not connect to
+   this server, the server MAY indicate that the connections are
+   unwanted by sending the error code 2001.  After receiving this error
+   message, the peer MAY refrain from reconnecting to the same EAP
+   server, and, if possible, both the EAP server and peer SHOULD
+   indicate this error condition to the user or server administrator.
+   However, in order to avoid persistent denial of service, peer devices
+   that are unable to alert a user SHOULD continue to try to reconnect
+   infrequently (e.g., approximately every 3600 seconds).
+
+3.6.3.  State Mismatch
+
+   In the states indicated by "-" in Table 14 in Appendix A, user action
+   is required to reset the association state or to recover it, for
+   example, from backup storage.  In those cases, the server sends the
+   error code 2002 to the peer.  If possible, both the EAP server and
+   peer SHOULD indicate this error condition to the user or server
+   administrator.
+
+3.6.4.  Negotiation Failure
+
+   If there is no matching protocol version, the peer sends the error
+   code 3001 to the server.  If there is no matching cryptosuite, the
+   peer sends the error code 3002 to the server.  If there is no
+   matching OOB direction, the peer sends the error code 3003 to the
+   server.
+
+   In practice, there is no way of recovering from these errors without
+   software or hardware changes.  If possible, both the EAP server and
+   peer SHOULD indicate these error conditions to the user.
+
+3.6.5.  Cryptographic Verification Failure
+
+   If the receiver of the OOB message detects an unrecognized PeerId or
+   incorrect fingerprint (Hoob) in the OOB message, the receiver MUST
+   remain in the Waiting for OOB (1) state as if no OOB message was
+   received.  The receiver SHOULD indicate the failure to accept the OOB
+   message to the user.  No in-band error message is sent.
+
+   Note that if the OOB message was delivered from the server to the
+   peer and the peer does not recognize the PeerId, the likely cause is
+   that the user has unintentionally delivered the OOB message to the
+   wrong peer device.  If possible, the peer SHOULD indicate this to the
+   user; however, the peer device may not have the capability for many
+   different error indications to the user, and it MAY use the same
+   indication as in the case of an incorrect fingerprint.
+
+   The rationale for the above is that the invalid OOB message could
+   have been presented to the receiver by mistake or intentionally by a
+   malicious party; thus, it should be ignored in the hope that the
+   honest user will soon deliver a correct OOB message.
+
+   If the EAP server or peer detects an incorrect message authentication
+   code (MACs, MACp, MACs2, or MACp2), it sends the error code 4001 to
+   the other side.  As specified in the beginning of Section 3.6, the
+   failed Completion Exchange will not result in server or peer state
+   changes, while an error in the Reconnect Exchange will put both sides
+   to the Reconnecting (3) state and thus lead to another reconnect
+   attempt.
+
+   The rationale for this is that the invalid cryptographic message may
+   have been spoofed by a malicious party; thus, it should be ignored.
+   In particular, a spoofed message on the in-band channel should not
+   force the honest user to perform the OOB Step again.  In practice,
+   however, the error may be caused by other failures, such as a
+   software bug.  For this reason, the EAP server MAY limit the rate of
+   peer connections with SleepTime after the above error.  Also, there
+   SHOULD be a way for the user to reset the peer to the Unregistered
+   (0) state so that the OOB Step can be repeated as the last resort.
+
+3.6.6.  Application-Specific Failure
+
+   Applications MAY define new error messages for failures that are
+   specific to the application or to one type of OOB channel.  They MAY
+   also use the generic application-specific error code 5001 or the
+   error codes 5002 and 5004, which have been reserved for indicating
+   invalid data in the ServerInfo and PeerInfo fields, respectively.
+   Additionally, anticipating OOB channels that make use of a URL, the
+   error code 5003 has been reserved for indicating an invalid server
+   URL.
+
+4.  ServerInfo and PeerInfo Contents
+
+   The ServerInfo and PeerInfo fields in the Initial Exchange and
+   Reconnect Exchange enable the server and peer, respectively, to send
+   information about themselves to the other endpoint.  They contain
+   JSON objects whose structure may be specified separately for each
+   application and each type of OOB channel.  ServerInfo and PeerInfo
+   MAY contain auxiliary data needed for the OOB channel messaging and
+   for EAP channel binding (see Section 6.7).  This section describes
+   the optional initial data fields for ServerInfo and PeerInfo
+   registered by this specification.  Further specifications may request
+   new application-specific ServerInfo and PeerInfo data fields from
+   IANA (see Sections 5.4 and 5.5).
+
+   +================+=================================================+
+   | Data Field     | Description                                     |
+   +================+=================================================+
+   | Type           | Type-tag string that can be used by the peer as |
+   |                | a hint for how to interpret the ServerInfo      |
+   |                | contents.                                       |
+   +----------------+-------------------------------------------------+
+   | ServerName     | String that may be used to aid human            |
+   |                | identification of the server.                   |
+   +----------------+-------------------------------------------------+
+   | ServerURL      | Prefix string when the OOB message is formatted |
+   |                | as a URL, as suggested in Appendix D.           |
+   +----------------+-------------------------------------------------+
+   | SSIDList       | List of IEEE 802.11 wireless network service    |
+   |                | set identifier (SSID) strings used for roaming  |
+   |                | support, as suggested in Appendix C.  JSON      |
+   |                | array of ASCII-encoded SSID strings.            |
+   +----------------+-------------------------------------------------+
+   | Base64SSIDList | List of IEEE 802.11 wireless network identifier |
+   |                | (SSID) strings used for roaming support, as     |
+   |                | suggested in Appendix C.  JSON array of SSIDs,  |
+   |                | each of which is base64url-encoded without      |
+   |                | padding.  Peers SHOULD send at most one of the  |
+   |                | fields SSIDList and Base64SSIDList in PeerInfo, |
+   |                | and the server SHOULD ignore SSIDList if        |
+   |                | Base64SSIDList is included.                     |
+   +----------------+-------------------------------------------------+
+
+                     Table 6: ServerInfo Data Fields
+
+   +==============+===================================================+
+   | Data Field   | Description                                       |
+   +==============+===================================================+
+   | Type         | Type-tag string that can be used by the server as |
+   |              | a hint for how to interpret the PeerInfo          |
+   |              | contents.                                         |
+   +--------------+---------------------------------------------------+
+   | PeerName     | String that may be used to aid human              |
+   |              | identification of the peer.                       |
+   +--------------+---------------------------------------------------+
+   | Manufacturer | Manufacturer or brand string.                     |
+   +--------------+---------------------------------------------------+
+   | Model        | Manufacturer-specified model string.              |
+   +--------------+---------------------------------------------------+
+   | SerialNumber | Manufacturer-assigned serial number.              |
+   +--------------+---------------------------------------------------+
+   | MACAddress   | Peer link-layer 48-bit extended unique identifier |
+   |              | (EUI-48) in the 12-digit base-16 form [EUI-48].   |
+   |              | The string MAY be in upper or lower case and MAY  |
+   |              | include additional colon ':' or dash '-'          |
+   |              | characters that MUST be ignored by the server.    |
+   +--------------+---------------------------------------------------+
+   | SSID         | IEEE 802.11 network SSID for channel binding.     |
+   |              | The SSID is an ASCII string.                      |
+   +--------------+---------------------------------------------------+
+   | Base64SSID   | IEEE 802.11 network SSID for channel binding.     |
+   |              | The SSID is base64url encoded.  Peer SHOULD send  |
+   |              | at most one of the fields SSID and Base64SSID in  |
+   |              | PeerInfo, and the server SHOULD ignore SSID if    |
+   |              | Base64SSID is included.                           |
+   +--------------+---------------------------------------------------+
+   | BSSID        | Wireless network basic service set identifier     |
+   |              | (BSSID) (EUI-48) in the 12-digit base-16 form     |
+   |              | [EUI-48] for channel binding.  The string MAY be  |
+   |              | in upper or lower case and MAY include additional |
+   |              | colon ':' or dash '-' characters that MUST be     |
+   |              | ignored by the server.                            |
+   +--------------+---------------------------------------------------+
+
+                      Table 7: PeerInfo Data Fields
+
+5.  IANA Considerations
+
+   This section provides information regarding registration of values
+   related to the EAP-NOOB method, in accordance with [RFC8126].
+
+   The EAP Method Type for EAP-NOOB (value 56) has been assigned in the
+   "Method Types" subregistry of the "Extensible Authentication Protocol
+   (EAP) Registry".
+
+   Per this memo, IANA has created and will maintain a new registry
+   entitled "Nimble Out-of-Band Authentication for EAP Parameters (EAP-
+   NOOB)" in the Extensible Authentication Protocol (EAP) category.
+   Also, IANA has created and will maintain the subregistries defined in
+   the following subsections.
+
+5.1.  Cryptosuites
+
+   IANA has created and will maintain a new subregistry entitled "EAP-
+   NOOB Cryptosuites" in the "Nimble Out-of-Band Authentication for EAP
+   Parameters (EAP-NOOB)" registry.  Cryptosuites are identified by an
+   integer.  Each cryptosuite MUST specify an ECDHE curve for the key
+   exchange, encoding of the ECDHE public key as a JWK object, and a
+   cryptographic hash function for the fingerprint and HMAC computation
+   and key derivation.  The hash value output by the cryptographic hash
+   function MUST be at least 32 bytes in length.  The initial values for
+   this registry are:
+
+      +=============+===============================================+
+      | Cryptosuite | Algorithms                                    |
+      +=============+===============================================+
+      | 0           | Reserved                                      |
+      +-------------+-----------------------------------------------+
+      | 1           | ECDHE curve Curve25519 [RFC7748], public-key  |
+      |             | format [RFC7517], hash function SHA-256       |
+      |             | [RFC6234].  The JWK encoding of Curve25519    |
+      |             | public key is defined in [RFC8037].  For      |
+      |             | clarity, the "crv" parameter is "X25519", the |
+      |             | "kty" parameter is "OKP", and the public-key  |
+      |             | encoding contains only an x-coordinate.       |
+      +-------------+-----------------------------------------------+
+      | 2           | ECDHE curve NIST P-256 [FIPS186-4], public-   |
+      |             | key format [RFC7517], hash function SHA-256   |
+      |             | [RFC6234].  The JWK encoding of NIST P-256    |
+      |             | public key is defined in [RFC7518].  For      |
+      |             | clarity, the "crv" parameter is "P-256", the  |
+      |             | "kty" parameter is "EC", and the public-key   |
+      |             | encoding has both an x and y coordinate, as   |
+      |             | defined in Section 6.2.1 of [RFC7518].        |
+      +-------------+-----------------------------------------------+
+
+                       Table 8: EAP-NOOB Cryptosuites
+
+   EAP-NOOB implementations MUST support Cryptosuite 1.  Support for
+   Cryptosuite 2 is RECOMMENDED.  An example of a Cryptosuite 1 public-
+   key encoded as a JWK object is given below.  (Line breaks are for
+   readability only.)
+
+   "jwk":{"kty":"OKP","crv":"X25519","x":"3p7bfXt9wbTTW2HC7OQ1Nz-
+   DQ8hbeGdNrfx-FG-IK08"}
+
+   Assignment of new values for new cryptosuites MUST be done through
+   IANA with "Specification Required", as defined in [RFC8126].
+
+5.2.  Message Types
+
+   IANA has created and will maintain a new subregistry entitled "EAP-
+   NOOB Message Types" in the "Nimble Out-of-Band Authentication for EAP
+   Parameters (EAP-NOOB)" registry.  EAP-NOOB request and response pairs
+   are identified by an integer Message Type.  The initial values for
+   this registry are:
+
+     +=========+============+========================================+
+     | Message | Used in    | Purpose                                |
+     | Type    | Exchange   |                                        |
+     +=========+============+========================================+
+     | 0       | Error      | Error notification                     |
+     +---------+------------+----------------------------------------+
+     | 1       | All        | PeerId and PeerState discovery         |
+     |         | exchanges  |                                        |
+     +---------+------------+----------------------------------------+
+     | 2       | Initial    | Version, cryptosuite, and parameter    |
+     |         |            | negotiation                            |
+     +---------+------------+----------------------------------------+
+     | 3       | Initial    | Exchange of ECDHE keys and nonces      |
+     +---------+------------+----------------------------------------+
+     | 4       | Waiting    | Indication to the peer that the server |
+     |         |            | has not yet received an OOB message    |
+     +---------+------------+----------------------------------------+
+     | 5       | Completion | NoobId discovery                       |
+     +---------+------------+----------------------------------------+
+     | 6       | Completion | Authentication and key confirmation    |
+     |         |            | with HMAC                              |
+     +---------+------------+----------------------------------------+
+     | 7       | Reconnect  | Version, cryptosuite, and parameter    |
+     |         |            | negotiation                            |
+     +---------+------------+----------------------------------------+
+     | 8       | Reconnect  | Exchange of ECDHE keys and nonces      |
+     +---------+------------+----------------------------------------+
+     | 9       | Reconnect  | Authentication and key confirmation    |
+     |         |            | with HMAC                              |
+     +---------+------------+----------------------------------------+
+
+                      Table 9: EAP-NOOB Message Types
+
+   Assignment of new values for new Message Types MUST be done through
+   IANA with "Specification Required", as defined in [RFC8126].
+
+5.3.  Error Codes
+
+   IANA has created and will maintain a new subregistry entitled "EAP-
+   NOOB Error codes" in the "Nimble Out-of-Band Authentication for EAP
+   Parameters (EAP-NOOB)" registry.  Cryptosuites are identified by an
+   integer.  The initial values for this registry are:
+
+        +============+===========================================+
+        | Error code | Purpose                                   |
+        +============+===========================================+
+        | 1001       | Invalid NAI                               |
+        +------------+-------------------------------------------+
+        | 1002       | Invalid message structure                 |
+        +------------+-------------------------------------------+
+        | 1003       | Invalid data                              |
+        +------------+-------------------------------------------+
+        | 1004       | Unexpected message type                   |
+        +------------+-------------------------------------------+
+        | 1005       | Invalid ECDHE key                         |
+        +------------+-------------------------------------------+
+        | 2001       | Unwanted peer                             |
+        +------------+-------------------------------------------+
+        | 2002       | State mismatch, user action required      |
+        +------------+-------------------------------------------+
+        | 2003       | Unrecognized OOB message identifier       |
+        +------------+-------------------------------------------+
+        | 2004       | Unexpected peer identifier                |
+        +------------+-------------------------------------------+
+        | 3001       | No mutually supported protocol version    |
+        +------------+-------------------------------------------+
+        | 3002       | No mutually supported cryptosuite         |
+        +------------+-------------------------------------------+
+        | 3003       | No mutually supported OOB direction       |
+        +------------+-------------------------------------------+
+        | 4001       | HMAC verification failure                 |
+        +------------+-------------------------------------------+
+        | 5001       | Application-specific error                |
+        +------------+-------------------------------------------+
+        | 5002       | Invalid server info                       |
+        +------------+-------------------------------------------+
+        | 5003       | Invalid server URL                        |
+        +------------+-------------------------------------------+
+        | 5004       | Invalid peer info                         |
+        +------------+-------------------------------------------+
+        | 6001-6999  | Reserved for Private and Experimental Use |
+        +------------+-------------------------------------------+
+
+                      Table 10: EAP-NOOB Error Codes
+
+   Assignment of new error codes MUST be done through IANA with
+   "Specification Required", as defined in [RFC8126], except for the
+   range 6001-6999.  This range is reserved for "Private Use" and
+   "Experimental Use", both locally and on the open Internet.
+
+5.4.  ServerInfo Data Fields
+
+   IANA has created and will maintain a new subregistry entitled "EAP-
+   NOOB ServerInfo Data Fields" in the "Nimble Out-of-Band
+   Authentication for EAP Parameters (EAP-NOOB)" registry.  The initial
+   values for this registry are:
+
+                 +================+=====================+
+                 | Data Field     | Specification       |
+                 +================+=====================+
+                 | Type           | RFC 9140, Section 4 |
+                 +----------------+---------------------+
+                 | ServerName     | RFC 9140, Section 4 |
+                 +----------------+---------------------+
+                 | ServerURL      | RFC 9140, Section 4 |
+                 +----------------+---------------------+
+                 | SSIDList       | RFC 9140, Section 4 |
+                 +----------------+---------------------+
+                 | Base64SSIDList | RFC 9140, Section 4 |
+                 +----------------+---------------------+
+
+                     Table 11: ServerInfo Data Fields
+
+   Assignment of new values for new ServerInfo data fields MUST be done
+   through IANA with "Specification Required", as defined in [RFC8126].
+
+5.5.  PeerInfo Data Fields
+
+   IANA is requested to create and maintain a new subregistry entitled
+   "EAP-NOOB PeerInfo Data Fields" in the "Nimble Out-of-Band
+   Authentication for EAP Parameters (EAP-NOOB)" registry.  The initial
+   values for this registry are:
+
+                  +==============+=====================+
+                  | Data Field   | Specification       |
+                  +==============+=====================+
+                  | Type         | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | PeerName     | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | Manufacturer | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | Model        | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | SerialNumber | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | MACAddress   | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | SSID         | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | Base64SSID   | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+                  | BSSID        | RFC 9140, Section 4 |
+                  +--------------+---------------------+
+
+                      Table 12: PeerInfo Data Fields
+
+   Assignment of new values for new PeerInfo data fields MUST be done
+   through IANA with "Specification Required", as defined in [RFC8126].
+
+5.6.  Domain Name Reservation
+
+   The special-use domain "eap-noob.arpa" has been registered in the
+   .arpa registry (https://www.iana.org/domains/arpa) and the "Special-
+   Use Domain Names" registry (https://www.iana.org/assignments/special-
+   use-domain-names).
+
+5.7.  Guidance for Designated Experts
+
+   Experts SHOULD be conservative in the allocation of new Cryptosuites.
+   Experts MUST ascertain that the requested values match the current
+   Crypto Forum Research Group (CFRG) guidance on cryptographic
+   algorithm security.  Experts MUST ensure that any new Cryptosuites
+   fully specify the encoding of the ECDHE public key and should include
+   details, such as the value of the "kty" (key type) parameter when JWK
+   [RFC7517] encoding is used.
+
+   Experts SHOULD be conservative in the allocation of new Message
+   Types.  Experts SHOULD ascertain that a well-defined specification
+   for the new Message Type is permanently and publicly available.
+
+   Experts SHOULD be conservative in the allocation of new Error codes,
+   since the 6001-6999 range is already reserved for private and
+   experimental use.
+
+   Experts MAY be liberal in the allocation of new ServerInfo and
+   PeerInfo data fields.  Experts MUST ensure that the data field
+   requested has a unique name that is not easily confused with existing
+   registrations.  For example, requests for a new PeerInfo data field
+   "ssid" should be rejected even though it is unique because it can be
+   confused with the existing registration of "SSID".  Experts MUST
+   ensure that a suitable Description for the data field is available.
+
+6.  Security Considerations
+
+   EAP-NOOB is an authentication and key derivation protocol; thus,
+   security considerations can be found in most sections of this
+   specification.  In the following, we explain the protocol design and
+   highlight some other special considerations.
+
+6.1.  Authentication Principle
+
+   EAP-NOOB establishes a shared secret with an authenticated ECDHE key
+   exchange.  The mutual authentication in EAP-NOOB is based on two
+   separate features, both conveyed in the OOB message.  The first
+   authentication feature is the secret nonce Noob.  The peer and server
+   use this secret in the Completion Exchange to mutually authenticate
+   the session key previously created with ECDHE.  The message
+   authentication codes computed with the secret nonce Noob are alone
+   sufficient for authenticating the key exchange.  The second
+   authentication feature is the integrity-protecting fingerprint Hoob.
+   Its purpose is to prevent impersonation attacks even in situations
+   where the attacker is able to eavesdrop on the OOB channel and the
+   nonce Noob is compromised.  In some human-assisted OOB channels, such
+   as human-perceptible audio or a user-typed URL, it may be easier to
+   detect tampering than disclosure of the OOB message, and such
+   applications benefit from the second authentication feature.
+
+   The additional security provided by the cryptographic fingerprint
+   Hoob is somewhat intricate to understand.  The endpoint that receives
+   the OOB message uses Hoob to verify the integrity of the ECDHE
+   exchange.  Thus, the OOB receiver can detect impersonation attacks
+   that may have happened on the in-band channel.  The other endpoint,
+   however, is not equally protected because the OOB message and
+   fingerprint are sent only in one direction.  Some protection to the
+   OOB sender is afforded by the fact that the user may notice the
+   failure of the association at the OOB receiver and therefore reset
+   the OOB sender.  Other device-pairing protocols have solved similar
+   situations by requiring the user to confirm to the OOB sender that
+   the association was accepted by the OOB receiver, e.g., with a button
+   press on the sender side.  Applications MAY implement EAP-NOOB in
+   this way.  Nevertheless, since EAP-NOOB was designed to work with
+   strictly one-directional OOB communication and the fingerprint is
+   only the second authentication feature, the EAP-NOOB specification
+   does not mandate such explicit confirmation to the OOB sender.
+
+   To summarize, EAP-NOOB uses the combined protection of the secret
+   nonce Noob and the cryptographic fingerprint Hoob, both conveyed in
+   the OOB message.  The secret nonce Noob alone is sufficient for
+   mutual authentication unless the attacker can eavesdrop on it from
+   the OOB channel.  Even if an attacker is able to eavesdrop on the
+   secret nonce Noob, it nevertheless cannot perform a full
+   impersonation attack on the in-band channel because a mismatching
+   fingerprint would alert the OOB receiver, which would reject the OOB
+   message.  The attacker that eavesdropped on the secret nonce can
+   impersonate the OOB receiver to the OOB sender.  If it does, the
+   association will appear to be complete only on the OOB sender side,
+   and such situations have to be resolved by the user by resetting the
+   OOB sender to the initial state.
+
+   The expected use cases for EAP-NOOB are ones where it replaces a
+   user-entered access credential in IoT appliances.  In wireless
+   network access without EAP, the user-entered credential is often a
+   passphrase that is shared by all the network stations.  The advantage
+   of an EAP-based solution, including EAP-NOOB, is that it establishes
+   a different shared secret for each peer device, which makes the
+   system more resilient against device compromise.  Another advantage
+   is that it is possible to revoke the security association for an
+   individual device on the server side.
+
+   Forward secrecy during fast reconnect in EAP-NOOB is optional.  The
+   Reconnect Exchange in EAP-NOOB provides forward secrecy only if both
+   the server and peer send their fresh ECDHE keys.  This allows both
+   the server and peer to limit the frequency of the costly computation
+   that is required for forward secrecy.  The server MAY adjust the
+   frequency of its attempts at ECDHE rekeying based on what it knows
+   about the peer's computational capabilities.
+
+   Another way in which some servers may control their computational
+   load is to reuse the same ECDHE key for all peers over a short
+   server-specific time window.  In that case, forward secrecy will be
+   achieved only after the server updates its ECDHE key, which may be a
+   reasonable trade-off between security and performance.  However, the
+   server MUST NOT reuse the same ECDHE key with the same peer when
+   rekeying with ECDHE (KeyingMode=2 or KeyingMode=3).  Instead, it can
+   simply not send an ECDHE key (KeyingMode=1).
+
+   The users delivering the OOB messages will often authenticate
+   themselves to the EAP server, e.g., by logging into a secure web page
+   or API.  In this case, the server can associate the peer device with
+   the user account.  Applications that make use of EAP-NOOB can use
+   this information for configuring the initial owner of the freshly
+   registered device.
+
+6.2.  Identifying Correct Endpoints
+
+   Potential weaknesses in EAP-NOOB arise from the fact that the user
+   must physically identify the correct peer device.  If the user
+   mistakenly delivers the OOB message from the wrong peer device to the
+   server, the server may create an association with the wrong peer.
+   The reliance on the user in identifying the correct endpoints is an
+   inherent property of user-assisted, out-of-band authentication.  To
+   understand the potential consequences of the user mistake, we need to
+   consider a few different scenarios.  In the first scenario, there is
+   no malicious party, and the user makes an accidental mistake between
+   two out-of-the-box devices that are both ready to be registered to a
+   server.  If the user delivers the OOB message from the wrong device
+   to the server, confusion may arise but usually no security issues.
+   In the second scenario, an attacker intentionally tricks the user,
+   for example, by substituting the original peer device with a
+   compromised one.  This is essentially a supply chain attack where the
+   user accepts a compromised physical device.
+
+   There is also a third scenario, in which an opportunistic attacker
+   tries to take advantage of the user's accidental mistake.  For
+   example, the user could play an audio or a blinking LED message to a
+   device that is not expecting to receive it.  In simple security
+   bootstrapping solutions that transfer a primary key to the device via
+   the OOB channel, the device could misuse or leak the accidentally
+   received primary key.  EAP-NOOB is not vulnerable to such
+   opportunistic attackers because the OOB message has no value to
+   anyone who did not take part in the corresponding Initial Exchange.
+
+   One mechanism that can mitigate user mistakes is certification of
+   peer devices.  A certificate or an attestation token (e.g., [TLS-CWT]
+   and [RATS-EAT]) can convey to the server authentic identifiers and
+   attributes, such as model and serial number, of the peer device.
+   Compared to a fully certificate-based authentication, however, EAP-
+   NOOB can be used without trusted third parties and does not require
+   the user to know any identifier of the peer device; physical access
+   to the device is sufficient for bootstrapping with EAP-NOOB.
+
+   Similarly, the attacker can try to trick the user into delivering the
+   OOB message to the wrong server so that the peer device becomes
+   associated with the wrong server.  If the EAP server is accessed
+   through a web user interface, the attack is akin to phishing attacks
+   where the user is tricked into accessing the wrong URL and wrong web
+   page.  OOB implementation with a dedicated app on a mobile device,
+   which communicates with a server API at a preconfigured URL, can
+   protect against such attacks.
+
+   After the device registration, an attacker could clone the device
+   identity by copying the keys from the persistent EAP-NOOB association
+   into another device.  The attacker can be an outsider who gains
+   access to the keys or the device owner who wants to have two devices
+   matching the same registration.  The cloning threats can be mitigated
+   by creating the cryptographic keys and storing the persistent EAP-
+   NOOB association on the peer device in a secure hardware component
+   such as a trusted execution environment (TEE).  Furthermore, remote
+   attestation on the application level could provide assurance to the
+   server that the device has not been cloned.  Reconnect Exchange with
+   a new cryptosuite (KeyingMode=3) will also disconnect all but the
+   first clone that performs the update.
+
+6.3.  Trusted Path Issues and Misbinding Attacks
+
+   Another potential threat is spoofed user input or output on the peer
+   device.  When the user is delivering the OOB message to or from the
+   correct peer device, a trusted path between the user and the peer
+   device is needed.  That is, the user must communicate directly with
+   an authentic operating system and EAP-NOOB implementation in the peer
+   device and not with a spoofed user interface.  Otherwise, a
+   registered device that is under the control of the attacker could
+   emulate the behavior of an unregistered device.  The secure path can
+   be implemented, for example, by having the user press a reset button
+   to return the device to the Unregistered (0) state and to invoke a
+   trusted UI.  The problem with such trusted paths is that they are not
+   standardized across devices.
+
+   Another potential consequence of a spoofed UI is the misbinding
+   attack where the user tries to register a correct but compromised
+   device, which tricks the user into registering another
+   (uncompromised) device instead.  For example, the compromised device
+   might have a malicious, full-screen app running, which presents to
+   the user QR codes copied, in real time, from another device's screen.
+   If the unwitting user scans the QR code and delivers the OOB message
+   in it to the server, the wrong device may become registered in the
+   server.  Such misbinding vulnerabilities arise because the user does
+   not have any secure way of verifying that the in-band cryptographic
+   handshake and the out-of-band physical access are terminated at the
+   same physical device.  Sethi et al.  [Sethi19] analyze the misbinding
+   threat against device-pairing protocols and also EAP-NOOB.
+   Essentially, all protocols where the authentication relies on the
+   user's physical access to the device are vulnerable to misbinding,
+   including EAP-NOOB.
+
+   A standardized trusted path for communicating directly with the
+   trusted computing base in a physical device would mitigate the
+   misbinding threat, but such paths rarely exist in practice.  Careful
+   asset tracking on the server side can also prevent most misbinding
+   attacks if the peer device sends its identifiers or attributes in the
+   PeerInfo field and the server compares them with the expected values.
+   The wrong but uncompromised device's PeerInfo will not match the
+   expected values.  Device certification by the manufacturer can
+   further strengthen the asset tracking.
+
+6.4.  Peer Identifiers and Attributes
+
+   The PeerId value in the protocol is a server-allocated identifier for
+   its association with the peer and SHOULD NOT be shown to the user
+   because its value is initially ephemeral.  Since the PeerId is
+   allocated by the server and the scope of the identifier is the single
+   server, the so-called identifier squatting attacks, where a malicious
+   peer could reserve another peer's identifier, are not possible in
+   EAP-NOOB.  The server SHOULD assign a random or pseudorandom PeerId
+   to each new peer.  It SHOULD NOT select the PeerId based on any peer
+   characteristics that it may know, such as the peer's link-layer
+   network address.
+
+   User reset or failure in the OOB Step can cause the peer to perform
+   many Initial Exchanges with the server, which allocates many PeerId
+   values and stores the ephemeral protocol state for them.  The peer
+   will typically only remember the latest ones.  EAP-NOOB leaves it to
+   the implementation to decide when to delete these ephemeral
+   associations.  There is no security reason to delete them early, and
+   the server does not have any way to verify that the peers are
+   actually the same one.  Thus, it is safest to store the ephemeral
+   states on the server for at least one day.  If the OOB messages are
+   sent only in the server-to-peer direction, the server SHOULD NOT
+   delete the ephemeral state before all the related Noob values have
+   expired.
+
+   After completion of EAP-NOOB, the server may store the PeerInfo data,
+   and the user may use it to identify the peer and its attributes, such
+   as the make and model or serial number.  A compromised peer could lie
+   in the PeerInfo that it sends to the server.  If the server stores
+   any information about the peer, it is important that this information
+   is approved by the user during or after the OOB Step.  Without
+   verification by the user or authentication on the application level,
+   the PeerInfo is not authenticated information and should not be
+   relied on.  One possible use for the PeerInfo field is EAP channel
+   binding (see Section 6.7).
+
+6.5.  Downgrading Threats
+
+   The fingerprint Hoob protects all the information exchanged in the
+   Initial Exchange, including the cryptosuite negotiation.  The message
+   authentication codes MACs and MACp also protect the same information.
+   The message authentication codes MACs2 and MACp2 protect information
+   exchanged during key renegotiation in the Reconnect Exchange.  This
+   prevents downgrading attacks to weaker cryptosuites, as long as the
+   possible attacks take more time than the maximum time allowed for the
+   EAP-NOOB completion.  This is typically the case for recently
+   discovered cryptanalytic attacks.
+
+   As an additional precaution, the EAP server and peer MUST check for
+   downgrading attacks in the Reconnect Exchange as follows.  As long as
+   the server or peer saves any information about the other endpoint, it
+   MUST also remember the previously negotiated cryptosuite and MUST NOT
+   accept renegotiation of any cryptosuite that is known to be weaker
+   than the previous one, such as a deprecated cryptosuite.  Determining
+   the relative strength of the cryptosuites is out of scope of this
+   specification and may be managed by implementations or by local
+   policies at the peer and server.
+
+   Integrity of the direction negotiation cannot be verified in the same
+   way as the integrity of the cryptosuite negotiation.  That is, if the
+   OOB channel used in an application is critically insecure in one
+   direction, an on-path attacker could modify the negotiation messages
+   and thereby cause that direction to be used.  Applications that
+   support OOB messages in both directions SHOULD, therefore, ensure
+   that the OOB channel has sufficiently strong security in both
+   directions.  While this is a theoretical vulnerability, it could
+   arise in practice if EAP-NOOB is deployed in new applications.
+   Currently, we expect most peer devices to support only one OOB
+   direction; in which case, interfering with the direction negotiation
+   can only prevent the completion of the protocol.
+
+   The long-term shared key material Kz in the persistent EAP-NOOB
+   association is established with an ECDHE key exchange when the peer
+   and server are first associated.  It is a weaker secret than a
+   manually configured random shared key because advances in
+   cryptanalysis against the used ECDHE curve could eventually enable
+   the attacker to recover Kz.  EAP-NOOB protects against such attacks
+   by allowing cryptosuite upgrades in the Reconnect Exchange and by
+   updating the shared key material Kz whenever the cryptosuite is
+   upgraded.  We do not expect the cryptosuite upgrades to be frequent,
+   but, if an upgrade becomes necessary, it can be done without manual
+   reset and reassociation of the peer devices.
+
+6.6.  Protected Success and Failure Indications
+
+   Section 7.16 of [RFC3748] allows EAP methods to specify protected
+   result indications because EAP-Success and EAP-Failure packets are
+   neither acknowledged nor integrity protected.  [RFC3748] notes that
+   these indications may be explicit or implicit.
+
+   EAP-NOOB relies on implicit, protected success indicators in the
+   Completion Exchange and Reconnect Exchange.  Successful verification
+   of MACs and MACs2 in the EAP-Request message from the server (message
+   type 6 and message type 9, respectively) acts as an implicit,
+   protected success indication to the peer.  Similarly, successful
+   verification of MACp and MACp2 in the EAP-Response message from the
+   peer (message type 6 and message type 9, respectively) act as an
+   implicit, protected success indication to the server.
+
+   EAP-NOOB failure messages are not protected.  Protected failure
+   result indications would not significantly improve availability since
+   EAP-NOOB reacts to most malformed data by ending the current EAP
+   conversation in EAP-Failure.  However, since EAP-NOOB spans multiple
+   conversations, failure in one conversation usually means no state
+   change on the level of the EAP-NOOB state machine.
+
+6.7.  Channel Binding
+
+   EAP channel binding, defined in [RFC6677], means that the endpoints
+   compare their perceptions of network properties, such as lower-layer
+   identifiers, over the secure channel established by EAP
+   authentication.  Section 4.1 of [RFC6677] defines two approaches to
+   channel binding.  EAP-NOOB follows the first approach, in which the
+   peer and server exchange plaintext information about the network over
+   a channel that is integrity protected with keys derived during the
+   EAP execution.  More specifically, channel information is exchanged
+   in the plaintext PeerInfo and ServerInfo objects and is later
+   verified with message authentication codes (MACp, MACs, MACp2, and
+   MACs2).  This allows policy-based comparison with locally perceived
+   network properties on either side, as well as logging for debugging
+   purposes.  The peer MAY include in PeerInfo any data items that it
+   wants to bind to the EAP-NOOB association and to the exported keys.
+   These can be properties of the authenticator or the access link, such
+   as the SSID and BSSID of the wireless network (see Table 6).  As
+   noted in Section 4.3 of [RFC6677], the scope of the channel binding
+   varies between deployments.  For example, the server may have less
+   link-layer information available from roaming networks than from a
+   local enterprise network, and it may be unable to verify all the
+   network properties received in PeerInfo.  There are also privacy
+   considerations related to exchanging the ServerInfo and PeerInfo
+   while roaming (see Section 6.10).
+
+   Channel binding to secure channels, defined in [RFC5056], binds
+   authentication at a higher protocol layer to a secure channel at a
+   lower layer.  Like most EAP methods, EAP-NOOB exports the session
+   keys MSK and EMSK, and an outer tunnel or a higher-layer protocol can
+   bind its authentication to these keys.  Additionally, EAP-NOOB
+   exports the key AMSK, which may be used to bind application-layer
+   authentication to the secure channel created by EAP-NOOB and to the
+   session keys MSK and EMSK.
+
+6.8.  Denial of Service
+
+   While denial-of-service (DoS) attacks by on-link attackers cannot be
+   fully prevented, the design goal in EAP-NOOB is to void long-lasting
+   failure caused by an attacker who is present only temporarily or
+   intermittently.  The main defense mechanism is the persistent EAP-
+   NOOB association, which is never deleted automatically due to in-band
+   messages or error indications.  Thus, the endpoints can always use
+   the persistent association for reconnecting after the DoS attacker
+   leaves the network.  In this sense, the persistent association serves
+   the same function in EAP-NOOB as a permanent primary key or
+   certificate in other authentication protocols.  We discuss logical
+   attacks against the updates of the persistent association in
+   Section 6.9.
+
+   In addition to logical DoS attacks, it is necessary to consider
+   resource exhaustion attacks against the EAP server.  The number of
+   persistent EAP-NOOB associations created in the server is limited by
+   the need for a user to assist in delivering the OOB message.  The
+   users can be authenticated for the input or output of the OOB message
+   at the EAP server, and any users who create excessive numbers of
+   persistent associations can be held accountable and their
+   associations can be deleted by the server administrator.  What the
+   attacker can do without user authentication is to perform the Initial
+   Exchange repeatedly and create a large number of ephemeral
+   associations (server in Waiting for OOB (1) state) without ever
+   delivering the OOB message.  In Section 6.4, it was suggested that
+   the server should store the ephemeral states for at least a day.
+   This may require off-loading the state storage from memory to disk
+   during a DoS attack.  However, if the server implementation is unable
+   to keep up with a rate of Initial Exchanges performed by a DoS
+   attacker and needs to drop some ephemeral states, no damage is caused
+   to already-created persistent associations, and the honest users can
+   resume registering new peers when the DoS attacker leaves the
+   network.
+
+   There are some trade-offs in the protocol design between politely
+   backing off and giving way to DoS attackers.  An on-link DoS attacker
+   could spoof the SleepTime value in the Initial Exchange or Waiting
+   Exchange to cause denial of service against a specific peer device.
+   There is an upper limit on the SleepTime (3600 seconds) to mitigate
+   the spoofing threat.  This means that, in the presence of an on-link
+   DoS attacker who spoofs the SleepTime, it could take up to one hour
+   after the delivery of the OOB message before the device performs the
+   Completion Exchange and becomes functional.  Similarly, the Unwanted
+   peer error (error code 2001) could cause the peer to stop connecting
+   to the network.  If the peer device is able to alert the user about
+   the error condition, it can safely stop connecting to the server and
+   wait for the user to trigger a reconnection attempt, e.g., by
+   resetting the device.  As mentioned in Section 3.6.2, peer devices
+   that are unable to alert the user should continue to retry the
+   Initial Exchange infrequently to avoid a permanent DoS condition.  We
+   believe a maximum backoff time of 3600 seconds is reasonable for a
+   new protocol because malfunctioning or misconfigured peer
+   implementations are at least as great a concern as DoS attacks, and
+   politely backing off within some reasonable limits will increase the
+   acceptance of the protocol.  The maximum backoff times could be
+   updated to be shorter as the protocol implementations mature.
+
+6.9.  Recovery from Loss of Last Message
+
+   The EAP-NOOB Completion Exchange, as well as the Reconnect Exchange
+   with cryptosuite update, results in a persistent state change that
+   should take place either on both endpoints or on neither; otherwise,
+   the result is a state mismatch that requires user action to resolve.
+   The state mismatch can occur if the final EAP response of the
+   exchanges is lost.  In the Completion Exchange, the loss of the final
+   response (Type=6) results in the peer moving to the Registered (4)
+   state and creating a persistent EAP-NOOB association while the server
+   stays in an ephemeral state (1 or 2).  In the Reconnect Exchange, the
+   loss of the final response (Type=9) results in the peer moving to the
+   Registered (4) state and updating its persistent key material Kz
+   while the server stays in the Reconnecting (3) state and keeps the
+   old key material.
+
+   The state mismatch is an example of an unavoidable problem in
+   distributed systems: it is theoretically impossible to guarantee
+   synchronous state changes in endpoints that communicate
+   asynchronously.  The protocol will always have one critical message
+   that may get lost, so that one side commits to the state change and
+   the other side does not.  In EAP, the critical message is the final
+   response from the peer to the server.  While the final response is
+   normally followed by EAP-Success, [RFC3748], Section 4.2 states that
+   the peer MAY assume that the EAP-Success was lost and the
+   authentication was successful.  Furthermore, EAP method
+   implementations in the peer do not receive notification of the EAP-
+   Success message from the parent EAP state machine [RFC4137].  For
+   these reasons, EAP-NOOB on the peer side commits to a state change
+   already when it sends the final response.
+
+   The best available solution to the loss of the critical message is to
+   keep trying.  EAP retransmission behavior defined in Section 4.3 of
+   [RFC3748] suggests 3-5 retransmissions.  In the absence of an
+   attacker, this would be sufficient to reduce the probability of
+   failure to an acceptable level.  However, a determined attacker on
+   the in-band channel can drop the final EAP-Response message and all
+   subsequent retransmissions.  In the Completion Exchange
+   (KeyingMode=0) and Reconnect Exchange with cryptosuite upgrade
+   (KeyingMode=3), this could result in a state mismatch and persistent
+   denial of service until the user resets the peer state.
+
+   EAP-NOOB implements its own recovery mechanism that allows unlimited
+   retries of the Reconnect Exchange.  When the DoS attacker eventually
+   stops dropping packets on the in-band channel, the protocol will
+   recover.  The logic for this recovery mechanism is specified in
+   Section 3.4.2.
+
+   EAP-NOOB does not implement the same kind of retry mechanism in the
+   Completion Exchange.  The reason is that there is always a user
+   involved in the initial association process, and the user can repeat
+   the OOB Step to complete the association after the DoS attacker has
+   left.  On the other hand, Reconnect Exchange needs to work without
+   user involvement.
+
+6.10.  Privacy Considerations
+
+   There are privacy considerations related to performing the Reconnect
+   Exchange while roaming.  The peer and server may send updated
+   PeerInfo and ServerInfo fields in the Reconnect Exchange.  This data
+   is sent unencrypted between the peer and the EAP authenticator, such
+   as a wireless access point.  Thus, it can be observed by both
+   outsiders and the access network.  The PeerInfo field contains
+   identifiers and other information about the peer device (see
+   Table 6).  While the information refers to the peer device and not
+   directly to the user, it can leak information about the user to the
+   access network and to outside observers.  The ServerInfo, on the
+   other hand, can leak information about the peer's affiliation with
+   the home network.  For this reason, the optional PeerInfo and
+   ServerInfo in the Reconnect Exchange SHOULD be omitted unless some
+   critical data has changed and it cannot be updated on the application
+   layer.
+
+   Peer devices that randomize their Layer 2 address to prevent tracking
+   can do this whenever the user resets the EAP-NOOB association.
+   During the lifetime of the association, the PeerId is a unique
+   identifier that can be used to track the peer in the access network.
+   Later versions of this specification may consider updating the PeerId
+   at each Reconnect Exchange.  In that case, it is necessary to
+   consider how the authenticator and access-network administrators can
+   recognize and add misbehaving peer devices to a deny list, as well as
+   how to avoid loss of synchronization between the server and the peer
+   if messages are lost during the identifier update.
+
+   To enable stronger identity protection in later versions of EAP-NOOB,
+   the optional server-assigned NAI (NewNAI) SHOULD have a constant
+   username part.  The RECOMMENDED username is "noob".  The server MAY,
+   however, send a different username in NewNAI to avoid username
+   collisions within its realm or to conform to a local policy on
+   usernames.
+
+6.11.  EAP Security Claims
+
+   EAP security claims are defined in Section 7.2.1 of [RFC3748].  The
+   security claims for EAP-NOOB are listed in Table 13.
+
+   +=================+=================================================+
+   | Security        | EAP-NOOB Claim                                  |
+   | Property        |                                                 |
+   +=================+=================================================+
+   | Authentication  | ECDHE key exchange with out-of-band             |
+   | mechanism       | authentication                                  |
+   +-----------------+-------------------------------------------------+
+   | Protected       | yes                                             |
+   | cryptosuite     |                                                 |
+   | negotiation     |                                                 |
+   +-----------------+-------------------------------------------------+
+   | Mutual          | yes                                             |
+   | authentication  |                                                 |
+   +-----------------+-------------------------------------------------+
+   | Integrity       | yes                                             |
+   | protection      |                                                 |
+   +-----------------+-------------------------------------------------+
+   | Replay          | yes                                             |
+   | protection      |                                                 |
+   +-----------------+-------------------------------------------------+
+   | Confidentiality | no                                              |
+   +-----------------+-------------------------------------------------+
+   | Key derivation  | yes                                             |
+   +-----------------+-------------------------------------------------+
+   | Key strength    | The specified cryptosuites provide              |
+   |                 | key strength of at least 128 bits.              |
+   +-----------------+-------------------------------------------------+
+   | Dictionary      | yes                                             |
+   | attack          |                                                 |
+   | protection      |                                                 |
+   +-----------------+-------------------------------------------------+
+   | Fast reconnect  | yes                                             |
+   +-----------------+-------------------------------------------------+
+   | Cryptographic   | not applicable                                  |
+   | binding         |                                                 |
+   +-----------------+-------------------------------------------------+
+   | Session         | yes                                             |
+   | independence    |                                                 |
+   +-----------------+-------------------------------------------------+
+   | Fragmentation   | no                                              |
+   +-----------------+-------------------------------------------------+
+   | Channel binding | yes (The ServerInfo and PeerInfo can            |
+   |                 | be used to convey integrity-protected           |
+   |                 | channel properties, such as network             |
+   |                 | SSID or peer MAC address.)                      |
+   +-----------------+-------------------------------------------------+
+
+                       Table 13: EAP Security Claims
+
+7.  References
+
+7.1.  Normative References
+
+   [EUI-48]   IEEE, "IEEE Standard for Local and Metropolitan Area
+              Networks: Overview and Architecture",
+              DOI 10.1109/IEEESTD.2014.6847097, IEEE Standard 802-2014,
+              June 2014, <https://doi.org/10.1109/IEEESTD.2014.6847097>.
+
+   [FIPS186-4]
+              National Institute of Standards and Technology (NIST),
+              "Digital Signature Standard (DSS)",
+              DOI 10.6028/NIST.FIPS.186-4, FIPS 186-4, July 2013,
+              <https://doi.org/10.6028/NIST.FIPS.186-4>.
+
+   [NIST-DH]  Barker, E., Chen, L., Roginsky, A., Vassilev, A., and R.
+              Davis, "Recommendation for Pair-Wise Key-Establishment
+              Schemes Using Discrete Logarithm Cryptography",
+              DOI 10.6028/NIST.SP.800-56Ar3, NIST Special
+              Publication 800-56A Revision 3, April 2018,
+              <https://nvlpubs.nist.gov/nistpubs/SpecialPublications/
+              NIST.SP.800-56Ar3.pdf>.
+
+   [RFC2104]  Krawczyk, H., Bellare, M., and R. Canetti, "HMAC: Keyed-
+              Hashing for Message Authentication", RFC 2104,
+              DOI 10.17487/RFC2104, February 1997,
+              <https://www.rfc-editor.org/info/rfc2104>.
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119,
+              DOI 10.17487/RFC2119, March 1997,
+              <https://www.rfc-editor.org/info/rfc2119>.
+
+   [RFC3748]  Aboba, B., Blunk, L., Vollbrecht, J., Carlson, J., and H.
+              Levkowetz, Ed., "Extensible Authentication Protocol
+              (EAP)", RFC 3748, DOI 10.17487/RFC3748, June 2004,
+              <https://www.rfc-editor.org/info/rfc3748>.
+
+   [RFC4648]  Josefsson, S., "The Base16, Base32, and Base64 Data
+              Encodings", RFC 4648, DOI 10.17487/RFC4648, October 2006,
+              <https://www.rfc-editor.org/info/rfc4648>.
+
+   [RFC5247]  Aboba, B., Simon, D., and P. Eronen, "Extensible
+              Authentication Protocol (EAP) Key Management Framework",
+              RFC 5247, DOI 10.17487/RFC5247, August 2008,
+              <https://www.rfc-editor.org/info/rfc5247>.
+
+   [RFC6234]  Eastlake 3rd, D. and T. Hansen, "US Secure Hash Algorithms
+              (SHA and SHA-based HMAC and HKDF)", RFC 6234,
+              DOI 10.17487/RFC6234, May 2011,
+              <https://www.rfc-editor.org/info/rfc6234>.
+
+   [RFC7517]  Jones, M., "JSON Web Key (JWK)", RFC 7517,
+              DOI 10.17487/RFC7517, May 2015,
+              <https://www.rfc-editor.org/info/rfc7517>.
+
+   [RFC7518]  Jones, M., "JSON Web Algorithms (JWA)", RFC 7518,
+              DOI 10.17487/RFC7518, May 2015,
+              <https://www.rfc-editor.org/info/rfc7518>.
+
+   [RFC7542]  DeKok, A., "The Network Access Identifier", RFC 7542,
+              DOI 10.17487/RFC7542, May 2015,
+              <https://www.rfc-editor.org/info/rfc7542>.
+
+   [RFC7748]  Langley, A., Hamburg, M., and S. Turner, "Elliptic Curves
+              for Security", RFC 7748, DOI 10.17487/RFC7748, January
+              2016, <https://www.rfc-editor.org/info/rfc7748>.
+
+   [RFC8037]  Liusvaara, I., "CFRG Elliptic Curve Diffie-Hellman (ECDH)
+              and Signatures in JSON Object Signing and Encryption
+              (JOSE)", RFC 8037, DOI 10.17487/RFC8037, January 2017,
+              <https://www.rfc-editor.org/info/rfc8037>.
+
+   [RFC8126]  Cotton, M., Leiba, B., and T. Narten, "Guidelines for
+              Writing an IANA Considerations Section in RFCs", BCP 26,
+              RFC 8126, DOI 10.17487/RFC8126, June 2017,
+              <https://www.rfc-editor.org/info/rfc8126>.
+
+   [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase in RFC
+              2119 Key Words", BCP 14, RFC 8174, DOI 10.17487/RFC8174,
+              May 2017, <https://www.rfc-editor.org/info/rfc8174>.
+
+   [RFC8259]  Bray, T., Ed., "The JavaScript Object Notation (JSON) Data
+              Interchange Format", STD 90, RFC 8259,
+              DOI 10.17487/RFC8259, December 2017,
+              <https://www.rfc-editor.org/info/rfc8259>.
+
+7.2.  Informative References
+
+   [Bluetooth]
+              Bluetooth Special Interest Group, "Bluetooth Core
+              Specification Version 5.3", July 2021,
+              <https://www.bluetooth.com/specifications/bluetooth-core-
+              specification>.
+
+   [IEEE-802.1X]
+              IEEE, "IEEE Standard for Local and Metropolitan Area
+              Networks--Port-Based Network Access Control", IEEE
+              Standard 802.1X-2020, February 2020.
+
+   [RATS-EAT] Lundblade, L., Mandyam, G., and J. O'Donoghue, "The Entity
+              Attestation Token (EAT)", Work in Progress, Internet-
+              Draft, draft-ietf-rats-eat-11, 24 October 2021,
+              <https://datatracker.ietf.org/doc/html/draft-ietf-rats-
+              eat-11>.
+
+   [RFC2904]  Vollbrecht, J., Calhoun, P., Farrell, S., Gommans, L.,
+              Gross, G., de Bruijn, B., de Laat, C., Holdrege, M., and
+              D. Spence, "AAA Authorization Framework", RFC 2904,
+              DOI 10.17487/RFC2904, August 2000,
+              <https://www.rfc-editor.org/info/rfc2904>.
+
+   [RFC3986]  Berners-Lee, T., Fielding, R., and L. Masinter, "Uniform
+              Resource Identifier (URI): Generic Syntax", STD 66,
+              RFC 3986, DOI 10.17487/RFC3986, January 2005,
+              <https://www.rfc-editor.org/info/rfc3986>.
+
+   [RFC4137]  Vollbrecht, J., Eronen, P., Petroni, N., and Y. Ohba,
+              "State Machines for Extensible Authentication Protocol
+              (EAP) Peer and Authenticator", RFC 4137,
+              DOI 10.17487/RFC4137, August 2005,
+              <https://www.rfc-editor.org/info/rfc4137>.
+
+   [RFC5056]  Williams, N., "On the Use of Channel Bindings to Secure
+              Channels", RFC 5056, DOI 10.17487/RFC5056, November 2007,
+              <https://www.rfc-editor.org/info/rfc5056>.
+
+   [RFC5216]  Simon, D., Aboba, B., and R. Hurst, "The EAP-TLS
+              Authentication Protocol", RFC 5216, DOI 10.17487/RFC5216,
+              March 2008, <https://www.rfc-editor.org/info/rfc5216>.
+
+   [RFC6677]  Hartman, S., Ed., Clancy, T., and K. Hoeper, "Channel-
+              Binding Support for Extensible Authentication Protocol
+              (EAP) Methods", RFC 6677, DOI 10.17487/RFC6677, July 2012,
+              <https://www.rfc-editor.org/info/rfc6677>.
+
+   [Sethi14]  Sethi, M., Oat, E., Di Francesco, M., and T. Aura, "Secure
+              bootstrapping of cloud-managed ubiquitous displays",
+              Proceedings of ACM International Joint Conference on
+              Pervasive and Ubiquitous Computing (UbiComp 2014), pp.
+              739-750, Seattle, USA, DOI 10.1145/2632048.2632049,
+              September 2014,
+              <http://dx.doi.org/10.1145/2632048.2632049>.
+
+   [Sethi19]  Sethi, M., Peltonen, A., and T. Aura, "Misbinding Attacks
+              on Secure Device Pairing and Bootstrapping",
+              DOI 10.1145/3321705.3329813, February 2019,
+              <https://arxiv.org/abs/1902.07550>.
+
+   [TLS-CWT]  Tschofenig, H. and M. Brossard, "Using CBOR Web Tokens
+              (CWTs) in Transport Layer Security (TLS) and Datagram
+              Transport Layer Security (DTLS)", Work in Progress,
+              Internet-Draft, draft-tschofenig-tls-cwt-02, 13 July 2020,
+              <https://datatracker.ietf.org/doc/html/draft-tschofenig-
+              tls-cwt-02>.
+
+Appendix A.  Exchanges and Events per State
+
+   Table 14 shows how the EAP server chooses the exchange type depending
+   on the server and peer states.  In the state combinations marked with
+   hyphen "-", there is no possible exchange and user action is required
+   to make progress.  Note that peer state 4 is omitted from the table
+   because the peer never connects to the server when the peer is in
+   that state.  The table also shows the handling of errors in each
+   exchange.  A notable detail is that the recipient of error code 2003
+   moves to state 1.
+
+    +=============+===============================+==================+
+    | Peer States | Exchange Chosen by the Server | Next Peer and    |
+    |             |                               | Server States    |
+    +=============+===============================+==================+
+    |                 Server State: Unregistered (0)                 |
+    +-------------+-------------------------------+------------------+
+    | 0..2        | Initial Exchange              | both 1 (0 on     |
+    |             |                               | error)           |
+    +-------------+-------------------------------+------------------+
+    | 3           | -                             | no change,       |
+    |             |                               | notify user      |
+    +-------------+-------------------------------+------------------+
+    |               Server State: Waiting for OOB (1)                |
+    +-------------+-------------------------------+------------------+
+    | 0           | Initial Exchange              | both 1 (0 on     |
+    |             |                               | error)           |
+    +-------------+-------------------------------+------------------+
+    | 1           | Waiting Exchange              | both 1 (no       |
+    |             |                               | change on error) |
+    +-------------+-------------------------------+------------------+
+    | 2           | Completion Exchange           | both 4 (A)       |
+    +-------------+-------------------------------+------------------+
+    | 3           | -                             | no change,       |
+    |             |                               | notify user      |
+    +-------------+-------------------------------+------------------+
+    |                 Server State: OOB Received (2)                 |
+    +-------------+-------------------------------+------------------+
+    | 0           | Initial Exchange              | both 1 (0 on     |
+    |             |                               | error)           |
+    +-------------+-------------------------------+------------------+
+    | 1           | Completion Exchange           | both 4 (B)       |
+    +-------------+-------------------------------+------------------+
+    | 2           | Completion Exchange           | both 4 (A)       |
+    +-------------+-------------------------------+------------------+
+    | 3           | -                             | no change,       |
+    |             |                               | notify user      |
+    +-------------+-------------------------------+------------------+
+    |        Server State: Reconnecting (3) or Registered (4)        |
+    +-------------+-------------------------------+------------------+
+    | 0..2        | -                             | no change,       |
+    |             |                               | notify user      |
+    +-------------+-------------------------------+------------------+
+    | 3           | Reconnect Exchange            | both 4 (3 on     |
+    |             |                               | error)           |
+    +-------------+-------------------------------+------------------+
+
+            Table 14: How the Server Chooses the Exchange Type
+
+   (A)  peer to 1 on error 2003; no other changes on error
+
+   (B)  server to 1 on error 2003; no other changes on error
+
+   Table 15 lists the local events that can take place in the server or
+   peer.  Both the server and peer output and accept OOB messages in
+   association state 1, leading the receiver to state 2.  Communication
+   errors and timeouts in states 0..2 lead back to state 0, while
+   similar errors in states 3..4 lead to state 3.  An application
+   request for rekeying (e.g., to refresh session keys or to upgrade
+   cryptosuite) also takes the association from state 3..4 to state 3.
+   The user can always reset the association state to 0.  Recovering
+   association data, e.g., from a backup, leads to state 3.
+
+         +===================+========================+=========+
+         | Server/Peer State | Possible Local Events  | Next    |
+         |                   | in the Server and Peer | State   |
+         +===================+========================+=========+
+         | 1                 | OOB Output             | 1       |
+         +-------------------+------------------------+---------+
+         | 1                 | OOB Input              | 2 (1 on |
+         |                   |                        | error)  |
+         +-------------------+------------------------+---------+
+         | 0..2              | Mobility/timeout/      | 0       |
+         |                   | network failure        |         |
+         +-------------------+------------------------+---------+
+         | 3..4              | Mobility/timeout/      | 3       |
+         |                   | network failure        |         |
+         +-------------------+------------------------+---------+
+         | 3..4              | Rekeying request       | 3       |
+         +-------------------+------------------------+---------+
+         | 0..4              | User resets            | 0       |
+         |                   | association            |         |
+         +-------------------+------------------------+---------+
+         | 0..4              | Association state      | 3       |
+         |                   | recovery               |         |
+         +-------------------+------------------------+---------+
+
+              Table 15: Local Events in the Server and Peer
+
+Appendix B.  Application-Specific Parameters
+
+   Table 16 lists OOB channel parameters that need to be specified in
+   each application that makes use of EAP-NOOB.  The list is not
+   exhaustive and is included for the convenience of implementers only.
+
+     +====================+=========================================+
+     | Parameter          | Description                             |
+     +====================+=========================================+
+     | OobDirs            | Allowed directions of the OOB channel.  |
+     +--------------------+-----------------------------------------+
+     | OobMessageEncoding | How the OOB message data fields are     |
+     |                    | encoded for the OOB channel.            |
+     +--------------------+-----------------------------------------+
+     | SleepTimeDefault   | Default minimum time in seconds that    |
+     |                    | the peer should sleep before the next   |
+     |                    | Waiting Exchange.                       |
+     +--------------------+-----------------------------------------+
+     | OobRetries         | Number of received OOB messages with    |
+     |                    | invalid Hoob, after which the receiver  |
+     |                    | moves to Unregistered (0) state.  When  |
+     |                    | the OOB channel has error detection or  |
+     |                    | correction, the RECOMMENDED value is 5. |
+     +--------------------+-----------------------------------------+
+     | NoobTimeout        | How many seconds the sender of the OOB  |
+     |                    | message remembers the sent Noob value.  |
+     |                    | The RECOMMENDED value is 3600 seconds.  |
+     +--------------------+-----------------------------------------+
+     | ServerInfoType     | The value of the Type field and the     |
+     |                    | other required fields in ServerInfo.    |
+     +--------------------+-----------------------------------------+
+     | PeerInfoType       | The value of the Type field and the     |
+     |                    | other required fields in PeerInfo.      |
+     +--------------------+-----------------------------------------+
+
+                  Table 16: OOB Channel Characteristics
+
+Appendix C.  EAP-NOOB Roaming
+
+   AAA architectures [RFC2904] allow for roaming of network-connected
+   appliances that are authenticated over EAP.  While the peer is
+   roaming in a visited network, authentication still takes place
+   between the peer and an authentication server at its home network.
+   EAP-NOOB supports such roaming by allowing the server to assign a NAI
+   to the peer.  After the NAI has been assigned, it enables the visited
+   network to route the EAP session to the peer's home AAA server.
+
+   A peer device that is new or has gone through a hard reset should be
+   connected first to the home network and establish an EAP-NOOB
+   association with its home AAA server before it is able to roam.
+   After that, it can perform the Reconnect Exchange from the visited
+   network.
+
+   Alternatively, the device may provide some method for the user to
+   configure the NAI of the home network.  This is the user or
+   application-configured NAI mentioned in Section 3.3.1.  In that case,
+   the EAP-NOOB association can be created while roaming.  The
+   configured NAI enables the EAP messages to be routed correctly to the
+   home AAA server.
+
+   While roaming, the device needs to identify the networks where the
+   EAP-NOOB association can be used to gain network access.  For 802.11
+   access networks, the server MAY send a list of SSID strings in the
+   ServerInfo field, called either SSIDList or Base64SSIDList.  The list
+   is formatted as explained in Table 6.  If present, the peer MAY use
+   this list as a hint to determine the networks where the EAP-NOOB
+   association can be used for access authorization, in addition to the
+   access network where the Initial Exchange took place.
+
+Appendix D.  OOB Message as a URL
+
+   While EAP-NOOB does not mandate any particular OOB communication
+   channel, typical OOB channels include graphical displays and emulated
+   NFC tags.  In the peer-to-server direction, it may be convenient to
+   encode the OOB message as a URL, which is then encoded as a QR code
+   for displays and printers or as an NFC Data Exchange Format (NDEF)
+   record for dynamic NFC tags.  A user can then simply scan the QR code
+   or NFC tag and open the URL, which causes the OOB message to be
+   delivered to the authentication server.  The URL MUST specify https
+   or another server-authenticated scheme so that there is a secure
+   connection to the server and the on-path attacker cannot read or
+   modify the OOB message.
+
+   The ServerInfo in this case includes a field called ServerURL of the
+   following format with a RECOMMENDED length of at most 60 characters:
+
+   https://<host>[:<port>]/[<path>]
+
+   To this, the peer appends the OOB message fields (PeerId, Noob, and
+   Hoob) as a query string.  PeerId is provided to the peer by the
+   server and might be a 22-character ASCII string.  The peer base64url
+   encodes, without padding, the 16-byte values Noob and Hoob into
+   22-character ASCII strings.  The query parameters MAY be in any
+   order.  The resulting URL is of the following format:
+
+   https://<host>[:<port>]/[<path>]?P=<PeerId>&N=<Noob>&H=<Hoob>
+
+   The following is an example of a well-formed URL encoding the OOB
+   message (without line breaks):
+
+   https://aaa.example.com/eapnoob?P=mcm5BSCDZ45cYPlAr1ghNw&N=rMinS0-F4E
+   fCU8D9ljxX_A&H=QvnMp4UGxuQVFaXPW_14UW
+
+Acknowledgments
+
+   Max Crone, Shiva Prasad TP, and Raghavendra MS implemented parts of
+   this protocol with wpa_supplicant and hostapd.  Eduardo Inglés and
+   Dan Garcia-Carrillo were involved in the implementation of this
+   protocol on Contiki.  Their inputs helped us in improving the
+   specification.
+
+   The authors would like to thank Rhys Smith and Josh Howlett for
+   providing valuable feedback, as well as new use cases and
+   requirements for the protocol.  Thanks to Eric Rescorla, Alan Dekok,
+   Darshak Thakore, Stefan Winter, Hannes Tschofenig, Daniel Migault,
+   Roman Danyliw, Benjamin Kaduk, Francesca Palombini, Steve Hanna, Lars
+   Eggert, and Éric Vyncke for their comments and reviews.
+
+   We would also like to express our sincere gratitude to Dave Thaler
+   for his thorough review of the document.
+
+Authors' Addresses
+
+   Tuomas Aura
+   Aalto University
+   FI-00076 Aalto
+   Finland
+
+   Email: tuomas.aura@aalto.fi
+
+
+   Mohit Sethi
+   Ericsson
+   FI-02420 Jorvas
+   Finland
+
+   Email: mohit@iki.fi
+
+
+   Aleksi Peltonen
+   Aalto University
+   FI-00076 Aalto
+   Finland
+
+   Email: aleksi.peltonen@aalto.fi

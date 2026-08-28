@@ -1,0 +1,90 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Known issues
+
+This page lists significant limitations, with what to expect and what to do
+about them. This is not a bug tracker. Report anything not listed here as an
+[issue](https://github.com/NVIDIA/Personal-AI-Router/issues).
+
+## Unified-Memory Systems Report Misleading GPU Memory
+
+On a system where the GPU shares system memory rather than having its own VRAM,
+the memory figures PAIR shows for that GPU are wrong or missing. What you see
+depends on the platform:
+
+| System | What PAIR Reports |
+| --- | --- |
+| Grace-Blackwell, including DGX Spark | **Correct.** PAIR reports total and used system memory as the GPU's memory, which is what unified memory means on that hardware. |
+| Windows with an integrated or unified-memory GPU | **Understated.** PAIR counts only memory dedicated to the GPU, so a GPU that draws on system RAM can appear to have almost none. |
+| Linux without an NVIDIA driver (AMD or Intel graphics) | **Missing.** PAIR lists the GPU by name with no memory figure and no utilization. |
+
+PAIR handles the Grace-Blackwell case deliberately. The driver reports no GPU
+memory total on that architecture, so PAIR substitutes system memory instead.
+The other two cases are the gap.
+
+**The impact is display, not routing.** These numbers appear on a node's card
+and in the GPU chart. Routing does not consider VRAM at all, because the
+scheduler counts workloads. A wrong figure does not send work to the wrong place.
+It misleads *you* when you decide which node should hold a large model, so on
+those systems judge capacity from the machine's own tools rather than from PAIR.
+
+## Scheduling Only Counts Jobs
+
+The single scheduling policy ranks nodes by how much work is already queued on
+them. It does not consider GPU model, available memory, current utilization,
+measured latency, whether a model is already loaded, or how expensive a request
+looks. On a cluster of similar machines this behaves reasonably. On a mixed one,
+expect work to land on a slower node about as often as a faster one.
+
+The full list of gaps is in
+[Scheduler Limitations](architecture.mdx#scheduler-limitations).
+Improving this is on the roadmap, and knowing which signals matter on your
+hardware would help. Refer to
+[Where PAIR is going](../README.md#where-pair-is-going).
+
+## PAIR Does Not Detect a Stuck Service Automatically
+
+PAIR restarts a background service that exits, but nothing detects one that is
+still running and no longer responding. The symptom is state that quietly stops
+updating, such as nodes that never refresh or jobs that never complete.
+Restarting from **Settings > Service** resolves it.
+
+## macOS Can Stop Answering LAN Connections While Unclustered
+
+On macOS, PAIR can stop answering connections from other machines on the network
+after it has been left unclustered for a while. Other nodes stop being able to
+discover or reach it, while the application itself looks healthy. Restarting PAIR
+restores it. This is a rarer problem than the others on this page, and it has only
+been seen on macOS.
+
+## The Terminal Interface Cannot Do Everything the Desktop App Can
+
+`nvpair-tui` is an operations tool for headless machines rather than a full
+replacement. It cannot do any of the following:
+
+- List or delete models
+- Change an engine's port
+- Update an engine
+- Control engines on other nodes
+- Show which node served a workload
+
+This matters most for a genuinely headless deployment, where those operations have
+no other route on that machine. Refer to
+[What the Terminal Interface Cannot Do](terminal-interface.mdx#what-the-terminal-interface-cannot-do).
+
+## Engine Binaries Are Not on Your PATH
+
+PAIR does not add the engines it installs to your `PATH`, so running an engine's
+CLI means using the full path. Refer to
+[Using an engine's own command line](getting-started.mdx#using-an-engines-own-command-line)
+for the locations. This is on the roadmap.
+
+## Platform Limits Worth Knowing
+
+- **The Linux desktop installer is a `.deb` only.** On RPM-based distributions,
+  [build from source](building.mdx).
+- **Windows on ARM is experimental.** Refer to
+  [What is supported](../README.md#what-is-supported).

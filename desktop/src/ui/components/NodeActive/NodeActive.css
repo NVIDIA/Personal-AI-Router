@@ -1,0 +1,219 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+.ring-outer-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.ring-outer-container .ring-inner-container {
+    position: relative;
+    width: calc(100% + 48px);
+    height: calc(100% + 48px);
+    left: -24px;
+    top: -24px;
+}
+
+.ring-outer-container .ring-glow {
+    border-radius: 50%;
+    position: absolute;
+    width: calc(100% - 48px);
+    height: calc(100% - 48px);
+    left: 24px;
+    top: 24px;
+    opacity: 0.75;
+}
+
+.ring-outer-container .ring-item {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    position: absolute;
+    left: 0;
+    top: 0;
+    opacity: 0.08;
+    clip-path: polygon(50% 50%, 50% 0%, 100% 0%, 100% 100%, 0% 100%, 0% 50%);
+    transition: box-shadow 0.3s ease-in-out;
+    animation: ring-spin 10s linear infinite;
+}
+
+@keyframes ring-spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes ring-pulse-5 {
+    0% {
+        opacity: 0.08;
+    }
+    8% {
+        opacity: 0.9;
+    }
+    20% {
+        opacity: 0.12;
+    }
+    100% {
+        opacity: 0.08;
+    }
+}
+
+@keyframes ring-pulse-4 {
+    0% {
+        opacity: 0.08;
+    }
+    8% {
+        opacity: 0.08;
+    }
+    16% {
+        opacity: 0.7;
+    }
+    28% {
+        opacity: 0.12;
+    }
+    100% {
+        opacity: 0.08;
+    }
+}
+
+@keyframes ring-pulse-3 {
+    0% {
+        opacity: 0.08;
+    }
+    16% {
+        opacity: 0.08;
+    }
+    24% {
+        opacity: 0.6;
+    }
+    36% {
+        opacity: 0.12;
+    }
+    100% {
+        opacity: 0.08;
+    }
+}
+
+@keyframes ring-pulse-2 {
+    0% {
+        opacity: 0.08;
+    }
+    24% {
+        opacity: 0.08;
+    }
+    32% {
+        opacity: 0.35;
+    }
+    44% {
+        opacity: 0.12;
+    }
+    100% {
+        opacity: 0.08;
+    }
+}
+
+@keyframes ring-pulse-1 {
+    0% {
+        opacity: 0.08;
+    }
+    32% {
+        opacity: 0.08;
+    }
+    40% {
+        opacity: 0.3;
+    }
+    52% {
+        opacity: 0.12;
+    }
+    100% {
+        opacity: 0.08;
+    }
+}
+
+@keyframes ring-pulse-0 {
+    0% {
+        opacity: 0.08;
+    }
+    40% {
+        opacity: 0.08;
+    }
+    48% {
+        opacity: 0.2;
+    }
+    60% {
+        opacity: 0.12;
+    }
+    100% {
+        opacity: 0.08;
+    }
+}
+
+.ring-outer-container .ring-item[data-index='0'] {
+    animation:
+        ring-spin 10s linear infinite,
+        ring-pulse-0 1.4s ease-in-out infinite;
+}
+
+.ring-outer-container .ring-item[data-index='1'] {
+    width: calc(100% - 8px);
+    height: calc(100% - 8px);
+    left: 4px;
+    top: 4px;
+    animation:
+        ring-spin 10s linear infinite reverse,
+        ring-pulse-1 1.4s ease-in-out infinite;
+    animation-delay: -3s, 0s;
+}
+
+.ring-outer-container .ring-item[data-index='2'] {
+    width: calc(100% - 16px);
+    height: calc(100% - 16px);
+    left: 8px;
+    top: 8px;
+    animation:
+        ring-spin 10s linear infinite,
+        ring-pulse-2 1.4s ease-in-out infinite;
+    animation-delay: -8s, 0s;
+}
+
+.ring-outer-container .ring-item[data-index='3'] {
+    width: calc(100% - 24px);
+    height: calc(100% - 24px);
+    left: 12px;
+    top: 12px;
+    animation:
+        ring-spin 10s linear infinite reverse,
+        ring-pulse-3 1.4s ease-in-out infinite;
+    animation-delay: -9s, 0s;
+}
+
+.ring-outer-container .ring-item[data-index='4'] {
+    width: calc(100% - 32px);
+    height: calc(100% - 32px);
+    left: 16px;
+    top: 16px;
+    animation:
+        ring-spin 10s linear infinite,
+        ring-pulse-4 1.4s ease-in-out infinite;
+    animation-delay: -6s, 0s;
+}
+
+.ring-outer-container .ring-item[data-index='5'] {
+    width: calc(100% - 40px);
+    height: calc(100% - 40px);
+    left: 20px;
+    top: 20px;
+    animation:
+        ring-spin 10s linear infinite reverse,
+        ring-pulse-5 1.4s ease-in-out infinite;
+    animation-delay: -1s, 0s;
+}

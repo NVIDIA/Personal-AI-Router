@@ -1,0 +1,49 @@
+# Personal AI Router Logs
+
+## Metadata
+{
+  "generatedAt": "2026-07-21T22:54:12.085Z",
+  "sessionStartedAt": "2026-07-21T22:10:43.029Z",
+  "appName": "nvpair",
+  "appVersion": "0.0.60-dev",
+  "platform": "win32",
+  "hostname": "TESTHOST-A",
+  "userDataPath": "C:\\Users\\testuser\\AppData\\Local\\Nvidia Corporation\\Personal AI Router",
+  "cliBinDir": "C:\\Program Files\\Seth Custom PAIR\\resources\\cli-bin",
+  "processVersions": {
+    "node": "24.17.0",
+    "v8": "14.8.178.33-electron.0",
+    "zlib": "1.3.2.1-motley"
+  }
+}
+
+## Current Modular State
+{
+  "selfId": "11111111-2222-4333-8444-555555555555",
+  "clusterFriendlyName": "Seth's Basement Lab",
+  "clusterId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "nodesInitial": {
+    "11111111-2222-4333-8444-555555555555": {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "name": "TESTHOST-A",
+      "ipAddress": "192.168.50.10"
+    },
+    "66666666-7777-4888-8999-aaaaaaaaaaaa": {
+      "id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+      "name": "TESTHOST-B",
+      "ipAddress": "192.168.50.11"
+    }
+  }
+}
+
+## Structured App Log JSONL
+{"level":"verbose","time":"2026-07-21T22:11:29.447Z","source":"service-bridge","sublevel":"broker","message":"{\"jsonrpc\":\"2.0\",\"method\":\"discovery:nodes-changed\",\"params\":[{\"id\":\"TESTHOST-B\",\"name\":\"TESTHOST-B\",\"hostUuid\":\"66666666-7777-4888-8999-aaaaaaaaaaaa\",\"ipAddress\":\"192.168.50.11\",\"port\":14318,\"trusted\":true,\"models\":[\"qwen3.6:27b\",\"gpt-oss:20b\"]}]}","data":{"stream":"stdout"}}
+{"level":"verbose","time":"2026-07-21T22:10:43.304Z","source":"service-bridge","sublevel":"broker","message":"15:10:43.304 [nvpair-node-settings] INFO settings loaded path=\"C:\\\\Users\\\\testuser\\\\AppData\\\\Local\\\\Nvidia Corporation\\\\Personal AI Router\\\\settings.json\" force_ports=true","data":{"stream":"stderr"}}
+{"level":"warn","time":"2026-07-21T22:10:43.305Z","source":"service-bridge","sublevel":"broker","message":"15:10:43.304 [nvpair-node-settings] INFO settings loaded path=\"C:\\\\Users\\\\testuser\\\\AppData\\\\Local\\\\Nvidia Corporation\\\\Personal AI Router\\\\settings.json\" force_ports=true"}
+{"level":"verbose","time":"2026-07-21T22:11:30.322Z","source":"service-bridge","sublevel":"broker","message":"15:11:30.322 [nvpair-errors] INFO http: TLS handshake error from 192.168.50.11:62152: client sent an HTTP request to an HTTPS server","data":{"stream":"stderr"}}
+{"level":"info","time":"2026-07-21T22:11:31.000Z","source":"service-bridge","sublevel":"proxy","message":"proxy listening","data":{"addr":"127.0.0.1","port":11434}}
+{"level":"info","time":"2026-07-21T22:11:32.000Z","source":"service-bridge","sublevel":"cluster","message":"peer certificate","data":{"fingerprint":"AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99","mac":"aa:bb:cc:dd:ee:ff"}}
+{"level":"info","time":"2026-07-21T22:11:35.000Z","source":"service-bridge","sublevel":"lifecycle","message":"spawning worker","data":{"binDir":"C:\\Program Files\\Seth Custom PAIR\\resources\\cli-bin","binaryPath":"C:\\Program Files\\Seth Custom PAIR\\resources\\cli-bin\\nvpair-ui-broker.exe"}}
+{"level":"verbose","time":"2026-07-21T22:11:36.000Z","source":"service-bridge","sublevel":"broker","message":"15:11:36.000 [nvpair-ui-broker] INFO launching worker path=\"C:\\\\Program Files\\\\Seth Custom PAIR\\\\resources\\\\cli-bin\\\\ollama-proxy.exe\"","data":{"stream":"stderr"}}
+{"level":"info","time":"2026-07-21T22:11:40.000Z","source":"service-bridge","sublevel":"poll","message":"polling node","data":{"host":"192.168.50.11","port":14318}}
+{"level":"info","time":"2026-07-21T22:11:42.000Z","source":"service-bridge","sublevel":"poll","message":"polling node","data":{"host":"192.168.50.11","port":14318}}

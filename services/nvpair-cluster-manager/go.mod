@@ -1,0 +1,24 @@
+module nvpair-cluster-manager
+
+go 1.25.0
+
+require (
+	eapnoob v0.0.0-00010101000000-000000000000
+	nvpair-shared v0.0.0-00010101000000-000000000000
+)
+
+require (
+	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+	github.com/grandcat/zeroconf v1.0.0 // indirect
+	github.com/miekg/dns v1.1.72 // indirect
+	golang.org/x/mod v0.31.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/tools v0.40.0 // indirect
+)
+
+replace nvpair-shared => ../shared
+
+replace eapnoob => ../eap-noob

@@ -1,0 +1,207 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Troubleshooting NVIDIA Personal AI Router
+
+Use this guide when PAIR does not discover peers, pair successfully, start
+engines, show endpoints, or complete an inference request. For security
+concerns, read the [security policy](../SECURITY.md) instead of opening a
+public issue.
+
+**This guide describes the desktop application.** Every step below refers to
+windows, tabs, and buttons in that interface. If you are on a headless system
+using the terminal interface, the underlying causes are the same but the screens
+are not. Refer to
+[Using the PAIR Terminal Interface](terminal-interface.mdx) for where the
+equivalent information lives.
+
+If what you are seeing is not a misconfiguration, check
+[Known Issues](known-issues.mdx). That page lists significant limitations, so you
+can tell "working as built" from "broken."
+
+## PAIR Does Not Become Ready
+
+If **Overview** stays on **Loading...** or reports a service error, everything you
+need is in one place. Open **Settings > Service**, where you can:
+
+1. Read the current service status. It should say connected.
+2. Select **Restart** to start the background services again. Try this first.
+3. Select **Open log file** to see what happened during startup. Refer to
+   [Where the Logs Are](#where-the-logs-are) for the other log controls and the
+   paths on disk.
+4. Confirm you accepted any firewall prompt shown on first run, then retry.
+
+If you file a support request, use **Save logs** on the same screen to write the
+logs somewhere you can attach them, and include the PAIR version shown there.
+
+## Discovery Is Empty
+
+PAIR discovers peers on the local network. If **Add node** or
+**Settings > Cluster > Available nodes to add** shows no systems:
+
+- Confirm PAIR is running on each intended peer.
+- Confirm the systems are on the same local network.
+- Allow PAIR through host firewalls on each system.
+- Retry with the peer's IP address in **Add node**.
+
+## Pairing Fails or Stalls
+
+A PIN belongs to one invitation attempt. A mistyped PIN, a canceled or expired
+invitation, or either system restarting mid-pairing ends that attempt, and the
+same PIN does not work afterward.
+
+**Start over rather than trying to rescue it.** On the inviting system, invite the
+node again from **Settings > Cluster** and enter the new PIN on the other system.
+Retrying is cheap and removes any question of which PIN is current. The full
+sequence is in
+[Form a Cluster by Pairing Systems](getting-started.mdx#3-form-a-cluster-by-pairing-systems).
+
+If a fresh invitation also fails:
+
+- Confirm the invited system is not already in another cluster. A node can only
+  belong to one, and it must leave its current cluster before you can pair it
+  again.
+- Confirm both systems appear to each other. If they do not, treat it as a
+  discovery problem first and work through the section above.
+- Allow PAIR through the firewall on both systems. Pairing uses TCP `14321`.
+  Refer to [Ports](getting-started.mdx#7-connecting-your-agents-and-port-information).
+
+## No Engine or Model Is Available
+
+If **Endpoints** cannot find a usable engine or model:
+
+1. Open **Overview** and select the node.
+2. Open **Engine settings**.
+3. Install the engine if needed, then start it with the engine switch.
+4. Select **Add model**, download a model, and load it if the engine requires
+   an explicit load step.
+
+PAIR may adopt an existing local Ollama or LM Studio installation instead of
+installing a new copy. An engine must be running before you can use models.
+
+To test routing across multiple nodes, prepare the same model on each node that
+should serve requests.
+
+For a fuller walkthrough of install, start, stop, update, uninstall, and what
+PAIR restores after relaunch, refer to [Managing Engines](engine-lifecycle.mdx).
+
+## An Application Cannot Reach PAIR
+
+**First, is the application on the same machine as PAIR?** If it is somewhere else
+on the network, that is the problem, and it is deliberate. An endpoint accepts
+plaintext requests from loopback only. PAIR refuses a request from another
+machine with `403` and a message saying the endpoint is loopback-only. Install
+PAIR on the machine running the application and pair it into the cluster. It
+needs no GPU or engine of its own, and its local endpoint routes to nodes that
+have them. Refer to
+[The Endpoint Is Local to the Machine Running PAIR](getting-started.mdx#the-endpoint-is-local-to-the-machine-running-pair).
+
+For an application on the same machine, copy the URL from
+**Endpoints > API endpoints** rather than assuming a port. PAIR takes the
+engine's usual port for its compatible proxy and moves the engine itself to the
+next free one, so the port an application needs is not always the engine's own.
+Refer to
+[Ports](getting-started.mdx#7-connecting-your-agents-and-port-information).
+
+If **Endpoints** shows **No engines are running**, start at least one compatible
+engine in the cluster first.
+
+If something PAIR does not manage already holds a port PAIR needs,
+**Settings > Service** reports the conflict. You can either move PAIR to a
+different port or stop whatever holds the port and restart the service. To move
+PAIR's port, expand **Engine settings > Ports** on the node's card in
+**Overview**, edit **Proxy** or **Server**, and select **Apply ports**. Changing
+PAIR's port is usually easier and leaves the other application alone. Refer to
+[Changing a Port](getting-started.mdx#changing-a-port).
+
+## Requests Work but PAIR Shows No Jobs
+
+If inference succeeds and yet **Jobs** stays empty, and the machine you sent the
+request from appears to serve everything, something other than PAIR is holding
+the proxy's port.
+
+The usual cause is the **Ollama desktop application**. When it starts, it binds
+`11434` itself, the port PAIR's Ollama-compatible proxy uses. Requests then go
+straight to that local Ollama, so PAIR never sees them and cannot route them to
+another node.
+
+To fix it:
+
+1. Quit the Ollama desktop application completely, including any tray or
+   menu-bar icon.
+2. In PAIR, open **Overview**, expand **Engine settings** on that node, and
+   toggle the Ollama engine off and back on.
+
+That relaunches PAIR's proxy on `11434`. Send another request and the job should
+appear. This is about the Ollama *desktop application* specifically. PAIR can
+manage or adopt an Ollama it starts itself.
+
+## Jobs Do Not Show Expected Routing
+
+Routing confirmation happens on **Overview**:
+
+1. Use the **Jobs** filter in the left column to show active, completed, or
+   failed requests.
+2. Open a job card and read **Ran on** or **Running on** to see which node
+   served the request.
+
+Send several independent requests to observe multi-node routing. One request
+runs on one selected node.
+
+## Where the Logs Are
+
+Everything you need is on **Settings > Service**:
+
+- **Open log file** opens the current log.
+- **Open logs directory** opens the folder holding it, which also keeps the
+  previous log.
+- **Save logs** writes a copy where you choose, for attaching to an issue.
+- The log-level control on the same screen sets verbosity. Set it to `debug`,
+  reproduce the problem, then read the log.
+
+To find them yourself:
+
+| Platform | Location |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\logs\` |
+| Linux | `~/.config/Nvidia Corporation/Personal AI Router/logs/` |
+
+The current log is `nvpair.jsonl` and the previous one is `nvpair.1.jsonl`. Each
+line is a JSON object, so `grep` and `jq` work well on them. PAIR never writes
+inference prompts or responses to the logs.
+
+On a headless system, the terminal interface shows the same output on its
+**Logs** tab.
+
+### Before Sharing a Log
+
+Logs carry host names, addresses, and account names. If you are attaching one to
+an issue, run it through the sanitizer first, which replaces those identifiers
+while keeping the log readable:
+
+```bash
+./scripts/collect-logs.sh
+```
+
+Refer to [Collecting and Sanitizing Logs](log-collection.mdx) for the options.
+When a problem involves more than one machine, copy each node's log onto one
+machine and run the sanitizer once over all of them. That is the only way the
+same node reads the same way in every file. Refer to
+[Collecting from More Than One Node](log-collection.mdx#collecting-from-more-than-one-node).
+
+## Getting More Help
+
+These documents cover related topics:
+
+- [Known Issues](known-issues.mdx)
+- [Getting Started](getting-started.mdx)
+- [Managing Engines](engine-lifecycle.mdx)
+- [Terminal Interface](terminal-interface.mdx)
+- [Collecting and Sanitizing Logs](log-collection.mdx)
+- [Build and Run from Source](building.mdx)
+- [Support Policy](../SUPPORT.md)
+
+When opening an issue, include the PAIR version, operating system, hardware,
+inference engine, model, reproduction steps, and a sanitized log.

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Retired: this filename held a maintainer runbook of internal upstream
+# locations. The runbook and its workflow are gone, but the guard stays so the
+# name cannot be recreated and committed into a tree that reaches GitHub.
+IMPORT_NOTES.md
+
+# Output of scripts/collect-logs.sh. token-map.json reverses the tokens in a
+# sanitized bundle, so it must never be committed.
+/pair-logs-*/
+token-map.json
+
+# Binaries left behind by `go build` without -o inside a tool's module.
+/scripts/collectlogs/collectlogs
+/scripts/inference-dispatcher/inference-dispatcher
+/scripts/inference-dispatcher/inference-dispatcher.exe
+
+# Python bytecode from local runs of ci/release-intent scripts.
+__pycache__/
+*.py[cod]
+
+# Per-machine bookkeeping written by the Cursor agent hooks, not configuration.
+/.cursor/hooks/state/

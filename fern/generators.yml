@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+api:
+  specs:
+    - openapi: ./openapi.yml
+      settings:
+        title-as-schema-name: true
+        inline-path-parameters: false
+        example-generation:
+          request:
+            max-depth: 3
+          response:
+            max-depth: 3

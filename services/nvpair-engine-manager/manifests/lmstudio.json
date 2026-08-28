@@ -1,0 +1,97 @@
+{
+  "engine": "lmstudio",
+  "display_name": "LM Studio",
+  "manifest_version": 1,
+  "detect": ["~/.lmstudio/bin/lms"],
+  "install": {
+    "fetch": { "url": "https://lmstudio.ai/install.sh" },
+    "run": ["bash", "{download}"],
+    "mode": "user"
+  },
+  "uninstall": {
+    "run": ["sh", "-c", "pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf \"$HOME/.lmstudio\"; sleep 1; [ -d \"$HOME/.lmstudio\" ] && exit 1; exit 0"]
+  },
+  "runtime": {
+    "mode": "command",
+    "port": 1235,
+    "bind": "127.0.0.1",
+    "start": [["{cli}", "server", "start", "--port", "{port}", "--bind", "{host}"]],
+    "stop": { "cmd": ["{cli}", "server", "stop"] },
+    "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 60 },
+    "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "detect": ["%USERPROFILE%\\.lmstudio\\bin\\lms.exe"],
+      "install": {
+        "script": [],
+        "fetch": { "url": "https://lmstudio.ai/install.ps1" },
+        "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "{download}"],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$root = Join-Path $env:USERPROFILE '.lmstudio'; Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root)) -or ($_.CommandLine -and $_.CommandLine.Contains($root)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 3; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; if (Test-Path -LiteralPath $root) { exit 1 }"]
+      },
+      "runtime": { "cli": "%USERPROFILE%\\.lmstudio\\bin\\lms.exe" }
+    },
+    "windows/arm64": {
+      "detect": ["%USERPROFILE%\\.lmstudio\\bin\\lms.exe"],
+      "install": {
+        "script": [],
+        "fetch": { "url": "https://lmstudio.ai/install.ps1" },
+        "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "{download}"],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$root = Join-Path $env:USERPROFILE '.lmstudio'; Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root)) -or ($_.CommandLine -and $_.CommandLine.Contains($root)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 3; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; if (Test-Path -LiteralPath $root) { exit 1 }"]
+      },
+      "runtime": { "cli": "%USERPROFILE%\\.lmstudio\\bin\\lms.exe" }
+    },
+    "darwin/arm64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
+    "darwin/amd64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
+    "linux/amd64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
+    "linux/arm64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List models available on this system (native REST v1).",
+      "http": { "method": "GET", "path": "/api/v1/models" },
+      "result": { "array": "models", "field": "key" }
+    },
+    "loaded_models": {
+      "description": "List models currently loaded in memory (native REST v1, filtered by nonempty loaded_instances).",
+      "http": { "method": "GET", "path": "/api/v1/models" },
+      "result": { "array": "models", "field": "key", "match": { "field": "loaded_instances", "nonempty": true } }
+    },
+    "pull_model": {
+      "description": "Download a model via the lms CLI (params: {\"model\": \"<owner/name | huggingface.co or lmstudio.ai URL>\"}). Tries the value as given, then the LM Studio Hub artifact id, then the Hugging Face repo URL. Resumes automatically on a transient download timeout.",
+      "cmd": ["{cli}", "get", "{model}", "--yes"],
+      "model_resolution": "lms-get"
+    },
+    "load_model": {
+      "description": "Load a downloaded model into memory (params: {\"model\": \"<name>\"}).",
+      "cmd": ["{cli}", "load", "{model}"]
+    },
+    "list_downloaded": {
+      "description": "List models downloaded to disk via the lms CLI.",
+      "cmd": ["{cli}", "ls"]
+    },
+    "chat": {
+      "description": "OpenAI-compatible chat completion (params: {\"model\": \"<name>\", \"messages\": [...]}).",
+      "http": { "method": "POST", "path": "/v1/chat/completions", "body_schema": { "model": "string", "messages": "array" } }
+    },
+    "unload_model": {
+      "description": "Unload a model from memory (params: {\"model\": \"<name>\"}).",
+      "cmd": ["{cli}", "unload", "{model}"]
+    },
+    "delete_model": {
+      "description": "Delete a downloaded model from disk and restart the server (params: {\"model\": \"<modelKey | owner/repo | on-disk path>\"}). LM Studio serves its model list from an index built at startup and offers no rescan, so a running server keeps advertising the deleted model until it restarts.",
+      "model_resolution": "lms-disk-path",
+      "remove_path": {
+        "root": "{models_dir}",
+        "path": "{models_dir}/{model}"
+      },
+      "restart_after": true
+    }
+  }
+}

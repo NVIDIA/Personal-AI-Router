@@ -1,0 +1,30 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+.drag-region {
+    -webkit-user-select: none;
+    -webkit-app-region: drag;
+}
+
+.non-drag-button {
+    -webkit-app-region: no-drag;
+}
+
+.app-bar-buttons {
+    margin-right: -0.5rem;
+}
+
+@media (max-width: 500px) {
+    body .app-bar-buttons button {
+        padding: 0.25rem !important;
+        min-width: 0 !important;
+        min-height: 0 !important;
+    }
+
+    body .app-bar-buttons svg {
+        width: 14px !important;
+        height: 14px !important;
+    }
+}

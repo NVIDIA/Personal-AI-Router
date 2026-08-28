@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Feature request
+description: Propose new or improved PAIR functionality
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before proposing implementation details.
+        New engines, public APIs, integrations, and distribution channels require maintainer alignment.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Desktop experience
+        - Discovery or pairing
+        - Routing and scheduling
+        - Engine or model management
+        - API compatibility
+        - Terminal / headless operation
+        - Installation or update
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is affected, and what cannot be accomplished today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior, not only an implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: textarea
+    id: implications
+    attributes:
+      label: Compatibility and security implications
+      description: Consider networking, data handling, pairing, APIs, packaging, and migration.
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation approach
+      description: How could maintainers verify the requested outcome?
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: I agree to follow the Code of Conduct.
+          required: true

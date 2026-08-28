@@ -1,0 +1,100 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+.cascade-menu-portal {
+    /* Take the portal wrapper out of flow. It is portaled into containers that
+       may be flex/grid with a gap (e.g. the modal content column); as a normal
+       child it would consume a gap and shift the container's size while open,
+       even though its only child is position: fixed. */
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+}
+
+.cascade-menu-portal:focus {
+    outline: none;
+}
+
+/* Panel (outer wrapper — positioning, border, shadow) */
+
+.cascade-menu-panel {
+    pointer-events: auto;
+    position: fixed;
+    width: max-content;
+    display: flex;
+    flex-direction: column;
+    /* One step lighter than the modal/overlay surface (gray-900) so the menu
+       reads as elevated instead of blending into the surface behind it. */
+    background-color: var(--color-gray-700);
+    background-image: none;
+    border: 1px solid #ffffff26;
+    border-radius: 6px;
+    padding: 4px 0;
+    box-shadow:
+        0 8px 24px rgba(0, 0, 0, 0.5),
+        0 2px 6px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+}
+
+/* Scroll region (inner — contains menu items) */
+
+.cascade-menu-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-subtle-foreground) transparent;
+}
+
+/* Slot (pinned above/below scroll region) */
+
+.cascade-menu-slot {
+    flex-shrink: 0;
+}
+
+.cascade-menu-slot-before {
+    border-bottom: 1px solid var(--color-translucent-white-200);
+}
+
+.cascade-menu-slot-after {
+    border-top: 1px solid var(--color-translucent-white-200);
+}
+
+/* Item row */
+
+.cascade-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    overflow: hidden;
+    contain: content;
+    transition:
+        background-color 80ms ease,
+        color 80ms ease;
+}
+
+.cascade-menu-item:hover:not(.cascade-menu-item-disabled),
+.cascade-menu-item-focused {
+    background-color: #ffffff0a;
+}
+
+.cascade-menu-item:active:not(.cascade-menu-item-disabled) {
+    background-color: #ffffff14;
+}
+
+.cascade-menu-item[aria-checked='true']:hover:not(.cascade-menu-item-disabled),
+.cascade-menu-item[aria-checked='true'].cascade-menu-item-focused {
+    background-color: #ffffff0a;
+}
+
+.cascade-menu-item-disabled {
+    opacity: 0.4;
+    cursor: default;
+    pointer-events: none;
+}

@@ -1,0 +1,12 @@
+{
+    "$comment": "Known false positives for the dead-code analyzer. Add entries after reviewing the report.",
+    "$reasons": {
+        "@tailwindcss/postcss": "Loaded by the PostCSS/Vite config, never imported from source.",
+        "tailwindcss": "Loaded by the PostCSS/Vite config, never imported from source.",
+        "@electron-toolkit/preload": "Imported for the ElectronAPI type by src/preload/index.d.ts. knip.json excludes ambient .d.ts files from analysis, so the only reference is invisible to it — uninstalling breaks the preload type declarations."
+    },
+    "files": [],
+    "exports": [],
+    "types": [],
+    "dependencies": ["@tailwindcss/postcss", "tailwindcss", "@electron-toolkit/preload"]
+}

@@ -1,0 +1,404 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Collecting and sanitizing logs
+
+`scripts/collect-logs.sh` (and its Windows twin `scripts/collect-logs.ps1`) reads
+Personal AI Router logs and replaces the identifiers in them, so you can
+hand over a log without carrying host names, addresses, or account names.
+
+```bash
+./scripts/collect-logs.sh                                   # local logs
+./scripts/collect-logs.sh -in a.txt -in b.txt -out ./out    # two nodes, two files out
+./scripts/collect-logs.sh -map ~/pair-token-map.json        # also keep the reversal map
+./scripts/collect-logs.sh -models                           # also replace model names
+./scripts/collect-logs.sh -raw                              # local debugging only
+./scripts/collect-logs.sh -h
+```
+
+The script requires `go` on `PATH`, the same toolchain `services/build.sh` needs.
+It does not require Node.js, so it runs on a machine that only builds the services.
+
+> **PAIR does not retrieve logs from other nodes.** No service method serves a log
+> to a peer, so gathering is manual. Copy each node's log onto one machine and
+> run the sanitizer once over all of them, one `-in` for each node. Tokens still
+> reconcile across the whole set, because a single run assigns all of them. Refer
+> to [Collecting from more than one node](#collecting-from-more-than-one-node).
+>
+> For what an automated gathering step would have to do, refer to
+> [Designing the gathering step](#designing-the-gathering-step) at the end of this
+> document.
+
+## What It Reads, and What It Writes
+
+The script reads only the log itself: `nvpair.jsonl`, its rotated
+`nvpair.1.jsonl`, or an exported `nvpair-logs-*.txt`. It touches nothing else in
+the app data directory, neither settings nor cluster identity.
+
+**The script only ever opens the source logs for reading.** Output goes to a
+separate directory, so a node's log keeps accumulating and you can collect the
+same node again later.
+
+### File Name Requirements
+
+A path passed directly to `-in` has no name requirement at all. The script
+accepts any name and any extension, including spaces.
+
+The script scans a directory, including the default local log directory, by name
+and reads only these files:
+
+| Name | What It Is |
+| --- | --- |
+| `nvpair.jsonl` | the active log |
+| `nvpair.1.jsonl` | the rotated log, which the script reads first so time ascends |
+| `nvpair-logs-*.txt` | an exported bundle |
+
+The script ignores anything else in the directory, so it silently skips a renamed
+log. Pass it with `-in` directly if you renamed it.
+
+Content decides the format, not the extension. The script treats an input as an
+exported bundle when the Markdown sections are present. The script reads a `.txt`
+holding plain JSONL as JSONL, and the reverse.
+
+Input names never reach the output. The script does not copy them into any
+artifact, and they do not influence output names. Those come from the producer
+named inside the input's own header. A file whose name contains a real host name
+is therefore safe, but the script also does not use that name, which is why a
+plain `nvpair.jsonl` with no header falls back to `source-1`.
+
+**One input produces one output file, in the format it arrived in.** The script
+never splits a log. Two nodes give two files:
+
+```
+out/
+  node-a.txt     <- everything the first input's machine recorded
+  node-c.txt     <- everything the second input's machine recorded
+  legend.md      <- what the tokens mean
+```
+
+The script names each file after its anonymized producer, so `node-a.txt` holds
+what `node-a` recorded. A rotation pair belongs to one machine, and the script
+writes it back as one file. When an input carries no header identifying its
+producer, the output falls back to `source-1`, `source-2`, and so on.
+
+A file named for a node only appears when that node *produced* an input. A machine
+that merely shows up as a discovered peer still gets a token, so `node-b` can
+appear inside both files without a `node-b.txt` existing.
+
+Exported bundles keep their layout. The script preserves and sanitizes the header
+sections describing app version, platform, binary inventory, and node snapshot,
+and the records follow in one section. A plain `nvpair.jsonl` comes back as plain
+JSONL.
+
+The caller handles archiving. The output directory contains only files that are
+safe to hand over, so you can archive it as is.
+
+## The Reversal Map
+
+`-map <path>` writes the token reversal table to a path you choose, with mode
+`0600`. It is opt-in, and the script never writes it into the output directory, so
+an archive step cannot sweep it up with the logs.
+
+That file is what keeps local debugging possible. Whoever owns the machine can
+still read their own logs, while what they hand over carries none of it. Never
+include it with the logs. `.gitignore` covers `token-map.json`.
+
+## Why the Work Happens after Logging, Not During
+
+The script leaves the on-disk log exactly as written and replaces identifiers
+when it produces a copy. That ordering follows from three things.
+
+There is one implementation instead of one for each process. Replacing
+identifiers while logging would mean the same rules in Go for the 13 services and
+again in TypeScript for the desktop logger, because JSON-RPC traffic the Go side
+cannot rewrite feeds the desktop log file, which is functional data. Two
+implementations of the same rules drift, and nodes on different app versions would
+then produce different tokens for the same address.
+
+A single run sees every input at once. That is what lets the script recognize a
+machine's host name, UUID, and address as one node and label it `node-a`
+everywhere, and what makes two nodes' logs comparable. The script allocates tokens
+across the whole set, so the same machine reads the same way in every output file.
+Doing it node by node before shipping would reintroduce exactly that
+reconciliation problem.
+
+Mistakes stay recoverable. If detection is wrong, you fix the rules and collect
+the logs again from the unchanged source. A redactor that rewrote records at write
+time would have destroyed the original.
+
+Reading local logs needs no tooling at all. Open the log directory, or use `-raw`
+to copy through and deduplicate without replacing anything.
+
+## What the Script Replaces, and What It Does Not
+
+The script recognizes identifiers by the shape of the value, never by the field
+name that carried it. The same host appears as `id`, `name`, `host`, `node_id`,
+`nodeId`, `uuid`, `hostUuid`, `ip`, `ipAddress`, `addr`, `target`, and `remote`,
+and also inside free-text service messages, so a rule keyed on field names would
+miss most occurrences. The script covers values used as JSON object keys too,
+because some payloads use a node UUID as the key.
+
+The script replaces the following:
+
+- Host names, addresses, and MAC addresses
+- Account names learned from a home-directory path. The script keeps the
+  surrounding path, so `C:\Users\node-a-user\AppData\Local\...` still shows the
+  directory layout.
+- The installation root, since a custom install directory can carry a name its
+  owner chose. Only the root goes, so `<install>\resources\cli-bin\...` still
+  shows the layout.
+- Free text the user typed, such as a cluster's friendly name. No shape test can
+  recognize that, so the script finds it by the key carrying it. When the friendly
+  name is the host name, it takes that node's token.
+
+Everything belonging to one machine shares that machine's label, so its host name,
+UUID, address, and account read as `node-a`, `node-a-uuid`, `node-a-ip`, and
+`node-a-user`. A service logs paths under the account it runs as and has no
+knowledge of a peer's home directory, so the script attributes an account found
+in one machine's log to that machine. A node seen only as a discovered peer
+therefore has no account token, because the script never read anything from it.
+
+The script leaves the following readable, because they identify nobody and are
+much easier to debug with:
+
+- Loopback, link-local, multicast, and unspecified addresses
+- **Node and cluster UUIDs.** These are random version 4 values. Nobody chose
+  them, they describe neither a person nor a network, and they are the primary key
+  in most payloads, so replacing them costs far more in readability than it gains.
+  The script still tracks them, because they are what links a machine's records to
+  its other identifiers.
+- Ports, engine names, durations, and status codes
+- Version strings, including four-part versions that look exactly like an address
+- Model names, unless you pass `-models`. Model identity is usually what a routing
+  problem is about, so it stays readable by default. Use the flag when a private
+  model name would describe what someone is working on.
+
+Addresses keep their diagnostic class. Whether PAIR reached a node over a private
+LAN address, a carrier-grade NAT range, or a routable one matters for routing
+problems and reveals nothing, so an unlinked address becomes `ip-lan-1` or
+`ip-public-1`.
+
+## Verification
+
+Every run re-reads the files it just wrote and fails with exit status 1 if
+anything survived. It asks two independent questions: whether any learned value
+is present in the output text, and whether any identifier shape remains that is
+neither a token nor deliberately readable. On failure the script hands over
+nothing, reports the findings, and leaves the source logs untouched, so you can
+apply a fix and repeat the run.
+
+| Status | Meaning | What the Caller Should Do |
+| --- | --- | --- |
+| 0 | verified clean | the output directory is safe to archive |
+| 1 | verification found something | do not archive or send, and report the findings |
+| 2 | usage or I/O error | fix and retry |
+
+On status 1 the source logs are untouched, so the fix is to correct detection and
+run again over the same copies. Keep them until the run succeeds.
+
+## Collecting from More Than One Node
+
+Until retrieval exists, staging is manual. Copy each node's log onto one machine
+and run the sanitizer there, once, over all of them.
+
+### Do Not Sanitize on Each Node First
+
+**Gather the raw logs and run the sanitizer once over the whole set.** The script
+allocates tokens for each run across every input, which is the only reason
+`node-a` means the same machine in every output file. If each node sanitized its
+own log first, every node would assign tokens from its own local view and the same
+address would come out differently in each file, with no way to reconcile them
+afterwards.
+
+This costs something. Raw logs cross the wire. That is an accepted trade, because
+the peers involved already know each other's host names and addresses through
+discovery. The genuinely new disclosure is the account name in file paths, which is
+why any eventual transport must still authenticate the peer and require explicit
+consent.
+
+### What to Gather
+
+For each node, gather only the log itself:
+
+| File | Notes |
+| --- | --- |
+| `nvpair.jsonl` | the active log |
+| `nvpair.1.jsonl` | the rotated log, which may be absent |
+
+Gather them from these directories:
+
+| Platform | Directory |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\logs\` |
+| Linux | `$XDG_CONFIG_HOME/Nvidia Corporation/Personal AI Router/logs/` (else `~/.config/...`) |
+
+Gather nothing else from the app data directory. Do not gather `settings.json` or
+`cluster/`. The sanitizer handles log records and has no rules for the contents of
+those files. Sweeping them in would ship unhandled material.
+
+### Identifying Which Node Produced Which File
+
+The sanitizer names each output after the node that produced it, and it learns that
+from **inside** the file, never from the file name. So how you export matters.
+
+**Preferred — the exported bundle.** Use each node's **Save logs** button, which
+produces an artifact already wrapped in a header the sanitizer reads:
+
+| Section | Field Read | Used for |
+| --- | --- | --- |
+| `Metadata` | `hostname` | identifies the producer |
+| `Current Modular State` | `selfId` | links the producer's UUID to it |
+
+With that header present the script names the outputs `node-a.txt`, `node-b.txt`,
+and so on, and the header's app version, platform, binary inventory, and node
+snapshot survive into the sanitized file as useful context.
+
+**Fallback — raw JSONL.** A bare `nvpair.jsonl` has no header, so the script
+cannot identify the producer and the output falls back to `source-1.jsonl`,
+`source-2.jsonl`. The script still fully sanitizes the logs and tokens still
+reconcile. You cannot tell which file came from which machine, which defeats much
+of the point of gathering them.
+
+### Ship the Bytes Unchanged
+
+Copy each log **exactly as it is on disk**:
+
+- **Do not re-encode, reformat, or pretty-print.** Identifiers appear at more than
+  one JSON escape depth, because a service quotes a path and the desktop logger
+  then encodes the result. Re-encoding changes those depths, and the script's
+  detection targets the original.
+- **Do not merge two nodes' logs into one file.** Use one file for each node. The
+  sanitizer attributes a whole input to one producer, so a merged file would
+  attribute every record, and every account name in it, to whichever machine it
+  identified first.
+- **Do not trim lines.** The script trusts host names only when they appear in a
+  structured field. A hand-trimmed fragment can lose those fields, in which case
+  the script does not replace a host name that survives only in free text. The run
+  warns when it cannot learn a host name. Treat that warning as a failed
+  collection.
+- **Keep rotation order.** `nvpair.1.jsonl` is older than `nvpair.jsonl`, and the
+  script must read it first. Passing the directory handles this. If listing files
+  explicitly, preserve that order.
+- **Never write to the source log.** A node's log must keep accumulating so you
+  can collect the same node again later.
+
+### Running It
+
+Pass one `-in` for each node, an output directory, and the reversal map outside
+that directory:
+
+```bash
+./scripts/collect-logs.sh \
+  -in staging/nodeA.txt \
+  -in staging/nodeB.txt \
+  -in staging/nodeC.txt \
+  -out ./out \
+  -map ./token-map.json
+```
+
+`-out` contains only shareable files, so you can archive it as is. The script
+writes `-map` where you point it, and it must stay off the machine you send to. It
+reverses every token.
+
+## Known Limits
+
+The script trusts host names only when they come from a structured field, either
+the bundle metadata or an object that also yielded a UUID or an address. No shape
+test separates a host name from a model name or a JSON-RPC method name, so
+accepting one from free text alone would corrupt unrelated text. A full exported
+bundle always carries those structured fields. A hand-trimmed fragment may not,
+and the run warns when it cannot learn a host name.
+
+The script leaves certificate fingerprints as they are. It recognizes them only
+well enough to keep itself from rewriting their MAC-shaped prefix.
+
+The script writes records for each node rather than interleaving them into a
+single cross-node timeline. Each record's `time` field is UTC and is the right key
+if you ever want such a view. You would still need to account for machine clock
+drift.
+
+## Designing the Gathering Step
+
+This section describes work that does not exist yet. It records what the sanitizer
+expects, so whoever builds retrieval does not have to reverse-engineer it.
+
+### Where the Boundary Sits
+
+`scripts/collect-logs.sh` reads logs that are already on the machine running it,
+one `-in` for each node, and writes one sanitized file for each input. What is
+missing is only the retrieval.
+
+```
+  node A ─┐
+  node B ─┼─► [ gather: not implemented ] ─► local copies ─► collect-logs.sh ─► sanitized files
+  node C ─┘
+```
+
+### Transport Requirements
+
+Serving a log to another machine is a log-exfiltration primitive. It must not be
+casual.
+
+- Use the existing trust fabric. `nvpair-cluster-manager` owns identity, pairing,
+  and every node-to-node channel, and PAIR relays through the broker rather than
+  implementing transport security itself. Refer to
+  [SECURITY.md](../SECURITY.md) and [Architecture](architecture.mdx).
+- Restrict to trusted cluster members and require explicit user consent on the
+  source node. Membership alone is a weak basis for handing over logs.
+- Do not expose an unauthenticated endpoint, and do not use the node-info HTTP
+  surface. That port exists for telemetry polling, and nothing authenticates it.
+- Log only operational metadata about the transfer: node, size, duration, and
+  outcome. Never log the contents.
+
+A new JSON-RPC method brings obligations. Update the producing Go service and the
+Electron bridge under `desktop/src/electron/service-bridge/`, then run
+`npm --prefix desktop run service-contracts:check`.
+
+### Supporting Raw JSONL
+
+Shipping bare `nvpair.jsonl` loses the producer's identity. To support it properly
+the sanitizer needs a small addition. Accept the producer as a hint from the file
+name or a new flag, and tokenize that value like any other identifier so the
+anonymized name reaches the output. Treat such a hint as advisory, because a
+mislabeled file must not be able to force two machines into one node group.
+
+### Still Unsolved after Transport Exists
+
+Transport alone does not solve these problems:
+
+- **Clock skew.** Records carry UTC timestamps, but machine clocks drift and no log
+  format fixes that. A cross-node timeline needs a clock reference captured at
+  gather time.
+- **No interleaved view.** Output is one file for each node by design. Each
+  record's `time` is the right key if you want a merged timeline later.
+- **Certificate fingerprints.** These pass through unchanged.
+- **Host names in free text.** The script replaces these only when it also learned
+  the same host name from a structured field.
+
+### Checklist
+
+Verify each item before shipping a gathering implementation:
+
+- [ ] The gather step collects only `nvpair.jsonl` and `nvpair.1.jsonl`, rotated
+      first.
+- [ ] One file for each node, with no merging, no re-encoding, and no trimming.
+- [ ] Each node's file carries a producer-identifying header, or you built the
+      sanitizer's name-hint addition.
+- [ ] Transport uses the cluster trust fabric and requires user consent.
+- [ ] Nothing modifies source logs on remote nodes.
+- [ ] The sanitizer runs once over all inputs, never once for each node.
+- [ ] The caller treats exit 1 as "do not send" and keeps the staged copies.
+- [ ] The reversal map goes outside the directory that gets archived.
+- [ ] Contract checks run if you added a JSON-RPC method, and CLI parity holds.
+
+## Related
+
+Refer to these documents and source locations:
+
+- [Troubleshooting](troubleshooting.mdx) — reading logs and common failures.
+- `desktop/src/shared/utils/log.ts` — where the desktop log is written.
+- `services/shared/applog` — where service logs are written.
+- Directory and file names come from `desktop/src/shared/constants/app.ts` and
+  `desktop/src/shared/utils/log.ts`. Keep any copy of them in sync with those.

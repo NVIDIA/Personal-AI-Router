@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+<plist version="1.0">
+<dict>
+  <!-- SMAppService LaunchDaemon for the PAIR privileged firewall helper.
+       Bundled at Contents/Library/LaunchDaemons/ and registered on first run by
+       Contents/MacOS/nvpair-helper-ctl via SMAppService.daemon(plistName:). -->
+  <key>Label</key>
+  <string>com.nvidia.nvpair.helper</string>
+
+  <!-- Daemon executable, resolved relative to the host .app bundle. -->
+  <key>BundleProgram</key>
+  <string>Contents/MacOS/com.nvidia.nvpair.helper</string>
+
+  <!-- Mach service the daemon vends; the control tool connects with the
+       matching name. Must equal HelperConstants.machServiceName. -->
+  <key>MachServices</key>
+  <dict>
+    <key>com.nvidia.nvpair.helper.xpc</key>
+    <true/>
+  </dict>
+
+  <!-- Surface the daemon under the host app in System Settings > Login Items. -->
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>com.nvidia.nvpair</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

@@ -1,0 +1,247 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Building and Running NVIDIA Personal AI Router
+
+This guide is for developers and users who prefer to compile Personal AI
+Router (PAIR). To use a prebuilt Windows installer, Debian package, or binary
+archive from the
+[GitHub releases page](https://github.com/NVIDIA/Personal-AI-Router/releases),
+refer to [Getting started](getting-started.mdx).
+
+Run commands from the indicated project directory.
+
+## Prerequisites
+
+Install these first:
+
+- [Git](https://git-scm.com/downloads).
+- [Node.js](https://nodejs.org/en/download) 25.5.0 or newer, which includes npm.
+- [Go](https://go.dev/dl/) 1.25 or newer.
+- [jq](https://jqlang.github.io/jq/download/) on your `PATH`. Install it with
+  `sudo apt install jq`, `sudo dnf install jq`, `brew install jq`, or
+  `winget install jqlang.jq`.
+
+## Quick Start from Source
+
+Clone the repository, install dependencies, and start the application:
+
+```bash
+git clone https://github.com/NVIDIA/Personal-AI-Router.git
+cd Personal-AI-Router/desktop
+npm install
+npm start
+```
+
+The `start` script generates desktop assets, compiles required Go executables
+from sibling `../services` into `desktop/cli-bin/`, and starts Electron through
+electron-vite. The service source is part of the same checkout, so there is no
+submodule and no separate services build step.
+
+The initial build can take longer than later ones. When the desktop
+application opens, follow [Getting started](getting-started.mdx#2-complete-first-run-setup)
+to install or select an engine, pair systems, prepare a model, and run a first
+inference test.
+
+## Make Targets
+
+The `Makefile` at the repository root wraps the commands in this guide for
+developers on Linux and macOS. Run these targets from there:
+
+```bash
+make          # list every target
+make dev      # check toolchain versions, fetch Go modules, install npm packages
+make build    # build the service binaries and the desktop bundles
+make run      # start the desktop application in development mode
+make check    # desktop gates: build scripts, lint, typecheck, contracts, tests
+make test     # desktop unit tests plus go test in every services module
+make clean    # remove build output; leaves installed dependencies alone
+```
+
+`make run` and `make build` install npm packages first whenever
+`desktop/package-lock.json` is newer than `desktop/node_modules`, so a fresh
+clone needs only `make run`.
+
+`make test` includes the Go component and cross-process suites, which start
+real subprocesses and bind local ports.
+
+`make build-services` stages the standalone bundle described in
+[Build the Services Alone](#build-the-services-alone). Run `make` for the
+remaining single-step targets.
+
+`make clean` removes generated build output and nothing else. It leaves
+`desktop/node_modules` in place, along with the per-user data a run creates:
+settings, logs, cluster identity, and any engine PAIR installed. To reset that
+data as well, refer to
+[Cleaning Up a Build from Source](#cleaning-up-a-build-from-source), which is the
+quickest way back to a first-run state after testing pairing or engine installs.
+
+Windows has no equivalent wrapper. Use the npm scripts and `build.bat`
+described below.
+
+## Build the Desktop Application Alone
+
+Install dependencies and build the application bundles without starting them:
+
+```bash
+cd desktop
+npm install
+npm run build
+```
+
+Build only the service binaries bundled by the desktop:
+
+```bash
+npm run build:modular-binaries
+```
+
+The service source must remain available at `../services`. Target-specific
+service-build scripts cover `win32`, `linux`, and `darwin` on x64 and arm64.
+Refer to `desktop/package.json` for their names. The Go services use no cgo, so
+you can build any of those targets from any host.
+
+A local build produces an application you run on the machine that built it. Use
+the [releases page](https://github.com/NVIDIA/Personal-AI-Router/releases) for
+installable builds. This guide does not cover producing distributable artifacts.
+
+## Build the Services Alone
+
+The service scripts read `services/versions.json`, stamp each version, build 13
+executables, and stage them together in `services/build/bin/`.
+
+Linux and macOS:
+
+```bash
+cd services
+./build.sh
+```
+
+Windows Command Prompt:
+
+```bat
+cd services
+build.bat
+```
+
+Avoid building one component and then running an old staged bundle. Rebuild the
+complete bundle so `services/build/bin/` is consistent.
+
+## Run Without the Desktop Application
+
+After you stage `build/bin/`, you have a complete, runnable PAIR node without
+the desktop application. How you drive it is up to you. You can start the
+terminal interface, which is the quickest route, run the broker directly, or
+write your own client against its API.
+
+### Start with the Terminal Interface
+
+This is the recommended way to use a services-only build, and the interface
+intended for headless systems. `nvpair-tui` launches and supervises its own
+broker, so nothing else needs to be running and there is no wiring to do:
+
+Linux and macOS:
+
+```bash
+cd services
+./build/bin/nvpair-tui
+```
+
+Windows Command Prompt:
+
+```bat
+cd services
+build\bin\nvpair-tui.exe
+```
+
+Pass `--broker-path` if the broker is not beside the `nvpair-tui` executable. Do
+not run the terminal interface and the desktop application at the same time. They
+compete for the same services, engines, and ports.
+
+[Using the PAIR terminal interface](terminal-interface.mdx) covers what to do
+after it opens: pairing, engines, models, routing, and settings. It also lists
+the operations that remain desktop-only.
+
+### Run the Broker Yourself
+
+Run `nvpair-ui-broker` directly when you want to drive the services
+programmatically rather than through the desktop or terminal interface:
+
+Linux and macOS:
+
+```bash
+cd services
+./build/bin/nvpair-ui-broker
+```
+
+Windows Command Prompt:
+
+```bat
+cd services
+build\bin\nvpair-ui-broker.exe
+```
+
+The broker speaks newline-delimited JSON-RPC on stdout and logs to stderr, and it
+expects the worker binaries beside it. A programmatic client normally spawns it
+with piped stdio. A quick check that it came up, on Linux or macOS:
+
+```bash
+cd services/build/bin
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"ping"}' | ./nvpair-ui-broker
+```
+
+PowerShell:
+
+```powershell
+Set-Location services\build\bin
+'{"jsonrpc":"2.0","id":1,"method":"ping"}' | .\nvpair-ui-broker.exe
+```
+
+You may see an `app:ready` notification alongside the response, and discovery may
+be empty while LAN browsing starts. Set `NVPAIR_LOG_LEVEL=debug` or pass
+`--log-level debug` for launch diagnostics. The accepted levels are `debug`,
+`info`, `warn`, and `error`.
+
+For the methods, notifications, and worker ownership, refer to the
+[broker reference](../services/nvpair-ui-broker/README.md). That document, not
+this one, is the source of truth for API usage.
+
+### Write Your Own Client
+
+The broker's JSON-RPC API is the same contract the desktop application and the
+terminal interface use, and neither is privileged. If you want a different
+interface, you can build one against that API rather than modifying PAIR. Drive
+discovery, pairing, engines, models, and routing yourself, and let the broker
+supervise the workers.
+
+Start with the [broker reference](../services/nvpair-ui-broker/README.md) for the
+protocol and lifecycle, and use
+[the generated method surface](../desktop/docs/services-api.md) for the full list
+of requests and notifications across the services.
+
+If you are changing PAIR rather than only running it, the checks to run before
+opening a pull request are in
+[CONTRIBUTING.md](../CONTRIBUTING.md#development-setup).
+
+## Cleaning Up a Build from Source
+
+A source build has nothing to uninstall — deleting the checkout removes the
+application. What it leaves behind is the same per-user data any install creates,
+so reset that the same way. Alongside the in-app
+**Settings > Service > Reset app data**, a script does the same job without the
+application running:
+
+```bash
+./scripts/wipe-app-data.sh --dry-run    # list what would be deleted
+./scripts/wipe-app-data.sh --confirm    # delete it
+```
+
+On Windows use `scripts\wipe-app-data.cmd` with the same flags. Neither script
+needs Node, and both exclude engine model libraries such as `~/.ollama` and
+`~/.lmstudio` by design, so a reset does not cost you re-downloading models.
+Start with `--dry-run`; it prints the exact paths and deletes nothing.
+
+If the machine belongs to a cluster, leave the cluster as well, or the other
+nodes keep listing it as a member. Refer to
+[Uninstalling](../README.md#uninstalling).

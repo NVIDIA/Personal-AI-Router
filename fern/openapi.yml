@@ -1,0 +1,441 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+openapi: 3.0.3
+info:
+  title: NVIDIA Personal AI Router API
+  version: 0.1.0
+  description: >
+    HTTP interfaces exposed by a local NVIDIA Personal AI Router (PAIR) proxy.
+    An application sends a normal engine-compatible request to the local proxy;
+    PAIR selects one eligible node and forwards the entire request to that
+    node's engine, then streams or returns the response. PAIR routes each
+    request to a single node. It does not pool GPU memory, combine GPUs, split a
+    model, or migrate an in-flight request.
+
+
+    Use the exact base URL copied from PAIR's **Endpoints** window. Do not assume
+    default engine ports such as `11434` (Ollama) or `1234` (LM Studio).
+servers:
+  - url: "{baseUrl}"
+    description: >
+      Local PAIR proxy base URL. Copy the exact value from PAIR's Endpoints
+      window for the running engine you want to target.
+    variables:
+      baseUrl:
+        default: http://127.0.0.1:11434
+        description: >
+          Placeholder only. The real host and port are assigned by PAIR and
+          shown in the Endpoints window; do not assume default engine ports.
+tags:
+  - name: Ollama-compatible
+    description: Ollama-compatible inference proxied to an eligible node.
+  - name: OpenAI-compatible
+    description: OpenAI-compatible inference proxied to an eligible node.
+  - name: Node info
+    description: Read-only node telemetry polled from discovered PAIR nodes.
+paths:
+  /api/chat:
+    post:
+      tags:
+        - Ollama-compatible
+      operationId: ollamaChat
+      summary: Ollama-compatible chat
+      description: >
+        Send an Ollama-compatible chat request to the local PAIR proxy. PAIR
+        forwards the request to one eligible node running a compatible engine
+        with the requested model available. With streaming enabled the upstream
+        engine returns newline-delimited JSON chunks; the final chunk sets
+        `done` to true.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OllamaChatRequest"
+            examples:
+              default:
+                value:
+                  model: llama3.1
+                  stream: false
+                  messages:
+                    - role: user
+                      content: Explain what NVIDIA Personal AI Router does in one sentence.
+      responses:
+        "200":
+          description: Chat response from the serving node.
+          headers:
+            X-PAIR-Served-By:
+              description: Stable host UUID of the node that served the request.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OllamaChatResponse"
+              examples:
+                default:
+                  value:
+                    model: llama3.1
+                    created_at: "2026-06-03T07:45:00Z"
+                    message:
+                      role: assistant
+                      content: >-
+                        NVIDIA Personal AI Router routes each AI request to one
+                        eligible system on your local network to serve
+                        inference.
+                    done: true
+                    done_reason: stop
+                    total_duration: 4200000000
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /v1/chat/completions:
+    post:
+      tags:
+        - OpenAI-compatible
+      operationId: createChatCompletion
+      summary: OpenAI-compatible chat completion
+      description: >
+        Send an OpenAI-compatible chat completion request to the local PAIR
+        proxy. PAIR forwards the entire request to a single eligible node and
+        returns the engine's response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatCompletionRequest"
+            examples:
+              default:
+                value:
+                  model: llama3.1
+                  messages:
+                    - role: user
+                      content: Explain what NVIDIA Personal AI Router does in one sentence.
+      responses:
+        "200":
+          description: Chat completion from the serving node.
+          headers:
+            X-PAIR-Served-By:
+              description: Stable host UUID of the node that served the request.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletion"
+              examples:
+                default:
+                  value:
+                    id: chatcmpl-01J0D5P0KZESQHTR2HWK7S5W27
+                    object: chat.completion
+                    created: 1780000000
+                    model: llama3.1
+                    choices:
+                      - index: 0
+                        message:
+                          role: assistant
+                          content: >-
+                            NVIDIA Personal AI Router routes each AI request to
+                            one eligible system on your local network to serve
+                            inference.
+                        finish_reason: stop
+                    usage:
+                      prompt_tokens: 18
+                      completion_tokens: 24
+                      total_tokens: 42
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /v1/node-info:
+    get:
+      tags:
+        - Node info
+      operationId: getNodeInfo
+      summary: Get node info
+      description: >
+        Returns telemetry for a discovered PAIR node. The desktop application
+        polls this endpoint because the data is not fully represented in the
+        broker control surface. The stable host UUID, not the display hostname,
+        correlates discovery, membership, workloads, telemetry, and routing.
+      responses:
+        "200":
+          description: Node telemetry snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeInfo"
+              examples:
+                default:
+                  value:
+                    uuid: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                    hostname: workstation-01
+                    addresses:
+                      - 192.168.1.24
+                      - fe80::1c2d:3e4f:5a6b:7c8d
+                    servicePorts:
+                      proxy: 51100
+                      broker: 51101
+                      scanner: 51102
+                    trust: trusted
+                    cluster:
+                      member: true
+                      clusterId: cluster_01J0D5TCGS8JQ2N8TZFRA0VN08
+                    engines:
+                      - ollama
+                    models:
+                      - name: llama3.1
+                        engine: ollama
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+components:
+  responses:
+    ErrorResponse:
+      description: Error response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    ChatRole:
+      type: string
+      enum:
+        - system
+        - user
+        - assistant
+        - tool
+    ChatMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          $ref: "#/components/schemas/ChatRole"
+        content:
+          type: string
+          example: Explain what NVIDIA Personal AI Router does in one sentence.
+    OllamaChatRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: Model name that must be available on an eligible node.
+          example: llama3.1
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream:
+          type: boolean
+          description: >
+            When true (the Ollama default), the response is streamed as
+            newline-delimited JSON chunks.
+          default: true
+    OllamaChatResponse:
+      type: object
+      required:
+        - model
+        - message
+        - done
+      properties:
+        model:
+          type: string
+          example: llama3.1
+        created_at:
+          type: string
+          format: date-time
+        message:
+          $ref: "#/components/schemas/ChatMessage"
+        done:
+          type: boolean
+          example: true
+        done_reason:
+          type: string
+          example: stop
+        total_duration:
+          type: integer
+          format: int64
+          description: Total request time in nanoseconds, as reported by the engine.
+          example: 4200000000
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: Model name that must be available on an eligible node.
+          example: llama3.1
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+          format: float
+          minimum: 0
+          example: 0.7
+        max_tokens:
+          type: integer
+          minimum: 1
+          example: 512
+    ChatCompletion:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+          example: chatcmpl-01J0D5P0KZESQHTR2HWK7S5W27
+        object:
+          type: string
+          example: chat.completion
+        created:
+          type: integer
+          format: int64
+          description: Unix timestamp in seconds.
+          example: 1780000000
+        model:
+          type: string
+          example: llama3.1
+        choices:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatCompletionChoice"
+        usage:
+          $ref: "#/components/schemas/Usage"
+    ChatCompletionChoice:
+      type: object
+      required:
+        - index
+        - message
+      properties:
+        index:
+          type: integer
+          example: 0
+        message:
+          $ref: "#/components/schemas/ChatMessage"
+        finish_reason:
+          type: string
+          enum:
+            - stop
+            - length
+            - tool_calls
+            - content_filter
+          example: stop
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+          example: 18
+        completion_tokens:
+          type: integer
+          example: 24
+        total_tokens:
+          type: integer
+          example: 42
+    EngineKind:
+      type: string
+      enum:
+        - ollama
+        - lmstudio
+    TrustState:
+      type: string
+      enum:
+        - trusted
+        - unpaired
+        - pending
+        - unknown
+    NodeModel:
+      type: object
+      required:
+        - name
+        - engine
+      properties:
+        name:
+          type: string
+          example: llama3.1
+        engine:
+          $ref: "#/components/schemas/EngineKind"
+    ClusterState:
+      type: object
+      required:
+        - member
+      properties:
+        member:
+          type: boolean
+          example: true
+        clusterId:
+          type: string
+          nullable: true
+          example: cluster_01J0D5TCGS8JQ2N8TZFRA0VN08
+    NodeInfo:
+      type: object
+      required:
+        - uuid
+        - hostname
+        - trust
+        - cluster
+      properties:
+        uuid:
+          type: string
+          description: Stable host UUID used to correlate discovery and routing.
+          example: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+        hostname:
+          type: string
+          example: workstation-01
+        addresses:
+          type: array
+          description: Reachable addresses advertised by the node.
+          items:
+            type: string
+          example:
+            - 192.168.1.24
+        servicePorts:
+          type: object
+          description: Service ports keyed by service name.
+          additionalProperties:
+            type: integer
+          example:
+            proxy: 51100
+            broker: 51101
+        trust:
+          $ref: "#/components/schemas/TrustState"
+        cluster:
+          $ref: "#/components/schemas/ClusterState"
+        engines:
+          type: array
+          items:
+            $ref: "#/components/schemas/EngineKind"
+        models:
+          type: array
+          description: Models reported as available on the node, where reported.
+          items:
+            $ref: "#/components/schemas/NodeModel"
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: model_not_available
+        message:
+          type: string
+          example: No eligible node has the requested model available.
+        requestId:
+          type: string
+          example: req_01J0D5TCGS8JQ2N8TZFRA0VN08
