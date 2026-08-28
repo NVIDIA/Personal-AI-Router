@@ -54,6 +54,10 @@ function goos(platform: SupportedPlatform): string {
     return platform === 'win32' ? 'windows' : platform
 }
 
+function goarch(arch: Arch): string {
+    return arch === 'x64' ? 'amd64' : 'arm64'
+}
+
 function main(): void {
     const platform = readPlatform()
     const arch = readArch()
@@ -73,7 +77,7 @@ function main(): void {
         ['build', '-trimpath', '-ldflags', '-s -w', '-o', outFile, '.'],
         {
             cwd: MODULE_DIR,
-            env: { ...process.env, CGO_ENABLED: '0', GOOS: goos(platform), GOARCH: arch },
+            env: { ...process.env, CGO_ENABLED: '0', GOOS: goos(platform), GOARCH: goarch(arch) },
             stdio: 'inherit'
         }
     )
