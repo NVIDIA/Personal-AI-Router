@@ -4,9 +4,92 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// TestProcImageResolvesThisProcess is the regression guard for a per-OS gap
+// that disabled orphan reclamation on macOS entirely.
+//
+// procImage only ever had a Linux implementation: it read /proc/<pid>/exe, and
+// macOS has no /proc, so it returned "" for every PID. The ownership check fails
+// closed on an empty image, so a listener on our own managed port could never be
+// confirmed as our own engine — an engine PAIR started but lost the handle to
+// could not be stopped, and the operator got "running under external management"
+// every time.
+//
+// Checked against this test binary because it is the one process whose real
+// executable path is known independently, and it costs nothing to introspect.
+func TestProcImageResolvesThisProcess(t *testing.T) {
+	want, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	got := procImage(os.Getpid())
+	if got == "" {
+		t.Fatalf("procImage returned nothing for this process; the ownership check "+
+			"fails closed on an empty image, so stop and uninstall are refused on %s",
+			runtime.GOOS)
+	}
+	if normalizeEngineImage(got) != normalizeEngineImage(want) {
+		t.Errorf("procImage = %q, want the running binary %q", got, want)
+	}
+}
+
+// TestProcImageRejectsInvalidPID checks the failure direction, since an image
+// that cannot be resolved must never be mistaken for a match.
+func TestProcImageRejectsInvalidPID(t *testing.T) {
+	for _, pid := range []int{0, -1} {
+		if got := procImage(pid); got != "" {
+			t.Errorf("procImage(%d) = %q, want empty", pid, got)
+		}
+	}
+	if isOurEngineImage("", "/opt/nvpair/ollama") {
+		t.Error("an unresolvable image matched; ownership checks must fail closed")
+	}
+}
+
+// TestPathComparisonFollowsSymlinks is the regression guard for the second half
+// of the same bug. The two sides of every ownership comparison come from
+// different places and only the OS side is resolved: macOS reports
+// /private/var/... where the configured path says /var/..., so one file looked
+// like two and the stop was declined.
+func TestPathComparisonFollowsSymlinks(t *testing.T) {
+	realDir := t.TempDir()
+	bin := filepath.Join(realDir, "engine")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second name for the same directory, which is exactly what /var is.
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	viaLink := filepath.Join(linkDir, "engine")
+
+	if !isOurEngineImage(viaLink, bin) {
+		t.Error("the same binary reached through a symlinked directory did not match itself")
+	}
+	if !isManagedInstallPath(viaLink, realDir) {
+		t.Error("a binary reached through a symlink was judged outside its own install directory")
+	}
+
+	// The guarantee that matters more: a genuinely different binary still fails.
+	other := filepath.Join(t.TempDir(), "engine")
+	if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isOurEngineImage(other, bin) {
+		t.Error("a same-named binary elsewhere matched; this would kill an unrelated process")
+	}
+	if isManagedInstallPath(other, realDir) {
+		t.Error("a binary outside the install directory was judged inside it")
+	}
+}
 
 func TestIsOurEngineImage(t *testing.T) {
 	bin := filepath.Join("/opt", "nvpair", "ollama.exe")

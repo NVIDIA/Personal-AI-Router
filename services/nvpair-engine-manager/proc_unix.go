@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -93,19 +92,6 @@ func ssPID(port int) (int, bool) {
 		return p, true
 	}
 	return 0, false
-}
-
-// procImage resolves a PID's executable path via /proc (Linux). macOS has no
-// /proc, so it returns "" there and the image check is skipped — reclamation
-// on macOS relies on the caller declining when the image can't be confirmed.
-func procImage(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	if path, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
-		return path
-	}
-	return ""
 }
 
 // signalPID sends SIGTERM (or SIGKILL when force) to the process group when
