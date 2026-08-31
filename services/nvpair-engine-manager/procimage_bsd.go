@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -29,6 +30,33 @@ import (
 //
 // Empty on any error so the caller's image check fails closed.
 func procImage(pid int) string {
+	return procImageVia(lsofPath(), pid)
+}
+
+// macOSLsof is where macOS ships lsof. Named because a bare "lsof" resolves
+// through PATH, and this process inherits whatever PATH the desktop app was
+// launched with — nothing in the chain from Electron through the broker sets
+// one. A GUI launch normally yields a PATH containing /usr/sbin, but a user or
+// launcher that narrows it would silently reinstate the exact bug this file
+// exists to fix, with the same misleading "external management" message and no
+// signal that a tool was missing.
+//
+// nvpair-node-info already addresses ioreg by absolute path for the same reason.
+const macOSLsof = "/usr/sbin/lsof"
+
+// lsofPath prefers the known macOS location and otherwise leaves resolution to
+// PATH, which is what the other BSDs this file also builds for need — FreeBSD
+// installs lsof from ports, under a different prefix.
+func lsofPath() string {
+	if _, err := os.Stat(macOSLsof); err == nil {
+		return macOSLsof
+	}
+	return "lsof"
+}
+
+// procImageVia runs one lsof and extracts the executable path, so the parsing
+// can be tested without depending on where the tool lives.
+func procImageVia(lsof string, pid int) string {
 	if pid <= 0 {
 		return ""
 	}
@@ -36,7 +64,7 @@ func procImage(pid int) string {
 	defer cancel()
 
 	out, err := exec.CommandContext(ctx,
-		"lsof", "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt").Output()
+		lsof, "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt").Output()
 	if err != nil {
 		return ""
 	}
