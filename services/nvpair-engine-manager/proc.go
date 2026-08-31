@@ -131,12 +131,35 @@ func terminatePID(pid int, grace time.Duration) {
 	}
 }
 
+// resolveForCompare cleans a path and resolves symlinks so two names for one
+// location compare equal.
+//
+// Every path comparison here has one side that came from the OS and one that
+// came from configuration, and only the OS side is resolved. On macOS the
+// kernel reports /private/var/... where the configured path says /var/...,
+// because /var is a symlink; compared textually, one file looks like two. In
+// the ownership checks that reads as "some other process took our port" and
+// declines an action that should have been allowed.
+//
+// Both sides of a comparison must go through this, or the mismatch simply moves
+// from one check to the next.
+//
+// Resolution is best-effort: a path that no longer exists on disk cannot be
+// resolved, and its cleaned form is still the most specific thing available.
+func resolveForCompare(path string) string {
+	path = filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return resolved
+}
+
 // normalizeEngineImage cleans an executable path for comparison. Linux
 // /proc/<pid>/exe can suffix " (deleted)" when the file was replaced while
 // the process still runs.
 func normalizeEngineImage(path string) string {
-	path = strings.TrimSuffix(path, " (deleted)")
-	return filepath.Clean(path)
+	return resolveForCompare(strings.TrimSuffix(path, " (deleted)"))
 }
 
 // isOurEngineImage reports whether the listener on our managed port is
@@ -164,7 +187,7 @@ func isManagedInstallPath(binPath, installDir string) bool {
 	if err != nil {
 		return false
 	}
-	dirAbs, err := filepath.Abs(installDir)
+	dirAbs, err := filepath.Abs(resolveForCompare(installDir))
 	if err != nil {
 		return false
 	}
