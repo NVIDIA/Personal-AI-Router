@@ -39,9 +39,15 @@ func TestStopGrace(t *testing.T) {
 }
 
 // spawnFakeListener starts a fake-engine copied to binPath, bound to
-// 127.0.0.1:port, and skips the test when this host can't resolve the PID/
-// image behind a listening port (no lsof/ss, or a /proc-less OS) — the
-// reclaim/decline behavior can't be exercised without that resolution.
+// 127.0.0.1:port, and skips the test when this host can't resolve the PID and
+// image behind a listening port — the reclaim/decline behavior cannot be
+// exercised without that resolution.
+//
+// In practice that means a host with neither lsof nor ss. It used to include
+// every macOS host, because procImage had only a /proc implementation and so
+// returned "" there: these tests reported success by skipping, on the one
+// platform where the behavior they cover was broken. Treat a skip here as a
+// missing tool to install, not as normal.
 func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(binPath)
