@@ -169,6 +169,12 @@ would only collide on the port. Consequences worth knowing:
   installs `lsof` and `iproute2` on Linux for this reason, and
   `services:macos-build` runs this module's tests natively so the `lsof` path is
   exercised somewhere (the Linux gate excludes it by build tag).
+  `ss` is iproute2 and therefore Linux-only; macOS has no equivalent fallback,
+  so `lsof` is the single mechanism there.
+- **The install directory is resolved before use.** If `<baseDir>/<engine>` is a
+  symlink, both the containment guard and an uninstall's `{install_dir}` act on
+  its target, so uninstall removes the engine's real files rather than leaving
+  them behind a deleted link. The two always agree; they are the same value.
 - **`engine:stop` may return an error while still saving OFF.** When stop
   declines a foreign listener it returns an actionable error, but the user's
   OFF choice is persisted anyway — UI layers should treat the saved desired
