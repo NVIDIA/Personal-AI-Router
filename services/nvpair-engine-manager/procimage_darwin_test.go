@@ -6,34 +6,68 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-// TestProcImageIgnoresPath is the guard for the deployment shape rather than the
-// developer one. This worker inherits whatever PATH the desktop app was launched
-// with, and nothing between Electron, the broker and here sets one. Resolving
-// lsof through PATH would mean a narrowed PATH silently returns the original bug
-// — orphan reclaim refused, with the same misleading "external management"
-// message — and a hostile PATH entry could choose which process PAIR kills.
-func TestProcImageIgnoresPath(t *testing.T) {
-	if _, err := os.Stat(lsofPath); err != nil {
-		t.Fatalf("macOS is expected to ship lsof at %s: %v", lsofPath, err)
+// TestOwnerLookupIgnoresPath is the guard for the deployment shape rather than
+// the developer one. This worker inherits whatever PATH the desktop app was
+// launched with, and nothing between Electron, the broker and here sets one, so
+// a narrowed PATH must not disable orphan reclaim and a user-writable directory
+// must not be able to shadow the tool that decides which process gets killed.
+//
+// It exercises pidOnPort, not procImage alone. An earlier version of this test
+// checked only the image half and passed while the PID half still went through
+// PATH — so it certified a guarantee the system did not have, and the two tests
+// that actually cover reclaim skipped instead of failing. Both halves are on the
+// same path to a kill; testing one is testing neither.
+func TestOwnerLookupIgnoresPath(t *testing.T) {
+	// A real listener whose owner is this test process.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
 	t.Setenv("PATH", "")
 
-	got := procImage(os.Getpid())
-	if got == "" {
-		t.Fatal("procImage found nothing with an empty PATH; lsof must be resolved absolutely")
+	pid, image, ok := pidOnPort(port)
+	if !ok {
+		t.Fatal("pidOnPort resolved no owner with an empty PATH; the PID lookup must " +
+			"not depend on PATH or reclaim stays broken exactly where it was")
+	}
+	if pid != os.Getpid() {
+		t.Errorf("pidOnPort = %d, want this process %d", pid, os.Getpid())
+	}
+	if image == "" {
+		t.Fatal("no image resolved with an empty PATH")
 	}
 
 	want, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	if normalizeEngineImage(got) != normalizeEngineImage(want) {
-		t.Errorf("procImage = %q, want the running binary %q", got, want)
+	if normalizeEngineImage(image) != normalizeEngineImage(want) {
+		t.Errorf("image = %q, want the running binary %q", image, want)
+	}
+}
+
+// TestSystemToolPrefersAnAbsoluteLocation pins the resolution order that keeps
+// PATH out of the decision on a normal host.
+func TestSystemToolPrefersAnAbsoluteLocation(t *testing.T) {
+	got := systemTool("lsof", lsofLocations)
+	if !filepath.IsAbs(got) {
+		t.Errorf("systemTool resolved %q; macOS ships lsof at an absolute location "+
+			"and it should be preferred over a PATH lookup", got)
+	}
+
+	// With no candidate present, the bare name is returned so a PATH lookup can
+	// still find a distribution that puts the tool somewhere else.
+	if got := systemTool("lsof", []string{"/nonexistent/a", "/nonexistent/b"}); got != "lsof" {
+		t.Errorf("systemTool with no candidates = %q, want the bare name", got)
 	}
 }
 

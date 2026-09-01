@@ -111,7 +111,13 @@ func (mp *managedProc) stop() {
 // managedProc.stop needs. Best-effort: a process that's already gone counts
 // as success. The platform primitives (signalPID, pidAlive) live in
 // proc_windows.go / proc_unix.go.
-func terminatePID(pid int, grace time.Duration) {
+// stillOurs re-confirms the target before escalating. It is called again after
+// the grace period because the identity check that authorized this kill happened
+// before the graceful signal: if the confirmed process exits during the wait and
+// the OS recycles its PID, the forced kill would land on whatever now holds it —
+// and on Unix that is a signal to a whole process group. The window is small but
+// it is a kill, so it is re-checked rather than assumed.
+func terminatePID(pid int, grace time.Duration, stillOurs func(int) bool) {
 	if pid <= 0 {
 		return
 	}
@@ -126,9 +132,15 @@ func terminatePID(pid int, grace time.Duration) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if pidAlive(pid) {
-		_ = signalPID(pid, true)
+	if !pidAlive(pid) {
+		return
 	}
+	if stillOurs != nil && !stillOurs(pid) {
+		// It outlived the graceful signal but is no longer the process we
+		// identified, so it is not ours to force.
+		return
+	}
+	_ = signalPID(pid, true)
 }
 
 // resolveForCompare cleans a path and resolves symlinks so two names for one
@@ -146,13 +158,17 @@ func terminatePID(pid int, grace time.Duration) {
 //
 // Resolution is best-effort: a path that no longer exists on disk cannot be
 // resolved, and its cleaned form is still the most specific thing available.
+//
+// Cleaning happens only on that fallback, never before resolution.
+// filepath.Clean collapses ".." lexically, which is wrong across a symlink:
+// "<dir>/link/../x" is cleaned to "<dir>/x", while the true path follows link
+// to its target first and can land somewhere else entirely. Cleaning first
+// could therefore make an outside path look contained.
 func resolveForCompare(path string) string {
-	path = filepath.Clean(path)
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
 	}
-	return resolved
+	return filepath.Clean(path)
 }
 
 // normalizeEngineImage cleans an executable path for comparison. Linux

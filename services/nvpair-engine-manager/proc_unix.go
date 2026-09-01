@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -56,11 +57,43 @@ func pidOnPort(port int) (pid int, image string, ok bool) {
 	return 0, "", false
 }
 
+// Absolute locations of the tools this file shells out to, tried in order
+// before falling back to a PATH lookup.
+//
+// PATH is not ours to trust: this worker inherits whatever the desktop app was
+// launched with, and nothing between Electron, the broker and here sets one, so
+// a user-writable directory such as /opt/homebrew/bin can shadow a system tool.
+// What comes back decides which PID gets terminated.
+//
+// A single list covers every Unix because a path that does not exist is simply
+// skipped; macOS ships lsof in /usr/sbin, most Linux distributions in /usr/bin,
+// and ss moves around by distribution.
+var (
+	lsofLocations = []string{"/usr/sbin/lsof", "/usr/bin/lsof"}
+	ssLocations   = []string{"/usr/sbin/ss", "/sbin/ss", "/usr/bin/ss"}
+)
+
+// systemTool is the first location that exists, or name for a PATH lookup.
+//
+// The fallback exists because Linux distributions disagree on where these live,
+// not as a convenience. Reaching it means none of the known locations exist, in
+// which case a PATH lookup is the only remaining chance of resolving the owner
+// at all — and failing to resolve declines the stop rather than widening it.
+func systemTool(name string, locations []string) string {
+	for _, path := range locations {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return name
+}
+
 // lsofPID prints just the PID(s) of the TCP listener on the port (-t = terse).
 func lsofPID(port int) (int, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsof", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
+	out, err := exec.CommandContext(ctx, systemTool("lsof", lsofLocations),
+		"-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
 	if err != nil {
 		return 0, false
 	}
@@ -76,7 +109,8 @@ func lsofPID(port int) (int, bool) {
 func ssPID(port int) (int, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ss", "-ltnp", "sport", "=", ":"+strconv.Itoa(port)).Output()
+	out, err := exec.CommandContext(ctx, systemTool("ss", ssLocations),
+		"-ltnp", "sport", "=", ":"+strconv.Itoa(port)).Output()
 	if err != nil {
 		return 0, false
 	}

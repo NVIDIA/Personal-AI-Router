@@ -205,11 +205,17 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
 	}
 	st := &engineState{
-		manifest:   m,
-		plat:       plat,
-		logs:       newLogBuffer(),
-		port:       plat.Runtime.Port,
-		installDir: filepath.Join(e.baseDir, engine),
+		manifest: m,
+		plat:     plat,
+		logs:     newLogBuffer(),
+		port:     plat.Runtime.Port,
+		// Resolved once, here, because this value is used for two things that
+		// must agree: the containment guard that decides whether uninstall may
+		// proceed, and the {install_dir} an uninstall command deletes. The guard
+		// resolves symlinks to compare real locations; if the deletion used the
+		// unresolved form, the directory checked would not be the directory
+		// removed.
+		installDir: resolveForCompare(filepath.Join(e.baseDir, engine)),
 	}
 	e.engines[engine] = st
 	return st, nil
