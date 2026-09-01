@@ -189,3 +189,14 @@ jobs:
                   echo "--- staged, escaped"
                   printf '%s\n' "$staged" | sed -n l
                   exit 1
+
+            # nvpair-engine-manager has macOS-exclusive source: procimage_darwin.go
+            # resolves a PID's executable through lsof, because macOS has no
+            # /proc, and that check decides whether stop and uninstall may
+            # terminate an adopted engine. The `services` job runs on Linux,
+            # where that file and its tests are excluded by build tag, so this
+            # is the only place they execute. macOS ships lsof at /usr/sbin/lsof.
+            - name: Engine manager tests (macOS)
+              if: runner.os == 'macOS'
+              working-directory: services/nvpair-engine-manager
+              run: go test ./... -count=1 -timeout=10m
