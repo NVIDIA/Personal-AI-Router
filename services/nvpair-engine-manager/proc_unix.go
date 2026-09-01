@@ -66,12 +66,13 @@ func pidOnPort(port int) (pid int, image string, ok bool) {
 // A single list covers every Unix because a path that does not exist is simply
 // skipped; macOS ships lsof in /usr/sbin, most Linux distributions in /usr/bin,
 // and ss moves around by distribution.
-var (
-	lsofLocations = []string{"/usr/sbin/lsof", "/usr/bin/lsof"}
-	ssLocations   = []string{"/usr/sbin/ss", "/sbin/ss", "/usr/bin/ss"}
-)
+var lsofLocations = []string{"/usr/sbin/lsof", "/usr/bin/lsof"}
 
-// systemTool is the first location that exists, or name for a PATH lookup.
+// systemTool is the first usable location, or name for a PATH lookup.
+//
+// Executability is checked, not just existence: a directory or a non-executable
+// file at a candidate path would otherwise short-circuit the search and take the
+// later candidates out of play.
 //
 // The fallback exists because Linux distributions disagree on where these live,
 // not as a convenience. Reaching it means none of the known locations exist, in
@@ -79,20 +80,47 @@ var (
 // at all — and failing to resolve declines the stop rather than widening it.
 func systemTool(name string, locations []string) string {
 	for _, path := range locations {
-		if _, err := os.Stat(path); err == nil {
-			return path
+		fi, err := os.Stat(path)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+			continue
 		}
+		return path
 	}
 	return name
 }
 
-// lsofPID prints just the PID(s) of the TCP listener on the port (-t = terse).
-func lsofPID(port int) (int, bool) {
+// runTool executes a resolved tool and returns its stdout.
+//
+// A non-zero exit is tolerated when there is still output, because lsof reports
+// failure if it hit *any* error anywhere — a filesystem it could not stat, which
+// is routine with network or FUSE mounts — while printing correct records for
+// what was asked about. Treating that as total failure is not a harmless
+// conservatism here: it drops the owner lookup through to the next mechanism,
+// and on macOS that means resolving `ss` (which does not exist) through PATH.
+//
+// A failure to start the tool, or a deadline (the answer may be truncated
+// mid-record), yields nothing so the caller fails closed.
+func runTool(tool string, args ...string) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, systemTool("lsof", lsofLocations),
-		"-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
-	if err != nil {
+
+	out, err := exec.CommandContext(ctx, tool, args...).Output()
+	var exited *exec.ExitError
+	if err != nil && !errors.As(err, &exited) {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return out
+}
+
+// lsofPID prints just the PID(s) of the TCP listener on the port (-t = terse).
+func lsofPID(port int) (int, bool) {
+	// -w suppresses the warnings that make lsof exit non-zero; see runTool.
+	out := runTool(systemTool("lsof", lsofLocations),
+		"-w", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN")
+	if len(out) == 0 {
 		return 0, false
 	}
 	for _, field := range strings.Fields(string(out)) {
@@ -103,34 +131,17 @@ func lsofPID(port int) (int, bool) {
 	return 0, false
 }
 
-// ssPID parses the owning PID out of ss's users:(("proc",pid=1234,fd=7)) tail.
-func ssPID(port int) (int, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, systemTool("ss", ssLocations),
-		"-ltnp", "sport", "=", ":"+strconv.Itoa(port)).Output()
-	if err != nil {
-		return 0, false
-	}
-	s := string(out)
-	idx := strings.Index(s, "pid=")
-	if idx < 0 {
-		return 0, false
-	}
-	rest := s[idx+len("pid="):]
-	end := strings.IndexAny(rest, ",)")
-	if end < 0 {
-		return 0, false
-	}
-	if p, err := strconv.Atoi(rest[:end]); err == nil && p > 0 {
-		return p, true
-	}
-	return 0, false
-}
-
-// signalPID sends SIGTERM (or SIGKILL when force) to the process group when
-// possible. The owned-process escalation and orphan reclaim share it so forced
-// stops reach forked helpers (model runners, etc.).
+// signalPID sends SIGTERM (or SIGKILL when force) to the target. The
+// owned-process escalation and orphan reclaim share it.
+//
+// The group is signalled only when the target leads it, so force still reaches
+// forked helpers (model runners and the like) of anything PAIR started —
+// configureSysProcAttr sets Setpgid, which makes every such process a group
+// leader. An adopted engine PAIR did not start is a different case: it may have
+// been launched from a shell wrapper or a pipeline, which puts unrelated
+// processes in its group, and the ownership check that authorized this kill
+// examined one PID. Signalling the group there would extend a single-process
+// decision across processes nothing verified.
 func signalPID(pid int, force bool) error {
 	if pid <= 0 {
 		return nil
@@ -139,7 +150,7 @@ func signalPID(pid int, force bool) error {
 	if force {
 		sig = syscall.SIGKILL
 	}
-	if pgid, err := syscall.Getpgid(pid); err == nil {
+	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
 		return syscall.Kill(-pgid, sig)
 	}
 	return syscall.Kill(pid, sig)

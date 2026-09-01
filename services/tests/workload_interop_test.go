@@ -83,6 +83,7 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 	t.Helper()
 	args = append([]string{"--cluster-dir", clusterDir}, args...)
 	cmd := exec.Command(brokerBin, args...)
+	cmd.Env = isolatedConfigEnv(t)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
