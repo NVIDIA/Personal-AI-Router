@@ -135,6 +135,46 @@ func TestManagedInstallPathRejectsAnEscapingLeafSymlink(t *testing.T) {
 	}
 }
 
+// TestManagedInstallPathFollowsASymlinkedInstallDir pins the opposite answer one
+// level up, so the asymmetry with the leaf rule is a recorded decision.
+//
+// When the install directory ITSELF is a symlink, its target is treated as the
+// managed location: a binary there is managed, and an uninstall removes the real
+// files rather than leaving them behind a deleted link. That is what someone who
+// points engine-bin at a larger disk needs. A symlink one level down, pointing
+// out of the directory, is still refused — the difference is that PAIR owns the
+// install directory it was configured with, and does not own whatever a link
+// inside it happens to reference.
+func TestManagedInstallPathFollowsASymlinkedInstallDir(t *testing.T) {
+	target := t.TempDir()
+	installDir := filepath.Join(t.TempDir(), "engine-bin")
+	if err := os.Symlink(target, installDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	bin := filepath.Join(target, "ollama")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reached by either name, the binary is inside the managed directory.
+	if !isManagedInstallPath(bin, installDir) {
+		t.Error("a binary in the target of a symlinked install directory was judged outside it")
+	}
+	if !isManagedInstallPath(filepath.Join(installDir, "ollama"), installDir) {
+		t.Error("a binary reached through the install-directory symlink was judged outside it")
+	}
+
+	// And something genuinely elsewhere is still refused.
+	outside := filepath.Join(t.TempDir(), "ollama")
+	if err := os.WriteFile(outside, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isManagedInstallPath(outside, installDir) {
+		t.Error("a binary outside the target was judged managed")
+	}
+}
+
 func TestIsOurEngineImage(t *testing.T) {
 	bin := filepath.Join("/opt", "nvpair", "ollama.exe")
 	cases := []struct {

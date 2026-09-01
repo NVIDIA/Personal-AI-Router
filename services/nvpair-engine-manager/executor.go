@@ -209,12 +209,14 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		plat:     plat,
 		logs:     newLogBuffer(),
 		port:     plat.Runtime.Port,
-		// Resolved once, here, because this value is used for two things that
-		// must agree: the containment guard that decides whether uninstall may
-		// proceed, and the {install_dir} an uninstall command deletes. The guard
-		// resolves symlinks to compare real locations; if the deletion used the
-		// unresolved form, the directory checked would not be the directory
-		// removed.
+		// Resolved so the {install_dir} an uninstall command deletes names the
+		// same location the containment guard checks.
+		//
+		// Best-effort, not a guarantee: state() is usually first called before
+		// the engine is installed, when this directory does not exist and
+		// resolution is a no-op, and the value is then cached. The guard in
+		// isManagedInstallPath resolves again at call time, so correctness rests
+		// on that rather than on this being current.
 		installDir: resolveForCompare(filepath.Join(e.baseDir, engine)),
 	}
 	e.engines[engine] = st
