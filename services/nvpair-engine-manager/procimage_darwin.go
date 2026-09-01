@@ -1,17 +1,28 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !linux && !windows
+//go:build darwin
 
 package main
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 )
+
+// lsofPath is where macOS ships lsof.
+//
+// Absolute, never a PATH lookup. This function's return value authorizes
+// terminatePID, so whichever binary answers here decides which process gets
+// killed; a PATH entry an attacker or a stray shell profile controls must not be
+// able to make that decision. This worker also inherits whatever PATH the
+// desktop app was launched with — nothing between Electron, the broker and here
+// sets one — so PATH is not ours to trust.
+//
+// nvpair-node-info addresses ioreg the same way (gpu_darwin.go).
+const lsofPath = "/usr/sbin/lsof"
 
 // procImage resolves a PID's executable path with lsof.
 //
@@ -30,32 +41,11 @@ import (
 //
 // Empty on any error so the caller's image check fails closed.
 func procImage(pid int) string {
-	return procImageVia(lsofPath(), pid)
+	return procImageVia(lsofPath, pid)
 }
 
-// macOSLsof is where macOS ships lsof. Named because a bare "lsof" resolves
-// through PATH, and this process inherits whatever PATH the desktop app was
-// launched with — nothing in the chain from Electron through the broker sets
-// one. A GUI launch normally yields a PATH containing /usr/sbin, but a user or
-// launcher that narrows it would silently reinstate the exact bug this file
-// exists to fix, with the same misleading "external management" message and no
-// signal that a tool was missing.
-//
-// nvpair-node-info already addresses ioreg by absolute path for the same reason.
-const macOSLsof = "/usr/sbin/lsof"
-
-// lsofPath prefers the known macOS location and otherwise leaves resolution to
-// PATH, which is what the other BSDs this file also builds for need — FreeBSD
-// installs lsof from ports, under a different prefix.
-func lsofPath() string {
-	if _, err := os.Stat(macOSLsof); err == nil {
-		return macOSLsof
-	}
-	return "lsof"
-}
-
-// procImageVia runs one lsof and extracts the executable path, so the parsing
-// can be tested without depending on where the tool lives.
+// procImageVia runs one lsof and extracts the executable path. Split out so the
+// parsing can be tested against a stub, and so a missing tool has a test.
 func procImageVia(lsof string, pid int) string {
 	if pid <= 0 {
 		return ""
@@ -63,6 +53,9 @@ func procImageVia(lsof string, pid int) string {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
 
+	// stdout only. lsof exits non-zero precisely when it could not introspect
+	// the process (not ours, or already gone) and prints nothing in that case,
+	// so there is no partial output worth salvaging from a failed run.
 	out, err := exec.CommandContext(ctx,
 		lsof, "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt").Output()
 	if err != nil {
@@ -70,7 +63,8 @@ func procImageVia(lsof string, pid int) string {
 	}
 	// Field output: an `f` line names the descriptor, and the `n` line that
 	// follows it is that descriptor's path. Only txt descriptors were requested,
-	// so the first such path is the executable.
+	// and the kernel lists the executable before the libraries it pulled in, so
+	// the first such path is the image.
 	inText := false
 	for _, line := range strings.Split(string(out), "\n") {
 		switch {

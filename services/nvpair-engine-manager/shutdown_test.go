@@ -209,16 +209,12 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 // engine's port down — this is the backstop the broker relies on now that it no
 // longer force-kills engine-manager on a timeout.
 func TestE2EStdinCloseStopsEngine(t *testing.T) {
-	cfg := t.TempDir()
-	home := t.TempDir()
-	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
-	} {
+	iso := newIsolatedConfig(t)
+	for _, dir := range iso.engineDirs() {
 		writeFakeManifest(t, dir)
 	}
 
-	m := startE2EManager(t, cfg, home)
+	m := startE2EManager(t, iso)
 	send(t, m.stdin, 1, "engine:start", map[string]any{"engine": "fake"})
 	var started EngineStatus
 	if err := json.Unmarshal(waitResult(t, m.frames, "1", 20*time.Second), &started); err != nil || !started.Running {

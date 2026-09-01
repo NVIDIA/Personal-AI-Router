@@ -91,6 +91,50 @@ func TestPathComparisonFollowsSymlinks(t *testing.T) {
 	}
 }
 
+// TestManagedInstallPathRejectsAnEscapingLeafSymlink pins the containment
+// direction for a symlink that lives inside the install directory but points
+// outside it.
+//
+// Resolving both sides changed this answer: a textual compare saw the link's own
+// location and called it managed, while resolution follows it to its target and
+// correctly does not. Fail-closed is the right direction here — a stop or
+// uninstall declines rather than acting on a file outside the directory PAIR
+// owns — but it is worth pinning, because the alternative would let a link
+// planted in the install directory nominate an arbitrary file for deletion.
+func TestManagedInstallPathRejectsAnEscapingLeafSymlink(t *testing.T) {
+	installDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(outside, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The link sits inside the install dir; its target does not.
+	link := filepath.Join(installDir, "engine")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if isManagedInstallPath(link, installDir) {
+		t.Error("a symlink inside the install directory pointing outside it was judged " +
+			"managed; that would let a planted link nominate an external file")
+	}
+
+	// And the same file reached by its real path is still correctly outside.
+	if isManagedInstallPath(outside, installDir) {
+		t.Error("a file outside the install directory was judged inside it")
+	}
+
+	// A real file inside the directory is still managed, so the check has not
+	// simply become "always false".
+	real := filepath.Join(installDir, "genuine")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !isManagedInstallPath(real, installDir) {
+		t.Error("a real binary inside the install directory was not judged managed")
+	}
+}
+
 func TestIsOurEngineImage(t *testing.T) {
 	bin := filepath.Join("/opt", "nvpair", "ollama.exe")
 	cases := []struct {

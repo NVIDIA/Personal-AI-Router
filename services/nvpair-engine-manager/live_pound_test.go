@@ -32,8 +32,7 @@ func TestLivePoundFixesOllama(t *testing.T) {
 	// #3 adoption: a fresh manager must report the already-running Ollama
 	// (manifest port 11434) as running, without us ever starting it.
 	func() {
-		cfg := t.TempDir()
-		frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+		frames, stdin, stop := startManager(t, newIsolatedConfig(t).env())
 		defer stop()
 		send(t, stdin, 1, "engine:get-installed", nil)
 		r := string(waitResult(t, frames, "1", 10*time.Second))
@@ -49,8 +48,7 @@ func TestLivePoundFixesOllama(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := t.TempDir()
-	frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	frames, stdin, stop := startManager(t, newIsolatedConfig(t).env())
 	defer stop()
 
 	// Bind default: the bundled manifest now declares runtime.bind 127.0.0.1,
