@@ -464,7 +464,12 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 				}
 				st.mu.Unlock()
 				grace := stopGrace(rt)
-				terminatePID(pid, grace)
+				// Re-confirmed before the forced kill: the identity check
+				// above ran before the graceful signal, and a PID freed
+				// during the wait can be reused by an unrelated process.
+				terminatePID(pid, grace, func(p int) bool {
+					return isOurEngineImage(procImage(p), binPath)
+				})
 				if !pidAlive(pid) {
 					e.markStopped(st, engine)
 					return nil
@@ -476,6 +481,17 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			}
 			e.emitState(engine)
 			if ok {
+				// Names the image deliberately: the operator has to know which
+				// application to close, and README documents this error as
+				// naming the PID and image path.
+				//
+				// Note for whoever touches the reporting path: on macOS this
+				// path now resolves to something real (it used to interpolate
+				// empty), and when Uninstall wraps this error it becomes a
+				// serviceError that nvpair-errors can push to paired peers. The
+				// path can contain a local username. Sanitizing belongs at that
+				// reporting boundary, not here, where it would cost the operator
+				// the one detail that makes the message actionable.
 				return fmt.Errorf("cannot stop engine %q: it is running under external management (pid %d, %s); stop it in its own application, then retry", engine, pid, image)
 			}
 			return fmt.Errorf("cannot stop engine %q: it is running under external management; stop it in its own application, then retry", engine)

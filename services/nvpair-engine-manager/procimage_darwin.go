@@ -7,22 +7,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
 )
-
-// lsofPath is where macOS ships lsof.
-//
-// Absolute, never a PATH lookup. This function's return value authorizes
-// terminatePID, so whichever binary answers here decides which process gets
-// killed; a PATH entry an attacker or a stray shell profile controls must not be
-// able to make that decision. This worker also inherits whatever PATH the
-// desktop app was launched with — nothing between Electron, the broker and here
-// sets one — so PATH is not ours to trust.
-//
-// nvpair-node-info addresses ioreg the same way (gpu_darwin.go).
-const lsofPath = "/usr/sbin/lsof"
 
 // procImage resolves a PID's executable path with lsof.
 //
@@ -41,7 +30,7 @@ const lsofPath = "/usr/sbin/lsof"
 //
 // Empty on any error so the caller's image check fails closed.
 func procImage(pid int) string {
-	return procImageVia(lsofPath, pid)
+	return procImageVia(systemTool("lsof", lsofLocations), pid)
 }
 
 // procImageVia runs one lsof and extracts the executable path. Split out so the
@@ -53,12 +42,29 @@ func procImageVia(lsof string, pid int) string {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
 
-	// stdout only. lsof exits non-zero precisely when it could not introspect
-	// the process (not ours, or already gone) and prints nothing in that case,
-	// so there is no partial output worth salvaging from a failed run.
-	out, err := exec.CommandContext(ctx,
-		lsof, "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt").Output()
-	if err != nil {
+	// -w suppresses warnings, because lsof's exit status is not a statement
+	// about our PID: it returns 1 if it hit *any* error anywhere, including a
+	// filesystem it could not stat, while still printing correct records for the
+	// process asked about. Hosts with network mounts or FUSE volumes hit that
+	// routinely. So the output is parsed whenever there is any, and the exit
+	// status only decides the empty case — otherwise a warning about an
+	// unrelated mount would blank the image and silently refuse a legitimate
+	// stop, which is the bug this file exists to fix.
+	out, err := exec.CommandContext(ctx, lsof,
+		"-w", "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt").Output()
+
+	// A non-zero exit is tolerated; anything else is not. Failing to start the
+	// tool means it is missing, and a deadline means the answer may be truncated
+	// mid-record, so neither can be parsed.
+	var exited *exec.ExitError
+	if err != nil && !errors.As(err, &exited) {
+		return ""
+	}
+	if ctx.Err() != nil {
+		return ""
+	}
+	// No records: the process is not ours, or it has already gone. Fail closed.
+	if len(out) == 0 {
 		return ""
 	}
 	// Field output: an `f` line names the descriptor, and the `n` line that
@@ -71,7 +77,12 @@ func procImageVia(lsof string, pid int) string {
 		case strings.HasPrefix(line, "f"):
 			inText = line == "ftxt"
 		case inText && strings.HasPrefix(line, "n"):
-			return strings.TrimSpace(line[1:])
+			// Only a stray CR is stripped. lsof treats space as printable
+			// outside the COMMAND column, so a path really ending in a space is
+			// reported verbatim; trimming it would let "/dir/engine " compare
+			// equal to the managed "/dir/engine" and widen a check that
+			// authorizes a kill.
+			return strings.TrimSuffix(line[1:], "\r")
 		}
 	}
 	return ""

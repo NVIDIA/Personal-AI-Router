@@ -210,16 +210,21 @@ would only collide on the port. Consequences worth knowing:
   image is **not** our managed binary is declined with an actionable error
   naming the offending PID and image path — the user / desktop app owns that
   process, and NVPAIR won't terminate it out from under them.
-- **Reclaim depends on an external tool on Unix.** Resolving the PID and the
-  executable behind a port uses `lsof` (with `ss` as a Linux alternative for the
-  PID); Linux additionally reads `/proc/<pid>/exe`, and Windows uses the
-  process-snapshot APIs. macOS has no `/proc`, so `lsof` is the only mechanism
-  there and is looked up at `/usr/sbin/lsof` before PATH. If the tool cannot be
-  run, the image comes back empty and the ownership check **fails closed**: an
-  adopted engine is declined with "running under external management" rather
-  than terminated on a guess. That is the safe direction, but it also means a
-  host without `lsof` cannot reclaim its own orphans — CI installs `lsof` and
-  `iproute2` for this reason.
+- **Reclaim depends on an external tool on Unix.** Both halves of the check —
+  which PID owns the port, and which executable that PID is running — shell out:
+  `lsof` (with `ss` as a Linux alternative for the PID lookup), plus
+  `/proc/<pid>/exe` on Linux and the process-snapshot APIs on Windows. macOS has
+  no `/proc`, so `lsof` is the only mechanism there.
+  Known absolute locations are tried before any PATH lookup, for both halves,
+  because this process inherits whatever PATH the desktop app was launched with
+  and the result decides which process may be terminated.
+  If the tool cannot be run, the image comes back empty and the ownership check
+  **fails closed**: an adopted engine is declined with "running under external
+  management" rather than terminated on a guess. That is the safe direction, but
+  it also means a host without `lsof` cannot reclaim its own orphans — CI
+  installs `lsof` and `iproute2` on Linux for this reason, and
+  `services:macos-build` runs this module's tests natively so the `lsof` path is
+  exercised somewhere (the Linux gate excludes it by build tag).
 - **`engine:stop` may return an error while still saving OFF.** When stop
   declines a foreign listener it returns an actionable error, but the user's
   OFF choice is persisted anyway — UI layers should treat the saved desired
