@@ -6,9 +6,6 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -39,30 +36,10 @@ func procImageVia(lsof string, pid int) string {
 	if pid <= 0 {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
-	defer cancel()
-
-	// -w suppresses warnings, because lsof's exit status is not a statement
-	// about our PID: it returns 1 if it hit *any* error anywhere, including a
-	// filesystem it could not stat, while still printing correct records for the
-	// process asked about. Hosts with network mounts or FUSE volumes hit that
-	// routinely. So the output is parsed whenever there is any, and the exit
-	// status only decides the empty case — otherwise a warning about an
-	// unrelated mount would blank the image and silently refuse a legitimate
-	// stop, which is the bug this file exists to fix.
-	out, err := exec.CommandContext(ctx, lsof,
-		"-w", "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt").Output()
-
-	// A non-zero exit is tolerated; anything else is not. Failing to start the
-	// tool means it is missing, and a deadline means the answer may be truncated
-	// mid-record, so neither can be parsed.
-	var exited *exec.ExitError
-	if err != nil && !errors.As(err, &exited) {
-		return ""
-	}
-	if ctx.Err() != nil {
-		return ""
-	}
+	// -w suppresses the warnings that make lsof exit non-zero; runTool owns the
+	// rule about when a non-zero exit still carries a usable answer, so the two
+	// lookups on the path to a kill cannot drift apart on it.
+	out := runTool(lsof, "-w", "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt")
 	// No records: the process is not ours, or it has already gone. Fail closed.
 	if len(out) == 0 {
 		return ""
