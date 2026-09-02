@@ -54,10 +54,12 @@ monorepo root, and it is absent from `services/versions.json` and
 binaries it is not one of — so both front ends resolve it the same way. See
 "Inference Demo" below.
 
-The connector remains `connecting` until broker `app:ready` and the required
-Ollama proxy readiness arrive. A startup deadline routes failures to
-Settings > Service with the error and log/restart controls; late readiness
-transitions the existing process tree to connected.
+The connector remains `connecting` until broker `app:ready` arrives. Proxy
+readiness is **not** part of that gate: it is an asynchronous capability signal
+the bridge reports afterwards, so no engine's proxy facade can hold the Overview
+window closed. A startup deadline routes failures to Settings > Service with the error
+and log/restart controls; late readiness transitions the existing process tree
+to connected.
 
 ## Communication
 
