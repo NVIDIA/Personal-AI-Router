@@ -55,6 +55,92 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 	}
 }
 
+// adoptedEngineOnLivePort seeds an engine that this process did not launch and
+// cannot stop: running, adopted, no owned proc, and a real listener on its port
+// so doStop's readiness probe can never confirm it went away. That is the one
+// shape whose stop is refused, leaving st.running true — so a repeated sweep
+// does the whole thing again instead of hitting the !st.running early return.
+// Its bin path is outside the managed install dir, so the port-reclaim branch
+// declines it rather than terminating a stranger's process.
+func adoptedEngineOnLivePort(t *testing.T, ex *Executor) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	st, err := ex.state("fake")
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	st.mu.Lock()
+	st.running = true
+	st.adopted = true
+	st.proc = nil
+	st.port = ln.Addr().(*net.TCPAddr).Port
+	st.binPath = filepath.Join(t.TempDir(), "someone-elses-engine")
+	st.mu.Unlock()
+}
+
+// TestStopAllSweepsOnce is the quit-latency guard. An ordinary quit asks for
+// StopAll three times — the desktop's engine:prepare-shutdown, the broker's own
+// teardown call, and the stdin-EOF path in Run — and every sweep used to re-pay
+// doStop's readiness probe for an engine whose stop it can only decline.
+// Measured against a real worker tree that had adopted an externally-managed
+// Ollama, that was 1068ms + 1052ms + 1040ms, essentially the whole quit.
+func TestStopAllSweepsOnce(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	adoptedEngineOnLivePort(t, ex)
+
+	first := time.Now()
+	ex.StopAll()
+	sweep := time.Since(first)
+	if sweep < 500*time.Millisecond {
+		t.Fatalf("first sweep took %v; too fast to have probed, so this no longer covers the repeat", sweep)
+	}
+
+	// The engine is still there and still un-stoppable, so an unguarded sweep
+	// would spend the probe again.
+	repeat := time.Now()
+	ex.StopAll()
+	ex.StopAll()
+	if elapsed := time.Since(repeat); elapsed > sweep/2 {
+		t.Fatalf("two further StopAll calls took %v against a %v sweep; the sweep is repeating", elapsed, sweep)
+	}
+}
+
+// TestStopAllWaitsForTheSweepInFlight is the other half, and the reason this is
+// a joining guard rather than a plain skip. A caller that returned while the
+// first sweep was still running would report engines stopped before they were:
+// the broker would close stdin, engine-manager would exit, and the engines it
+// launched would be left running with nothing owning them.
+func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	adoptedEngineOnLivePort(t, ex)
+
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		ex.StopAll()
+	}()
+
+	// Let the first caller take the Once, then join behind it.
+	time.Sleep(100 * time.Millisecond)
+	second := time.Now()
+	ex.StopAll()
+	waited := time.Since(second)
+
+	select {
+	case <-sweepDone:
+	default:
+		t.Fatal("the second caller returned while the first sweep was still running")
+	}
+	if waited < 100*time.Millisecond {
+		t.Fatalf("second caller waited only %v; it did not join the sweep in flight", waited)
+	}
+}
+
 func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
 	t.Setenv("FAKE_PID_FILE", pidFile)
