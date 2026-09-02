@@ -255,6 +255,13 @@ type Broker struct {
 	clusterMgrSup  *supervisor
 	schedulerSup   *supervisor
 
+	// startedWorkers are the supervisors whose first spawn succeeded, which is
+	// exactly the set teardown may join: supervisor.Stop waits on a monitor
+	// goroutine that only a successful Start launches. Written by Serve as it
+	// brings each worker up and read by its deferred stopWorkers, both on the
+	// same goroutine, so it needs no lock.
+	startedWorkers []*supervisor
+
 	// subMu guards subscribed. The discovery:nodes-changed stream is
 	// opt-in: emitNodesChanged (called on the scanner-event goroutine)
 	// reads this flag while the discovery:subscribe / discovery:unsubscribe
@@ -1977,8 +1984,8 @@ func (b *Broker) onErrorsUpdate(params json.RawMessage) {
 // worker, wires its crash/recovery callbacks (report into the pipeline,
 // drop the handle while down), and starts it. It returns the supervisor,
 // or nil when the binary wasn't resolved or the first spawn failed — in
-// both cases the broker simply runs without that worker. The caller defers
-// Stop on a non-nil result.
+// both cases the broker simply runs without that worker. A started worker is
+// registered for teardown here, so the caller needs no defer of its own.
 func (b *Broker) startOptionalWorker(name, path string, spawn func() (supervisedHandle, error), clearHandle func()) *supervisor {
 	if path == "" {
 		slog.Info("worker path not resolved; running without it", "worker", name)
@@ -1990,7 +1997,17 @@ func (b *Broker) startOptionalWorker(name, path string, spawn func() (supervised
 		slog.Warn("worker failed to start; continuing without it", "worker", name, "path", path, "err", err)
 		return nil
 	}
+	b.trackWorker(sup)
 	return sup
+}
+
+// trackWorker records a supervisor whose first spawn succeeded so the deferred
+// stopWorkers joins it. Every started worker must be tracked exactly once: an
+// untracked one is never asked to stop and outlives the broker, and one tracked
+// without a successful Start parks teardown on a monitor goroutine that was
+// never launched.
+func (b *Broker) trackWorker(s *supervisor) {
+	b.startedWorkers = append(b.startedWorkers, s)
 }
 
 // Serve runs the JSON-RPC loop until the peer disconnects, the context is
@@ -2069,6 +2086,12 @@ func (b *Broker) Serve(ctx context.Context) error {
 		defer stopFlusher()
 	}
 
+	// Join every started worker from one place, so the joins fan out instead of
+	// costing the sum of ten sequential defers (see stopWorkers). Registered
+	// after the flusher's stop so it runs BEFORE it (LIFO): the workers must be
+	// quiescent before the final workload-history flush.
+	defer b.stopWorkers()
+
 	// Bound how long a lost terminal event can keep a remote workload displaying
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
@@ -2084,7 +2107,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	if err := b.scannerSup.Start(); err != nil {
 		return fmt.Errorf("start scanner: %w", err)
 	}
-	defer b.scannerSup.Stop()
+	b.trackWorker(b.scannerSup)
 
 	// nvpair-errors is the service-error datastore and the backbone of the
 	// error-surfacing pipeline: producers' errors:report / errors:clear
@@ -2103,7 +2126,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 			slog.Warn("nvpair-errors failed to start; continuing with the error pipeline disabled", "path", b.errorsPath, "err", err)
 			b.errorsSup = nil
 		} else {
-			defer b.errorsSup.Stop()
+			b.trackWorker(b.errorsSup)
 		}
 	} else {
 		slog.Info("nvpair-errors path not resolved; running with the error pipeline disabled")
@@ -2114,14 +2137,8 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// safely move an identified LM Studio command runtime. Unknown owners are
 	// never terminated; preparation instead selects an explicit fallback.
 	b.settingsSup = b.startOptionalWorker("settings", b.settingsPath, b.spawnSettings, func() { b.setSettings(nil) })
-	if b.settingsSup != nil {
-		defer b.settingsSup.Stop()
-	}
 	b.prepareOllamaHostAliasCandidate()
 	b.engineMgrSup = b.startOptionalWorker("engine-manager", b.engineMgrPath, b.spawnEngineMgr, func() { b.setEngineMgr(nil); b.clearEngineRelaySub() })
-	if b.engineMgrSup != nil {
-		defer b.engineMgrSup.Stop()
-	}
 	b.migrateLegacyEngineSettings()
 	b.prepareEnabledFacades()
 
@@ -2138,7 +2155,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 			slog.Warn("node-info failed to start; continuing without local node advertisement", "path", b.nodeInfoPath, "err", err)
 			b.nodeInfoSup = nil
 		} else {
-			defer b.nodeInfoSup.Stop()
+			b.trackWorker(b.nodeInfoSup)
 		}
 	} else {
 		slog.Info("node-info path not resolved; running without local node advertisement")
@@ -2192,7 +2209,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 			}
 			b.finishLMStudioProxyTerminal()
 		} else {
-			defer b.proxySup.Stop()
+			b.trackWorker(b.proxySup)
 		}
 	}
 
@@ -2216,7 +2233,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 			slog.Warn("workload-manager failed to start; continuing without cluster workload relay", "path", b.workloadMgrPath, "err", err)
 			b.workloadMgrSup = nil
 		} else {
-			defer b.workloadMgrSup.Stop()
+			b.trackWorker(b.workloadMgrSup)
 		}
 	} else {
 		slog.Info("workload-manager path not resolved; running without cluster workload relay")
@@ -2228,23 +2245,14 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// crash surfacing); the broker demuxes their errors:* notifications
 	// into the pipeline and relays their control-plane requests.
 	b.manualNodesSup = b.startOptionalWorker("manual-nodes", b.manualNodesPath, b.spawnManualNodes, b.clearManualNodesState)
-	if b.manualNodesSup != nil {
-		defer b.manualNodesSup.Stop()
-	}
 	// nvpair-cluster-manager owns the node's cryptographic identity, the
 	// trusted-node store, and the PIN-based pairing flow, and answers
 	// cluster:* / nodes:* requests the broker relays.
 	b.clusterMgrSup = b.startOptionalWorker("cluster-manager", b.clusterMgrPath, b.spawnClusterManager, func() { b.setClusterMgr(nil) })
-	if b.clusterMgrSup != nil {
-		defer b.clusterMgrSup.Stop()
-	}
 	// nvpair-job-scheduler ranks the discovered nodes least-loaded-first and emits
 	// schedule:priority; the broker fans it out to the proxies. Non-fatal like
 	// the other auxiliaries — absent it, the proxies keep their default order.
 	b.schedulerSup = b.startOptionalWorker("scheduler", b.schedulerPath, b.spawnJobScheduler, func() { b.setScheduler(nil) })
-	if b.schedulerSup != nil {
-		defer b.schedulerSup.Stop()
-	}
 
 	if err := b.codec.Notify("app:ready", ReadyParams{Version: Version}); err != nil {
 		return fmt.Errorf("send app:ready: %w", err)
