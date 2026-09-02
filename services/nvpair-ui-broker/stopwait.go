@@ -4,10 +4,14 @@
 package main
 
 import (
+	"cmp"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,9 +26,6 @@ const (
 	// engineManagerStopGrace is longer because nvpair-engine-manager stops the
 	// engine processes it launched (StopAll) on its way out. Cutting that short is
 	// exactly what the old 2s-grace-then-kill did, and it orphaned engines.
-	// graceFor reserves this out of the shared budget so the workers joined ahead
-	// of it cannot spend it — it is joined late in the sequence, so join order
-	// alone would otherwise decide how much it gets.
 	engineManagerStopGrace = 6 * time.Second
 
 	// engineStopAllBudget bounds the broker's wait for engine-manager to stop the
@@ -38,10 +39,8 @@ const (
 	workerSignalGrace = 2 * time.Second
 
 	// teardownBudget bounds everything the broker does between being told to shut
-	// down and its last worker join. The joins run one after another, so
-	// per-worker graces alone add up: a tree where every worker hangs for its
-	// own grace outlives the parent's shutdown grace several times over, and
-	// being killed from outside mid-teardown skips the rest of shutdown.
+	// down and its last worker join, so being killed from outside mid-teardown —
+	// which skips the rest of shutdown — cannot happen.
 	//
 	// The accounting the parent's grace has to cover, in order:
 	//
@@ -53,11 +52,21 @@ const (
 	// other worker join — draws on this one budget, so no step can be lengthened
 	// without the others giving way. It must also exceed the largest single worker
 	// grace, or that worker could never be granted it.
+	//
+	// stopWorkers fans the worker joins out, so they cost the slowest worker
+	// rather than the sum. The budget still bounds the phases ahead of them and
+	// remains the backstop for a tree where several workers hang at once.
 	teardownBudget = 10 * time.Second
+
+	// teardownReportAfter is the total worker-teardown time past which the
+	// per-worker breakdown is logged. Concurrent joins put a healthy tree well
+	// under a second, so anything past this is worth naming.
+	teardownReportAfter = 2 * time.Second
 
 	// minWorkerGrace is the floor every worker keeps even once the budget is
 	// spent, so a worker milliseconds away from exiting is not signalled purely
-	// because earlier workers were slow.
+	// because the phases ahead of it — the proxy join and the engine StopAll
+	// wait — were slow.
 	minWorkerGrace = 250 * time.Millisecond
 
 	// engineManagerWorkerName selects the longer grace above.
@@ -116,16 +125,22 @@ func stopGraceFor(name string) time.Duration {
 }
 
 // graceFor returns the named worker's own grace, clipped to what is left of the
-// shared teardown budget and floored at minWorkerGrace. One slow worker still
-// gets its full grace, while many cannot add up past the budget.
+// shared teardown budget and floored at minWorkerGrace.
+//
+// Every worker draws on the remaining budget directly. While the joins ran
+// sequentially this also had to reserve engine-manager's longer grace out of
+// what the other workers could see, because engine-manager was joined late in
+// the sequence and the workers ahead of it would otherwise decide how long it
+// got to stop its engines. stopWorkers now joins them together, so they all read the
+// same remaining budget at the same moment and none can spend another's — and
+// the reservation had become a penalty, cutting healthy workers that needed a
+// few hundred milliseconds down to the floor whenever the budget dipped below
+// engine-manager's share.
 func graceFor(name string) time.Duration {
 	grace := stopGraceFor(name)
 	left, active := teardownRemaining()
 	if !active {
 		return grace
-	}
-	if name != engineManagerWorkerName {
-		left -= engineManagerStopGrace
 	}
 	if left < grace {
 		grace = left
@@ -223,6 +238,91 @@ func waitForStdinClose(name string, cmd *exec.Cmd, stdin io.Closer, done <-chan 
 		return
 	}
 	slog.Warn("worker killed", "worker", name, "waitedMs", time.Since(started).Milliseconds())
+}
+
+// workerJoin records how long one worker took to join.
+type workerJoin struct {
+	name string
+	took time.Duration
+}
+
+// stopWorkers joins every worker the broker started, concurrently.
+//
+// These joins used to be ten separate `defer <sup>.Stop()` statements, and Go
+// runs deferrals one at a time, so the tree's teardown cost the sum of the
+// per-worker exits instead of the slowest one. A healthy tree stops in
+// milliseconds either way, but the sum is what a tree under load pays: the
+// proxy and node-info both drain HTTP servers on their way out, so a few
+// simultaneously slow workers is the difference between one drain and several.
+//
+// Fanning them out is safe because no ordering between workers is left by the
+// time this runs. shutdownInferenceStack has already closed ingress at the
+// proxy and waited out engine-manager's StopAll, which are teardown's only two
+// dependencies. What remains is independent processes that each need their
+// stdin closed and their exit reaped. The proxy is joined again here;
+// supervisor.Stop is idempotent, so its second join is free.
+//
+// One property of the old defer order does go away: nvpair-errors was
+// registered early and so torn down late, which let a worker dying alongside it
+// still reach the error sink. That only ever mattered for a worker that crashed
+// during teardown — a clean stop reports nothing, since the supervisor's stop
+// path does not fire onCrash — and such a report goes to a pipeline the process
+// is about to discard, where no user would see it. forwardErrorsReport's nil
+// guard already makes the losing race a no-op rather than a panic.
+//
+// Only workers whose first spawn succeeded are joined. supervisor.Stop blocks on
+// the monitor goroutine that Start launches, so calling it on a supervisor that
+// never started would wait forever on a goroutine that does not exist.
+func (b *Broker) stopWorkers() {
+	if len(b.startedWorkers) == 0 {
+		return
+	}
+	// Arm the budget for the shutdown paths that never reach
+	// shutdownInferenceStack — an early Serve return, e.g. a failed app:ready.
+	// Idempotent, so the ordinary path keeps the clock it started there.
+	beginTeardown()
+
+	started := time.Now()
+	joins := make([]workerJoin, len(b.startedWorkers))
+	var wg sync.WaitGroup
+	for i, sup := range b.startedWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			at := time.Now()
+			sup.Stop()
+			joins[i] = workerJoin{name: sup.name, took: time.Since(at)}
+		}()
+	}
+	wg.Wait()
+
+	reportWorkerJoins(time.Since(started), joins)
+}
+
+// reportWorkerJoins names where teardown time went, once it is worth naming.
+//
+// This logs at warn deliberately. The desktop runs the broker at --log-level
+// warn, so an info-level report is missing from exactly the logs that get
+// collected when a user complains that quitting is slow. A ten-second teardown
+// reached QA with every existing diagnostic silent for that reason: the
+// escalation warnings only fire for a worker that misses its grace,
+// supervisor.Stop only names one that takes longer than workerStopReportAfter,
+// and a teardown that is merely the sum of prompt exits trips neither. The
+// breakdown is one line rather than one per worker, so a slow teardown is a
+// single grep away from its cause.
+func reportWorkerJoins(total time.Duration, joins []workerJoin) {
+	if total < teardownReportAfter {
+		return
+	}
+	slices.SortFunc(joins, func(a, b workerJoin) int { return cmp.Compare(b.took, a.took) })
+	parts := make([]string, 0, len(joins))
+	for _, j := range joins {
+		parts = append(parts, fmt.Sprintf("%s=%dms", j.name, j.took.Milliseconds()))
+	}
+	slog.Warn("worker teardown was slow",
+		"totalMs", total.Milliseconds(),
+		"workers", len(joins),
+		"joins", strings.Join(parts, " "))
 }
 
 // waitClosed reports whether done closed within d.
