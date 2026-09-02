@@ -751,7 +751,35 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
+//
+// Exactly one sweep runs per process, and every caller returns only once that
+// sweep has finished. Three separate entry points ask for it on an ordinary
+// quit — the engine:prepare-shutdown handler (which the desktop calls directly,
+// and the broker calls again from its own teardown) and the stdin-EOF path in
+// Run — because each is the right trigger for a different way of being shut
+// down: a desktop quit, a TUI or signal shutdown, and a parent that simply
+// severed the pipe.
+//
+// Left unguarded, all three ran the full sweep. That is free for an engine we
+// own, which is stopped by the first sweep and skipped by the rest at doStop's
+// !st.running check — but not for an adopted one, whose stop is refused, so
+// st.running stays true and each sweep re-pays doStop's readiness probe from
+// scratch. Measured against a real worker tree with an externally-managed
+// Ollama, the three sweeps cost 1068ms + 1052ms + 1040ms and were essentially
+// the entire 3.2s quit; the reclaim path's grace+2s wait can make a single
+// sweep cost ~7s, which is how quitting reached the ~15s the desktop waits
+// before it force-kills the tree.
+//
+// Blocking the later callers rather than returning early is the important half.
+// A caller that returned while the first sweep was still running would report
+// engines stopped before they were: the broker would close stdin, engine-manager
+// would exit, and the engines it launched would be orphaned. sync.Once.Do gives
+// exactly this — the first caller runs it, the rest wait for it.
 func (e *Executor) StopAll() {
+	e.stopAllOnce.Do(e.stopAllNow)
+}
+
+func (e *Executor) stopAllNow() {
 	e.shuttingDown.Store(true)
 	e.mu.Lock()
 	names := make([]string, 0, len(e.engines))

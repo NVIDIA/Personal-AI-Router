@@ -351,3 +351,17 @@ termination, console hiding) are the only build-tagged Go
 Shuts down on stdin EOF (parent closed the pipe), `SIGINT`/`SIGTERM`, or a
 `shutdown` JSON-RPC request — stopping any running engines first so none
 are orphaned.
+
+That engine sweep (`StopAll`) runs **exactly once per process**, and every
+caller returns only once it has finished. An ordinary desktop quit asks for it
+three times: the desktop sends `engine:prepare-shutdown`, the broker sends it
+again from its own teardown, and then closing stdin reaches the EOF path. Each
+is the right trigger for a different way of being shut down, so all three stay.
+
+Repeating the sweep is free for an engine this service owns — the first sweep
+stops it and the rest skip it — but not for an adopted one, whose stop can only
+be declined, so the sweep re-pays its readiness probe every time. That was the
+bulk of the app's quit latency. Later callers **wait** for the sweep in flight
+rather than returning early: returning early would report engines stopped before
+they were, and the broker would close stdin and exit while they were still
+running.
