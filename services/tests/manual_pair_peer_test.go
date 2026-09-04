@@ -40,6 +40,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -145,6 +146,46 @@ type brokerProc struct {
 	msgs   <-chan jsonrpc.Message
 	buf    []jsonrpc.Message
 	nextID int
+}
+
+// clusterManagerPort is the broker-owned cluster-manager port. It is a
+// compiled-in constant, so only one broker on this machine can hold it, and a
+// test that needs its *own* broker's pairing listener has to wait for whatever
+// held it last to let go.
+const clusterManagerPort = 14321
+
+// awaitPortFree blocks until nothing accepts on addr. The broker's ports are
+// fixed constants and a previous test's broker can still be tearing its workers
+// down when the next one starts; without this the new broker's cluster-manager
+// silently fails to bind and a pairing completion is posted to the wrong process.
+func awaitPortFree(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("%s was still held after 30s; a previous test's broker has not exited", addr)
+}
+
+// awaitPortListening blocks until addr accepts, so a pairing is not sent before
+// the listener that has to answer it exists.
+func awaitPortListening(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("nothing is listening on %s after 30s", addr)
 }
 
 func startBrokerWithClusterDir(t *testing.T, clusterDir string) *brokerProc {
@@ -280,13 +321,15 @@ func TestManualPairPeerBehavesLikeADiscoveredPeer(t *testing.T) {
 	cmB := startCM(t, baseB, portB)
 	t.Cleanup(cmB.stop)
 
-	// A is a real broker with its own real cluster-manager.
+	// A is a real broker with its own real cluster-manager. Its pairing port is a
+	// compiled-in constant, so wait for a previous test's broker to release it
+	// before starting, and for this one's listener to exist before pairing.
+	awaitPortFree(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(clusterManagerPort)))
 	brokerA := startBrokerWithClusterDir(t, dirA)
 	brokerA.call("discovery:subscribe", nil)
 	brokerA.call("proxy:subscribe", nil)
-
-	// The listeners need a moment to bind before pairing.
-	time.Sleep(time.Second)
+	awaitPortListening(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(clusterManagerPort)))
+	awaitPortListening(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(portB)))
 
 	// Pair A to B by address and port alone — no nodeId, because A has not
 	// discovered B and never will. This is the invite an operator sends after
