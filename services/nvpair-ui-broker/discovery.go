@@ -273,6 +273,19 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 	return gone
 }
 
+// hasSource reports whether the given source currently claims key. It answers
+// "does the daemon already own this record?" for the manual-node synthesis,
+// which must not write a directory entry the scanner is authoritative for.
+func (s *discoveryStore) hasSource(key string, source nodeSource) bool {
+	if key == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sn, ok := s.nodes[key]
+	return ok && sn.hasSource(source)
+}
+
 // Snapshot returns the narrow wire-format view used by
 // discovery:get-nodes and discovery:nodes-changed, sorted by id for
 // stable rendering. The rich EnrichedNode payload stays in the store

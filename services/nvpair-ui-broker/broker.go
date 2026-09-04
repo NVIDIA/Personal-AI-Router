@@ -305,6 +305,12 @@ type Broker struct {
 	manualMu           sync.Mutex
 	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
+	// manualRelayKeys are the directory keys this broker synthesized for manual
+	// PAIR nodes. The relay directory is keyed by hostUuid and the scanner writes
+	// the same keys, so a withdrawal has to know what it put there: removing a
+	// record the daemon owns would evict a live discovered peer from every
+	// consumer until its next browse event.
+	manualRelayKeys map[string]bool
 
 	// schedMu guards each engine's cached priority and generation. Per-engine
 	// delivery locks serialize asynchronous node/set-priority calls; a stale
@@ -382,6 +388,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		relayDir:           relay.NewDirectory(),
 		regCache:           relay.NewRegistrationCache(),
 		manualNodeKeys:     make(map[string]string),
+		manualRelayKeys:    make(map[string]bool),
 		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
 		workloads:          workloadstore.New(),
 		ollamaPortReady:    make(chan struct{}),
@@ -1295,7 +1302,7 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 // the alias's key changed (node-info revealed its real UUID) the
 // old key is reprojected from a surviving alias or released.
 func (b *Broker) upsertManualNode(s manualNodeStatus) {
-	en := manualToEnriched(s)
+	en := b.manualEnriched(s)
 	key := en.storeKey()
 	receivedAt := time.Now()
 
@@ -1307,6 +1314,9 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 
 	b.store.Upsert(en, sourceManual)
 	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
+	// A PAIR node joins the discovery relay as if it had been found over mDNS, so
+	// every consumer treats it as the pinned peer it is.
+	b.applyManualDirectory(s, key)
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
 	// lmstudio-proxy) so inference can route to it; an unreachable engine is
 	// pulled back out. No-op for a proxy the broker doesn't supervise.
@@ -1350,13 +1360,15 @@ func (b *Broker) reprojectOrRelease(key string) {
 	survivor, ok := b.survivingAliasLocked(key)
 	b.manualMu.Unlock()
 	if ok {
-		b.store.Upsert(manualToEnriched(survivor.status), sourceManual)
+		b.store.Upsert(b.manualEnriched(survivor.status), sourceManual)
 		b.bridgeManualNode(survivor.status, key)
+		b.applyManualDirectory(survivor.status, key)
 		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
 		return
 	}
 	b.store.Remove(key, sourceManual)
 	b.removeManualNodeFromProxies(key)
+	b.releaseManualDirectory(key)
 	b.removeTelemetry(sourceManual, key)
 }
 
@@ -1403,6 +1415,9 @@ func (b *Broker) clearManualNodesState() {
 		// doesn't keep a stale manual target the crashed prober can no
 		// longer vouch for. Clients re-add manual nodes after the restart.
 		b.removeManualNodeFromProxies(key)
+		// And out of the discovery relay, for the same reason: a synthesized PAIR
+		// peer is only as good as the prober that keeps vouching for it.
+		b.releaseManualDirectory(key)
 	}
 }
 
