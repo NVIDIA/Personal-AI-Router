@@ -15,6 +15,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strconv"
@@ -26,6 +27,9 @@ import (
 )
 
 func strptr(s string) *string { return &s }
+
+// errFakeTimeout stands in for a probe that got no answer.
+var errFakeTimeout = errors.New("simulated probe timeout")
 
 // probeSync registers an entry and probes it on this goroutine, so a test reads a
 // settled status instead of racing addNode's background probe.
@@ -113,6 +117,67 @@ func TestProbeNode_PairNodeIsNotProbedOnItsEnginePorts(t *testing.T) {
 	}
 	if status.HostUUID != "peer-host-uuid" {
 		t.Fatalf("hostUuid = %q, want the peer's identity", status.HostUUID)
+	}
+}
+
+// One missed node-info answer must not turn a peer back into a stranger. Three
+// seconds is a routine gap across an overlay network, and without hysteresis that
+// gap would probe the peer's proxy facades in plaintext, blank its service map,
+// and withdraw it from every consumer for a cycle. Discovery tolerates three
+// consecutive misses before evicting an mDNS node; this tolerates the same.
+func TestProbeNode_PairNodeSurvivesAMissedProbe(t *testing.T) {
+	m, _, rt := newTestManager()
+
+	var engineProbes atomic.Int32
+	for _, port := range []string{"11434", "1234"} {
+		host := net.JoinHostPort("gpu-box.tail1234.ts.net", port)
+		for _, path := range []string{"/", "/api/tags", "/v1/models"} {
+			rt.set(http.MethodGet, host, path, func(*http.Request) (*http.Response, error) {
+				engineProbes.Add(1)
+				return httpJSON(http.StatusForbidden, `{"error":"loopback-only"}`)
+			})
+		}
+	}
+
+	answering := true
+	rt.set(http.MethodGet, net.JoinHostPort("gpu-box.tail1234.ts.net", "14318"), "/v1/node-info",
+		func(*http.Request) (*http.Response, error) {
+			if !answering {
+				return nil, errFakeTimeout
+			}
+			data, _ := json.Marshal(pairNodeInfo())
+			return httpJSON(http.StatusOK, string(data))
+		})
+
+	entry := ManualEntry{Address: "gpu-box.tail1234.ts.net"}
+	probeSync(m, entry)
+
+	answering = false
+	for i := 0; i < probeFailThreshold; i++ {
+		m.probeNode(entry)
+		status := statusFor(t, m, nodeID(entry))
+		if !status.PairNode {
+			t.Fatalf("probe %d: a missed node-info answer must not un-pair a peer", i+1)
+		}
+		if status.NodeInfoUp {
+			t.Fatalf("probe %d: the node must still read as unreachable", i+1)
+		}
+		if status.Services[noderec.ServiceEngineManager] != 14322 {
+			t.Fatalf("probe %d: services = %v, want the peer's map carried across the gap", i+1, status.Services)
+		}
+		if status.ClusterUUID == nil || *status.ClusterUUID != "peer-cluster-uuid" {
+			t.Fatalf("probe %d: the peer's principal must survive the gap", i+1)
+		}
+	}
+	if n := engineProbes.Load(); n != 0 {
+		t.Fatalf("%d plaintext engine probes during the gap, want 0", n)
+	}
+
+	// Past the tolerance it does revert: a node that genuinely stopped being a
+	// PAIR node must not be remembered as one forever.
+	m.probeNode(entry)
+	if statusFor(t, m, nodeID(entry)).PairNode {
+		t.Fatal("past the failure threshold the node must revert to a bare host")
 	}
 }
 

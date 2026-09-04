@@ -75,7 +75,8 @@ type AvailableNode struct {
 	// is the key clients should dedup/track nodes by; id/name stay the hostname
 	// for display. Two machines sharing a hostname are distinct by HostUUID. It
 	// is the same value the cluster surface exposes as nodeUuid.
-	// Omitted for manual nodes, which carry no UUID and are keyed by id.
+	// A manually added node carries one too: its real UUID once its node-info
+	// reports one, and its manual id until then, so it is never keyless.
 	HostUUID  string `json:"hostUuid,omitempty"`
 	IPAddress string `json:"ipAddress"`
 	// IPAddresses is every address this node published, in its own ranked order

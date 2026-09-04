@@ -39,8 +39,9 @@ type EnrichedNode struct {
 	// It's the discovery-store key, so a PC rename — which changes the hostname
 	// (ID) but not the UUID — updates the existing entry in place instead of
 	// leaving a ghost under the old name. It stays off the wire; the
-	// client-facing id/name remain the hostname. Empty for manual nodes, which
-	// fall back to keying by their own ID.
+	// client-facing id/name remain the hostname. A manual node carries one too:
+	// its real UUID once its node-info reports one, and its manual id until then
+	// (see manualToEnriched), so the store key is never empty.
 	HostUUID  string      `json:"-"`
 	Host      string      `json:"host"`
 	Port      int         `json:"port"`

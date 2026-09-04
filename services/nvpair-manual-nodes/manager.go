@@ -379,6 +379,18 @@ func (m *Manager) probeAll(ctx context.Context) {
 	}
 }
 
+// lastProbe returns a node's previous status and consecutive-failure count, and
+// whether it is still tracked at all (it can be removed mid-probe).
+func (m *Manager) lastProbe(id string) (ManualNodeStatus, int, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tn, ok := m.nodes[id]
+	if !ok {
+		return ManualNodeStatus{}, 0, false
+	}
+	return tn.status, tn.consecutiveFails, true
+}
+
 func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
@@ -394,7 +406,27 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	// there. Its engines are read from its engine manager instead, and it is
 	// routed to through those same facades over cluster mTLS.
 	nodeInfoUp, info := m.probeNodeInfo(entry, ports)
+
+	// What this node was on the previous cycle, read before anything else runs:
+	// the sticky decision below has to be made before the engine legs, not after.
+	last, lastFails, tracked := m.lastProbe(id)
+	if !tracked {
+		return
+	}
+
+	// A single missed node-info answer must not turn a peer back into a stranger.
+	// Three seconds is a routine gap across an overlay network — a relayed path, a
+	// wake from sleep, a peer under load — and without hysteresis that gap would
+	// probe the peer's proxy facades in plaintext, blank its service map and
+	// withdraw it from every consumer, only to restore it 10 seconds later.
+	// Discovery tolerates three consecutive misses before evicting an mDNS node;
+	// this is the same tolerance, bounded by the same counter, so a node that
+	// genuinely stops being a PAIR node still reverts within one failure episode.
 	pairNode := nodeInfoUp && len(info.Services) > 0
+	sticky := !pairNode && last.PairNode && lastFails < probeFailThreshold
+	if sticky {
+		pairNode = true
+	}
 
 	newStatus := ManualNodeStatus{
 		ID:             id,
@@ -418,7 +450,20 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		HostUUID:       info.HostUUID,
 	}
 
-	if pairNode {
+	if sticky {
+		// Carry the peer's identity forward across the gap, exactly as HostUUID is
+		// carried below: what a consumer holds must not oscillate because one
+		// probe timed out. NodeInfoUp stays false, so the node still reads as
+		// unreachable and the failure counter still runs.
+		newStatus.ClusterUUID = last.ClusterUUID
+		newStatus.Services = last.Services
+		newStatus.Models = last.Models
+		newStatus.ModelsByEngine = last.ModelsByEngine
+		newStatus.LoadedByEngine = last.LoadedByEngine
+		newStatus.GPUs = last.GPUs
+		newStatus.CPU = last.CPU
+		newStatus.Memory = last.Memory
+	} else if pairNode {
 		models := m.fetchPeerModels(addr, info)
 		newStatus.Models = models.Models
 		newStatus.ModelsByEngine = models.ModelsByEngine
