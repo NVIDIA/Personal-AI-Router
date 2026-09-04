@@ -7,7 +7,7 @@
     "lmstudio-proxy": "0.16.2",
     "nvpair-node-info": "0.13.3",
     "nvpair-node-scanner": "0.20.3",
-    "nvpair-manual-nodes": "0.11.1",
+    "nvpair-manual-nodes": "0.12.0",
     "nvpair-workload-manager": "0.13.3",
     "nvpair-errors": "0.7.4",
     "nvpair-node-settings": "1.0.4",

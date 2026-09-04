@@ -62,6 +62,8 @@ Emitted when a manually added node has been probed and its initial status determ
 
 Each node is probed for both inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`) and LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list). `lmstudio_up` / `lmstudio_port` / `lmstudio_models` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run either engine, both, or neither.
 
+When nothing answers on `:11434`, the same Ollama probe is retried on `:17434`, the default port of [llmman](https://github.com/llmmanorg/llmman), which serves the Ollama API. Such a node reports `ollama_up: true` with `ollama_port: 17434` and is bridged into `ollama-proxy` like an Ollama node.
+
 ### `node/updated`
 
 Emitted when a periodic probe detects a change (service going up/down, models,
@@ -134,13 +136,13 @@ Changes the log level at runtime. Accepted as either a request (answered with `{
 
 Each manual node is probed every 10 seconds, with a 3-second timeout per leg, for:
 
-- **Ollama** on port 11434: health check (`GET /`) and model list (`GET /api/tags`)
+- **Ollama** on port 11434: health check (`GET /`) and model list (`GET /api/tags`). If it does not answer, the same probe is sent to port 17434, where [llmman](https://github.com/llmmanorg/llmman) serves the Ollama API; `ollama_port` reports whichever port answered
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
 - **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
 
 A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
 
-The three engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
+The engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
 
 ## Shutdown
 
