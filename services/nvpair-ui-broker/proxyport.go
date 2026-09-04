@@ -137,6 +137,13 @@ func (b *Broker) markOllamaPortReady() {
 }
 
 func (b *Broker) setOllamaProxyFallback(excludedPorts ...int) int {
+	// An explicit env override is authoritative: tests pin the port so spawn
+	// never fights a cohabiting process, and the fallback probe must not
+	// stomp it.
+	if p := b.servicePorts.OllamaProxy; p != 0 {
+		b.ollamaProxyStartupPort.Store(int32(p))
+		return p
+	}
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		excludedPorts = append(excludedPorts, aliasPort)
 	}

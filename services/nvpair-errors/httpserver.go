@@ -23,6 +23,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,6 +32,10 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
 )
+
+// maxIngestBodyBytes bounds an inbound error-sync snapshot, matching the
+// 1 MiB cap the other inter-node endpoints apply to request bodies.
+const maxIngestBodyBytes = 1 << 20
 
 // newErrorsMux builds the HTTP routes backed by the manager. Split out
 // from the listener so tests can exercise the handlers via
@@ -51,13 +56,14 @@ func newErrorsMux(mgr *Manager, mesh *clustertrust.Mesh) *http.ServeMux {
 		// unclustered node serve this data in the clear, so there is no branch here
 		// for a future caller to widen.
 		mesh.Refresh()
-		if _, ok := mesh.VerifyClientPin(r); !ok {
+		callerUUID, ok := mesh.VerifyClientPin(r)
+		if !ok {
 			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
 			return
 		}
 		switch r.Method {
 		case http.MethodPost:
-			handleIngest(w, r, mgr)
+			handleIngest(w, r, mgr, callerUUID)
 		case http.MethodGet:
 			handleServeLocal(w, mgr)
 		default:
@@ -68,15 +74,16 @@ func newErrorsMux(mgr *Manager, mesh *clustertrust.Mesh) *http.ServeMux {
 	return mux
 }
 
-// handleIngest reconciles a peer's pushed SyncEnvelope. A malformed
-// body or an envelope missing its nodeId is a 400 — we never let a
-// peer reconcile our own origin (the manager rejects nodeId ==
-// localNodeID as a no-op, but we reject empty here so the client gets
-// a clear signal rather than a silent accept).
-func handleIngest(w http.ResponseWriter, r *http.Request, mgr *Manager) {
+// handleIngest reconciles a peer's pushed SyncEnvelope. The envelope's nodeId
+// is NOT trusted: the origin identity is the mTLS-authenticated caller UUID,
+// which the pin store keys identically to the nodeId the push side uses. A
+// mismatched body value is a 400 (caught by tests and honest peers), a
+// malformed body is a 400, and the manager still rejects reconciling our own
+// origin as a no-op.
+func handleIngest(w http.ResponseWriter, r *http.Request, mgr *Manager, callerUUID string) {
 	defer r.Body.Close()
 	var env errors.SyncEnvelope
-	if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxIngestBodyBytes)).Decode(&env); err != nil {
 		slog.Warn("ingest: bad request body", "err", err)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
@@ -85,9 +92,15 @@ func handleIngest(w http.ResponseWriter, r *http.Request, mgr *Manager) {
 		http.Error(w, `"nodeId" is required`, http.StatusBadRequest)
 		return
 	}
+	if env.NodeID != callerUUID {
+		slog.Warn("ingest: envelope nodeId does not match the authenticated caller",
+			"caller", callerUUID)
+		http.Error(w, "nodeId does not match the authenticated caller", http.StatusBadRequest)
+		return
+	}
 
-	mgr.ReconcilePeer(env.NodeID, env.Errors)
-	slog.Debug("ingested peer snapshot", "nodeId", env.NodeID, "count", len(env.Errors))
+	mgr.ReconcilePeer(callerUUID, env.Errors)
+	slog.Debug("ingested peer snapshot", "nodeId", callerUUID, "count", len(env.Errors))
 	w.WriteHeader(http.StatusNoContent)
 }
 

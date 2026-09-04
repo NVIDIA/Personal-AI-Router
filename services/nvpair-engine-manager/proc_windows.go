@@ -30,14 +30,24 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 	}
 }
 
-// gracefulSignal stops the process tree and is the only stop signal
-// engine-manager sends: stop() sends this once and waits for the engine to
-// exit. Windows has no SIGTERM, and the engines we spawn run windowless
-// (CREATE_NO_WINDOW), so a non-/F taskkill only posts WM_CLOSE — which a
-// windowless process can't receive ("can only be terminated forcefully"), i.e.
-// it does nothing. Never force-killing such a process would leave the engine
-// running forever, so on Windows the stop is taskkill /T /F.
+// gracefulSignal stops the process tree with taskkill /T /F. Windows has no
+// SIGTERM, and the engines we spawn run windowless (CREATE_NO_WINDOW), so a
+// non-/F taskkill only posts WM_CLOSE — which a windowless process can't
+// receive ("can only be terminated forcefully"), i.e. it does nothing. Never
+// force-killing such a process would leave the engine running forever, so on
+// Windows the stop is immediately /T /F; stop()'s escalation timer never
+// fires because the tree is already dead by the time gracefulSignal returns.
 func gracefulSignal(cmd *exec.Cmd) error {
+	return taskkill(cmd, true)
+}
+
+// forceSignal is the escalation stop() uses when the engine ignores the
+// graceful signal. On Windows gracefulSignal already force-killed the whole
+// tree, so this is a no-op: taskkill /T /F cannot be ignored.
+func forceSignal(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
 	return taskkill(cmd, true)
 }
 

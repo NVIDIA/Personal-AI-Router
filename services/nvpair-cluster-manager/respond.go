@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,6 +95,7 @@ func (m *Manager) handleRespondToInvite(msg *Message) {
 		// teardown is authoritative even if the notify ultimately fails — the
 		// inviter's invite TTL then expires the pending invite as a fallback.
 		inviterAddr := sess.addr
+		signalTag := sessionSignalTag(sess, p.InviteID, "decline")
 		m.finishInvite(p.InviteID, inviteStateDeclined)
 		if sess.peerPairing != nil {
 			m.removeMemberByUUID(sess.peerPairing.NodeUUID)
@@ -101,7 +103,7 @@ func (m *Manager) handleRespondToInvite(msg *Message) {
 		m.deleteSession(p.InviteID)
 		sess.mu.Unlock()
 		m.emitNodesChanged()
-		go m.notifyInviterTerminal(inviterAddr, p.InviteID, "decline", "")
+		go m.notifyInviterTerminal(inviterAddr, p.InviteID, "decline", "", signalTag)
 		log.Printf("invite %s: declined by local user", p.InviteID)
 		m.respondInvite(msg, p.InviteID)
 		return
@@ -152,6 +154,7 @@ func (m *Manager) handleRespondToInvite(msg *Message) {
 		// after the session is dropped. Local teardown is authoritative even if
 		// the notify fails — the inviter's invite TTL is the remaining backstop.
 		inviterAddr := sess.addr
+		signalTag := sessionSignalTag(sess, p.InviteID, "fail")
 		m.finishInviteReason(p.InviteID, inviteStateFailed, reason)
 		if sess.peerPairing != nil {
 			m.removeMemberByUUID(sess.peerPairing.NodeUUID)
@@ -159,7 +162,7 @@ func (m *Manager) handleRespondToInvite(msg *Message) {
 		m.deleteSession(p.InviteID)
 		sess.mu.Unlock()
 		m.emitNodesChanged()
-		go m.notifyInviterTerminal(inviterAddr, p.InviteID, "fail", reason)
+		go m.notifyInviterTerminal(inviterAddr, p.InviteID, "fail", reason, signalTag)
 		m.respondInvite(msg, p.InviteID)
 		return
 	}
@@ -249,7 +252,19 @@ func (m *Manager) runCompletionExchangeLocked(sess *pairingSession, pin string) 
 	if sess.addr == "" {
 		return fmt.Errorf("inviter address unknown")
 	}
-	if err := sess.peer.OOBInputNoob(noobFromPIN(pin)); err != nil {
+	// The salt arrived inside the inviter's MAC-covered ServerInfo (captured
+	// into sess.peerPairing at Initial completion), so the PIN Noob we derive
+	// matches what the inviter injected. Empty salt means a legacy pre-salt
+	// inviter: derive the legacy unsalted Noob (see pinNoob).
+	salt := sess.pinSalt
+	if len(salt) == 0 && sess.peerPairing != nil && sess.peerPairing.PinSalt != "" {
+		s, err := base64.StdEncoding.DecodeString(sess.peerPairing.PinSalt)
+		if err != nil {
+			return fmt.Errorf("decode pin salt: %w", err)
+		}
+		salt = s
+	}
+	if err := sess.peer.OOBInputNoob(deriveNoobFromPINAndSalt(pin, salt)); err != nil {
 		return fmt.Errorf("feed pin: %w", err)
 	}
 
@@ -355,16 +370,18 @@ func (m *Manager) notifyInviterAuthenticated(inviterAddr string, inviterDER []by
 }
 
 // notifyInviterTerminal POSTs a pre-commit pairing outcome signal
-// (decline/fail/expire). Retries a few times; remaining failures are logged and
-// periodic reconciliation/TTL cleanup is the backstop.
-func (m *Manager) notifyInviterTerminal(inviterAddr, inviteID, phase, reason string) {
+// (decline/fail/expire), authenticated with signalTag over the session's
+// ephemeral Key Exchange secret (see pairingSignalMAC). Retries a few times;
+// remaining failures are logged and periodic reconciliation/TTL cleanup is the
+// backstop.
+func (m *Manager) notifyInviterTerminal(inviterAddr, inviteID, phase, reason, signalTag string) {
 	if inviterAddr == "" {
 		return
 	}
 	client := &http.Client{Timeout: pairingHTTPTimeout}
 	var err error
 	for attempt := 1; attempt <= inviterNotifyAttempts; attempt++ {
-		err = postPairingSignal(client, inviterAddr, inviteID, phase, reason)
+		err = postPairingSignalTagged(client, "http", inviterAddr, inviteID, phase, reason, signalTag)
 		if err == nil {
 			return
 		}
@@ -373,6 +390,18 @@ func (m *Manager) notifyInviterTerminal(inviterAddr, inviteID, phase, reason str
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
 	}
+}
+
+// sessionSignalTag computes the terminal-signal MAC for a live joiner session
+// (caller holds sess.mu) and must be called before the session is deleted.
+// An empty tag is returned when no Key Exchange secret exists yet — the signal
+// is then sent unauthenticated and a hardened inviter falls back to its TTL.
+func sessionSignalTag(sess *pairingSession, inviteID, phase string) string {
+	key, err := sess.ephemeralKey()
+	if err != nil {
+		return ""
+	}
+	return pairingSignalMAC(key, inviteID, phase)
 }
 
 // finishInvite transitions an invite to a terminal state and stamps respondedAt.

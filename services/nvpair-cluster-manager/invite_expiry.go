@@ -239,11 +239,12 @@ func (m *Manager) expireInboundInvitesLocked(ids []string) {
 			membersChanged = true
 		}
 		inviterAddr := sess.addr
+		signalTag := sessionSignalTag(sess, id, "expire")
 		m.deleteSession(id)
 		sess.mu.Unlock()
 
 		m.emitInviteExpired(id)
-		go m.notifyInviterTerminal(inviterAddr, id, "expire", "")
+		go m.notifyInviterTerminal(inviterAddr, id, "expire", "", signalTag)
 		log.Printf("invite %s: expired inbound (TTL elapsed with no local response)", id)
 	}
 	if membersChanged {

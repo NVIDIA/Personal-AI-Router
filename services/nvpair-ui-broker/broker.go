@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,7 +21,7 @@ import (
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
-	"nvpair-shared/errors"
+	gerrors "nvpair-shared/errors"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
 	"nvpair-shared/schedulerwire"
@@ -161,6 +162,11 @@ type Broker struct {
 	clusterMgrPath    string
 	schedulerPath     string
 	clusterDir        string
+	// servicePorts overrides the fixed inter-node service ports (see
+	// resolveServicePorts). Defaults keep the spec'd values; NVPAIR_TEST
+	// environments set them to free ports so concurrent test runs and
+	// cohabiting dev machines never skip on fixed-port collisions.
+	servicePorts servicePorts
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
@@ -178,7 +184,7 @@ type Broker struct {
 	ollamaProxyGeneration            uint64 // guarded by ollamaHostAliasMu
 	ollamaHostAliasSyncMu            sync.Mutex
 	ollamaHostAliasErrorMu           sync.Mutex
-	ollamaHostAliasError             *errors.ServiceError
+	ollamaHostAliasError             *gerrors.ServiceError
 	ollamaPortReady                  chan struct{}
 	ollamaPortReadyOnce              sync.Once
 	managedLMStudioFacade            atomic.Bool
@@ -361,7 +367,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// only. The same value is passed to nvpair-errors via --node-id so
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
-	return &Broker{
+	b := &Broker{
 		codec:              codec,
 		startedAt:          time.Now(),
 		nodeID:             nodeID,
@@ -377,6 +383,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		clusterMgrPath:     paths.clusterMgr,
 		schedulerPath:      paths.scheduler,
 		clusterDir:         paths.clusterDir,
+		servicePorts:       resolveServicePorts(os.Getenv),
 		store:              newDiscoveryStore(),
 		telemetry:          newTelemetryCache(),
 		relayDir:           relay.NewDirectory(),
@@ -387,6 +394,16 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		ollamaPortReady:    make(chan struct{}),
 		lmstudioPortReady:  make(chan struct{}),
 	}
+	// Seed explicit proxy listen ports from the env overrides so spawnProxy /
+	// spawnLMStudioProxy pass --port instead of letting the proxies fall back
+	// to their defaults (11435/1234), which a dev machine may already hold.
+	if b.servicePorts.OllamaProxy != 0 {
+		b.ollamaProxyStartupPort.Store(int32(b.servicePorts.OllamaProxy))
+	}
+	if b.servicePorts.LMStudioProxy != 0 {
+		b.lmstudioProxyStartupPort.Store(int32(b.servicePorts.LMStudioProxy))
+	}
+	return b
 }
 
 // registerService records a local service in the discovery registration cache
@@ -617,7 +634,8 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// /v1/node-info agrees with the identity the fleet keys on, even on a custom
 	// --cluster-dir data root (node-info gets no cluster-dir, so it would
 	// otherwise resolve the default root and could report a different UUID).
-	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.forwardNodeInfoNotification, "--node-id", b.nodeID)
+	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.forwardNodeInfoNotification,
+		"--port", fmt.Sprintf("%d", b.servicePorts.NodeInfo), "--node-id", b.nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -627,9 +645,10 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// only source. It runs on every spawn, which also covers a supervised restart.
 	b.pushClusterIdentityToNodeInfo()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
-	// node-info binds the fixed :14318 (force_ports is inert), so the broker
-	// knows its port. Idempotent across restarts.
-	b.registerService(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: nodeInfoHTTPPort})
+	// node-info binds the port the broker passes via --port (the spec default
+	// :14318 or the servicePorts override), so the broker knows it. Idempotent
+	// across restarts.
+	b.registerService(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: b.servicePorts.NodeInfo})
 	slog.Info("node-info started", "path", b.nodeInfoPath, "pid", np.cmd.Process.Pid)
 	return np, nil
 }
@@ -672,12 +691,13 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 }
 
 func (b *Broker) spawnWorkloadManager() (supervisedHandle, error) {
-	wm, err := startWorkloadManager(b.workloadMgrPath, applog.LevelString(), b.relayDir, b.forwardWorkloadManagerNotification, b.clusterDirArgs()...)
+	wmArgs := append([]string{"--port", fmt.Sprintf("%d", b.servicePorts.Workload)}, b.clusterDirArgs()...)
+	wm, err := startWorkloadManager(b.workloadMgrPath, applog.LevelString(), b.relayDir, b.forwardWorkloadManagerNotification, wmArgs...)
 	if err != nil {
 		return nil, err
 	}
 	b.setWorkloadMgr(wm)
-	b.registerService(noderec.RegisterParams{Service: noderec.ServiceWorkload, Port: workloadHTTPPort})
+	b.registerService(noderec.RegisterParams{Service: noderec.ServiceWorkload, Port: b.servicePorts.Workload})
 	// A (re)started manager's anti-entropy set starts empty. Replay this node's
 	// active local-origin workloads so a supervised restart mid-job doesn't
 	// leave a later-joining peer unable to learn those jobs (and the heartbeat
@@ -762,14 +782,14 @@ func (b *Broker) spawnErrors() (supervisedHandle, error) {
 	// Pass the resolved node UUID so nvpair-errors attributes this node's errors
 	// to the same identity the broker stamps (and the cluster keys on), not its
 	// hostname — keeping local-origin attribution and clear-by-id in lockstep.
-	extra := append(b.clusterDirArgs(), "--node-id", b.nodeID)
+	extra := append(b.clusterDirArgs(), "--port", fmt.Sprintf("%d", b.servicePorts.Errors), "--node-id", b.nodeID)
 	ep, err := startErrors(b.errorsPath, applog.LevelString(), b.relayDir, b.onErrorsUpdate, extra...)
 	if err != nil {
 		return nil, err
 	}
 	b.setErrors(ep)
 	b.replayOllamaHostAliasError()
-	b.registerService(noderec.RegisterParams{Service: noderec.ServiceErrors, Port: errorsHTTPPort})
+	b.registerService(noderec.RegisterParams{Service: noderec.ServiceErrors, Port: b.servicePorts.Errors})
 	slog.Info("nvpair-errors started", "path", b.errorsPath, "pid", ep.cmd.Process.Pid)
 	return ep, nil
 }
@@ -783,8 +803,8 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 	// identity is resolved per handshake from the live cluster dir), so a join or
 	// leave needs no restart here.
 	args := append(b.logLevelArgs(),
-		"--http-port", fmt.Sprintf("%d", engineManagerHTTPPort),
-		"--control-port", fmt.Sprintf("%d", engineControlPort))
+		"--http-port", fmt.Sprintf("%d", b.servicePorts.EngineHTTP),
+		"--control-port", fmt.Sprintf("%d", b.servicePorts.EngineControl))
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		args = append(args, "--reserved-port", fmt.Sprintf("%d", aliasPort))
 	}
@@ -807,7 +827,7 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 	// Register engine-manager's HTTP surface so the daemon advertises em= on this
 	// node's _nvpair-node record; peers enrich models from it. Fixed port (like
 	// node-info's ni=), replayed across scanner restarts by regCache.
-	b.registerService(noderec.RegisterParams{Service: noderec.ServiceEngineManager, Port: engineManagerHTTPPort})
+	b.registerService(noderec.RegisterParams{Service: noderec.ServiceEngineManager, Port: b.servicePorts.EngineHTTP})
 	// Advertise the ec remote-control surface too, whenever a cluster dir is
 	// configured — which is exactly when engine-manager binds it. The port is
 	// bound for the life of the process and admits callers by live membership
@@ -816,9 +836,9 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 	// also why no re-registration is needed on a membership change: nothing about
 	// the advertised address depends on whether this node is currently a member.
 	if b.clusterDir != "" {
-		b.registerService(noderec.RegisterParams{Service: noderec.ServiceEngineControl, Port: engineControlPort})
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceEngineControl, Port: b.servicePorts.EngineControl})
 	}
-	slog.Info("engine-manager started", "path", b.engineMgrPath, "pid", w.cmd.Process.Pid, "httpPort", engineManagerHTTPPort, "controlPort", engineControlPort)
+	slog.Info("engine-manager started", "path", b.engineMgrPath, "pid", w.cmd.Process.Pid, "httpPort", b.servicePorts.EngineHTTP, "controlPort", b.servicePorts.EngineControl)
 	return w, nil
 }
 
@@ -893,12 +913,13 @@ func (b *Broker) spawnClusterManager() (supervisedHandle, error) {
 	// its parent is the base — the same derivation resolveLocalNodeID performs.
 	// Passing it keeps the only writer of the cluster dir and the workers reading it
 	// on one directory.
-	cm, err := startClusterManager(b.clusterMgrPath, applog.LevelString(), b.clusterManagerConfigDir(), b.relayDir, b.forwardClusterManagerNotification)
+	cm, err := startClusterManager(b.clusterMgrPath, applog.LevelString(), b.clusterManagerConfigDir(), b.relayDir, b.forwardClusterManagerNotification,
+		"--port", fmt.Sprintf("%d", b.servicePorts.ClusterManager))
 	if err != nil {
 		return nil, err
 	}
 	b.setClusterMgr(cm)
-	b.registerService(noderec.RegisterParams{Service: noderec.ServiceCluster, Port: clusterManagerHTTPPort})
+	b.registerService(noderec.RegisterParams{Service: noderec.ServiceCluster, Port: b.servicePorts.ClusterManager})
 	// Reflect the persisted clusterId (owned by nvpair-node-settings) back into the
 	// cluster-manager, which doesn't persist it itself. Synchronous so the first
 	// spawn restores before app:ready/readLoop (no client-visible race); also
@@ -1614,6 +1635,18 @@ func (b *Broker) runWorkloadHistoryFlusher(ctx context.Context) func() {
 	}
 }
 
+// errTerminalRead reports that the client stdin read loop ended on a
+// non-recoverable scanner/transport error (e.g. an over-long frame that
+// bufio.Scanner cannot resync past), distinct from a clean EOF.
+var errTerminalRead = errors.New("terminal read error")
+
+// messageDispatchConcurrency is the size of the broker's inbound dispatch
+// pool: enough worker goroutines that one slow synchronous worker relay
+// (bounded by rpcWorkerCallTimeout) cannot head-of-line block the rest of
+// the control plane, few enough that handlers stay effectively serialized
+// under normal traffic.
+const messageDispatchConcurrency = 4
+
 func (b *Broker) Serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
@@ -1963,7 +1996,7 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 	// receipt. Release the candidate reservation before forwarding the sticky
 	// warning so an existing Ollama owner can be adopted normally.
 	if method == methodErrorsReport {
-		var report errors.ServiceError
+		var report gerrors.ServiceError
 		if json.Unmarshal(params, &report) == nil && report.ID == ollamaHostAliasBlockedID {
 			if !b.releaseOllamaHostAliasReservationForGeneration(generation) {
 				return
@@ -2184,12 +2217,46 @@ func (b *Broker) readLoop(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			}
-			// EOF is terminal (stream closed); other errors are per-line
-			// (e.g. a bad JSON frame) and the next Read advances past them.
-			if err == io.EOF {
-				return
+			// A decoded message (err nil) and a recoverable decode error
+			// (bad frame; the next Read advances past it) both keep the pump
+			// running. EOF is terminal (stream closed), and any other error
+			// is a terminal scanner/transport error: stop feeding the
+			// channel so the consumer exits instead of spinning.
+			if err == nil {
+				continue
 			}
+			var de *DecodeError
+			if errors.As(err, &de) {
+				continue
+			}
+			return
 		}
+	}()
+
+	// Bounded dispatch pool: handleMessage runs synchronous worker relays
+	// (proxy/cluster/settings/manual-nodes, each bounded by
+	// rpcWorkerCallTimeout) so dispatching on the read loop would let one
+	// slow worker stall every other client request for up to 5s. A small
+	// worker pool decouples them. Cross-request ordering is preserved for
+	// the channels that need it by dedicated mutexes inside the handlers
+	// (workloadEmitMu serializes workload apply→fan→emit; subscription
+	// bookkeeping is per-state mutexed), and JSON-RPC has no cross-request
+	// response-ordering guarantee — each response carries its own id. The
+	// codec's write mutex keeps concurrent responses from interleaving.
+	dispatch := make(chan *Message)
+	var dispatchWG sync.WaitGroup
+	for range messageDispatchConcurrency {
+		dispatchWG.Add(1)
+		go func() {
+			defer dispatchWG.Done()
+			for msg := range dispatch {
+				b.handleMessage(msg)
+			}
+		}()
+	}
+	defer func() {
+		close(dispatch)
+		dispatchWG.Wait()
 	}()
 
 	for {
@@ -2201,10 +2268,16 @@ func (b *Broker) readLoop(ctx context.Context) error {
 				if r.err == io.EOF || ctx.Err() != nil {
 					return nil
 				}
-				slog.Warn("JSON-RPC read error", "err", r.err)
-				continue
+				// Terminal scanner/transport error — the producer goroutine
+				// has already stopped; exit instead of spinning.
+				slog.Warn("JSON-RPC read error (terminal)", "err", r.err)
+				return errTerminalRead
 			}
-			b.handleMessage(r.msg)
+			select {
+			case dispatch <- r.msg:
+			case <-ctx.Done():
+				return nil
+			}
 			if ctx.Err() != nil {
 				return nil
 			}

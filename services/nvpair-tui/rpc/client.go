@@ -6,6 +6,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -68,9 +69,15 @@ func (c *Client) Run(ctx context.Context) error {
 			if err == io.EOF {
 				return nil
 			}
-			// A single malformed line should not kill the session; the
+			// A single malformed frame should not kill the session; the
 			// broker may emit a frame we don't model. Skip and continue.
-			continue
+			// Anything else (over-long frame, transport error) is terminal:
+			// bufio.Scanner cannot resync, so continuing would spin.
+			var de *DecodeError
+			if errors.As(err, &de) {
+				continue
+			}
+			return err
 		}
 		switch {
 		case msg.IsResponse():

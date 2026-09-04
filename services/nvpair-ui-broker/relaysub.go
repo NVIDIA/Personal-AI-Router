@@ -19,10 +19,10 @@ type relaySendFunc func(nodes []noderec.DirectoryNode)
 // subscribeRelay registers a worker as a relay.Directory subscriber for the
 // given discovery:subscribe params and returns the subscription id plus the
 // subscriber handle. The caller owns the id's lifetime (Unsubscribe on worker
-// exit / re-subscribe) and must send the initial snapshot via dir.Deliver(sub)
-// after releasing its own lock; Deliver captures the snapshot at send time, so
-// the initial delivery can't be overtaken by a concurrent Apply and land a stale
-// set.
+// exit / re-subscribe) and must request the initial snapshot via
+// dir.Deliver(sub); Deliver schedules the send on the subscriber's pump, which
+// captures the snapshot at send time, so the initial delivery can't be
+// overtaken by a concurrent Apply and land a stale set.
 func subscribeRelay(dir *relay.Directory, params json.RawMessage, send relaySendFunc) (int, *relay.Subscriber, error) {
 	var sp noderec.SubscribeParams
 	if err := json.Unmarshal(params, &sp); err != nil {

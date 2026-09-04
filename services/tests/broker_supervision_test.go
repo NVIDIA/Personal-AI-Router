@@ -42,6 +42,51 @@ func startBrokerWithEnv(t *testing.T, extraEnv []string, extraArgs ...string) (s
 	return startBrokerWithConfigDirAndEnv(t, t.TempDir(), extraEnv, extraArgs...)
 }
 
+// proxyPortEnv overrides both proxies' listen ports with free ports, so a
+// broker spawn never fights a dev process on 11435/1234. Tests that read the
+// bound port dynamically (waitProxyReady / waitLMStudioProxyReady) need no
+// other change.
+func proxyPortEnv(t *testing.T) []string {
+	t.Helper()
+	return []string{
+		"NVPAIR_SERVICE_OLLAMA_PROXY_PORT=" + fmt.Sprintf("%d", freePort(t)),
+		"NVPAIR_SERVICE_LMSTUDIO_PROXY_PORT=" + fmt.Sprintf("%d", freePort(t)),
+	}
+}
+
+// freeServicePortEnv allocates free ports for the broker's fixed service
+// ports and returns the NVPAIR_SERVICE_*_PORT env entries that override them,
+// plus the resolved values keyed by name. Tests use this instead of skipping
+// on fixed-port collisions: two brokers (or a broker and the dev machine's
+// real one) can then coexist on one host.
+func freeServicePortEnv(t *testing.T) ([]string, map[string]int) {
+	t.Helper()
+	names := []string{
+		"NVPAIR_SERVICE_NODE_INFO_PORT",
+		"NVPAIR_SERVICE_ERRORS_PORT",
+		"NVPAIR_SERVICE_WORKLOAD_PORT",
+		"NVPAIR_SERVICE_CLUSTER_MANAGER_PORT",
+		"NVPAIR_SERVICE_ENGINE_HTTP_PORT",
+		"NVPAIR_SERVICE_ENGINE_CONTROL_PORT",
+	}
+	env := make([]string, 0, len(names))
+	ports := make(map[string]int, len(names))
+	used := map[int]bool{}
+	for _, name := range names {
+		var p int
+		for {
+			p = freePort(t)
+			if !used[p] {
+				break
+			}
+		}
+		used[p] = true
+		env = append(env, name+"="+fmt.Sprintf("%d", p))
+		ports[name] = p
+	}
+	return env, ports
+}
+
 func startBrokerWithConfigDir(t *testing.T, configDir string, extraArgs ...string) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, stderrLines <-chan string, cleanup func()) {
 	t.Helper()
 	// An empty --cluster-dir makes this node a NON-MEMBER regardless of the
@@ -192,10 +237,9 @@ const methodErrorsUpdate = "errors:update"
 
 var proxyPidRe = regexp.MustCompile(`proxy started.*\bpid=(\d+)`)
 
-// portBusy reports whether a TCP port on localhost is already bound — used
-// to skip tests whose supervised workers need a fatal-on-conflict listener
-// (nvpair-errors --peer-sync on 14319, ollama-proxy on 11435) when something
-// else on the host already holds it.
+// portBusy reports whether a TCP port on localhost is already bound — used by
+// TestInheritedOllamaHostAliasEndToEnd, whose managed Ollama facade (:11434)
+// collides with a real Ollama the test cannot move.
 func portBusy(port int) bool {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -210,14 +254,9 @@ func portBusy(port int) bool {
 // through the nvpair-errors pipeline (errors:update relay + errors:get-initial),
 // and that the supervisor restarts the proxy.
 func TestBrokerCrashSurfacingAndRestart(t *testing.T) {
-	if portBusy(14319) {
-		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
-	}
-	if portBusy(11435) {
-		t.Skip("ollama-proxy port 11435 already in use; skipping")
-	}
+	svcEnv, _ := freeServicePortEnv(t)
 
-	stdin, msgs, stderr, cleanup := startBrokerWith(t,
+	stdin, msgs, stderr, cleanup := startBrokerWithEnv(t, svcEnv,
 		"--errors-path", errorsBin,
 		"--proxy-path", proxyBin,
 	)
@@ -414,9 +453,7 @@ func proxyStatus(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, id 
 // running, the requested port is free, so the broker relays it unchanged (no
 // bump) — exercising the interception + relay + rebind wiring end to end.
 func TestBrokerProxySetPortRebinds(t *testing.T) {
-	if portBusy(11435) {
-		t.Skip("ollama-proxy default port 11435 already in use; skipping")
-	}
+	svcEnv, _ := freeServicePortEnv(t)
 	cfg := t.TempDir()
 	cmd := exec.Command(brokerBin,
 		"--scanner-path", scannerBin,
@@ -431,6 +468,7 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 		"APPDATA="+cfg,
 		"LOCALAPPDATA="+cfg,
 	)
+	cmd.Env = append(cmd.Env, svcEnv...)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

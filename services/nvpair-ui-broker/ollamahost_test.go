@@ -114,7 +114,7 @@ func TestReservedOllamaHostAliasPort(t *testing.T) {
 			if tc.lmstudioBackend > 0 {
 				enginePorts[tc.lmstudioBackend] = "lmstudio"
 			}
-			reason := reservedOllamaHostAliasPort(tc.port, enginePorts, tc.lmstudioProxy)
+			reason := (&Broker{servicePorts: resolveServicePorts(func(string) string { return "" })}).reservedOllamaHostAliasPort(tc.port, enginePorts, tc.lmstudioProxy)
 			if tc.wantReasonSubstr == "" && reason != "" {
 				t.Fatalf("reason = %q, want none", reason)
 			}

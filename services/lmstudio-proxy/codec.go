@@ -10,9 +10,10 @@ package main
 import "nvpair-shared/jsonrpc"
 
 type (
-	Message  = jsonrpc.Message
-	RPCError = jsonrpc.RPCError
-	Codec    = jsonrpc.Codec
+	Message     = jsonrpc.Message
+	RPCError    = jsonrpc.RPCError
+	DecodeError = jsonrpc.DecodeError
+	Codec       = jsonrpc.Codec
 )
 
 var NewCodec = jsonrpc.NewCodec

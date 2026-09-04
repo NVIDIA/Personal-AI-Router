@@ -75,21 +75,23 @@ func scanLines(r io.Reader, stream string, onLine func(stream, line string)) {
 	}
 }
 
-// stop stops the process and waits for it to exit, with no timeout.
+// stop stops the process and waits for it to exit.
 //
-// It sends one platform-appropriate stop signal (see gracefulSignal) and then
-// blocks until the process is gone:
-//   - Unix: SIGTERM to the process group — a graceful ask, with no escalation
-//     to SIGKILL. A well-behaved engine (Ollama, and the test fake) exits on it.
+// It sends one platform-appropriate stop signal (see gracefulSignal), waits
+// stopGrace(rt) (the manifest's stop spec, default 5s) for the engine to
+// honor it, and then escalates to a forced kill of the whole tree/group (see
+// forceSignal):
+//   - Unix: SIGTERM to the process group, then SIGKILL to the group if the
+//     engine is still alive after the grace period. The group kill reaches
+//     engines that forked helper processes (model runners, etc.).
 //   - Windows: taskkill /T /F. Our engines run windowless, and a windowless
-//     process can't receive a graceful (non-/F) close, so /F is the only signal
-//     that actually stops it — never force-killing there would leave the engine
-//     running forever.
+//     process can't receive a graceful (non-/F) close, so /F is the only
+//     signal that actually stops it — never force-killing there would leave
+//     the engine running forever.
 //
-// There is deliberately no timeout: a stop is complete only when the engine has
-// actually exited. On Unix an engine that ignored SIGTERM would not be stopped
-// and this would wait for it; in practice engines exit on SIGTERM.
-func (mp *managedProc) stop() {
+// A stop is complete only when the engine has actually exited, so after
+// escalation stop still blocks on the exit rather than returning early.
+func (mp *managedProc) stop(rt Runtime) {
 	if mp == nil || mp.cmd == nil || mp.cmd.Process == nil {
 		return
 	}
@@ -99,6 +101,16 @@ func (mp *managedProc) stop() {
 	default:
 	}
 	_ = gracefulSignal(mp.cmd)
+	deadline := time.After(stopGrace(rt))
+	select {
+	case <-mp.done:
+		return
+	case <-deadline:
+	}
+	// The engine ignored the graceful signal: force the whole group. SIGKILL
+	// cannot be caught, so the process-exit goroutine will observe the exit
+	// and close done.
+	_ = forceSignal(mp.cmd)
 	<-mp.done
 }
 

@@ -4,10 +4,15 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/pbkdf2"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"regexp"
@@ -42,6 +47,11 @@ type PairingInfo struct {
 	ClusterFriendlyName string `json:"clusterFriendlyName"`
 	Addr                string `json:"addr,omitempty"`
 	Cert                string `json:"cert"`
+	// PinSalt is the inviter's per-invite PBKDF2 salt for stretching the PIN
+	// into the OOB Noob (see pinNoob), base64-encoded. It rides inside the
+	// EAP-NOOB transcript (ServerInfo is MAC-covered), so tampering with it
+	// breaks the transcript handshake rather than substituting a chosen Noob.
+	PinSalt string `json:"pinSalt,omitempty"`
 }
 
 // localPairingInfo builds this node's PairingInfo. addr is the inviter's
@@ -66,6 +76,15 @@ func (m *Manager) localPairingInfo(addr string, admissionEpoch ...uint64) *Pairi
 		Addr:                addr,
 		Cert:                string(m.identity.CertPEM),
 	}
+}
+
+// localPairingInfoWithPinSalt is localPairingInfo for inviter pairing sessions,
+// additionally carrying the PIN stretching salt so the joiner can reconstruct
+// the Noob from the user's typed PIN.
+func (m *Manager) localPairingInfoWithPinSalt(addr string, salt []byte) (*PairingInfo, error) {
+	pi := m.localPairingInfo(addr)
+	pi.PinSalt = base64.StdEncoding.EncodeToString(salt)
+	return pi, nil
 }
 
 // toMap renders the PairingInfo as the map[string]any the eap-noob config
@@ -115,20 +134,68 @@ func parsePairingInfo(raw []byte) (*PairingInfo, *x509.Certificate, error) {
 	return &pi, cert, nil
 }
 
-// generatePIN returns a fresh random six-digit PIN and its 16-byte Noob
-// encoding.
-func generatePIN() (string, []byte, error) {
+// pinPBKDF2Iterations is the stretching work factor applied when deriving the
+// PIN Noob. The NoobId the joiner transmits is H("NoobId", Noob) with no key,
+// so a passive observer of the plaintext pairing channel could otherwise check
+// all 10^6 PIN candidates against a captured NoobId in milliseconds. A PBKDF2
+// pass per candidate makes offline enumeration ~10^6 × iteration cost instead,
+// and the online cap in handlePairingCompletion complements it for active
+// guessing. Tune upward with hardware.
+const pinPBKDF2Iterations = 50000
+
+// newPinSalt returns a fresh per-invite PBKDF2 salt for stretching the PIN
+// into the OOB Noob. It is generated before the Initial Exchange so it can ride
+// inside the inviter's ServerInfo — which the EAP-NOOB transcript MACs —
+// giving the joiner an integrity-protected copy without a second channel.
+func newPinSalt() ([]byte, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("generate pin salt: %w", err)
+	}
+	return salt, nil
+}
+
+// mintPIN draws the random six-digit PIN and derives its Noob under the
+// session's salt. Identical PINs across invites produce unrelated Noobs, and a
+// captured NoobId cannot be attacked offline without redoing the full stretched
+// search over all 10^6 candidates.
+func mintPIN(salt []byte) (string, []byte, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("generate pin: %w", err)
 	}
 	pin := fmt.Sprintf("%06d", n.Int64())
-	return pin, noobFromPIN(pin), nil
+	return pin, pinNoob(pin, salt), nil
+}
+
+// pinNoob derives the 16-byte Noob from a PIN and its per-invite salt:
+// PBKDF2-HMAC-SHA256(PIN, salt), first 16 bytes. Stretching is the
+// compensating control for the low-entropy PIN Noob (documented security
+// debt, §4). An empty salt falls back to the legacy big-endian encoding so a
+// pre-salt inviter remains pairable; the salt itself is not secret (it is
+// MAC-covered against tampering), the work factor is the point.
+func pinNoob(pin string, salt []byte) []byte {
+	if len(salt) == 0 {
+		return noobFromPIN(pin)
+	}
+	k, err := pbkdf2.Key(sha256.New, pin, salt, pinPBKDF2Iterations, 16)
+	if err != nil {
+		// sha256.New never fails to construct; an error here is a programming
+		// fault, so fail closed rather than pairing on a weak Noob.
+		panic(fmt.Sprintf("pbkdf2: %v", err))
+	}
+	return k
+}
+
+// deriveNoobFromPINAndSalt reconstructs the Noob on the joiner side from the
+// PIN the user typed and the salt from the inviter's MAC-covered ServerInfo.
+func deriveNoobFromPINAndSalt(pin string, salt []byte) []byte {
+	return pinNoob(pin, salt)
 }
 
 // noobFromPIN encodes a six-digit PIN as a 16-byte big-endian Noob. This is the
-// low-entropy, temporary stand-in for a real OOB nonce (documented security
-// debt, §4).
+// legacy unsalted derivation, kept only for tests asserting the migration
+// reference; production flows use pinNoob with a per-invite salt.
 func noobFromPIN(pin string) []byte {
 	v := new(big.Int)
 	v.SetString(pin, 10)
@@ -156,6 +223,49 @@ const (
 	roleInviter pairingRole = iota // EAP-NOOB Server
 	roleJoiner                     // EAP-NOOB Peer
 )
+
+// pairingSignalLabel domain-separates the terminal-signal MAC derived from the
+// session's ephemeral Key Exchange secret.
+const pairingSignalLabel = "nvpair-pairing-signal-v1"
+
+// pairingSignalMAC derives the authentication tag for a terminal pairing
+// signal (cancel/decline/expire/fail) from the session's EphemeralKey — the
+// ECDH secret both sides already share after the Initial Exchange. A passive
+// on-path observer of the plaintext pairing channel can read the inviteId but
+// cannot compute this tag, so terminal signals are no longer forgeable. The
+// tag is base64-encoded for transport; verification decodes before comparing.
+func pairingSignalMAC(key []byte, inviteID, phase string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(pairingSignalLabel))
+	mac.Write([]byte{0})
+	mac.Write([]byte(inviteID))
+	mac.Write([]byte{0})
+	mac.Write([]byte(phase))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// verifyPairingSignal reports whether env carries a valid tag for the given
+// phase under the session's ephemeral key. Unknown/absent keys verify nothing.
+func verifyPairingSignal(sess *pairingSession, env *pairingEnvelope, phase string) bool {
+	if sess == nil || env.SignalTag == "" {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	key, err := sess.ephemeralKey()
+	if err != nil {
+		return false
+	}
+	want, err := base64.StdEncoding.DecodeString(pairingSignalMAC(key, env.InviteID, phase))
+	if err != nil {
+		return false
+	}
+	got, err := base64.StdEncoding.DecodeString(env.SignalTag)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(want, got)
+}
 
 // pairingSession holds the live EAP-NOOB crypto state for one in-flight pairing,
 // kept alive across the separate HTTP requests of the Initial and Completion
@@ -200,8 +310,38 @@ type pairingSession struct {
 	// retryable and lets a post-success joiner failure roll the inviter back.
 	awaitingAck        bool
 	completionResponse []byte
+	// completionAttempts counts Completion Exchange messages fed to the EAP
+	// server, bounding online PIN guessing against the six-digit PIN Noob
+	// (see handlePairingCompletion).
+	completionAttempts int
+	// pinSalt is the per-invite PBKDF2 salt (inviter: generated with the PIN;
+	// joiner: learned from the inviter's authenticated ServerInfo) used to
+	// stretch the PIN into the OOB Noob.
+	pinSalt []byte
 
 	mu sync.Mutex
+}
+
+// maxCompletionAttempts bounds PIN-entry attempts per invite: enough for
+// honest typos, far below the 10^6 PIN keyspace.
+const maxCompletionAttempts = 5
+
+// ephemeralKey returns this session's Key Exchange secret (see
+// eapnoob.EphemeralKey). The caller must hold sess.mu (the eapnoob Server/Peer
+// objects are not synchronized). Sessions whose EAP object was never created
+// (or whose Initial Exchange never completed) report an error — callers treat
+// the signal as unauthenticated/unsendable.
+func (s *pairingSession) ephemeralKey() ([]byte, error) {
+	if s.role == roleInviter {
+		if s.server == nil {
+			return nil, errors.New("no inviter EAP session")
+		}
+		return s.server.EphemeralKey()
+	}
+	if s.peer == nil {
+		return nil, errors.New("no joiner EAP session")
+	}
+	return s.peer.EphemeralKey()
 }
 
 func (m *Manager) putSession(s *pairingSession) {
