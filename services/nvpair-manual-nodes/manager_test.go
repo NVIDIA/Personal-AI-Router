@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -84,7 +85,18 @@ func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 }
 
 func configureHealthyNode(rt *fakeRoundTripper, addr string, models []string, info NodeInfoResponse) {
-	host := net.JoinHostPort(addr, "11434")
+	configureHealthyOllamaAPI(rt, addr, ollamaPort, models)
+
+	infoHost := net.JoinHostPort(addr, "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(info)
+		return httpJSON(http.StatusOK, string(data))
+	})
+}
+
+// configureHealthyOllamaAPI registers GET / and GET /api/tags on addr:port.
+func configureHealthyOllamaAPI(rt *fakeRoundTripper, addr string, port int, models []string) {
+	host := net.JoinHostPort(addr, strconv.Itoa(port))
 	rt.set(http.MethodGet, host, "/", func(*http.Request) (*http.Response, error) {
 		return httpJSON(http.StatusOK, `{}`)
 	})
@@ -100,12 +112,6 @@ func configureHealthyNode(rt *fakeRoundTripper, addr string, models []string, in
 			}{Name: name})
 		}
 		data, _ := json.Marshal(payload)
-		return httpJSON(http.StatusOK, string(data))
-	})
-
-	infoHost := net.JoinHostPort(addr, "14318")
-	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
-		data, _ := json.Marshal(info)
 		return httpJSON(http.StatusOK, string(data))
 	})
 }
@@ -151,6 +157,30 @@ func TestProbeLMStudioReportsModels(t *testing.T) {
 	downUp, downModels := m.probeLMStudio("absent.local", lmStudioPort)
 	if downUp || downModels != nil {
 		t.Fatalf("expected absent lmstudio down, got up=%v models=%#v", downUp, downModels)
+	}
+}
+
+// TestProbeOllamaAPIFallsBackToLLMMan: Ollama wins when both answer, llmman is
+// reported with its port when only it answers, neither reports down on 11434.
+func TestProbeOllamaAPIFallsBackToLLMMan(t *testing.T) {
+	m, _, rt := newTestManager()
+	configureHealthyOllamaAPI(rt, "both.local", ollamaPort, []string{"llama3"})
+	configureHealthyOllamaAPI(rt, "both.local", llmmanPort, []string{"gemma4"})
+	configureHealthyOllamaAPI(rt, "llmman.local", llmmanPort, []string{"gemma4", "qwen3.8"})
+
+	up, port, models := m.probeOllamaAPI("both.local")
+	if !up || port != ollamaPort || len(models) != 1 || models[0] != "llama3" {
+		t.Fatalf("both: up=%v port=%d models=%#v, want ollama on %d", up, port, models, ollamaPort)
+	}
+
+	up, port, models = m.probeOllamaAPI("llmman.local")
+	if !up || port != llmmanPort || len(models) != 2 || models[0] != "gemma4" || models[1] != "qwen3.8" {
+		t.Fatalf("llmman: up=%v port=%d models=%#v, want llmman on %d", up, port, models, llmmanPort)
+	}
+
+	up, port, models = m.probeOllamaAPI("absent.local")
+	if up || port != ollamaPort || models != nil {
+		t.Fatalf("absent: up=%v port=%d models=%#v, want down on %d", up, port, models, ollamaPort)
 	}
 }
 
