@@ -646,11 +646,34 @@ its address.
 
 ### Manual Nodes
 
-Some networks block or filter multicast, so discovery is not the only path in.
-`nvpair-manual-nodes` takes an address you enter directly and probes it on a
-fixed interval, and a manual node that answers is folded into the same directory
-as a discovered one. It is initially keyed by the address you typed, and re-keyed
-to the peer's real UUID as soon as that node reports it.
+Some networks block or filter multicast, and some never carry it at all — a
+Tailscale tailnet, a WireGuard tunnel, a routed link — so discovery is not the
+only path in. `nvpair-manual-nodes` takes an address you enter directly, a name
+or a literal, and probes it on a fixed interval. It is initially keyed by the
+address you typed, and re-keyed to the peer's real UUID as soon as that node
+reports it.
+
+What it finds decides how the node is used, and there are two answers:
+
+- **A bare inference host.** Ollama or LM Studio on a machine that does not run
+  PAIR. Its engines answer plain HTTP on their own ports, and it is bridged into
+  this node's proxies as a routing target. This is what manual nodes were
+  originally for.
+- **Another PAIR node.** It answers on its node-info port with its identity, its
+  cluster principal, and the set of services it runs — the same set it would have
+  carried on an mDNS record that never arrives here. From that, this node
+  synthesizes the directory record discovery would have produced, and the peer is
+  a peer: inventory over mutual TLS from its engine manager, inference routed to
+  its proxy over mutual TLS, telemetry into the scheduler. Nothing downstream
+  knows it was typed rather than discovered.
+
+The distinction matters because a PAIR node's engine ports are proxy front doors
+that refuse plaintext from anything but their own loopback. Probing them would
+report a healthy peer as having no engines, so a node that identifies itself as a
+PAIR node is never asked there.
+
+Refer to [Running PAIR across a Tailscale tailnet](remote-networks.mdx) for the
+operator's walkthrough.
 
 ## Trust Boundaries
 

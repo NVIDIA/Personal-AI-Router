@@ -46,6 +46,12 @@ PAIR discovers peers on the local network. If **Add node** or
 - Allow PAIR through host firewalls on each system.
 - Retry with the peer's IP address in **Add node**.
 
+**If the systems are joined by a VPN or overlay network rather than a local
+link, discovery will never find them.** Multicast does not cross a tailnet, a
+WireGuard tunnel, or a routed link, so an empty list is the expected result
+rather than a fault. Add the peer by name instead:
+[Running PAIR across a Tailscale tailnet](remote-networks.mdx).
+
 ## Pairing Fails or Stalls
 
 A PIN belongs to one invitation attempt. A mistyped PIN, a canceled or expired
