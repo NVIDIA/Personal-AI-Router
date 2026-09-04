@@ -22,7 +22,7 @@ broker supervises every worker and relays its control plane.
 | ------------------------- | --------------------------------------------------------- |
 | `nvpair-ui-broker`        | Worker supervision and relay                              |
 | `ollama-proxy`            | Ollama-compatible routing proxy with cluster-mTLS ingress |
-| `lmstudio-proxy`          | LM Studio routing proxy with cluster-mTLS ingress         |
+| `lmstudio-proxy`          | OpenAI-compatible routing proxy (LM Studio, vLLM) with cluster-mTLS ingress |
 | `nvpair-node-scanner`     | Discovery and node announcement                           |
 | `nvpair-node-info`        | Node metadata and telemetry                               |
 | `nvpair-manual-nodes`     | User-managed node entries                                 |
@@ -90,8 +90,10 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
-asynchronous capability signal. Personal AI Router waits up to the canonical
+service connection, while the Ollama and OpenAI-compatible proxy readiness
+signals remain asynchronous capability signals. The OpenAI-compatible proxy
+fronts LM Studio and vLLM together, so one `lmstudio-proxy:ready` records the
+port for both engines. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
 Settings > Service with retry and log access. If a stalled broker reports ready
@@ -266,7 +268,8 @@ LAN-reachable. Each node fronts its engine with its `ollama-proxy` /
 `lmstudio-proxy`, whose LAN ingress is gated by cluster mTLS: only a pinned
 cluster member can send it work. Discovery advertises the promoted **proxy**
 port (never the engine port), and the broker hands the private loopback engine to
-the local proxy via `node/set-local-backend`. Every cluster-scoped worker derives
+the local proxy via `node/set-local-backend`, which is keyed per engine so the
+one OpenAI-compatible proxy can hold an LM Studio and a vLLM backend at once. Every cluster-scoped worker derives
 its own membership from the cluster directory continuously, so a proxy's mTLS
 ingress tracks a create, join, or leave with no worker restart. Loopback
 plaintext requests from local clients are unaffected. This is entirely

@@ -37,9 +37,13 @@ lifecycle, and relay rules.
 
 Two responsibilities live in the broker itself rather than in a worker:
 
-- **Engine advertising.** The broker polls local Ollama and LM Studio every 5 s
-  and registers each running engine's port (`ol` / `lm`) with the discovery
-  daemon, so both are carried in this host's single `_nvpair-node` record. The
+- **Engine advertising.** The broker polls local Ollama, LM Studio, and vLLM
+  every 5 s and registers each running engine's port (`ol` / `lm` / `vl`) with
+  the discovery daemon, so all of them are carried in this host's single
+  `_nvpair-node` record. `lm` and `vl` both carry the port of the one
+  OpenAI-compatible proxy, so a host serving from both engines advertises the
+  same port twice; which engine owns a given model comes from engine-manager
+  model attribution, not from the key. The
   model list is not part of that record — it is served over HTTP by
   `nvpair-engine-manager` on the `em` service and fetched by a peer's daemon
   during discovery enrichment.
@@ -115,7 +119,7 @@ Two classes of proxy notification are **not** re-emitted under the `proxy:` name
 - **Inbound (peers -> manager -> broker).** The manager translates peer-origin lifecycle events into `workloads:upsert` and peer-origin removals into `workloads:remove` on stdout. The broker applies each accepted transition to the same store, fans it to the scheduler, and relays it to clients subscribed via `workloads:subscribe`.
 - **Local echo.** Local-origin proxy workloads are also emitted to the same `workloads:*` client stream (lifecycle translated to `workloads:upsert`), so a subscribed client sees a coherent cluster-wide view — its own workloads alongside peers'.
 
-**`nvpair-job-scheduler`** consumes the accepted workload stream, compact GPU telemetry, and discovery snapshot. It smooths fresh utilization into pressure 0–3, uses neutral pressure 1 for invalid/missing/older-than-10-second samples, and orders by `pending + gpuPressure`, then pressure, then stable UUID. Load is node-wide across Ollama and LM Studio because both normally contend for the same resources. Each engine-specific `schedule:priority` carries `{engine,nodes,ranks}` and refreshes when order, pending counts, or pressure changes. The broker caches, generation-orders, and replays the full `{nodes,ranks}` snapshot to the matching proxy, where a newly delivered snapshot resets optimistic reservation deltas. On scheduler spawn/restart the broker replays active workloads and telemetry before discovery, then resumes all three live feeds.
+**`nvpair-job-scheduler`** consumes the accepted workload stream, compact GPU telemetry, and discovery snapshot. It smooths fresh utilization into pressure 0–3, uses neutral pressure 1 for invalid/missing/older-than-10-second samples, and orders by `pending + gpuPressure`, then pressure, then stable UUID. Load is node-wide across Ollama, LM Studio, and vLLM because they normally contend for the same resources. Each engine-specific `schedule:priority` carries `{engine,nodes,ranks}` and refreshes when order, pending counts, or pressure changes. The broker caches, generation-orders, and replays the full `{nodes,ranks}` snapshot to the matching proxy, where a newly delivered snapshot resets optimistic reservation deltas. On scheduler spawn/restart the broker replays active workloads and telemetry before discovery, then resumes all three live feeds.
 
 `schedule:priority` and `node/set-priority` are internal worker contracts: the broker does not expose either notification to its connected client.
 
