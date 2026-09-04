@@ -295,15 +295,27 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 			os.Remove(tmp.Name())
 			return "", fmt.Errorf("checksum mismatch for %s: got %s, want %s", f.URL, sum, want)
 		}
-	} else {
-		// Unpinned download: bytes are not integrity-checked, only
-		// transport-secured (HTTPS, enforced above) — the same weaker
-		// guarantee as a `script` install. Logged loudly, and the computed
-		// digest is surfaced so a manifest author can pin it later.
-		slog.Warn("UNPINNED download: manifest has no sha256, integrity not verified",
+	} else if allowUnpinnedDownloads() {
+		// Explicit operator opt-in: bytes are not integrity-checked, only
+		// transport-secured (HTTPS, enforced above). Logged loudly, and the
+		// computed digest is surfaced so a manifest author can pin it later.
+		slog.Warn("UNPINNED download allowed by NVPAIR_ALLOW_UNPINNED_DOWNLOADS: integrity not verified",
 			"engine", engine, "url", f.URL, "computed_sha256", sum)
+	} else {
+		// Fail closed: an executed artifact without a pinned digest means any
+		// HTTPS host serving the manifest URL yields code execution. Surface
+		// the digest so the manifest author can pin it immediately.
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("download %s has no sha256 pin in the manifest (computed sha256 %s); "+
+			"pin it or set NVPAIR_ALLOW_UNPINNED_DOWNLOADS=1 to accept unverified downloads", f.URL, sum)
 	}
 	return tmp.Name(), nil
+}
+
+// allowUnpinnedDownloads reports whether the operator explicitly opted in to
+// executing downloads whose manifests carry no sha256 pin.
+func allowUnpinnedDownloads() bool {
+	return os.Getenv("NVPAIR_ALLOW_UNPINNED_DOWNLOADS") == "1"
 }
 
 // runCommand executes a manifest-declared argv (an install or uninstall

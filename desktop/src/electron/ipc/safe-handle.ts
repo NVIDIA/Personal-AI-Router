@@ -16,7 +16,9 @@ function isKnownSender(event: IpcMainInvokeEvent): boolean {
 
     const url = event.sender.getURL()
     if (url.startsWith('file://')) return true
-    if (url.startsWith(process.env.ELECTRON_RENDERER_URL ?? '')) return true
+    const devUrl = process.env.ELECTRON_RENDERER_URL
+    if (devUrl !== undefined && devUrl !== '' && (url === devUrl || url.startsWith(devUrl + '/')))
+        return true
     return false
 }
 

@@ -23,7 +23,9 @@ import (
 // startBrokerInDir starts the broker with settings + cluster-manager pointed at
 // a caller-supplied config dir (so state persists across a restart when the
 // same dir is reused), returning its stdin, stdout frame stream, and a cleanup.
-func startBrokerInDir(t *testing.T, configDir string, extraArgs ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
+// extraEnv (may be nil) carries env entries for the broker process, e.g.
+// service-port overrides; the remaining args are broker CLI args.
+func startBrokerInDir(t *testing.T, configDir string, extraEnv []string, extraArgs ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
 	args := append([]string{"--scanner-path", scannerBin, "--cluster-dir", t.TempDir()}, extraArgs...)
 	cmd := exec.Command(brokerBin, args...)
@@ -33,6 +35,7 @@ func startBrokerInDir(t *testing.T, configDir string, extraArgs ...string) (io.W
 		"APPDATA="+configDir,
 		"LOCALAPPDATA="+configDir,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("broker stdin pipe: %v", err)
@@ -85,13 +88,14 @@ func waitForResponseID(t *testing.T, msgs <-chan jsonrpc.Message, id int, timeou
 // config dir, and asserts cluster:get-node-id reports the restored clusterId
 // (rather than the "" a fresh cluster-manager comes up with).
 func TestBrokerRestoresClusterIdentityAfterRestart(t *testing.T) {
+	svcEnv, _ := freeServicePortEnv(t)
 	configDir := t.TempDir()
 	const clusterID = "restore-test-cluster-0001"
 	const friendly = "Restore Test Lab"
 
 	// First broker: persist the cluster identity via the settings relay, as a
 	// clustered node's UI would have on create/join.
-	stdin1, msgs1, cleanup1 := startBrokerInDir(t, configDir,
+	stdin1, msgs1, cleanup1 := startBrokerInDir(t, configDir, svcEnv,
 		"--settings-path", nodeSettingsBin,
 		"--cluster-manager-path", clusterMgrBin,
 	)
@@ -116,7 +120,7 @@ func TestBrokerRestoresClusterIdentityAfterRestart(t *testing.T) {
 	// Second broker in the same config dir: the cluster-manager reloads with no
 	// clusterId of its own, and the broker must restore it from settings before
 	// serving requests.
-	stdin2, msgs2, cleanup2 := startBrokerInDir(t, configDir,
+	stdin2, msgs2, cleanup2 := startBrokerInDir(t, configDir, svcEnv,
 		"--settings-path", nodeSettingsBin,
 		"--cluster-manager-path", clusterMgrBin,
 	)
@@ -188,13 +192,11 @@ func waitSettingClusterID(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Mes
 // survives a restart), and cluster:leave must clear it (so the node stays
 // unclustered after a restart rather than having the stale id restored).
 func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
-	if portBusy(14321) {
-		t.Skip("cluster-manager inter-node port 14321 already in use; skipping")
-	}
+	svcEnv, _ := freeServicePortEnv(t)
 	configDir := t.TempDir()
 
 	// 1. Create a cluster; the broker must mirror the new id into settings.
-	stdin1, msgs1, cleanup1 := startBrokerInDir(t, configDir,
+	stdin1, msgs1, cleanup1 := startBrokerInDir(t, configDir, svcEnv,
 		"--settings-path", nodeSettingsBin,
 		"--cluster-manager-path", clusterMgrBin,
 	)
@@ -213,7 +215,7 @@ func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
 	cleanup1()
 
 	// 2. Restart: the created identity is restored from settings.
-	stdin2, msgs2, cleanup2 := startBrokerInDir(t, configDir,
+	stdin2, msgs2, cleanup2 := startBrokerInDir(t, configDir, svcEnv,
 		"--settings-path", nodeSettingsBin,
 		"--cluster-manager-path", clusterMgrBin,
 	)
@@ -232,7 +234,7 @@ func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
 	cleanup2()
 
 	// 4. Restart: the node stays unclustered (the leave stuck).
-	stdin3, msgs3, cleanup3 := startBrokerInDir(t, configDir,
+	stdin3, msgs3, cleanup3 := startBrokerInDir(t, configDir, svcEnv,
 		"--settings-path", nodeSettingsBin,
 		"--cluster-manager-path", clusterMgrBin,
 	)

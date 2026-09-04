@@ -53,31 +53,32 @@ func nodeForModel(t *testing.T, id, serverURL, model string) Node {
 	return node
 }
 
-// TestHandlePlain_OptionsPreflight: a CORS preflight is answered locally with
-// 204 + permissive headers and never forwarded.
+// TestHandlePlain_OptionsPreflight: a preflight from an allowlisted origin is
+// answered locally with 204 + the static grant and never forwarded. An
+// unlisted origin's preflight falls through to the origin gate (403).
 func TestHandlePlain_OptionsPreflight(t *testing.T) {
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
 	p := testProxy(NewDiscovery(), 11434)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
 	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("Origin", "https://ui.example")
 	req.Header.Set("Access-Control-Request-Headers", "X-Custom-Token")
 	p.handlePlain(rec, req)
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want the allowlisted origin", got)
 	}
 	if rec.Header().Get("Access-Control-Allow-Methods") == "" {
 		t.Errorf("missing Access-Control-Allow-Methods")
 	}
-	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "*" {
-		t.Errorf("Access-Control-Expose-Headers = %q, want *", got)
-	}
-	// The browser's requested headers are echoed so an arbitrary header clears preflight.
-	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "X-Custom-Token" {
-		t.Errorf("Access-Control-Allow-Headers = %q, want echoed X-Custom-Token", got)
+	// Arbitrary request headers are no longer echoed: the static grant is
+	// deny-by-default, so X-Custom-Token must not clear preflight.
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Authorization" {
+		t.Errorf("Access-Control-Allow-Headers = %q, want the static grant", got)
 	}
 }
 
@@ -85,6 +86,7 @@ func TestHandlePlain_OptionsPreflight(t *testing.T) {
 // exact origin into credentialed CORS, its preflight policy reaches the browser
 // instead of being replaced by the proxy's uncredentialed wildcard fallback.
 func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://app.example")
 	preflightSeen := make(chan struct{}, 1)
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodOptions {
@@ -144,7 +146,10 @@ func TestHandleHTTP_EngineCORSPolicyPreserved(t *testing.T) {
 	p := testProxy(disc, 11434)
 
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want the engine's own origin", got)
@@ -172,13 +177,16 @@ func TestHandleHTTP_EngineCredentialsWithoutOriginDropped(t *testing.T) {
 	p := testProxy(disc, 11434)
 
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want the proxy's wildcard", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want the allowlisted origin", got)
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
-		t.Errorf("Access-Control-Allow-Credentials = %q, want cleared alongside the wildcard origin", got)
+		t.Errorf("Access-Control-Allow-Credentials = %q, want cleared (the engine declared no origin policy to preserve)", got)
 	}
 }
 
@@ -198,8 +206,11 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 	disc.AddManual(nodeForModel(t, "good", good.URL, "llama"))
 	p := testProxy(disc, 11434)
 
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	p.handleHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -207,8 +218,8 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 	if gotBody != `{"model":"llama"}` {
 		t.Errorf("node got body %q, want the original request body", gotBody)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on success", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want the allowlisted origin on success", got)
 	}
 }
 
@@ -234,7 +245,10 @@ func TestHandleHTTP_NoRetryOn400(t *testing.T) {
 	p.SetSelected("bad")
 
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (client errors must not fail over)", rec.Code)
@@ -249,13 +263,16 @@ func TestHandleHTTP_NoRetryOn400(t *testing.T) {
 func TestHandleHTTP_RejectionHasCORS(t *testing.T) {
 	p := testProxy(NewDiscovery(), 11434)
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on rejection", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want the allowlisted origin on rejection", got)
 	}
 }
 
@@ -284,7 +301,10 @@ func TestHandleHTTP_FailoverOn503(t *testing.T) {
 	p.SetSelected("busy") // deterministic: busy is tried first
 
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (should have failed over past the 503)", rec.Code)
@@ -292,8 +312,8 @@ func TestHandleHTTP_FailoverOn503(t *testing.T) {
 	if gotBody != `{"model":"llama"}` {
 		t.Errorf("failover node got body %q, want the original request body", gotBody)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on proxied success", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want the allowlisted origin on proxied success", got)
 	}
 }
 
@@ -314,13 +334,16 @@ func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 	p := testProxy(disc, 11434)
 
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 when all nodes are down", rec.Code)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on exhausted error", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want the allowlisted origin on exhausted error", got)
 	}
 }
 
@@ -445,8 +468,8 @@ func TestHandleHTTP_AggregatesModelList(t *testing.T) {
 	if got.Data[1].OwnedBy != "first" {
 		t.Errorf("duplicate metadata = %q, want deterministic first candidate", got.Data[1].OwnedBy)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want no grant for an Origin-less caller", got)
 	}
 }
 
@@ -521,7 +544,10 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -562,7 +588,10 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 	p.SetSelected("missing")
 
 	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`))
+	req.Header.Set("Origin", "https://ui.example")
+	t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+	p.handleHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway ||
 		!strings.Contains(rec.Body.String(), "no available node advertises the requested model") {

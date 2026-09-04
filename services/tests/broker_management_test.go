@@ -143,13 +143,11 @@ func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 // shows up in proxy:nodes/list and can be routed to — even though it never
 // appears over mDNS.
 func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
-	if portBusy(11435) {
-		t.Skip("ollama-proxy port 11435 already in use; skipping")
-	}
+	svcEnv, _ := freeServicePortEnv(t)
 	stopOllama := fakeOllama(t) // skips if 11434 unavailable
 	t.Cleanup(stopOllama)
 
-	stdin, msgs, _, cleanup := startBrokerWith(t,
+	stdin, msgs, _, cleanup := startBrokerWithEnv(t, svcEnv,
 		"--manual-nodes-path", manualNodesBin,
 		"--proxy-path", proxyBin,
 	)
@@ -197,15 +195,13 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 // resolve to it. The candidate must therefore appear in proxy:nodes/list under
 // the learned hostUuid, not the user-supplied manual name.
 func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
-	if portBusy(11435) {
-		t.Skip("ollama-proxy port 11435 already in use; skipping")
-	}
+	svcEnv, _ := freeServicePortEnv(t)
 	stopOllama := fakeOllama(t) // skips if 11434 unavailable
 	t.Cleanup(stopOllama)
 	stopNodeInfo := fakeNodeInfo(t, "learned-host-uuid") // skips if 14318 unavailable
 	t.Cleanup(stopNodeInfo)
 
-	stdin, msgs, _, cleanup := startBrokerWith(t,
+	stdin, msgs, _, cleanup := startBrokerWithEnv(t, svcEnv,
 		"--manual-nodes-path", manualNodesBin,
 		"--proxy-path", proxyBin,
 	)
@@ -301,11 +297,9 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 // reflected in the next errors:update — the same as a supervised worker
 // emitting one on its stdout.
 func TestBrokerAcceptsClientErrorsReport(t *testing.T) {
-	if portBusy(14319) {
-		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
-	}
+	svcEnv, _ := freeServicePortEnv(t)
 
-	stdin, msgs, _, cleanup := startBrokerWith(t, "--errors-path", errorsBin)
+	stdin, msgs, _, cleanup := startBrokerWithEnv(t, svcEnv, "--errors-path", errorsBin)
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
@@ -326,11 +320,9 @@ func TestBrokerAcceptsClientErrorsReport(t *testing.T) {
 // leg B: an id-bearing errors:report is acked with a null result and also
 // reflected in errors:update.
 func TestBrokerAcceptsClientErrorsReportRequest(t *testing.T) {
-	if portBusy(14319) {
-		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
-	}
+	svcEnv, _ := freeServicePortEnv(t)
 
-	stdin, msgs, _, cleanup := startBrokerWith(t, "--errors-path", errorsBin)
+	stdin, msgs, _, cleanup := startBrokerWithEnv(t, svcEnv, "--errors-path", errorsBin)
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)

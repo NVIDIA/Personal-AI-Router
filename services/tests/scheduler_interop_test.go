@@ -553,10 +553,6 @@ func TestProxySetPriorityViaBroker(t *testing.T) {
 // lmstudio-proxy must intersect that list with its own discovery set and never
 // dial a priority id that never advertised the lm service.
 func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
-	if portBusy(1234) {
-		t.Skip("lmstudio-proxy default port 1234 already in use; skipping")
-	}
-
 	var hitsMu sync.Mutex
 	hits := map[string]int{}
 	realEngine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -570,7 +566,7 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 	t.Cleanup(realEngine.Close)
 	realPort := portOfURL(t, realEngine.URL)
 
-	stdin, msgs, stderr, cleanup := startBrokerWith(t,
+	stdin, msgs, stderr, cleanup := startBrokerWithEnv(t, proxyPortEnv(t),
 		"--lmstudio-proxy-path", lmstudioProxyBin,
 	)
 	t.Cleanup(cleanup)

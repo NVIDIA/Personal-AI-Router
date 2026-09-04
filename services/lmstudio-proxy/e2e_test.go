@@ -205,8 +205,8 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (should fail over from the 503 node)", resp.StatusCode)
 	}
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want no grant for an Origin-less caller", got)
 	}
 	if gotBody != `{"model":"m"}` {
 		t.Errorf("healthy upstream got body %q, want the original request body", gotBody)

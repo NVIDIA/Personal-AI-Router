@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"io"
 	"net"
 	"net/http"
@@ -34,10 +35,28 @@ import (
 	"github.com/grandcat/zeroconf"
 )
 
-const (
-	workloadEventsURL = "127.0.0.1:14320/v1/workloads/events"
-	errorsSyncURL     = "127.0.0.1:14319/v1/errors"
-)
+// dataPlaneURLs are the per-test inter-node endpoints and listener addresses.
+// Ports come from the freeServicePortEnv overrides so concurrent test runs and
+// cohabiting dev machines never collide on the spec's fixed 14319/14320.
+type dataPlaneURLs struct {
+	workloadEventsURL string
+	errorsSyncURL     string
+	workloadAddr      string
+	errorsAddr        string
+}
+
+func newDataPlaneURLs(t *testing.T) (env []string, urls dataPlaneURLs) {
+	t.Helper()
+	svcEnv, ports := freeServicePortEnv(t)
+	wl := ports["NVPAIR_SERVICE_WORKLOAD_PORT"]
+	er := ports["NVPAIR_SERVICE_ERRORS_PORT"]
+	return svcEnv, dataPlaneURLs{
+		workloadEventsURL: fmt.Sprintf("127.0.0.1:%d/v1/workloads/events", wl),
+		errorsSyncURL:     fmt.Sprintf("127.0.0.1:%d/v1/errors", er),
+		workloadAddr:      fmt.Sprintf("127.0.0.1:%d", wl),
+		errorsAddr:        fmt.Sprintf("127.0.0.1:%d", er),
+	}
+}
 
 // interNodeCluster is a synthetic two-node cluster for the data-plane tests.
 // nodeDir is handed to the broker as --cluster-dir so its workers come up as a
@@ -188,11 +207,9 @@ const dataPlaneErrorsEnvelope = `{"nodeId":"intruder-node","errors":[{"id":"intr
 // plaintext workload events from any host on the network and relayed them into its
 // catalog as though a peer had sent them.
 func TestDataPlaneRefusesNonMemberWhenUnclustered(t *testing.T) {
-	if portBusy(14319) || portBusy(14320) {
-		t.Skip("an inter-node port is already in use; skipping")
-	}
+	env, urls := newDataPlaneURLs(t)
 	// startBrokerProc pins an EMPTY cluster dir, so these workers are non-members.
-	_, msgs, cleanup := startBrokerProc(t,
+	_, msgs, cleanup := startBrokerProcWithEnv(t, env,
 		"--scanner-path", scannerBin,
 		"--workload-manager-path", workloadMgrBin,
 		"--errors-path", errorsBin,
@@ -200,11 +217,11 @@ func TestDataPlaneRefusesNonMemberWhenUnclustered(t *testing.T) {
 	t.Cleanup(cleanup)
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
-	waitTCP(t, "127.0.0.1:14320", 15*time.Second)
-	assertPlaintextRefused(t, workloadEventsURL, dataPlaneWorkloadFrame)
+	waitTCP(t, urls.workloadAddr, 15*time.Second)
+	assertPlaintextRefused(t, urls.workloadEventsURL, dataPlaneWorkloadFrame)
 
-	waitTCP(t, "127.0.0.1:14319", 15*time.Second)
-	assertPlaintextRefused(t, errorsSyncURL, dataPlaneErrorsEnvelope)
+	waitTCP(t, urls.errorsAddr, 15*time.Second)
+	assertPlaintextRefused(t, urls.errorsSyncURL, dataPlaneErrorsEnvelope)
 }
 
 // TestModelInventoryRefusesLANPlaintext: a node's model inventory is cluster data.
@@ -222,23 +239,22 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 	if lanIP == "" {
 		t.Skip("no non-loopback IPv4 address available; cannot exercise the LAN path")
 	}
-	if portBusy(14322) {
-		t.Skip("engine-manager em port 14322 already in use; skipping")
-	}
+	svcEnv, ports := freeServicePortEnv(t)
+	emPort := ports["NVPAIR_SERVICE_ENGINE_HTTP_PORT"]
 
 	// startBrokerProc pins an empty cluster dir, so this node is a non-member.
-	_, msgs, cleanup := startBrokerProc(t,
+	_, msgs, cleanup := startBrokerProcWithEnv(t, svcEnv,
 		"--scanner-path", scannerBin,
 		"--engine-manager-path", engineMgrBin,
 	)
 	t.Cleanup(cleanup)
 	waitForMethod(t, msgs, "app:ready", 15*time.Second)
-	waitTCP(t, "127.0.0.1:14322", 20*time.Second)
+	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", emPort), 20*time.Second)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Loopback: this node's own scanner path must keep working while unclustered.
-	resp, err := client.Get("http://127.0.0.1:14322/v1/models")
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", emPort))
 	if err != nil {
 		t.Fatalf("loopback model fetch failed: %v", err)
 	}
@@ -251,7 +267,7 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 
 	// The same request from this host's LAN address is a non-loopback caller with
 	// no cluster credentials, and must be refused.
-	lanResp, err := client.Get("http://" + net.JoinHostPort(lanIP, "14322") + "/v1/models")
+	lanResp, err := client.Get("http://" + net.JoinHostPort(lanIP, strconv.Itoa(emPort)) + "/v1/models")
 	if err != nil {
 		t.Logf("LAN plaintext model fetch refused at the transport: %v", err)
 		return
@@ -270,9 +286,7 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 // host can complete the TLS handshake, which is what makes the per-request pin
 // gate load-bearing rather than decorative.
 func TestDataPlaneRefusesNonMemberWhenClustered(t *testing.T) {
-	if portBusy(14319) || portBusy(14320) {
-		t.Skip("an inter-node port is already in use; skipping")
-	}
+	env, urls := newDataPlaneURLs(t)
 	fx := newInterNodeCluster(t)
 
 	// A stranger: it pins the node under test (so it can verify the server and
@@ -288,7 +302,7 @@ func TestDataPlaneRefusesNonMemberWhenClustered(t *testing.T) {
 	}
 	stranger := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: strangerCfg}}
 
-	_, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
+	_, msgs, cleanup := startBrokerProcInClusterWithEnv(t, fx.nodeDir, env,
 		"--scanner-path", scannerBin,
 		"--workload-manager-path", workloadMgrBin,
 		"--errors-path", errorsBin,
@@ -296,13 +310,13 @@ func TestDataPlaneRefusesNonMemberWhenClustered(t *testing.T) {
 	t.Cleanup(cleanup)
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
-	waitTCP(t, "127.0.0.1:14320", 15*time.Second)
-	assertPlaintextRefused(t, workloadEventsURL, dataPlaneWorkloadFrame)
-	assertForbidden(t, stranger, "https://"+workloadEventsURL, dataPlaneWorkloadFrame)
+	waitTCP(t, urls.workloadAddr, 15*time.Second)
+	assertPlaintextRefused(t, urls.workloadEventsURL, dataPlaneWorkloadFrame)
+	assertForbidden(t, stranger, "https://"+urls.workloadEventsURL, dataPlaneWorkloadFrame)
 
-	waitTCP(t, "127.0.0.1:14319", 15*time.Second)
-	assertPlaintextRefused(t, errorsSyncURL, dataPlaneErrorsEnvelope)
-	assertForbidden(t, stranger, "https://"+errorsSyncURL, dataPlaneErrorsEnvelope)
+	waitTCP(t, urls.errorsAddr, 15*time.Second)
+	assertPlaintextRefused(t, urls.errorsSyncURL, dataPlaneErrorsEnvelope)
+	assertForbidden(t, stranger, "https://"+urls.errorsSyncURL, dataPlaneErrorsEnvelope)
 
 	// Control: the node's real pinned peer IS served, so the assertions above are
 	// rejecting the caller rather than a broken listener. It carries a distinct
@@ -310,7 +324,7 @@ func TestDataPlaneRefusesNonMemberWhenClustered(t *testing.T) {
 	// byte-identical, which would silently defeat any later assertion that the
 	// injected workload is absent from the catalog.
 	peer := fx.clientAsPeer(t)
-	postUntil(t, peer, "https://"+workloadEventsURL, dataPlanePeerFrame, http.StatusOK, 15*time.Second)
+	postUntil(t, peer, "https://"+urls.workloadEventsURL, dataPlanePeerFrame, http.StatusOK, 15*time.Second)
 }
 
 // assertForbidden requires a request that completes a handshake to be turned away

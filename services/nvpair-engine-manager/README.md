@@ -102,24 +102,30 @@ persisted) — NVPAIR can't relocate a process it didn't start; see Adoption bel
 ## Lifecycle
 
 ```
-NotInstalled --engine:install--> (HTTPS download + verify-if-pinned + user-mode run) --> Stopped
+NotInstalled --engine:install--> (HTTPS download + sha256 verify, fail closed + user-mode run) --> Stopped
 Stopped      --engine:start----> (adopt if already serving the port, else spawn) --> Running --health--> Running
-Running      --engine:stop-----> (stop signal, wait for exit; no timeout) --> Stopped
+Running      --engine:stop-----> (stop signal, wait up to the manifest grace, then SIGKILL/pgid) --> Stopped
 ```
 
 Detect uses the manifest's `detect` paths. Install is one-shot and
 user-mode — an HTTPS download, verified against the manifest's `sha256`
-when one is pinned (an unpinned fetch runs with a loud warning). Start
+pin. A manifest without a pin fails the install closed (any executed
+artifact must be pinned in the reviewed manifest); the escape hatch is
+`NVPAIR_ALLOW_UNPINNED_DOWNLOADS=1`, which runs the unpinned fetch with a
+loud warning instead. The bundled manifests all carry live-verified
+digests. Start
 waits for the readiness probe, then runs a periodic health probe; an
 unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
 reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+to exit up to the manifest's stop grace (default 5s, `grace_s` from the
+manifest's stop spec): SIGTERM to the process group on Unix, `taskkill /T /F`
+on Windows — where the windowless engines we spawn can't receive a graceful
+(non-`/F`) close, so a forced terminate is the only signal that actually stops
+them. An engine still alive after the grace is escalated to a forced kill
+(SIGKILL/pgid on Unix) so a hung engine cannot block shutdown forever.
 
 ### Adoption — start may attach to an engine it didn't launch
 

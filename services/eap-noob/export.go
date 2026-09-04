@@ -14,6 +14,22 @@ import (
 // successful Completion Exchange has established the association key Kz.
 var ErrNotRegistered = errors.New("eapnoob: no registered association")
 
+// EphemeralKey returns the raw ECDH shared secret (z) established by the
+// Key Exchange of the in-flight method execution, before any PIN is involved.
+// Both sides hold the identical value once the Initial Exchange completes;
+// a passive observer of the plaintext transport cannot compute it. Callers
+// use it to authenticate transport-level session signals (cancel/decline/
+// expire) that arrive outside the EAP-NOOB message stream. It returns an
+// error when no Key Exchange has run yet.
+//
+// Promoted to Server.EphemeralKey and Peer.EphemeralKey via embedding.
+func (ms *methodState) EphemeralKey() ([]byte, error) {
+	if len(ms.z) == 0 {
+		return nil, errors.New("eapnoob: no key exchange performed")
+	}
+	return append([]byte(nil), ms.z...), nil
+}
+
 // Export derives a shared secret of arbitrary length from the established
 // association. Both the peer and the server, having reached the Registered
 // state with the same Kz, derive identical bytes for the same label and

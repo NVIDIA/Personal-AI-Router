@@ -85,21 +85,26 @@ func registerEqual(a, b noderec.RegisterParams) bool {
 }
 
 // Subscriber is a client interested in directory changes: a service filter and a
-// callback invoked (on the caller's goroutine, under no relay lock) with the
-// subscriber's full filtered node set on every change. Consumers replace their
-// set from it rather than applying deltas, so a dropped or reordered push can't
-// leave them drifted — every push is the authoritative current list.
+// callback invoked with the subscriber's full filtered node set on every change.
+// Consumers replace their set from it rather than applying deltas, so a dropped
+// or reordered push can't leave them drifted — every push is the authoritative
+// current list.
+//
+// Deliveries are asynchronous: each subscriber owns a pump goroutine (started
+// by Directory.Subscribe) that serializes its sends and coalesces concurrent
+// triggers into one delivery that captures the snapshot at send time. A slow or
+// blocked Send therefore stalls only its own subscriber, never the directory
+// update path that feeds it (the scanner's read pump calls Apply).
 type Subscriber struct {
 	Filter noderec.SubscribeParams
 	Send   func(nodes []noderec.DirectoryNode)
 
-	// sendMu serializes deliveries to this subscriber so two concurrent
-	// deliveries — the initial post-subscribe delivery racing an Apply fan-out
-	// driven by the scanner read-pump — can't reorder and leave the subscriber
-	// holding an older set than a newer one. Combined with capturing the snapshot
-	// inside Deliver (at send time, not subscribe time), the last delivery to
-	// acquire it always carries the latest directory state.
-	sendMu sync.Mutex
+	// kick carries a pending-delivery signal (capacity 1: extra signals while
+	// one is already pending coalesce — the pump captures the latest snapshot
+	// when it wakes, so early triggers can't deliver stale state). done closes
+	// on Unsubscribe and stops the pump.
+	kick chan struct{}
+	done chan struct{}
 }
 
 // Directory is the broker's view of all LAN nodes (keyed by hostUuid) plus its
@@ -119,32 +124,63 @@ func NewDirectory() *Directory {
 	}
 }
 
-// Subscribe registers a subscriber and returns its id. The caller sends the
-// initial snapshot via Deliver after releasing its own lock — Deliver captures
-// the snapshot at send time, so a concurrent Apply can't sneak a newer snapshot
-// in and have this initial delivery overwrite it with an older one.
+// Subscribe registers a subscriber and starts its delivery pump goroutine. The
+// initial snapshot arrives via the pump after any pending Deliver call —
+// snapshot is captured at send time, so a concurrent Apply can't sneak a newer
+// snapshot in and have this initial delivery overwrite it with an older one.
 func (d *Directory) Subscribe(sub *Subscriber) (id int) {
+	sub.kick = make(chan struct{}, 1)
+	sub.done = make(chan struct{})
 	d.mu.Lock()
 	d.nextID++
 	id = d.nextID
 	d.subs[id] = sub
 	d.mu.Unlock()
+	go d.pump(sub)
 	return id
 }
 
-// Deliver pushes the subscriber its current filtered snapshot, serialized
-// per-subscriber. Capturing the snapshot here (at delivery time) rather than
-// handing Send a pre-captured slice means a delivery can never carry a set older
-// than the directory's state when it actually runs; the per-subscriber lock then
-// guarantees the initial post-subscribe delivery and a concurrent Apply fan-out
-// settle on the latest set regardless of which runs last.
+// pump serializes one subscriber's deliveries. Every wake re-captures the
+// latest filtered snapshot, so coalesced triggers always deliver current state.
+// done takes priority over a pending kick: once Unsubscribe has closed done, a
+// trigger that raced the close must not produce a Send against a consumer
+// that's gone.
+func (d *Directory) pump(sub *Subscriber) {
+	for {
+		select {
+		case <-sub.done:
+			return
+		default:
+		}
+		select {
+		case <-sub.kick:
+			sub.Send(d.filtered(sub.Filter))
+		case <-sub.done:
+			return
+		}
+	}
+}
+
+// Deliver asks for a delivery of the subscriber's current filtered snapshot.
+// Non-blocking: it schedules the send on the subscriber's pump and never blocks
+// the caller — Apply runs on the scanner read pump, and a subscriber whose Send
+// blocks (a stalled worker's stdin pipe) must not stall the directory or the
+// other subscribers. Multiple pending triggers coalesce into one send of the
+// latest state.
 func (d *Directory) Deliver(sub *Subscriber) {
-	sub.sendMu.Lock()
-	defer sub.sendMu.Unlock()
+	select {
+	case sub.kick <- struct{}{}:
+	default:
+	}
+}
+
+// filtered returns the nodes matching a subscriber's filter, sorted by
+// hostUuid for a deterministic set.
+func (d *Directory) filtered(f noderec.SubscribeParams) []noderec.DirectoryNode {
 	d.mu.Lock()
-	nodes := d.filteredLocked(sub.Filter)
+	nodes := d.filteredLocked(f)
 	d.mu.Unlock()
-	sub.Send(nodes)
+	return nodes
 }
 
 // filteredLocked returns the nodes matching a subscriber's filter, sorted by
@@ -160,11 +196,16 @@ func (d *Directory) filteredLocked(f noderec.SubscribeParams) []noderec.Director
 	return out
 }
 
-// Unsubscribe removes a subscriber.
+// Unsubscribe removes a subscriber and stops its delivery pump, waiting for
+// the pump to exit so a Send cannot run against a consumer that's gone.
 func (d *Directory) Unsubscribe(id int) {
 	d.mu.Lock()
+	sub := d.subs[id]
 	delete(d.subs, id)
 	d.mu.Unlock()
+	if sub != nil {
+		close(sub.done)
+	}
 }
 
 // Apply folds a daemon node-* delta into the directory, then re-sends every

@@ -29,10 +29,10 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 }
 
 // gracefulSignal sends SIGTERM to the process group (falling back to the
-// process itself). It is the only stop signal engine-manager sends: stop()
-// sends this once and waits for the engine to exit, and never escalates to
-// SIGKILL. A well-behaved engine (Ollama, and the test fake, whose default
-// SIGTERM disposition is to exit) terminates on it.
+// process itself). It is the graceful stop signal: stop() sends this and
+// waits stopGrace for the engine to exit before escalating to forceSignal.
+// A well-behaved engine (Ollama, and the test fake, whose default SIGTERM
+// disposition is to exit) terminates on it.
 func gracefulSignal(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
@@ -41,6 +41,19 @@ func gracefulSignal(cmd *exec.Cmd) error {
 		return syscall.Kill(-pgid, syscall.SIGTERM)
 	}
 	return cmd.Process.Signal(syscall.SIGTERM)
+}
+
+// forceSignal sends SIGKILL to the process group (falling back to the process
+// itself). stop() escalates to it when the engine ignores the graceful signal
+// for stopGrace — SIGKILL cannot be caught, so the engine cannot survive it.
+func forceSignal(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
+		return syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+	return cmd.Process.Kill()
 }
 
 // pidOnPort returns the PID listening on the given TCP port and that

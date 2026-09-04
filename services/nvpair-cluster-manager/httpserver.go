@@ -43,6 +43,11 @@ type pairingEnvelope struct {
 	// state:"rejected" rather than state:"failed". Empty on normal messages.
 	Rejected bool   `json:"rejected,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+	// SignalTag authenticates a terminal signal (cancel/decline/expire/fail)
+	// as an HMAC over the session's ephemeral Key Exchange secret — proof the
+	// sender ran the Initial Exchange, not a bystander who only observed the
+	// inviteId on the wire. Verified in handlePairing before the phase runs.
+	SignalTag string `json:"signalTag,omitempty"`
 }
 
 // runHTTP starts the inter-node listener on the configured port and blocks until
@@ -99,8 +104,16 @@ func (m *Manager) handlePairing(w http.ResponseWriter, r *http.Request) {
 	case "completion":
 		m.handlePairingCompletion(w, &env, msg, hostOnly(r.RemoteAddr))
 	case "cancel":
+		if sess, ok := m.getSession(env.InviteID); !ok || !verifyPairingSignal(sess, &env, "cancel") {
+			http.Error(w, "unauthenticated signal", http.StatusUnauthorized)
+			return
+		}
 		m.handlePairingCancel(w, &env)
 	case "decline":
+		if sess, ok := m.getSession(env.InviteID); !ok || !verifyPairingSignal(sess, &env, "decline") {
+			http.Error(w, "unauthenticated signal", http.StatusUnauthorized)
+			return
+		}
 		m.handlePairingDecline(w, &env)
 	case "fail":
 		callerUUID := ""
@@ -111,6 +124,11 @@ func (m *Manager) handlePairing(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "not a trusted peer", http.StatusForbidden)
 				return
 			}
+		} else if sess, ok := m.getSession(env.InviteID); !ok || !verifyPairingSignal(sess, &env, "fail") {
+			// Plain-HTTP pre-commit fail (the wrong-PIN mirror): authenticated
+			// with the session's ephemeral-key MAC like the other signals.
+			http.Error(w, "unauthenticated signal", http.StatusUnauthorized)
+			return
 		}
 		m.handlePairingFailedFrom(w, &env, callerUUID)
 	case "ack":
@@ -121,6 +139,10 @@ func (m *Manager) handlePairing(w http.ResponseWriter, r *http.Request) {
 		}
 		m.handlePairingAck(w, &env, callerUUID)
 	case "expire":
+		if sess, ok := m.getSession(env.InviteID); !ok || !verifyPairingSignal(sess, &env, "expire") {
+			http.Error(w, "unauthenticated signal", http.StatusUnauthorized)
+			return
+		}
 		m.handlePairingExpired(w, &env)
 	default:
 		http.Error(w, "unknown phase", http.StatusBadRequest)
@@ -257,6 +279,27 @@ func (m *Manager) handlePairingCompletion(w http.ResponseWriter, env *pairingEnv
 			return
 		}
 		respondPairing(w, blob)
+		return
+	}
+	// Rate-limit the Completion Exchange before feeding the message to the EAP
+	// server: the PIN is six digits, so each additional attempt materially
+	// reduces the work a guessed PIN needs. The NoobId derived from a PIN Noob
+	// is offline-checkable against a captured transcript (documented PIN Noob
+	// debt, §4), and the exchange is driven over plaintext HTTP — without a
+	// cap an on-path attacker can exhaust the keyspace within one invite TTL.
+	// N attempts tolerate honest typos; beyond that the invite (and the EAP
+	// session holding its Noob) is torn down, invalidating the transcript.
+	sess.completionAttempts++
+	if sess.completionAttempts > maxCompletionAttempts {
+		// Tear down the invite AND the EAP session: dropping the session
+		// invalidates the Noob the attacker is testing against, so a resumed
+		// attack would need a fresh invite (and fresh user cooperation).
+		// inviteMu/sess.mu stay held until return — the defers above unlock
+		// them, and the teardown helpers take only memMu/sessMu.
+		m.finishInviteReason(env.InviteID, inviteStateFailed, reasonIncorrectPIN)
+		m.deleteSession(env.InviteID)
+		m.emitNodesChanged()
+		http.Error(w, "too many pairing attempts", http.StatusTooManyRequests)
 		return
 	}
 	out, err := sess.server.Receive(msg)
@@ -520,6 +563,7 @@ func (m *Manager) prepareJoinerInitialComplete(inviteID string, sess *pairingSes
 type supersededInboundInvite struct {
 	invite      *Invite
 	inviterAddr string
+	signalTag   string
 }
 
 // onJoinerInitialComplete publishes the newest pending invite from a sender and
@@ -556,7 +600,7 @@ func (m *Manager) onJoinerInitialComplete(inv *Invite, sess *pairingSession) {
 		if err := m.codec.Notify("cluster:invite-canceled", old.invite); err != nil {
 			log.Printf("emit cluster:invite-canceled: %v", err)
 		}
-		go m.notifyInviterTerminal(old.inviterAddr, old.invite.InviteID, "decline", "")
+		go m.notifyInviterTerminal(old.inviterAddr, old.invite.InviteID, "decline", "", old.signalTag)
 		log.Printf("invite %s: superseded by newer invite %s from %s",
 			old.invite.InviteID, inv.InviteID, inv.FromNodeUUID)
 	}
@@ -590,6 +634,7 @@ func (m *Manager) supersedePendingInboundLocked(fromNodeUUID, keepInviteID strin
 			sess.mu.Unlock()
 			continue
 		}
+		signalTag := sessionSignalTag(sess, id, "decline")
 		m.finishInvite(id, inviteStateCanceled)
 		m.deleteSession(id)
 		inviterAddr := sess.addr
@@ -603,6 +648,7 @@ func (m *Manager) supersedePendingInboundLocked(fromNodeUUID, keepInviteID strin
 		superseded = append(superseded, supersededInboundInvite{
 			invite:      canceled,
 			inviterAddr: inviterAddr,
+			signalTag:   signalTag,
 		})
 	}
 	return superseded

@@ -192,26 +192,31 @@ type workloadParams struct {
 
 // bufferBodyAndModel reads the request body once and returns the raw bytes
 // (so each failover attempt can replay it — see the loop in handleHTTP) along
-// with the JSON "model" field for workload tracking. Inference bodies are
-// small (prompt + model), so full buffering is cheap. Returns (nil, "") when
-// the body is absent and an empty model when none is parseable. The caller
-// restores r.Body from the returned bytes before each forward attempt.
-func bufferBodyAndModel(r *http.Request) ([]byte, string) {
+// with the JSON "model" field for workload tracking. Bodies are capped at
+// maxInferenceBodyBytes: without a limit, any loopback caller (or a cross-origin
+// browser POST) could stream an arbitrarily large body and exhaust proxy
+// memory. Returns (nil, "", false) when the body is absent and an empty model
+// when none is parseable. The caller restores r.Body from the returned bytes
+// before each forward attempt.
+func bufferBodyAndModel(r *http.Request) ([]byte, string, bool) {
 	if r.Body == nil {
-		return nil, ""
+		return nil, "", false
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxInferenceBodyBytes+1))
 	_ = r.Body.Close()
 	if err != nil {
-		return body, ""
+		return body, "", false
+	}
+	if len(body) > maxInferenceBodyBytes {
+		return nil, "", true
 	}
 	var probe struct {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
-		return body, ""
+		return body, "", false
 	}
-	return body, probe.Model
+	return body, probe.Model, false
 }
 
 type statusCapture struct {
@@ -520,6 +525,11 @@ const (
 	proxyReadHeaderTimeout = 10 * time.Second
 	proxyServerIdleTimeout = 90 * time.Second
 	maxModelListBytes      = 16 << 20
+	// maxInferenceBodyBytes caps how much of an inbound request body the proxy
+	// buffers for replay across failover attempts. Long-context prompts fit
+	// far below this; anything larger is rejected with 413 instead of being
+	// buffered into memory unbounded.
+	maxInferenceBodyBytes = 32 << 20
 )
 
 // idleClientWriteTimeout bounds how long a single write of streamed response
@@ -815,7 +825,7 @@ type modelListResult struct {
 // deterministic while an unavailable peer cannot hide healthy inventories.
 func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidates []candidate) (int, error) {
 	writeJSON := func(status int, body []byte) {
-		cors.Apply(w.Header())
+		cors.Apply(w.Header(), r.Header.Get("Origin"))
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(status)
@@ -945,7 +955,22 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse the request's model before choosing a node. Model eligibility only
 	// applies to inference routes; control endpoints retain their existing
 	// routing behavior even when their JSON happens to contain a model field.
-	bodyBytes, model := bufferBodyAndModel(r)
+	bodyBytes, model, bodyTooLarge := bufferBodyAndModel(r)
+	if bodyTooLarge {
+		slog.Warn("proxy request rejected",
+			"id", reqID, "method", r.Method, "path", r.URL.Path,
+			"remote", r.RemoteAddr, "reason", "request body exceeds limit")
+		http.Error(w, `{"error":"request body exceeds limit"}`, http.StatusRequestEntityTooLarge)
+		p.codec.Notify("proxy/request", RequestEvent{
+			ID:       reqID,
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Status:   http.StatusRequestEntityTooLarge,
+			Duration: time.Since(start).Milliseconds(),
+			Error:    "request body exceeds limit",
+		})
+		return
+	}
 	isInf := isInferenceRequest(r.Method, r.URL.Path)
 	routingModel := ""
 	if isInf {
@@ -978,7 +1003,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if cors.WritePreflight(w, r) {
 			return
 		}
-		cors.Apply(w.Header())
+		cors.Apply(w.Header(), r.Header.Get("Origin"))
 		rejectionBody := `{"error":"no active node selected or available"}`
 		rejectionError := "no active node"
 		if isInf && model != "" {
@@ -1172,7 +1197,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// response outright. An engine that omits the header has
 				// expressed nothing to preserve, so the proxy supplies its own.
 				if resp.Header.Get("Access-Control-Allow-Origin") == "" {
-					cors.Apply(resp.Header)
+					cors.Apply(resp.Header, r.Header.Get("Origin"))
 				}
 				if !started {
 					started = true
@@ -1241,7 +1266,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				if mErr != nil {
 					body = []byte(`{"error":"upstream error"}`)
 				}
-				cors.Apply(ew.Header())
+				cors.Apply(ew.Header(), r.Header.Get("Origin"))
 				ew.Header().Set("Content-Type", "application/json")
 				ew.Header().Set("X-Content-Type-Options", "nosniff")
 				ew.WriteHeader(http.StatusBadGateway)
@@ -1863,8 +1888,15 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 			if err == io.EOF || ctx.Err() != nil {
 				return nil
 			}
-			log.Printf("JSON-RPC read error: %v", err)
-			continue
+			var de *DecodeError
+			if stderrors.As(err, &de) {
+				log.Printf("JSON-RPC decode error (skipping frame): %v", err)
+				continue
+			}
+			// Terminal transport/scanner error (e.g. an over-long frame —
+			// bufio.Scanner cannot resync) — stop instead of spinning.
+			log.Printf("JSON-RPC read error (terminal): %v", err)
+			return err
 		}
 		p.handleMessage(msg)
 	}

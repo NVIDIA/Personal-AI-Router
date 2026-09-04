@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -102,7 +103,15 @@ func (s *Scanner) readLoop(ctx context.Context) error {
 				return nil
 			}
 			log.Printf("JSON-RPC read error: %v", err)
-			continue
+			var de *DecodeError
+			if errors.As(err, &de) {
+				log.Printf("JSON-RPC decode error (skipping frame): %v", err)
+				continue
+			}
+			// Terminal transport/scanner error (e.g. an over-long frame —
+			// bufio.Scanner cannot resync) — stop instead of spinning.
+			log.Printf("JSON-RPC read error (terminal): %v", err)
+			return err
 		}
 		s.handleMessage(msg)
 	}

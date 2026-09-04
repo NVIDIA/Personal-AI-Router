@@ -56,8 +56,9 @@ func capturingExecutor(t *testing.T, m *Manifest) (*Executor, *captured) {
 	return ex, c
 }
 
-// TestDownloadUnpinned verifies a fetch with no sha256 succeeds (over
-// loopback http) — the unpinned path the bundled Ollama manifest now uses.
+// TestDownloadUnpinned verifies a fetch with no sha256 is REJECTED by
+// default (fail-closed) and succeeds only with the explicit operator
+// opt-in, over loopback http.
 func TestDownloadUnpinned(t *testing.T) {
 	payload := []byte("unpinned engine bytes")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,9 +66,19 @@ func TestDownloadUnpinned(t *testing.T) {
 	}))
 	defer srv.Close()
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+
+	// Default: fail closed, and the error must surface the computed digest
+	// so a manifest author can pin it.
+	if _, err := ex.download(context.Background(), "fake", &Fetch{URL: srv.URL}); err == nil {
+		t.Fatal("unpinned download should be rejected without the opt-in")
+	} else if !strings.Contains(err.Error(), "NVPAIR_ALLOW_UNPINNED_DOWNLOADS") {
+		t.Fatalf("rejection should name the opt-in, got %v", err)
+	}
+
+	t.Setenv("NVPAIR_ALLOW_UNPINNED_DOWNLOADS", "1")
 	p, err := ex.download(context.Background(), "fake", &Fetch{URL: srv.URL}) // no SHA256
 	if err != nil {
-		t.Fatalf("unpinned download should succeed, got %v", err)
+		t.Fatalf("unpinned download should succeed with the opt-in, got %v", err)
 	}
 	defer os.Remove(p)
 	if got, _ := os.ReadFile(p); string(got) != string(payload) {
