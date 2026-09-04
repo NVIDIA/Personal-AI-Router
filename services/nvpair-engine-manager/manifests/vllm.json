@@ -1,0 +1,51 @@
+{
+  "engine": "vllm",
+  "display_name": "vLLM",
+  "manifest_version": 1,
+  "detect": ["{install_dir}/venv/bin/vllm", "~/.vllm/bin/vllm"],
+  "install": {
+    "fetch": { "url": "https://astral.sh/uv/install.sh" },
+    "run": [
+      "sh",
+      "-c",
+      "set -e; mkdir -p \"$1\"; UV_INSTALL_DIR=\"$1/uv\" UV_NO_MODIFY_PATH=1 sh \"$2\"; \"$1/uv/uv\" venv \"$1/venv\"; \"$1/uv/uv\" pip install --python \"$1/venv/bin/python\" vllm",
+      "sh",
+      "{install_dir}",
+      "{download}"
+    ],
+    "mode": "user"
+  },
+  "uninstall": {
+    "run": ["rm", "-rf", "{install_dir}"]
+  },
+  "runtime": {
+    "mode": "process",
+    "bin": "{install_dir}/venv/bin/vllm",
+    "args": ["serve", "{model}", "--port", "{port}", "--host", "{host}"],
+    "extra_args": [],
+    "port": 8000,
+    "bind": "127.0.0.1",
+    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 1800 },
+    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }
+  },
+  "platforms": {
+    "linux/amd64": {},
+    "linux/arm64": {}
+  },
+  "actions": {
+    "list_models": {
+      "description": "List the model this vLLM process serves (OpenAI-compatible).",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "loaded_models": {
+      "description": "List models resident in memory. vLLM serves exactly one model per process and keeps it resident, so this is the same list as list_models.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "chat": {
+      "description": "OpenAI-compatible chat completion (params: {\"model\": \"<name>\", \"messages\": [...]}).",
+      "http": { "method": "POST", "path": "/v1/chat/completions", "body_schema": { "model": "string", "messages": "array" } }
+    }
+  }
+}
