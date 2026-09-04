@@ -291,11 +291,11 @@ func (m *Manager) handlePairingCompletion(w http.ResponseWriter, env *pairingEnv
 	// session holding its Noob) is torn down, invalidating the transcript.
 	sess.completionAttempts++
 	if sess.completionAttempts > maxCompletionAttempts {
-		sess.mu.Unlock()
-		m.inviteMu.Unlock()
 		// Tear down the invite AND the EAP session: dropping the session
 		// invalidates the Noob the attacker is testing against, so a resumed
 		// attack would need a fresh invite (and fresh user cooperation).
+		// inviteMu/sess.mu stay held until return — the defers above unlock
+		// them, and the teardown helpers take only memMu/sessMu.
 		m.finishInviteReason(env.InviteID, inviteStateFailed, reasonIncorrectPIN)
 		m.deleteSession(env.InviteID)
 		m.emitNodesChanged()

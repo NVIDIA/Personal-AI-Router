@@ -78,9 +78,12 @@ func (m *Manager) handleCancelInvite(msg *Message) {
 	signalKey, keyErr := sess.ephemeralKey()
 	if keyErr != nil {
 		// No Key Exchange secret (initial exchange never completed) — the joiner
-		// has no session to clear either, so skipping the notify is safe.
+		// has no session to clear either, so skipping the notify is safe. The
+		// terminal write and session delete stay under sess.mu, matching the
+		// success path below and keeping this serialized against Completion.
 		m.finishInvite(p.InviteID, inviteStateCanceled)
 		m.deleteSession(p.InviteID)
+		sess.mu.Unlock()
 		m.maybeLeaveInviteCreatedClusterLocked()
 		m.inviteMu.Unlock()
 		log.Printf("invite %s: canceled by inviter (no joiner signal key; skipping notify: %v)", p.InviteID, keyErr)
