@@ -38,7 +38,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama and LM Studio |
+| **Inference engines** | Ollama, LM Studio, and vLLM (Linux) |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -100,7 +100,8 @@ you want by its full filename instead.
   status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
-  select **Install** next to Ollama or LM Studio. PAIR downloads and sets the
+  select **Install** next to Ollama, LM Studio, or (on Linux) vLLM. PAIR
+  downloads and sets the
   engine up for you, so nothing needs to be in place beforehand. If PAIR already
   found an engine you installed yourself, start that one instead.
 
@@ -149,7 +150,8 @@ The reply is ordinary OpenAI-shaped JSON, abbreviated here:
 }
 ```
 
-If you changed a port, or you are using LM Studio rather than Ollama, copy the
+If you changed a port, or you are using LM Studio or vLLM rather than Ollama,
+copy the
 URL from **Endpoints → API endpoints** instead of assuming the one above.
 
 That is a single machine working. To route across machines, pair a second one

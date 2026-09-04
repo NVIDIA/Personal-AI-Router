@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-engine-manager
 
-A config-driven control plane for local inference engines (Ollama today;
-Intel/others via a dropped-in manifest). It manages everything about an
+A config-driven control plane for local inference engines (Ollama, LM Studio and
+vLLM today; others via a dropped-in manifest). It manages everything about an
 engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
@@ -35,10 +35,11 @@ Requests (caller → service):
 | `engine:status` | `{ engine }` | `EngineStatus` |
 | `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
-| `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
+| `engine:start` | `{ engine, port?, bind?, model? }` | `EngineStatus` (after readiness). `model` is a one-shot served-model override for this launch, mirroring `port` |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind) |
+| `engine:set-model` | `{ engine, model }` | `EngineStatus` (after restart). The persistent served-model setter for an engine that runs one model per process; an empty `model` removes the override |
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
@@ -51,7 +52,9 @@ Requests (caller → service):
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-`EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
+`EngineStatus` = `{ engine, display_name, installed, running, healthy, port, model? }`.
+`model` is the engine's configured served model, present only for an engine that
+serves one model per process (vLLM) and only once one has been chosen.
 
 Notifications (service → caller): `engine:ready{version}`,
 `engine:state-changed{EngineStatus}`,
@@ -85,6 +88,19 @@ pinned cluster peer. See "Remote engine management" below.
 service side, so the read loop never blocks and their responses arrive when
 the op finishes.
 
+`engine:set-model` is the persistent served-model setter, for an engine whose
+launch command names the model it serves (vLLM's `vllm serve <model>`). It
+writes a `{ engine, runtime: { model } }` delta into the same per-user override
+file `engine:set-port` uses — both setters read-modify-write it, so neither
+clobbers the other, and the file is removed only once no override remains — and
+applies the choice by restarting a running engine onto it. An empty model
+removes the override, which leaves an engine that requires one unable to start
+until a model is chosen again. A running, **adopted** engine is refused for the
+same reason `engine:set-port` refuses one. Starting an engine whose launch
+template substitutes `{model}` with none configured fails with an actionable
+error rather than spawning a process that cannot serve anything. The one-shot
+counterpart is `engine:start {model}`, which reverts on the next restart.
+
 `engine:set-port` is the **persistent** port setter (distinct from the
 one-shot `engine:start {port}` override, which reverts on the next restart).
 It validates `1-65535`, persists the choice as a manifest override (a
@@ -113,7 +129,9 @@ when one is pinned (an unpinned fetch runs with a loud warning). Start
 waits for the readiness probe, then runs a periodic health probe; an
 unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
-allowance on supported Windows systems. The deadline remains finite: if Ollama
+allowance on supported Windows systems. The bundled vLLM manifest allows thirty:
+its first start downloads the model's weights and captures CUDA graphs before it
+serves anything. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
 reports the failed start. Stop sends one stop signal and waits for the engine
 to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no

@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
-install and run those engines for you, or work with a copy you already have.
+run models. Today that means Ollama, LM Studio, or vLLM on a given machine. PAIR
+can install and run those engines for you, or work with a copy you already have.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
 
@@ -74,9 +74,9 @@ When you install an engine, consider the following:
   configures it, and owns it from then on.
 - A successful install **starts the engine** as part of the same flow, so you
   normally do not need a separate start step right after install.
-- If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
-  that install instead of downloading another copy. Adoption helps when the
-  usual engine port is already in use.
+- If Ollama, LM Studio, or vLLM is already running on the machine, PAIR can
+  **adopt** that install instead of downloading another copy. Adoption helps when
+  the usual engine port is already in use.
 
 To download models:
 
@@ -128,9 +128,49 @@ controlled:
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
   instance that way and restart it on the port you chose.
+- **vLLM** is managed as a process, so it behaves like Ollama: PAIR will not move
+  an adopted one.
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.
+
+## vLLM
+
+vLLM works differently enough from the other engines to be worth reading before
+you use it.
+
+**Linux only.** vLLM publishes no Windows build and no macOS GPU build, so PAIR
+offers it on Linux and reports it as unavailable elsewhere.
+
+**Adopting an instance you already run is the normal path.** Most people run
+vLLM themselves, either as `vllm serve <model>` or from the `vllm/vllm-openai`
+container image. If something is already serving on port `8000`, turning vLLM on
+in **Engine settings** adopts it rather than starting a second copy, and the
+engine shows as running. PAIR does not stop an instance it did not start; stop
+it the way you started it.
+
+**One model per process.** Unlike Ollama and LM Studio, a vLLM process serves
+exactly one model, named when it starts. Set it in **Engine settings** under
+**Model to serve**, using a Hugging Face model id such as `Qwen/Qwen3-8B`. PAIR
+persists the choice and restarts the engine onto it. Starting vLLM with no model
+chosen fails with a message saying so rather than starting something that cannot
+answer.
+
+**The first start can take many minutes.** vLLM downloads the model's weights
+and compiles CUDA graphs before it serves anything, so PAIR allows up to thirty
+minutes for it to become ready. The engine shows as starting throughout; later
+starts of the same model are much faster.
+
+**There are no model operations.** vLLM has no download, load, unload, or delete
+surface — the engine fetches what it needs from the model id you configured, and
+keeps it resident for the life of the process. The model list simply shows what
+the running engine serves.
+
+**Installing it takes a while and uses a lot of disk.** Choosing install builds a
+Python environment under PAIR's own engine directory and installs vLLM and its
+CUDA dependencies into it, which is several gigabytes. Uninstalling removes that
+environment; it does not remove downloaded weights, which live in the Hugging
+Face cache at `~/.cache/huggingface`.
 
 ## Managing Engines on Other Machines
 
