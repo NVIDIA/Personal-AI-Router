@@ -130,9 +130,9 @@ endpoint cannot be opened at all, `nvpair-tui` logs a warning and runs the
 interactive UI anyway: the UI is its primary job.
 
 On Unix the path has to fit the platform's `sun_path` limit (104 bytes on
-macOS). A default path that would not fit is reported with that limit named,
-rather than being silently truncated by the kernel; `--control-socket` with a
-shorter path is the fix.
+macOS). Any path that would not fit — the default or one given with
+`--control-socket` — is reported with that limit named, rather than being
+silently truncated by the kernel into a socket nobody will dial.
 
 ### Methods
 
