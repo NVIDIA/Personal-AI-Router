@@ -2198,6 +2198,15 @@ func setNodeIDIfEmpty(m map[string]json.RawMessage, key, nodeID string) bool {
 	return true
 }
 
+// recoverableDecode reports whether a codec Read error is a recoverable
+// per-frame decode failure (bad JSON / wrong version): the scanner advances
+// past the bad frame, so both the producer and the consumer keep pumping
+// instead of tearing the connection down.
+func recoverableDecode(err error) bool {
+	var de *DecodeError
+	return errors.As(err, &de)
+}
+
 func (b *Broker) readLoop(ctx context.Context) error {
 	// codec.Read() blocks on stdin, so we run it on its own goroutine and
 	// select against ctx.Done(). Otherwise a SIGINT/SIGTERM (which cancels
@@ -2225,8 +2234,7 @@ func (b *Broker) readLoop(ctx context.Context) error {
 			if err == nil {
 				continue
 			}
-			var de *DecodeError
-			if errors.As(err, &de) {
+			if recoverableDecode(err) {
 				continue
 			}
 			return
@@ -2265,6 +2273,12 @@ func (b *Broker) readLoop(ctx context.Context) error {
 			return nil
 		case r := <-reads:
 			if r.err != nil {
+				// Recoverable per-frame decode failure: the producer keeps
+				// pumping and the next Read advances past the bad frame, so
+				// skip it here too instead of tearing down the connection.
+				if recoverableDecode(r.err) {
+					continue
+				}
 				if r.err == io.EOF || ctx.Err() != nil {
 					return nil
 				}

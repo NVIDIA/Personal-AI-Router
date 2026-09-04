@@ -6,8 +6,8 @@ package relay
 import (
 	"reflect"
 	"sync"
-	"time"
 	"testing"
+	"time"
 
 	"nvpair-shared/noderec"
 )
@@ -200,5 +200,43 @@ func TestDirectorySnapshotFilterAndSort(t *testing.T) {
 	ol := d.Snapshot(noderec.ServiceOllama)
 	if len(ol) != 2 {
 		t.Fatalf("snapshot(ol) = %d, want 2", len(ol))
+	}
+}
+
+// TestDeliverCoalescesTriggers guards the pump contract: Deliver is non-blocking
+// and multiple pending triggers coalesce into ONE send of the latest state — a
+// subscriber with a slow Send must never accumulate a backlog of stale snapshots.
+func TestDeliverCoalescesTriggers(t *testing.T) {
+	d := NewDirectory()
+	rec := &recordingSub{}
+	sub := &Subscriber{Filter: noderec.SubscribeParams{}, Send: rec.send}
+	id := d.Subscribe(sub)
+
+	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
+	d.Apply(noderec.NotifyNodeDiscovered, olNode("b"))
+	// Three triggers while none has been consumed yet: they must coalesce.
+	d.Deliver(sub)
+	d.Deliver(sub)
+	d.Deliver(sub)
+
+	got := rec.last(1)
+	if !reflect.DeepEqual(ids(got), []string{"a", "b"}) {
+		t.Fatalf("coalesced delivery = %v, want [a b] (latest state)", got)
+	}
+
+	// The next Apply re-pushes current state even though its trigger coalesced
+	// with the earlier ones — the pump always re-captures at wake time.
+	d.Apply(noderec.NotifyNodeDiscovered, erNode("c"))
+	if got := ids(rec.last(2)); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("delivery after coalesced apply = %v, want [a b c]", got)
+	}
+
+	// After Unsubscribe the pump exits: Deliver must not panic and no more
+	// sends may arrive.
+	d.Unsubscribe(id)
+	d.Deliver(sub)
+	time.Sleep(50 * time.Millisecond)
+	if n := rec.count(); n != 2 {
+		t.Errorf("post-unsubscribe deliveries = %d, want 2", n)
 	}
 }

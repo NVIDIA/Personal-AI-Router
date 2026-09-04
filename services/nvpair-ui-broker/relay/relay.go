@@ -142,9 +142,16 @@ func (d *Directory) Subscribe(sub *Subscriber) (id int) {
 
 // pump serializes one subscriber's deliveries. Every wake re-captures the
 // latest filtered snapshot, so coalesced triggers always deliver current state.
-// Exits on Unsubscribe (done closed).
+// done takes priority over a pending kick: once Unsubscribe has closed done, a
+// trigger that raced the close must not produce a Send against a consumer
+// that's gone.
 func (d *Directory) pump(sub *Subscriber) {
 	for {
+		select {
+		case <-sub.done:
+			return
+		default:
+		}
 		select {
 		case <-sub.kick:
 			sub.Send(d.filtered(sub.Filter))

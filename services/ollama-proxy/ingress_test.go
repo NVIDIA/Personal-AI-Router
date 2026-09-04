@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -139,4 +140,43 @@ func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {
 	if tr != shared {
 		t.Fatal("ingress reverse proxy did not use the shared plain Transport")
 	}
+}
+
+// TestHandlePlainGatesLoopbackCrossOrigin: the loopback gate does not exclude
+// browsers (they connect from loopback), so a simple cross-origin POST from an
+// origin the allowlist does not name must be refused with the proxy's own 403,
+// and an allowlisted origin must pass through to the router.
+func TestHandlePlainGatesLoopbackCrossOrigin(t *testing.T) {
+	t.Run("unlisted origin is refused with 403 origin-not-allowed", func(t *testing.T) {
+		t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "")
+		p := testProxy(NewDiscovery(), 1235)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+
+		p.handlePlain(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("cross-origin loopback status = %d, want %d", rec.Code, http.StatusForbidden)
+		}
+		if !strings.Contains(rec.Body.String(), "origin-not-allowed") {
+			t.Errorf("body = %q, want the origin-not-allowed code", rec.Body.String())
+		}
+	})
+	t.Run("allowlisted origin passes the gate", func(t *testing.T) {
+		t.Setenv("NVPAIR_PROXY_ALLOWED_ORIGINS", "https://ui.example")
+		p := testProxy(NewDiscovery(), 1235)
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("Origin", "https://ui.example")
+		// The engine-manager identity marker answers 409 only after the origin
+		// gate, so a 409 proves the allowlisted caller reached the router.
+		req.Header.Set(engineIdentityProbeHeader, "1")
+		rec := httptest.NewRecorder()
+
+		p.handlePlain(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("allowlisted-origin status = %d, want %d (gate pass-through)", rec.Code, http.StatusConflict)
+		}
+	})
 }
