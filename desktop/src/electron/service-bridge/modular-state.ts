@@ -40,13 +40,23 @@ type BrokerNodeSource = ProxyNodeSource | 'broker'
  * Engines surfaced by the broker's proxy plane. Other engine-manager engines
  * are not currently routed across nodes.
  */
-export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio'>
-export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio']
+export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'vllm'>
+export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'vllm']
 
-/** Map a proxy node source onto the engine it describes. */
-const PROXY_SOURCE_ENGINE: Record<ProxyNodeSource, ProxyEngine> = {
-    'ollama-proxy': 'ollama',
-    'lmstudio-proxy': 'lm-studio'
+/**
+ * The engines each proxy fronts. `lmstudio-proxy` is the OpenAI-compatible
+ * router and serves every engine that speaks that API, so a node it reports is
+ * not necessarily LM Studio — which engine it actually runs comes from the
+ * node's own per-engine model attribution (see enginesOnProxyNode).
+ */
+const PROXY_SOURCE_ENGINES: Record<ProxyNodeSource, readonly ProxyEngine[]> = {
+    'ollama-proxy': ['ollama'],
+    'lmstudio-proxy': ['lm-studio', 'vllm']
+}
+
+/** The proxy that fronts an engine, and so the node source it reports under. */
+function proxySourceForEngine(engine: ProxyEngine): ProxyNodeSource {
+    return engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'
 }
 
 /** Per-engine presence on a node — each proxy reports its own engine. */
@@ -164,7 +174,7 @@ function emptyPresence(): EnginePresence {
 }
 
 function emptyEngines(): Record<ProxyEngine, EnginePresence> {
-    return { ollama: emptyPresence(), 'lm-studio': emptyPresence() }
+    return { ollama: emptyPresence(), 'lm-studio': emptyPresence(), vllm: emptyPresence() }
 }
 
 /** Immutably set one engine's presence, preserving the other. */
@@ -175,7 +185,8 @@ function setEngine(
 ): Record<ProxyEngine, EnginePresence> {
     return {
         ollama: engine === 'ollama' ? presence : engines.ollama,
-        'lm-studio': engine === 'lm-studio' ? presence : engines['lm-studio']
+        'lm-studio': engine === 'lm-studio' ? presence : engines['lm-studio'],
+        vllm: engine === 'vllm' ? presence : engines.vllm
     }
 }
 
@@ -390,7 +401,7 @@ export function parseWorkloadsInitial(value: JsonValue | undefined): Workload[] 
 
 /** True for an engine fronted by a broker-supervised reverse proxy. */
 export function isProxyEngine(engine: EngineType): engine is ProxyEngine {
-    return engine === 'ollama' || engine === 'lm-studio'
+    return engine === 'ollama' || engine === 'lm-studio' || engine === 'vllm'
 }
 
 const PENDING_OP_IDLE_TIMEOUT_MS = 90_000
@@ -709,26 +720,54 @@ function toEngineStatus(
  * the engine is determined by which relay namespace it arrived on. The presence
  * is stamped onto that engine only; the other engine stays empty.
  */
-function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): ModularNode | null {
+/**
+ * Which of a proxy's engines a reported node actually runs.
+ *
+ * A proxy that fronts one engine answers for itself — the source names it. The
+ * OpenAI proxy fronts several, so a node it reports is not necessarily LM
+ * Studio: it stamps every routed node with per-engine model attribution keyed by
+ * engine-manager name, and that is what says whether the node runs LM Studio,
+ * vLLM, or both. A payload with no attribution names no engine, so callers that
+ * must clear presence use the proxy's whole engine set instead.
+ */
+function enginesOnProxyNode(source: ProxyNodeSource, params: JsonValue | undefined): ProxyEngine[] {
+    const fronted = PROXY_SOURCE_ENGINES[source]
+    if (fronted.length === 1) return [...fronted]
+    const byEngine = objectValue(objectValue(params)?.modelsByEngine)
+    if (!byEngine) return []
+    // Presence of the key, not a non-empty list: an engine that is running with
+    // no models reports an empty (JSON null) list and is still present.
+    return fronted.filter(engine => Object.hasOwn(byEngine, proxyEngineToManagerName(engine)))
+}
+
+function parseProxyNode(
+    params: JsonValue | undefined,
+    source: ProxyNodeSource,
+    engines: readonly ProxyEngine[]
+): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
     // The proxy keys `Node.ID` by the stable per-host UUID (and rejects empty),
     // so this is already the canonical node key — no TXT parsing needed.
     const id = stringValue(obj.id)
     if (!id) return null
-    const engines = emptyEngines()
-    engines[engine] = {
+    const presence: EnginePresence = {
         up: true,
         // Under secure inference this is the peer's promoted inference proxy
-        // port, not the engine's own (loopback-private) port.
+        // port, not the engine's own (loopback-private) port. Every engine a
+        // proxy fronts shares that one port.
         port: numberValue(obj.port),
         // The proxy `Node` carries no version field; engine version comes from
         // nvpair-engine-manager, not discovery.
         version: null
     }
+    let nodeEngines = emptyEngines()
+    for (const engine of engines) {
+        nodeEngines = setEngine(nodeEngines, engine, presence)
+    }
     return {
         id,
-        sources: [engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'],
+        sources: [source],
         // `Node.Host` is the hostname; empty for the self-bridge manual node,
         // in which case the broker discovery entry supplies the display name on
         // merge (see mergeNode). Never fall back to the UUID id here.
@@ -760,7 +799,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         gpus: [],
         cpu: null,
         memory: null,
-        engines,
+        engines: nodeEngines,
         lastSeen: Date.now()
     }
 }
@@ -900,7 +939,7 @@ class ModularBridgeState {
     // Per-engine bound proxy port reported by the broker. 0 = not reported yet;
     // we never fabricate a default — an unknown port surfaces as null, not a
     // guess. `ollama` is the `ollama-proxy`, `lm-studio` is the `lmstudio-proxy`.
-    private proxyPorts: Record<ProxyEngine, number> = { ollama: 0, 'lm-studio': 0 }
+    private proxyPorts: Record<ProxyEngine, number> = { ollama: 0, 'lm-studio': 0, vllm: 0 }
     private selfId: string | null = null
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
@@ -910,7 +949,7 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; port: number }
+        { installed: boolean; running: boolean; port: number; servedModel: string }
     >()
     /**
      * Local model lists pulled from `nvpair-engine-manager`'s `list_models` action by
@@ -1375,7 +1414,10 @@ class ModularBridgeState {
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            // Empty for every engine that does not serve one model per process,
+            // and for one that does but has no model chosen yet.
+            servedModel: stringValue(obj.model)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -2073,7 +2115,8 @@ class ModularBridgeState {
                 nodeId,
                 processStatus: pending,
                 enginePort: facts && facts.running && facts.port > 0 ? facts.port : null,
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                servedModel: facts?.servedModel
             }
         }
 
@@ -2096,7 +2139,10 @@ class ModularBridgeState {
                 // Each proxy-fronted engine has its own broker proxy
                 // (`ollama-proxy` / `lmstudio-proxy`); report that engine's bound
                 // proxy port. Loopback-only engines get null.
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                // The engine's configured served model, for an engine that runs
+                // one model per process. Empty when none is chosen.
+                servedModel: facts.servedModel
             }
         }
 
@@ -2280,11 +2326,11 @@ class ModularBridgeState {
 
     handleNotification(notification: JsonRpcNotification): void {
         if (notification.source === 'proxy') {
-            this.handleProxyNotification(notification, 'ollama')
+            this.handleProxyNotification(notification, 'ollama-proxy')
             return
         }
         if (notification.source === 'lmstudio-proxy') {
-            this.handleProxyNotification(notification, 'lm-studio')
+            this.handleProxyNotification(notification, 'lmstudio-proxy')
             return
         }
         if (notification.source === 'broker') {
@@ -2292,28 +2338,36 @@ class ModularBridgeState {
         }
     }
 
-    private handleProxyNotification(notification: JsonRpcNotification, engine: ProxyEngine): void {
+    private handleProxyNotification(
+        notification: JsonRpcNotification,
+        source: ProxyNodeSource
+    ): void {
+        const fronted = PROXY_SOURCE_ENGINES[source]
         if (notification.method === 'ready') {
             const params = objectValue(notification.params)
             // Trust the broker-reported port only. If `ready` carries no port we
             // keep the last known value (0 = unknown) rather than guessing.
             const nextPort = numberValue(params?.port)
             if (nextPort <= 0) return
-            const changed = nextPort !== this.proxyPorts[engine]
-            this.proxyPorts[engine] = nextPort
-            // A runtime proxy:set-port (or a broker steer onto a free port)
-            // re-emits `ready` with the new port. Push a fresh status for that
-            // engine so the Edit Node proxy port reflects the actually-bound value
-            // immediately. Only on a real change so the startup baseline `ready`
-            // (and redundant re-readies) stay quiet.
-            if (changed) this.emitLocalEngineStatus(engine)
+            // Every engine this proxy fronts is reached through the one listener,
+            // so they all move together.
+            for (const engine of fronted) {
+                const changed = nextPort !== this.proxyPorts[engine]
+                this.proxyPorts[engine] = nextPort
+                // A runtime proxy:set-port (or a broker steer onto a free port)
+                // re-emits `ready` with the new port. Push a fresh status for that
+                // engine so the Edit Node proxy port reflects the actually-bound
+                // value immediately. Only on a real change so the startup baseline
+                // `ready` (and redundant re-readies) stay quiet.
+                if (changed) this.emitLocalEngineStatus(engine)
+            }
             return
         }
 
         if (notification.method === 'error') {
             const params = objectValue(notification.params)
             this.upsertError({
-                id: `${engine}-proxy:${Date.now()}`,
+                id: `${source}:${Date.now()}`,
                 message: stringValue(params?.message) || 'Modular proxy failed',
                 timestamp: Date.now(),
                 severity: 'error',
@@ -2323,16 +2377,23 @@ class ModularBridgeState {
         }
 
         if (notification.method === 'node/removed') {
-            const node = parseProxyNode(notification.params, engine)
+            // A removal payload carries the node id alone, so it names no engine.
+            // The proxy only sends one once its last engine entry for that node is
+            // gone, so clearing every engine it fronts is the accurate reading.
+            const node = parseProxyNode(notification.params, source, fronted)
             if (!node) return
-            this.clearNodeEngine(node.id, engine)
+            for (const engine of fronted) {
+                this.clearNodeEngine(node.id, engine)
+            }
             return
         }
 
         if (notification.method === 'node/discovered' || notification.method === 'node/updated') {
-            const node = parseProxyNode(notification.params, engine)
+            const engines = enginesOnProxyNode(source, notification.params)
+            if (engines.length === 0) return
+            const node = parseProxyNode(notification.params, source, engines)
             if (!node) return
-            this.upsertNode(node, engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy')
+            this.upsertNode(node, source)
         }
     }
 
@@ -2344,7 +2405,7 @@ class ModularBridgeState {
     private clearNodeEngine(nodeId: string, engine: ProxyEngine): void {
         const existing = this.nodes.get(nodeId)
         if (!existing) return
-        const source: BrokerNodeSource = engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'
+        const source: BrokerNodeSource = proxySourceForEngine(engine)
         const sources = removeSource(existing.sources, source)
         if (sources.length === 0 && !existing.nodeInfoUp) {
             this.removeNodeEntry(nodeId)
@@ -2592,9 +2653,16 @@ class ModularBridgeState {
             }
         }
 
-        // A proxy source (ollama-proxy / lmstudio-proxy): refresh only that
-        // engine's presence; keep the other engine, telemetry, and node-info.
-        const engine = PROXY_SOURCE_ENGINE[source]
+        // A proxy source (ollama-proxy / lmstudio-proxy): refresh only the
+        // engines that proxy fronts; keep the others, telemetry, and node-info.
+        // The OpenAI proxy fronts more than one, and its event is authoritative
+        // for all of them — a node that dropped vLLM but kept LM Studio reports
+        // exactly that, so both presences come from the incoming node.
+        const fronted = PROXY_SOURCE_ENGINES[source]
+        const mergedEngines = fronted.reduce(
+            (acc, engine) => setEngine(acc, engine, next.engines[engine]),
+            existing.engines
+        )
         return {
             ...next,
             sources: mergeSources(existing.sources, source),
@@ -2623,7 +2691,7 @@ class ModularBridgeState {
             models: existing.models,
             modelsByEngine: existing.modelsByEngine,
             loadedByEngine: existing.loadedByEngine,
-            engines: setEngine(existing.engines, engine, next.engines[engine]),
+            engines: mergedEngines,
             lastSeen: Math.max(existing.lastSeen, next.lastSeen)
         }
     }

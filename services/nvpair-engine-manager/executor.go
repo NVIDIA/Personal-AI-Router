@@ -33,6 +33,11 @@ type EngineStatus struct {
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port,omitempty"`
+	// Model is the engine's configured served model, for an engine that runs one
+	// model per process (vLLM). Empty for every other engine, and for one that
+	// needs a model but has none chosen yet — the state in which a start is
+	// refused. Set by engine:set-model; see runtime.model.
+	Model string `json:"model,omitempty"`
 }
 
 // engineState is the per-engine runtime state.

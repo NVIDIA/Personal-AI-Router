@@ -20,6 +20,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
         hasDeleteModel: true,
+        hasServedModel: false,
         engineHub: { label: 'Ollama', url: 'https://ollama.com/library' }
     },
     'lm-studio': {
@@ -42,6 +43,28 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // exposes no rescan, so nvpair-engine-manager's delete_model restarts the
         // server. Deleting therefore interrupts inference and needs a warning.
         restartsOnModelDelete: true,
+        hasServedModel: false,
         engineHub: { label: 'LM Studio', url: 'https://lmstudio.ai/models' }
+    },
+    vllm: {
+        hasExpiry: false,
+        // vLLM keeps its one served model resident for the life of the process.
+        // There is nothing to eject short of stopping the engine.
+        hasEject: false,
+        // vLLM publishes no Windows build and no macOS GPU build, so PAIR only
+        // offers to install it on Linux. Its manifest ships Linux platforms only,
+        // so the engine reports unavailable everywhere else.
+        hasInstall: ['linux'],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: true,
+        // vLLM has no model-management surface: weights are fetched by the engine
+        // itself when it starts, from the model id configured below.
+        modelOpsWhenStopped: false,
+        hasDeleteModel: false,
+        hasServedModel: true
     }
 }

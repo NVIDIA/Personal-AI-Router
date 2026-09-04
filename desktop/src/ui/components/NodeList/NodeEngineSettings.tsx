@@ -98,6 +98,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                     docsUrl: EngineDefaultLinks[type]?.docsUrl,
                     installUrl: EngineDefaultLinks[type]?.installUrl,
                     installedVersion: status.installedVersion,
+                    servedModel: status.servedModel,
                     updateAvailable
                 },
                 statusKnown

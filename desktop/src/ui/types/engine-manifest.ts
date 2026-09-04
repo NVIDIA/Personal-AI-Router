@@ -37,6 +37,12 @@ export interface EngineCaps {
     /** When true, show the Delete action in the model action menu. */
     hasDeleteModel: boolean
     /**
+     * When true, the engine serves exactly one model per process and the model is
+     * chosen before it starts, so Engine settings offers a "Model to serve" field.
+     * The engine manager persists the choice and restarts the engine onto it.
+     */
+    hasServedModel: boolean
+    /**
      * When true, the engine restarts as part of deleting a model, so Delete asks
      * for confirmation first. The engine manager owns the restart; this flag only
      * tells the UI that deleting has that side effect.

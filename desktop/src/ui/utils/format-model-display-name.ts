@@ -45,6 +45,9 @@ export function formatModelDisplayName(name: string, engineType?: string | null)
         case 'ollama':
             return formatOllamaModelName(formatted)
 
+        // vLLM serves Hugging Face repo ids verbatim (Qwen/Qwen3-8B), which the
+        // shared Hugging Face formatter already renders; it needs no
+        // engine-specific rules of its own.
         default:
             if (formatted.includes('/')) {
                 return formatHuggingFaceModelName(formatted)
