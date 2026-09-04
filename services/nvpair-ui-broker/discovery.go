@@ -39,8 +39,9 @@ type EnrichedNode struct {
 	// It's the discovery-store key, so a PC rename — which changes the hostname
 	// (ID) but not the UUID — updates the existing entry in place instead of
 	// leaving a ghost under the old name. It stays off the wire; the
-	// client-facing id/name remain the hostname. Empty for manual nodes, which
-	// fall back to keying by their own ID.
+	// client-facing id/name remain the hostname. A manual node carries one too:
+	// its real UUID once its node-info reports one, and its manual id until then
+	// (see manualToEnriched), so the store key is never empty.
 	HostUUID  string      `json:"-"`
 	Host      string      `json:"host"`
 	Port      int         `json:"port"`
@@ -271,6 +272,19 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 		cb()
 	}
 	return gone
+}
+
+// hasSource reports whether the given source currently claims key. It answers
+// "does the daemon already own this record?" for the manual-node synthesis,
+// which must not write a directory entry the scanner is authoritative for.
+func (s *discoveryStore) hasSource(key string, source nodeSource) bool {
+	if key == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sn, ok := s.nodes[key]
+	return ok && sn.hasSource(source)
 }
 
 // Snapshot returns the narrow wire-format view used by
@@ -660,6 +674,35 @@ func writeClusterIdentityFrame(mu *sync.Mutex, w io.Writer, clusterUUID string) 
 		JSONRPC: "2.0",
 		Method:  noderec.MethodSetClusterIdentity,
 		Params:  noderec.ClusterIdentityParams{ClusterUUID: clusterUUID},
+	}
+	data, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	mu.Lock()
+	defer mu.Unlock()
+	_, err = w.Write(data)
+	return err
+}
+
+// writeServicesFrame marshals a newline-delimited nodeinfo:set-services
+// notification and writes it to a child's stdin under mu. The set is always sent
+// whole: a service that stopped is expressed by its key being absent, exactly as
+// an unregister is on the discovery record.
+func writeServicesFrame(mu *sync.Mutex, w io.Writer, services map[noderec.ServiceKey]int) error {
+	if services == nil {
+		services = map[noderec.ServiceKey]int{}
+	}
+	frame := struct {
+		JSONRPC string                 `json:"jsonrpc"`
+		Method  string                 `json:"method"`
+		Params  noderec.ServicesParams `json:"params"`
+	}{
+		JSONRPC: "2.0",
+		Method:  noderec.MethodSetServices,
+		Params:  noderec.ServicesParams{Services: services},
 	}
 	data, err := json.Marshal(frame)
 	if err != nil {

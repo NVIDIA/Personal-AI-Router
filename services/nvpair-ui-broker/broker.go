@@ -75,7 +75,8 @@ type AvailableNode struct {
 	// is the key clients should dedup/track nodes by; id/name stay the hostname
 	// for display. Two machines sharing a hostname are distinct by HostUUID. It
 	// is the same value the cluster surface exposes as nodeUuid.
-	// Omitted for manual nodes, which carry no UUID and are keyed by id.
+	// A manually added node carries one too: its real UUID once its node-info
+	// reports one, and its manual id until then, so it is never keyless.
 	HostUUID  string `json:"hostUuid,omitempty"`
 	IPAddress string `json:"ipAddress"`
 	// IPAddresses is every address this node published, in its own ranked order
@@ -305,6 +306,12 @@ type Broker struct {
 	manualMu           sync.Mutex
 	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
+	// manualRelayKeys are the directory keys this broker synthesized for manual
+	// PAIR nodes. The relay directory is keyed by hostUuid and the scanner writes
+	// the same keys, so a withdrawal has to know what it put there: removing a
+	// record the daemon owns would evict a live discovered peer from every
+	// consumer until its next browse event.
+	manualRelayKeys map[string]bool
 
 	// schedMu guards each engine's cached priority and generation. Per-engine
 	// delivery locks serialize asynchronous node/set-priority calls; a stale
@@ -382,6 +389,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		relayDir:           relay.NewDirectory(),
 		regCache:           relay.NewRegistrationCache(),
 		manualNodeKeys:     make(map[string]string),
+		manualRelayKeys:    make(map[string]bool),
 		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
 		workloads:          workloadstore.New(),
 		ollamaPortReady:    make(chan struct{}),
@@ -400,6 +408,7 @@ func (b *Broker) registerService(p noderec.RegisterParams) {
 	if sc := b.getScanner(); sc != nil {
 		go sc.pushRegister(p)
 	}
+	go b.pushServicesToNodeInfo()
 }
 
 // unregisterService removes a local service from the cache and the daemon.
@@ -409,6 +418,32 @@ func (b *Broker) unregisterService(svc noderec.ServiceKey) {
 	}
 	if sc := b.getScanner(); sc != nil {
 		go sc.pushUnregister(svc)
+	}
+	go b.pushServicesToNodeInfo()
+}
+
+// localServices projects the registration cache onto the {service: port} map
+// node-info reports. One derivation, so what a peer reads over HTTP and what it
+// would have read off this host's mDNS record are the same set.
+func (b *Broker) localServices() map[noderec.ServiceKey]int {
+	regs := b.regCache.Snapshot()
+	services := make(map[noderec.ServiceKey]int, len(regs))
+	for _, p := range regs {
+		services[p.Service] = p.Port
+	}
+	return services
+}
+
+// pushServicesToNodeInfo sends node-info this node's current service map.
+// Best-effort on a node-info that isn't running (never spawned, or mid-restart):
+// the next spawn pushes again.
+func (b *Broker) pushServicesToNodeInfo() {
+	np := b.getNodeInfo()
+	if np == nil {
+		return
+	}
+	if err := np.SetServices(b.localServices()); err != nil {
+		slog.Warn("failed to push service map to node-info", "err", err)
 	}
 }
 
@@ -626,6 +661,11 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// /v1/node-info but holds no cluster dir to read it from, so this push is the
 	// only source. It runs on every spawn, which also covers a supervised restart.
 	b.pushClusterIdentityToNodeInfo()
+	// And the service map, for the same reason: node-info is the only surface a
+	// peer that never saw this host's mDNS record can ask which services it runs.
+	// Pushed here as well as from registerService so a restart re-seeds the set
+	// the workers registered before node-info came back.
+	b.pushServicesToNodeInfo()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.
@@ -1263,7 +1303,7 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 // the alias's key changed (node-info revealed its real UUID) the
 // old key is reprojected from a surviving alias or released.
 func (b *Broker) upsertManualNode(s manualNodeStatus) {
-	en := manualToEnriched(s)
+	en := b.manualEnriched(s)
 	key := en.storeKey()
 	receivedAt := time.Now()
 
@@ -1275,6 +1315,9 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 
 	b.store.Upsert(en, sourceManual)
 	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
+	// A PAIR node joins the discovery relay as if it had been found over mDNS, so
+	// every consumer treats it as the pinned peer it is.
+	b.applyManualDirectory(s, key)
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
 	// lmstudio-proxy) so inference can route to it; an unreachable engine is
 	// pulled back out. No-op for a proxy the broker doesn't supervise.
@@ -1318,13 +1361,15 @@ func (b *Broker) reprojectOrRelease(key string) {
 	survivor, ok := b.survivingAliasLocked(key)
 	b.manualMu.Unlock()
 	if ok {
-		b.store.Upsert(manualToEnriched(survivor.status), sourceManual)
+		b.store.Upsert(b.manualEnriched(survivor.status), sourceManual)
 		b.bridgeManualNode(survivor.status, key)
+		b.applyManualDirectory(survivor.status, key)
 		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
 		return
 	}
 	b.store.Remove(key, sourceManual)
 	b.removeManualNodeFromProxies(key)
+	b.releaseManualDirectory(key)
 	b.removeTelemetry(sourceManual, key)
 }
 
@@ -1371,6 +1416,9 @@ func (b *Broker) clearManualNodesState() {
 		// doesn't keep a stale manual target the crashed prober can no
 		// longer vouch for. Clients re-add manual nodes after the restart.
 		b.removeManualNodeFromProxies(key)
+		// And out of the discovery relay, for the same reason: a synthesized PAIR
+		// peer is only as good as the prober that keeps vouching for it.
+		b.releaseManualDirectory(key)
 	}
 }
 

@@ -1,0 +1,210 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Running PAIR across a Tailscale tailnet
+
+PAIR finds peers by multicast DNS, which never leaves a local link. Two machines
+joined only by a Tailscale tailnet, a WireGuard tunnel, or a routed link will not
+discover each other no matter how long you wait. Nothing is wrong with either
+one: the announcement has nowhere to go.
+
+They can still be a cluster. You add the peer by address instead of waiting for
+it to appear, and everything after that — pairing, inventory, telemetry, and
+routing inference — works exactly as it does on a LAN, over the same
+certificate-pinned mutual TLS. PAIR's trust is in the certificates, not in the
+route the packets took.
+
+This page uses Tailscale because it is the common case. The same steps apply to
+any network where the two machines can open TCP connections to each other but
+multicast does not cross.
+
+## What changes on a tailnet
+
+**No discovery.** Nothing appears under **Add node** on its own. This is the only
+part of PAIR that a tailnet actually breaks, and adding the peer by address is
+the whole fix.
+
+**Addresses look unusual.** A Tailscale node's IPv4 address is in `100.64.0.0/10`
+— carrier-grade NAT space, not a private LAN range — and its IPv6 address is a
+unique local address under `fd7a:115c:a1e0::/48`. Both are ordinary addresses to
+PAIR. When a node has a LAN address as well, PAIR prefers the LAN one, because a
+peer on the same LAN reaches it faster; when the tailnet address is all a node
+has, it is used without hesitation.
+
+**Use the MagicDNS name.** Tailscale gives every node a name like
+`gpu-box.tail1234.ts.net`. Prefer it over the numeric address. PAIR re-resolves a
+name on every check, so a node that is re-authenticated, re-created, or simply
+handed a different address keeps working; a node added by IP address is stranded
+the moment its address changes and has to be re-added by hand.
+
+**Latency is higher, and sometimes much higher.** A tailnet connection is usually
+direct, but it falls back to a relay when both machines are behind restrictive
+NATs. Inference still works; the first token just takes longer to arrive.
+
+## Add a node by host name, pair it, and check it
+
+Do this on one machine. Both must have PAIR running, and both must be on the same
+tailnet.
+
+1. **Confirm the tailnet reaches the peer.** On the machine you are adding
+   *from*:
+
+   ```bash
+   tailscale status              # the peer should be listed and online
+   tailscale ping gpu-box        # a direct or relayed path, either is fine
+   ```
+
+   On Windows, the command is `"C:\Program Files\Tailscale\tailscale.exe" status`.
+   On macOS, the CLI lives inside the app bundle at
+   `/Applications/Tailscale.app/Contents/MacOS/Tailscale`.
+
+2. **Open Add node** and type the peer's MagicDNS name — `gpu-box.tail1234.ts.net`
+   — into **Address or host name**. Enter the name on its own. Do not append a
+   port: PAIR adds each service's own port to what you type, so `host:14318`
+   becomes unreachable, and PAIR will tell you so rather than accepting it.
+
+   If any of the peer's services are not on their default ports, open **Service
+   ports** and fill in only the ones that moved. Everything you leave blank keeps
+   its default.
+
+3. **Select Invite.** PAIR adds the node first and then starts pairing, so the
+   node appears in your node list within about ten seconds whether or not the
+   pairing succeeds. That is the fastest way to find out whether the address was
+   right.
+
+4. **Read the PIN to the other machine.** Someone there accepts the invitation
+   and types the six digits. This is the same PIN pairing as on a LAN.
+
+5. **Check the result.** The peer's card should show its GPU, CPU, and memory
+   within a probe cycle, and its models shortly after the pairing completes.
+   Models arrive only once you are paired: a peer serves its model list to
+   certificates it has pinned and to nobody else.
+
+6. **Route something to it.** Send a request to your local endpoint and confirm
+   the job is attributed to the remote node in the jobs view.
+
+Repeat from the other machine only if you want it to be able to *start* pairings
+too; membership itself is mutual after one successful pairing.
+
+## Opening the right ports in a Tailscale ACL
+
+Tailscale's default policy allows everything between your own nodes, in which
+case nothing here is required. If you have narrowed it, this grant opens exactly
+what PAIR needs between machines tagged `tag:pair`, and nothing else:
+
+```json
+{
+  "tagOwners": {
+    "tag:pair": ["autogroup:admin"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:pair"],
+      "dst": ["tag:pair:1234,11434,14318,14319,14320,14321,14322,14323"]
+    }
+  ]
+}
+```
+
+What each port is for:
+
+| Port | Service | Why a peer needs it |
+| --- | --- | --- |
+| `14318` | Node info | Hardware inventory, node identity, and the list of services this node runs. It is how a node added by address is recognized as a PAIR node at all. |
+| `14321` | Cluster manager | PIN pairing, then the mutually authenticated membership channel. |
+| `14322` | Engine manager | The peer's model inventory. Mutual TLS; a peer you have not paired with gets nothing. |
+| `14323` | Engine control | Remote engine and model operations. Mutual TLS, cluster members only. |
+| `11434` | Ollama-compatible proxy | Where inference is routed. Mutual TLS from a peer; plaintext is refused from anything but the machine's own loopback. |
+| `1234` | OpenAI-compatible proxy | The same, for the OpenAI-compatible surface. |
+| `14319` | Error sync | Cross-node error reporting. Mutual TLS. |
+| `14320` | Workload manager | Job and telemetry exchange. Mutual TLS. |
+
+Two things this table is worth reading carefully for. First, `11434` and `1234`
+on a PAIR node are **proxy front doors, not the engines themselves**. The engines
+listen on loopback only and are never exposed. A peer connects to the front door
+with its pinned certificate and the proxy passes the request to the local engine.
+Second, `14318` is the one surface deliberately served in plaintext, so that a
+machine which has not paired yet can still be seen. It carries hardware
+inventory, a node identity, and port numbers — no prompts, no responses, no keys.
+
+Do not port-forward any of these on a public interface. The point of running PAIR
+over a tailnet is that these ports are reachable only from machines you have
+admitted to it.
+
+## Troubleshooting
+
+### The node appears but has no models
+
+Expected until the pairing completes. A peer serves its model list only over
+mutual TLS to a certificate it has pinned. Check that the node card shows the
+peer as paired; if the pairing was declined or expired, start it again from
+**Add node** using the same address.
+
+If it is paired and models are still missing, the peer's engine-manager port
+(`14322`) is most likely blocked. Confirm with:
+
+```bash
+tailscale ping gpu-box
+```
+
+and check the ACL grant above.
+
+### 403 from the peer
+
+A `403` means the connection reached the peer and the peer declined to serve it.
+Two causes, and they are worth telling apart:
+
+- **Not paired, or no longer paired.** The peer serves its inventory, engine
+  control, workloads, and inference only to certificates it pins. Removing a node
+  from a cluster takes effect on the very next request, so a node that worked
+  yesterday and 403s today may simply have been removed. Pair again.
+- **Something dialed a proxy port in plaintext.** `11434` and `1234` accept
+  plaintext only from the machine's own loopback. If you are testing by hand with
+  `curl http://gpu-box.tail1234.ts.net:11434/`, a `403` is the correct answer and
+  not a fault. Route inference through your *local* endpoint and let PAIR make the
+  connection.
+
+### The host name does not resolve
+
+MagicDNS has to be enabled for the tailnet, and the machine has to be using
+Tailscale's resolver.
+
+- **Everywhere:** confirm MagicDNS is on in the Tailscale admin console under
+  **DNS**, and that `tailscale status` shows the peer's full name.
+- **Windows:** MagicDNS names sometimes fail to resolve when another VPN client
+  or a corporate DNS policy has claimed the resolver. Test with
+  `Resolve-DnsName gpu-box.tail1234.ts.net`. If it fails while `tailscale ping
+  gpu-box` succeeds, restart the Tailscale service, and if that does not help,
+  add the node by its `100.x.y.z` address instead. It works; it just will not
+  survive the node changing address.
+- **Linux:** a host using `systemd-resolved` needs Tailscale's resolver
+  registered. `tailscale status` reporting the peer while
+  `getent hosts gpu-box.tail1234.ts.net` returns nothing points at that.
+
+### The node was found, then went unreachable
+
+PAIR checks a manual node every ten seconds and reports it after three
+consecutive failures, so about thirty seconds of silence. A relayed tailnet path
+can be slow enough to miss a check without the node being down; PAIR tolerates
+that and keeps the peer in the routing pool across a short gap.
+
+A node added by IP address that never comes back has probably changed address.
+Re-add it by its MagicDNS name so it can recover on its own next time.
+
+### Both machines are on a LAN *and* a tailnet
+
+Nothing to do. They will discover each other over the LAN, and PAIR prefers the
+LAN address because it is the faster path. Adding the tailnet name as well is
+harmless — the discovered record wins and the manual entry stands down.
+
+## Reading next
+
+- [Getting started](getting-started.mdx) — the LAN version of the same walkthrough
+- [Architecture](architecture.mdx#manual-nodes) — how a node added by address is
+  folded into the same directory as a discovered one
+- [Troubleshooting](troubleshooting.mdx) — everything that is not specific to a
+  remote network
+- [SECURITY.md](../SECURITY.md) — what PAIR does and does not defend against

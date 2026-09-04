@@ -38,7 +38,7 @@ import {
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
-import { listManualNodeEntries } from './manual-nodes-store'
+import { listManualNodeEntries, manualPortsToWire } from './manual-nodes-store'
 import {
     MODULAR_RUNTIME_BINARIES,
     modularBinaryFileName
@@ -851,10 +851,10 @@ class ModularSupervisor {
         const entries = listManualNodeEntries()
         for (const entry of entries) {
             try {
-                await this.callProcess('broker', 'node/add', {
-                    address: entry.address,
-                    name: entry.name
-                })
+                const params: JsonObject = { address: entry.address, name: entry.name }
+                const wirePorts = manualPortsToWire(entry.ports)
+                if (wirePorts) params.ports = wirePorts
+                await this.callProcess('broker', 'node/add', params)
             } catch (err) {
                 log.warn({
                     sublevel: 'manual-nodes',

@@ -11,6 +11,7 @@ import {
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
+import { createStructuredLogger } from '@/shared/utils/log'
 import { getEngineHubModels } from '@/electron/model-hub'
 import { getModularSupervisor } from './modular-supervisor'
 import {
@@ -23,7 +24,12 @@ import {
 import type { ProxyEngine } from './modular-state'
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
 import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
-import { removeManualNodeEntry, resolveManualNodeKey } from './manual-nodes-store'
+import {
+    addManualNodeEntry,
+    manualPortsToWire,
+    removeManualNodeEntry,
+    resolveManualNodeKey
+} from './manual-nodes-store'
 
 type BridgeHandler<C extends WsInvokeChannel> = (
     payload?: WsInvokeRequest<C>
@@ -34,6 +40,8 @@ type BridgeHandlerMap = {
 }
 
 // The broker allows pairing exchanges up to 30 seconds; keep the UI bridge outside that deadline.
+const log = createStructuredLogger('service-bridge')
+
 const CLUSTER_PAIRING_CALL_TIMEOUT_MS = 35_000
 
 function wait(ms: number): Promise<void> {
@@ -798,6 +806,32 @@ async function handleClusterInviteNode(
 ): Promise<Invite> {
     if (!payload) return emptyInvite()
 
+    // Add the address as a manual node BEFORE inviting it.
+    //
+    // On a network that carries no multicast — a Tailscale tailnet, a routed
+    // subnet — nothing is ever discovered, so a peer that is only paired stays
+    // invisible: no record arrives for it, ever. Adding it first also gives the
+    // operator the one piece of feedback that matters when an address was typed
+    // by hand: the node appears with its hardware as soon as it answers, whether
+    // or not the pairing that follows succeeds.
+    const supervisor = getModularSupervisor()
+    if (supervisor.hasProcess('broker')) {
+        const entry = addManualNodeEntry(payload.ipAddress, payload.ports)
+        const params: JsonObject = { address: entry.address, name: entry.name }
+        const wirePorts = manualPortsToWire(entry.ports)
+        if (wirePorts) params.ports = wirePorts
+        try {
+            await supervisor.callProcess('broker', 'node/add', params)
+        } catch (err) {
+            // Non-fatal: the entry is persisted and replayed on the next start,
+            // and the invite below is what the operator asked for.
+            log.warn({
+                sublevel: 'manual-nodes',
+                message: `Failed to add manual node ${entry.address}: ${getErrorString(err)}`
+            })
+        }
+    }
+
     // cluster-manager auto-founds a solo cluster on the first invite while
     // unclustered (under inviteMu, with invite-created provenance). Do not
     // pre-call cluster:create here: parallel Invites used to race concurrent
@@ -813,7 +847,7 @@ async function handleClusterInviteNode(
             'cluster:invite-node',
             {
                 address: payload.ipAddress,
-                port: MODULAR_CLUSTER_MANAGER_PORT
+                port: payload.ports?.cluster ?? MODULAR_CLUSTER_MANAGER_PORT
             },
             CLUSTER_PAIRING_CALL_TIMEOUT_MS
         )
