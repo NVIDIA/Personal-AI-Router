@@ -65,6 +65,8 @@ cd <directory containing nvpair-tui>
 | --- | --- |
 | `--broker-path <path>` | Use a service binary that is not beside `nvpair-tui` |
 | `--log-level <level>` | Verbosity of the terminal interface's own logging: `debug`, `info`, `warn`, or `error`. PAIR also reads this from `NVPAIR_LOG_LEVEL` |
+| `--control-socket <path>` | Serve the pairing control socket somewhere other than its default per-user path |
+| `--no-control-socket` | Serve no control socket, which disables [pairing from a script](#pair-from-a-script-or-over-ssh) |
 | `--version` | Print the version and exit |
 
 The interface's own log output goes to stderr, so it never corrupts the display.
@@ -184,6 +186,113 @@ Press `d` instead to decline. After pairing, the peer appears under **Members**.
 Only pair when you trust both machines and the network. The PIN is a short-lived
 bootstrap code, not a durable credential. Refer to the
 [security policy](../SECURITY.md).
+
+## Pair from a Script or Over SSH
+
+Every pairing step above is also a command. While the terminal interface is
+running, the same `nvpair-tui` binary invoked with a command talks to it, so you
+can pair a machine from a script, or in one `ssh` line, without opening the
+interface and pressing keys.
+
+**The interface has to be running.** These commands drive it; they do not start
+anything. Leave it running in tmux, as in
+[Keep It Running After You Disconnect](#keep-it-running-after-you-disconnect).
+If it is not running, every command exits `2` and says so. They also do not
+reach the desktop application — that is a different program with its own
+services, and the two must never run on one machine anyway.
+
+```bash
+nvpair-tui invite <address> [--port N] [--wait]
+nvpair-tui pending
+nvpair-tui accept --pin 123456 [--invite <id>] [--wait 2m]
+nvpair-tui decline [--invite <id>]
+nvpair-tui members
+```
+
+Add `--json` to any of them to get the raw result instead of a human line, for a
+script to parse.
+
+**Put the PIN in `NVPAIR_PIN`, not on the command line, in a script.** A command
+argument is visible to every user on the machine in `ps` and is written to your
+shell history. The environment variable is neither.
+
+```bash
+NVPAIR_PIN=402199 nvpair-tui accept
+```
+
+### The Desktop Invites, the Headless Box Accepts
+
+This is the common case: someone at the desktop application starts the pairing,
+and the machine that has to answer has no screen.
+
+1. On the desktop machine, invite the box by address and note the six digits it
+   shows.
+2. On the box, over SSH:
+
+   ```bash
+   ssh gpu-box 'NVPAIR_PIN=402199 nvpair-tui accept'
+   ```
+
+   It exits `0` once the machines are paired.
+
+If you want to arm the accept before the desktop user has sent anything, give it
+a window to wait in:
+
+```bash
+NVPAIR_PIN=402199 nvpair-tui accept --wait 2m
+```
+
+It waits up to two minutes for an invitation to arrive, then answers it.
+
+### The Headless Box Invites, the Desktop Accepts
+
+Run the invitation on the box and read out the PIN it prints:
+
+```bash
+$ nvpair-tui invite 192.168.1.40
+PIN 402199  invite inv-9f3a1c  to 192.168.1.40
+Read the PIN to whoever is at that machine; they run: nvpair-tui accept --pin 402199
+```
+
+The desktop user types those six digits into the prompt the desktop application
+shows. Add `--wait` and the command blocks until the pairing finishes, exiting
+`0` when it succeeds.
+
+### Two Headless Boxes
+
+Neither machine has a screen, so the PIN goes from one command's output straight
+into the other's environment:
+
+```bash
+PIN=$(ssh box-a 'nvpair-tui invite box-b.example.net --json' | jq -r .pin)
+ssh box-b "NVPAIR_PIN=$PIN nvpair-tui accept --wait 2m"
+ssh box-a 'nvpair-tui members'
+```
+
+The last line lists the cluster and both machines, which is the confirmation
+that it worked.
+
+### Exit Codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The pairing reached the state you asked for |
+| `1` | The other machine refused: a wrong PIN, or a declined invitation |
+| `2` | Anything else: no terminal interface running, a bad argument, an unreachable machine, an expired invitation |
+
+### What You Can and Cannot Do This Way
+
+`pending` lists only invitations that arrived while this terminal interface has
+been running. If you restart it while an invitation is in flight, `pending`
+comes back empty even though the other machine still thinks one is open. Send a
+new invitation.
+
+`--invite <id>` is only needed when more than one invitation is waiting at once.
+With exactly one, the commands find it; with none or several, they say so and
+name them.
+
+Pairing is all these commands do. Everything else — engines, models, proxies,
+settings — is still the interface's tabs.
 
 ## Prepare an Engine and a Model
 

@@ -330,6 +330,39 @@ func TestInviteWaitExitsOnTheFinalState(t *testing.T) {
 	}
 }
 
+// TestInviteWaitJSONPrintsOnlyJSON checks that --json means machine-readable
+// output all the way through: two documents, one per line, and no prose
+// mixed in for a parser to trip over.
+func TestInviteWaitJSONPrintsOnlyJSON(t *testing.T) {
+	created := `{"inviteId":"inv-1","state":"pending","pin":"` + cliTestPIN + `"}`
+	final := `{"inviteId":"inv-1","state":"paired"}`
+	endpoint := newFakeEndpoint().on("pair:invite", created).on("pair:invite-status", final)
+
+	got := run(t, endpoint, nil, "invite", "10.0.0.5", "--wait", "--json")
+	if got.code != exitOK {
+		t.Fatalf("exit = %d (%s)", got.code, got.all())
+	}
+	lines := strings.Split(strings.TrimSpace(got.stdout), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("stdout = %q, want the created invite and its final state, one per line", got.stdout)
+	}
+	if lines[0] != created {
+		t.Errorf("first line = %q, want the invite as created (it carries the PIN)", lines[0])
+	}
+	if lines[1] != final {
+		t.Errorf("second line = %q, want the final invite", lines[1])
+	}
+	for _, line := range lines {
+		var probe map[string]any
+		if err := json.Unmarshal([]byte(line), &probe); err != nil {
+			t.Errorf("line %q is not JSON: %v", line, err)
+		}
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful --json run", got.stderr)
+	}
+}
+
 func TestInviteWaitPollsUntilTheInviteLeavesPending(t *testing.T) {
 	endpoint := newFakeEndpoint().
 		on("pair:invite", `{"inviteId":"inv-1","state":"pending","pin":"`+cliTestPIN+`"}`).

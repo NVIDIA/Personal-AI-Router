@@ -21,7 +21,7 @@ As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` a
 
 | Library | Version | Used By | License | License URL |
 |---------|---------|---------|---------|-------------|
-| `github.com/Microsoft/go-winio` | v0.6.2 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-manual-nodes, nvpair-node-settings, nvpair-cluster-manager, nvpair-ui-broker, nvpair-workload-manager, nvpair-errors, nvpair-engine-manager, nvpair-job-scheduler | MIT | [LICENSE](https://github.com/microsoft/go-winio/blob/main/LICENSE) |
+| `github.com/Microsoft/go-winio` | v0.6.2 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-manual-nodes, nvpair-node-settings, nvpair-cluster-manager, nvpair-ui-broker, nvpair-workload-manager, nvpair-errors, nvpair-engine-manager, nvpair-job-scheduler, nvpair-tui | MIT | [LICENSE](https://github.com/microsoft/go-winio/blob/main/LICENSE) |
 | `github.com/charmbracelet/bubbles` | v1.0.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbles/blob/master/LICENSE) |
 | `github.com/charmbracelet/bubbletea` | v1.3.10 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbletea/blob/master/LICENSE) |
 | `github.com/charmbracelet/lipgloss` | v1.1.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/lipgloss/blob/master/LICENSE) |

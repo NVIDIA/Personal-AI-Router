@@ -286,8 +286,15 @@ func cmdInvite(env *cliEnv, args []string) int {
 			}, exitOK)
 		}
 
-		fmt.Fprintf(env.out, "PIN %s  invite %s  to %s\n", invite.PIN(), invite.InviteID, address)
-		fmt.Fprintln(env.out, "Waiting for the other machine to accept...")
+		// Waiting still has to show the PIN straight away — it is what the
+		// operator reads out while the command blocks. Under --json that
+		// makes the output two JSON objects, one per line: the invite as
+		// created, carrying the PIN, and then its final state. The final
+		// invite carries no PIN, so a single document could not serve both.
+		env.emit(*common.json, raw, func() {
+			fmt.Fprintf(env.out, "PIN %s  invite %s  to %s\n", invite.PIN(), invite.InviteID, address)
+			fmt.Fprintln(env.out, "Waiting for the other machine to accept...")
+		}, exitOK)
 		final, err := env.awaitInvite(ctx, client, invite.InviteID)
 		if err != nil {
 			return env.fail(err)
