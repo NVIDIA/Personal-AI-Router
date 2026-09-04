@@ -64,12 +64,16 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	type proxyCase struct {
 		name      string
 		rpcPrefix string
+		// engine names which engine the proxy's manual entry represents. The
+		// OpenAI proxy fronts more than one, so its manual overlay is keyed by
+		// (engine, node) and the field is required.
+		engine string
 		path      string
 		port      int
 	}
 	cases := []proxyCase{
-		{name: "ollama", rpcPrefix: "proxy", path: "/api/chat", port: ollamaPort},
-		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", path: "/v1/chat/completions", port: lmstudioPort},
+		{name: "ollama", rpcPrefix: "proxy", engine: "ollama", path: "/api/chat", port: ollamaPort},
+		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", engine: "lmstudio", path: "/v1/chat/completions", port: lmstudioPort},
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
@@ -99,6 +103,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			for _, node := range nodes {
 				params := map[string]any{
 					"id":        node.id,
+					"engine":    tc.engine,
 					"host":      "127.0.0.1",
 					"port":      node.port,
 					"addresses": []string{"127.0.0.1"},

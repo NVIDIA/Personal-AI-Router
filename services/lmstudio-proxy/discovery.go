@@ -5,10 +5,11 @@ package main
 
 // Discovery is the proxy's routing-target set. The proxy runs no mDNS of its
 // own: routing targets are pushed down from the broker's discovery relay
-// (discovery:nodes snapshots for the lm service) into the subscribed overlay,
-// merged with user-added manual nodes. The proxy is itself advertised — as an lm
-// service — by the node-scanner daemon's single _nvpair-node record, keyed off
-// the engine port the broker's poller registers.
+// (discovery:nodes snapshots for the OpenAI-compatible engine services — lm and
+// vl) into the subscribed overlay, merged with user-added manual nodes. The
+// proxy is itself advertised — under one key per local OpenAI engine — by the
+// node-scanner daemon's single _nvpair-node record, which the broker's poller
+// registers against this proxy's own listen port.
 //
 // The routable Node projection (IP / withPrimaryIP) and the manual-node
 // overlay live here; request-path reachability (TCP-probe + failover) lives in
@@ -36,10 +37,23 @@ type Node struct {
 	Addresses []string `json:"addresses"`
 	TXT       []string `json:"txt"`
 	// Models is the latest model inventory carried by the broker's discovery
-	// snapshot. Model-bearing inference is eligible only when this list
-	// advertises the requested model; an empty list stays in discovery but is
-	// not an inference candidate until a later inventory update.
+	// snapshot — the union across every OpenAI engine the node runs. Model-bearing
+	// inference is eligible only when this list advertises the requested model; an
+	// empty list stays in discovery but is not an inference candidate until a
+	// later inventory update.
 	Models []string `json:"models,omitempty"`
+	// ModelsByEngine attributes each model to the engine on this node that serves
+	// it, so a request can be tagged with the engine that will actually run it and
+	// so a node running both LM Studio and vLLM is not conflated into one
+	// inventory. Keyed by engine-manager engine name ("lmstudio", "vllm").
+	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
+	// Engine names the single OpenAI engine a manual node was added for. A relay
+	// peer leaves it empty: one peer entry covers every engine that peer runs,
+	// because they all answer on that peer's one proxy port. A manual node is the
+	// exception — the user supplies an engine's own address, and LM Studio and
+	// vLLM sit on different ports — so one manual node per engine is added, each
+	// carrying the engine it represents.
+	Engine string `json:"engine,omitempty"`
 	// IP is the single canonical LAN address a consumer should dial/display for
 	// this node, resolved via the shared netpick ranker: the node's
 	// own ip= TXT if present, else the best-scored advertised IPv4. It is
@@ -64,14 +78,33 @@ func (n Node) withPrimaryIP() Node {
 	return n
 }
 
+// routeKey is the node's key for per-target routing caches (the reachability
+// chooser). It is the node ID for a relay peer, and engine-qualified for a
+// manual node, because two manual entries can share an ID while pointing at
+// different engine ports on that host — caching them under one key would let
+// one engine's confirmed address be used to dial the other's.
+//
+// It is deliberately NOT the attribution handle: scheduledOn, node/select and
+// the scheduler's priority list stay keyed by the bare node ID, which names the
+// machine rather than one engine on it.
+func (n Node) routeKey() string {
+	if n.Engine == "" {
+		return n.ID
+	}
+	return n.Engine + "\x00" + n.ID
+}
+
+// manualKey is the manual overlay's storage key: one entry per (engine, node).
+func manualKey(engine, id string) string { return engine + "\x00" + id }
+
 // Discovery holds the proxy's routing targets: the relay-fed subscribed overlay
 // and the user-added manual overlay.
 type Discovery struct {
 	mu          sync.RWMutex
 	manualNodes map[string]Node
 	// subscribedNodes are routing targets pushed down by the broker's discovery
-	// relay (discovery:nodes snapshots for the lm service), keyed by node ID (the
-	// directory instance name).
+	// relay (discovery:nodes snapshots for the OpenAI engine services), keyed by
+	// node ID (the directory instance name).
 	subscribedNodes map[string]Node
 }
 
@@ -93,8 +126,11 @@ func (d *Discovery) Nodes() []Node {
 		out = append(out, n)
 		seen[id] = struct{}{}
 	}
-	for id, n := range d.manualNodes {
-		if _, exists := seen[id]; !exists {
+	// Manual entries are keyed per (engine, node), so a host added for both
+	// engines contributes one entry each; a node the relay already covers is
+	// skipped entirely, exactly as before.
+	for _, n := range d.manualNodes {
+		if _, exists := seen[n.ID]; !exists {
 			out = append(out, n)
 		}
 	}
@@ -135,31 +171,61 @@ func (d *Discovery) SetSubscribed(nodes []Node) (discovered, updated, removed []
 // warrants a node/updated.
 func nodeEqual(a, b Node) bool {
 	return a.ID == b.ID && a.Host == b.Host && a.Port == b.Port && a.IP == b.IP &&
+		a.Engine == b.Engine &&
 		slices.Equal(a.Addresses, b.Addresses) && slices.Equal(a.TXT, b.TXT) &&
-		slices.Equal(a.Models, b.Models)
+		slices.Equal(a.Models, b.Models) && engineModelsEqual(a.ModelsByEngine, b.ModelsByEngine)
 }
 
+// engineModelsEqual compares two per-engine inventories. It is part of nodeEqual
+// because a node that moves a model from one engine to the other keeps the same
+// union — without this the change would not raise a node/updated and consumers
+// would keep the stale attribution.
+func engineModelsEqual(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for engine, models := range a {
+		other, ok := b[engine]
+		if !ok || !slices.Equal(models, other) {
+			return false
+		}
+	}
+	return true
+}
+
+// AddManual upserts a manual node for one engine. The same node ID added for
+// two engines is two entries, because each names that engine's own port.
 func (d *Discovery) AddManual(node Node) (added bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, exists := d.manualNodes[node.ID]
-	d.manualNodes[node.ID] = node
+	key := manualKey(node.Engine, node.ID)
+	_, exists := d.manualNodes[key]
+	d.manualNodes[key] = node
 	return !exists
 }
 
-func (d *Discovery) RemoveManual(id string) (removed bool) {
+// RemoveManual drops one engine's entry for a node.
+func (d *Discovery) RemoveManual(engine, id string) (removed bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, exists := d.manualNodes[id]
+	key := manualKey(engine, id)
+	_, exists := d.manualNodes[key]
 	if exists {
-		delete(d.manualNodes, id)
+		delete(d.manualNodes, key)
 	}
 	return exists
 }
 
+// IsManual reports whether any engine's manual entry exists for a node ID. It
+// answers the routing question "did the user supply this address explicitly?",
+// which is a property of the node, not of one engine on it.
 func (d *Discovery) IsManual(id string) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	_, exists := d.manualNodes[id]
-	return exists
+	for _, n := range d.manualNodes {
+		if n.ID == id {
+			return true
+		}
+	}
+	return false
 }

@@ -24,11 +24,12 @@ type proxyNode struct {
 	Port int    `json:"port"`
 }
 
-// proxyEngine is one of the two reverse proxies the broker fronts. Both
+// proxyEngine is one of the reverse proxies the broker fronts. They all
 // speak the same routing/failover contract; only the JSON-RPC prefix and
-// label differ.
+// label differ. One proxy may front several engines — the OpenAI-compatible
+// one serves LM Studio and vLLM — so the label names the engines, not a binary.
 type proxyEngine struct {
-	label    string // "Ollama" / "LM Studio"
+	label    string // "Ollama" / "LM Studio & vLLM"
 	prefix   string // "proxy" / "lmstudio-proxy"
 	ready    bool
 	port     int
@@ -91,7 +92,7 @@ func newProxiesView(client *rpc.Client) *proxiesView {
 		portInput: ti,
 		engines: []*proxyEngine{
 			{label: "Ollama", prefix: "proxy", table: newTable(nil)},
-			{label: "LM Studio", prefix: "lmstudio-proxy", table: newTable(nil)},
+			{label: "LM Studio & vLLM", prefix: "lmstudio-proxy", table: newTable(nil)},
 		},
 	}
 	return v
