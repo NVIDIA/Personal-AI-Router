@@ -142,7 +142,7 @@ JSON is relayed untouched.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `ping` | — | `{version, brokerReady}` |
+| `ping` | — | `{version, brokerReady}` — `brokerReady` goes back to `false` if the broker dies, so a script is not sent on to an invite that can only time out |
 | `pair:invite` | `{address, port?, nodeId?}` | the `Invite`, including its `pin` |
 | `pair:invite-status` | `{inviteId}` | the current `Invite` |
 | `pair:pending` | — | `{invites: [...]}` — inbound invitations not yet answered, each with the `pin` member removed and a `receivedAt` (this node's clock, epoch ms) added so a caller can age it |

@@ -129,8 +129,13 @@ const notificationBuffer = 256
 // The pairing service is fed first and synchronously: it must observe an
 // invite even if the UI is between frames. The UI's copy is dropped rather
 // than blocked on, because a stalled UI must not stall pairing.
+//
+// The stream closing means the broker is gone, so readiness is withdrawn on
+// the way out: a script that asks `ping` after the broker died has to be told
+// the truth, or it will go on to send an invite that can only time out.
 func fanOutNotifications(in <-chan *rpc.Message, pairs *pairing.Service, ready *atomic.Bool, out chan<- *rpc.Message) {
 	defer close(out)
+	defer ready.Store(false)
 	for msg := range in {
 		if msg.Method == "app:ready" {
 			ready.Store(true)

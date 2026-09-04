@@ -13,6 +13,14 @@
 // Everything the assertions turn on stays real: a real nvpair-tui process, its
 // real control socket and subcommands, and a real PIN-authenticated EAP-NOOB
 // exchange between two real cluster managers.
+//
+// It deliberately does not synthesize a response for a relayed request the
+// cluster manager never answers — if the manager dies mid-pairing, that request
+// simply has no reply and the caller waits out its own 35 s timeout. The real
+// broker tracks its workers and fails such a call fast; reproducing that here
+// would be more fixture than the test needs. So a subcommand in this test that
+// takes 35 s has lost its cluster manager, and the manager's stderr (passed
+// through to the test's) says why.
 package main
 
 import (
