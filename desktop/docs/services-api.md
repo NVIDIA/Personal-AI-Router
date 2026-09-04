@@ -32,6 +32,11 @@
 - ⚠️ nvpair-node-settings → settings/get-force-ports
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/set-force-ports
+- ⚠️ nvpair-tui → pair:invite
+- ⚠️ nvpair-tui → pair:invite-status
+- ⚠️ nvpair-tui → pair:members
+- ⚠️ nvpair-tui → pair:pending
+- ⚠️ nvpair-tui → pair:respond
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
@@ -208,12 +213,19 @@
 | Method | Direction | In bridge? |
 |---|---|---|
 | `cluster:identity-changed` | request (we call) | ✅ yes |
+| `cluster:invite-canceled` | request (we call) | ✅ yes |
+| `cluster:invite-expired` | request (we call) | ✅ yes |
 | `cluster:invite-received` | request (we call) | ✅ yes |
 | `engine:install-progress` | request (we call) | ✅ yes |
 | `engine:pull-progress` | request (we call) | ✅ yes |
 | `engine:state-changed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
 | `nodes:changed` | request (we call) | ✅ yes |
+| `pair:invite` | request (we call) | ⚠️ not called |
+| `pair:invite-status` | request (we call) | ⚠️ not called |
+| `pair:members` | request (we call) | ⚠️ not called |
+| `pair:pending` | request (we call) | ⚠️ not called |
+| `pair:respond` | request (we call) | ⚠️ not called |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:upsert` | request (we call) | ✅ yes |
 
