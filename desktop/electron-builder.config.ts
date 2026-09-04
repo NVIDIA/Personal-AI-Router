@@ -395,7 +395,10 @@ const config: Configuration = {
     mac: {
         executableName: APP_EXECUTABLE_NAME,
         extendInfo: {
-            CFBundleDisplayName: APP_DISPLAY_NAME
+            CFBundleDisplayName: APP_DISPLAY_NAME,
+            NSLocalNetworkUsageDescription:
+                'Personal AI Router uses your local network to discover and connect to paired compute nodes running local inference models.',
+            NSBonjourServices: ['_nvpair-node._tcp']
         },
         icon: './resources/icons/logo.icns',
         // SMAppService (the privileged firewall helper) requires macOS 13+.
