@@ -400,6 +400,7 @@ func (b *Broker) registerService(p noderec.RegisterParams) {
 	if sc := b.getScanner(); sc != nil {
 		go sc.pushRegister(p)
 	}
+	go b.pushServicesToNodeInfo()
 }
 
 // unregisterService removes a local service from the cache and the daemon.
@@ -409,6 +410,32 @@ func (b *Broker) unregisterService(svc noderec.ServiceKey) {
 	}
 	if sc := b.getScanner(); sc != nil {
 		go sc.pushUnregister(svc)
+	}
+	go b.pushServicesToNodeInfo()
+}
+
+// localServices projects the registration cache onto the {service: port} map
+// node-info reports. One derivation, so what a peer reads over HTTP and what it
+// would have read off this host's mDNS record are the same set.
+func (b *Broker) localServices() map[noderec.ServiceKey]int {
+	regs := b.regCache.Snapshot()
+	services := make(map[noderec.ServiceKey]int, len(regs))
+	for _, p := range regs {
+		services[p.Service] = p.Port
+	}
+	return services
+}
+
+// pushServicesToNodeInfo sends node-info this node's current service map.
+// Best-effort on a node-info that isn't running (never spawned, or mid-restart):
+// the next spawn pushes again.
+func (b *Broker) pushServicesToNodeInfo() {
+	np := b.getNodeInfo()
+	if np == nil {
+		return
+	}
+	if err := np.SetServices(b.localServices()); err != nil {
+		slog.Warn("failed to push service map to node-info", "err", err)
 	}
 }
 
@@ -626,6 +653,11 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// /v1/node-info but holds no cluster dir to read it from, so this push is the
 	// only source. It runs on every spawn, which also covers a supervised restart.
 	b.pushClusterIdentityToNodeInfo()
+	// And the service map, for the same reason: node-info is the only surface a
+	// peer that never saw this host's mDNS record can ask which services it runs.
+	// Pushed here as well as from registerService so a restart re-seeds the set
+	// the workers registered before node-info came back.
+	b.pushServicesToNodeInfo()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.

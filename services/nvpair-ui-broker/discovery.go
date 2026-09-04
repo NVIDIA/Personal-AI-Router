@@ -672,3 +672,32 @@ func writeClusterIdentityFrame(mu *sync.Mutex, w io.Writer, clusterUUID string) 
 	_, err = w.Write(data)
 	return err
 }
+
+// writeServicesFrame marshals a newline-delimited nodeinfo:set-services
+// notification and writes it to a child's stdin under mu. The set is always sent
+// whole: a service that stopped is expressed by its key being absent, exactly as
+// an unregister is on the discovery record.
+func writeServicesFrame(mu *sync.Mutex, w io.Writer, services map[noderec.ServiceKey]int) error {
+	if services == nil {
+		services = map[noderec.ServiceKey]int{}
+	}
+	frame := struct {
+		JSONRPC string                 `json:"jsonrpc"`
+		Method  string                 `json:"method"`
+		Params  noderec.ServicesParams `json:"params"`
+	}{
+		JSONRPC: "2.0",
+		Method:  noderec.MethodSetServices,
+		Params:  noderec.ServicesParams{Services: services},
+	}
+	data, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	mu.Lock()
+	defer mu.Unlock()
+	_, err = w.Write(data)
+	return err
+}

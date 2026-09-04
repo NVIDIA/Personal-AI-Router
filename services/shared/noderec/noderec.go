@@ -326,6 +326,23 @@ const (
 	// record keeps its last observed value indefinitely.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
 
+	// MethodSetServices tells nvpair-node-info which services this node runs and
+	// on which ports — the same {key: port} set the broker registers with
+	// nvpair-node-scanner — so it can report them on /v1/node-info.
+	//
+	// It exists because that set is otherwise published only on this host's mDNS
+	// record, and multicast does not cross a routed or overlay network. A peer on
+	// a Tailscale tailnet never sees the record, so without this it can learn
+	// that a node exists (it was typed in) but not that the node is a PAIR node,
+	// nor where its engine-manager, proxies or cluster manager listen. node-info
+	// is the one inter-node surface kept plain, which makes it the one place such
+	// a peer can ask.
+	//
+	// The broker owns the set (it is the process that assigns and re-assigns
+	// those ports) and re-pushes it on every change, so node-info reports one
+	// live value rather than deriving a second one.
+	MethodSetServices = "nodeinfo:set-services"
+
 	// NotifyObservedAddresses is nvpair-node-info -> broker: the local addresses
 	// peers have actually reached this node on, learned from its own accepted
 	// connections.
@@ -396,6 +413,14 @@ type UnregisterParams struct {
 // announced — so the field is always sent.
 type ClusterIdentityParams struct {
 	ClusterUUID string `json:"clusterUuid"`
+}
+
+// ServicesParams carries this node's whole {service: port} set for
+// MethodSetServices. The set is always sent complete rather than as a delta: a
+// service that stopped is expressed by its key being absent, which is the same
+// thing an unregister means on the discovery record.
+type ServicesParams struct {
+	Services map[ServiceKey]int `json:"services"`
 }
 
 // ObservedAddressesParams carries the local addresses remote peers have reached
