@@ -212,13 +212,17 @@ nvpair-tui members
 Add `--json` to any of them to get the raw result instead of a human line, for a
 script to parse.
 
-**Put the PIN in `NVPAIR_PIN`, not on the command line, in a script.** A command
-argument is visible to every user on the machine in `ps` and is written to your
-shell history. The environment variable is neither.
+**Put the PIN in `NVPAIR_PIN`, not in `--pin`, in a script.** `--pin 402199` is
+visible to every user on the machine for as long as the command runs, because
+process arguments are public in `ps`, and it is written to your shell history.
+An environment variable is neither.
 
 ```bash
 NVPAIR_PIN=402199 nvpair-tui accept
 ```
+
+`--pin` is for typing at an interactive prompt, where you have just read the
+digits off another machine's screen and the pairing is over in seconds.
 
 ### The Desktop Invites, the Headless Box Accepts
 
@@ -233,7 +237,9 @@ and the machine that has to answer has no screen.
    ssh gpu-box 'NVPAIR_PIN=402199 nvpair-tui accept'
    ```
 
-   It exits `0` once the machines are paired.
+   It exits `0` once the machines are paired. Typing the digits like this is
+   fine for a one-off; see [Two Headless Boxes](#two-headless-boxes) for the
+   form to use in a script.
 
 If you want to arm the accept before the desktop user has sent anything, give it
 a window to wait in:
@@ -261,16 +267,23 @@ shows. Add `--wait` and the command blocks until the pairing finishes, exiting
 ### Two Headless Boxes
 
 Neither machine has a screen, so the PIN goes from one command's output straight
-into the other's environment:
+into the other's environment, over the SSH connection's standard input rather
+than through either machine's command line:
 
 ```bash
 PIN=$(ssh box-a 'nvpair-tui invite box-b.example.net --json' | jq -r .pin)
-ssh box-b "NVPAIR_PIN=$PIN nvpair-tui accept --wait 2m"
+echo "$PIN" | ssh box-b 'read -r NVPAIR_PIN; export NVPAIR_PIN; nvpair-tui accept --wait 2m'
 ssh box-a 'nvpair-tui members'
 ```
 
 The last line lists the cluster and both machines, which is the confirmation
 that it worked.
+
+The `read` is what keeps the PIN out of `ps` on both machines. Interpolating it
+into the remote command — `ssh box-b "NVPAIR_PIN=$PIN ..."` — is easier to read
+but puts the digits in the argument list of the local `ssh` and of the remote
+shell, where anyone with an account on either machine can see them for as long
+as the pairing takes.
 
 ### Exit Codes
 
