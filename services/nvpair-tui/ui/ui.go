@@ -7,20 +7,38 @@ import (
 	"bufio"
 	"io"
 
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Run builds the tabbed program over a connected broker client and the
-// broker's stderr stream, and blocks until the user quits. The caller is
-// responsible for shutting the broker down afterwards.
-func Run(client *rpc.Client, stderr io.Reader) error {
+// Deps is everything the tabbed program is built over. The broker's
+// notification stream arrives as a channel rather than straight off the
+// client, because the process fans those pushes out to the pairing service
+// first — the Cluster tab is one consumer of pairing state, not its owner.
+type Deps struct {
+	// Client issues broker requests.
+	Client *rpc.Client
+	// Notifications carries the broker's pushes. Closed when the broker goes
+	// away, which is how the UI learns it disconnected.
+	Notifications <-chan *rpc.Message
+	// Stderr is the broker's captured stderr, shown in the Logs tab.
+	Stderr io.Reader
+	// Pairing is the process-wide pairing service, shared with the control
+	// socket so an invite created from a script shows up here too.
+	Pairing *pairing.Service
+}
+
+// Run builds the tabbed program over its dependencies and blocks until the
+// user quits. The caller is responsible for shutting the broker down
+// afterwards.
+func Run(deps Deps) error {
 	logCh := make(chan string, 2000)
-	go scanLines(stderr, logCh)
+	go scanLines(deps.Stderr, logCh)
 
 	p := tea.NewProgram(
-		New(client, logCh, defaultViews(client)),
+		New(deps, logCh, defaultViews(deps)),
 		tea.WithAltScreen(),
 	)
 	_, err := p.Run()
@@ -40,15 +58,16 @@ func scanLines(r io.Reader, out chan<- string) {
 }
 
 // defaultViews lists the tabs in display order.
-func defaultViews(client *rpc.Client) []View {
+func defaultViews(deps Deps) []View {
+	client := deps.Client
 	return []View{
 		newHealthView(client),
 		newErrorsView(client),
-		newNodesView(client),
+		newNodesView(client, deps.Pairing),
 		newProxiesView(client),
 		newWorkloadsView(client),
 		newEnginesView(client),
-		newClusterView(client),
+		newClusterView(client, deps.Pairing),
 		newManualView(client),
 		newSettingsView(client),
 		newLogsView(client),
