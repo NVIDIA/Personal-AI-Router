@@ -47,9 +47,9 @@ func waitForLog(lines <-chan string) tea.Cmd {
 // waitForNotification blocks on the next broker push and delivers it as a
 // NotificationMsg, re-arming itself after each one (the model returns this
 // command again from Update). A closed channel yields DisconnectedMsg.
-func waitForNotification(client *rpc.Client) tea.Cmd {
+func waitForNotification(pushes <-chan *rpc.Message) tea.Cmd {
 	return func() tea.Msg {
-		msg, ok := <-client.Notifications()
+		msg, ok := <-pushes
 		if !ok {
 			return DisconnectedMsg{}
 		}
