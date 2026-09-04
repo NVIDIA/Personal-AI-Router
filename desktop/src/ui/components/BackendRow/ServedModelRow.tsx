@@ -8,14 +8,14 @@ import { Check } from '@/ui/components/icons'
  * The model an engine serves, for an engine that runs one model per process
  * (vLLM). It is a start-time setting, not a model operation: the engine manager
  * persists it and restarts the engine onto it, and the engine downloads the
- * weights itself on that first start. Editable on the local node only, like the
- * ports beside it — the backend exposes no remote served-model control.
+ * weights itself on that first start. The local node only — the engine manager
+ * writes manifest overrides for its own host and the backend exposes no remote
+ * served-model control, so `PortsSection` does not render this for a peer.
  */
 export function ServedModelRow({
     model,
     changed,
     disabled,
-    isLocalNode,
     onChange,
     onApply
 }: {
@@ -23,7 +23,6 @@ export function ServedModelRow({
     /** True when the draft differs from the engine-reported value. */
     changed: boolean
     disabled: boolean
-    isLocalNode: boolean
     onChange: (value: string) => void
     onApply: () => void
 }) {
@@ -44,36 +43,26 @@ export function ServedModelRow({
                     pointerEvents: disabled ? 'none' : 'auto'
                 }}
             >
-                {isLocalNode ? (
-                    <TextInput
-                        value={model}
-                        onValueChange={onChange}
-                        disabled={disabled}
-                        size="small"
-                        placeholder="Qwen/Qwen3-8B"
-                        className="grow"
-                    />
-                ) : (
-                    // Remote nodes are read-only: the engine manager only mutates
-                    // the local node's manifest overrides.
-                    <Flex align="center" style={{ minHeight: 30 }}>
-                        <Text kind="body/semibold/sm">{model || '—'}</Text>
+                <TextInput
+                    value={model}
+                    onValueChange={onChange}
+                    disabled={disabled}
+                    size="small"
+                    placeholder="Qwen/Qwen3-8B"
+                    className="grow"
+                />
+                <Button
+                    kind="primary"
+                    color="brand"
+                    size="small"
+                    onClick={onApply}
+                    disabled={disabled || !changed}
+                >
+                    <Flex align="center" gap="2">
+                        <Check style={{ fontSize: 16 }} />
+                        Apply model
                     </Flex>
-                )}
-                {isLocalNode && (
-                    <Button
-                        kind="primary"
-                        color="brand"
-                        size="small"
-                        onClick={onApply}
-                        disabled={disabled || !changed}
-                    >
-                        <Flex align="center" gap="2">
-                            <Check style={{ fontSize: 16 }} />
-                            Apply model
-                        </Flex>
-                    </Button>
-                )}
+                </Button>
             </Flex>
         </Stack>
     )
