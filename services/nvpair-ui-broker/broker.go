@@ -153,6 +153,7 @@ type Broker struct {
 	nodeInfoPath      string
 	proxyPath         string
 	lmstudioProxyPath string
+	llamacppProxyPath string
 	workloadMgrPath   string
 	errorsPath        string
 	engineMgrPath     string
@@ -213,6 +214,7 @@ type Broker struct {
 	nodeInfo      *nodeInfoProcess
 	proxy         *proxyProcess
 	lmstudioProxy *proxyProcess
+	llamacppProxy *proxyProcess
 	workloadMgr   *workloadManagerProcess
 	errorsProc    *errorsProcess
 	engineMgr     *rpcWorker
@@ -228,6 +230,7 @@ type Broker struct {
 	nodeInfoSup      *supervisor
 	proxySup         *supervisor
 	lmstudioProxySup *supervisor
+	llamacppProxySup *supervisor
 	workloadMgrSup   *supervisor
 	errorsSup        *supervisor
 	engineMgrSup     *supervisor
@@ -252,6 +255,7 @@ type Broker struct {
 	proxyMu                 sync.Mutex
 	proxySubscribed         bool
 	lmstudioProxySubscribed bool
+	llamacppProxySubscribed bool
 
 	// workloadsMu guards workloadsSubscribed. The workloads:* stream is
 	// opt-in too: emitWorkloadEvent (called on the proxy reader goroutine
@@ -330,6 +334,7 @@ type workerPaths struct {
 	nodeInfo      string
 	proxy         string
 	lmstudioProxy string
+	llamacppProxy string
 	workloadMgr   string
 	errors        string
 	engineMgr     string
@@ -369,6 +374,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		nodeInfoPath:       paths.nodeInfo,
 		proxyPath:          paths.proxy,
 		lmstudioProxyPath:  paths.lmstudioProxy,
+		llamacppProxyPath:  paths.llamacppProxy,
 		workloadMgrPath:    paths.workloadMgr,
 		errorsPath:         paths.errors,
 		engineMgrPath:      paths.engineMgr,
@@ -1464,6 +1470,8 @@ func (b *Broker) proxyForEngine(engine string) *proxyProcess {
 		return b.getProxy()
 	case "lmstudio":
 		return b.getLMStudioProxy()
+	case "llamacpp":
+		return b.getLlamaCppProxy()
 	default:
 		return nil
 	}
@@ -1775,11 +1783,39 @@ func (b *Broker) Serve(ctx context.Context) error {
 		b.finishLMStudioProxyTerminal()
 	}
 
+	// llamacpp-proxy exposes an adopted local llama-server through the same
+	// cluster-aware OpenAI proxy control plane used by LM Studio.
+	if b.llamacppProxyPath != "" {
+		b.llamacppProxySup = newSupervisor(
+			"llamacpp-proxy",
+			defaultRestartPolicy(),
+			b.spawnLlamaCppProxy,
+		)
+		b.configureLlamaCppProxySupervisorCallbacks(b.llamacppProxySup)
+		if err := b.llamacppProxySup.Start(); err != nil {
+			slog.Warn(
+				"llamacpp-proxy failed to start; continuing without local llama.cpp proxy",
+				"path", b.llamacppProxyPath,
+				"err", err,
+			)
+			b.llamacppProxySup = nil
+			b.unregisterService(noderec.ServiceLlamaCpp)
+		} else {
+			defer b.llamacppProxySup.Stop()
+		}
+	} else {
+		slog.Info(
+			"llamacpp-proxy path not resolved; running without local llama.cpp proxy",
+		)
+		b.unregisterService(noderec.ServiceLlamaCpp)
+	}
+
 	// Restore engines and begin both advertising loops only after both proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
 	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	go b.runAutoAdvertiseLlamaCpp(ctx)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -1856,6 +1892,11 @@ func (b *Broker) shutdownInferenceStack() {
 	// Stop ingress first so no new inference can arrive while engine-manager is
 	// draining engines. supervisor.Stop uses each proxy's stdin-close/join path;
 	// it never adds a parent-side kill timeout.
+	if b.llamacppProxySup != nil {
+		b.llamacppProxySup.Stop()
+		b.setLlamaCppProxy(nil)
+		b.unregisterService(noderec.ServiceLlamaCpp)
+	}
 	if b.lmstudioProxySup != nil {
 		b.lmstudioProxySup.Stop()
 		b.setLMStudioProxy(nil)
@@ -2239,6 +2280,11 @@ func (b *Broker) forwardLogLevel(level string) {
 	if p := b.getLMStudioProxy(); p != nil {
 		if err := p.SetLogLevel(level); err != nil {
 			slog.Warn("failed to forward log/set-level to lmstudio-proxy", "err", err)
+		}
+	}
+	if p := b.getLlamaCppProxy(); p != nil {
+		if err := p.SetLogLevel(level); err != nil {
+			slog.Warn("failed to forward log/set-level to llamacpp-proxy", "err", err)
 		}
 	}
 	if wm := b.getWorkloadMgr(); wm != nil {
@@ -2819,6 +2865,64 @@ func (b *Broker) handleMessage(msg *Message) {
 		// is bumped) before handing the proxy the port to bind.
 		b.handleProxySetPort(msg)
 
+	case "llamacpp-proxy:get-status":
+		var result ProxyStatusResult
+		if p := b.getLlamaCppProxy(); p != nil {
+			ready, port := p.Status()
+			result.Ready = ready
+			result.Port = port
+		}
+		if err := b.codec.Respond(msg.ID, result); err != nil {
+			log.Printf(
+				"failed to respond to llamacpp-proxy:get-status: %v",
+				err,
+			)
+		}
+
+	case "llamacpp-proxy:subscribe":
+		b.proxyMu.Lock()
+		wasSubscribed := b.llamacppProxySubscribed
+		b.llamacppProxySubscribed = true
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(
+			msg.ID,
+			SubscriptionResult{Subscribed: true},
+		); err != nil {
+			log.Printf(
+				"failed to respond to llamacpp-proxy:subscribe: %v",
+				err,
+			)
+		}
+		if !wasSubscribed {
+			if p := b.getLlamaCppProxy(); p != nil {
+				if rp := p.ReadyParams(); rp != nil {
+					if err := b.codec.Notify(
+						"llamacpp-proxy:ready",
+						rp,
+					); err != nil {
+						slog.Warn(
+							"emit baseline llamacpp-proxy:ready failed",
+							"err", err,
+						)
+					}
+				}
+			}
+		}
+
+	case "llamacpp-proxy:unsubscribe":
+		b.proxyMu.Lock()
+		b.llamacppProxySubscribed = false
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(
+			msg.ID,
+			SubscriptionResult{Subscribed: false},
+		); err != nil {
+			log.Printf(
+				"failed to respond to llamacpp-proxy:unsubscribe: %v",
+				err,
+			)
+		}
+
 	case "lmstudio-proxy:set-port":
 		b.handleLMStudioProxySetPort(msg)
 
@@ -2943,6 +3047,10 @@ func (b *Broker) handleMessage(msg *Message) {
 		// lmstudio-proxy:* is checked before proxy:* — though the prefixes
 		// don't actually overlap (lmstudio-proxy: vs proxy:), keeping it
 		// first makes the LM Studio namespace explicit.
+		if strings.HasPrefix(msg.Method, "llamacpp-proxy:") {
+			b.relayToLlamaCppProxy(msg)
+			return
+		}
 		if strings.HasPrefix(msg.Method, "lmstudio-proxy:") {
 			b.relayToLMStudioProxy(msg)
 			return

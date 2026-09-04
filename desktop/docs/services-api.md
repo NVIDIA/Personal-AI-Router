@@ -16,6 +16,8 @@
 - none ✅
 
 ### Requests the backend handles but the bridge never calls (unused capability)
+- ⚠️ llamacpp-proxy → node/selected
+- ⚠️ llamacpp-proxy → node/set-local-backend
 - ⚠️ lmstudio-proxy → node/selected
 - ⚠️ lmstudio-proxy → node/set-local-backend
 - ⚠️ nvpair-engine-manager → engine:describe
@@ -44,6 +46,31 @@
 
 ### Backend binaries not listed in `modular-binaries.ts`
 - none ✅
+
+## llamacpp-proxy
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `error` | notification (we consume) | ✅ yes |
+| `errors:clear` | notification (we consume) | ✅ yes |
+| `errors:report` | notification (we consume) | ✅ yes |
+| `node/discovered` | notification (we consume) | ✅ yes |
+| `node/removed` | notification (we consume) | ✅ yes |
+| `node/selection-changed` | notification (we consume) | ➖ ignored |
+| `node/updated` | notification (we consume) | ✅ yes |
+| `proxy/request` | notification (we consume) | ✅ yes |
+| `proxy/request-started` | notification (we consume) | ➖ ignored |
+| `ready` | notification (we consume) | ✅ yes |
+| `node/add-manual` | request (we call) | ✅ yes |
+| `node/remove-manual` | request (we call) | ✅ yes |
+| `node/select` | request (we call) | ✅ yes |
+| `node/selected` | request (we call) | ⚠️ not called |
+| `node/set-local-backend` | request (we call) | ⚠️ not called |
+| `node/set-priority` | request (we call) | ✅ yes |
+| `nodes/list` | request (we call) | ✅ yes |
+
+**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
+- `method (var)  (proxy.go)`
 
 ## lmstudio-proxy
 
@@ -263,6 +290,7 @@
 - `proxy:*  (broker.go)`
 - `method (var)  (clustermanager.go)`
 - `method (var)  (errors.go)`
+- `llamacpp-proxy:*  (llamacppproxy.go)`
 - `lmstudio-proxy:*  (lmstudioproxy.go)`
 - `method (var)  (proxy.go)`
 - `method (var)  (rpcworker.go, 2 sites)`

@@ -6,6 +6,7 @@ import type { SupportedPlatform } from '@/shared/types/platform'
 export type ModularProcessName =
     | 'proxy'
     | 'lmstudio-proxy'
+    | 'llamacpp-proxy'
     | 'broker'
     | 'node-info'
     | 'scanner'
@@ -70,6 +71,16 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         // access to be reachable.
         processName: 'lmstudio-proxy',
         baseName: 'lmstudio-proxy',
+        args: [],
+        launchOwner: 'broker',
+        needsFirewallAccess: true,
+        optional: true
+    },
+    {
+        // Native llama.cpp reverse proxy. The broker connects this facade to an
+        // adopted llama-server and relays it under the `llamacpp-proxy:` namespace.
+        processName: 'llamacpp-proxy',
+        baseName: 'llamacpp-proxy',
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: true,

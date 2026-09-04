@@ -40,6 +40,7 @@ REM bare .components.nvpair-ui-broker would parse as subtraction).
 for /f "delims=" %%V in ('jq -r ".product" "%VERSIONS_FILE%"')                                                  do set "V_PRODUCT=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "ollama-proxy"         ".components[$k]" "%VERSIONS_FILE%"')            do set "V_PROXY=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "lmstudio-proxy"       ".components[$k]" "%VERSIONS_FILE%"')            do set "V_LMPROXY=%%V"
+for /f "delims=" %%V in ('jq -r --arg k "llamacpp-proxy"       ".components[$k]" "%VERSIONS_FILE%"')            do set "V_LLAMAPROXY=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-node-info"        ".components[$k]" "%VERSIONS_FILE%"')            do set "V_NINFO=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-node-scanner"     ".components[$k]" "%VERSIONS_FILE%"')            do set "V_NSCAN=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-manual-nodes"     ".components[$k]" "%VERSIONS_FILE%"')            do set "V_MNODES=%%V"
@@ -61,6 +62,7 @@ if "%V_PRODUCT%"=="" (
 echo  product           = %V_PRODUCT%
 echo  ollama-proxy      = %V_PROXY%
 echo  lmstudio-proxy    = %V_LMPROXY%
+echo  llamacpp-proxy    = %V_LLAMAPROXY%
 echo  nvpair-node-info     = %V_NINFO%
 echo  nvpair-node-scanner  = %V_NSCAN%
 echo  nvpair-manual-nodes  = %V_MNODES%
@@ -79,67 +81,72 @@ echo  Building all components
 echo ========================================
 echo.
 
-echo [1/13] Building ollama-proxy (v%V_PROXY%)...
+echo [1/14] Building ollama-proxy (v%V_PROXY%)...
 cd /d "%ROOT%ollama-proxy"
 go build -ldflags "-X main.Version=%V_PROXY%" -o ollama-proxy.exe . || goto :fail
 echo       OK
 
-echo [2/13] Building lmstudio-proxy (v%V_LMPROXY%)...
+echo [2/14] Building lmstudio-proxy (v%V_LMPROXY%)...
 cd /d "%ROOT%lmstudio-proxy"
 go build -ldflags "-X main.Version=%V_LMPROXY%" -o lmstudio-proxy.exe . || goto :fail
 echo       OK
 
-echo [3/13] Building nvpair-node-info (v%V_NINFO%)...
+echo [3/14] Building llamacpp-proxy (v%V_LLAMAPROXY%)...
+cd /d "%ROOT%llamacpp-proxy"
+go build -ldflags "-X main.Version=%V_LLAMAPROXY%" -o llamacpp-proxy.exe . || goto :fail
+echo       OK
+
+echo [4/14] Building nvpair-node-info (v%V_NINFO%)...
 cd /d "%ROOT%nvpair-node-info"
 go build -ldflags "-X main.Version=%V_NINFO%" -o nvpair-node-info.exe . || goto :fail
 echo       OK
 
-echo [4/13] Building nvpair-node-scanner (v%V_NSCAN%)...
+echo [5/14] Building nvpair-node-scanner (v%V_NSCAN%)...
 cd /d "%ROOT%nvpair-node-scanner"
 go build -ldflags "-X main.Version=%V_NSCAN%" -o nvpair-node-scanner.exe . || goto :fail
 echo       OK
 
-echo [5/13] Building nvpair-manual-nodes (v%V_MNODES%)...
+echo [6/14] Building nvpair-manual-nodes (v%V_MNODES%)...
 cd /d "%ROOT%nvpair-manual-nodes"
 go build -ldflags "-X main.Version=%V_MNODES%" -o nvpair-manual-nodes.exe . || goto :fail
 echo       OK
 
-echo [6/13] Building nvpair-workload-manager (v%V_WLMGR%)...
+echo [7/14] Building nvpair-workload-manager (v%V_WLMGR%)...
 cd /d "%ROOT%nvpair-workload-manager"
 go build -ldflags "-X main.Version=%V_WLMGR%" -o nvpair-workload-manager.exe . || goto :fail
 echo       OK
 
-echo [7/13] Building nvpair-errors (v%V_ERRORS%)...
+echo [8/14] Building nvpair-errors (v%V_ERRORS%)...
 cd /d "%ROOT%nvpair-errors"
 go build -ldflags "-X main.Version=%V_ERRORS%" -o nvpair-errors.exe . || goto :fail
 echo       OK
 
-echo [8/13] Building nvpair-engine-manager (v%V_ENGMGR%)...
+echo [9/14] Building nvpair-engine-manager (v%V_ENGMGR%)...
 cd /d "%ROOT%nvpair-engine-manager"
 go build -ldflags "-X main.Version=%V_ENGMGR%" -o nvpair-engine-manager.exe . || goto :fail
 echo       OK
 
-echo [9/13] Building nvpair-node-settings (v%V_NSETTINGS%)...
+echo [10/14] Building nvpair-node-settings (v%V_NSETTINGS%)...
 cd /d "%ROOT%nvpair-node-settings"
 go build -ldflags "-X main.Version=%V_NSETTINGS%" -o nvpair-node-settings.exe . || goto :fail
 echo       OK
 
-echo [10/13] Building nvpair-ui-broker (v%V_BROKER%)...
+echo [11/14] Building nvpair-ui-broker (v%V_BROKER%)...
 cd /d "%ROOT%nvpair-ui-broker"
 go build -ldflags "-X main.Version=%V_BROKER%" -o nvpair-ui-broker.exe . || goto :fail
 echo       OK
 
-echo [11/13] Building nvpair-cluster-manager (v%V_CLUMGR%)...
+echo [12/14] Building nvpair-cluster-manager (v%V_CLUMGR%)...
 cd /d "%ROOT%nvpair-cluster-manager"
 go build -ldflags "-X main.Version=%V_CLUMGR%" -o nvpair-cluster-manager.exe . || goto :fail
 echo       OK
 
-echo [12/13] Building nvpair-job-scheduler (v%V_SCHED%)...
+echo [13/14] Building nvpair-job-scheduler (v%V_SCHED%)...
 cd /d "%ROOT%nvpair-job-scheduler"
 go build -ldflags "-X main.Version=%V_SCHED%" -o nvpair-job-scheduler.exe . || goto :fail
 echo       OK
 
-echo [13/13] Building nvpair-tui (v%V_TUI%)...
+echo [14/14] Building nvpair-tui (v%V_TUI%)...
 cd /d "%ROOT%nvpair-tui"
 go build -ldflags "-X main.Version=%V_TUI%" -o nvpair-tui.exe . || goto :fail
 echo       OK
@@ -157,6 +164,7 @@ if exist "%BIN_OUT%" rmdir /s /q "%BIN_OUT%"
 mkdir "%BIN_OUT%"
 copy /y "%ROOT%ollama-proxy\ollama-proxy.exe" "%BIN_OUT%\ollama-proxy.exe" >nul || goto :fail
 copy /y "%ROOT%lmstudio-proxy\lmstudio-proxy.exe" "%BIN_OUT%\lmstudio-proxy.exe" >nul || goto :fail
+copy /y "%ROOT%llamacpp-proxy\llamacpp-proxy.exe" "%BIN_OUT%\llamacpp-proxy.exe" >nul || goto :fail
 copy /y "%ROOT%nvpair-node-info\nvpair-node-info.exe" "%BIN_OUT%\nvpair-node-info.exe" >nul || goto :fail
 copy /y "%ROOT%nvpair-node-scanner\nvpair-node-scanner.exe" "%BIN_OUT%\nvpair-node-scanner.exe" >nul || goto :fail
 copy /y "%ROOT%nvpair-manual-nodes\nvpair-manual-nodes.exe" "%BIN_OUT%\nvpair-manual-nodes.exe" >nul || goto :fail
@@ -176,6 +184,7 @@ echo ========================================
 echo.
 echo  Proxy:            %BIN_OUT%\ollama-proxy.exe
 echo  LM Studio Proxy:  %BIN_OUT%\lmstudio-proxy.exe
+echo  Llama.cpp Proxy:  %BIN_OUT%\llamacpp-proxy.exe
 echo  Node Info:        %BIN_OUT%\nvpair-node-info.exe
 echo  Node Scanner:     %BIN_OUT%\nvpair-node-scanner.exe
 echo  Manual Nodes:     %BIN_OUT%\nvpair-manual-nodes.exe

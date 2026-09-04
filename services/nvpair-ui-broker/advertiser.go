@@ -22,6 +22,7 @@ const (
 	// real port is resolved per poll via localEnginePort.
 	defaultOllamaPort   = 11434
 	defaultLMStudioPort = 1234
+	defaultLlamaCppPort = 8080
 
 	// engineManagerHTTPPort is the fixed LAN port the broker tells
 	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
@@ -179,6 +180,69 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 		b.unregisterService(noderec.ServiceLMStudio)
 		b.setProxyLocalBackend(b.getLMStudioProxy(), "lmstudio", enginePort, false)
 	}
+}
+
+// runAutoAdvertiseLlamaCpp reconciles the adopted llama-server with the
+// promoted llamacpp-proxy endpoint. The backend remains loopback-only while
+// peers discover and dial the proxy's cluster mTLS port.
+func (b *Broker) runAutoAdvertiseLlamaCpp(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseLlamaCpp(client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseLlamaCpp(client)
+		}
+	}
+}
+
+func (b *Broker) reconcileAdvertiseLlamaCpp(client *http.Client) {
+	enginePort, probe := b.localEnginePort(
+		"llamacpp",
+		defaultLlamaCppPort,
+	)
+	proxyPort := b.llamacppProxyListenPort()
+
+	up := probe &&
+		proxyPort != 0 &&
+		enginePort != proxyPort &&
+		checkLMStudioHealth(client, enginePort)
+
+	if up {
+		b.registerService(noderec.RegisterParams{
+			Service: noderec.ServiceLlamaCpp,
+			Port:    proxyPort,
+		})
+		b.setProxyLocalBackend(
+			b.getLlamaCppProxy(),
+			"llamacpp",
+			enginePort,
+			true,
+		)
+	} else {
+		b.unregisterService(noderec.ServiceLlamaCpp)
+		b.setProxyLocalBackend(
+			b.getLlamaCppProxy(),
+			"llamacpp",
+			enginePort,
+			false,
+		)
+	}
+}
+
+func (b *Broker) llamacppProxyListenPort() int {
+	if p := b.getLlamaCppProxy(); p != nil {
+		if ready, port := p.Status(); ready {
+			return port
+		}
+	}
+	return 0
 }
 
 // proxyLocalBackend is the node/set-local-backend payload: the loopback engine
