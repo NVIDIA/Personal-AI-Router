@@ -39,5 +39,35 @@ export default function EngineIcon({ type, size = 32 }: { type: EngineType; size
         )
     }
 
+    // vLLM's own logo is not redistributable here, so its tile is drawn rather
+    // than shipped: a wordmark on the project's colours, in the same rounded
+    // square the other engines use so the row stays visually even.
+    if (type === 'vllm') {
+        return (
+            <div style={{ ...containerStyle, backgroundColor: '#30a2ff' }}>
+                <svg
+                    viewBox="0 0 32 32"
+                    width="100%"
+                    height="100%"
+                    role="img"
+                    aria-label="vLLM"
+                    focusable="false"
+                >
+                    <text
+                        x="16"
+                        y="21"
+                        textAnchor="middle"
+                        fontFamily="system-ui, -apple-system, Segoe UI, sans-serif"
+                        fontSize="13"
+                        fontWeight="700"
+                        fill="#ffffff"
+                    >
+                        vL
+                    </text>
+                </svg>
+            </div>
+        )
+    }
+
     return null
 }

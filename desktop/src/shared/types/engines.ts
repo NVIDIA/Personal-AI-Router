@@ -40,6 +40,12 @@ export interface EngineStatusData {
      * reported version data or engines that are not installed.
      */
     installedVersion?: string
+    /**
+     * The model this engine is configured to serve, for an engine that runs one
+     * model per process (vLLM). Empty string when none is chosen — the state in
+     * which the engine refuses to start. Undefined for every other engine.
+     */
+    servedModel?: string
 }
 
 export type ModelItemStatus = (typeof ModelItemStatuses)[number]

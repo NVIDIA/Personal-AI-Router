@@ -124,7 +124,7 @@ func (e *Executor) Errors() []serviceError {
 func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return EngineStatus{
+	status := EngineStatus{
 		Engine:      engine,
 		DisplayName: st.manifest.DisplayName,
 		Installed:   st.installed,
@@ -132,6 +132,10 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Healthy:     st.healthy,
 		Port:        st.port,
 	}
+	if st.plat != nil {
+		status.Model = st.plat.Runtime.Model
+	}
+	return status
 }
 
 // reconcilePresence reconciles filesystem detection with a fixed-port engine

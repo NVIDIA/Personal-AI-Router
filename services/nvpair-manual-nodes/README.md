@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-manual-nodes
 
-A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
+A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, vLLM, and node-info, and emits status events.
 
 ## Communication
 
@@ -50,6 +50,9 @@ Emitted when a manually added node has been probed and its initial status determ
     "lmstudio_up":true,
     "lmstudio_port":1234,
     "lmstudio_models":["qwen2.5-7b-instruct"],
+    "vllm_up":true,
+    "vllm_port":8000,
+    "vllm_models":["Qwen/Qwen3-8B"],
     "node_info_up":true,
     "node_info_port":14318,
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
@@ -60,7 +63,9 @@ Emitted when a manually added node has been probed and its initial status determ
 }
 ```
 
-Each node is probed for both inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`) and LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list). `lmstudio_up` / `lmstudio_port` / `lmstudio_models` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run either engine, both, or neither.
+Each node is probed for every inference engine: Ollama on its default `:11434` (`GET /` + `/api/tags`), LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list), and vLLM on its default `:8000`. The `lmstudio_*` and `vllm_*` fields mirror the `ollama_*` ones and let a supervising broker bridge the node into the right proxy the same way it bridges Ollama into `ollama-proxy`. A node can run any combination of them, or none.
+
+vLLM is OpenAI-compatible, so `/v1/models` alone cannot tell it from LM Studio. The vLLM probe therefore also requires `GET /version` to answer 200 with a JSON `version` field, which LM Studio does not serve — both must pass before a node is reported as running vLLM.
 
 ### `node/updated`
 
@@ -136,11 +141,12 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 
 - **Ollama** on port 11434: health check (`GET /`) and model list (`GET /api/tags`)
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
+- **vLLM** on port 8000: `GET /version` (the disambiguator from any other OpenAI-compatible server) followed by `GET /v1/models` for the model list
 - **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
 
 A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
 
-The three engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
+The engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
 
 ## Shutdown
 

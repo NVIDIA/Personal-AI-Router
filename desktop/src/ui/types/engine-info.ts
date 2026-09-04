@@ -95,6 +95,11 @@ export interface BackendInfo {
     proxyPort: number | null
     /** Installed engine binary version reported by the owning node */
     installedVersion?: string
+    /**
+     * The model this engine is configured to serve, for an engine that runs one
+     * model per process (vLLM). Empty string when none is chosen.
+     */
+    servedModel?: string
     /** Models on this backend with per-model status */
     models: ModelItem[]
     /** System-level dependencies required before install/run (local node only) */

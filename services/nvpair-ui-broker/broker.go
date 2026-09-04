@@ -505,16 +505,21 @@ func (b *Broker) restoreEnabledEnginesAfterPortGate(ctx context.Context) bool {
 	return true
 }
 
-func (b *Broker) runEngineAvailabilityAfterPortGates(
-	ctx context.Context,
-	runOllama func(context.Context),
-	runLMStudio func(context.Context),
-) bool {
+// runEngineAvailabilityAfterPortGates starts every engine-advertise loop once
+// the managed port gates have settled, so no loop can advertise a port that is
+// still being moved. The last loop runs on this goroutine; the rest get their
+// own. Variadic because the set grows with each engine PAIR fronts.
+func (b *Broker) runEngineAvailabilityAfterPortGates(ctx context.Context, loops ...func(context.Context)) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
-	go runOllama(ctx)
-	runLMStudio(ctx)
+	if len(loops) == 0 {
+		return true
+	}
+	for _, run := range loops[:len(loops)-1] {
+		go run(ctx)
+	}
+	loops[len(loops)-1](ctx)
 	return true
 }
 
@@ -1462,8 +1467,9 @@ func (b *Broker) proxyForEngine(engine string) *proxyProcess {
 	switch engine {
 	case "ollama":
 		return b.getProxy()
-	case "lmstudio":
-		return b.getLMStudioProxy()
+	case "lmstudio", "vllm":
+		// Both OpenAI-compatible engines are fronted by the one OpenAI proxy.
+		return b.getOpenAIProxy()
 	default:
 		return nil
 	}
@@ -1779,7 +1785,8 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	go b.runEngineAvailabilityAfterPortGates(ctx,
+		b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseVLLM)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events

@@ -3,11 +3,15 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# LM Studio Proxy
+# OpenAI-Compatible Proxy
 
-A discovery-aware HTTP reverse proxy for LM Studio nodes on the local network. It runs no mDNS browse of its own: its routing targets come from the broker's discovery relay (it sends `discovery:subscribe {services:[lm]}` and replaces its routing overlay from each pushed `discovery:nodes` snapshot) plus user-added manual nodes. It forwards HTTP requests to the selected node, aggregates the model-list route across candidate nodes, and exposes a bidirectional JSON-RPC 2.0 control channel over stdio (or an IPC socket).
+A discovery-aware HTTP reverse proxy for every OpenAI-compatible engine on the local network — **LM Studio and vLLM** today. They speak the same HTTP surface, so they share one router rather than one binary each; the binary, its port file, and its `lmstudio-proxy:` relay namespace keep their historical spelling because those are wire contracts.
 
-> **Clone of `ollama-proxy`.** This proxy is a deliberate clone of [`ollama-proxy`](../ollama-proxy/README.md) so the two share identical routing, failover, CORS, and node-selection behavior — the CORS policy is literally the same code, `nvpair-shared/cors`, and is documented [there](../ollama-proxy/README.md#http-reverse-proxy). The differences are engine-specific: it subscribes to the discovery relay for `lm` nodes, forwards the OpenAI-compatible inference routes (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), tags workloads `lmstudio`, and persists its port to its own file. It has no `--alias-address`, so its self-forward guard covers only its own listener.
+It runs no mDNS browse of its own: its routing targets come from the broker's discovery relay (it sends `discovery:subscribe {services:[lm, vl]}` and replaces its routing overlay from each pushed `discovery:nodes` snapshot) plus user-added manual nodes. It forwards HTTP requests to the selected node, aggregates the model-list route across candidate nodes, and exposes a bidirectional JSON-RPC 2.0 control channel over stdio (or an IPC socket).
+
+**Which engine owns a model.** A peer advertises `lm` and `vl` at the same value — the port of its own OpenAI proxy — so a peer running both still resolves to one routing target. Which engine actually serves a given model comes from the node's per-engine model attribution (`modelsByEngine`, keyed by engine-manager name), not from the service key. That attribution is what tags each forwarded workload with the engine that ran it, and what the desktop reads to label a node. A model id advertised by more than one engine on a node resolves to the first in the proxy's engine order (LM Studio, then vLLM), so routing is deterministic.
+
+> **Sibling of `ollama-proxy`.** This proxy shares `ollama-proxy`'s routing, failover, CORS, and node-selection behavior — the CORS policy is literally the same code, `nvpair-shared/cors`, and is documented [there](../ollama-proxy/README.md#http-reverse-proxy). The differences are engine-specific: it subscribes to the discovery relay for `lm` and `vl` nodes, forwards the OpenAI-compatible inference routes (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), tags each workload with the engine that owns its model, and persists its port to its own file. It has no `--alias-address`, so its self-forward guard covers only its own listener.
 
 ## Build
 
@@ -34,14 +38,14 @@ lmstudio-proxy [flags]
 
 ### HTTP Reverse Proxy
 
-The proxy listens on `--port` (default 1234) and forwards incoming HTTP requests to the currently active LM Studio node — except the model-list route `GET /v1/models`, which is queried across every candidate node concurrently and merged into one de-duplicated inventory. Point your OpenAI-compatible client at `http://localhost:1234` and the proxy handles routing.
+The proxy listens on `--port` (default 1234) and forwards incoming HTTP requests to the currently active node — except the model-list route `GET /v1/models`, which is queried across every candidate node concurrently and merged into one de-duplicated inventory. Point your OpenAI-compatible client at `http://localhost:1234` and the proxy handles routing.
 
-**Cluster ingress.** The listener carries two personalities, demultiplexed by each connection's first byte. Plaintext HTTP is accepted only from loopback; a LAN caller is refused. When `--cluster-dir` shows this node is a cluster member, the same listener also terminates cluster mTLS: a peer whose client certificate matches one of this node's pins is forwarded straight to the local engine reported by `node/set-local-backend`, and is never re-routed onward to another node. Membership and pins are re-derived per request, so joining or leaving a cluster needs no restart.
+**Cluster ingress.** The listener carries two personalities, demultiplexed by each connection's first byte. Plaintext HTTP is accepted only from loopback; a LAN caller is refused. When `--cluster-dir` shows this node is a cluster member, the same listener also terminates cluster mTLS: a peer whose client certificate matches one of this node's pins is forwarded straight to a local engine reported by `node/set-local-backend`, and is never re-routed onward to another node. With more than one local OpenAI engine the ingress picks the one that actually serves the requested model, read from the engines themselves (short-TTL cached) rather than from discovery, falling back to the single healthy engine when there is only one and answering `503` when neither resolves. A peer's `GET /v1/models` is answered by merging every local engine's inventory, so nothing this node serves is hidden from the cluster. Membership and pins are re-derived per request, so joining or leaving a cluster needs no restart.
 
 **Persisted port.** A port chosen at runtime via the `set-port` request (see below) is saved as `lmstudio-proxy-port.json` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) and **restored on startup**, taking precedence over `--port`/the default. One value is exempt: a stored `1235` is discarded and `--port` is used instead, so that port cannot be restored even when it was chosen deliberately via `set-port`. Any other stored port is honoured. The broker uses `--ignore-persisted-port` while reserving the managed `1234` facade.
 
 Node selection:
-- **Eligibility**: Before routing model-bearing inference, the proxy keeps only nodes whose current LM Studio inventory advertises the exact requested model ID. An empty or non-matching inventory is excluded until a later discovery update; if no advertised owner is routable, the proxy returns a local `502`.
+- **Eligibility**: Before routing model-bearing inference, the proxy keeps only nodes whose current OpenAI-engine inventory advertises the exact requested model ID. An empty or non-matching inventory is excluded until a later discovery update; if no advertised owner is routable, the proxy returns a local `502`.
 - **Auto**: When no eligible node is explicitly selected, the proxy follows `node/set-priority` (see below), then discovered nodes in stable ID order.
 - **Priority (scheduler-driven)**: The Job Scheduler ranks the cluster least-loaded-first by pending workload plus smoothed GPU pressure and, via `nvpair-ui-broker`, pushes the ordered node list with those per-node counts to this proxy with `node/set-priority`. Auto routing sends the request to the listed node carrying the least estimated load. See [`nvpair-job-scheduler`](../nvpair-job-scheduler/README.md).
 - **Manual**: Use the `node/select` JSON-RPC method to pin traffic to a specific node. A manual pin **overrides the priority list only when that node is eligible** for the requested model.
@@ -88,10 +92,11 @@ Nodes are represented throughout the protocol with this shape:
 |-------|------|-------------|
 | `id` | string | Stable per-host UUID from the discovery record (the ID you supply, for a manual node) |
 | `host` | string | Hostname, for display — routing never keys on it |
-| `port` | int | LM Studio port from the discovery record's `lm` service entry |
+| `port` | int | The node's OpenAI proxy port, from whichever of the `lm` / `vl` service entries the record carries (they name the same port) |
 | `addresses` | string[] | Addresses to dial. A node fed by the discovery relay always carries exactly one canonical address; several only ever appear on a manual node |
 | `txt` | string[] | The discovery record's TXT pairs, carried verbatim |
-| `models` | string[] | The node's LM Studio model inventory from the discovery snapshot. Model-bearing inference is eligible only when this list advertises the exact requested model ID. An omitted or empty list excludes the node from that request until inventory updates; it remains available for non-inference routes and model-list aggregation |
+| `modelsByEngine` | object | The node's inventory attributed per OpenAI engine (`lmstudio`, `vllm`), keyed by engine-manager engine name. A present key with an empty list means that engine is running and holds nothing; a missing key means the node does not run it. This is what says which engine a node runs and which one a model belongs to |
+| `models` | string[] | The union of the above — the node's whole OpenAI-reachable model inventory from the discovery snapshot. Model-bearing inference is eligible only when this list advertises the exact requested model ID. An omitted or empty list excludes the node from that request until inventory updates; it remains available for non-inference routes and model-list aggregation |
 | `ip` | string | The single canonical LAN address to dial or display, resolved from the node's `ip=` TXT if present and otherwise the best-scored advertised IPv4. Stamped onto outbound `node/*` notifications so consumers agree with the address the proxy routes to |
 
 ---
@@ -349,7 +354,7 @@ Add a node manually (for networks where mDNS is blocked). If the node ID already
 
 **Request:**
 ```json
-{"jsonrpc":"2.0","id":5,"method":"node/add-manual","params":{"id":"remote-server","host":"remote-server","port":1234,"addresses":["10.0.1.50"]}}
+{"jsonrpc":"2.0","id":5,"method":"node/add-manual","params":{"id":"remote-server","engine":"vllm","host":"remote-server","port":8000,"addresses":["10.0.1.50"]}}
 ```
 
 **Response:**
@@ -365,7 +370,7 @@ Remove a previously added manual node.
 
 **Request:**
 ```json
-{"jsonrpc":"2.0","id":6,"method":"node/remove-manual","params":{"id":"remote-server"}}
+{"jsonrpc":"2.0","id":6,"method":"node/remove-manual","params":{"id":"remote-server","engine":"vllm"}}
 ```
 
 **Response:**
@@ -377,7 +382,7 @@ The proxy emits a `node/removed` notification and clears the active selection if
 
 #### `node/set-local-backend`
 
-Tell the proxy which loopback engine this node's own traffic terminates on. The broker sends it once the local LM Studio address and health are known. It is the target the cluster mTLS ingress forwards to, and the substitute used when discovery advertises this node's own proxy endpoint as a candidate. A zero `port` or `"healthy":false` effectively clears it, and the ingress then answers `503`.
+Tell the proxy which loopback engine this node's own traffic terminates on. Backends are held **per engine**, so one node may run LM Studio and vLLM at once and clearing one leaves the other routing. The broker sends one per engine once that engine's local address and health are known. They are the targets the cluster mTLS ingress forwards to, and the substitutes used when discovery advertises this node's own proxy endpoint as a candidate. A zero `port` or `"healthy":false` effectively clears that engine's backend, and its ingress then answers `503`.
 
 **Request:**
 ```json
@@ -441,4 +446,4 @@ The proxy shuts down gracefully on any of:
 
 ## Discovery
 
-The proxy does not browse mDNS. On startup it subscribes to the broker's discovery relay for `lm` (LM Studio) nodes (`discovery:subscribe {services:[lm]}`). Targets then arrive as `discovery:nodes` notifications carrying the relay's full filtered node set, and each snapshot replaces the routing overlay wholesale — a departed node is simply absent from the next one — while the diff against the previous overlay is what produces the `node/discovered`, `node/updated`, and `node/removed` notifications. User-added manual nodes are merged on top. Nodes are keyed by the discovery record's stable per-host UUID, so routing survives a machine being renamed. The single `_nvpair-node` browse that feeds the relay lives in the `nvpair-node-scanner` daemon (see its README) — this proxy is a pure consumer of the resulting routing set.
+The proxy does not browse mDNS. On startup it subscribes to the broker's discovery relay for `lm` (LM Studio) and `vl` (vLLM) nodes (`discovery:subscribe {services:[lm, vl]}`). Targets then arrive as `discovery:nodes` notifications carrying the relay's full filtered node set, and each snapshot replaces the routing overlay wholesale — a departed node is simply absent from the next one — while the diff against the previous overlay is what produces the `node/discovered`, `node/updated`, and `node/removed` notifications. User-added manual nodes are merged on top. Nodes are keyed by the discovery record's stable per-host UUID, so routing survives a machine being renamed. The single `_nvpair-node` browse that feeds the relay lives in the `nvpair-node-scanner` daemon (see its README) — this proxy is a pure consumer of the resulting routing set.

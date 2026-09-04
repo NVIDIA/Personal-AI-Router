@@ -47,7 +47,7 @@ func contains(hay, needle string) bool {
 // probe) and it never trips the loopback rewrite or self-forward guard. The
 // octet is derived from the id's first byte so each id gets a distinct valid IP.
 func prNode(id string) Node {
-	return Node{ID: id, Addresses: []string{"192.0.2." + strconv.Itoa(int(id[0]))}, Port: 1234}
+	return Node{ID: id, Addresses: []string{"192.0.2." + strconv.Itoa(int(id[0]))}, Port: 1234, Engine: "lmstudio"}
 }
 
 // prProxy returns a proxy whose discovery holds the given node ids.

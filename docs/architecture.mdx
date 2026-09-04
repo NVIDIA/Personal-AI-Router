@@ -19,7 +19,7 @@ flowchart TB
     NodeA["<b>Node</b><br/>one machine running PAIR"]
     NodeB["<b>Node</b>"]
     EngineA1["<b>Engine</b><br/>Ollama"]
-    EngineA2["<b>Engine</b><br/>LM Studio"]
+    EngineA2["<b>Engine</b><br/>LM Studio / vLLM"]
     EngineB1["<b>Engine</b><br/>Ollama"]
     ModelA1["<b>Models</b><br/>present on this engine"]
     ModelA2["<b>Models</b>"]
@@ -40,7 +40,8 @@ flowchart TB
   one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node, Ollama or LM Studio. A node can
+- An **engine** is an inference server on a node: Ollama, LM Studio, or vLLM. A
+  node can
   run both, one, or neither, and a node with no running engine is not eligible to
   serve.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
@@ -314,7 +315,8 @@ ordering reaches a proxy in three steps:
 
 The ranking combines *pending work and GPU pressure*. A workload counts as
 pending while it is queued or running, and it is attributed to the node it was
-placed on. Both engines count together, so Ollama load affects LM Studio ordering
+placed on. Every engine counts together, so Ollama load affects LM Studio and
+vLLM ordering
 and vice versa.
 
 GPU pressure is deliberately coarse. The scheduler smooths the busiest GPU's
@@ -357,7 +359,7 @@ across the cluster as a whole.
 When an inference request contains a non-empty model, only nodes whose current
 inventory for that engine advertises the model enter the failover list. An empty
 inventory and an inventory that lists other models are both ineligible. Ollama's
-implicit `:latest` tag is normalized; LM Studio model IDs match exactly.
+implicit `:latest` tag is normalized; LM Studio and vLLM model IDs match exactly.
 
 If no advertised owner is routable, the proxy returns an actionable local `502`
 without sending the request to an engine. It does not broaden the candidate list
@@ -428,7 +430,8 @@ one place lower in the order.
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**Both engines are counted as one pool.** Ollama and LM Studio load is summed,
+**Every engine is counted as one pool.** Ollama, LM Studio, and vLLM load is
+summed,
 and maximum GPU pressure applies to the whole node. That is conservative on a
 typical single-GPU machine and can underuse a multi-GPU node where the engines
 occupy different devices.
@@ -462,7 +465,8 @@ port it listens on.
 ### Finding an Engine
 
 PAIR does not assume it installed the engine. Detection checks the manifest's
-known install locations for each engine, so an Ollama or LM Studio you installed
+known install locations for each engine, so an Ollama, LM Studio, or vLLM you
+installed
 yourself is found where it already is. "Installing" an engine that is already
 present downloads nothing and reports it as installed.
 
@@ -521,7 +525,8 @@ A default installation listens on these ports:
 | Port | Listener |
 | --- | --- |
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
-| `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
+| `1234` | OpenAI-compatible proxy for LM Studio and vLLM (LM Studio moves to `1235`+) |
+| `8000` | vLLM engine (adopted or PAIR-started; the proxy never takes this port) |
 | `14318` | Node hardware and model inventory |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |

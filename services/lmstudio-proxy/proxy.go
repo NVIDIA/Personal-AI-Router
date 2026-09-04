@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,16 +139,19 @@ const (
 	workloadCompletedMethod = "workload:completed"
 	workloadErroredMethod   = "workload:errored"
 
-	// workloadEngine is the opaque engine identifier carried in every
-	// workload this proxy produces. This proxy only ever fronts LM Studio.
-	workloadEngine = "lmstudio"
+	// fallbackWorkloadEngine is the opaque engine identifier used when a
+	// forwarded request could not be attributed to one of this proxy's engines —
+	// a peer whose per-engine model attribution has not arrived yet. It is the
+	// first engine in openaiEngines, which is also the tie-break order routing
+	// uses, so the tag matches what the request was routed as.
+	fallbackWorkloadEngine = "lmstudio"
 )
 
 // inferenceEndpoints is the set of request paths that count as cluster
 // workloads. Health checks, model listings (/v1/models), and other control
 // traffic are deliberately excluded so we don't flood the cluster with
-// non-inference noise. LM Studio serves the OpenAI-compatible API, so these
-// are the OpenAI inference routes.
+// non-inference noise. Every engine behind this proxy serves the
+// OpenAI-compatible API, so these are the OpenAI inference routes.
 var inferenceEndpoints = map[string]bool{
 	"/v1/chat/completions": true,
 	"/v1/completions":      true,
@@ -335,12 +339,19 @@ type Proxy struct {
 	// only loopback-plaintext local routing. Read-only after startup.
 	mesh *clustertrust.Mesh
 
-	// backendMu guards backend, the explicit loopback engine the cluster mTLS
-	// ingress forwards to. The broker sets/clears it via node/set-local-backend;
-	// it is never sourced from discovery, so an ingress request can only ever
-	// reach this node's own local engine and can never be re-routed to a peer.
+	// backendMu guards backends, this node's own loopback engines keyed by
+	// engine-manager name. The broker sets/clears each via
+	// node/set-local-backend; they are never sourced from discovery, so an
+	// ingress request can only ever reach this node's own local engines and can
+	// never be re-routed to a peer. One node may run several at once, so each is
+	// set and cleared independently.
 	backendMu sync.RWMutex
-	backend   localBackend
+	backends  map[string]localBackend
+
+	// localModels caches which of this node's own engines serves which models,
+	// read from the engines themselves. It is what the mTLS ingress uses to pick
+	// the engine for a peer's request. See localModelsByEngine.
+	localModels localModelsCache
 
 	selectedMu sync.RWMutex
 	selectedID string
@@ -475,12 +486,14 @@ func (p *Proxy) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to send ready notification: %w", err)
 	}
 
-	// Routing targets come from the broker's discovery relay. Subscribe
-	// for lm nodes; they arrive as discovery:nodes snapshots (handled in
-	// handleMessage), each replacing the subscribed overlay. Non-fatal: if the
-	// parent isn't a relay-aware broker the proxy still routes to manual nodes.
-	slog.Debug("subscribing to discovery relay for routing targets", "service", string(noderec.ServiceLMStudio))
-	if err := p.codec.Notify(noderec.MethodSubscribe, noderec.SubscribeParams{Services: []noderec.ServiceKey{noderec.ServiceLMStudio}}); err != nil {
+	// Routing targets come from the broker's discovery relay. Subscribe for every
+	// OpenAI-compatible engine service (lm, vl); they arrive as discovery:nodes
+	// snapshots (handled in handleMessage), each replacing the subscribed
+	// overlay. Non-fatal: if the parent isn't a relay-aware broker the proxy
+	// still routes to manual nodes.
+	services := subscribedServices()
+	slog.Debug("subscribing to discovery relay for routing targets", "services", services)
+	if err := p.codec.Notify(noderec.MethodSubscribe, noderec.SubscribeParams{Services: services}); err != nil {
 		slog.Warn("failed to subscribe to discovery relay", "err", err)
 	}
 
@@ -697,8 +710,16 @@ func (p *Proxy) emitWorkload(method string, w Workload) {
 // pinned to that peer's exact server cert. Empty peerUUID means a plain-HTTP
 // dial — the local backend (self) or an explicit manual node.
 type candidate struct {
-	id       string
-	url      *url.URL
+	id  string
+	url *url.URL
+	// routeKey keys the reachability chooser. It equals id for a relay peer and
+	// is engine-qualified for a manual node, so two manual entries for one host's
+	// two engines never share a confirmed address. See Node.routeKey.
+	routeKey string
+	// engine is the OpenAI engine on that node this request is routed to. It is
+	// what the emitted workload is tagged with, so a dual-engine node's work is
+	// attributed to the engine that actually ran it.
+	engine   string
 	peerUUID string
 }
 
@@ -828,12 +849,6 @@ func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidate
 		target.Path = r.URL.Path
 		target.RawPath = r.URL.RawPath
 		target.RawQuery = r.URL.RawQuery
-		upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
-		if err != nil {
-			results[i].err = err
-			continue
-		}
-		upstream.Header.Set("Accept", "application/json")
 
 		// A cluster-peer candidate is queried over mTLS to its promoted proxy;
 		// self/manual candidates use the shared plain client.
@@ -843,57 +858,18 @@ func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidate
 		}
 
 		wg.Add(1)
-		go func(i int, cand candidate, req *http.Request, client *http.Client) {
+		go func(i int, cand candidate, target url.URL, client *http.Client) {
 			defer wg.Done()
-			resp, err := client.Do(req)
+			items, err := fetchModelList(r.Context(), client, &target)
 			if err != nil {
-				p.targets.Forget(cand.id)
+				if isTransportError(err) {
+					p.targets.Forget(cand.routeKey)
+				}
 				results[i].err = err
 				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				results[i].err = fmt.Errorf("upstream returned %s", resp.Status)
-				return
-			}
-			body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBytes+1))
-			if err != nil {
-				results[i].err = err
-				return
-			}
-			if len(body) > maxModelListBytes {
-				results[i].err = fmt.Errorf("model list exceeds %d bytes", maxModelListBytes)
-				return
-			}
-			var envelope struct {
-				Data *[]json.RawMessage `json:"data"`
-			}
-			if err := json.Unmarshal(body, &envelope); err != nil {
-				results[i].err = err
-				return
-			}
-			if envelope.Data == nil {
-				results[i].err = fmt.Errorf("upstream response has no data array")
-				return
-			}
-			models := *envelope.Data
-			items := make([]modelListItem, 0, len(models))
-			for _, raw := range models {
-				var identity struct {
-					ID string `json:"id"`
-				}
-				if err := json.Unmarshal(raw, &identity); err != nil {
-					results[i].err = fmt.Errorf("invalid model record: %w", err)
-					return
-				}
-				if identity.ID == "" {
-					results[i].err = fmt.Errorf("model record has no id")
-					return
-				}
-				items = append(items, modelListItem{key: identity.ID, raw: raw})
 			}
 			results[i] = modelListResult{items: items, ok: true}
-		}(i, cand, upstream, client)
+		}(i, cand, target, client)
 	}
 	wg.Wait()
 
@@ -1042,7 +1018,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		wl = &Workload{
 			ID:          reqID,
 			Model:       model,
-			Engine:      workloadEngine,
+			Engine:      candidateEngine(candidates[0]),
 			RunID:       p.runID,
 			State:       "running",
 			ScheduledOn: candidates[0].id,
@@ -1213,7 +1189,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// can fail over to another of its published addresses
 				// (multi-homed peer). The in-request failover below moves on to
 				// the next node.
-				p.targets.Forget(cand.id)
+				p.targets.Forget(cand.routeKey)
 				if !last {
 					// Transport/dial error with candidates left: fail over.
 					retry = true
@@ -1369,7 +1345,9 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 	out := make([]candidate, 0, len(nodes))
 	// Dedup by resolved backend host: the same physical node can appear under two
 	// IDs (e.g. a manually-added entry and its relay-discovered record), and
-	// routing to the same engine twice is wasteful.
+	// routing to the same engine twice is wasteful. It is also what collapses a
+	// peer that advertises several engine keys back into one candidate: every
+	// key on a peer names that peer's single proxy port.
 	seenHost := make(map[string]bool, len(nodes))
 	// placed tracks node IDs already considered so the priority-ordered and
 	// fallback passes don't reconsider one (scheduler ordering).
@@ -1383,19 +1361,23 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 		if u == nil {
 			return
 		}
+		engine := p.nodeEngineFor(n, model)
 		peerUUID := ""
 		switch {
 		case isSelfTarget(u, selfPort):
-			// Our own advertised endpoint (lm now points at this proxy). Serve
-			// it from the explicit local backend — the loopback engine — rather
-			// than dialing our own mTLS ingress, which would recurse. Ranking
-			// still used this node's real (discovered) model list above.
-			lb, ok := p.localBackendTarget()
-			if !ok {
-				slog.Debug("resolveCandidates: no local backend for self", "node_id", n.ID)
-				return
+			// Our own advertised endpoint (the engine keys now point at this
+			// proxy). Serve it from the explicit local backends — the loopback
+			// engines — rather than dialing our own mTLS ingress, which would
+			// recurse. Ranking still used this node's real (discovered) model
+			// list above. With no routing model there is nothing to attribute, so
+			// every healthy local engine becomes its own candidate and the
+			// aggregated model list covers them all.
+			for _, local := range p.selfTargets(n, model, engine) {
+				out = appendCandidate(out, seenHost, candidate{
+					id: n.ID, routeKey: n.routeKey(), engine: local.Engine, url: local.URL,
+				}, selfPort)
 			}
-			u = lb
+			return
 		case p.mesh.HasPin(n.ClusterUUID):
 			// A pinned cluster peer: reach it only over mTLS to its promoted
 			// proxy (the lm port now advertises the proxy, not the engine).
@@ -1419,21 +1401,13 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 				"node_id", n.ID, "cluster_uuid", n.ClusterUUID)
 			return
 		}
-		// Defensive: the local backend must never resolve back to this proxy.
-		if isSelfTarget(u, selfPort) {
-			slog.Debug("resolveCandidates: skipping self-target node",
-				"node_id", n.ID, "target", u.Host, "self_port", selfPort)
-			return
-		}
-		if seenHost[u.Host] {
-			return
-		}
-		seenHost[u.Host] = true
-		out = append(out, candidate{
+		out = appendCandidate(out, seenHost, candidate{
 			id:       n.ID,
+			routeKey: n.routeKey(),
+			engine:   engine,
 			url:      u,
 			peerUUID: peerUUID,
-		})
+		}, selfPort)
 	}
 
 	// Capability has already been enforced. An eligible explicit selection wins,
@@ -1585,7 +1559,7 @@ func (p *Proxy) targetURL(n Node) *url.URL {
 	if len(candidates) == 0 {
 		return nil
 	}
-	host := p.targets.Prefer(n.ID, candidates)
+	host := p.targets.Prefer(n.routeKey(), candidates)
 	return &url.URL{Scheme: "http", Host: host}
 }
 
@@ -1826,8 +1800,26 @@ func upstreamUnreachableID(nodeID string) string {
 // LM Studio port the broker's engine poller registered, not the proxy's listen
 // port).
 func subscribedToNode(n noderec.DirectoryNode) (Node, bool) {
-	svc, ok := n.Services[noderec.ServiceLMStudio]
-	if !ok || n.IP == "" {
+	if n.IP == "" {
+		return Node{}, false
+	}
+	// A node may advertise several OpenAI engine keys at once. They all carry the
+	// same value — the port of that node's one OpenAI-compatible proxy — so the
+	// node projects to a single routable entry whose per-engine model attribution
+	// records which engine actually serves what.
+	port := 0
+	byEngine := make(map[string][]string, len(openaiEngines))
+	for _, e := range openaiEngines {
+		svc, ok := n.Services[e.Service]
+		if !ok {
+			continue
+		}
+		if port == 0 {
+			port = svc.Port
+		}
+		byEngine[e.Name] = append([]string(nil), n.EngineModels(e.Name)...)
+	}
+	if port == 0 {
 		return Node{}, false
 	}
 	// Key routing by the stable per-host UUID, not the hostname: candidate ids,
@@ -1839,7 +1831,7 @@ func subscribedToNode(n noderec.DirectoryNode) (Node, bool) {
 	return Node{
 		ID:   n.HostUUID,
 		Host: n.Name,
-		Port: svc.Port,
+		Port: port,
 		// The node's whole ranked address list, not just its canonical one: a
 		// multi-homed peer's best address from its own vantage point may be a
 		// direct-connect link this host cannot reach, and routing needs somewhere
@@ -1848,11 +1840,12 @@ func subscribedToNode(n noderec.DirectoryNode) (Node, bool) {
 		TXT:         n.AddressTXT(),
 		IP:          n.IP,
 		ClusterUUID: n.ClusterUUID,
-		// Filter on this node's LM Studio models only, not the cross-engine union,
-		// so a model a dual-engine node serves solely via Ollama isn't accepted as
-		// an LM Studio owner here (falls back to the union for a peer that sends
-		// no attribution — see DirectoryNode.EngineModels).
-		Models: append([]string(nil), n.EngineModels("lmstudio")...),
+		// Filter on this node's OpenAI-engine models only, not the cross-engine
+		// union, so a model a multi-engine node serves solely via Ollama isn't
+		// accepted as an owner here (each key falls back to the union for a peer
+		// that sends no attribution — see DirectoryNode.EngineModels).
+		Models:         unionModels(byEngine),
+		ModelsByEngine: byEngine,
 	}, true
 }
 
@@ -1981,29 +1974,48 @@ func (p *Proxy) handleMessage(msg *Message) {
 			p.codec.RespondError(msg.ID, -32602, "id, port, and at least one address are required")
 			return
 		}
+		// engine names which OpenAI engine on that host this address serves.
+		// LM Studio and vLLM listen on different ports, so a node running both is
+		// added once per engine and the entries must not collide.
+		if !isOpenAIEngine(node.Engine) {
+			p.codec.RespondError(msg.ID, -32602, "engine must be one of "+strings.Join(engineNames(), ", "))
+			return
+		}
+		// A manual node's whole inventory belongs to the engine it was added for.
+		node.ModelsByEngine = map[string][]string{node.Engine: append([]string(nil), node.Models...)}
 		added := p.discovery.AddManual(node)
 		if err := p.codec.Respond(msg.ID, map[string]bool{"added": added}); err != nil {
 			log.Printf("failed to respond to node/add-manual: %v", err)
 		}
 		if added {
-			log.Printf("manual node added: %s (%s:%d)", node.ID, node.Addresses[0], node.Port)
+			log.Printf("manual node added: %s/%s (%s:%d)", node.Engine, node.ID, node.Addresses[0], node.Port)
 			p.codec.Notify("node/discovered", node.withPrimaryIP())
 		} else {
-			log.Printf("manual node updated: %s (%s:%d)", node.ID, node.Addresses[0], node.Port)
+			log.Printf("manual node updated: %s/%s (%s:%d)", node.Engine, node.ID, node.Addresses[0], node.Port)
 			p.codec.Notify("node/updated", node.withPrimaryIP())
 		}
 
 	case "node/remove-manual":
-		var params SelectParams
+		var params struct {
+			ID     string `json:"id"`
+			Engine string `json:"engine"`
+		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
-			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"id\": \"...\"}")
+			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"id\": \"...\", \"engine\": \"...\"}")
 			return
 		}
-		removed := p.discovery.RemoveManual(params.ID)
+		if !isOpenAIEngine(params.Engine) {
+			p.codec.RespondError(msg.ID, -32602, "engine must be one of "+strings.Join(engineNames(), ", "))
+			return
+		}
+		removed := p.discovery.RemoveManual(params.Engine, params.ID)
 		if err := p.codec.Respond(msg.ID, map[string]bool{"removed": removed}); err != nil {
 			log.Printf("failed to respond to node/remove-manual: %v", err)
 		}
-		if removed {
+		// The node itself is only gone once its last engine's entry is dropped;
+		// until then it is still a routing target for the other engine, so the
+		// selection and the node/removed event must not fire early.
+		if removed && !p.discovery.IsManual(params.ID) {
 			log.Printf("manual node removed: %s", params.ID)
 			p.selectedMu.Lock()
 			if p.selectedID == params.ID {
@@ -2020,6 +2032,10 @@ func (p *Proxy) handleMessage(msg *Message) {
 		var b localBackend
 		if err := json.Unmarshal(msg.Params, &b); err != nil {
 			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"engine\",\"host\",\"port\",\"healthy\"}")
+			return
+		}
+		if !isOpenAIEngine(b.Engine) {
+			p.codec.RespondError(msg.ID, -32602, "engine must be one of "+strings.Join(engineNames(), ", "))
 			return
 		}
 		p.setLocalBackend(b)

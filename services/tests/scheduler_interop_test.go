@@ -583,7 +583,7 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 	proxyPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
 
 	writeRawFrame(t, stdin, fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":90,"method":"lmstudio-proxy:node/add-manual","params":{"id":"real-lm","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["chat-model"]}}`,
+		`{"jsonrpc":"2.0","id":90,"method":"lmstudio-proxy:node/add-manual","params":{"id":"real-lm","engine":"lmstudio","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["chat-model"]}}`,
 		realPort,
 	))
 	if resp := waitForResponse(t, msgs, 5*time.Second); resp.Error != nil {

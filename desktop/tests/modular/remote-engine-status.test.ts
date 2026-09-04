@@ -22,7 +22,8 @@ describe('remote engine status', () => {
                 host: remoteNodeId,
                 port: 1234,
                 addresses: ['192.0.2.190'],
-                ip: '192.0.2.190'
+                ip: '192.0.2.190',
+                modelsByEngine: { lmstudio: [] }
             }
         })
         expect(state.isRemoteEngineRunning(remoteNodeId, 'lm-studio')).toBe(true)

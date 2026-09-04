@@ -27,7 +27,8 @@ const MANIFEST_DIR = path.resolve(process.cwd(), '../services/nvpair-engine-mana
 /** Manifest engine ids differ from our `EngineType` for LM Studio only. */
 const ENGINE_TYPE_BY_MANIFEST_ID: Record<string, EngineType> = {
     ollama: 'ollama',
-    lmstudio: 'lm-studio'
+    lmstudio: 'lm-studio',
+    vllm: 'vllm'
 }
 
 interface ManifestAction {

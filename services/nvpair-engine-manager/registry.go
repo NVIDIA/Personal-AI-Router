@@ -25,11 +25,11 @@ import (
 // schema growth stays backward compatible.
 const ManifestSchemaVersion = 1
 
-// allowedPlaceholders is the set of `{token}`s the runner can resolve
-// at execution time. Validation rejects any other token so a typo in
-// a manifest fails at load with a clear message rather than at run
-// time with a mangled command line.
-var allowedPlaceholders = map[string]bool{
+// reservedActionPlaceholders is the set of `{token}`s the runner always
+// resolves itself from trusted state (the manifest, the chosen port, the
+// install dir). An engine:action caller's params are refused these names, so a
+// hostile param can never hijack one — notably {cli}, which is argv[0].
+var reservedActionPlaceholders = map[string]bool{
 	"bin":         true,
 	"cli":         true,
 	"host":        true,
@@ -37,6 +37,27 @@ var allowedPlaceholders = map[string]bool{
 	"download":    true,
 	"install_dir": true,
 	"models_dir":  true,
+}
+
+// allowedPlaceholders is the set of `{token}`s a manifest may template.
+// Validation rejects any other token so a typo fails at load with a clear
+// message rather than at run time with a mangled command line. It is the
+// reserved set plus {model}: unlike the reserved names, model is a value the
+// caller legitimately supplies per call on a model action (`lms get {model}`)
+// as well as one the runner resolves from runtime.model at launch, so it is
+// resolvable without being caller-proof.
+var allowedPlaceholders = buildAllowedPlaceholders()
+
+func buildAllowedPlaceholders() map[string]bool {
+	out := make(map[string]bool, len(reservedActionPlaceholders)+1)
+	for k := range reservedActionPlaceholders {
+		out[k] = true
+	}
+	// model is the served model of an engine that runs one model per process
+	// (vLLM's `vllm serve <model>`): read from runtime.model at start, set
+	// persistently by engine:set-model, overridable per call by engine:start.
+	out["model"] = true
+	return out
 }
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
@@ -113,17 +134,28 @@ type Fetch struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
-	Mode  string            `json:"mode,omitempty"`
-	Bin   string            `json:"bin,omitempty"`
-	Args  []string          `json:"args,omitempty"`
-	Env   map[string]string `json:"env,omitempty"`
+	Mode string            `json:"mode,omitempty"`
+	Bin  string            `json:"bin,omitempty"`
+	Args []string          `json:"args,omitempty"`
+	// ExtraArgs are appended after Args on every launch. They exist so a
+	// per-user manifest override can add engine flags (vLLM's
+	// --gpu-memory-utilization, --max-model-len, …) without restating the
+	// bundled Args array, which a deep merge would replace wholesale.
+	ExtraArgs []string          `json:"extra_args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
 	Port  int               `json:"port"`            // 0 => auto-assign a free loopback port
 	Bind  string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
 	Start [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
 	// CLI is the engine's control-CLI path for this platform, referenced
 	// elsewhere as {cli}. It lets the manifest's global actions resolve
 	// to the correct per-OS binary (e.g. lms.exe vs lms).
-	CLI    string    `json:"cli,omitempty"`
+	CLI string `json:"cli,omitempty"`
+	// Model is the model this engine serves, for an engine that serves exactly
+	// one model per process (vLLM). It is substituted as {model} in Args /
+	// ExtraArgs / Start. Empty means "not configured": starting an engine whose
+	// launch template references {model} then fails with an actionable error
+	// instead of spawning a process that cannot serve anything.
+	Model  string    `json:"model,omitempty"`
 	Ready  *Probe    `json:"ready,omitempty"`
 	Stop   *StopSpec `json:"stop,omitempty"`
 	Health *Probe    `json:"health,omitempty"`
@@ -394,28 +426,91 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 	return nil
 }
 
-// bundledDefaultPort returns the host-platform runtime.port from the bundled
-// (un-overridden) manifest for an engine, used to decide whether a chosen
-// port is back at the default (so its override file can be dropped).
-func (r *Registry) bundledDefaultPort(engine string) (int, bool) {
+// bundledHostRuntime returns the host-platform runtime block from the bundled
+// (un-overridden) manifest for an engine. It is how the persistent setters
+// decide whether a chosen value is back at the bundled default, so that
+// field's override can be dropped instead of pinned forever.
+func (r *Registry) bundledHostRuntime(engine string) (Runtime, bool) {
 	raw, ok := r.bundledRaw[engine]
 	if !ok {
-		return 0, false
+		return Runtime{}, false
 	}
 	merged, err := applyPlatformDefaults(raw)
 	if err != nil {
-		return 0, false
+		return Runtime{}, false
 	}
 	var m Manifest
 	if err := json.Unmarshal(merged, &m); err != nil {
-		return 0, false
+		return Runtime{}, false
 	}
 	p, ok := m.HostPlatform()
 	if !ok {
+		return Runtime{}, false
+	}
+	return p.Runtime, true
+}
+
+// bundledDefaultPort returns the host-platform runtime.port from the bundled
+// (un-overridden) manifest for an engine, used to decide whether a chosen
+// port is back at the default (so its override can be dropped).
+func (r *Registry) bundledDefaultPort(engine string) (int, bool) {
+	rt, ok := r.bundledHostRuntime(engine)
+	if !ok {
 		return 0, false
 	}
-	return p.Runtime.Port, true
+	return rt.Port, true
 }
+
+// bundledDefaultModel returns the host-platform runtime.model from the bundled
+// manifest — the counterpart of bundledDefaultPort for engine:set-model.
+func (r *Registry) bundledDefaultModel(engine string) (string, bool) {
+	rt, ok := r.bundledHostRuntime(engine)
+	if !ok {
+		return "", false
+	}
+	return rt.Model, true
+}
+
+// launchArgs is the full argv tail for a process-mode launch: the manifest's
+// runtime.args followed by runtime.extra_args, before placeholder resolution.
+func (r *Runtime) launchArgs() []string {
+	if len(r.ExtraArgs) == 0 {
+		return r.Args
+	}
+	out := make([]string, 0, len(r.Args)+len(r.ExtraArgs))
+	out = append(out, r.Args...)
+	out = append(out, r.ExtraArgs...)
+	return out
+}
+
+// referencesModel reports whether this runtime's launch template substitutes
+// {model} anywhere — the signal that the engine serves one model per process
+// and cannot start until a model has been chosen.
+func (r *Runtime) referencesModel() bool {
+	if referencesModelToken(r.Bin) {
+		return true
+	}
+	for _, s := range r.launchArgs() {
+		if referencesModelToken(s) {
+			return true
+		}
+	}
+	for _, cmd := range r.Start {
+		for _, s := range cmd {
+			if referencesModelToken(s) {
+				return true
+			}
+		}
+	}
+	for _, v := range r.Env {
+		if referencesModelToken(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func referencesModelToken(s string) bool { return strings.Contains(s, "{model}") }
 
 // mergeOntoBundled deep-merges an override manifest's raw JSON onto the
 // bundled manifest of the same engine (override wins). When the override
@@ -719,6 +814,7 @@ func (m *Manifest) templatedStrings() []string {
 		}
 		out = append(out, p.Runtime.Bin)
 		out = append(out, p.Runtime.Args...)
+		out = append(out, p.Runtime.ExtraArgs...)
 		for _, cmd := range p.Runtime.Start {
 			out = append(out, cmd...)
 		}

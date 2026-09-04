@@ -47,6 +47,12 @@ export interface IEngineApi {
     deleteModel(engineType: EngineType, nodeId: string, model: string): void
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
+    /**
+     * Choose the model an engine serves. For an engine that runs one model per
+     * process (vLLM), the choice is persisted and the engine restarts onto it;
+     * an empty model clears the choice. Local node only.
+     */
+    setServedModel(engineType: EngineType, nodeId: string, model: string): void
     /** Search the model registry/hub for available models. */
     searchHub(engineType: EngineType): Promise<EngineHubSearchResponse>
 
@@ -86,6 +92,8 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 enginePort: ports.enginePort,
                 proxyPort: ports.proxyPort
             }),
+        setServedModel: (engineType, nodeId, model) =>
+            fireCommand(transport, { command: 'setServedModel', engineType, nodeId, model }),
         pullModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
         loadModel: (engineType, nodeId, model) =>

@@ -299,13 +299,30 @@ function engineManagerId(engine: ProxyEngine): string {
 function proxyEngineFromManagerId(id: string): ProxyEngine | null {
     if (id === 'ollama') return 'ollama'
     if (id === 'lmstudio') return 'lm-studio'
+    if (id === 'vllm') return 'vllm'
     return null
 }
 
-/** The broker relay namespace fronting an engine's reverse proxy. */
+/**
+ * The broker relay namespace fronting an engine's reverse proxy. Every
+ * OpenAI-compatible engine shares one router, so they share one namespace; the
+ * `lmstudio-proxy` spelling is a wire contract and keeps its historical name.
+ */
 function proxyRelayPrefix(engine: ProxyEngine): string {
     return engine === 'ollama' ? 'proxy' : 'lmstudio-proxy'
 }
+
+/** The bridge notification source for an engine's proxy. */
+function proxyNotificationSource(engine: ProxyEngine): 'proxy' | 'lmstudio-proxy' {
+    return engine === 'ollama' ? 'proxy' : 'lmstudio-proxy'
+}
+
+/**
+ * One engine per supervised proxy process, for the sweeps that are a property of
+ * the proxy rather than of an engine (status polling, node hydration). Iterating
+ * PROXY_ENGINES there would query the OpenAI proxy once per engine it fronts.
+ */
+const PROXY_REPRESENTATIVE_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio']
 
 /**
  * Spawns and supervises the modular backend.
@@ -891,7 +908,7 @@ class ModularSupervisor {
         await this.seedClusterPeerIds()
         await this.refreshAllRemoteEngineStatus()
         this.startRemoteStatusPolling()
-        for (const engine of PROXY_ENGINES) {
+        for (const engine of PROXY_REPRESENTATIVE_ENGINES) {
             await this.hydrateProxyNodes(engine)
             await this.pollProxyStatus(engine)
         }
@@ -1079,7 +1096,7 @@ class ModularSupervisor {
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxyNotificationSource(engine),
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1100,7 +1117,7 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxyNotificationSource(engine),
                     method: 'node/discovered',
                     params: node
                 })
@@ -1266,19 +1283,23 @@ class ModularSupervisor {
             this.scheduleRemoteEngineStatusRefresh()
         }
 
-        const proxyEngine: ProxyEngine | null =
+        // Every engine the (re)bound proxy fronts loses its manual-node set at
+        // once, since they share the process.
+        const reboundEngines: readonly ProxyEngine[] =
             event.source === 'proxy'
-                ? 'ollama'
+                ? ['ollama']
                 : event.source === 'lmstudio-proxy'
-                  ? 'lm-studio'
-                  : null
-        if (proxyEngine && event.method === 'ready') {
+                  ? PROXY_ENGINES.filter(engine => engine !== 'ollama')
+                  : []
+        if (reboundEngines.length > 0 && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
-            const bridge = this.getLocalBridge(proxyEngine)
-            bridge.bridgedId = ''
-            bridge.bridgedPort = 0
-            void this.reconcileLocalNodeBridge(proxyEngine)
+            for (const proxyEngine of reboundEngines) {
+                const bridge = this.getLocalBridge(proxyEngine)
+                bridge.bridgedId = ''
+                bridge.bridgedPort = 0
+                void this.reconcileLocalNodeBridge(proxyEngine)
+            }
             this.emitStateRefreshIfHydrated()
         }
         if (event.source === 'broker' && event.method === 'app:ready') {
@@ -2188,6 +2209,9 @@ class ModularSupervisor {
             try {
                 await this.callProxy(engine, 'node/add-manual', {
                     id: selfId,
+                    // The OpenAI proxy fronts several engines on different local
+                    // ports, so a manual entry names the engine it belongs to.
+                    engine: engineManagerId(engine),
                     host: '127.0.0.1',
                     port: bridge.port,
                     addresses: ['127.0.0.1']
@@ -2208,7 +2232,10 @@ class ModularSupervisor {
             bridge.bridgedId = ''
             bridge.bridgedPort = 0
             try {
-                await this.callProxy(engine, 'node/remove-manual', { id: previousId })
+                await this.callProxy(engine, 'node/remove-manual', {
+                    id: previousId,
+                    engine: engineManagerId(engine)
+                })
             } catch (err) {
                 log.verbose({
                     sublevel: proxyRelayPrefix(engine),

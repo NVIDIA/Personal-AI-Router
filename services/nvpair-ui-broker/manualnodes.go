@@ -28,6 +28,9 @@ type manualNodeStatus struct {
 	LMStudioUp     bool        `json:"lmstudio_up"`
 	LMStudioPort   int         `json:"lmstudio_port"`
 	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
+	VLLMUp         bool        `json:"vllm_up"`
+	VLLMPort       int         `json:"vllm_port"`
+	VLLMModels     []string    `json:"vllm_models,omitempty"`
 	NodeInfoPort   int         `json:"node_info_port"`
 	GPUs           []GPUInfo   `json:"gpus"`
 	CPU            *CPUInfo    `json:"cpu"`
@@ -109,6 +112,9 @@ func manualModelsByEngine(s manualNodeStatus) map[string][]string {
 	if len(s.LMStudioModels) > 0 {
 		byEngine["lmstudio"] = s.LMStudioModels
 	}
+	if len(s.VLLMModels) > 0 {
+		byEngine["vllm"] = s.VLLMModels
+	}
 	if len(byEngine) == 0 {
 		return nil
 	}
@@ -139,12 +145,23 @@ func mergeModels(lists ...[]string) []string {
 // It mirrors the proxy's Node wire shape (id/host/port/addresses[/txt]);
 // the proxy requires a non-empty address list and a port to forward to.
 type proxyManualNode struct {
-	ID        string   `json:"id"`
+	ID string `json:"id"`
+	// Engine names which engine on that host this address serves. The OpenAI
+	// proxy fronts more than one engine on different ports, so it keys its manual
+	// overlay by (engine, node) and would otherwise collapse a host running both
+	// into a single entry. ollama-proxy fronts one engine and ignores the field.
+	Engine    string   `json:"engine"`
 	Host      string   `json:"host"`
 	Port      int      `json:"port"`
 	Addresses []string `json:"addresses"`
 	TXT       []string `json:"txt,omitempty"`
 	Models    []string `json:"models,omitempty"`
+}
+
+// proxyManualRef identifies a manual node to remove from one proxy engine.
+type proxyManualRef struct {
+	ID     string `json:"id"`
+	Engine string `json:"engine"`
 }
 
 // bridgeManualNode keeps every supervised proxy's manual-node set in step with
@@ -161,7 +178,8 @@ type proxyManualNode struct {
 // inference to them even though both workers are broker-owned.
 func (b *Broker) bridgeManualNode(s manualNodeStatus, key string) {
 	b.bridgeToProxy(b.getProxy(), "ollama", s, key, s.OllamaUp, s.OllamaPort, s.OllamaModels)
-	b.bridgeToProxy(b.getLMStudioProxy(), "lmstudio", s, key, s.LMStudioUp, s.LMStudioPort, s.LMStudioModels)
+	b.bridgeToProxy(b.getOpenAIProxy(), "lmstudio", s, key, s.LMStudioUp, s.LMStudioPort, s.LMStudioModels)
+	b.bridgeToProxy(b.getOpenAIProxy(), "vllm", s, key, s.VLLMUp, s.VLLMPort, s.VLLMModels)
 }
 
 // bridgeToProxy adds the node to p when its engine is reachable, or removes it
@@ -177,6 +195,7 @@ func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatu
 	if up && s.Address != "" && port > 0 {
 		node := proxyManualNode{
 			ID:        key,
+			Engine:    engine,
 			Host:      s.Address,
 			Port:      port,
 			Addresses: []string{s.Address},
@@ -187,15 +206,17 @@ func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatu
 	}
 	// Engine unreachable (down, or this node doesn't run it): make sure the
 	// proxy isn't left holding a stale manual entry it would try to route to.
-	b.callProxyManual(p, engine, "node/remove-manual", map[string]string{"id": key}, key)
+	b.callProxyManual(p, engine, "node/remove-manual", proxyManualRef{ID: key, Engine: engine}, key)
 }
 
 // removeManualNodeFromProxies drops a manual node from every supervised proxy.
 // Idempotent: a no-op for a proxy where the node was never bridged or that
 // isn't supervised (the proxy's RemoveManual just reports removed=false).
 func (b *Broker) removeManualNodeFromProxies(id string) {
-	b.callProxyManual(b.getProxy(), "ollama", "node/remove-manual", map[string]string{"id": id}, id)
-	b.callProxyManual(b.getLMStudioProxy(), "lmstudio", "node/remove-manual", map[string]string{"id": id}, id)
+	b.callProxyManual(b.getProxy(), "ollama", "node/remove-manual", proxyManualRef{ID: id, Engine: "ollama"}, id)
+	for _, engine := range []string{"lmstudio", "vllm"} {
+		b.callProxyManual(b.getOpenAIProxy(), engine, "node/remove-manual", proxyManualRef{ID: id, Engine: engine}, id)
+	}
 }
 
 // callProxyManual issues a best-effort node/add-manual|remove-manual to a

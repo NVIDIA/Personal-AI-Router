@@ -40,6 +40,10 @@ type opParam struct {
 	Port   int    `json:"port,omitempty"`
 	Bind   string `json:"bind,omitempty"`
 	Start  bool   `json:"start,omitempty"`
+	// Model is the one-shot served-model override for engine:start, mirroring
+	// Port: it applies to this launch only and is never persisted. Use
+	// engine:set-model for the persistent choice.
+	Model string `json:"model,omitempty"`
 }
 
 type actionParam struct {
@@ -54,6 +58,16 @@ type actionParam struct {
 type setPortParam struct {
 	Engine string `json:"engine"`
 	Port   int    `json:"port"`
+}
+
+// setModelParam is the engine:set-model input: the engine whose served model to
+// change and the model id. It is the persistent counterpart of the one-shot
+// engine:start {model} override — the choice is written as a manifest override
+// exactly the way engine:set-port writes the port, and an empty model removes
+// the override (back to the bundled default).
+type setModelParam struct {
+	Engine string `json:"engine"`
+	Model  string `json:"model"`
 }
 
 // Manager is the engine-manager's JSON-RPC front end. It dispatches the
@@ -248,6 +262,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:set-port":
 		go m.runSetPort(ctx, msg)
 
+	case "engine:set-model":
+		go m.runSetModel(ctx, msg)
+
 	case "internal:set-reserved-port":
 		var p struct {
 			Port int `json:"port"`
@@ -294,7 +311,7 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		return
 	}
 	start := func() error {
-		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind})
+		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind, Model: p.Model})
 	}
 	var err error
 	switch msg.Method {
@@ -335,6 +352,21 @@ func (m *Manager) runSetPort(ctx context.Context, msg *Message) {
 		return
 	}
 	st, err := m.exec.SetPort(ctx, p.Engine, p.Port)
+	m.respondOrErr(msg, st, err)
+}
+
+// runSetModel persists the model an engine serves (as a manifest override) and
+// applies it, responding with the engine's resulting status.
+func (m *Manager) runSetModel(ctx context.Context, msg *Message) {
+	var p setModelParam
+	if !m.parse(msg, &p) {
+		return
+	}
+	if p.Engine == "" {
+		m.codec.RespondError(msg.ID, -32602, "engine is required")
+		return
+	}
+	st, err := m.exec.SetModel(ctx, p.Engine, p.Model)
 	m.respondOrErr(msg, st, err)
 }
 
