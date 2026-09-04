@@ -23,6 +23,7 @@
  *   - `export` is reserved for the handful of symbols consumed by the
  *     service bridge generics — nothing else.
  */
+import type { ManualServicePorts } from '@/shared/types/manual-node'
 import type {
     EngineCommandPayload,
     EngineHubSearchResponse,
@@ -75,7 +76,17 @@ export interface WsInvokeChannelMap {
 
     // Cluster — PIN-pairing handshake (nvpair-cluster-manager)
     'cluster:get-initial': { request: void; response: ClusterInitialSnapshot }
-    'cluster:invite-node': { request: { ipAddress: string }; response: Invite }
+    // Add a node by address and start pairing with it, in that order. The
+    // address is added as a manual node first so it appears with its hardware
+    // as soon as it answers -- on a network without multicast that is the only
+    // feedback the operator gets about whether the address is right, and it is
+    // also what keeps a successfully paired peer visible afterwards, since no
+    // discovery record will ever arrive for it. `ports` overrides the assumed
+    // port of any single service on that host.
+    'cluster:invite-node': {
+        request: { ipAddress: string; ports?: ManualServicePorts }
+        response: Invite
+    }
     'cluster:invite-status': { request: { inviteId: string }; response: Invite }
     'cluster:respond-to-invite': {
         request: { inviteId: string; accept: boolean; pin?: string }
