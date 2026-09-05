@@ -642,3 +642,83 @@ func TestResolveCandidates_SelfGuard(t *testing.T) {
 		t.Errorf("expected the real node to survive the self-guard, candidates = %+v", cands)
 	}
 }
+
+// TestHandleHTTP_AnthropicMessages_InferenceRouting proves /v1/messages is
+// treated as an inference endpoint: model-based candidate filtering is applied
+// and the request body is forwarded unchanged to the matching node.
+func TestHandleHTTP_AnthropicMessages_InferenceRouting(t *testing.T) {
+	var gotBody string
+	var gotPath string
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"Hello!"}]}`)
+	}))
+	defer good.Close()
+
+	wrongModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("wrong-model node should not receive request")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer wrongModel.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "wrong", wrongModel.URL, "mistral"))
+	disc.AddManual(nodeForModel(t, "good", good.URL, "claude-3-5-sonnet-20241022"))
+	p := testProxy(disc, 11434)
+	p.SetSelected("wrong")
+
+	body := `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+	rec := httptest.NewRecorder()
+	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotBody != body {
+		t.Errorf("node got body %q, want the original request body", gotBody)
+	}
+	if gotPath != "/v1/messages" {
+		t.Errorf("path = %q, want /v1/messages", gotPath)
+	}
+}
+
+// TestHandleHTTP_AnthropicMessages_404Failover proves /v1/messages is treated
+// as an inference endpoint for 404 failover: when the first eligible candidate
+// returns 404, the request retries to the second candidate and the body is
+// preserved.
+func TestHandleHTTP_AnthropicMessages_404Failover(t *testing.T) {
+	missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":{"type":"not_found_error","message":"model not found"}}`)
+	}))
+	defer missing.Close()
+
+	var gotBody string
+	has := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"Hello!"}]}`)
+	}))
+	defer has.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "missing", missing.URL, "claude-3-5-sonnet-20241022"))
+	disc.AddManual(nodeForModel(t, "has", has.URL, "claude-3-5-sonnet-20241022"))
+	p := testProxy(disc, 11434)
+	p.SetSelected("missing")
+
+	body := `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+	rec := httptest.NewRecorder()
+	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (should fail over past the 404)", rec.Code)
+	}
+	if gotBody != body {
+		t.Errorf("failover node got body %q, want the original request body", gotBody)
+	}
+}
