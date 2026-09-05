@@ -156,7 +156,8 @@ func TestCandidates_Deduplicates(t *testing.T) {
 }
 
 func TestVirtualIface(t *testing.T) {
-	for _, n := range []string{"vEthernet (Default Switch)", "docker0", "br-1a2b", "tailscale0", "utun3", "VirtualBox Host-Only", "vEthernet (WSL)"} {
+	for _, n := range []string{"vEthernet (Default Switch)", "docker0", "br-1a2b", "tailscale0", "utun3", "VirtualBox Host-Only", "vEthernet (WSL)",
+		"ovn-k8s-mp0", "ovs-system", "genev_sys_6081", "vxlan.calico", "flannel.1", "cni0", "cali1a2b3c4d5e6", "cilium_host", "antrea-gw0", "kube-ipvs0"} {
 		if !virtualIface(n) {
 			t.Errorf("virtualIface(%q) = false, want true", n)
 		}
@@ -220,6 +221,49 @@ func TestRankLocal_ExcludesVirtual(t *testing.T) {
 		if ip == "172.17.0.1" || ip == "172.18.0.1" {
 			t.Errorf("rankLocal published container bridge %s", ip)
 		}
+	}
+}
+
+// ovnKubernetesHost describes a Kubernetes node running OVN-Kubernetes, the
+// OpenShift default. The physical NIC is enslaved to the OVS uplink bridge and
+// holds no address; the LAN address lives on "br-ex", and the pod network's
+// management port "ovn-k8s-mp0" holds a /23 that no machine off the node can
+// reach. The default route leaves through br-ex.
+func ovnKubernetesHost() []localIface {
+	return []localIface{
+		{name: "eno1"},
+		{name: "br-ex", addrs: []localAddr{{ip: "192.168.1.100", prefixLen: 24}}},
+		{name: "br-int"},
+		{name: "ovs-system"},
+		{name: "genev_sys_6081"},
+		{name: "ovn-k8s-mp0", addrs: []localAddr{{ip: "10.128.0.2", prefixLen: 23}}},
+	}
+}
+
+// TestRankLocal_OVNKubernetesPublishesTheUplink is the reported defect. "br-ex"
+// was demoted by the "br-" rule while "ovn-k8s-mp0" counted as physical, so the
+// node published its pod-network address as canonical and every peer was told
+// to dial an address it could not reach. Both belong to the overlay pass, where
+// the default-route evidence picks the uplink.
+func TestRankLocal_OVNKubernetesPublishesTheUplink(t *testing.T) {
+	got := rankLocal(ovnKubernetesHost(), Evidence{}, "192.168.1.100")
+	if len(got) == 0 {
+		t.Fatal("rankLocal returned no candidates")
+	}
+	if got[0] != "192.168.1.100" {
+		t.Fatalf("canonical address = %q, want 192.168.1.100 (the uplink bridge, not the pod network); full order %v", got[0], got)
+	}
+}
+
+// TestRankLocal_OVNKubernetesPeerOnLinkWinsWithoutRoute: the route source is
+// one signal, and a host can fail to report it. A peer inside the uplink's own
+// subnet is stronger evidence, and it alone must be enough to keep the
+// pod-network address off the front of the list.
+func TestRankLocal_OVNKubernetesPeerOnLinkWinsWithoutRoute(t *testing.T) {
+	ev := Evidence{PeerOnLink: map[string]bool{"br-ex": true}}
+	got := rankLocal(ovnKubernetesHost(), ev, "")
+	if len(got) == 0 || got[0] != "192.168.1.100" {
+		t.Fatalf("canonical address = %v, want 192.168.1.100 first", got)
 	}
 }
 
