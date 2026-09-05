@@ -112,6 +112,9 @@ type AvailableNode struct {
 	// consumer show which of a remote node's models are loaded. Omitted
 	// when no engine reports loaded state.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// LoadedVRAMByEngine reports last-observed GPU-resident bytes per engine/model.
+	// It is not a minimum requirement or an admission signal. Zero is known; absent is unknown.
+	LoadedVRAMByEngine map[string]map[string]uint64 `json:"loadedVramByEngine,omitempty"`
 }
 
 // GetNodesResult is the response to "discovery:get-nodes". Wrapped in an

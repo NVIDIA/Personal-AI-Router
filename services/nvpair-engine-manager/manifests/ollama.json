@@ -88,10 +88,10 @@
       "http": { "method": "GET", "path": "/api/tags" },
       "result": { "array": "models", "field": "name" }
     },
-    "loaded_models": {
-      "description": "List models currently loaded in memory (every /api/ps entry is resident).",
-      "http": { "method": "GET", "path": "/api/ps" },
-      "result": { "array": "models", "field": "name" }
+      "loaded_models": {
+        "description": "List models currently loaded in memory (every /api/ps entry is resident).",
+        "http": { "method": "GET", "path": "/api/ps" },
+        "result": { "array": "models", "field": "name", "vram_field": "size_vram" }
     },
     "pull_model": {
       "description": "Pull a model by name (params: {\"name\": \"<model>\"}).",
