@@ -47,7 +47,11 @@ var clearKey = key.NewBinding(
 
 func newErrorsView(client *rpc.Client) *errorsView {
 	v := &errorsView{client: client}
-	v.table = newTable(nil)
+	// Seed real columns up front (not nil): errors:get-initial can return
+	// before the first tea.WindowSizeMsg reaches SetSize, and setErrors ->
+	// table.SetRows on a zero-column table panics (index out of range) as
+	// soon as the broker already has >=1 stored error at startup.
+	v.table = newTable(v.columns())
 	return v
 }
 

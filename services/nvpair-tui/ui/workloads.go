@@ -41,6 +41,10 @@ type workloadsSubscribedMsg struct{ err error }
 func newWorkloadsView(client *rpc.Client) *workloadsView {
 	v := &workloadsView{client: client, byKey: map[string]workload{}}
 	v.table = newTable(nil)
+	// Seed real columns before any RPC result can reach the table: a
+	// zero-column table panics (index out of range) in table.SetRows if
+	// data arrives before the first tea.WindowSizeMsg calls SetSize.
+	v.SetSize(0, 0)
 	return v
 }
 

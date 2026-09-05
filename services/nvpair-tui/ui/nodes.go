@@ -69,6 +69,10 @@ var niInviteKey = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "invite to
 func newNodesView(client *rpc.Client) *nodesView {
 	v := &nodesView{client: client}
 	v.table = newTable(nil)
+	// Seed real columns before any RPC result can reach setNodes: a
+	// zero-column table panics (index out of range) in table.SetRows if
+	// data arrives before the first tea.WindowSizeMsg calls SetSize.
+	v.SetSize(0, 0)
 	return v
 }
 
