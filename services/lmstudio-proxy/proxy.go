@@ -146,12 +146,13 @@ const (
 // inferenceEndpoints is the set of request paths that count as cluster
 // workloads. Health checks, model listings (/v1/models), and other control
 // traffic are deliberately excluded so we don't flood the cluster with
-// non-inference noise. LM Studio serves the OpenAI-compatible API, so these
-// are the OpenAI inference routes.
+// non-inference noise. LM Studio serves the OpenAI-compatible API and the
+// Anthropic Messages API, so both inference route families are included.
 var inferenceEndpoints = map[string]bool{
 	"/v1/chat/completions": true,
 	"/v1/completions":      true,
 	"/v1/embeddings":       true,
+	"/v1/messages":         true,
 }
 
 // isInferenceRequest reports whether a request should be tracked as a
