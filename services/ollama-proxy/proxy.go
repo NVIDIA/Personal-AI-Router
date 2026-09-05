@@ -147,8 +147,8 @@ const (
 // inferenceEndpoints is the set of request paths that count as cluster
 // workloads. Health checks, model listings (/api/tags), and other control
 // traffic are deliberately excluded so we don't flood the cluster with
-// non-inference noise. Both the native Ollama and OpenAI-compatible
-// inference routes are included.
+// non-inference noise. Both the native Ollama, OpenAI-compatible, and
+// Anthropic Messages API inference routes are included.
 var inferenceEndpoints = map[string]bool{
 	"/api/generate":        true,
 	"/api/chat":            true,
@@ -157,6 +157,7 @@ var inferenceEndpoints = map[string]bool{
 	"/v1/chat/completions": true,
 	"/v1/completions":      true,
 	"/v1/embeddings":       true,
+	"/v1/messages":         true,
 }
 
 // isInferenceRequest reports whether a request should be tracked as a
