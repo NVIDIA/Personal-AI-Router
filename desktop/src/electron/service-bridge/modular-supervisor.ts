@@ -299,12 +299,23 @@ function engineManagerId(engine: ProxyEngine): string {
 function proxyEngineFromManagerId(id: string): ProxyEngine | null {
     if (id === 'ollama') return 'ollama'
     if (id === 'lmstudio') return 'lm-studio'
+    if (id === 'llamacpp') return 'llamacpp'
     return null
 }
 
 /** The broker relay namespace fronting an engine's reverse proxy. */
 function proxyRelayPrefix(engine: ProxyEngine): string {
-    return engine === 'ollama' ? 'proxy' : 'lmstudio-proxy'
+    if (engine === 'ollama') return 'proxy'
+    if (engine === 'lm-studio') return 'lmstudio-proxy'
+    return 'llamacpp-proxy'
+}
+
+function proxyNotificationSource(
+    engine: ProxyEngine
+): 'proxy' | 'lmstudio-proxy' | 'llamacpp-proxy' {
+    if (engine === 'ollama') return 'proxy'
+    if (engine === 'lm-studio') return 'lmstudio-proxy'
+    return 'llamacpp-proxy'
 }
 
 /**
@@ -879,6 +890,7 @@ class ModularSupervisor {
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
         await subscribe('proxy:subscribe', 'subscribe to broker ollama-proxy relay')
         await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
+        await subscribe('llamacpp-proxy:subscribe', 'subscribe to broker llamacpp-proxy relay')
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1080,7 +1092,7 @@ class ModularSupervisor {
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxyNotificationSource(engine),
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1101,7 +1113,7 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxyNotificationSource(engine),
                     method: 'node/discovered',
                     params: node
                 })
@@ -1272,7 +1284,9 @@ class ModularSupervisor {
                 ? 'ollama'
                 : event.source === 'lmstudio-proxy'
                   ? 'lm-studio'
-                  : null
+                  : event.source === 'llamacpp-proxy'
+                    ? 'llamacpp'
+                    : null
         if (proxyEngine && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
@@ -1317,9 +1331,16 @@ class ModularSupervisor {
         this.readinessWaiters.clear()
     }
 
-    /** Rewrite broker `proxy:`/`lmstudio-proxy:` relay frames into proxy-source events. */
+    /** Rewrite broker proxy relay frames into their concrete worker-source events. */
     private normalizeBrokerProxy(notification: JsonRpcNotification): JsonRpcNotification {
         if (notification.source !== 'broker') return notification
+        if (notification.method.startsWith('llamacpp-proxy:')) {
+            return {
+                source: 'llamacpp-proxy',
+                method: notification.method.slice('llamacpp-proxy:'.length),
+                params: notification.params
+            }
+        }
         if (notification.method.startsWith('lmstudio-proxy:')) {
             return {
                 source: 'lmstudio-proxy',

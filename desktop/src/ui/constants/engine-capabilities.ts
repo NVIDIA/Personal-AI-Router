@@ -43,5 +43,20 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // server. Deleting therefore interrupts inference and needs a warning.
         restartsOnModelDelete: true,
         engineHub: { label: 'LM Studio', url: 'https://lmstudio.ai/models' }
+    },
+    llamacpp: {
+        // PAIR adopts an externally managed llama-server. It does not install,
+        // start, stop, delete, load, or unload the engine or its models.
+        hasExpiry: false,
+        hasEject: false,
+        hasInstall: [],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: false,
+        modelOpsWhenStopped: false,
+        hasDeleteModel: false
     }
 }

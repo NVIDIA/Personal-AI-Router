@@ -47,10 +47,13 @@ func (b *Broker) configureLlamaCppProxySupervisorCallbacks(sup *supervisor) {
 }
 
 func (b *Broker) llamacppProxyArgs() []string {
+	// Supply 8081 as the first-run default while allowing the proxy's
+	// persisted set-port value to win on later launches. This keeps Chilly's
+	// default unchanged and lets a host where 8081 is already reserved
+	// preseed or select another durable facade port.
 	args := []string{
 		"--port",
 		fmt.Sprintf("%d", llamaCppProxyFacadePort),
-		"--ignore-persisted-port",
 	}
 	return append(args, b.clusterDirArgs()...)
 }

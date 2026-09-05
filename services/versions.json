@@ -12,7 +12,7 @@
     "nvpair-workload-manager": "0.13.3",
     "nvpair-errors": "0.7.4",
     "nvpair-node-settings": "1.0.4",
-    "nvpair-ui-broker": "0.41.0",
+    "nvpair-ui-broker": "0.41.1",
     "nvpair-engine-manager": "0.18.0",
     "nvpair-cluster-manager": "1.1.4",
     "nvpair-job-scheduler": "0.4.1",
