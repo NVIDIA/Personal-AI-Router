@@ -94,6 +94,10 @@ func newProxiesView(client *rpc.Client) *proxiesView {
 			{label: "LM Studio", prefix: "lmstudio-proxy", table: newTable(nil)},
 		},
 	}
+	// Seed real columns before any RPC result can reach these tables: a
+	// zero-column table panics (index out of range) in table.SetRows if
+	// data arrives before the first tea.WindowSizeMsg calls SetSize.
+	v.SetSize(0, 0)
 	return v
 }
 
