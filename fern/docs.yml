@@ -37,6 +37,9 @@ navigation:
       - page: Building and Running
         path: ../docs/building.mdx
         slug: building
+      - page: Containers and Kubernetes
+        path: ../docs/containers.mdx
+        slug: containers
       - page: Troubleshooting
         path: ../docs/troubleshooting.mdx
         slug: troubleshooting

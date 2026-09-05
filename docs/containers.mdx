@@ -1,0 +1,173 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Running PAIR in a Container or on Kubernetes
+
+The services-only build of PAIR is thirteen statically linked Go binaries with
+no cgo, so a container image is a base plus an unzip. This page covers what a
+container must get right, gives a Dockerfile that builds a node from a release
+asset, and gives Kubernetes manifests that run it as a pod and expose its
+endpoint to other workloads on the cluster.
+
+The node routes; it does not infer. It joins your existing cluster and forwards
+requests to the nodes that have engines, so a workload on Kubernetes reaches
+the GPUs on your other machines.
+
+Everything here was validated with PAIR v0.1.1 on a single-node OpenShift 4.22
+cluster running OVN-Kubernetes, clustered with a Linux node holding an NVIDIA
+GPU and a macOS node. The manifests are plain Kubernetes except for one
+OpenShift-specific role binding, called out below.
+
+## What a Container Must Get Right
+
+**Discovery needs the host's network.** PAIR discovers peers by mDNS, which is
+multicast on the local link and never crosses a router. A container on a pod
+network or a Docker bridge is not on the LAN's link, so it can neither hear the
+other nodes nor be heard by them. Run the container with `--network host`, or
+the pod with `hostNetwork: true`. Keep the host's resolver too (`dnsPolicy:
+Default` on Kubernetes), so LAN names still resolve.
+
+**The endpoint is loopback-only, so other containers need a relay.** An
+endpoint accepts plaintext only from `127.0.0.1` and answers anything else with
+`403` and `{"code":"loopback-only"}`. That is deliberate: peers arrive over
+mTLS, and the plaintext port is for applications on the same machine. Refer to
+[An Application Cannot Reach PAIR](troubleshooting.mdx#an-application-cannot-reach-pair).
+A container on host networking is on the same machine, but the other workloads
+on the cluster are not, and issuing each one a client certificate would hand out
+a cluster identity per consumer. The image therefore runs a small relay that
+listens on a routable port in the same network namespace and opens a fresh
+connection from loopback. It copies bytes and parses nothing, so streaming
+responses pass straight through. The relay is the trust boundary, so keep it
+inside the cluster: no Ingress, no Route, and a NetworkPolicy.
+
+**Identity must persist.** `node.crt`, `node.key`, and `trusted/` live under
+`$XDG_CONFIG_HOME/Nvidia Corporation/Personal AI Router`. Mount a volume there.
+Without one the node is a stranger to the cluster on every restart, and the
+other members keep listing the old one.
+
+**The terminal interface needs a terminal.** `nvpair-tui` supervises the broker,
+so it is the node, and it exits without a PTY. Run the container with `-it`, or
+the pod with `tty: true` and `stdin: true`. Stdin is what the pairing code is
+typed into.
+
+**Nothing may depend on a fixed user id.** Kubernetes platforms commonly run
+containers as an arbitrary non-root user. The image sets `HOME` to a
+group-writable directory and puts the data root under it.
+
+## The Image
+
+[`services/container/Dockerfile`](../services/container/Dockerfile) builds the
+image from the `service-binaries-linux-x64.zip` release asset, pinned by sha256,
+on a UBI 9 minimal base. It does not build from source.
+
+```bash
+cd services/container
+docker build --platform linux/amd64 -t pair-node:v0.1.1 .
+```
+
+To build a different release, pass `PAIR_VERSION` and the asset's `PAIR_SHA256`
+as build arguments.
+
+The entrypoint starts two relays and then runs `nvpair-tui` in the foreground.
+If the terminal interface exits, the container exits, rather than lingering with
+a dead node behind healthy-looking relays.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PAIR_OPENAI_PORT` | `1234` | PAIR's OpenAI-compatible proxy, loopback-only |
+| `PAIR_OLLAMA_PORT` | `11434` | PAIR's Ollama-compatible proxy, loopback-only |
+| `PAIR_RELAY_OPENAI_PORT` | `18434` | Routable relay in front of the OpenAI proxy |
+| `PAIR_RELAY_OLLAMA_PORT` | `18435` | Routable relay in front of the Ollama proxy |
+| `NVPAIR_LOG_LEVEL` | `info` | Service log level |
+
+### Run With Docker or Podman
+
+```bash
+docker run -it --name pair --network host \
+  -v pair-home:/pairhome \
+  pair-node:v0.1.1
+```
+
+Detach with `Ctrl-P Ctrl-Q`. `Ctrl-C` stops the terminal interface, and the
+terminal interface is the node. Other containers on the same host reach the
+endpoint at `http://<host>:18434/v1`; applications on the host itself can use
+`http://127.0.0.1:1234/v1` directly.
+
+## Kubernetes
+
+The manifests in
+[`services/container/kubernetes/`](../services/container/kubernetes/) create a
+`pair` namespace, a service account, a StatefulSet with a persistent volume for
+the node's identity, a Service that gives workloads a stable name, and a
+NetworkPolicy that admits only cluster traffic to the relay ports.
+
+Set the image in `10-statefulset.yaml` to wherever you pushed it, then:
+
+```bash
+kubectl apply -f 00-namespace-sa-rbac.yaml
+kubectl apply -f 10-statefulset.yaml -f 20-service.yaml
+kubectl -n pair rollout status statefulset/pair
+```
+
+Workloads then use:
+
+```text
+http://pair.pair.svc.cluster.local:1234/v1     # OpenAI-compatible
+http://pair.pair.svc.cluster.local:11434       # Ollama-compatible
+```
+
+### OpenShift
+
+`00-namespace-sa-rbac.yaml` also binds the `hostnetwork-v2` security context
+constraint to the service account, which OpenShift requires before a pod may use
+the host's network. It is the narrowest constraint that admits this pod, and the
+pod is written to it: seccomp `RuntimeDefault`, no privilege escalation, all
+capabilities dropped, arbitrary user id. The older `hostnetwork` constraint
+permits no seccomp profile at all and rejects the pod with a message that names
+no constraint, so bind `-v2`. Granting a constraint is a privilege grant; apply
+that file as a cluster administrator. On other distributions the binding is
+ignored because the ClusterRole does not exist, and the namespace's
+pod-security labels do the equivalent job.
+
+### Pair the Node
+
+Pairing needs a person at an existing node, because the six-digit code is shown
+there and expires quickly.
+
+1. On an existing node, open **Nodes** and press `i` to invite the new node.
+2. Attach to the pod and enter the code on the **Cluster** tab:
+   ```bash
+   kubectl -n pair attach -it pair-0
+   ```
+   Detach with `Ctrl-P Ctrl-Q`.
+3. Confirm the **Cluster** tab on any node lists the new member.
+
+If discovery does not list the new node, add it by the Kubernetes node's LAN
+address. On an OVN-Kubernetes host the node may advertise its pod-network
+address instead of its uplink; that is a ranking defect in
+`services/shared/netpick`, fixed separately.
+
+### Verify
+
+```bash
+kubectl -n pair run pair-probe --rm -it --restart=Never \
+  --image=registry.access.redhat.com/ubi9/ubi-minimal -- \
+  curl -sS http://pair.pair.svc.cluster.local:1234/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"<model-id>","messages":[{"role":"user","content":"reply with ok"}],"max_tokens":8}'
+```
+
+Use exactly the model id the cluster advertises at `/v1/models`. Before pairing,
+the request returns `503` with `model inventory unavailable`; that is correct,
+because the node has no engine and no cluster to route to. After pairing, a
+completion means the request left the cluster, crossed the LAN over PAIR's
+transport, and was served by a node with an engine.
+
+## Limits
+
+- The image is `linux/amd64`, because the release asset is.
+- One node per Kubernetes host, because the node owns host ports.
+- The relay has no authentication. Keep it inside the cluster.
+- Pairing is interactive. A scripted accept path is proposed separately.
