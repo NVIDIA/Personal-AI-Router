@@ -59,6 +59,28 @@ function rotateIfNeeded(): void {
     }
 }
 
+let stdoutAvailable = true
+
+function isBrokenPipe(error: unknown): boolean {
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as NodeJS.ErrnoException).code === 'EPIPE'
+    )
+}
+
+// A piped development launch can lose its stdout consumer before Electron has
+// finished shutting down. Treat EPIPE as console detachment: structured file
+// logging remains available, and shutdown must not become an uncaught exception.
+process.stdout.on('error', error => {
+    if (isBrokenPipe(error)) {
+        stdoutAvailable = false
+        return
+    }
+    throw error
+})
+
 function writeEntry(scope: string, level: string, payload: StructuredLogPayload): void {
     const now = new Date()
     const normalizedData =
@@ -91,7 +113,17 @@ function writeEntry(scope: string, level: string, payload: StructuredLogPayload)
     const prefix = `(${scope})`.padEnd(24)
     const msg = payload.message ?? ''
     const dataStr = payload.data ? ` ${JSON.stringify(payload.data)}` : ''
-    process.stdout.write(`${now.toLocaleTimeString()} ${prefix} > ${msg}${dataStr}\n`)
+    if (!stdoutAvailable || process.stdout.destroyed || !process.stdout.writable) return
+
+    try {
+        process.stdout.write(`${now.toLocaleTimeString()} ${prefix} > ${msg}${dataStr}\n`)
+    } catch (error) {
+        if (isBrokenPipe(error)) {
+            stdoutAvailable = false
+            return
+        }
+        throw error
+    }
 }
 
 // ---------------------------------------------------------------------------

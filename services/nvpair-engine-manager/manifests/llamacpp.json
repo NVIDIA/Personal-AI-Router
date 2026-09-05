@@ -1,0 +1,44 @@
+{
+  "engine": "llamacpp",
+  "display_name": "llama.cpp",
+  "manifest_version": 1,
+  "runtime": {
+    "bin": "llama-server",
+    "bind": "127.0.0.1",
+    "port": 8080,
+    "ready": {
+      "http": "http://127.0.0.1:{port}/health",
+      "status": 200,
+      "timeout_s": 60
+    },
+    "health": {
+      "http": "http://127.0.0.1:{port}/health",
+      "status": 200,
+      "interval_s": 10
+    }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "runtime": { "bin": "llama-server.exe" }
+    },
+    "windows/arm64": {
+      "runtime": { "bin": "llama-server.exe" }
+    },
+    "darwin/amd64": {},
+    "darwin/arm64": {},
+    "linux/amd64": {},
+    "linux/arm64": {}
+  },
+  "actions": {
+    "list_models": {
+      "description": "List models served by this llama.cpp instance.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "loaded_models": {
+      "description": "List models currently loaded by this llama.cpp instance.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    }
+  }
+}

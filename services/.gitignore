@@ -12,6 +12,7 @@ dist/
 # happen to share a name with a component directory.
 ollama-proxy/ollama-proxy
 lmstudio-proxy/lmstudio-proxy
+llamacpp-proxy/llamacpp-proxy
 nvpair-node-info/nvpair-node-info
 nvpair-node-scanner/nvpair-node-scanner
 nvpair-manual-nodes/nvpair-manual-nodes

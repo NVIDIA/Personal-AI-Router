@@ -9,23 +9,28 @@ import { EngineType, ModelExpiry } from '@/shared/types/engines'
 // never-enabled placeholders; they were removed with the chat window, which was
 // their only in-app consumer. Adding an engine back means shipping its manifest
 // first -- an engine row without one renders commands that fail with `-32000`.
-export const EngineTypes = ['ollama', 'lm-studio'] as const
+export const EngineTypes = ['ollama', 'lm-studio', 'llamacpp'] as const
 
 // Kept as a distinct export so a future engine can ship behind it rather than
 // appearing the moment its type exists.
-export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio'] as const
+export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llamacpp']
 
 export const EngineSources = ['bundled', 'detected', 'installed'] as const
 
 export const EngineDisplayNames: Record<EngineType, string> = {
     ollama: 'Ollama',
-    'lm-studio': 'LM Studio'
+    'lm-studio': 'LM Studio',
+    llamacpp: 'llama.cpp'
 } as const
 
 /** Default docs/install URLs for built-in backends. Single source of truth for UI and adapter buildInfo(). */
 export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUrl: string }> = {
     ollama: { docsUrl: 'https://docs.ollama.com/', installUrl: 'https://ollama.com/download' },
-    'lm-studio': { docsUrl: 'https://lmstudio.ai/docs', installUrl: 'https://lmstudio.ai/' }
+    'lm-studio': { docsUrl: 'https://lmstudio.ai/docs', installUrl: 'https://lmstudio.ai/' },
+    llamacpp: {
+        docsUrl: 'https://github.com/ggml-org/llama.cpp/tree/master/tools/server',
+        installUrl: 'https://github.com/ggml-org/llama.cpp/releases'
+    }
 } as const
 
 export const ModelItemStatuses = ['idle', 'loading', 'loaded', 'ejecting', 'pulling'] as const

@@ -8,6 +8,7 @@ import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
+import { canAutoInstallBackendForOs } from '@/ui/utils/backend-target-os'
 import { Button, Flex, Switch, Text } from '@nvidia/foundations-react-core'
 import { Download } from '@/ui/components/icons'
 import { useCallback, useMemo } from 'react'
@@ -16,6 +17,8 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
     const isRemote = useConnectionStore(s => s.selfId !== nodeId)
     const isDisconnected = useNodesStore(s => isRemote && s.nodes.get(nodeId)?.status === 'offline')
+    const nodeOs = useNodesStore(s => s.nodes.get(nodeId)?.os)
+    const targetOs = nodeOs ?? window.windowApi.platform
     // Re-render when a lifecycle command for this node begins/clears; the
     // per-engine pending state is read below via getState().
     const lifecyclePendingFingerprint = usePendingActionsStore(state => {
@@ -85,6 +88,7 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                     b.status === 'stopping'
 
                 if (b.status === 'not-installed' && !pending) {
+                    if (!canAutoInstallBackendForOs(b.type, targetOs)) return null
                     return (
                         <Button
                             key={b.name}

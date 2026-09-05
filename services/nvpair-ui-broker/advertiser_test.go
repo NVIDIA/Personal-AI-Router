@@ -23,6 +23,9 @@ func TestLocalEnginePortFallback(t *testing.T) {
 	if got, ok := b.localEnginePort("lmstudio", defaultLMStudioPort); !ok || got != defaultLMStudioPort {
 		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultLMStudioPort)
 	}
+	if got, ok := b.localEnginePort("llamacpp", defaultLlamaCppPort); !ok || got != defaultLlamaCppPort {
+		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultLlamaCppPort)
+	}
 }
 
 func TestRunningEnginePort(t *testing.T) {
@@ -43,6 +46,65 @@ func TestRunningEnginePort(t *testing.T) {
 				t.Fatalf("runningEnginePort = (%d, %v), want (%d, %v)", port, ok, tc.port, tc.ok)
 			}
 		})
+	}
+}
+
+func TestLlamaCppWithoutProxyDoesNotAdvertise(t *testing.T) {
+	b := &Broker{regCache: relay.NewRegistrationCache()}
+
+	// A nil client is safe because the missing proxy short-circuits the health
+	// request. A healthy backend must never be advertised without its ingress.
+	b.reconcileAdvertiseLlamaCpp(nil)
+
+	if got := b.regCache.Snapshot(); len(got) != 0 {
+		t.Fatalf("llama.cpp was advertised without its proxy: %+v", got)
+	}
+}
+
+func TestLlamaCppFallbackNeverAdvertisesItsProxy(t *testing.T) {
+	proxyClient, proxyServer := net.Pipe()
+	defer proxyClient.Close()
+	defer proxyServer.Close()
+
+	proxy := &proxyProcess{
+		peer:  NewPeer(NewCodec(proxyClient)),
+		ready: true,
+		port:  defaultLlamaCppPort,
+	}
+	go proxy.peer.Serve(nil, nil)
+
+	localBackend := make(chan proxyLocalBackend, 1)
+	go func() {
+		codec := NewCodec(proxyServer)
+		msg, err := codec.Read()
+		if err != nil {
+			return
+		}
+		var got proxyLocalBackend
+		if json.Unmarshal(msg.Params, &got) == nil {
+			localBackend <- got
+		}
+		_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+	}()
+
+	b := &Broker{regCache: relay.NewRegistrationCache()}
+	b.setLlamaCppProxy(proxy)
+
+	// If the backend fallback ever equals the listener, reconciliation must
+	// clear it rather than creating a self-forward loop.
+	b.reconcileAdvertiseLlamaCpp(nil)
+
+	if got := b.regCache.Snapshot(); len(got) != 0 {
+		t.Fatalf("llama.cpp proxy was advertised as its own backend: %+v", got)
+	}
+
+	select {
+	case got := <-localBackend:
+		if got.Port != defaultLlamaCppPort || got.Healthy {
+			t.Fatalf("self-forward backend was not cleared: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("llamacpp-proxy did not receive a cleared local backend")
 	}
 }
 
