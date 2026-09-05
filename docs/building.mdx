@@ -163,6 +163,14 @@ compete for the same services, engines, and ports.
 after it opens: pairing, engines, models, routing, and settings. It also lists
 the operations that remain desktop-only.
 
+### Run in a Container
+
+The services bundle needs nothing from the host but a terminal and a writable
+data directory, so it also runs as a container, and as a pod on Kubernetes.
+[Containers and Kubernetes](containers.mdx) has a Dockerfile, the manifests, and
+the two things a container must get right: host networking for discovery and a
+loopback relay for the endpoint.
+
 ### Run the Broker Yourself
 
 Run `nvpair-ui-broker` directly when you want to drive the services

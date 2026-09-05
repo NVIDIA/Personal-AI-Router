@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The pod is on hostNetwork, so its pod IP IS the node IP and a selector-based Service
+# resolves straight to it. In-cluster workloads then use a stable name rather than
+# hard-coding a node address that changes if this ever moves to a multi-node cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pair
+  namespace: pair
+spec:
+  selector: {app: pair}
+  ports:
+    - {name: openai, port: 1234, targetPort: 18434, protocol: TCP}
+    - {name: ollama, port: 11434, targetPort: 18435, protocol: TCP}
+---
+# Reachable from anywhere in the cluster; the relay is the trust boundary and there is no
+# authentication in front of it, so keep it inside. Deliberately no Route or Ingress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cluster-to-relay
+  namespace: pair
+spec:
+  podSelector: {matchLabels: {app: pair}}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 18434}
+        - {protocol: TCP, port: 18435}
