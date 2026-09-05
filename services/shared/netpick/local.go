@@ -70,9 +70,20 @@ func (e Evidence) peerOnLink(iface string) bool { return e.PeerOnLink[iface] }
 func (e Evidence) peerObserved(ip string) bool  { return e.PeerObserved[ip] }
 
 // virtualIface reports whether an interface name looks like a virtual / overlay
-// adapter (Docker, Hyper-V vEthernet, VPN/tunnel, VM host-only, WSL). Such an
-// address is almost never how a LAN peer reaches this host, so rankLocal ranks
-// every qualified physical address ahead of all of them.
+// adapter (Docker, Hyper-V vEthernet, VPN/tunnel, VM host-only, WSL, Kubernetes
+// CNI). Such an address is almost never how a LAN peer reaches this host, so
+// rankLocal ranks every qualified physical address ahead of all of them.
+//
+// Kubernetes hosts need the overlay pass to be complete rather than merely the
+// physical pass to be right. On an OVN-Kubernetes node the physical NIC carries
+// no address at all: the LAN address sits on the OVS uplink bridge "br-ex",
+// which the "br-" rule already demotes, while the pod-network management port
+// "ovn-k8s-mp0" holds a routable-looking /23 that nothing off the node can
+// reach. If that port counts as physical it is the only physical candidate,
+// qualifies, and is published as canonical -- the Docker-bridge failure again,
+// with an address every peer is told to dial and none can. Naming the CNI
+// interfaces virtual sends both to the overlay pass, where the default-route
+// evidence picks the uplink.
 //
 // It is a demotion and not an exclusion because on some hosts it is the only
 // answer there is: a Windows host on a Hyper-V external switch holds its LAN
@@ -94,6 +105,10 @@ func virtualIface(name string) bool {
 		"veth", "docker", "br-", "vethernet", "vmnet", "vboxnet", "virbr",
 		"tailscale", "zt", "utun", "wg", "tun", "tap", "ppp", "vpn",
 		"hyper-v", "virtual", "wsl", "loopback", "isatap", "teredo",
+		// Kubernetes CNI: OVN-Kubernetes / Open vSwitch, Geneve and VXLAN
+		// tunnel endpoints, flannel, Calico, Cilium, Antrea, kube-proxy IPVS.
+		"ovn-", "ovs-", "genev", "vxlan", "flannel", "cni", "cali", "cilium",
+		"antrea", "kube",
 	} {
 		if strings.Contains(n, v) {
 			return true
