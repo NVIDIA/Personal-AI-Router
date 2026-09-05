@@ -189,6 +189,9 @@ type Action struct {
 type ActionResult struct {
 	Array string `json:"array"` // top-level array field, e.g. "models" / "data"
 	Field string `json:"field"` // string field per element, e.g. "name" / "id"
+	// VRAMField is an optional unsigned byte count on a loaded_models row.
+	// It describes observed GPU residency, never a minimum memory requirement.
+	VRAMField string `json:"vram_field,omitempty"`
 	// Match, when set, keeps only array elements that pass the ResultMatch
 	// filter. It lets loaded_models reuse the same extractor as list_models
 	// across engines whose list endpoint tags residency (LM Studio's

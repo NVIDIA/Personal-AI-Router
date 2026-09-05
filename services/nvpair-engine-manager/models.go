@@ -42,6 +42,9 @@ type ModelsResult struct {
 	Models         []string            `json:"models"`
 	ByEngine       map[string][]string `json:"modelsByEngine,omitempty"`
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// LoadedVRAMByEngine contains observed GPU-resident bytes, not required
+	// capacity. Missing model keys are unknown; an explicit zero is preserved.
+	LoadedVRAMByEngine map[string]map[string]uint64 `json:"loadedVramByEngine,omitempty"`
 }
 
 // Models returns the union of model names served by every installed, running
@@ -79,6 +82,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	listOK := make([]bool, len(engineNames))
 	loaded := make([][]string, len(engineNames))
 	loadedOK := make([]bool, len(engineNames))
+	loadedVRAM := make([]map[string]uint64, len(engineNames))
 	var wg sync.WaitGroup
 	for i, name := range engineNames {
 		mf, ok := e.reg.Get(name)
@@ -121,6 +125,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 					// "unknown". An action or shape error leaves loadedOK[i] false.
 					loaded[i] = models
 					loadedOK[i] = true
+					loadedVRAM[i] = extractLoadedVRAM(raw, loadedSpec)
 				} else {
 					slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
 				}
@@ -160,6 +165,12 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 				ld = []string{}
 			}
 			res.LoadedByEngine[engineNames[i]] = ld
+			if len(loadedVRAM[i]) > 0 {
+				if res.LoadedVRAMByEngine == nil {
+					res.LoadedVRAMByEngine = make(map[string]map[string]uint64)
+				}
+				res.LoadedVRAMByEngine[engineNames[i]] = loadedVRAM[i]
+			}
 		}
 	}
 	return res
