@@ -7,6 +7,7 @@ import { OpenInNew } from '@/ui/components/icons'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { PlatformDisplayName } from '@/shared/types/platform'
 import { canAutoInstallBackendForOs } from '@/ui/utils/backend-target-os'
+import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import { useDismissibleTooltipTrigger } from '@/ui/hooks/use-dismissible-tooltip-trigger'
 
@@ -24,6 +25,7 @@ export function InstallButton({
     onInstall: () => void
 }) {
     const autoInstall = canAutoInstallBackendForOs(backend.type, targetOs)
+    const hasInstall = EngineCapabilities[backend.type].hasInstall.length > 0
     const isNotInstalled = backend.processStatus === 'not-installed'
     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
     const prereqsMet = missingPrereqs.length === 0
@@ -38,7 +40,7 @@ export function InstallButton({
 
     return (
         <>
-            {!autoInstall && isLocalNode && isNotInstalled && backend.installUrl && (
+            {hasInstall && !autoInstall && isLocalNode && isNotInstalled && backend.installUrl && (
                 <button
                     type="button"
                     onClick={e => openLink(e, backend.installUrl!)}
@@ -50,7 +52,8 @@ export function InstallButton({
                 </button>
             )}
 
-            {autoInstall &&
+            {hasInstall &&
+                autoInstall &&
                 isNotInstalled &&
                 (!prereqsMet ? (
                     <DismissibleTooltip

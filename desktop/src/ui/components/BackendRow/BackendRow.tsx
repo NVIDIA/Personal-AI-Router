@@ -89,6 +89,7 @@ export function BackendRow({
     const [confirmPorts, setConfirmPorts] = useState(false)
 
     const caps = EngineCapabilities[backend.type]
+    const hasManagedInstall = caps.hasInstall.length > 0
 
     const serverPortChanged = useMemo(
         () => caps.hasEnginePort && edit.serverPort !== String(backend.port ?? ''),
@@ -179,10 +180,10 @@ export function BackendRow({
         return (
             displayBackend.processStatus !== 'installing' &&
             displayBackend.processStatus !== 'uninstalling' &&
-            displayBackend.processStatus !== 'not-installed' &&
+            (displayBackend.processStatus !== 'not-installed' || !hasManagedInstall) &&
             displayBackend.processStatus !== 'initializing'
         )
-    }, [displayBackend.processStatus, isUnavailable])
+    }, [displayBackend.processStatus, isUnavailable, hasManagedInstall])
 
     const nodeOs = useNodesStore(state => state.nodes.get(nodeId)?.os)
     const targetOs = nodeOs ?? window.windowApi.platform

@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { EngineTypes, EnabledEngineTypes, EngineDisplayNames } from '@/shared/constants/engines'
+import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import {
     getModularBridgeState,
     isProxyEngine,
@@ -16,6 +17,8 @@ describe('llama.cpp Desktop proxy integration', () => {
         expect(PROXY_ENGINES).toContain('llamacpp')
         expect(isProxyEngine('llamacpp')).toBe(true)
         expect(EngineDisplayNames.llamacpp).toBe('llama.cpp')
+        expect(EngineCapabilities.llamacpp.hasInstall).toEqual([])
+        expect(EngineCapabilities.llamacpp.hasEnginePort).toBe(true)
     })
 
     it('records the broker-reported llama.cpp proxy port', () => {
