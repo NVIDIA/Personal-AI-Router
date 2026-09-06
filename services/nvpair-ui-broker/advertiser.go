@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -41,6 +42,10 @@ const (
 	// decide whether to register it with (or unregister it from) the discovery
 	// daemon (a 5s cadence).
 	autoAdvertiseInterval = 5 * time.Second
+
+	// Health bodies normally contain a short status or model list. Bound the
+	// discard in case an engine returns an unexpectedly large response.
+	maxHealthProbeBodyBytes = 1 << 20
 )
 
 // runAutoAdvertise is the broker's ollama engine-registration loop. It polls
@@ -270,6 +275,9 @@ func checkOllamaHealth(client *http.Client, port int) bool {
 	if err != nil {
 		return false
 	}
+	// Read to EOF before closing so the transport can reuse this connection on
+	// the next poll. The client's timeout also bounds a stalled body read.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHealthProbeBodyBytes))
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
@@ -284,6 +292,7 @@ func checkLMStudioHealth(client *http.Client, port int) bool {
 	if err != nil {
 		return false
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHealthProbeBodyBytes))
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
