@@ -1287,8 +1287,9 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	b.store.Upsert(en, sourceManual)
 	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
-	// lmstudio-proxy) so inference can route to it; an unreachable engine is
-	// pulled back out. No-op for a proxy the broker doesn't supervise.
+	// lmstudio-proxy / llamacpp-proxy) so inference can route to it; an
+	// unreachable engine is pulled back out. No-op for a proxy the broker
+	// doesn't supervise.
 	b.bridgeManualNode(s, key)
 
 	if existed && oldKey != key {
