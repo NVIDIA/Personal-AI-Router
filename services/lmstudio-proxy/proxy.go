@@ -29,6 +29,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/errors"
+	"nvpair-shared/ingressauth"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -334,6 +335,11 @@ type Proxy struct {
 	// nil = unclustered: the LAN TLS ingress accepts nothing and the node does
 	// only loopback-plaintext local routing. Read-only after startup.
 	mesh *clustertrust.Mesh
+
+	// lanAuth is the opt-in API-key gate for non-loopback plaintext callers
+	// (nvpair-shared/ingressauth). nil or disabled: plaintext is loopback-only.
+	// Set once at startup; the gate re-reads its own key file on demand.
+	lanAuth *ingressauth.Gate
 
 	// backendMu guards backend, the explicit loopback engine the cluster mTLS
 	// ingress forwards to. The broker sets/clears it via node/set-local-backend;
