@@ -28,6 +28,8 @@ ollama-proxy [flags]
 | `--ignore-persisted-port` | `false` | Use `--port` even when `proxy-port.json` contains a saved port (used by broker-managed startup) |
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
+| `--late-binding` | `false` | Hold an inference request until a node has a free generation slot instead of committing it to a node the moment it arrives. See [Late binding](#late-binding-opt-in) for the precondition it depends on. |
+| `--node-parallel` | `1` | Concurrent generation slots per node, consulted only with `--late-binding`: `N` for every node, or `<node-id>=N` to override one. Repeat the flag to mix them. Match each node's `OLLAMA_NUM_PARALLEL`. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
 | `--version` | | Print version and exit |
 
@@ -51,6 +53,24 @@ Node selection:
 - **Priority (scheduler-driven)**: The Job Scheduler ranks the cluster least-loaded-first by pending workload plus smoothed GPU pressure and, via `nvpair-ui-broker`, pushes the ordered node list with those per-node counts to this proxy with `node/set-priority`. Auto routing sends the request to the listed node carrying the least estimated load. See [`nvpair-job-scheduler`](../nvpair-job-scheduler/README.md).
 - **Manual**: Use the `node/select` JSON-RPC method to pin traffic to a specific node. A manual pin **overrides the priority list only when that node is eligible** for the requested model.
 - **Failover**: If the selected node disappears from the discovery set, the proxy falls back to auto-select and emits a `node/selection-changed` notification. A transport error or retryable status, including a model `404` from an advertised owner with stale inventory, steps to the next eligible owner.
+
+### Late binding (opt-in)
+
+By default the proxy commits a request to a node the moment the request arrives and forwards it immediately. That decision is final: the request then queues on that node however the fleet moves afterwards, so a burst that lands on a node which turns out to be busy waits behind it while another node goes idle.
+
+`--late-binding` moves the commitment to the moment a node can actually start generating. The same least-estimated-loaded rule decides, but only among eligible nodes below their concurrent-generation ceiling (`--node-parallel`, matching the node's `OLLAMA_NUM_PARALLEL`), and a request that finds every eligible owner at capacity waits for a slot instead of joining a queue. The node chosen is the one the default path picks whenever that node is free; otherwise a free node wins over one that is generating.
+
+The scheduler contract is untouched: `node/set-priority`, its ranks, and the ordering they imply are consumed exactly as before, and an eligible `node/select` pin still bypasses the whole mechanism.
+
+**Occupancy.** The gate counts one thing: the generations this proxy has bound to a node and not yet seen finish. One entry is added when a request is bound and removed at its terminal workload transition, so each in-flight request is counted exactly once, for exactly as long as the node is generating for it.
+
+The scheduler's `pending` count is deliberately not part of it. `pending` still *orders* the choice, as it always has, but it is those same requests seen through a full round trip — proxy → broker → workload-manager → scheduler → `node/set-priority` — so a gate built on it counts each request twice and, worse, keeps counting one after it has finished: the node would stay at capacity until some later snapshot happened to report the lower count, leaving a slot dead on every completion. A gate must be prompt and local; a ranking may be lagging and remote.
+
+**Precondition.** Because the ledger counts this proxy's own dispatches, it only describes the node while the proxy is its **only client** — a local `ollama run`, a second router, or an application pointed straight at the engine port is invisible here, and the ceiling is then fiction. PAIR's own layout satisfies this, since the proxy is the front door and the engine is moved aside onto a loopback port.
+
+Bounded by design: a request waits at most two minutes for a slot before committing to the least loaded node anyway, so an occupancy model that has gone stale — a node that died mid-generation, a workload whose terminal transition never arrived — degrades routing to the default behavior rather than stalling it.
+
+A waiting request stays visible. It has not been forwarded, so it emits no `workload:started`; it emits `workload:submitted` instead (`state` `queued`, no `scheduledOn`), and gets its job card while it waits. Unplaced work counts toward no node's pending, so announcing it does not disturb the ranking the scheduler sends back. If the client hangs up before a slot frees, the queued card is retired with `workload:errored` and no node is contacted.
 
 ### IPC Transport
 
@@ -176,11 +196,14 @@ A proxied request finished, or was rejected before forwarding. `duration_ms` cov
 {"jsonrpc":"2.0","method":"proxy/request","params":{"id":"17","node_id":"22222222-2222-2222-2222-222222222222","method":"POST","path":"/api/chat","target":"192.168.1.50:11434","status":200,"duration_ms":6120,"ttfb_ms":95}}
 ```
 
-#### `workload:started` / `workload:completed` / `workload:errored`
+#### `workload:submitted` / `workload:started` / `workload:completed` / `workload:errored`
 
-One lifecycle transition per forwarded inference request, carrying a single `workloadInfo`. `engine` is always `ollama`; `originatedFrom` is left empty for the broker to stamp, and `scheduledOn` names the node that actually served (re-pointed if failover moved the request). The broker relays these to `nvpair-workload-manager`. The proxy never emits `workload:submitted` — it forwards immediately rather than queueing.
+One lifecycle transition per inference request, carrying a single `workloadInfo`. `engine` is always `ollama`; `originatedFrom` is left empty for the broker to stamp, and `scheduledOn` names the node that actually served (re-pointed if failover moved the request). The broker relays these to `nvpair-workload-manager`.
+
+By default the proxy emits no `workload:submitted`: it forwards on arrival, so it queues nothing and a request's first event is `workload:started`. **Under [`--late-binding`](#late-binding-opt-in) only**, a request that has to wait for a generation slot emits `workload:submitted` first — `state` `queued`, and no `scheduledOn`, because no node has been chosen yet. `workload:started` then re-points the same id at the node that runs it. A request that gets a slot immediately still emits nothing but `started`, so the announcement means what it says: this request queued.
 
 ```json
+{"jsonrpc":"2.0","method":"workload:submitted","params":{"workloadInfo":{"id":"18","model":"llama3:latest","engine":"ollama","runId":"3ce8a1740b62df95","state":"queued","originatedFrom":"","createdAt":1716998400000,"startedAt":null,"completedAt":null,"error":null,"requesterId":null}}}
 {"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"17","model":"llama3:latest","engine":"ollama","runId":"3ce8a1740b62df95","state":"running","originatedFrom":"","scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}
 ```
 
@@ -300,6 +323,16 @@ Semantics:
 - **Snapshot reset.** Each new snapshot replaces the pending and GPU-pressure
   baselines and clears the reservations. GPU pressure is clamped to the
   scheduler's 0–3 range.
+- **Late binding (opt-in) gates the same choice on a free slot.** With
+  `--late-binding` the auto ordering above is applied only to eligible nodes
+  below their concurrent-generation ceiling, and a request that finds none waits
+  for a slot rather than committing to a queue. The snapshot the scheduler sends
+  and the rule applied to it are unchanged; only the set it is applied to, and
+  therefore when the request is committed, differ. Whether a node is below its
+  ceiling is answered from this proxy's own in-flight generations, not from the
+  snapshot — a snapshot reset must not hand back a slot that is still in use,
+  and a finished request must not keep one until the next snapshot arrives. See
+  [Late binding](#late-binding-opt-in).
 - **Eligible manual pin wins.** An active `node/select` pin takes precedence when
   it is in the request's owner set. An ineligible pin is ignored for that request,
   so automatic reservations still apply among eligible owners. Clearing the pin

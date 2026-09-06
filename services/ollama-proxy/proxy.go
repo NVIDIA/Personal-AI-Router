@@ -129,12 +129,17 @@ type RequestEvent struct {
 }
 
 // Workload lifecycle method names (workload-manager spec 7). The proxy is
-// a workload *producer*: it emits one of these per forwarded inference
-// request so the broker can stamp the origin (originatedFrom) and forward it to the
-// workload-manager, which broadcasts it cluster-wide. We don't emit
-// workload:submitted (the proxy never queues — it forwards immediately) or
-// workloads:remove (retirement is a broker concern).
+// a workload *producer*: it emits these per inference request so the broker can
+// stamp the origin (originatedFrom) and forward them to the workload-manager,
+// which broadcasts them cluster-wide.
+//
+// workload:submitted is emitted only under --late-binding, and only for a
+// request that actually waits for a generation slot: the default path still
+// forwards on arrival, so it queues nothing and goes straight to
+// workload:started. workloads:remove is never emitted (retirement is a broker
+// concern).
 const (
+	workloadSubmittedMethod = "workload:submitted"
 	workloadStartedMethod   = "workload:started"
 	workloadCompletedMethod = "workload:completed"
 	workloadErroredMethod   = "workload:errored"
@@ -142,6 +147,11 @@ const (
 	// workloadEngine is the opaque engine identifier carried in every
 	// workload this proxy produces. The proxy only ever fronts Ollama.
 	workloadEngine = "ollama"
+
+	// statusClientClosedRequest is nginx's 499, reported in proxy/request for a
+	// request the client abandoned before any node was contacted. Nothing is
+	// written to the client — it is gone — so this only labels the event.
+	statusClientClosedRequest = 499
 )
 
 // inferenceEndpoints is the set of request paths that count as cluster
@@ -368,6 +378,24 @@ type Proxy struct {
 	priorityPending      map[string]int
 	priorityGPUPressure  map[string]int
 	priorityReservations map[string]int
+
+	// lateBind is nil — the default — unless --late-binding is set. When it is,
+	// reserveCandidate takes a free generation slot or waits for one, and the
+	// handler gives it back at the terminal workload transition. slotFree is the
+	// wait, created alongside lateBind and signalled under priorityMu whenever a
+	// slot is released or a snapshot changes the eligible set. Both are
+	// read-only after startup.
+	//
+	// lateBindInFlight is the occupancy ledger the gate consults, guarded by
+	// priorityMu like the maps above but emphatically NOT part of the scheduler
+	// baseline: SetPrioritySnapshot replaces those and must leave this alone.
+	// It holds one entry per request this proxy has bound to a node and not yet
+	// seen finish, which is what makes the count exact — the scheduler's pending
+	// is the same requests a round trip later, so a gate that added the two
+	// would count each of them twice. See latebind.go.
+	lateBind         *lateBindConfig
+	slotFree         *sync.Cond
+	lateBindInFlight map[string]int
 
 	// targets remembers, per node, which of its published addresses accepted a
 	// connection, so a repeated forward costs no confirmation. An entry is
@@ -1147,8 +1175,69 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		routingModel = model
 	}
 	candidates := p.resolveCandidates(routingModel)
+	// releaseSlot gives back the generation slot the reservation took under
+	// --late-binding. It is a no-op with late binding off, or when no
+	// reservation was made (an explicit pin, an empty priority list). The slot
+	// is released at the terminal workload transition below, which is where the
+	// node actually stops generating; the defer is the backstop for a path that
+	// never reaches one, such as a panic unwinding the handler.
+	//
+	// queued records that this request was announced to the cluster as waiting
+	// for a slot. It can only become true under --late-binding, and only for a
+	// request that actually parked. Both it and announceQueued are touched from
+	// this goroutine alone: reserveCandidate calls the hook synchronously.
+	releaseSlot := noRelease
+	queued := false
 	if isInf && model != "" {
-		candidates = p.reserveCandidate(candidates)
+		// A parked request has not been forwarded, so nothing downstream would
+		// otherwise know it exists — it would sit invisible for as long as it
+		// waits. workload:submitted is the cluster's word for that: state
+		// queued, and no scheduledOn, because no node has been chosen yet.
+		// Unplaced work counts toward no node's pending, so announcing it does
+		// not disturb the ranking the scheduler sends back. The workload:started
+		// emitted below re-points the same id at the node once one is bound.
+		announceQueued := func() {
+			queued = true
+			p.emitWorkload(workloadSubmittedMethod, Workload{
+				ID:        reqID,
+				Model:     model,
+				Engine:    workloadEngine,
+				RunID:     p.runID,
+				State:     "queued",
+				CreatedAt: start.UnixMilli(),
+			})
+		}
+		candidates, releaseSlot = p.reserveCandidate(r.Context(), candidates, announceQueued)
+		defer releaseSlot()
+		if queued && r.Context().Err() != nil {
+			// The client gave up while this request was still waiting for a
+			// slot, so it never reached a node. Retire the queued card with its
+			// own terminal instead of forwarding a request nobody is waiting
+			// for and reporting it started on a node that never saw it. Only
+			// late binding can reach this: without it a request is committed on
+			// arrival and there is no window to be abandoned in.
+			completedMs := time.Now().UnixMilli()
+			errText := "client disconnected while queued for a generation slot"
+			p.emitWorkload(workloadErroredMethod, Workload{
+				ID:          reqID,
+				Model:       model,
+				Engine:      workloadEngine,
+				RunID:       p.runID,
+				State:       "failed",
+				CreatedAt:   start.UnixMilli(),
+				CompletedAt: &completedMs,
+				Error:       &errText,
+			})
+			p.codec.Notify("proxy/request", RequestEvent{
+				ID:       reqID,
+				Method:   r.Method,
+				Path:     r.URL.Path,
+				Status:   statusClientClosedRequest,
+				Duration: time.Since(start).Milliseconds(),
+				Error:    errText,
+			})
+			return
+		}
 	}
 	if r.Method == http.MethodGet && (r.URL.Path == "/api/tags" || r.URL.Path == "/v1/models") {
 		if len(candidates) > 0 {
@@ -1263,6 +1352,12 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		terminalOnce.Do(func() {
+			// The workload is over — completed, failed, or cancelled — so the
+			// node is no longer generating for it. Give the generation slot back
+			// first, so a request parked in reserveCandidate can take it without
+			// waiting for this handler to unwind (the disconnect watcher reaches
+			// this before the stream copy returns). No-op with late binding off.
+			releaseSlot()
 			now := time.Now().UnixMilli()
 			wlMu.Lock()
 			terminated = true
@@ -1672,14 +1767,22 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 // Model eligibility was enforced before this function receives the list. An
 // explicit node/select pin bypasses reservations, and unlisted/manual owners
 // retain their existing fallback position.
-func (p *Proxy) reserveCandidate(candidates []candidate) []candidate {
+//
+// With --late-binding the choice is restricted to candidates that still have a
+// free generation slot, and a request that finds none parks here until one frees
+// rather than committing to a queue (see latebind.go). onQueued, when non-nil,
+// is called once if this request has to park, so the caller can announce the
+// queued state; it is never called for a request that binds immediately. The
+// second return value releases the slot this request took; it is a no-op when
+// late binding is off or no reservation was made.
+func (p *Proxy) reserveCandidate(ctx context.Context, candidates []candidate, onQueued func()) ([]candidate, func()) {
 	if len(candidates) == 0 {
-		return candidates
+		return candidates, noRelease
 	}
 	if selectedID := p.SelectedID(); selectedID != "" {
 		for _, cand := range candidates {
 			if cand.id == selectedID {
-				return candidates
+				return candidates, noRelease
 			}
 		}
 	}
@@ -1692,31 +1795,18 @@ func (p *Proxy) reserveCandidate(candidates []candidate) []candidate {
 	p.priorityMu.Lock()
 	defer p.priorityMu.Unlock()
 	if len(p.priority) == 0 {
-		return candidates
+		return candidates, noRelease
 	}
 	if p.priorityReservations == nil {
 		p.priorityReservations = make(map[string]int)
 	}
 
-	bestIndex := -1
-	bestOrder := len(p.priority)
-	var bestLoad uint64
-	for order, id := range p.priority {
-		index, ok := candidateIndex[id]
-		if !ok {
-			continue
-		}
-		load := uint64(p.priorityPending[id]) +
-			uint64(p.priorityGPUPressure[id]) +
-			uint64(p.priorityReservations[id])
-		if bestIndex < 0 || load < bestLoad || (load == bestLoad && order < bestOrder) {
-			bestIndex = index
-			bestOrder = order
-			bestLoad = load
-		}
+	bestIndex, freeIndex := p.pickCandidateLocked(candidateIndex)
+	if p.lateBind != nil {
+		bestIndex = p.waitForFreeSlotLocked(ctx, candidateIndex, onQueued, bestIndex, freeIndex)
 	}
 	if bestIndex < 0 {
-		return candidates
+		return candidates, noRelease
 	}
 
 	chosen := candidates[bestIndex]
@@ -1725,7 +1815,54 @@ func (p *Proxy) reserveCandidate(candidates []candidate) []candidate {
 		copy(candidates[1:bestIndex+1], candidates[:bestIndex])
 		candidates[0] = chosen
 	}
-	return candidates
+	release := noRelease
+	if p.lateBind != nil {
+		// The reservation above keeps its existing meaning and lifetime — an
+		// optimistic tiebreak the next snapshot clears. The ledger entry is
+		// separate and is retired only by release, at the terminal transition,
+		// so this request occupies the node's ceiling exactly once and for
+		// exactly as long as the node is generating for it.
+		p.lateBindInFlight[chosen.id]++
+		release = p.releaseSlot(chosen.id)
+	}
+	return candidates, release
+}
+
+// pickCandidateLocked scans the scheduler's list for the eligible candidate
+// carrying the least estimated load and returns its index in the failover list,
+// or -1 when the list holds none of them. With late binding on it also returns
+// the least loaded candidate that still has a free generation slot, again -1 for
+// none. The two agree whenever the least loaded candidate is itself free; they
+// differ when it is at capacity, which is the whole of the routing change (GPU
+// pressure can rank an idle node above a node that is generating). Callers hold
+// priorityMu.
+func (p *Proxy) pickCandidateLocked(candidateIndex map[string]int) (best, free int) {
+	best, free = -1, -1
+	bestOrder, freeOrder := len(p.priority), len(p.priority)
+	var bestLoad, freeLoad uint64
+	for order, id := range p.priority {
+		index, ok := candidateIndex[id]
+		if !ok {
+			continue
+		}
+		load := uint64(p.priorityPending[id]) +
+			uint64(p.priorityGPUPressure[id]) +
+			uint64(p.priorityReservations[id])
+		if best < 0 || load < bestLoad || (load == bestLoad && order < bestOrder) {
+			best = index
+			bestOrder = order
+			bestLoad = load
+		}
+		if p.lateBind == nil || !p.hasFreeSlotLocked(id) {
+			continue
+		}
+		if free < 0 || load < freeLoad || (load == freeLoad && order < freeOrder) {
+			free = index
+			freeOrder = order
+			freeLoad = load
+		}
+	}
+	return best, free
 }
 
 func nodeAdvertisesModel(n Node, model string) bool {
@@ -2052,6 +2189,20 @@ func (p *Proxy) SetPrioritySnapshot(priority schedulerwire.Priority) int {
 	p.priorityPending = pending
 	p.priorityGPUPressure = gpuPressure
 	p.priorityReservations = make(map[string]int)
+	// A snapshot replaces the scheduler baseline and, with it, the eligible set
+	// and the ordering — so a request parked in reserveCandidate has to
+	// re-derive its pick against the new one, which may have made a node
+	// routable that was not before. Broadcasting under the mutex is what makes
+	// that wakeup impossible to miss; nil until --late-binding creates it.
+	//
+	// lateBindInFlight is untouched on purpose. It records generations this
+	// proxy started and has not seen finish, which a snapshot knows nothing
+	// about: clearing it here would hand out a slot that is still in use, and
+	// deriving occupancy from the pending counts above instead would keep a
+	// finished request occupying the node until some later snapshot retires it.
+	if p.slotFree != nil {
+		p.slotFree.Broadcast()
+	}
 	p.priorityMu.Unlock()
 	return len(cleaned)
 }

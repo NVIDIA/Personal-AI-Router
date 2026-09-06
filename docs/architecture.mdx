@@ -418,6 +418,15 @@ the same node.
 are the same unit of pending work, so "fewest jobs" is not "least busy." A node
 running one enormous request looks more idle than a node running two trivial ones.
 
+**A request commits to a node when it arrives.** The proxy picks the least loaded
+eligible node at arrival and forwards immediately, and that choice is final: the
+request queues on that node however the fleet moves afterwards, so a burst that
+lands on a node which then turns out to be busy waits behind it while another node
+goes idle. `ollama-proxy` carries an opt-in `--late-binding` mode that instead
+waits for a node with a free generation slot, described in
+[its component reference](../services/ollama-proxy/README.md).
+It is off by default and does not change the behavior described here.
+
 **Model load state is not considered.** Eligibility asks whether a node *has* the
 model, not whether it is already loaded in memory. PAIR knows which models are
 loaded, and the interface shows it, but routing does not use it, so a request can

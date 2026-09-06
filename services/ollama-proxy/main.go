@@ -34,6 +34,9 @@ func main() {
 	ignorePersistedPort := flag.Bool("ignore-persisted-port", false, "use --port even when a persisted port exists")
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
+	lateBinding := flag.Bool("late-binding", false, "hold an inference request until a node has a free generation slot instead of committing it to a node on arrival; requires this proxy to be the node's only client")
+	var nodeParallel nodeParallelFlags
+	flag.Var(&nodeParallel, "node-parallel", "concurrent generation slots per node, consulted only with --late-binding: N for every node, or <node-id>=N to override one (default 1, matching Ollama's OLLAMA_NUM_PARALLEL)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -84,6 +87,10 @@ func main() {
 	codec := NewCodec(transport)
 	disc := NewDiscovery()
 	proxy := NewProxy(codec, disc, effectivePort)
+	if *lateBinding {
+		proxy.EnableLateBinding(nodeParallel)
+		log.Printf("late binding enabled (generation slots per node: %s)", nodeParallel.String())
+	}
 	for _, aliasAddress := range aliasAddresses {
 		if err := proxy.setLoopbackAlias(aliasAddress); err != nil {
 			log.Fatalf("invalid alias address: %v", err)
