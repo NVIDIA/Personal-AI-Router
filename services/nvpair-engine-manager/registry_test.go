@@ -521,6 +521,85 @@ func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {
 	}
 }
 
+// TestLlamaCppManifestIsAdoptOnly pins the bundled llama.cpp engine as
+// adopt-only: LoadFS merges the shared runtime onto every platform, so
+// inspecting Platforms without that merge would see empty Runtime and
+// modeOrDefault() == "process". PAIR must never spawn llama-server.
+func TestLlamaCppManifestIsAdoptOnly(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := reg.Get("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp manifest not loaded")
+	}
+	if m.Engine != "llamacpp" || m.DisplayName != "llama.cpp" {
+		t.Fatalf("identity = %s %s", m.Engine, m.DisplayName)
+	}
+	for _, name := range []string{"pull_model", "load_model", "unload_model", "delete_model", "install", "uninstall"} {
+		if _, ok := m.Actions[name]; ok {
+			t.Errorf("%s must not exist", name)
+		}
+	}
+	wantPlatforms := []string{
+		"windows/amd64", "windows/arm64",
+		"darwin/arm64", "darwin/amd64",
+		"linux/amd64", "linux/arm64",
+	}
+	for _, key := range wantPlatforms {
+		p, ok := m.Platforms[key]
+		if !ok {
+			t.Errorf("missing platform %s", key)
+			continue
+		}
+		if p.Runtime.modeOrDefault() != "adopt" {
+			t.Errorf("%s mode = %q, want adopt", key, p.Runtime.Mode)
+		}
+		if p.Runtime.Port != 8082 {
+			t.Errorf("%s port = %d, want 8082", key, p.Runtime.Port)
+		}
+		if p.Runtime.Bind != "127.0.0.1" {
+			t.Errorf("%s bind = %q, want 127.0.0.1", key, p.Runtime.Bind)
+		}
+		if p.Runtime.Ready == nil || !strings.Contains(p.Runtime.Ready.HTTP, "/v1/models") {
+			t.Errorf("%s ready probe must be /v1/models", key)
+		}
+		if p.Runtime.Health == nil || !strings.Contains(p.Runtime.Health.HTTP, "/v1/models") {
+			t.Errorf("%s health probe must be /v1/models", key)
+		}
+		if strings.TrimSpace(p.Runtime.Bin) != "" {
+			t.Errorf("%s bin is forbidden in adopt mode, got %q", key, p.Runtime.Bin)
+		}
+		if len(p.Runtime.Start) != 0 {
+			t.Errorf("%s start is forbidden in adopt mode, got %v", key, p.Runtime.Start)
+		}
+		if p.Install != nil {
+			t.Errorf("%s install must not exist", key)
+		}
+		if p.Uninstall != nil {
+			t.Errorf("%s uninstall must not exist", key)
+		}
+	}
+	list := m.Actions["list_models"]
+	if list.HTTP == nil || list.HTTP.Method != "GET" || list.HTTP.Path != "/v1/models" {
+		t.Errorf("list_models HTTP = %+v, want GET /v1/models", list.HTTP)
+	}
+	if list.Result == nil || list.Result.Array != "data" || list.Result.Field != "id" {
+		t.Errorf("list_models result = %+v, want data[].id", list.Result)
+	}
+	loaded := m.Actions["loaded_models"]
+	if loaded.HTTP == nil || loaded.HTTP.Method != "GET" || loaded.HTTP.Path != "/v1/models" {
+		t.Errorf("loaded_models HTTP = %+v, want GET /v1/models", loaded.HTTP)
+	}
+	if loaded.Result == nil || loaded.Result.Match == nil || loaded.Result.Match.Field != "status.value" {
+		t.Fatal("loaded_models must match status.value")
+	}
+	if !slices.Equal(loaded.Result.Match.In, []string{"loaded"}) {
+		t.Errorf("loaded_models match.in = %v, want [loaded]", loaded.Result.Match.In)
+	}
+}
+
 // TestLMStudioInstallBootstrapSafety verifies that bootstrap fetch failures are
 // visible and Windows executes a downloaded .ps1
 // file rather than pipe remote content through Invoke-Expression.

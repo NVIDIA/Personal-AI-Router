@@ -1,0 +1,45 @@
+{
+  "engine": "llamacpp",
+  "display_name": "llama.cpp",
+  "manifest_version": 1,
+  "runtime": {
+    "mode": "adopt",
+    "bind": "127.0.0.1",
+    "port": 8082,
+    "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 5 },
+    "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 5 }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "detect": [
+        "%LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\ggml.llamacpp_Microsoft.Winget.Source_8wekyb3d8bbwe\\llama-server.exe",
+        "C:\\Users\\P-DLE\\Desktop\\AI Playground\\vendor\\llama.cpp-official\\bin\\llama-server.exe"
+      ]
+    },
+    "windows/arm64": {
+      "detect": [
+        "%LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\ggml.llamacpp_Microsoft.Winget.Source_8wekyb3d8bbwe\\llama-server.exe"
+      ]
+    },
+    "darwin/arm64": { "detect": ["/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server"] },
+    "darwin/amd64": { "detect": ["/usr/local/bin/llama-server"] },
+    "linux/amd64": { "detect": ["/usr/local/bin/llama-server", "/usr/bin/llama-server"] },
+    "linux/arm64": { "detect": ["/usr/local/bin/llama-server", "/usr/bin/llama-server"] }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List every model id advertised by llama-server.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "loaded_models": {
+      "description": "List model ids currently loaded in memory.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": {
+        "array": "data",
+        "field": "id",
+        "match": { "field": "status.value", "in": ["loaded"] }
+      }
+    }
+  }
+}
