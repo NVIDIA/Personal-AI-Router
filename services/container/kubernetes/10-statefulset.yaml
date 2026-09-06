@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pair
+  namespace: pair
+spec:
+  serviceName: pair
+  replicas: 1
+  selector:
+    matchLabels: {app: pair}
+  template:
+    metadata:
+      labels: {app: pair}
+    spec:
+      serviceAccountName: pair
+      # The whole point. Without it the pod sits on the SDN, mDNS never reaches the LAN, and
+      # the node can neither find nor be found by the other PAIR nodes.
+      hostNetwork: true
+      # With hostNetwork the pod inherits the node's resolver by default, which resolves the
+      # LAN's own names. ClusterFirstWithHostNet would send lookups to the cluster DNS instead
+      # and lose the local domain.
+      dnsPolicy: Default
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: pair
+          # Build services/container/Dockerfile, push it to a registry your cluster can pull
+          # from, and pin it here, ideally by digest.
+          image: REGISTRY/pair-node:v0.1.1
+          # nvpair-tui is a bubbletea program: it wants a PTY and exits without one. Both
+          # flags are needed -- tty alone gives no stdin to attach to, which is how the
+          # six-digit pairing code gets typed in.
+          tty: true
+          stdin: true
+          stdinOnce: false
+          env:
+            - {name: PAIR_RELAY_OPENAI_PORT, value: "18434"}
+            - {name: PAIR_RELAY_OLLAMA_PORT, value: "18435"}
+            - {name: NVPAIR_LOG_LEVEL, value: "info"}
+          ports:
+            - {name: openai, containerPort: 18434, protocol: TCP}
+            - {name: ollama, containerPort: 18435, protocol: TCP}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            # This node routes; it does not infer. The GPUs are on the other nodes.
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: home, mountPath: /pairhome}
+            - {name: runtime, mountPath: /tmp/pair-runtime}
+          readinessProbe:
+            tcpSocket: {port: 18434}
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        - name: runtime
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: home
+      spec:
+        accessModes: [ReadWriteOnce]
+        # node.crt, node.key and trusted/ live under here. Lose it and the node is a stranger
+        # to the cluster on every restart, and the other nodes keep listing the old member.
+        resources: {requests: {storage: 2Gi}}

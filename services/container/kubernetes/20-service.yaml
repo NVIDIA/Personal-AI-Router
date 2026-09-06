@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The pod is on hostNetwork, so its pod IP IS the node IP and a selector-based Service
+# resolves straight to it. In-cluster workloads then use a stable name rather than
+# hard-coding a node address that changes if this ever moves to a multi-node cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pair
+  namespace: pair
+spec:
+  selector: {app: pair}
+  ports:
+    - {name: openai, port: 1234, targetPort: 18434, protocol: TCP}
+    - {name: ollama, port: 11434, targetPort: 18435, protocol: TCP}
+---
+# There is deliberately no NetworkPolicy here. The pod is on the host network, and
+# NetworkPolicy does not apply to host-network pods, so a policy would admit nothing and
+# deny nothing while looking like a boundary. The relay enforces the boundary itself: it
+# refuses any source outside --allow-cidr (loopback and the cluster's pod network by
+# default; pass --allow-cidr in the entrypoint if your cluster network is not
+# 10.128.0.0/14). Deliberately no Route or Ingress, and the relay ports are host ports,
+# so a host firewall is the place for a second layer.
