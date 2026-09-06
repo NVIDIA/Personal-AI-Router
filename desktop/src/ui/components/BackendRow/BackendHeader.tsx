@@ -114,7 +114,7 @@ export function BackendHeader({
                                     e.stopPropagation()
                                     handleCopy()
                                 }}
-                                title={`Copy ${backend.displayName} API http://127.0.0.1:${backend.proxyPort}`}
+                                title={`Copy ${backend.displayName} API ${proxyUrl}`}
                                 style={{ padding: '2px 6px', minWidth: 'auto' }}
                                 aria-label={`Copy ${backend.displayName} API URL`}
                             >
