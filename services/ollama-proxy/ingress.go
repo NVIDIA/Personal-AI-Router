@@ -13,6 +13,7 @@ import (
 	"strconv"
 
 	"nvpair-shared/cors"
+	"nvpair-shared/ingressauth"
 )
 
 const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
@@ -65,34 +66,49 @@ func (p *Proxy) localBackendTarget() (*url.URL, bool) {
 // the TLS personality, but plaintext is loopback-only unless authenticated.
 func (p *Proxy) handlePlain(w http.ResponseWriter, r *http.Request) {
 	if !isLoopbackRemote(r.RemoteAddr) {
-		// Answer a non-loopback preflight ahead of the gate. It grants no access
-		// on its own; the request that follows still receives the real 401/403,
-		// and a browser sends no Authorization on a preflight anyway. A loopback
-		// preflight continues into handleHTTP so an available engine's exact
-		// origin and credentials policy can be preserved.
+		// One Authorize call refreshes the key file and judges the request from
+		// that single view, so enablement and the key set cannot change between
+		// "is the gate on?" and "is this key good?".
+		var d ingressauth.Decision
+		if p.lanAuth != nil {
+			d = p.lanAuth.Authorize(r)
+		}
+		// A source outside the operator's allowlist gets nothing — not even the
+		// preflight — so the allowlist means what it says for OPTIONS too.
+		if d.Enabled && d.Code == ingressauth.CodeSourceNotAllowed {
+			slog.Warn("rejected non-loopback plaintext request", "remote", r.RemoteAddr,
+				"method", r.Method, "path", r.URL.Path, "code", d.Code)
+			writeIngressError(w, d.Status, d.Code, d.Message)
+			return
+		}
+		// Answer a non-loopback preflight ahead of the credential check. It
+		// grants no access on its own; the request that follows still receives
+		// the real 401/403, and a browser sends no Authorization on a preflight
+		// anyway. A loopback preflight continues into handleHTTP so an available
+		// engine's exact origin and credentials policy can be preserved.
 		if cors.WritePreflight(w, r) {
 			return
 		}
-		if p.lanAuth == nil || !p.lanAuth.Enabled() {
+		if !d.Enabled {
 			slog.Warn("rejected non-loopback plaintext request; cluster peers must use mTLS",
 				"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
 			writeIngressError(w, http.StatusForbidden, "loopback-only",
 				"plaintext requests are accepted only from loopback; cluster peers must use the mTLS ingress")
 			return
 		}
-		d := p.lanAuth.Authorize(r)
 		if !d.Allowed {
 			slog.Warn("rejected non-loopback plaintext request", "remote", r.RemoteAddr,
 				"method", r.Method, "path", r.URL.Path, "code", d.Code, "key_fp", d.KeyFingerprint)
-			if d.Status == http.StatusUnauthorized {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="nvpair-proxy"`)
+			if d.Challenge != "" {
+				w.Header().Set("WWW-Authenticate", d.Challenge)
 			}
 			writeIngressError(w, d.Status, d.Code, d.Message)
 			return
 		}
 		// The key is the proxy's credential, not the engine's: never forward it.
 		p.lanAuth.StripCredential(r.Header)
-		slog.Debug("authenticated non-loopback plaintext request", "remote", r.RemoteAddr,
+		// At Info, not Debug: a production log must show who used a key.
+		slog.Info("authenticated non-loopback plaintext request", "remote", r.RemoteAddr,
 			"method", r.Method, "path", r.URL.Path, "key_fp", d.KeyFingerprint)
 	}
 	// Engine-manager marks its private identity/action requests so this

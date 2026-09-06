@@ -87,15 +87,35 @@ request is routed like a loopback client, and the key is stripped before the
 request is forwarded, so it never reaches an engine or a peer. Loopback callers
 are never asked for a key.
 
-The gate compares keys in constant time, holds them in memory only as digests,
-never logs a presented key (a rejection logs a short digest fingerprint), and
-fails closed: a key file that other users can read, that contains a malformed
-entry, or that cannot be read contributes no keys and the LAN stays closed.
+A key therefore reaches everything a loopback client on that node can reach:
+inference routed onward to other paired nodes, and every engine route the proxy
+forwards, which for Ollama includes model management (`/api/pull`,
+`/api/delete`, `/api/create`, `/api/copy`). Treat it as a credential for the
+cluster, not for one machine. Enabling the gate restricts the network, not the
+host: on a multi-user machine, every local account keeps loopback access to the
+proxy regardless of the gate. Any process running as the proxy's own user can
+also enable the gate by creating the key file, just as it could set the
+environment; the proxy announces that at warning level in its log.
+
+The loopback exemption also means that anything terminating connections on the
+node itself and re-originating them locally — a reverse proxy or TLS terminator
+on the same host, or Docker Desktop on macOS forwarding container traffic to the
+host — presents every one of its clients to PAIR as a loopback caller that is
+never asked for a key. Such a front end must enforce its own authentication, or
+run on a different host so that PAIR sees its real address.
+
+The gate compares keys in constant time, holds file keys in memory only as
+digests (a key supplied inline through the environment also remains in the
+process environment in clear, so prefer the file), never logs a presented key
+(a rejection logs a short digest fingerprint), and fails closed: a key file that other users can read (judged by Unix permission
+bits; on Windows the check is skipped and the per-user data directory's ACL is
+the protection), that contains a malformed entry, or that cannot be read
+contributes no keys and the LAN stays closed.
 Enabling the gate is logged at warning level at startup and whenever the key set
 changes. It adds no TLS, rate limiting, or per-key permissions: the plaintext
-personality stays plaintext, so use it only on a network you trust or behind a
-TLS-terminating proxy you control, and treat a configured key as a credential
-that grants everything a local application can do.
+personality stays plaintext, so use it only on a network you trust, and pair it
+with `NVPAIR_PROXY_ALLOWED_CIDRS` so a leaked key is only usable from the
+networks you expect.
 
 ### Local Network Is a Trust-Relevant Boundary
 

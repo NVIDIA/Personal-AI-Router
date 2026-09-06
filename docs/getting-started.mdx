@@ -456,8 +456,9 @@ Kubernetes workload, an SDK on a machine you do not administer. For those, a
 node can accept requests from the network when the caller presents an API key.
 The default is unchanged. With no key configured, the endpoint stays local.
 
-1. Generate a key. Anything of at least 32 printable ASCII characters with no
-   whitespace works; a random one is best:
+1. Generate a key: at least 32 characters drawn from letters, digits, and
+   `- . _ ~ + / =`, produced randomly. Nothing limits how fast a caller can
+   guess, so a memorable passphrase is not a substitute:
 
    ```bash
    openssl rand -hex 32
@@ -473,7 +474,9 @@ The default is unchanged. With no key configured, the endpoint stays local.
    | macOS | `~/Library/Application Support/Nvidia Corporation/Personal AI Router/proxy-api-keys` |
 
    On Linux and macOS the file must be readable by you alone (`chmod 600`). A
-   file other users can read is ignored, and the node's log says so.
+   file other users can read is ignored, and the node's log says so. On
+   Windows the default location is inside your own `%LOCALAPPDATA%`, which
+   other accounts cannot read by default; PAIR does not check the ACL itself.
 
 3. Point the client at the node's address and the port shown in **Endpoints**,
    for example `http://gpu-box:11434` or `http://gpu-box:1234/v1`, and send the
@@ -488,7 +491,10 @@ The default is unchanged. With no key configured, the endpoint stays local.
    `X-Api-Key: <key>` instead.
 
 The proxy notices the key file appearing, changing, or disappearing on its own,
-so you can add, rotate, or revoke keys without restarting PAIR. Three environment
+so you can add, rotate, or revoke keys without restarting PAIR. When you replace
+it from a script, write the new file beside the old one and rename it into place;
+a rewrite that truncates the file first is briefly seen as an empty key file and
+refused until the next check, about a second later. Three environment
 variables refine the behavior for headless or containerized nodes:
 `NVPAIR_PROXY_API_KEYS_FILE` names a different key file, `NVPAIR_PROXY_API_KEYS`
 supplies keys inline (comma-separated), and `NVPAIR_PROXY_ALLOWED_CIDRS` (for
@@ -500,7 +506,10 @@ responses cross your network unencrypted, and anyone holding the key can use the
 node, and through it every node in the cluster, exactly as a local application
 could. Use it on a network you trust, keep the key private, and prefer the CIDR
 allowlist. Applications on the node itself keep working over loopback without a
-key. The node logs a warning when authenticated access is enabled and logs every
+key, and so does anything that terminates connections on the node and forwards
+them locally, such as a reverse proxy or TLS terminator on the same machine: PAIR
+sees those clients as loopback and never asks them for a key, so such a front
+end must do its own authentication. The node logs a warning when authenticated access is enabled and logs every
 request it refuses, identifying a rejected key only by a short fingerprint.
 
 ## Verify It Is Working

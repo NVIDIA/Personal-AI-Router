@@ -144,6 +144,10 @@ func TestHandlePlainNonLoopbackWrongKeyIs401(t *testing.T) {
 	if got := ingressCode(t, rec); got != ingressauth.CodeUnauthorized {
 		t.Errorf("code = %q, want %q", got, ingressauth.CodeUnauthorized)
 	}
+	// RFC 6750 §3.1: a credential that was examined and rejected is told so.
+	if got := rec.Header().Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) {
+		t.Errorf("WWW-Authenticate = %q, want error=\"invalid_token\" on a rejected key", got)
+	}
 	if seen.Load() != nil {
 		t.Fatal("a request with a wrong key reached the engine")
 	}
@@ -238,5 +242,39 @@ func TestHandlePlainGateWithoutKeysKeepsLoopbackOnly(t *testing.T) {
 	}
 	if seen.Load() != nil {
 		t.Fatal("a LAN request reached the engine with no keys configured")
+	}
+}
+
+// TestHandlePlainPreflightOutsideAllowedCIDRIs403: the allowlist applies to a
+// preflight too. A source the operator excluded gets no 204 that would let a
+// browser proceed to the request that follows.
+func TestHandlePlainPreflightOutsideAllowedCIDRIs403(t *testing.T) {
+	p, seen := lanProxy(t, netip.MustParsePrefix("10.0.0.0/8"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req.RemoteAddr = lanRemote
+	p.handlePlain(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("out-of-allowlist preflight status = %d, want 403", rec.Code)
+	}
+	if got := ingressCode(t, rec); got != ingressauth.CodeSourceNotAllowed {
+		t.Errorf("code = %q, want %q", got, ingressauth.CodeSourceNotAllowed)
+	}
+	if seen.Load() != nil {
+		t.Fatal("a preflight reached the engine")
+	}
+}
+
+// TestHandlePlainPreflightInsideAllowedCIDRIs204: inside the allowlist the
+// preflight is still answered without a credential, as browsers require.
+func TestHandlePlainPreflightInsideAllowedCIDRIs204(t *testing.T) {
+	p, _ := lanProxy(t, netip.MustParsePrefix("192.0.2.0/24"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req.RemoteAddr = lanRemote
+	p.handlePlain(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("in-allowlist preflight status = %d, want 204", rec.Code)
 	}
 }
