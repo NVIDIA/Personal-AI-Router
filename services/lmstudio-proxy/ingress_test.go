@@ -109,3 +109,21 @@ func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {
 		t.Fatal("ingress reverse proxy did not use the shared plain Transport")
 	}
 }
+
+func TestIsLoopbackRemote(t *testing.T) {
+	for _, c := range []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:5000", true},
+		{"[::1]:5000", true},
+		{"192.168.1.10:5000", false},
+		{"10.0.0.5:80", false},
+		{"", false},
+		{"garbage", false},
+	} {
+		if got := isLoopbackRemote(c.addr); got != c.want {
+			t.Errorf("isLoopbackRemote(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}

@@ -166,7 +166,7 @@ Not every surface is gated, and the exceptions are deliberate:
 
 | Surface | Transport |
 | --- | --- |
-| Proxy, local clients | Plaintext HTTP, loopback only |
+| Proxy, local clients | Plaintext HTTP, loopback only (opt-in: API-key authenticated LAN callers) |
 | Proxy, cluster ingress | Mutual TLS |
 | Model inventory, remote engine control | Mutual TLS |
 | Workload replication, error synchronization | Mutual TLS |
@@ -192,7 +192,7 @@ port, chosen by the connection's first byte. A TLS handshake record starts with
 
 | First Byte | Personality | Who Uses It |
 | --- | --- | --- |
-| Not `0x16` | Plaintext HTTP, loopback only | Your local applications |
+| Not `0x16` | Plaintext HTTP, loopback only by default | Your local applications; API-key holders when the operator enables LAN access |
 | `0x16` | Mutual TLS | Paired nodes in the cluster |
 
 This is why an endpoint is `http://127.0.0.1:11434` for an application on the
@@ -203,15 +203,22 @@ plaintext.
 The loopback restriction is enforced, not merely conventional. The listener binds
 all interfaces so the TLS personality can accept peers, but a plaintext request
 from any non-loopback address is refused with `403`. Without that check the port
-would be an open relay for anything on the network.
+would be an open relay for anything on the network. The one exception is opt-in:
+an operator who configures API keys (refer to
+[Reaching PAIR from Another Machine](getting-started.mdx#reaching-pair-from-another-machine))
+admits a non-loopback caller that presents a configured key to the same router a
+loopback client uses. A caller without one is still refused, with `401`, and
+loopback callers are never asked for a key.
 
 Two consequences follow, and together they define how clients are expected to
 reach PAIR:
 
-- **A machine that is not a node has no way in.** It cannot use the plaintext
-  personality, because it is not loopback, and it cannot use the TLS personality,
-  because it holds no pinned cluster certificate. Pointing an application at
-  another machine's proxy port does not work by design.
+- **A machine that is not a node has no way in unless the operator hands it a
+  key.** It cannot use the plaintext personality, because it is not loopback, and
+  it cannot use the TLS personality, because it holds no pinned cluster
+  certificate. Pointing an application at another machine's proxy port does not
+  work by design, until that machine's operator enables authenticated LAN access
+  and gives the application an API key.
 - **A peer request is served, not re-routed.** The mTLS ingress forwards straight
   to that node's own engine and never re-enters candidate selection, so a peer
   cannot chain a request onward through a third node.

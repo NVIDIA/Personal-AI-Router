@@ -195,6 +195,23 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Needed only by a caller that is not on the node itself, and only when
+        the node's operator has enabled authenticated LAN access by configuring
+        API keys. Loopback callers send no credential. Send a configured key as
+        `Authorization: Bearer <key>`; the proxy strips it before forwarding.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: >
+        Alternative to bearerAuth for clients built on the Anthropic SDK
+        convention. Same scope: non-loopback callers, when the operator has
+        enabled LAN access.
   schemas:
     ChatRole:
       type: string

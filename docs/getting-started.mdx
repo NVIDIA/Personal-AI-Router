@@ -427,11 +427,12 @@ PAIR.
 
 This is the part that surprises people, so it is worth stating directly.
 
-**An endpoint only accepts requests from the machine it is on.** A PAIR proxy
-serves plaintext HTTP to loopback only. PAIR refuses a request arriving from
-anywhere else on the network with `403`, and the message says so. You cannot
-point an application on a fourth machine at `http://some-node:11434` and have it
-work.
+**By default, an endpoint only accepts requests from the machine it is on.** A
+PAIR proxy serves plaintext HTTP to loopback only. PAIR refuses a request
+arriving from anywhere else on the network with `403`, and the message says so.
+You cannot point an application on a fourth machine at `http://some-node:11434`
+and have it work, unless that node's operator has enabled authenticated access,
+described below.
 
 **Run PAIR where you work.** The intended pattern is to install PAIR on the
 machine you use, pair it into the cluster, and point your applications at *its*
@@ -443,11 +444,73 @@ PAIR makes the routing decision where you make the request. When a cluster peer
 reaches a node over its authenticated channel, that node's own engine serves the
 request and does not forward it onward.
 
-**If you need a network-reachable inference endpoint,** that is outside
-what PAIR does. You would configure an engine to listen on your network yourself
-and take on the exposure that implies. PAIR does not offer it by default and there
-is no plan to add it as an option, because it would turn any node into an open
-relay for anything on the network.
+**If you need a network-reachable inference endpoint,** PAIR can provide one,
+but only when you turn it on and only to clients that hold a key. PAIR never
+offers it by default, because an endpoint anything on the network can use
+without a credential would turn the node into an open relay.
+
+### Reaching PAIR from Another Machine
+
+Some clients cannot run PAIR themselves: an automation host, a container, a
+Kubernetes workload, an SDK on a machine you do not administer. For those, a
+node can accept requests from the network when the caller presents an API key.
+The default is unchanged. With no key configured, the endpoint stays local.
+
+1. Generate a key: at least 32 characters drawn from letters, digits, and
+   `- . _ ~ + / =`, produced randomly. Nothing limits how fast a caller can
+   guess, so a memorable passphrase is not a substitute:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. Put it in the proxy key file on the node, one key per line (`#` starts a
+   comment). The default location is `proxy-api-keys` in PAIR's data directory:
+
+   | OS | Path |
+   | --- | --- |
+   | Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\proxy-api-keys` |
+   | Linux | `~/.config/Nvidia Corporation/Personal AI Router/proxy-api-keys` |
+   | macOS | `~/Library/Application Support/Nvidia Corporation/Personal AI Router/proxy-api-keys` |
+
+   On Linux and macOS the file must be readable by you alone (`chmod 600`). A
+   file other users can read is ignored, and the node's log says so. On
+   Windows the default location is inside your own `%LOCALAPPDATA%`, which
+   other accounts cannot read by default; PAIR does not check the ACL itself.
+
+3. Point the client at the node's address and the port shown in **Endpoints**,
+   for example `http://gpu-box:11434` or `http://gpu-box:1234/v1`, and send the
+   key as a bearer token:
+
+   ```bash
+   curl http://gpu-box:1234/v1/models -H "Authorization: Bearer $KEY"
+   ```
+
+   OpenAI-compatible SDKs send this header when you give them the key as their
+   API key. Clients built on the Anthropic convention may send
+   `X-Api-Key: <key>` instead.
+
+The proxy notices the key file appearing, changing, or disappearing on its own,
+so you can add, rotate, or revoke keys without restarting PAIR. When you replace
+it from a script, write the new file beside the old one and rename it into place;
+a rewrite that truncates the file first is briefly seen as an empty key file and
+refused until the next check, about a second later. Three environment
+variables refine the behavior for headless or containerized nodes:
+`NVPAIR_PROXY_API_KEYS_FILE` names a different key file, `NVPAIR_PROXY_API_KEYS`
+supplies keys inline (comma-separated), and `NVPAIR_PROXY_ALLOWED_CIDRS` (for
+example `192.168.1.0/24,10.0.0.0/8`) additionally restricts which source networks
+may use a key at all.
+
+Understand what you are enabling. The connection is plain HTTP, so prompts and
+responses cross your network unencrypted, and anyone holding the key can use the
+node, and through it every node in the cluster, exactly as a local application
+could. Use it on a network you trust, keep the key private, and prefer the CIDR
+allowlist. Applications on the node itself keep working over loopback without a
+key, and so does anything that terminates connections on the node and forwards
+them locally, such as a reverse proxy or TLS terminator on the same machine: PAIR
+sees those clients as loopback and never asks them for a key, so such a front
+end must do its own authentication. The node logs a warning when authenticated access is enabled and logs every
+request it refuses, identifying a rejected key only by a short fingerprint.
 
 ## Verify It Is Working
 
