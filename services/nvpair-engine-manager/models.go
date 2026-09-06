@@ -4,6 +4,7 @@
 package main
 
 import (
+	"strings"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -201,7 +202,7 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 		if spec.Match != nil && !matchRow(el, spec.Match) {
 			continue
 		}
-		fv, ok := el[spec.Field]
+		fv, ok := lookupField(el, spec.Field)
 		if !ok {
 			continue
 		}
@@ -223,7 +224,7 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 // wrong-typed field fails the match, so a row we cannot classify is excluded
 // rather than counted as loaded.
 func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
-	fv, ok := el[m.Field]
+	fv, ok := lookupField(el, m.Field)
 	if !ok {
 		return false
 	}
@@ -244,4 +245,37 @@ func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
 		}
 	}
 	return false
+}
+
+// lookupField resolves a field name against a decoded row. A plain name is a
+// top-level key; a dotted name ("status.value") descends through nested
+// objects one segment at a time. Only the dotted form descends, so a
+// top-level key that itself contains a dot is still found by its literal
+// name first. Added for engines whose inventory reports state as a nested
+// object — llama.cpp's router mode answers GET /models with
+// `"status": {"value": "loaded"}` per row.
+func lookupField(el map[string]json.RawMessage, field string) (json.RawMessage, bool) {
+	if v, ok := el[field]; ok {
+		return v, true
+	}
+	if !strings.Contains(field, ".") {
+		return nil, false
+	}
+	cur := el
+	parts := strings.Split(field, ".")
+	for i, part := range parts {
+		v, ok := cur[part]
+		if !ok {
+			return nil, false
+		}
+		if i == len(parts)-1 {
+			return v, true
+		}
+		var next map[string]json.RawMessage
+		if err := json.Unmarshal(v, &next); err != nil {
+			return nil, false
+		}
+		cur = next
+	}
+	return nil, false
 }

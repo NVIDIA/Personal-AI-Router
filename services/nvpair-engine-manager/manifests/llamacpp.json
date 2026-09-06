@@ -1,0 +1,280 @@
+{
+  "engine": "llamacpp",
+  "display_name": "llama.cpp",
+  "manifest_version": 1,
+  "install": {
+    "mode": "user"
+  },
+  "runtime": {
+    "mode": "process",
+    "args": [
+      "--host",
+      "{host}",
+      "--port",
+      "{port}",
+      "--models-dir",
+      "{install_dir}/models",
+      "--models-max",
+      "1"
+    ],
+    "port": 8080,
+    "bind": "127.0.0.1",
+    "ready": {
+      "http": "http://127.0.0.1:{port}/health",
+      "status": 200,
+      "timeout_s": 60
+    },
+    "stop": {
+      "signal": "term",
+      "grace_s": 10
+    },
+    "health": {
+      "http": "http://127.0.0.1:{port}/health",
+      "status": 200,
+      "interval_s": 10
+    }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "detect": [
+        "{install_dir}\\llama-server.exe"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/llama-b10819-bin-win-vulkan-x64.zip",
+          "sha256": "4c5ff97b5440024906fc90f67809d84b92d9b77847c7d1a800701a36499e565e"
+        },
+        "run": [
+          "tar",
+          "-xf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": [
+          "cmd",
+          "/c",
+          "rmdir",
+          "/s",
+          "/q",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}\\llama-server.exe"
+      }
+    },
+    "windows/arm64": {
+      "detect": [
+        "{install_dir}\\llama-server.exe"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/llama-b10819-bin-win-cpu-arm64.zip",
+          "sha256": "5802d55f633b68bf6dbe574d75f9f47387761fe3b6ddef4193ea9ea423642afb"
+        },
+        "run": [
+          "tar",
+          "-xf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": [
+          "cmd",
+          "/c",
+          "rmdir",
+          "/s",
+          "/q",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}\\llama-server.exe"
+      }
+    },
+    "darwin/arm64": {
+      "detect": [
+        "{install_dir}/llama-server"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/llama-b10819-bin-macos-arm64.tar.gz",
+          "sha256": "8933e736495eadfef0731ae32054acfaa75699bf4a6ccba77cd8475db085ec66"
+        },
+        "run": [
+          "tar",
+          "-xzf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}/llama-server"
+      }
+    },
+    "darwin/amd64": {
+      "detect": [
+        "{install_dir}/llama-server"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/llama-b10819-bin-macos-x64.tar.gz",
+          "sha256": "04dd13ec03120685bd6e1931e8f1562d2c981ca076a3e63cc44e9a199b37816a"
+        },
+        "run": [
+          "tar",
+          "-xzf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}/llama-server"
+      }
+    },
+    "linux/amd64": {
+      "detect": [
+        "{install_dir}/llama-server"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/llama-b10819-bin-ubuntu-vulkan-x64.tar.gz",
+          "sha256": "2175737ab85506e7639fc7f8c84b5247fd607cc6e7030825c6dcadd4279f62e3"
+        },
+        "run": [
+          "tar",
+          "-xzf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}/llama-server"
+      }
+    },
+    "linux/arm64": {
+      "detect": [
+        "{install_dir}/llama-server"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/llama-b10819-bin-ubuntu-arm64.tar.gz",
+          "sha256": "6f6f7e1e9b371d4840860a79ccbf4ad6f7da9da76349ce73079e3289b01033ec"
+        },
+        "run": [
+          "tar",
+          "-xzf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ],
+        "mode": "user"
+      },
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}/llama-server"
+      }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List every GGUF the router can serve: files placed under {install_dir}/models (single files, or a sub-directory for multi-shard / mmproj pairs) plus the llama.cpp HF cache. Router-mode GET /models.",
+      "http": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "result": {
+        "array": "data",
+        "field": "id"
+      }
+    },
+    "loaded_models": {
+      "description": "Models currently resident in a child llama-server instance (router-mode GET /models, rows whose status.value is \"loaded\").",
+      "http": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "result": {
+        "array": "data",
+        "field": "id",
+        "match": {
+          "field": "status.value",
+          "in": [
+            "loaded"
+          ]
+        }
+      }
+    },
+    "load_model": {
+      "description": "Load a model into memory (params: {\"model\": \"<id from list_models>\"}). The router spawns a child llama-server for it; --models-max bounds how many stay resident.",
+      "http": {
+        "method": "POST",
+        "path": "/models/load",
+        "body_schema": {
+          "model": "string"
+        }
+      }
+    },
+    "unload_model": {
+      "description": "Unload a model from memory (params: {\"model\": \"<id>\"}). The GGUF stays on disk.",
+      "http": {
+        "method": "POST",
+        "path": "/models/unload",
+        "body_schema": {
+          "model": "string"
+        }
+      }
+    },
+    "chat": {
+      "description": "OpenAI-compatible chat completion (params: {\"model\": \"<id>\", \"messages\": [...]}). In router mode the model field selects \u2014 and, unless --no-models-autoload is set, loads \u2014 the instance that serves the request.",
+      "http": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body_schema": {
+          "model": "string",
+          "messages": "array"
+        }
+      }
+    }
+  }
+}
