@@ -15,17 +15,10 @@ spec:
     - {name: openai, port: 1234, targetPort: 18434, protocol: TCP}
     - {name: ollama, port: 11434, targetPort: 18435, protocol: TCP}
 ---
-# Reachable from anywhere in the cluster; the relay is the trust boundary and there is no
-# authentication in front of it, so keep it inside. Deliberately no Route or Ingress.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-cluster-to-relay
-  namespace: pair
-spec:
-  podSelector: {matchLabels: {app: pair}}
-  policyTypes: [Ingress]
-  ingress:
-    - ports:
-        - {protocol: TCP, port: 18434}
-        - {protocol: TCP, port: 18435}
+# There is deliberately no NetworkPolicy here. The pod is on the host network, and
+# NetworkPolicy does not apply to host-network pods, so a policy would admit nothing and
+# deny nothing while looking like a boundary. The relay enforces the boundary itself: it
+# refuses any source outside --allow-cidr (loopback and the cluster's pod network by
+# default; pass --allow-cidr in the entrypoint if your cluster network is not
+# 10.128.0.0/14). Deliberately no Route or Ingress, and the relay ports are host ports,
+# so a host firewall is the place for a second layer.

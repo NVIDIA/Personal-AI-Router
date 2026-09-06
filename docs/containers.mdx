@@ -39,8 +39,13 @@ on the cluster are not, and issuing each one a client certificate would hand out
 a cluster identity per consumer. The image therefore runs a small relay that
 listens on a routable port in the same network namespace and opens a fresh
 connection from loopback. It copies bytes and parses nothing, so streaming
-responses pass straight through. The relay is the trust boundary, so keep it
-inside the cluster: no Ingress, no Route, and a NetworkPolicy.
+responses pass straight through. The relay is the trust boundary, and it has to
+enforce that boundary itself: the pod is on the host network, NetworkPolicy does
+not apply to host-network pods, and a listener on `0.0.0.0` in that pod is a
+listener on the LAN. The relay therefore refuses any source outside its
+`--allow-cidr` list, which defaults to loopback plus `10.128.0.0/14`, the
+OVN-Kubernetes cluster network. Set it to your cluster's pod CIDR if that
+differs. No Ingress, no Route.
 
 **Identity must persist.** `node.crt`, `node.key`, and `trusted/` live under
 `$XDG_CONFIG_HOME/Nvidia Corporation/Personal AI Router`. Mount a volume there.
@@ -100,8 +105,9 @@ endpoint at `http://<host>:18434/v1`; applications on the host itself can use
 The manifests in
 [`services/container/kubernetes/`](../services/container/kubernetes/) create a
 `pair` namespace, a service account, a StatefulSet with a persistent volume for
-the node's identity, a Service that gives workloads a stable name, and a
-NetworkPolicy that admits only cluster traffic to the relay ports.
+the node's identity, and a Service that gives workloads a stable name. There is
+no NetworkPolicy, because one would not apply to a host-network pod; the relay's
+own source allowlist is what keeps the ports cluster-only.
 
 Set the image in `10-statefulset.yaml` to wherever you pushed it, then:
 
@@ -169,5 +175,7 @@ transport, and was served by a node with an engine.
 
 - The image is `linux/amd64`, because the release asset is.
 - One node per Kubernetes host, because the node owns host ports.
-- The relay has no authentication. Keep it inside the cluster.
+- The relay has no authentication; it admits by source address only. An
+  authenticated, opt-in path native to the proxies is proposed in a separate PR,
+  and would make the relay unnecessary.
 - Pairing is interactive. A scripted accept path is proposed separately.
