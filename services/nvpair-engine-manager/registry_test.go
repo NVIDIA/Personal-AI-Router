@@ -69,6 +69,18 @@ func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsAdoptMode(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.Runtime.Mode = "adopt"
+	p.Runtime.Bin = ""
+	p.Runtime.Start = nil
+	m.Platforms["linux/amd64"] = p
+	if err := m.Validate(); err != nil {
+		t.Fatalf("adopt-mode manifest with ready and empty bin/start rejected: %v", err)
+	}
+}
+
 func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
@@ -139,6 +151,26 @@ func TestValidateRejects(t *testing.T) {
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
+		{"adopt with bin", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Mode = "adopt"
+			m.Platforms["linux/amd64"] = p
+		}, "runtime.bin is forbidden"},
+		{"adopt without ready", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Mode = "adopt"
+			p.Runtime.Bin = ""
+			p.Runtime.Start = nil
+			p.Runtime.Ready = nil
+			m.Platforms["linux/amd64"] = p
+		}, "runtime.ready is required"},
+		{"adopt with start", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Mode = "adopt"
+			p.Runtime.Bin = ""
+			p.Runtime.Start = [][]string{{"lms", "server", "start"}}
+			m.Platforms["linux/amd64"] = p
+		}, "runtime.start is forbidden"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
