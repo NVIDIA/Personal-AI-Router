@@ -35,6 +35,7 @@ var healthWorkers = []string{
 	"node-info",
 	"proxy",
 	"lmstudio-proxy",
+	"llamacpp-proxy",
 	"workload-manager",
 	"engine-manager",
 	"manual-nodes",

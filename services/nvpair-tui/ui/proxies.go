@@ -24,12 +24,12 @@ type proxyNode struct {
 	Port int    `json:"port"`
 }
 
-// proxyEngine is one of the two reverse proxies the broker fronts. Both
+// proxyEngine is one of the reverse proxies the broker fronts. All three
 // speak the same routing/failover contract; only the JSON-RPC prefix and
 // label differ.
 type proxyEngine struct {
-	label    string // "Ollama" / "LM Studio"
-	prefix   string // "proxy" / "lmstudio-proxy"
+	label    string // "Ollama" / "LM Studio" / "llama.cpp"
+	prefix   string // "proxy" / "lmstudio-proxy" / "llamacpp-proxy"
 	ready    bool
 	port     int
 	selected string
@@ -92,6 +92,7 @@ func newProxiesView(client *rpc.Client) *proxiesView {
 		engines: []*proxyEngine{
 			{label: "Ollama", prefix: "proxy", table: newTable(nil)},
 			{label: "LM Studio", prefix: "lmstudio-proxy", table: newTable(nil)},
+			{label: "llama.cpp", prefix: "llamacpp-proxy", table: newTable(nil)},
 		},
 	}
 	return v
@@ -215,6 +216,8 @@ func (v *proxiesView) handleNotification(msg *rpc.Message) tea.Cmd {
 	switch {
 	case strings.HasPrefix(msg.Method, "lmstudio-proxy:"):
 		idx = 1
+	case strings.HasPrefix(msg.Method, "llamacpp-proxy:"):
+		idx = 2
 	case strings.HasPrefix(msg.Method, "proxy:"):
 		idx = 0
 	default:
