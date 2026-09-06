@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
+run models. Today that means Ollama, LM Studio, or llama.cpp on a given machine. PAIR can
 install and run those engines for you, or work with a copy you already have.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
@@ -131,6 +131,33 @@ controlled:
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.
+
+## llama.cpp
+
+PAIR can install and own a `llama-server` from the pinned
+[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) release
+named in its manifest, verified against the release's published SHA-256. It
+runs the server in **router mode**: no model is named on the command line, and
+the server lists and loads models on demand from the `models` directory inside
+its install. Put a GGUF file there, or a sub-directory holding a multi-shard or
+`mmproj` pair, and it appears under **Add model** as an available model.
+
+What is different from Ollama and LM Studio:
+
+- **No pull.** llama.cpp has no model registry. PAIR does not download GGUFs for
+  it; copy files into the models directory (or use the llama.cpp Hugging Face
+  cache) and use the engine's model list. This is deliberate: a download step
+  would need a model source PAIR does not have a maintainer-aligned policy for.
+- **One resident model by default.** The manifest starts the router with
+  `--models-max 1`, so loading a second model ejects the first. Raise it in the
+  manifest only on machines with the memory for it.
+- **Builds.** The pinned archives are the Vulkan builds on Windows x64 and Linux
+  x64 (one archive, no separate runtime download) and the native builds on
+  macOS and arm64. A CUDA build needs a second runtime archive the manifest
+  format does not express yet.
+- **Adopt vs install.** An already-running `llama-server` on the engine's port
+  is adopted exactly like the other engines; PAIR does not move or stop a
+  process it did not start.
 
 ## Managing Engines on Other Machines
 

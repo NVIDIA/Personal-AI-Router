@@ -355,6 +355,34 @@ func TestBundledManifestsMerge(t *testing.T) {
 		t.Error("ollama linux/amd64 missing")
 	}
 
+	lc, ok := reg.Get("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp not loaded")
+	}
+	for _, pf := range [][2]string{{"windows", "amd64"}, {"darwin", "arm64"}, {"linux", "amd64"}} {
+		p, ok := lc.PlatformFor(pf[0], pf[1])
+		if !ok {
+			t.Errorf("llamacpp %s/%s missing", pf[0], pf[1])
+			continue
+		}
+		// PAIR-installed llama.cpp: a pinned, checksummed release archive,
+		// a router-mode runtime (no model on the command line, a models
+		// directory under the install), and an identity probe on /health.
+		if p.Install == nil || p.Install.Fetch == nil || p.Install.Fetch.SHA256 == "" {
+			t.Errorf("llamacpp %s/%s: install must fetch a checksummed archive", pf[0], pf[1])
+		}
+		if p.Runtime.Port != 8080 || p.Runtime.Bin == "" || p.Runtime.Ready == nil || p.Runtime.Ready.HTTP == "" {
+			t.Errorf("llamacpp %s/%s runtime: port=%d bin=%q ready=%v", pf[0], pf[1], p.Runtime.Port, p.Runtime.Bin, p.Runtime.Ready)
+		}
+		joined := strings.Join(p.Runtime.Args, " ")
+		if !strings.Contains(joined, "--models-dir") || strings.Contains(joined, " -m ") || strings.Contains(joined, "--model ") {
+			t.Errorf("llamacpp %s/%s must run in router mode (--models-dir, no -m): %q", pf[0], pf[1], joined)
+		}
+	}
+	if a, ok := lc.Actions["loaded_models"]; !ok || a.Result == nil || a.Result.Match == nil || a.Result.Match.Field != "status.value" {
+		t.Errorf("llamacpp loaded_models must filter on the router's nested status.value")
+	}
+
 	lm, ok := reg.Get("lmstudio")
 	if !ok {
 		t.Fatal("lmstudio not loaded")

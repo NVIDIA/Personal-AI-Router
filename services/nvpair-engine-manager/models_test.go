@@ -382,3 +382,47 @@ func TestSameStringSet(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupFieldNested covers the dotted-path form llama.cpp's router mode
+// needs: GET /models reports residency as a nested object, and a plain
+// top-level lookup can neither filter on it nor, with a plain key, find it.
+func TestLookupFieldNested(t *testing.T) {
+	row := map[string]json.RawMessage{
+		"id":     json.RawMessage(`"Qwen3-8B-Q5_K_M.gguf"`),
+		"status": json.RawMessage(`{"value":"loaded","args":["llama-server","-c","4096"]}`),
+		"a.b":    json.RawMessage(`"literal-dotted-key"`),
+	}
+	if v, ok := lookupField(row, "status.value"); !ok || string(v) != `"loaded"` {
+		t.Fatalf("status.value: ok=%v v=%s", ok, v)
+	}
+	if v, ok := lookupField(row, "a.b"); !ok || string(v) != `"literal-dotted-key"` {
+		t.Fatalf("literal dotted key must win over descent: ok=%v v=%s", ok, v)
+	}
+	if _, ok := lookupField(row, "status.missing"); ok {
+		t.Fatal("missing nested leaf must not resolve")
+	}
+	if _, ok := lookupField(row, "id.value"); ok {
+		t.Fatal("descending through a string must fail, not panic")
+	}
+}
+
+// TestExtractStringsNestedMatch is the llama.cpp loaded_models contract end
+// to end: only rows whose status.value is "loaded" are counted, and a row
+// with no status (a model the router has never touched) is excluded rather
+// than counted as resident.
+func TestExtractStringsNestedMatch(t *testing.T) {
+	raw := json.RawMessage(`{"data":[
+		{"id":"a.gguf","status":{"value":"loaded"}},
+		{"id":"b.gguf","status":{"value":"unloaded"}},
+		{"id":"c.gguf","status":{"value":"loading"}},
+		{"id":"d.gguf"}
+	]}`)
+	spec := &ActionResult{Array: "data", Field: "id", Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}}}
+	got, ok := extractStringsResult(raw, spec)
+	if !ok {
+		t.Fatal("expected an authoritative result")
+	}
+	if len(got) != 1 || got[0] != "a.gguf" {
+		t.Fatalf("loaded set: %v", got)
+	}
+}
