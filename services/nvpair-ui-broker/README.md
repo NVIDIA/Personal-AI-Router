@@ -12,7 +12,7 @@ the broker from the same installation directory. The broker is the parent
 process and canonical backend entry point: it supervises the worker subprocesses
 on the UI's behalf, speaking JSON-RPC over stdio.
 
-The broker supervises **eleven** worker subprocesses, so a client gets the whole
+The broker supervises **twelve** worker subprocesses, so a client gets the whole
 backend behind one endpoint. Each is spawned at startup and relayed under its own
 namespace:
 
@@ -22,6 +22,7 @@ namespace:
 | `nvpair-node-info` | Local GPU / CPU / memory inventory over HTTP at `/v1/node-info` | — (HTTP only) |
 | `ollama-proxy` | Ollama-compatible inference proxy and router | `proxy:*` |
 | `lmstudio-proxy` | The LM Studio counterpart, supervised identically | `lmstudio-proxy:*` |
+| `llamacpp-proxy` | The llama.cpp counterpart, supervised identically (no managed facade) | `llamacpp-proxy:*` |
 | `nvpair-engine-manager` | Local engine and model control plane; also serves `GET /v1/models` to peers | `engine:*` |
 | `nvpair-cluster-manager` | Node identity, trusted-node store, PIN pairing | `cluster:*`, `nodes:*` |
 | `nvpair-workload-manager` | Cluster workload relay between this node and peers | `workloads:*` |
@@ -70,6 +71,7 @@ Bidirectional newline-delimited JSON-RPC 2.0 — same conventions as every other
 | `--node-info-path <path>` | `./nvpair-node-info[.exe]` in the CWD | Explicit path to the `nvpair-node-info` binary the broker should spawn. When omitted and no default sibling exists, the broker runs without the local inventory server (non-fatal); when set to an invalid path, the broker exits with an error |
 | `--proxy-path <path>` | `./ollama-proxy[.exe]` in the CWD | Explicit path to the `ollama-proxy` binary the broker spawns for the local Ollama reverse proxy. Same optional semantics as `--node-info-path`: an absent default sibling means no local proxy (non-fatal); an invalid explicit path exits with an error |
 | `--lmstudio-proxy-path <path>` | `./lmstudio-proxy[.exe]` in the CWD | Explicit path to the `lmstudio-proxy` binary the broker spawns for the local LM Studio reverse proxy. Same optional semantics as `--proxy-path` |
+| `--llamacpp-proxy-path <path>` | `./llamacpp-proxy[.exe]` in the CWD | Explicit path to the `llamacpp-proxy` binary the broker spawns for the local llama.cpp reverse proxy. Same optional semantics as `--proxy-path` |
 | `--workload-manager-path <path>` | `./nvpair-workload-manager[.exe]` in the CWD | Explicit path to the `nvpair-workload-manager` binary the broker spawns for the cluster workload relay. Same optional semantics as `--node-info-path`: an absent default sibling means no workload relay (non-fatal); an invalid explicit path exits with an error |
 | `--errors-path <path>` | `./nvpair-errors[.exe]` in the CWD | Explicit path to the `nvpair-errors` binary the broker spawns (with `--peer-sync`) for the service-error pipeline. Same optional semantics as `--node-info-path`: an absent default sibling means the error pipeline is disabled — producers' errors are dropped (non-fatal); an invalid explicit path exits with an error |
 | `--engine-manager-path <path>` | `./nvpair-engine-manager[.exe]` in the CWD | Explicit path to the `nvpair-engine-manager` binary the broker spawns for engine management. Same optional semantics as `--node-info-path` |
@@ -87,13 +89,13 @@ Logs go to **stderr** (shared `applog` format, same as every other NVPAIR binary
 
 On startup — **before** emitting `app:ready` — the broker spawns the scanner and (when available) node-info, ollama-proxy, the workload-manager, and the cluster-manager as child processes over stdio. The proxy is spawned up front but doesn't gate `app:ready` — it announces its listen port asynchronously (see below). None of the auxiliary workers gate `app:ready`.
 
-**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm` from the engine poller) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
+**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`lc` from the engine poller) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
 
 **`nvpair-node-info`** is spawned next. It's a server, not an event source: it stands up the local `/v1/node-info` HTTP endpoint (GPU/CPU/memory inventory). It does not advertise itself — the broker registers its `ni` port with the scanner daemon, which carries it in the node record, and a peer's daemon fetches `/v1/node-info` over plain HTTP to enrich the node. The broker doesn't read anything back from node-info's stdout (drained and discarded). Spawning it is **optional**: if the binary can't be resolved (and no `--node-info-path` override was given) the broker logs a warning and continues serving discovery without it.
 
-**Engine advertising.** The broker runs an internal 5 s poll loop against local Ollama at its configured backend port and LM Studio (`GET /v1/models`) and reconciles this node's engine registration with the scanner daemon:
+**Engine advertising.** The broker runs an internal 5 s poll loop against local Ollama at its configured backend port, LM Studio, and llama.cpp (`GET /v1/models`) and reconciles this node's engine registration with the scanner daemon:
 
-- engine **up** → register `ol` / `lm` at the engine's real port, never the proxy's own, to prevent a self-forward loop;
+- engine **up** → register `ol` / `lm` / `lc` at the **proxy** port (never the engine) and hand the engine's loopback port to that proxy via `node/set-local-backend`; equal proxy/engine ports are refused so the proxy cannot self-forward;
 - engine **down** → unregister it.
 
 The daemon folds those registrations into this host's single `_nvpair-node` record, so a peer discovers the engine through the shared channel. The model list is not part of that registration — it's served over HTTP by `nvpair-engine-manager` (the `em` service, `GET /v1/models`) and enriched onto each node by the peer's daemon. There is no separate advertiser subprocess and no manual-advertise RPC.
@@ -384,6 +386,10 @@ The same check runs whenever the proxy announces a (re)bound port (its restored 
 #### `lmstudio-proxy:get-status` / `lmstudio-proxy:subscribe` / `lmstudio-proxy:unsubscribe` / `lmstudio-proxy:<method>` (generic relay)
 
 The LM Studio counterpart of the `proxy:*` surface runs the supervised `lmstudio-proxy` on compatibility port `:1234` and tracks the managed LM Studio backend on `:1235`. With managed port ownership enabled (the default), the broker identifies and moves an existing LM Studio server through engine-manager before allowing the proxy to claim `1234`; unknown owners are left untouched and force a warned proxy fallback. Disabling managed ownership preserves explicit custom backend and proxy ports. `lmstudio-proxy:get-status` reports the actual bound port; `lmstudio-proxy:subscribe` / `lmstudio-proxy:unsubscribe` opt into / out of its `lmstudio-proxy:<event>` stream; and any other `lmstudio-proxy:<method>` is relayed verbatim with the prefix stripped (`nodes/list`, `node/select`, `node/add-manual`, `node/remove-manual`, ...). `lmstudio-proxy:shutdown` is refused because the broker owns lifecycle ordering. Workload and error events feed the shared streams exactly as Ollama's do.
+
+#### `llamacpp-proxy:get-status` / `llamacpp-proxy:subscribe` / `llamacpp-proxy:unsubscribe` / `llamacpp-proxy:<method>` (generic relay)
+
+The llama.cpp counterpart of the `proxy:*` surface runs the supervised `llamacpp-proxy` on `:8084` (or a persisted port). There is no managed facade and the broker never binds llama-server's stock `:8082`. `llamacpp-proxy:get-status` reports the actual bound port; `llamacpp-proxy:subscribe` / `llamacpp-proxy:unsubscribe` opt into / out of its `llamacpp-proxy:<event>` stream; and any other `llamacpp-proxy:<method>` is relayed verbatim with the prefix stripped. `llamacpp-proxy:shutdown` is refused because the broker owns lifecycle ordering. Workload and error events feed the shared streams exactly as Ollama's and LM Studio's do. `schedule:priority` for engine `llamacpp` is forwarded as `node/set-priority` on this proxy.
 
 #### `proxy:subscribe`
 
