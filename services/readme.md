@@ -11,8 +11,9 @@ local network: each node advertises itself over mDNS as one consolidated
 node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
-discovery. A node may be running [Ollama](https://ollama.com/), LM Studio, both,
-or neither, and its model inventory is fetched over HTTP from its engine-manager
+discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
+llama.cpp, any combination, or none, and its model inventory is fetched over HTTP
+from its engine-manager
 rather than crammed into mDNS TXT records, which are too small to carry it.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
@@ -35,13 +36,14 @@ see the [root README](../README.md#what-is-supported).
 
 ## Architecture
 
-This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the eleven workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is the thirteenth: a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
+This tree builds fourteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the twelve workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is the fourteenth: a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
 
 | Binary | Role |
 | --- | --- |
 | `nvpair-ui-broker` | Parent service and JSON-RPC API surface used by the bundled UI and other clients. Supervises workers, relays consolidated discovery, and coordinates routing and scheduling. |
 | `ollama-proxy` | Ollama-compatible HTTP reverse proxy. Routes only to advertised model owners, with owner failover and scheduler priorities. |
 | `lmstudio-proxy` | LM Studio counterpart to `ollama-proxy`, forwarding OpenAI-compatible inference routes with equivalent owner-only routing and failover behavior. |
+| `llamacpp-proxy` | llama.cpp counterpart to `lmstudio-proxy`. OpenAI-compatible routes; eligibility is **loaded** models only. Default listen port `8084`; never binds the adopt probe (default `8082`). |
 | `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
 | `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
 | `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
@@ -59,7 +61,7 @@ The mDNS responder is our own rather than the host's, because Windows ships none
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama and LM Studio together. Fresh maximum-GPU utilization is
+node across Ollama, LM Studio, and llama.cpp together. Fresh maximum-GPU utilization is
 smoothed into pressure 0–3; missing or stale telemetry is neutral. Rankings use
 `pending + gpuPressure`, and each proxy adds local reservations before choosing,
 so bursts spread without waiting for workload feedback.
@@ -70,6 +72,7 @@ so bursts spread without waiting for workload feedback.
 nvpair-ui-broker/        Parent service / JSON-RPC API surface
 ollama-proxy/            Ollama-compatible routing proxy
 lmstudio-proxy/          OpenAI-compatible routing proxy for LM Studio
+llamacpp-proxy/          OpenAI-compatible routing proxy for llama.cpp
 nvpair-node-info/        Local GPU-inventory HTTP service
 nvpair-node-scanner/     Consolidated _nvpair-node._tcp discovery daemon
 nvpair-manual-nodes/     Manual-node manager
@@ -84,8 +87,8 @@ shared/                   Shared Go module (nvpair-shared/…)
 eap-noob/                 EAP-NOOB implementation used by cluster pairing
 tests/                    Cross-process integration tests (separate go.mod)
 versions.json             Single source of truth for every component version
-build.bat                 Builds all thirteen binaries (Windows)
-build.sh                  Builds all thirteen binaries (Linux)
+build.bat                 Builds all fourteen binaries (Windows)
+build.sh                  Builds all fourteen binaries (Linux)
 VERSIONING.md             SemVer rules and version-bump workflow
 ```
 
@@ -115,7 +118,7 @@ On Linux and macOS:
 ./build.sh
 ```
 
-Both scripts read `versions.json`, build all thirteen Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
+Both scripts read `versions.json`, build all fourteen Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
 
 Do **not** build individual components by hand without also copying their binaries into `build/bin/`: the broker will silently keep using the older binary there.
 
@@ -190,7 +193,7 @@ cd shared
 go test ./...
 ```
 
-**Every one of the thirteen binaries has tests**, as do `shared/` and
+**Every one of the fourteen binaries has tests**, as do `shared/` and
 `eap-noob/`. Depth varies with how much behaviour a component carries:
 `nvpair-engine-manager` and `nvpair-cluster-manager` have the largest suites,
 while a component with one test file may still hold twenty test functions in it.

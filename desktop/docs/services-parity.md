@@ -24,6 +24,7 @@ history.
 | Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
+| llama.cpp routing          | Complete                        | Adopt-only `llamacpp-proxy` on `8084`; loaded-model eligibility only                                                                            |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
@@ -41,6 +42,7 @@ history.
 
 - `ollama-proxy`;
 - `lmstudio-proxy`;
+- `llamacpp-proxy`;
 - `nvpair-node-scanner`;
 - `nvpair-node-info`;
 - `nvpair-manual-nodes`;
@@ -99,15 +101,16 @@ they survive worker restarts.
 
 ## Routing and inference
 
-Both text-engine proxies are broker-owned and cluster-aware:
+The text-engine proxies are broker-owned and cluster-aware:
 
 - `ollama-proxy` serves the Ollama-compatible surface;
-- `lmstudio-proxy` serves the LM Studio/OpenAI-compatible surface.
+- `lmstudio-proxy` serves the LM Studio/OpenAI-compatible surface;
+- `llamacpp-proxy` serves the llama.cpp/OpenAI-compatible surface (`8084`; loaded models only).
 
 Routing precedence is manual selection, scheduler priority, then deterministic
 proxy ordering. Personal AI Router leaves proxies in automatic mode.
 
-`nvpair-job-scheduler` combines total queued and running workload across both
+`nvpair-job-scheduler` combines total queued and running workload across all
 engines with a smoothed 0–3 GPU-pressure signal. The backend scanner and manual
 node worker provide maximum-GPU utilization, while invalid, missing, or
 older-than-10-second samples receive neutral pressure. The scheduler emits order,

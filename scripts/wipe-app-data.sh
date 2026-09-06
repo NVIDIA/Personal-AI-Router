@@ -148,6 +148,7 @@ PAIR_PROCS=(
   nvpair-ui-broker
   ollama-proxy
   lmstudio-proxy
+  llamacpp-proxy
   nvpair-node-info
   nvpair-node-scanner
   nvpair-manual-nodes

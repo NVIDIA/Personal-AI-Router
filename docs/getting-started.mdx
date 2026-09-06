@@ -33,7 +33,10 @@ inference; two or more on the same local network let you try pairing and routing
 Nothing else has to be in place first:
 
 - **Engines.** PAIR installs and starts Ollama or LM Studio for you in step 4. If
-  an engine is already installed, PAIR detects and uses it instead.
+  an engine is already installed, PAIR detects and uses it instead. llama.cpp is
+  adopt-only: start `llama-server` yourself (PAIR probes port `8082` by default)
+  and PAIR exposes `http://127.0.0.1:8084/v1`. It does not install llama.cpp or
+  load GGUFs. Cluster peers need this PAIR fork to route llama.cpp.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
   eligible node, so a single node holding the model is enough. Prepare the same
   model on additional nodes when you want any of them to be able to serve it.
@@ -157,8 +160,10 @@ For each node that should serve a model:
 ![An engine's model list on the node card, with one model pulling and its progress shown.](assets/onboarding/getting-started/07-add-model.png)
 
 A node is eligible for a request only when it is online, a compatible engine is
-running, and the requested model is available there. To test routing across
-multiple nodes, prepare the same model on each of those nodes.
+running, and the requested model is available there. For llama.cpp the model
+must already be **loaded** on that node's `llama-server`; PAIR does not load
+GGUFs. To test routing across multiple nodes, prepare the same model on each of
+those nodes.
 
 Refer to [Managing engines](engine-lifecycle.mdx) for details about:
 
@@ -191,6 +196,8 @@ engine would normally listen on:
 
 - `11434` for Ollama.
 - `1234` for LM Studio.
+- `8084` for llama.cpp (`llama-server` itself stays on its adopt port, default
+  `8082`).
 
 Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
@@ -219,15 +226,16 @@ The engine therefore has to understand the style you send.
 | --- | --- | --- |
 | Ollama | Works | Works |
 | LM Studio | Works | Not available |
+| llama.cpp | Works | Not available |
 
-**If you are unsure, send the OpenAI-style request.** It works with either engine,
-and most tools and SDKs use it. Use the Ollama style
+**If you are unsure, send the OpenAI-style request.** It works with any of these
+engines, and most tools and SDKs use it. Use the Ollama style
 only when something you already have is written against Ollama's `/api/...` API.
 
 The choice does not affect routing. Both styles are routed across your cluster the
 same way, and neither one changes which node serves the request.
 
-### OpenAI-Style Request (Works With Either Engine)
+### OpenAI-Style Request (Works With Any Engine)
 
 ```bash
 curl <PAIR_BASE_URL>/v1/chat/completions \
@@ -290,11 +298,14 @@ free port.
 | --- | --- |
 | Ollama-compatible proxy | `11434` |
 | LM Studio / OpenAI-compatible proxy | `1234` |
+| llama.cpp / OpenAI-compatible proxy | `8084` |
 
 When PAIR takes one of those ports, the engine behind it moves:
 
 - Ollama moves to `11435` or higher.
 - LM Studio moves to `1235` or higher.
+- llama.cpp does not move: `llama-server` stays on its adopt port (default
+  `8082`). PAIR never binds that port.
 
 **Endpoints** is the authoritative source for the URL to use.
 
@@ -408,6 +419,7 @@ What that base URL serves depends on the engine behind it:
 | --- | --- | --- |
 | Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — and the OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models` |
 | LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible paths only |
+| llama.cpp | `http://127.0.0.1:8084/v1` | The OpenAI-compatible paths only. Completions require the model **loaded** on the serving node; a catalog-only id returns `502`. |
 
 The distinction matters when you fill in an application's settings. A client
 written against the OpenAI API usually wants the `/v1` included, as in
@@ -555,8 +567,10 @@ downloading again.
 Updating keeps your settings, logs, cluster identity, and cluster membership, so
 a node stays paired across an update. Model weights are untouched as well,
 because they belong to the engine rather than to PAIR. Updating PAIR does not
-update Ollama or LM Studio — engines are updated separately from **Engine
-settings**, described in [Managing engines](engine-lifecycle.mdx).
+update Ollama, LM Studio, or llama.cpp — Ollama and LM Studio are updated
+separately from **Engine settings**, described in
+[Managing engines](engine-lifecycle.mdx). PAIR does not update llama.cpp. PAIR does not
+update llama.cpp.
 
 You update each machine from that machine. PAIR never updates a peer for you,
 and it cannot be driven remotely, so a cluster is updated one node at a time.

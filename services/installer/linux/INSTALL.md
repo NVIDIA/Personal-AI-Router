@@ -25,6 +25,7 @@ NVIDIA-Personal-AI-Router-<version>/
 │   ├── nvpair-ui-broker              # primary entry point (JSON-RPC over stdio / IPC)
 │   ├── ollama-proxy
 │   ├── lmstudio-proxy
+│   ├── llamacpp-proxy
 │   ├── nvpair-node-info
 │   ├── nvpair-node-scanner
 │   ├── nvpair-manual-nodes
