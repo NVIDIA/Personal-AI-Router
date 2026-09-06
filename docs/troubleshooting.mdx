@@ -98,6 +98,21 @@ needs no GPU or engine of its own, and its local endpoint routes to nodes that
 have them. Refer to
 [The Endpoint Is Local to the Machine Running PAIR](getting-started.mdx#the-endpoint-is-local-to-the-machine-running-pair).
 
+If the application must stay where it is, the node's operator can enable
+authenticated access with an API key; refer to
+[Reaching PAIR from Another Machine](getting-started.mdx#reaching-pair-from-another-machine).
+The refusal then says what is missing:
+
+- `403` `loopback-only`: the node has no usable key configured. Check the node's
+  log; a key file that other users can read, or that contains a malformed entry,
+  is ignored and the reason is logged.
+- `401` `unauthorized`: the request carried no key, or a key the node does not
+  have. Send it as `Authorization: Bearer <key>` (or `X-Api-Key: <key>`). The
+  node's log shows the first eight hex digits of the SHA-256 of the key it
+  received, so you can tell a missing key from a mistyped one.
+- `403` `source-not-allowed`: the node restricts callers with
+  `NVPAIR_PROXY_ALLOWED_CIDRS` and the application's address is outside it.
+
 For an application on the same machine, copy the URL from
 **Endpoints > API endpoints** rather than assuming a port. PAIR takes the
 engine's usual port for its compatible proxy and moves the engine itself to the
