@@ -75,8 +75,9 @@ func effectiveBind(manifestBind, override string) string {
 
 // Start launches the engine and waits for its readiness probe, then
 // begins the health loop. No-op if already running. It branches on the
-// runtime mode: "process" (spawn + own the process) or "command" (run
-// bring-up commands; liveness comes from the probe).
+// runtime mode: "process" (spawn + own the process), "command" (run
+// bring-up commands; liveness comes from the probe), or "adopt"
+// (identify an already-running listener; never spawn).
 func (e *Executor) Start(ctx context.Context, engine string) error {
 	return e.StartWith(ctx, engine, startOpts{})
 }
@@ -158,6 +159,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 			go e.runHealth(hctx, st, engine, port, gen)
 		}
 		return nil
+	}
+	if rt.modeOrDefault() == "adopt" {
+		return fmt.Errorf("cannot start engine %q: nothing is serving on port %d (PAIR will not launch llama-server)", engine, port)
 	}
 	if presence.Occupied && rt.modeOrDefault() == "process" {
 		return fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName)

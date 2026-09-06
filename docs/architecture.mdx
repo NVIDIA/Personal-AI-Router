@@ -20,18 +20,22 @@ flowchart TB
     NodeB["<b>Node</b>"]
     EngineA1["<b>Engine</b><br/>Ollama"]
     EngineA2["<b>Engine</b><br/>LM Studio"]
+    EngineA3["<b>Engine</b><br/>llama.cpp"]
     EngineB1["<b>Engine</b><br/>Ollama"]
     ModelA1["<b>Models</b><br/>present on this engine"]
     ModelA2["<b>Models</b>"]
+    ModelA3["<b>Models</b>"]
     ModelB1["<b>Models</b>"]
 
     Cluster --- NodeA
     Cluster --- NodeB
     NodeA --- EngineA1
     NodeA --- EngineA2
+    NodeA --- EngineA3
     NodeB --- EngineB1
     EngineA1 --- ModelA1
     EngineA2 --- ModelA2
+    EngineA3 --- ModelA3
     EngineB1 --- ModelB1
 ```
 
@@ -40,9 +44,9 @@ flowchart TB
   one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node, Ollama or LM Studio. A node can
-  run both, one, or neither, and a node with no running engine is not eligible to
-  serve.
+- An **engine** is an inference server on a node: Ollama, LM Studio, or
+  llama.cpp. A node can run any combination, or none, and a node with no running
+  engine is not eligible to serve.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
   model on two nodes is two independent copies and that duplication is what makes
   the two nodes interchangeable for a request.
@@ -314,8 +318,8 @@ ordering reaches a proxy in three steps:
 
 The ranking combines *pending work and GPU pressure*. A workload counts as
 pending while it is queued or running, and it is attributed to the node it was
-placed on. Both engines count together, so Ollama load affects LM Studio ordering
-and vice versa.
+placed on. All engines count together, so Ollama load affects LM Studio and llama.cpp
+ordering and vice versa.
 
 GPU pressure is deliberately coarse. The scheduler smooths the busiest GPU's
 utilization, maps it to 0–3 pressure units at 40%, 70%, and 85%, and uses lower
@@ -358,6 +362,8 @@ When an inference request contains a non-empty model, only nodes whose current
 inventory for that engine advertises the model enter the failover list. An empty
 inventory and an inventory that lists other models are both ineligible. Ollama's
 implicit `:latest` tag is normalized; LM Studio model IDs match exactly.
+llama.cpp is stricter: only models **loaded** on the serving node are eligible,
+not ids that are merely present on disk.
 
 If no advertised owner is routable, the proxy returns an actionable local `502`
 without sending the request to an engine. It does not broaden the candidate list
@@ -418,20 +424,22 @@ the same node.
 are the same unit of pending work, so "fewest jobs" is not "least busy." A node
 running one enormous request looks more idle than a node running two trivial ones.
 
-**Model load state is not considered.** Eligibility asks whether a node *has* the
-model, not whether it is already loaded in memory. PAIR knows which models are
-loaded, and the interface shows it, but routing does not use it, so a request can
-be sent to a node that must cold-load the model while a node holding it warm sits
-one place lower in the order.
+**Model load state is not considered for Ollama and LM Studio.** Eligibility
+asks whether a node *has* the model, not whether it is already loaded in memory.
+PAIR knows which models are loaded, and the interface shows it, but those two
+engines do not use load state for routing, so a request can be sent to a node
+that must cold-load the model while a node holding it warm sits one place lower
+in the order. llama.cpp is the exception: routing requires the model already
+loaded, so PAIR never triggers a GGUF swap.
 
 **Only work PAIR routed contributes to pending counts.** Inference sent straight
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**Both engines are counted as one pool.** Ollama and LM Studio load is summed,
-and maximum GPU pressure applies to the whole node. That is conservative on a
-typical single-GPU machine and can underuse a multi-GPU node where the engines
-occupy different devices.
+**All engines are counted as one pool.** Ollama, LM Studio, and llama.cpp load is
+summed, and maximum GPU pressure applies to the whole node. That is conservative
+on a typical single-GPU machine and can underuse a multi-GPU node where the
+engines occupy different devices.
 
 **Every node ranks from its own view, and views lag.** There is no shared
 schedule. Two nodes dispatching at the same moment can briefly steer work to the
@@ -457,18 +465,22 @@ reports from real deployments are more useful than guesses. Refer to
 
 `nvpair-engine-manager` owns everything about a local engine except serving
 inference. It finds the engine, installs it, starts and stops it, and chooses the
-port it listens on.
+port it listens on. llama.cpp is adopt-only: PAIR probes an already-running
+`llama-server` and never installs, starts, stops, or loads GGUFs.
 
 ### Finding an Engine
 
 PAIR does not assume it installed the engine. Detection checks the manifest's
-known install locations for each engine, so an Ollama or LM Studio you installed
-yourself is found where it already is. "Installing" an engine that is already
-present downloads nothing and reports it as installed.
+known install locations for each engine, so an Ollama, LM Studio, or llama.cpp
+`llama-server` you installed yourself is found where it already is. "Installing"
+an engine that is already present downloads nothing and reports it as installed.
+llama.cpp has no install path: PAIR only reports it installed when a binary or a
+healthy adopt probe (default port `8082`) is present.
 
 Starting is similarly deferential. If something is already serving the engine's
 port, PAIR **adopts** that instance instead of spawning a second copy, and reports
-it as running even though it did not start it.
+it as running even though it did not start it. For llama.cpp, adopt is the only
+start path.
 
 Adoption is a real distinction, not a label. PAIR cannot stop or move a process
 it did not start, so it refuses operations that need process ownership rather
@@ -484,7 +496,8 @@ listened somewhere else, every tool would need reconfiguring to gain anything, s
 PAIR inverts it: the **proxy** takes the port the engine would normally use, and
 the engine moves behind it — Ollama to `11435` and upwards, LM Studio to `1235`
 and upwards. Existing clients keep working untouched and transparently gain the
-cluster.
+cluster. llama.cpp is different: the proxy listens on `8084` and `llama-server`
+stays on its adopt port (default `8082`). PAIR never binds the adopt port.
 
 This is also what makes the engine unreachable from outside. Engines PAIR starts
 bind to loopback, so the only network-facing listener is the proxy, which is where
@@ -522,6 +535,7 @@ A default installation listens on these ports:
 | --- | --- |
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
+| `8084` | OpenAI-compatible proxy for llama.cpp (`llama-server` stays on its adopt port, default `8082`) |
 | `14318` | Node hardware and model inventory |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
@@ -550,8 +564,8 @@ browsing themselves.
 The scanner advertises one `_nvpair-node._tcp` multicast DNS (mDNS) record for
 each host, and that record carries two kinds of content:
 
-- The ports its sibling services registered: node-info, both proxies, errors,
-  workloads, cluster manager, and engine manager
+- The ports its sibling services registered: node-info, the inference proxies,
+  errors, workloads, cluster manager, and engine manager
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
   reach it — `ip=` for the address the node ranks first, and `ips=` for the whole
   ranked list
@@ -707,7 +721,7 @@ desktop build compiles the sibling tree directly.
 | Build In | Output | Contents |
 | --- | --- | --- |
 | `desktop/` | `desktop/cli-bin/` | What the app supervises, one OS/arch |
-| `services/` | `services/build/bin/` | All 13 executables, for standalone use |
+| `services/` | `services/build/bin/` | All 14 executables, for standalone use |
 
 `desktop/scripts/build-modular-binaries.ts` compiles the runtime inventory for a
 selected target and writes a manifest recording the source identity, versions,

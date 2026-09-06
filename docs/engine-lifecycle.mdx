@@ -6,10 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
-install and run those engines for you, or work with a copy you already have.
-This page explains what you can expect when you install, start, stop, update, or
-remove an engine.
+run models. Today that means Ollama, LM Studio, or llama.cpp on a given machine.
+PAIR can install and run Ollama and LM Studio for you, or work with a copy you
+already have. llama.cpp is adopt-only: PAIR never installs it, never starts or
+stops `llama-server`, and never loads GGUFs. This page explains what you can
+expect when you install, start, stop, update, or remove an engine.
 
 For first-time setup, refer to [Getting started](getting-started.mdx). If
 something does not start, refer to [Troubleshooting](troubleshooting.mdx).
@@ -77,6 +78,12 @@ When you install an engine, consider the following:
 - If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
   that install instead of downloading another copy. Adoption helps when the
   usual engine port is already in use.
+- llama.cpp is always adopted. PAIR probes an already-running `llama-server`
+  (default port `8082`) and does not download, spawn, or load anything. There is
+  no install, update, uninstall, load, or eject action for it. Applications talk
+  to PAIR at `http://127.0.0.1:8084/v1`. Routing requires the requested model to
+  already be **loaded** on the serving node. Cluster peers need this PAIR fork to
+  advertise llama.cpp.
 
 To download models:
 
@@ -99,7 +106,8 @@ engine.
 
 An engine must be **running** before **Endpoints** or your applications can use
 its models. If **Endpoints** says **No engines are running**, start an engine
-first.
+first. For llama.cpp, start `llama-server` yourself; PAIR's switch only reports
+whether the adopt probe succeeded.
 
 ## Updating and Uninstalling an Engine
 
@@ -128,6 +136,9 @@ controlled:
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
   instance that way and restart it on the port you chose.
+- **llama.cpp** is never started or stopped by PAIR. Change its port on
+  `llama-server` itself; PAIR's adopt probe follows the configured probe port
+  (default `8082`).
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.
@@ -181,7 +192,8 @@ working with **models** (download, load, unload, and delete):
 | Remove a downloaded model | **Delete**, where the engine supports it |
 
 **Eject** removes a model from memory only. The download stays, and **Load**
-brings it back without fetching it again.
+brings it back without fetching it again. llama.cpp has no Load, Eject, or
+Delete in PAIR: load GGUFs in `llama-server` itself.
 
 ![An engine's model list showing the Load, Eject, and Delete actions against a downloaded model.](assets/onboarding/engine-lifecycle/04-model-actions.png)
 

@@ -23,6 +23,11 @@ func canMoveAdoptedEngine(rt Runtime) bool {
 // the port survives a restart with no separate override store. Held under the
 // engine's op lock so it can't interleave with another lifecycle op.
 //
+// Adopt-mode engines only retarget the loopback probe: the persisted port
+// changes and a later start/status identifies whatever is already listening
+// there. PAIR never stops the foreign listener or binds a new one. A probe
+// that finds nothing on the new port is not a SetPort failure.
+//
 // A running, adopted process-mode engine is refused. An identified command-mode
 // engine may be moved only when its manifest provides an official stop command.
 func (e *Executor) SetPort(ctx context.Context, engine string, port int) (EngineStatus, error) {
@@ -44,6 +49,24 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 	adopted := st.adopted
 	oldPort := st.port
 	st.mu.Unlock()
+
+	if st.plat.Runtime.modeOrDefault() == "adopt" {
+		if err := e.persistPort(engine, port); err != nil {
+			return EngineStatus{}, err
+		}
+		st.mu.Lock()
+		st.port = port
+		if st.plat != nil {
+			st.plat.Runtime.Port = port
+		}
+		st.mu.Unlock()
+		if wasRunning {
+			_ = e.doStart(ctx, st, engine, startOpts{})
+		} else {
+			e.emitState(engine)
+		}
+		return e.snapshot(engine, st), nil
+	}
 
 	// Adopted process-mode engines and command-mode engines without an official
 	// stop command remain externally managed. Refuse rather than killing an

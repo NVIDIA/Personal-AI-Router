@@ -6,6 +6,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -243,6 +246,41 @@ func TestSetPortRejectsCommandEngineWithoutStopCommand(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ex.overrideDir, "external.json")); !os.IsNotExist(err) {
 		t.Fatalf("rejected command engine persisted an override: %v", err)
+	}
+}
+
+func TestSetPortAdoptModeDoesNotStopListener(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	oldPort, _ := strconv.Atoi(u.Port())
+
+	ex := newTestExecutor(t, adoptManifest(oldPort))
+	ex.overrideDir = t.TempDir()
+	if err := ex.Start(context.Background(), "llamacpp"); err != nil {
+		t.Fatal(err)
+	}
+	before := hits
+	_, err := ex.SetPort(context.Background(), "llamacpp", oldPort+1)
+	if err != nil {
+		t.Fatalf("set-port adopt: %v", err)
+	}
+	resp, err := http.Get(srv.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("foreign listener died: %v", err)
+	}
+	resp.Body.Close()
+	st, _ := ex.Status("llamacpp")
+	if st.Port != oldPort+1 {
+		t.Fatalf("port = %d, want %d", st.Port, oldPort+1)
+	}
+	if hits < before {
+		t.Fatal("listener should still be reachable on the old port")
 	}
 }
 

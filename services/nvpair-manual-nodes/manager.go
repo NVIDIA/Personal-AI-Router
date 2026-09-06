@@ -112,9 +112,17 @@ type ManualNodeStatus struct {
 	// LM Studio is probed on its default OpenAI-API port the same way Ollama
 	// is on 11434, so a manually-added node running LM Studio can be bridged
 	// into lmstudio-proxy by a supervising broker.
-	LMStudioUp     bool        `json:"lmstudio_up"`
-	LMStudioPort   int         `json:"lmstudio_port"`
-	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
+	LMStudioUp     bool     `json:"lmstudio_up"`
+	LMStudioPort   int      `json:"lmstudio_port"`
+	LMStudioModels []string `json:"lmstudio_models,omitempty"`
+	// llama.cpp is probed on its default OpenAI-API port (8082) the same way
+	// LM Studio is on 1234. llamacpp_models is the loaded subset only
+	// (status.value == "loaded"); a 200 from GET /v1/models still counts as
+	// up when that set is empty so a supervising broker can bridge the node
+	// into llamacpp-proxy.
+	LlamaCppUp     bool        `json:"llamacpp_up"`
+	LlamaCppPort   int         `json:"llamacpp_port"`
+	LlamaCppModels []string    `json:"llamacpp_models,omitempty"`
 	NodeInfoUp     bool        `json:"node_info_up"`
 	NodeInfoPort   int         `json:"node_info_port"`
 	TLSEnabled     bool        `json:"tls_enabled,omitempty"`
@@ -138,12 +146,11 @@ type trackedNode struct {
 	entry  ManualEntry
 	status ManualNodeStatus
 
-	// consecutiveFails counts back-to-back probes where neither
-	// service answered (OllamaUp && NodeInfoUp both false). Reset
-	// to 0 on any probe where at least one service responded.
-	// Used to gate probe-failed errors:report emits at
-	// probeFailThreshold so a single transient failure doesn't
-	// generate UI noise.
+	// consecutiveFails counts back-to-back probes where no engine
+	// and no node-info answered (reachable is false). Reset to 0
+	// on any probe where at least one service responded. Used to
+	// gate probe-failed errors:report emits at probeFailThreshold
+	// so a single transient failure doesn't generate UI noise.
 	consecutiveFails int
 }
 
@@ -253,6 +260,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 
 	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
 	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
+	llamaCppUp, llamaCppModels := m.probeLlamaCpp(addr, llamaCppPort)
 
 	// Pick scheme + port + client based on the entry's TLS hint.
 	// The operator decides which scheme this manual node uses; we
@@ -290,6 +298,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		LMStudioUp:     lmStudioUp,
 		LMStudioPort:   lmStudioPort,
 		LMStudioModels: lmStudioModels,
+		LlamaCppUp:     llamaCppUp,
+		LlamaCppPort:   llamaCppPort,
+		LlamaCppModels: llamaCppModels,
 		NodeInfoUp:     nodeInfoUp,
 		NodeInfoPort:   nodeInfoPort,
 		TLSEnabled:     entry.TLSPort > 0,
@@ -302,7 +313,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		HostUUID:       info.HostUUID,
 	}
 
-	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
+	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.LlamaCppUp || newStatus.NodeInfoUp
 
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
@@ -331,10 +342,12 @@ func (m *Manager) probeNode(entry ManualEntry) {
 
 	changed := prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
+		prev.LlamaCppUp != newStatus.LlamaCppUp ||
 		prev.NodeInfoUp != newStatus.NodeInfoUp ||
 		prev.HostUUID != newStatus.HostUUID ||
 		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
 		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
+		!sliceEqual(prev.LlamaCppModels, newStatus.LlamaCppModels) ||
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
@@ -441,6 +454,59 @@ func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
 		}
 	}
 	slog.Debug("manual probe lmstudio up",
+		"addr", addr, "port", port, "models", len(models),
+		"duration_ms", time.Since(start).Milliseconds())
+	return true, models
+}
+
+// llamaCppPort is llama.cpp's default OpenAI-API server port, probed the same
+// way LM Studio is hardcoded to 1234. A manual node is remote, so (like the
+// other engines) we assume the engine's default port rather than resolving it
+// via the engine manager (which only governs the local engine).
+const llamaCppPort = 8082
+
+// probeLlamaCpp checks llama-server's OpenAI-compatible API on addr:port. A
+// single GET /v1/models doubles as the liveness check and the model list.
+// Only ids whose status.value is "loaded" are returned — a missing status is
+// treated as not loaded — so the broker bridges a routing-eligible set into
+// llamacpp-proxy. A 200 still reports the node up when that set is empty.
+func (m *Manager) probeLlamaCpp(addr string, port int) (bool, []string) {
+	url := "http://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
+	start := time.Now()
+	resp, err := m.client.Get(url)
+	if err != nil {
+		slog.Debug("manual probe llamacpp failed",
+			"addr", addr, "port", port, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		return false, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("manual probe llamacpp non-OK",
+			"addr", addr, "port", port, "status", resp.StatusCode,
+			"duration_ms", time.Since(start).Milliseconds())
+		return false, nil
+	}
+	var result struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Status struct {
+				Value string `json:"value"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// Reachable, but the model list didn't parse — still report it up.
+		slog.Debug("manual probe llamacpp up (models parse failed)",
+			"addr", addr, "port", port, "err", err)
+		return true, nil
+	}
+	models := make([]string, 0, len(result.Data))
+	for _, d := range result.Data {
+		if d.ID != "" && d.Status.Value == "loaded" {
+			models = append(models, d.ID)
+		}
+	}
+	slog.Debug("manual probe llamacpp up",
 		"addr", addr, "port", port, "models", len(models),
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, models

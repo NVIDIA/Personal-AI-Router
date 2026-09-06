@@ -86,6 +86,18 @@ func TestExtractStrings(t *testing.T) {
 			spec: &ActionResult{Array: "models", Field: "key", Match: &ResultMatch{Field: "loaded_instances", Nonempty: true}},
 			want: []string{"a"},
 		},
+		{
+			name: "dotted status.value keeps only loaded llama.cpp rows",
+			raw:  `{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"unloaded"}},{"id":"c"},{"id":"d","status":{"value":"loaded"}}]}`,
+			spec: &ActionResult{Array: "data", Field: "id", Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}}},
+			want: []string{"a", "d"},
+		},
+		{
+			name: "dotted match: missing status is unloaded",
+			raw:  `{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b"}]}`,
+			spec: &ActionResult{Array: "data", Field: "id", Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}}},
+			want: []string{"a"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

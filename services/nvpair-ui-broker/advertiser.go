@@ -14,14 +14,16 @@ import (
 )
 
 const (
-	// defaultOllamaPort / defaultLMStudioPort are the engines' stock ports,
-	// used ONLY as a fallback when engine-manager can't report the real one.
-	// Never hardcode the advertise/health port: the product-default proxy takes
-	// Ollama's :11434, so a fixed :11434 would advertise the proxy
-	// as Ollama and make the proxy (and peers) self-forward into a loop. The
-	// real port is resolved per poll via localEnginePort.
-	defaultOllamaPort   = 11434
-	defaultLMStudioPort = 1234
+	// defaultOllamaPort / defaultLMStudioPort / defaultLlamaCppPort are the
+	// engines' stock ports, used ONLY as a fallback when engine-manager can't
+	// report the real one. Never hardcode the advertise/health port: the
+	// product-default proxy takes Ollama's :11434, so a fixed :11434 would
+	// advertise the proxy as Ollama and make the proxy (and peers) self-forward
+	// into a loop. The real port is resolved per poll via localEnginePort.
+	defaultOllamaPort        = 11434
+	defaultLMStudioPort      = 1234
+	defaultLlamaCppPort      = 8082
+	defaultLlamaCppProxyPort = 8084
 
 	// engineManagerHTTPPort is the fixed LAN port the broker tells
 	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
@@ -181,6 +183,51 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	}
 }
 
+// runAutoAdvertiseLlamaCpp is the llama.cpp sibling of runAutoAdvertiseLMStudio:
+// it polls the local llama-server and reconciles this node's lc service
+// registration against it. Kept parallel to the other engines rather than
+// folded into them: the three are a deliberate temporary set, to be unified
+// when the proxies are.
+func (b *Broker) runAutoAdvertiseLlamaCpp(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseLlamaCpp(client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseLlamaCpp(client)
+		}
+	}
+}
+
+// reconcileAdvertiseLlamaCpp brings this node's lc registration into line with
+// the local llama.cpp server, mirroring reconcileAdvertiseLMStudio: it
+// advertises the promoted proxy port (never the engine) and hands the engine's
+// loopback port to llamacpp-proxy via node/set-local-backend. There is no
+// managed facade, so equal proxy/engine ports are a hard refuse rather than a
+// cached-backend recovery.
+func (b *Broker) reconcileAdvertiseLlamaCpp(client *http.Client) {
+	enginePort, probe := b.localEnginePort("llamacpp", defaultLlamaCppPort)
+	proxyPort := b.llamaCppProxyListenPort()
+	if proxyPort != 0 && enginePort == proxyPort {
+		enginePort = 0
+		probe = false
+	}
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkLlamaCppHealth(client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceLlamaCpp, Port: proxyPort})
+		b.setProxyLocalBackend(b.getLlamaCppProxy(), "llamacpp", enginePort, true)
+	} else {
+		b.unregisterService(noderec.ServiceLlamaCpp)
+		b.setProxyLocalBackend(b.getLlamaCppProxy(), "llamacpp", enginePort, false)
+	}
+}
+
 // proxyLocalBackend is the node/set-local-backend payload: the loopback engine
 // the proxy's cluster mTLS ingress forwards to, and the proxy's own self
 // candidate on the local routing path.
@@ -261,6 +308,18 @@ func (b *Broker) lmstudioProxyListenPort() int {
 	return 0
 }
 
+// llamaCppProxyListenPort is the llama.cpp sibling of proxyListenPort. Equal
+// proxy/engine ports are refused so the broker never advertises lc at the
+// proxy's own listener or hands that listener back as the local backend.
+func (b *Broker) llamaCppProxyListenPort() int {
+	if p := b.getLlamaCppProxy(); p != nil {
+		if ready, port := p.Status(); ready {
+			return port
+		}
+	}
+	return 0
+}
+
 // checkOllamaHealth reports whether a local ollama server is answering on the
 // given port. A plain GET of the root that returns 200 is ollama's liveness
 // convention. The port is resolved per poll (see
@@ -280,6 +339,20 @@ func checkOllamaHealth(client *http.Client, port int) bool {
 // is resolved per poll (see localEnginePort), not hardcoded, so the proxy is
 // never mistaken for LM Studio.
 func checkLMStudioHealth(client *http.Client, port int) bool {
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// checkLlamaCppHealth reports whether a local llama-server is answering on the
+// given port. llama.cpp serves the OpenAI-compatible API, so a 200 from
+// /v1/models is its liveness signal. The port is resolved per poll (see
+// localEnginePort), not hardcoded, so the proxy is never mistaken for the
+// engine.
+func checkLlamaCppHealth(client *http.Client, port int) bool {
 	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
 	if err != nil {
 		return false

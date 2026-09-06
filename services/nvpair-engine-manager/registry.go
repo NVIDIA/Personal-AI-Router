@@ -112,6 +112,9 @@ type Fetch struct {
 //   - "command": the engine is a daemon brought up/down by commands
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
+//   - "adopt": the engine is an already-running service this process
+//     never launches; Start identifies it via the ready probe and
+//     fails if nothing is serving. Bin and start are forbidden.
 type Runtime struct {
 	Mode  string            `json:"mode,omitempty"`
 	Bin   string            `json:"bin,omitempty"`
@@ -577,8 +580,18 @@ func (p *Platform) validate(key string) error {
 		if len(p.Runtime.Start) == 0 {
 			return fmt.Errorf("platform %q: runtime.start is required in command mode", key)
 		}
+	case "adopt":
+		if strings.TrimSpace(p.Runtime.Bin) != "" {
+			return fmt.Errorf("platform %q: runtime.bin is forbidden in adopt mode", key)
+		}
+		if len(p.Runtime.Start) != 0 {
+			return fmt.Errorf("platform %q: runtime.start is forbidden in adopt mode", key)
+		}
+		if p.Runtime.Ready == nil {
+			return fmt.Errorf("platform %q: runtime.ready is required in adopt mode", key)
+		}
 	default:
-		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
+		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\", \"command\", or \"adopt\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
 		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || len(p.Install.Run) > 0) {

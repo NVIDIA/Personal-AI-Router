@@ -53,7 +53,7 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 			restore <- msg.Method
 		}
 	}()
-	advertised := make(chan string, 2)
+	advertised := make(chan string, 3)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan bool, 1)
@@ -62,6 +62,7 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 			ctx,
 			func(context.Context) { advertised <- "ollama" },
 			func(context.Context) { advertised <- "lmstudio" },
+			func(context.Context) { advertised <- "llamacpp" },
 		)
 	}()
 
@@ -91,12 +92,12 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 		t.Fatal("enabled-engine restore did not run after both proxy outcomes")
 	}
 	seen := map[string]bool{}
-	for len(seen) < 2 {
+	for len(seen) < 3 {
 		select {
 		case got := <-advertised:
 			seen[got] = true
 		case <-time.After(2 * time.Second):
-			t.Fatalf("advertising did not start for both engines: %v", seen)
+			t.Fatalf("advertising did not start for all engines: %v", seen)
 		}
 	}
 	if !<-done {
@@ -124,15 +125,20 @@ func (h *orderedLifecycleHandle) Stop() {
 }
 
 func TestInferenceShutdownStopsProxiesBeforeEngines(t *testing.T) {
-	order := make(chan string, 3)
+	order := make(chan string, 4)
 	ollama := newOrderedLifecycleHandle("ollama-proxy", order)
 	lmstudio := newOrderedLifecycleHandle("lmstudio-proxy", order)
+	llamacpp := newOrderedLifecycleHandle("llamacpp-proxy", order)
 	proxySup := newSupervisor("proxy", noRestartPolicy(), func() (supervisedHandle, error) { return ollama, nil })
 	lmstudioSup := newSupervisor("lmstudio-proxy", noRestartPolicy(), func() (supervisedHandle, error) { return lmstudio, nil })
+	llamaCppSup := newSupervisor("llamacpp-proxy", noRestartPolicy(), func() (supervisedHandle, error) { return llamacpp, nil })
 	if err := proxySup.Start(); err != nil {
 		t.Fatal(err)
 	}
 	if err := lmstudioSup.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := llamaCppSup.Start(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -151,13 +157,13 @@ func TestInferenceShutdownStopsProxiesBeforeEngines(t *testing.T) {
 		_ = codec.Respond(msg.ID, nil)
 	}()
 
-	b := &Broker{proxySup: proxySup, lmstudioProxySup: lmstudioSup}
+	b := &Broker{proxySup: proxySup, lmstudioProxySup: lmstudioSup, llamaCppProxySup: llamaCppSup}
 	b.setEngineMgr(engine)
 	b.shutdownInferenceStack()
 
-	got := []string{<-order, <-order, <-order}
-	if got[0] != "lmstudio-proxy" || got[1] != "ollama-proxy" || got[2] != "engine-manager" {
-		t.Fatalf("shutdown order = %v, want [lmstudio-proxy ollama-proxy engine-manager]", got)
+	got := []string{<-order, <-order, <-order, <-order}
+	if got[0] != "llamacpp-proxy" || got[1] != "lmstudio-proxy" || got[2] != "ollama-proxy" || got[3] != "engine-manager" {
+		t.Fatalf("shutdown order = %v, want [llamacpp-proxy lmstudio-proxy ollama-proxy engine-manager]", got)
 	}
 }
 

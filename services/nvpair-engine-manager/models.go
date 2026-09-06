@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -216,14 +217,37 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 	return out, true
 }
 
+// lookupField walks a dotted Field path (e.g. "status.value") through nested
+// JSON objects. A missing segment or a non-object intermediate returns ok=false.
+func lookupField(el map[string]json.RawMessage, field string) (json.RawMessage, bool) {
+	obj := el
+	parts := strings.Split(field, ".")
+	for i, part := range parts {
+		fv, ok := obj[part]
+		if !ok {
+			return nil, false
+		}
+		if i == len(parts)-1 {
+			return fv, true
+		}
+		next := map[string]json.RawMessage{}
+		if err := json.Unmarshal(fv, &next); err != nil {
+			return nil, false
+		}
+		obj = next
+	}
+	return nil, false
+}
+
 // matchRow reports whether an element passes an ActionResult row filter.
-// With Match.In set, Match.Field must decode as a JSON string equal to one of
-// In. With Match.Nonempty set, Match.Field must decode as a JSON array with
+// Match.Field may be a dotted path into nested objects (e.g. "status.value").
+// With Match.In set, the resolved field must decode as a JSON string equal to
+// one of In. With Match.Nonempty set, it must decode as a JSON array with
 // length > 0 (LM Studio /api/v1/models loaded_instances). A missing or
 // wrong-typed field fails the match, so a row we cannot classify is excluded
 // rather than counted as loaded.
 func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
-	fv, ok := el[m.Field]
+	fv, ok := lookupField(el, m.Field)
 	if !ok {
 		return false
 	}

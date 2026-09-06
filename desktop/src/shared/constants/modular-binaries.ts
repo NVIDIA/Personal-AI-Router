@@ -6,6 +6,7 @@ import type { SupportedPlatform } from '@/shared/types/platform'
 export type ModularProcessName =
     | 'proxy'
     | 'lmstudio-proxy'
+    | 'llamacpp-proxy'
     | 'broker'
     | 'node-info'
     | 'scanner'
@@ -70,6 +71,19 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         // access to be reachable.
         processName: 'lmstudio-proxy',
         baseName: 'lmstudio-proxy',
+        args: [],
+        launchOwner: 'broker',
+        needsFirewallAccess: true,
+        optional: true
+    },
+    {
+        // llama.cpp reverse proxy — the llama.cpp counterpart of `lmstudio-proxy`,
+        // supervised the same way and relayed under the `llamacpp-proxy:`
+        // namespace (`--llamacpp-proxy-path`). Like the other inference proxies
+        // it binds its HTTP listener on all interfaces, so it needs firewall
+        // access to be reachable.
+        processName: 'llamacpp-proxy',
+        baseName: 'llamacpp-proxy',
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: true,

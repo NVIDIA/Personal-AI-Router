@@ -35,9 +35,10 @@ These terms have specific meanings in PAIR:
   is no server, controller, or primary node.
 - **Cluster** — the set of nodes you have paired together. A node belongs to at
   most one cluster, and it must leave before it can join another.
-- **Engine** — the local inference server that runs models: Ollama or LM Studio.
-  PAIR can install, start, stop, and update an engine, or adopt one you already
-  run yourself.
+- **Engine** — the local inference server that runs models: Ollama, LM Studio,
+  or llama.cpp. PAIR can install, start, stop, and update Ollama and LM Studio,
+  or adopt an engine you already run yourself. llama.cpp is adopt-only: PAIR
+  never installs it or loads GGUFs.
 - **Model** — what you prepare on each node. Nodes do not share models, so a
   node can serve a request only for a model it already holds. Preparing the same
   model on several nodes is what makes those nodes interchangeable.
@@ -121,7 +122,8 @@ For the trust boundaries in detail, refer to
 
 - A local endpoint for compatible AI applications and development tools.
 - LAN discovery plus manually configured nodes.
-- Ollama-compatible and LM Studio/OpenAI-compatible routing proxies.
+- Ollama-compatible and OpenAI-compatible (LM Studio and llama.cpp) routing
+  proxies.
 - Pairing and cluster membership managed by the background services.
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between machines: a request sent to another node travels over
@@ -163,10 +165,11 @@ It stages the generated binaries in `desktop/cli-bin/`.
 
 ### `services/`
 
-The Go tree contains 13 build outputs:
+The Go tree contains 14 build outputs:
 
 - `nvpair-ui-broker`: service entry point, worker supervisor, and JSON-RPC API
-- `ollama-proxy` and `lmstudio-proxy`: compatible inference proxies
+- `ollama-proxy`, `lmstudio-proxy`, and `llamacpp-proxy`: compatible inference
+  proxies
 - `nvpair-node-scanner` and `nvpair-node-info`: discovery and host telemetry
 - `nvpair-manual-nodes`: user-specified nodes
 - `nvpair-engine-manager`: local engine and model lifecycle

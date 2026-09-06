@@ -23,6 +23,9 @@ func TestLocalEnginePortFallback(t *testing.T) {
 	if got, ok := b.localEnginePort("lmstudio", defaultLMStudioPort); !ok || got != defaultLMStudioPort {
 		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultLMStudioPort)
 	}
+	if got, ok := b.localEnginePort("llamacpp", defaultLlamaCppPort); !ok || got != defaultLlamaCppPort {
+		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultLlamaCppPort)
+	}
 }
 
 func TestRunningEnginePort(t *testing.T) {

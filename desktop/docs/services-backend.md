@@ -23,6 +23,7 @@ broker supervises every worker and relays its control plane.
 | `nvpair-ui-broker`        | Worker supervision and relay                              |
 | `ollama-proxy`            | Ollama-compatible routing proxy with cluster-mTLS ingress |
 | `lmstudio-proxy`          | LM Studio routing proxy with cluster-mTLS ingress         |
+| `llamacpp-proxy`          | llama.cpp routing proxy with cluster-mTLS ingress         |
 | `nvpair-node-scanner`     | Discovery and node announcement                           |
 | `nvpair-node-info`        | Node metadata and telemetry                               |
 | `nvpair-manual-nodes`     | User-managed node entries                                 |
@@ -45,7 +46,7 @@ flowchart TB
     Broker["nvpair-ui-broker"]
     Scanner["nvpair-node-scanner"]
     NodeInfo["nvpair-node-info"]
-    Proxies["ollama-proxy / lmstudio-proxy"]
+    Proxies["ollama-proxy / lmstudio-proxy / llamacpp-proxy"]
     Engines["nvpair-engine-manager"]
     Cluster["nvpair-cluster-manager"]
     Settings["nvpair-node-settings"]
@@ -90,8 +91,8 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
-asynchronous capability signal. Personal AI Router waits up to the canonical
+service connection, while Ollama, LM Studio, and llama.cpp proxy readiness
+remains an asynchronous capability signal. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
 Settings > Service with retry and log access. If a stalled broker reports ready
@@ -117,7 +118,7 @@ reserved for inference clients.
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `proxy:ready` / `lmstudio-proxy:ready`               | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `proxy:ready` / `lmstudio-proxy:ready` / `llamacpp-proxy:ready` | Record engine proxy port                                                                                                 | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:install-progress` / `engine:remote-progress` | Update operation progress                                                                                                       | engine progress pushes                                    |
@@ -128,7 +129,7 @@ reserved for inference clients.
 | `nodes:changed`                                      | Replace membership snapshot                                                                                                     | `nodes:changed`                                           |
 | `workloads:upsert` / `workloads:remove`              | Update workload catalog                                                                                                         | workload pushes                                           |
 
-`nvpair-job-scheduler` combines queued and running work across both engines with
+`nvpair-job-scheduler` combines queued and running work across all engines with
 a smoothed 0–3 pressure from the busiest GPU. Invalid, missing, or
 older-than-10-second telemetry receives neutral pressure. It emits
 `schedule:priority` with order, pending count, and pressure; the broker applies
@@ -150,8 +151,11 @@ waiting for authoritative state. Pending state clears on matching engine state,
 progress, or error pushes.
 
 Local engine operations include install, start, stop, uninstall, update, port
-changes, and model actions. Remote cluster operations use the engine manager's
-remote control surface where supported.
+changes, and model actions. llama.cpp is adopt-only: PAIR probes an
+already-running `llama-server` (default `8082`) and does not install, spawn, or
+load GGUFs. The app endpoint is `http://127.0.0.1:8084/v1`; routing requires the
+model **loaded** on the serving node. Remote cluster operations use the engine
+manager's remote control surface where supported.
 
 `engine:stop` (and its cluster `ec` equivalent) reclaims an orphan a prior run
 left on the engine's own managed port, terminating it only when that PID is
@@ -263,7 +267,7 @@ resolved back to the hostname the entry was keyed by.
 
 An NVPAIR-launched engine binds to loopback only and is never directly
 LAN-reachable. Each node fronts its engine with its `ollama-proxy` /
-`lmstudio-proxy`, whose LAN ingress is gated by cluster mTLS: only a pinned
+`lmstudio-proxy` / `llamacpp-proxy`, whose LAN ingress is gated by cluster mTLS: only a pinned
 cluster member can send it work. Discovery advertises the promoted **proxy**
 port (never the engine port), and the broker hands the private loopback engine to
 the local proxy via `node/set-local-backend`. Every cluster-scoped worker derives

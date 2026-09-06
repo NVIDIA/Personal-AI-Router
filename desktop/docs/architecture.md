@@ -44,6 +44,7 @@ The canonical runtime inventory is
 | `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay  |
 | `ollama-proxy`            | Broker           | Ollama-compatible proxy and cluster routing |
 | `lmstudio-proxy`          | Broker, optional | LM Studio OpenAI-compatible proxy           |
+| `llamacpp-proxy`          | Broker, optional | llama.cpp OpenAI-compatible proxy           |
 | `nvpair-node-scanner`     | Broker           | LAN discovery and announcement              |
 | `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint        |
 | `nvpair-workload-manager` | Broker, optional | Workload replication                        |
@@ -110,7 +111,7 @@ subscribes to broker relays after `app:ready`, and converts backend responses
 into stable UI contracts.
 
 Electron reports the service connected after broker `app:ready`. The
-broker-owned Ollama and LM Studio proxies remain asynchronous capabilities; a
+broker-owned Ollama, LM Studio, and llama.cpp proxies remain asynchronous capabilities; a
 late or failed proxy does not misreport the broker startup as failed. If
 `app:ready` does not arrive within the startup deadline, Overview opens Settings
 
@@ -195,16 +196,18 @@ Engine lifecycle and model operations flow through the broker's `engine:*`
 relay to `nvpair-engine-manager`. The renderer identifies engines with the
 closed `EngineType` union and narrows external strings with `isEngineType()`.
 
-The Ollama and LM Studio proxies are cluster-aware. For model-bearing inference,
-each proxy first keeps only nodes whose per-engine discovery inventory advertises
-the requested model. Empty and non-matching inventories are excluded; an empty
-owner set returns a local `502`. Routing precedence within the eligible set is:
+The Ollama, LM Studio, and llama.cpp proxies are cluster-aware. For
+model-bearing inference, each proxy first keeps only nodes whose per-engine
+discovery inventory advertises the requested model. llama.cpp uses the **loaded**
+set, not the on-disk catalog. Empty and non-matching inventories are excluded; an
+empty owner set returns a local `502`. Routing precedence within the eligible set
+is:
 
 1. a user-selected manual node;
 2. the priority list emitted by `nvpair-job-scheduler`;
 3. the proxy's deterministic default ordering.
 
-The scheduler combines total pending (queued and running) workload across both
+The scheduler combines total pending (queued and running) workload across all
 engines with a smoothed 0–3 pressure derived from the busiest GPU. Missing,
 invalid, or older-than-10-second telemetry has neutral pressure. It emits the
 order, pending count, and pressure, reranking on meaningful workload, discovery,
@@ -266,6 +269,9 @@ cannot yet be reported are centralized in
 `src/shared/constants/modular-runtime.ts`.
 
 - Ollama-compatible clients use the proxy port reported by the broker.
+- llama.cpp clients use the OpenAI-compatible proxy at `http://127.0.0.1:8084/v1`
+  by default. PAIR adopts an already-running `llama-server` (default probe
+  `8082`) and does not install or load GGUFs.
 - Cluster pairing currently uses port `14321`.
 - Node telemetry is read from `/v1/node-info` at each discovered node's
   advertised port.

@@ -139,6 +139,7 @@ fi
 
 cp "$BIN_SRC/ollama-proxy"     "$STAGE/bin/"
 cp "$BIN_SRC/lmstudio-proxy"   "$STAGE/bin/"
+cp "$BIN_SRC/llamacpp-proxy"   "$STAGE/bin/"
 cp "$BIN_SRC/nvpair-node-info"    "$STAGE/bin/"
 cp "$BIN_SRC/nvpair-node-scanner" "$STAGE/bin/"
 cp "$BIN_SRC/nvpair-manual-nodes" "$STAGE/bin/"
