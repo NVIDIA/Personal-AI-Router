@@ -1256,11 +1256,50 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 // node-info first reported its real hostUuid, moving it off the manual id). On a
 // rekey it drops the manual claim under the old key (the scanner's claim, if
 // any, survives); the caller rebridges the proxy overlay off the old key.
+// manualAliasForStoreKey inverts the alias->storeKey tracking: given a
+// discovery-store key (typically the node's hostUuid), return the manual alias
+// id the manual-nodes service tracks it under. The desktop removes nodes by
+// UUID, but the service keys its entries by their add-time id, so the relay
+// translates before forwarding node/remove. When several aliases share a key
+// (two entries for one machine), the lexicographically smallest is chosen —
+// the same deterministic rule survivingAliasLocked uses.
+func (b *Broker) manualAliasForStoreKey(storeKey string) (string, bool) {
+	b.manualMu.Lock()
+	defer b.manualMu.Unlock()
+	best := ""
+	for alias, key := range b.manualNodeKeys {
+		if key == storeKey && (best == "" || alias < best) {
+			best = alias
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
+}
+
+// translateManualRemoveID rebinds a node/remove's id from a discovery-store key
+// to the manual alias id the service tracks, when lookup resolves it to a
+// different alias. Returns the rewritten params, or (nil, false) when the id
+// passes through untouched (not a known store key, or already the alias id).
+func translateManualRemoveID(id string, lookup func(storeKey string) (string, bool)) (json.RawMessage, bool) {
+	alias, ok := lookup(id)
+	if !ok || alias == id {
+		return nil, false
+	}
+	params, err := json.Marshal(map[string]string{"id": alias})
+	if err != nil {
+		return nil, false
+	}
+	return params, true
+}
+
 // upsertManualNode ingests a manual node status: it records the alias's payload,
 // keys the discovery store by the node's operational identity (its hostUuid once
-// node-info reports one, else the manual id), and bridges the proxy candidate
-// under that same key so scheduler priority and scheduledOn resolve to it. If
-// the alias's key changed (node-info revealed its real UUID) the
+// node-info reports one, else the manual id — declared endpoints always keep
+// their manual id, see manualToEnriched), and bridges the proxy candidate under
+// that same key so scheduler priority and scheduledOn resolve to it. If the
+// alias's key changed (node-info revealed its real UUID) the
 // old key is reprojected from a surviving alias or released.
 func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	en := manualToEnriched(s)
@@ -3159,7 +3198,22 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 	}
 	id := msg.ID
 	method := msg.Method
-	relayErr := mn.RelayRequest(method, msg.Params, func(result json.RawMessage, rpcErr *RPCError, err error) {
+	// The desktop removes nodes by UUID (the discovery-store key). A manual
+	// alias rekeyed to its node-info hostUuid is still tracked by the service
+	// under its add-time id, so translate store key -> alias id first; ids the
+	// broker doesn't recognize pass through untouched.
+	relayParams := msg.Params
+	if method == "node/remove" {
+		var p struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.ID != "" {
+			if rewritten, ok := translateManualRemoveID(p.ID, b.manualAliasForStoreKey); ok {
+				relayParams = rewritten
+			}
+		}
+	}
+	relayErr := mn.RelayRequest(method, relayParams, func(result json.RawMessage, rpcErr *RPCError, err error) {
 		switch {
 		case err != nil:
 			if e := b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes call failed: %v", err)); e != nil {
