@@ -61,3 +61,23 @@ func TestNodeURL(t *testing.T) {
 		})
 	}
 }
+
+func TestJoinedPath(t *testing.T) {
+	cases := []struct {
+		base, in, want string
+	}{
+		{"", "/v1/chat/completions", "/v1/chat/completions"},
+		{"/v1", "/v1/chat/completions", "/v1/chat/completions"},
+		{"/v1", "/v1/models", "/v1/models"},
+		{"/v1", "/v1/completions", "/v1/completions"},
+		{"/api", "/v1/embeddings", "/api/embeddings"},
+		{"/v1", "/health", "/health"},
+		{"", "/health", "/health"},
+		{"/nested/v1", "/v1/chat/completions", "/nested/v1/chat/completions"},
+	}
+	for _, tc := range cases {
+		if got := joinedPath(tc.base, tc.in); got != tc.want {
+			t.Errorf("joinedPath(%q, %q) = %q, want %q", tc.base, tc.in, got, tc.want)
+		}
+	}
+}
