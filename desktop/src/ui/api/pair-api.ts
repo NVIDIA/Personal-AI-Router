@@ -39,6 +39,8 @@ export interface INodesApi {
     }>
     /** Remove a node from the cluster (revokes membership + pinned trust). */
     removeMember(nodeId: string): Promise<{ nodeId: string; removed: boolean }>
+    /** Adopt an externally-managed OpenAI-compatible endpoint by base URL. */
+    addEndpoint(url: string): Promise<{ ok: boolean; error?: string }>
     /** A node was added or updated in the discovery/metrics list. */
     onUpsert(callback: (node: NodeItem) => void): () => void
     /** A node was removed from the discovery/metrics list. */
@@ -146,6 +148,7 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
                 }
             },
             removeMember: nodeId => transport.invoke('nodes:remove-member', { nodeId }),
+            addEndpoint: url => transport.invoke('nodes:add-endpoint', { url }),
             onUpsert: cb => transport.subscribePush('nodes:upsert', cb),
             onRemove: cb => transport.subscribePush('nodes:remove', cb),
             onMembersChanged: cb => transport.subscribePush('nodes:changed', cb)

@@ -403,10 +403,14 @@ function pendingEngineOpIdleTimeoutMs(status: EngineProcessStatus): number {
 
 /**
  * Map a `nvpair-engine-manager` engine identifier onto our closed `EngineType`
- * union. The engine-manager uses `lmstudio`; we use `lm-studio`.
+ * union. The engine-manager uses `lmstudio`; we use `lm-studio`. External
+ * OpenAI-compatible endpoints report engine `openai`; they render through the
+ * existing lm-studio display path (no dedicated icon/badge — cosmetic, same as
+ * the node-card engine chip) so their workloads are not silently dropped by
+ * the closed-union guard.
  */
 function engineManagerEngineType(name: string): EngineType | null {
-    const normalized = name === 'lmstudio' ? 'lm-studio' : name
+    const normalized = name === 'lmstudio' || name === 'openai' ? 'lm-studio' : name
     return isEngineType(normalized) ? normalized : null
 }
 

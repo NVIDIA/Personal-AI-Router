@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type manualNode struct {
 	Address    string `json:"address"`
 	OllamaUp   bool   `json:"ollama_up"`
 	NodeInfoUp bool   `json:"node_info_up"`
+	OpenAIUp   bool   `json:"openai_up"`
 }
 
 // manualView manages user-added nodes that don't appear via mDNS: list,
@@ -61,10 +63,11 @@ var (
 
 func newManualView(client *rpc.Client) *manualView {
 	ti := textinput.New()
-	// nvpair-manual-nodes appends its own fixed ports (11434 for Ollama, 14318
-	// for node-info) to whatever's entered, so a host:port form yields a
-	// malformed URL and the node always reads down. Only a bare host works.
-	ti.Placeholder = "host"
+	// A bare host uses the historical form: nvpair-manual-nodes appends its
+	// fixed engine ports (11434 for Ollama, 14318 for node-info), so a
+	// host:port form yields a malformed URL and the node always reads down.
+	// A full http:// base URL adopts the endpoint at that exact URL instead.
+	ti.Placeholder = "host or http://host:port/v1"
 	v := &manualView{client: client, input: ti}
 	v.table = newTable(nil)
 	return v
@@ -95,14 +98,15 @@ func (v *manualView) tickCmd() tea.Cmd {
 
 func (v *manualView) SetSize(w, h int) {
 	v.width, v.height = w, h
-	const ollama, nodeinfo = 8, 9
-	id := clampWidth((w-ollama-nodeinfo-2)/2, 8)
-	addr := clampWidth(w-ollama-nodeinfo-id-2, 10)
+	const ollama, nodeinfo, openai = 8, 9, 8
+	id := clampWidth((w-ollama-nodeinfo-openai-2)/2, 8)
+	addr := clampWidth(w-ollama-nodeinfo-openai-id-2, 10)
 	v.table.SetColumns([]table.Column{
 		{Title: "ID", Width: id},
 		{Title: "ADDRESS", Width: addr},
 		{Title: "OLLAMA", Width: ollama},
 		{Title: "NODEINFO", Width: nodeinfo},
+		{Title: "OPENAI", Width: openai},
 	})
 	v.table.SetWidth(w)
 	v.table.SetHeight(clampWidth(h-2, 1))
@@ -160,16 +164,40 @@ func (v *manualView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
+// parseManualInput splits the operator's add input into the two node/add
+// flavors: a bare host/address (the historical form; the prober appends its
+// fixed engine ports) or a full OpenAI-compatible base URL (declared
+// endpoints are probed at the URL itself, not the default ports).
+func parseManualInput(s string) (address, baseURL string, err error) {
+	s = strings.TrimSpace(s)
+	if strings.Contains(s, "://") {
+		if !strings.HasPrefix(s, "http://") {
+			return "", "", fmt.Errorf("only http:// base URLs are supported (https not yet)")
+		}
+		return "", s, nil
+	}
+	if s == "" {
+		return "", "", fmt.Errorf("address required")
+	}
+	return s, "", nil
+}
+
 func (v *manualView) submitAdd() tea.Cmd {
 	v.adding = false
 	v.input.Blur()
-	addr := strings.TrimSpace(v.input.Value())
-	if addr == "" {
-		v.status = "address required"
+	addr, baseURL, err := parseManualInput(v.input.Value())
+	if err != nil {
+		v.status = err.Error()
 		return nil
 	}
-	return call(v.client, "node/add", map[string]string{"address": addr}, func(_ *rpc.Message, err error) tea.Msg {
-		return manualActionMsg{what: "add " + addr, err: err}
+	params := map[string]string{"address": addr}
+	label := addr
+	if baseURL != "" {
+		params = map[string]string{"openai_base_url": baseURL}
+		label = baseURL
+	}
+	return call(v.client, "node/add", params, func(_ *rpc.Message, err error) tea.Msg {
+		return manualActionMsg{what: "add " + label, err: err}
 	})
 }
 
@@ -193,6 +221,7 @@ func (v *manualView) setNodes(nodes []manualNode) {
 			n.Address,
 			yesNo(n.OllamaUp),
 			yesNo(n.NodeInfoUp),
+			yesNo(n.OpenAIUp),
 		})
 	}
 	v.table.SetRows(rows)
@@ -201,7 +230,7 @@ func (v *manualView) setNodes(nodes []manualNode) {
 func (v *manualView) View() string {
 	var b strings.Builder
 	if len(v.nodes) == 0 {
-		b.WriteString(footerStyle.Render("No manual nodes. Press a to add one by address."))
+		b.WriteString(footerStyle.Render("No manual nodes. Press a to add one by host or OpenAI endpoint URL."))
 	} else {
 		b.WriteString(v.table.View())
 	}

@@ -944,6 +944,31 @@ async function handleNodeRemoveMember(
     }
 }
 
+/**
+ * Adopt an externally-managed OpenAI-compatible endpoint by base URL.
+ * Relays `node/add` with `openai_base_url` to the broker, which forwards it to
+ * nvpair-manual-nodes (persisting the entry and probing the declared URL).
+ * The scheme check stays local for fast inline feedback; the service
+ * re-validates and is authoritative.
+ */
+async function handleAddOpenAIEndpoint(
+    payload?: WsInvokeRequest<'nodes:add-endpoint'>
+): Promise<WsInvokeResponse<'nodes:add-endpoint'>> {
+    const url = payload?.url?.trim() ?? ''
+    if (!/^https?:\/\//.test(url)) {
+        return {
+            ok: false,
+            error: 'Enter a full endpoint URL, e.g. http://192.168.1.50:8888/v1 (https not supported yet)'
+        }
+    }
+    try {
+        await getModularSupervisor().callProcess('broker', 'node/add', { openai_base_url: url })
+        return { ok: true }
+    } catch (err) {
+        return { ok: false, error: getErrorString(err) }
+    }
+}
+
 const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'app:get-initial': async () => ({
         connected: getModularSupervisor().ready,
@@ -952,6 +977,7 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
 
     'nodes:get-initial': () => getModularBridgeState().getNodesInitial(),
     'nodes:remove-member': payload => handleNodeRemoveMember(payload),
+    'nodes:add-endpoint': payload => handleAddOpenAIEndpoint(payload),
 
     'discovery:get-nodes': () => getModularBridgeState().getAvailableNodes(),
 
