@@ -143,7 +143,9 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 
 	gpu := make(map[string]gpuStat)
 	sampledAt := time.Time{}
-	if c.decodeGPU(gpu) {
+	nvidiaValid := c.decodeGPU(gpu)
+	amdValid := decodeAMDUtilization(amdPCIRoot, gpu)
+	if nvidiaValid || amdValid {
 		sampledAt = time.Now()
 	}
 	applyGPUStats(previous, snap, gpu, sampledAt)
@@ -161,7 +163,7 @@ func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
 	csv, err := nvidiaSmiCSV("uuid,utilization.gpu,memory.used")
 	if err != nil {
 		if c.nvidiaUnavailable.CompareAndSwap(false, true) {
-			slog.Warn("nvidia-smi unavailable; GPU utilization / dedicated VRAM-used will not be reported",
+			slog.Debug("nvidia-smi unavailable; NVIDIA metrics unavailable; other GPU sources remain enabled",
 				"err", err)
 		}
 		return false

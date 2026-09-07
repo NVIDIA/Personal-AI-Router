@@ -45,6 +45,12 @@ func detectGPUs() []GPUInfo {
 					}
 				}
 			}
+			// Preserve NVIDIA records and include AMD adapters on mixed hosts.
+			for _, gpu := range detectGPUsGHW() {
+				if strings.HasPrefix(gpu.statsKey, "amd:") {
+					gpus = append(gpus, gpu)
+				}
+			}
 			return gpus
 		}
 	}
@@ -66,7 +72,7 @@ func detectGPUsGHW() []GPUInfo {
 		if card.DeviceInfo != nil && card.DeviceInfo.Product != nil {
 			name = card.DeviceInfo.Product.Name
 		}
-		gpus = append(gpus, GPUInfo{Name: name})
+		gpus = append(gpus, GPUInfo{Name: name, statsKey: amdStatsKey(amdPCIRoot, card.Address)})
 	}
 	return gpus
 }

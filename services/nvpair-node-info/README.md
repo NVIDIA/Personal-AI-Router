@@ -7,6 +7,19 @@ SPDX-License-Identifier: Apache-2.0
 
 A Go service that exposes this machine's hardware inventory (GPUs, CPU, physical memory) over a small HTTP API at `/v1/node-info`. It advertises nothing over mDNS itself — its parent (the broker) registers its `ni` port with the `nvpair-node-scanner` discovery daemon, which folds it into this node's single `_nvpair-node` record and fetches `/v1/node-info` to enrich the node for peers.
 
+## Linux AMD telemetry
+
+AMD adapters use PCI identity and the amdgpu `gpu_busy_percent` sysfs counter.
+This requires neither ROCm nor CUDA. Missing, unreadable, malformed, or out of
+range samples are unavailable. Valid samples, including idle samples, refresh
+the existing `telemetryValid` and `msSince` freshness contract. The existing
+wire format omits a zero utilization value, so inspect freshness as well.
+
+AMD memory fields remain omitted. On Strix Halo, reserved framebuffer VRAM,
+GTT capacity, the HSA GPU-visible pool, and system MemAvailable are distinct
+and overlapping measurements. This change does not label system RAM or GTT
+as dedicated VRAM. NVIDIA collection remains enabled on mixed-vendor hosts.
+
 ## Communication
 
 Two surfaces:
