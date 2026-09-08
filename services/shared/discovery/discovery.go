@@ -8,10 +8,11 @@
 //
 // The core is a scan-and-diff state machine: each scan browses a service type
 // over grandcat/zeroconf, re-sends the PTR query from a per-interface unicast
-// socket (the Windows send workaround — zeroconf sends from a multicast-bound
-// socket Windows refuses to transmit on), and reconciles the result against the
-// known-node map. Address/TXT comparison is order-insensitive so a multi-homed
-// node whose records come back reordered doesn't churn a spurious "updated".
+// UDP 5353 socket (the Windows send workaround — zeroconf sends from a
+// multicast-bound socket Windows refuses to transmit on), and reconciles the
+// result against the known-node map. Address/TXT comparison is order-insensitive
+// so a multi-homed node whose records come back reordered doesn't churn a
+// spurious "updated".
 //
 // The per-service variations are expressed as functional options rather than
 // forks:
@@ -44,9 +45,10 @@ import (
 	"sync"
 	"time"
 
+	"nvpair-shared/mdns"
+
 	"github.com/grandcat/zeroconf"
 	"github.com/miekg/dns"
-	"golang.org/x/net/ipv4"
 )
 
 // Event types emitted by Run.
@@ -607,8 +609,6 @@ func sendMulticastQuery(service, domain string) map[string]bool {
 		return outcomes
 	}
 
-	target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
-
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		slog.Warn("mdns send: enumerate interfaces failed", "err", err)
@@ -630,44 +630,20 @@ func sendMulticastQuery(service, domain string) map[string]bool {
 		if err != nil {
 			continue
 		}
-		var src net.IP
-		for _, a := range addrs {
-			ipnet, ok := a.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			if ip4 := ipnet.IP.To4(); ip4 != nil {
-				src = ip4
-				break
-			}
-		}
+		ifi := ifi
+		src, err := sendMulticastQueryOnInterface(buf, &ifi, addrs, mdns.SendFromInterface)
 		if src == nil {
 			continue
 		}
-
-		ifi := ifi
-		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: src, Port: 0})
 		if err != nil {
-			slog.Debug("mdns send: bind failed", "iface", ifi.Name, "ip", src.String(), "err", err)
+			slog.Debug("mdns send: send failed", "iface", ifi.Name, "ip", src.String(), "err", err)
 			outcomes[ifi.Name] = false
-			failures = append(failures, fmt.Sprintf("%s bind: %v", ifi.Name, err))
+			failures = append(failures, fmt.Sprintf("%s send: %v", ifi.Name, err))
 			continue
 		}
-		pc := ipv4.NewPacketConn(conn)
-		if err := pc.SetMulticastInterface(&ifi); err != nil {
-			slog.Debug("mdns send: SetMulticastInterface failed", "iface", ifi.Name, "err", err)
-		}
-		_ = pc.SetMulticastTTL(255)
-		if _, err := conn.WriteToUDP(buf, target); err != nil {
-			slog.Debug("mdns send: write failed", "iface", ifi.Name, "ip", src.String(), "err", err)
-			outcomes[ifi.Name] = false
-			failures = append(failures, fmt.Sprintf("%s write: %v", ifi.Name, err))
-		} else {
-			slog.Debug("mdns send: query sent", "service", service, "iface", ifi.Name, "ip", src.String())
-			outcomes[ifi.Name] = true
-			sent++
-		}
-		_ = conn.Close()
+		slog.Debug("mdns send: query sent", "service", service, "iface", ifi.Name, "ip", src.String())
+		outcomes[ifi.Name] = true
+		sent++
 	}
 
 	if sent == 0 {
@@ -679,6 +655,25 @@ func sendMulticastQuery(service, domain string) map[string]bool {
 			"errors", strings.Join(failures, "; "))
 	}
 	return outcomes
+}
+
+func sendMulticastQueryOnInterface(
+	buf []byte,
+	ifi *net.Interface,
+	addrs []net.Addr,
+	send func([]byte, *net.Interface, net.IP, *net.UDPAddr) error,
+) (net.IP, error) {
+	for _, addr := range addrs {
+		ipnet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ip4 := ipnet.IP.To4(); ip4 != nil {
+			target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+			return ip4, send(buf, ifi, ip4, target)
+		}
+	}
+	return nil, nil
 }
 
 // UUIDFromTXT returns the value of the "uuid=" TXT record, or "" if absent. It's
