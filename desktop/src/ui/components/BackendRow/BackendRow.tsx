@@ -71,7 +71,8 @@ export function BackendRow({
 }) {
     const [edit, setEdit] = useState<EditState>({
         serverPort: String(backend.port ?? ''),
-        proxyPort: String(backend.proxyPort ?? '')
+        proxyPort: String(backend.proxyPort ?? ''),
+        servedModel: backend.servedModel ?? ''
     })
 
     const addLocalError = useErrorsStore(state => state.addLocalError)
@@ -83,6 +84,10 @@ export function BackendRow({
     useEffect(() => {
         setEdit(prev => ({ ...prev, proxyPort: String(backend.proxyPort ?? '') }))
     }, [backend.proxyPort])
+
+    useEffect(() => {
+        setEdit(prev => ({ ...prev, servedModel: backend.servedModel ?? '' }))
+    }, [backend.servedModel])
 
     const [expanded, setExpanded] = useState(false)
     const [confirmUninstall, setConfirmUninstall] = useState(false)
@@ -101,6 +106,11 @@ export function BackendRow({
     )
 
     const portsChanged = serverPortChanged || proxyPortChanged
+
+    const servedModelChanged = useMemo(
+        () => caps.hasServedModel && edit.servedModel.trim() !== (backend.servedModel ?? ''),
+        [caps.hasServedModel, edit.servedModel, backend.servedModel]
+    )
 
     const installProgress = useEngineProgressStore(s => {
         const installKey = engineProgressKey({
@@ -198,9 +208,18 @@ export function BackendRow({
     const resetPortsToBackend = useCallback(() => {
         setEdit({
             serverPort: String(backend.port ?? ''),
-            proxyPort: String(backend.proxyPort ?? '')
+            proxyPort: String(backend.proxyPort ?? ''),
+            servedModel: backend.servedModel ?? ''
         })
-    }, [backend.port, backend.proxyPort])
+    }, [backend.port, backend.proxyPort, backend.servedModel])
+
+    // Changing the served model restarts a running engine onto it, exactly as a
+    // port change does; the engine reports the applied value back, which resets
+    // the draft through the effect above.
+    const handleApplyServedModel = useCallback(() => {
+        if (!servedModelChanged) return
+        window.pairApi.engines.setServedModel(backend.type, nodeId, edit.servedModel.trim())
+    }, [servedModelChanged, backend.type, nodeId, edit.servedModel])
 
     const validateAndConfirmPorts = useCallback(() => {
         if (!serverPortChanged && !proxyPortChanged) return
@@ -288,14 +307,17 @@ export function BackendRow({
                 <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
             )}
 
-            {canShowAccordions && (caps.hasEnginePort || edit.proxyPort) && (
+            {canShowAccordions && (caps.hasEnginePort || caps.hasServedModel || edit.proxyPort) && (
                 <PortsSection
                     edit={edit}
                     portsChanged={portsChanged}
+                    servedModelChanged={servedModelChanged}
                     anyLoading={isTransitioning}
                     isLocalNode={isLocalNode}
                     caps={caps}
                     onApplyPorts={validateAndConfirmPorts}
+                    onApplyServedModel={handleApplyServedModel}
+                    onServedModelChange={v => setEdit(prev => ({ ...prev, servedModel: v }))}
                     onServerChange={v => setEdit(prev => ({ ...prev, serverPort: v }))}
                     onProxyChange={v => setEdit(prev => ({ ...prev, proxyPort: v }))}
                 />

@@ -10,7 +10,7 @@
 // whose TXT map carries a schema version, the node's identity, its LAN address,
 // and one compact key per local service port, e.g.:
 //
-//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;er=14319;wl=14320;cl=14321;em=14322
+//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;vl=8000;sg=30000;er=14319;wl=14320;cl=14321;em=14322
 //
 // Design decisions this package encodes:
 //   - SRV port is a fixed, NON-authoritative constant; consumers ignore it and
@@ -87,6 +87,16 @@ const (
 	ServiceNodeInfo ServiceKey = "ni"
 	ServiceOllama   ServiceKey = "ol"
 	ServiceLMStudio ServiceKey = "lm"
+	// ServiceVLLM is a node's vLLM engine, reached through the same
+	// OpenAI-compatible proxy that fronts LM Studio. A node may advertise lm, vl
+	// and sg at once (all point at that one proxy port); which engine owns a given
+	// model comes from the engine-manager model attribution, not from the key.
+	ServiceVLLM ServiceKey = "vl"
+	// ServiceSGLang is a node's SGLang engine, reached through that same proxy.
+	// Like lm and vl, its advertised value is the proxy's listen port and never
+	// the engine's own, so a node running all three still projects to a single
+	// routing target.
+	ServiceSGLang   ServiceKey = "sg"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -104,9 +114,9 @@ const (
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
-	ServiceNodeInfo, ServiceOllama, ServiceLMStudio,
-	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl,
+	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceVLLM,
+	ServiceSGLang, ServiceErrors, ServiceWorkload, ServiceCluster,
+	ServiceEngineManager, ServiceEngineControl,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).
@@ -326,6 +336,23 @@ const (
 	// record keeps its last observed value indefinitely.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
 
+	// MethodSetServices tells nvpair-node-info which services this node runs and
+	// on which ports — the same {key: port} set the broker registers with
+	// nvpair-node-scanner — so it can report them on /v1/node-info.
+	//
+	// It exists because that set is otherwise published only on this host's mDNS
+	// record, and multicast does not cross a routed or overlay network. A peer on
+	// a Tailscale tailnet never sees the record, so without this it can learn
+	// that a node exists (it was typed in) but not that the node is a PAIR node,
+	// nor where its engine-manager, proxies or cluster manager listen. node-info
+	// is the one inter-node surface kept plain, which makes it the one place such
+	// a peer can ask.
+	//
+	// The broker owns the set (it is the process that assigns and re-assigns
+	// those ports) and re-pushes it on every change, so node-info reports one
+	// live value rather than deriving a second one.
+	MethodSetServices = "nodeinfo:set-services"
+
 	// NotifyObservedAddresses is nvpair-node-info -> broker: the local addresses
 	// peers have actually reached this node on, learned from its own accepted
 	// connections.
@@ -396,6 +423,14 @@ type UnregisterParams struct {
 // announced — so the field is always sent.
 type ClusterIdentityParams struct {
 	ClusterUUID string `json:"clusterUuid"`
+}
+
+// ServicesParams carries this node's whole {service: port} set for
+// MethodSetServices. The set is always sent complete rather than as a delta: a
+// service that stopped is expressed by its key being absent, which is the same
+// thing an unregister means on the discovery record.
+type ServicesParams struct {
+	Services map[ServiceKey]int `json:"services"`
 }
 
 // ObservedAddressesParams carries the local addresses remote peers have reached

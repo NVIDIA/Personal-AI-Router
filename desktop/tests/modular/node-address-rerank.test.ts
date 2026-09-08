@@ -101,7 +101,8 @@ describe('broker address re-rank', () => {
                 host: 'proxy-refresh-host',
                 port: 1234,
                 addresses: ['203.0.113.7'],
-                ip: '192.0.2.201'
+                ip: '192.0.2.201',
+                modelsByEngine: { lmstudio: [] }
             }
         })
 

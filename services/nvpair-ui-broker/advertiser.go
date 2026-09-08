@@ -22,6 +22,12 @@ const (
 	// real port is resolved per poll via localEnginePort.
 	defaultOllamaPort   = 11434
 	defaultLMStudioPort = 1234
+	// defaultVLLMPort is vLLM's stock OpenAI-API port, used on the same
+	// fallback-only terms as the two above.
+	defaultVLLMPort = 8000
+	// defaultSGLangPort is SGLang's stock --port, used on the same fallback-only
+	// terms as the three above.
+	defaultSGLangPort = 30000
 
 	// engineManagerHTTPPort is the fixed LAN port the broker tells
 	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
@@ -181,6 +187,106 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	}
 }
 
+// runAutoAdvertiseVLLM is the vLLM sibling of runAutoAdvertiseLMStudio. vLLM
+// speaks the same OpenAI API, so it is fronted by the same proxy; only the
+// discovery service key (vl) and the engine name differ. There is no managed
+// facade for vLLM — nothing serves :8000 on the proxy's behalf — so this loop
+// has none of the facade/backend-cache handling the LM Studio one carries.
+func (b *Broker) runAutoAdvertiseVLLM(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseVLLM(client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseVLLM(client)
+		}
+	}
+}
+
+// reconcileAdvertiseVLLM brings this node's vl registration into line with the
+// local vLLM server: it advertises the OpenAI proxy's port (never the engine's)
+// and hands the engine's loopback port to that same proxy via
+// node/set-local-backend, which keys its backends by engine so this never
+// disturbs LM Studio's.
+func (b *Broker) reconcileAdvertiseVLLM(client *http.Client) {
+	enginePort, probe := b.localEnginePort("vllm", defaultVLLMPort)
+	b.reconcileAdvertiseVLLMAt(client, enginePort, probe)
+}
+
+// reconcileAdvertiseVLLMAt is reconcileAdvertiseVLLM with the engine port
+// already resolved, so the registration and backend decisions can be exercised
+// without an engine-manager. The health probe is the last term of the guard, so
+// a collision or an authoritative "not running" short-circuits before any
+// request is made — which is what lets a caller pass a nil client to assert
+// exactly that.
+func (b *Broker) reconcileAdvertiseVLLMAt(client *http.Client, enginePort int, probe bool) {
+	proxyPort := b.lmstudioProxyListenPort()
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkVLLMHealth(client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceVLLM, Port: proxyPort})
+		b.setProxyLocalBackend(b.getOpenAIProxy(), "vllm", enginePort, true)
+	} else {
+		b.unregisterService(noderec.ServiceVLLM)
+		b.setProxyLocalBackend(b.getOpenAIProxy(), "vllm", enginePort, false)
+	}
+}
+
+// runAutoAdvertiseSGLang is the SGLang sibling of runAutoAdvertiseVLLM. SGLang
+// speaks the same OpenAI API, so it too is fronted by the one OpenAI proxy;
+// only the discovery service key (sg) and the engine name differ. Like vLLM it
+// has no managed facade — nothing serves :30000 on the proxy's behalf — so this
+// loop carries none of LM Studio's facade/backend-cache handling.
+func (b *Broker) runAutoAdvertiseSGLang(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseSGLang(client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseSGLang(client)
+		}
+	}
+}
+
+// reconcileAdvertiseSGLang brings this node's sg registration into line with the
+// local SGLang server: it advertises the OpenAI proxy's port (never the
+// engine's) and hands the engine's loopback port to that same proxy via
+// node/set-local-backend, which keys its backends by engine so this never
+// disturbs LM Studio's or vLLM's.
+func (b *Broker) reconcileAdvertiseSGLang(client *http.Client) {
+	enginePort, probe := b.localEnginePort("sglang", defaultSGLangPort)
+	b.reconcileAdvertiseSGLangAt(client, enginePort, probe)
+}
+
+// reconcileAdvertiseSGLangAt is reconcileAdvertiseSGLang with the engine port
+// already resolved, so the registration and backend decisions can be exercised
+// without an engine-manager. The health probe is the last term of the guard, so
+// a collision or an authoritative "not running" short-circuits before any
+// request is made — which is what lets a caller pass a nil client to assert
+// exactly that.
+func (b *Broker) reconcileAdvertiseSGLangAt(client *http.Client, enginePort int, probe bool) {
+	proxyPort := b.lmstudioProxyListenPort()
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkSGLangHealth(client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceSGLang, Port: proxyPort})
+		b.setProxyLocalBackend(b.getOpenAIProxy(), "sglang", enginePort, true)
+	} else {
+		b.unregisterService(noderec.ServiceSGLang)
+		b.setProxyLocalBackend(b.getOpenAIProxy(), "sglang", enginePort, false)
+	}
+}
+
 // proxyLocalBackend is the node/set-local-backend payload: the loopback engine
 // the proxy's cluster mTLS ingress forwards to, and the proxy's own self
 // candidate on the local routing path.
@@ -249,6 +355,13 @@ func (b *Broker) proxyListenPort() int {
 	return 0
 }
 
+// getOpenAIProxy returns the proxy that fronts every OpenAI-compatible engine.
+// One process serves LM Studio, vLLM and SGLang: they speak the same HTTP
+// surface, so they need one router, and node/set-local-backend keys its backends
+// by engine so all of them are held at once. Named for the role rather than the
+// binary, which keeps its historical lmstudio-proxy spelling as a wire contract.
+func (b *Broker) getOpenAIProxy() *proxyProcess { return b.getLMStudioProxy() }
+
 // lmstudioProxyListenPort is the LM Studio sibling of proxyListenPort. It
 // prevents the compatibility fallback from mistaking a proxy moved onto :1234
 // for the actual engine.
@@ -281,6 +394,39 @@ func checkOllamaHealth(client *http.Client, port int) bool {
 // never mistaken for LM Studio.
 func checkLMStudioHealth(client *http.Client, port int) bool {
 	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// checkVLLMHealth reports whether a local vLLM server is answering on the given
+// port. vLLM exposes a dedicated /health, which is a cheaper and more precise
+// liveness signal than its model list — and, unlike /v1/models, one the OpenAI
+// proxy's own facade does not answer, so the proxy can never be mistaken for the
+// engine. The port is resolved per poll (see localEnginePort), not hardcoded.
+func checkVLLMHealth(client *http.Client, port int) bool {
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// checkSGLangHealth reports whether a local SGLang server is answering on the
+// given port. It asks for /get_model_info, SGLang's own metadata route, rather
+// than /health: on current SGLang builds /health runs a real forward pass and
+// takes about a second, and this loop runs every five seconds, so probing it
+// would spend a fifth of the engine's time answering PAIR. /get_model_info
+// answers in well under a millisecond, and because SGLang binds its port only
+// once the model is loaded, a 200 from it means ready to serve, not merely
+// started. It is also a route neither vLLM nor the OpenAI proxy's own facade
+// answers, so nothing else can be mistaken for the engine. The port is resolved
+// per poll (see localEnginePort), not hardcoded.
+func checkSGLangHealth(client *http.Client, port int) bool {
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/get_model_info", port))
 	if err != nil {
 		return false
 	}

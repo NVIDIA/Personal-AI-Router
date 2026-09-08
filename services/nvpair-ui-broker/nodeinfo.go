@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+
+	"nvpair-shared/noderec"
 )
 
 // maxNodeInfoLine caps one stdout frame from node-info. Its frames are a handful
@@ -56,6 +58,15 @@ func (n *nodeInfoProcess) SetLogLevel(level string) error {
 // stop treating this node as unavailable for pairing.
 func (n *nodeInfoProcess) SetClusterIdentity(clusterUUID string) error {
 	return writeClusterIdentityFrame(&n.stdinMu, n.stdin, clusterUUID)
+}
+
+// SetServices tells node-info this node's whole {service: port} set, so
+// /v1/node-info can report it. The set otherwise exists only on this host's mDNS
+// record, and multicast does not cross a routed or overlay network — a peer that
+// reached this node across a Tailscale tailnet has node-info and nothing else to
+// ask. Sent on spawn and on every registration change.
+func (n *nodeInfoProcess) SetServices(services map[noderec.ServiceKey]int) error {
+	return writeServicesFrame(&n.stdinMu, n.stdin, services)
 }
 
 // Done implements supervisedHandle: the returned channel closes once the

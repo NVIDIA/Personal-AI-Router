@@ -6,8 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
-install and run those engines for you, or work with a copy you already have.
+run models. Today that means Ollama, LM Studio, vLLM, or SGLang on a given
+machine. PAIR can install and run those engines for you, or work with a copy you
+already have.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
 
@@ -74,9 +75,9 @@ When you install an engine, consider the following:
   configures it, and owns it from then on.
 - A successful install **starts the engine** as part of the same flow, so you
   normally do not need a separate start step right after install.
-- If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
-  that install instead of downloading another copy. Adoption helps when the
-  usual engine port is already in use.
+- If Ollama, LM Studio, vLLM, or SGLang is already running on the machine, PAIR
+  can **adopt** that install instead of downloading another copy. Adoption helps
+  when the usual engine port is already in use.
 
 To download models:
 
@@ -128,9 +129,163 @@ controlled:
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
   instance that way and restart it on the port you chose.
+- **vLLM** is managed as a process, so it behaves like Ollama: PAIR will not move
+  an adopted one.
+- **SGLang** is managed as a process too, so the same applies: an adopted SGLang
+  is neither moved nor stopped by PAIR.
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.
+
+## vLLM
+
+vLLM works differently enough from the other engines to be worth reading before
+you use it.
+
+**Linux only.** vLLM publishes no Windows build and no macOS GPU build, so PAIR
+offers it on Linux and reports it as unavailable elsewhere.
+
+**Adopting an instance you already run is the normal path.** Most people run
+vLLM themselves, either as `vllm serve <model>` or from the `vllm/vllm-openai`
+container image. If something is already serving on port `8000`, turning vLLM on
+in **Engine settings** adopts it rather than starting a second copy, and the
+engine shows as running. PAIR does not stop an instance it did not start; stop
+it the way you started it.
+
+**One model per process.** Unlike Ollama and LM Studio, a vLLM process serves
+exactly one model, named when it starts. Set it in **Engine settings** under
+**Model to serve**, using a Hugging Face model id such as `Qwen/Qwen3-8B`. PAIR
+persists the choice and restarts the engine onto it. Starting vLLM with no model
+chosen fails with a message saying so rather than starting something that cannot
+answer.
+
+**The first start can take many minutes.** vLLM downloads the model's weights
+and compiles CUDA graphs before it serves anything, so PAIR allows up to thirty
+minutes for it to become ready. The engine shows as starting throughout; later
+starts of the same model are much faster.
+
+**There are no model operations.** vLLM has no download, load, unload, or delete
+surface — the engine fetches what it needs from the model id you configured, and
+keeps it resident for the life of the process. The model list simply shows what
+the running engine serves.
+
+**Installing it takes a while and uses a lot of disk.** Choosing install builds a
+Python environment under PAIR's own engine directory and installs vLLM and its
+CUDA dependencies into it, which is several gigabytes. Uninstalling removes that
+environment; it does not remove downloaded weights, which live in the Hugging
+Face cache at `~/.cache/huggingface`.
+
+**A vLLM instance that spans several machines looks like one engine to PAIR.**
+vLLM itself can shard a model across the GPUs of two or more machines with its
+own tensor parallelism (`--tensor-parallel-size N --nnodes M`), for example
+across two DGX Spark systems joined by their direct high-speed link. PAIR
+neither combines GPUs nor splits models; it adopts the instance vLLM formed as a
+single engine on that instance's head node. Only the head node (`--node-rank 0`)
+opens the API port; every other node runs with `--headless` and holds its share
+of the weights without listening for requests. PAIR follows that shape:
+
+- Run PAIR on **every** machine in the vLLM group, so each reports hardware and
+  telemetry and takes part in the cluster. Pair them all with the rest of your
+  cluster the usual way.
+- Turn vLLM on only on the head node. It adopts the instance on port `8000` and
+  advertises the model. On a worker node there is nothing on port `8000` to
+  adopt, so vLLM shows as off there, which is correct rather than a fault. Do not
+  start a second vLLM on a worker; its GPU is already in use by the head's
+  instance.
+- Every request for that model routes to the head node. Because the group is one
+  instance, there is no second copy for the scheduler to balance against; run a
+  separate instance elsewhere if you want the same model on two owners.
+- Never restart a worker's vLLM on its own. Losing a rank stops the whole
+  instance, and the head node's API goes with it. Restart the group in the order
+  vLLM's own documentation gives for multi-node serving.
+
+## SGLang
+
+[SGLang](https://docs.sglang.ai) is a second OpenAI-compatible inference server.
+In PAIR it behaves much as vLLM does, so the section above applies almost
+unchanged; what follows is the SGLang version of it, and calls out where the two
+differ.
+
+**Linux only.** As with vLLM, PAIR offers SGLang on Linux and reports it as
+unavailable elsewhere.
+
+**Adopting an instance you already run is the normal path.** Most people run
+SGLang themselves, either as `sglang serve --model-path <model>` or from the
+`lmsysorg/sglang` container image. If something is already serving on port
+`30000`, turning SGLang on in **Engine settings** adopts it rather than starting
+a second copy, and the engine shows as running. PAIR will not move or stop an
+instance it did not start; stop it the way you started it. The
+OpenAI-compatible proxy on `1234` fronts it exactly as it fronts LM Studio and
+vLLM, and never takes port `30000` for itself.
+
+**One model per process.** An SGLang process serves exactly one model, chosen
+before it starts. Set it in **Engine settings** under **Model to serve**, using
+either a Hugging Face model id such as `Qwen/Qwen3-8B` or the path to a local
+model directory. Starting SGLang with no model chosen fails with a message
+saying so. The id the engine then advertises on `/v1/models`, and that you see
+under **Endpoints**, is its `--served-model-name`, which defaults to the
+`--model-path` verbatim — so a local directory is advertised under its own path,
+for example `/models/my-model`. Name the model exactly that way in a
+request, or start SGLang with `--served-model-name` set to something friendlier.
+
+**The port opens only once the model is loaded.** SGLang binds `30000` after
+loading finishes rather than before, and PAIR checks readiness and liveness with
+`GET /get_model_info`, SGLang's own metadata route. It deliberately does not use
+`GET /health`: on current SGLang builds that route runs a real forward pass and
+takes about a second, and PAIR probes an engine often enough that this would
+cost real serving time. A node that is still loading therefore shows no SGLang
+at all until it is ready, which is expected rather than a fault. A first start
+can take many minutes, and PAIR allows up to thirty minutes for it; later starts
+of the same model are much faster.
+
+**There are no model operations.** As with vLLM, SGLang has no download, load,
+unload, or delete surface. The engine fetches what it needs for the model you
+configured and keeps it resident for the life of the process, and the model list
+simply shows what the running engine serves.
+
+**Installing it takes a while and uses a lot of disk.** Choosing install builds
+a Python environment with `uv` under PAIR's own engine directory and installs
+SGLang and its CUDA dependencies into it, which is several gigabytes.
+Uninstalling removes that environment; it does not remove downloaded weights,
+which live in the Hugging Face cache at `~/.cache/huggingface`.
+
+**On a machine PAIR does not run, SGLang is recognized by its own route.** A
+bare inference host added by address answers on `30000` like any other
+OpenAI-compatible server, so PAIR asks for `GET /get_model_info`, which SGLang
+serves and the others do not, before treating the host as an SGLang node.
+
+**An SGLang instance that spans several machines looks like one engine to
+PAIR.** SGLang itself can shard a model across the GPUs of two or more machines
+with `--tp N --nnodes M`, giving each machine its own `--node-rank` and pointing
+them all at the head's `--dist-init-addr`. As with vLLM, PAIR neither combines
+GPUs nor splits models; it adopts the instance SGLang formed as a single engine
+on that instance's head node. Two machines serving one model look like this, run
+in the `lmsysorg/sglang` container:
+
+```bash
+# head node
+sglang serve --model-path /models/my-model --tp 2 --nnodes 2 --node-rank 0 \
+  --dist-init-addr 192.0.2.10:20000 --host 0.0.0.0 --port 30000
+# second machine: the same command with --node-rank 1
+```
+
+Only the head node (`--node-rank 0`) opens the API port; every other rank holds
+its share of the weights and listens for nothing. PAIR follows that shape:
+
+- Run PAIR on **every** machine in the SGLang group, so each reports hardware and
+  telemetry and takes part in the cluster. Pair them all with the rest of your
+  cluster the usual way.
+- Turn SGLang on only on the head node. It adopts the instance on port `30000`
+  and advertises the model. On a worker rank there is nothing on `30000` to
+  adopt, so SGLang shows as off there, which is correct rather than a fault. Do
+  not start a second SGLang on a worker; its GPU is already in use by the head's
+  instance.
+- Every request for that model routes to the head node. Because the group is one
+  instance, there is no second copy for the scheduler to balance against; run a
+  separate instance elsewhere if you want the same model on two owners.
+- Never restart a worker rank on its own. Losing a rank stops the whole instance,
+  and the head node's API goes with it. Restart the group in the order SGLang's
+  own documentation gives for multi-node serving.
 
 ## Managing Engines on Other Machines
 

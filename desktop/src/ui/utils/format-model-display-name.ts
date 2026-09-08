@@ -23,7 +23,8 @@ export function formatModelDisplayName(name: string, engineType?: string | null)
         return name
     }
 
-    if (name.length > MAX_FORMAT_INPUT_CHARS) {
+    const capped = name.length > MAX_FORMAT_INPUT_CHARS
+    if (capped) {
         name = name.slice(0, MAX_FORMAT_INPUT_CHARS)
     }
 
@@ -45,12 +46,47 @@ export function formatModelDisplayName(name: string, engineType?: string | null)
         case 'ollama':
             return formatOllamaModelName(formatted)
 
+        // vLLM and SGLang serve whatever their `--model` / `--model-path` was:
+        // either a Hugging Face repo id verbatim (Qwen/Qwen3-8B), which the
+        // shared Hugging Face formatter already renders, or the path of a local
+        // model directory, which it would mangle into "models/my model".
+        // Neither needs engine-specific rules beyond telling those two apart.
         default:
+            if (isPathLikeModelId(formatted)) {
+                // Naming the last segment is only truthful on a name the cap
+                // left intact. The cap slices from the right, which is exactly
+                // where a path keeps its last segment, so on a capped path the
+                // rule would hand back a truncated *middle* segment as
+                // confidently as a real directory name. Hand back the truncated
+                // path instead — it reads as unfinished, which it is.
+                return capped ? formatted : formatLocalModelPath(formatted)
+            }
             if (formatted.includes('/')) {
                 return formatHuggingFaceModelName(formatted)
             }
             return formatted
     }
+}
+
+/**
+ * A local model directory rather than a Hugging Face repo id. The leading slash
+ * is the whole test: a repo id is always `org/repo` with no leading separator,
+ * so nothing that would otherwise reach the Hugging Face formatter is captured
+ * here.
+ */
+function isPathLikeModelId(name: string): boolean {
+    return name.startsWith('/')
+}
+
+/**
+ * The last segment of a local model path — `/models/my-model` renders as
+ * `my-model`. Kept verbatim rather than humanised the way a repo id is: a
+ * directory name is what the operator typed into "Model to serve", and it is
+ * only recognisable if we hand it back unchanged.
+ */
+function formatLocalModelPath(modelPath: string): string {
+    const segments = modelPath.split('/').filter(segment => segment.length > 0)
+    return segments.length > 0 ? segments[segments.length - 1] : modelPath
 }
 
 /**

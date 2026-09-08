@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
     },
     supervisor: {
         callProcess: vi.fn<Supervisor['callProcess']>(),
+        // An outbound invite now adds the address as a manual node first, so it
+        // stays visible on a network that discovers nothing. These tests are
+        // about the pairing RPC timeout, so the broker reads as absent and that
+        // step is skipped.
+        hasProcess: vi.fn<Supervisor['hasProcess']>(() => false),
         markAutoCreatedSoloForInvite: vi.fn<Supervisor['markAutoCreatedSoloForInvite']>()
     }
 }))

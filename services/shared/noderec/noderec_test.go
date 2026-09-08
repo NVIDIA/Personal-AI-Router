@@ -130,6 +130,32 @@ func TestTXTDeterministicOrder(t *testing.T) {
 	}
 }
 
+// TestTXTEmitsEveryEngineKeyInOrder pins where the OpenAI-compatible engine
+// keys sit in the emit order. All three name one node's single proxy port, so a
+// record carrying them is what a peer running LM Studio, vLLM and SGLang at once
+// publishes; the order is part of the wire format's determinism guarantee, and a
+// key appended to serviceKeyOrder in the wrong place would move a key nothing
+// else in the tree notices.
+func TestTXTEmitsEveryEngineKeyInOrder(t *testing.T) {
+	r := NodeRecord{
+		HostUUID: "h",
+		Services: map[ServiceKey]int{
+			ServiceSGLang:   1234,
+			ServiceOllama:   11434,
+			ServiceLMStudio: 1234,
+			ServiceVLLM:     1234,
+		},
+	}
+	got := r.TXT()
+	want := []string{"v=1", "uuid=h", "ol=11434", "lm=1234", "vl=1234", "sg=1234"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("TXT order = %v, want %v", got, want)
+	}
+	if p, ok := ParseTXT(got).Port(ServiceSGLang); !ok || p != 1234 {
+		t.Errorf("sg round-trip = %d,%v want 1234,true", p, ok)
+	}
+}
+
 func TestTXTDefaultsSchema(t *testing.T) {
 	r := NodeRecord{HostUUID: "h", Services: map[ServiceKey]int{}}
 	if got := r.TXT()[0]; got != "v="+SchemaVersion {
@@ -147,6 +173,8 @@ func TestTransportPolicy(t *testing.T) {
 		{ServiceNodeInfo, TransportPlain, false, false},
 		{ServiceOllama, TransportPlain, false, false},
 		{ServiceLMStudio, TransportPlain, false, false},
+		{ServiceVLLM, TransportPlain, false, false},
+		{ServiceSGLang, TransportPlain, false, false},
 		{ServiceEngineManager, TransportPlain, false, false},
 		{ServiceErrors, TransportMTLSWhenClustered, true, false},
 		{ServiceWorkload, TransportMTLSWhenClustered, true, false},

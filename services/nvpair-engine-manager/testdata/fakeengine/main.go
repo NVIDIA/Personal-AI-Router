@@ -146,6 +146,15 @@ func main() {
 			log.Fatalf("write FAKE_PID_FILE %q: %v", path, err)
 		}
 	}
+	// vLLM mode: a vLLM process serves exactly one model, named on its command
+	// line, and keeps it resident. FAKE_ENGINE_MODEL reseeds the registry with
+	// just that model so the OpenAI list/loaded endpoints report vLLM's shape.
+	if m := os.Getenv("FAKE_ENGINE_MODEL"); m != "" {
+		modelsMu.Lock()
+		models = map[string]bool{m: true}
+		loaded = map[string]bool{m: true}
+		modelsMu.Unlock()
+	}
 	if raw := os.Getenv("FAKE_START_DELAY"); raw != "" {
 		delay, err := time.ParseDuration(raw)
 		if err != nil {
@@ -290,6 +299,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"model": bstr(b, "model"), "object": "chat.completion",
 			"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}}})
+	})
+	// vLLM-shape readiness/health: a bare 200 on /health, and a /version that
+	// answers JSON with a version field. /version is what distinguishes vLLM
+	// from any other OpenAI-compatible server on a probe (LM Studio has no
+	// such route), so nvpair-manual-nodes uses it as its disambiguator.
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.0.0-fake"})
 	})
 	mux.HandleFunc("/api/error", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)

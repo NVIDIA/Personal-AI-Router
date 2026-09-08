@@ -1859,15 +1859,14 @@ func nodeCandidates(n Node) []string {
 	port := strconv.Itoa(n.Port)
 	sorted := netpick.Candidates(n.TXT, n.Addresses)
 	if len(sorted) == 0 {
-		// A non-IP entry (a .local hostname) that netpick cannot parse.
-		hosts := n.Addresses
-		if len(hosts) == 0 {
-			if n.Host == "" {
-				return nil
-			}
-			hosts = []string{n.Host}
+		// The node published no dialable address of its own. Its discovery host
+		// name is a different source, not a re-reading of the same one — netpick
+		// admits IP literals and DNS names alike, so an address list holding a
+		// MagicDNS or .local name has already been ranked above.
+		if n.Host == "" {
+			return nil
 		}
-		sorted = append([]string(nil), hosts...)
+		sorted = []string{n.Host}
 	}
 
 	seen := make(map[string]bool, len(sorted))

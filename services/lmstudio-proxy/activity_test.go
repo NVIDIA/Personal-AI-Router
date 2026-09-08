@@ -58,6 +58,7 @@ func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
 		Addresses: []string{"127.0.0.1"},
 		Port:      closedPortFor(t),
 		Models:    []string{"qwen"},
+		Engine:    "lmstudio",
 	})
 	p := NewProxy(NewCodec(rec), disc, 1235)
 

@@ -5,7 +5,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-manual-nodes
 
-A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
+A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable — a filtered LAN, or an overlay network such as a Tailscale tailnet, which carries no multicast at all. Accepts node addresses via JSON-RPC, probes each one, and emits status events.
+
+There are two kinds of manual node, and one probe tells them apart. **node-info is asked first**, and its answer decides everything else:
+
+- **A bare inference host** — Ollama, LM Studio, vLLM, or SGLang on a machine that does not run PAIR. It serves no `/v1/node-info`, so its engines are probed on their own ports in plain HTTP and a supervising broker bridges it into the local proxies as a routing target. This is what manual nodes were originally for.
+- **A PAIR node** — it answers `/v1/node-info` *with a `services` map*. It is then reported with `pair_node: true`, its cluster principal, its service map, and its model inventory read from its engine manager over cluster mTLS. A supervising broker folds it into the discovery directory as if it had been found over mDNS.
+
+A PAIR node is **never** probed on its engine ports. On such a node `:11434` and `:1234` are the proxy facades, which refuse plaintext from anything but loopback, so a probe there is a guaranteed `403` that would report a healthy peer as having no engines.
 
 ## Communication
 
@@ -50,8 +57,15 @@ Emitted when a manually added node has been probed and its initial status determ
     "lmstudio_up":true,
     "lmstudio_port":1234,
     "lmstudio_models":["qwen2.5-7b-instruct"],
+    "vllm_up":true,
+    "vllm_port":8000,
+    "vllm_models":["Qwen/Qwen3-8B"],
+    "sglang_up":true,
+    "sglang_port":30000,
+    "sglang_models":["/models/my-model"],
     "node_info_up":true,
     "node_info_port":14318,
+    "pair_node":false,
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
     "telemetryValid":true,
     "msSince":120,
@@ -60,7 +74,16 @@ Emitted when a manually added node has been probed and its initial status determ
 }
 ```
 
-Each node is probed for both inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`) and LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list). `lmstudio_up` / `lmstudio_port` / `lmstudio_models` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run either engine, both, or neither.
+Each node is probed for every inference engine: Ollama on its default `:11434` (`GET /` + `/api/tags`), LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list), vLLM on its default `:8000`, and SGLang on its default `:30000`. The `lmstudio_*`, `vllm_*` and `sglang_*` fields mirror the `ollama_*` ones and let a supervising broker bridge the node into the right proxy the same way it bridges Ollama into `ollama-proxy`. A node can run any combination of them, or none.
+
+All three OpenAI-compatible engines serve the same `/v1/models`, so the model list alone cannot tell them apart on a host running more than one. Each therefore has a second route that identifies it:
+
+- **vLLM** serves `GET /version` returning a JSON `version` field, which LM Studio does not.
+- **SGLang** serves `GET /get_model_info` returning a JSON `model_path`, which neither of the others does.
+
+Both routes must answer before a node is reported as running that engine, and the vLLM probe additionally refuses a server that answers `/get_model_info`: that route is SGLang's own, so a server answering it is SGLang whatever else it serves.
+
+An SGLang model id is its `--served-model-name`, which defaults to `--model-path` verbatim — often a bare local directory such as `/models/my-model` rather than a Hugging Face id. It is reported as given and never parsed.
 
 ### `node/updated`
 
@@ -91,10 +114,13 @@ A hostname is preferred over an IP literal: probe clients disable keep-alives sp
 
 | Param | Required | Description |
 |---|---|---|
-| `address` | Yes | IP address or hostname of the node, with no port |
+| `address` | Yes | IP address or host name of the node, with no port. A `host:port` string is **rejected** with an actionable error: every probe appends its own service port, so such an entry could never be reached |
 | `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`) |
-| `tls_port` | No | Probe node-info over HTTPS on this port instead of plain HTTP on `14318`. Echoed back as `tls_enabled` |
+| `ports` | No | Per-service port overrides: `{node_info, cluster, ollama, lmstudio, vllm, sglang}`. An unset field keeps that service's default. Persisted and echoed back as `ports`. |
+| `tls_port` | No | Probe node-info over HTTPS on this port instead of plain HTTP. Takes precedence over `ports.node_info`, since it names an HTTPS listener and therefore names its port. Echoed back as `tls_enabled` |
 | `mtls` | No | Stored and echoed back as `mtls_required`. The probe transport itself is chosen by `tls_port` and live cluster membership, so this field records intent rather than driving it |
+
+An address may be a MagicDNS name (`gpu-box.tail1234.ts.net`), a `.local` name, an IPv4 literal, or an IPv6 literal in plain or bracketed form.
 
 Response: the initial node status object.
 
@@ -132,15 +158,19 @@ Changes the log level at runtime. Accepted as either a request (answered with `{
 
 ## Probing
 
-Each manual node is probed every 10 seconds, with a 3-second timeout per leg, for:
+Each manual node is probed every 10 seconds, with a 3-second timeout per leg. **node-info is asked first**, because its answer decides which other legs may run at all:
 
-- **Ollama** on port 11434: health check (`GET /`) and model list (`GET /api/tags`)
-- **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
-- **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
+- **Node Info** on port 14318 (or `ports.node_info`, or `tls_port` over HTTPS): hardware inventory, identity, cluster principal, and service map (`GET /v1/node-info`)
+- Then, **only for a bare host** (node-info reported no service map):
+  - **Ollama** on port 11434 (or `ports.ollama`): health check (`GET /`) and model list (`GET /api/tags`)
+  - **LM Studio** on port 1234 (or `ports.lmstudio`): `GET /v1/models`, which doubles as the liveness check and the model list
+  - **vLLM** on port 8000 (or `ports.vllm`): `GET /version` (the disambiguator from LM Studio) followed by `GET /v1/models` for the model list, and refused if it also answers SGLang's `/get_model_info`
+  - **SGLang** on port 30000 (or `ports.sglang`): `GET /get_model_info` (the disambiguator from any other OpenAI-compatible server) followed by `GET /v1/models` for the model list
+- Or, **only for a PAIR node**, its model inventory from its engine manager (`GET /v1/models` on the `em` port from the service map) over cluster mTLS, pinned to the peer's cluster principal. No pin, no models: a peer does not serve its inventory to a stranger, so the node appears with its hardware and gains its models once paired.
 
 A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
 
-The three engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
+`pair_node` holds across a failure episode rather than being recomputed per probe. One missed node-info answer is routine across an overlay network, and without that tolerance the gap would probe the peer's proxy facades in plaintext and withdraw it from every consumer for a cycle. It reverts past `probeFailThreshold` consecutive failures, so a node that genuinely stops being a PAIR node is not remembered as one.
 
 ## Shutdown
 

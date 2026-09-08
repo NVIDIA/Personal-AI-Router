@@ -16,8 +16,12 @@ requests can be routed to eligible nodes according to engine availability,
 model availability, and current workload.
 
 PAIR is useful for concurrent local workloads such as multi-agent applications.
-Prompts and responses are intended to remain on the local network when every
-configured client, model source, engine, and node is local.
+Prompts and responses are intended to stay on the network you route them over —
+your local network, or an encrypted overlay such as a Tailscale tailnet that you
+configured yourself — when every configured client, model source, engine, and
+node is one of yours. Refer to
+[Running PAIR across a Tailscale tailnet](docs/remote-networks.mdx) for nodes
+that are not on the same local link.
 
 > PAIR routes each independent request to one node. It does **not** pool GPU
 > memory, combine GPUs into a larger logical GPU, shard one model across
@@ -38,7 +42,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama and LM Studio |
+| **Inference engines** | Ollama, LM Studio, and — on Linux — vLLM and SGLang |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -100,9 +104,10 @@ you want by its full filename instead.
   status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
-  select **Install** next to Ollama or LM Studio. PAIR downloads and sets the
-  engine up for you, so nothing needs to be in place beforehand. If PAIR already
-  found an engine you installed yourself, start that one instead.
+  select **Install** next to Ollama, LM Studio, or (on Linux) vLLM or SGLang.
+  PAIR downloads and sets the engine up for you, so nothing needs to be in place
+  beforehand. If PAIR already found an engine you installed yourself, start that
+  one instead.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
@@ -149,8 +154,9 @@ The reply is ordinary OpenAI-shaped JSON, abbreviated here:
 }
 ```
 
-If you changed a port, or you are using LM Studio rather than Ollama, copy the
-URL from **Endpoints → API endpoints** instead of assuming the one above.
+If you changed a port, or you are using LM Studio, vLLM, or SGLang rather than
+Ollama, copy the URL from **Endpoints → API endpoints** instead of assuming the
+one above.
 
 That is a single machine working. To route across machines, pair a second one
 from **Settings → Cluster** and repeat the engine and model steps there. The
@@ -224,19 +230,22 @@ Each entry assumes the ones before it.
 4. **[Terminal interface](docs/terminal-interface.mdx)** — the same tasks from a
    terminal, for a machine with no desktop environment. Skip it if every machine
    you run has a desktop.
-5. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
+5. **[Remote networks](docs/remote-networks.mdx)** — read this if your machines
+   are joined by a VPN or overlay network rather than a local link: discovery
+   does not cross one, so you add the peer by name instead.
+6. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
    you need it, so you know where the diagnostics live. Alongside it,
    **[Known issues](docs/known-issues.mdx)** lists the significant limitations we
    are already aware of, and
    **[Collecting and sanitizing logs](docs/log-collection.mdx)** covers preparing
    a log you can share.
-6. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
+7. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
    routed, and where the trust boundaries are. Read this before changing
    anything, or if you want to know why PAIR behaves the way it does.
-7. **[Building and running](docs/building.mdx)** — prerequisites, building from
+8. **[Building and running](docs/building.mdx)** — prerequisites, building from
    source, running the services without the desktop application, and writing
    your own client against the JSON-RPC API.
-8. **[Developer guide](docs/developing.mdx)** — read this before contributing:
+9. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
 

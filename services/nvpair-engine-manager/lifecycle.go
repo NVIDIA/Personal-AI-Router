@@ -57,6 +57,9 @@ func (e *Executor) waitDetect(engine string, want bool, timeout time.Duration) b
 type startOpts struct {
 	Port int
 	Bind string
+	// Model overrides runtime.model for this launch only, for an engine that
+	// serves one model per process. "" => the manifest's configured model.
+	Model string
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -165,6 +168,16 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
+	model := rt.Model
+	if opts.Model != "" {
+		model = opts.Model
+	}
+	// An engine whose launch template substitutes {model} serves exactly one
+	// model per process and has nothing to serve until one is chosen. Fail with
+	// guidance rather than spawning a process that cannot answer.
+	if rt.referencesModel() && strings.TrimSpace(model) == "" {
+		return fmt.Errorf("cannot start %s: it serves one model per process, and no model is configured — choose the model to serve in Engine settings", st.manifest.DisplayName)
+	}
 	vars := map[string]string{
 		"host":        effectiveBind(rt.Bind, opts.Bind),
 		"port":        strconv.Itoa(port),
@@ -172,6 +185,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
+	}
+	if model != "" {
+		vars["model"] = model
 	}
 
 	st.mu.Lock()
@@ -227,7 +243,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	}
 	vars["bin"] = binPath
 
-	args, err := resolveArgs(rt.Args, vars)
+	args, err := resolveArgs(rt.launchArgs(), vars)
 	if err != nil {
 		return err
 	}

@@ -91,7 +91,7 @@ describe('LM Studio model reconciliation', () => {
         state.handleNotification({
             source: 'lmstudio-proxy',
             method: 'node/discovered',
-            params: { id: nodeId, port: 1234 }
+            params: { id: nodeId, port: 1234, modelsByEngine: { lmstudio: [] } }
         })
         state.handleNotification({
             source: 'broker',
@@ -202,7 +202,7 @@ describe('LM Studio model reconciliation', () => {
         state.handleNotification({
             source: 'lmstudio-proxy',
             method: 'node/discovered',
-            params: { id: nodeId, port: 1234 }
+            params: { id: nodeId, port: 1234, modelsByEngine: { lmstudio: [] } }
         })
         state.handleNotification({
             source: 'broker',
@@ -264,7 +264,7 @@ describe('LM Studio model reconciliation', () => {
         state.handleNotification({
             source: 'lmstudio-proxy',
             method: 'node/discovered',
-            params: { id: nodeId, port: 1234 }
+            params: { id: nodeId, port: 1234, modelsByEngine: { lmstudio: [] } }
         })
         state.handleNotification({
             source: 'broker',
@@ -323,7 +323,7 @@ describe('LM Studio model reconciliation', () => {
         state.handleNotification({
             source: 'lmstudio-proxy',
             method: 'node/discovered',
-            params: { id: nodeId, port: 1234 }
+            params: { id: nodeId, port: 1234, modelsByEngine: { lmstudio: [] } }
         })
         state.handleNotification({
             source: 'broker',
@@ -414,7 +414,7 @@ describe('LM Studio model reconciliation', () => {
         state.handleNotification({
             source: 'lmstudio-proxy',
             method: 'node/discovered',
-            params: { id: nodeId, port: 1234 }
+            params: { id: nodeId, port: 1234, modelsByEngine: { lmstudio: [] } }
         })
         state.handleNotification({
             source: 'broker',

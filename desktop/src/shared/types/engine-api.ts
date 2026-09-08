@@ -50,12 +50,19 @@ export type EngineCommandType =
     | 'unloadModel'
     | 'deleteModel'
     | 'setModelExpiry'
+    | 'setServedModel'
 
 /** Payload for engine commands sent from the UI. */
 export interface EngineCommandPayload {
     command: EngineCommandType
     engineType: EngineType
     nodeId: string
+    /**
+     * The model an operation acts on. For `setServedModel` it is the model the
+     * engine should serve from its next start; an empty string clears the
+     * choice, leaving an engine that requires one unable to start until it is
+     * set again.
+     */
     model?: string
     /**
      * `setPorts` only. The engine HTTP server port to apply. Omitted when the

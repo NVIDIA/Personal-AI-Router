@@ -93,7 +93,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	waitForResponse(t, msgs, 5*time.Second)
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"proxy:node/select","params":{"id":"fake-ollama"}}`)
 	waitForResponse(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":52,"method":"lmstudio-proxy:node/add-manual","params":{"id":"fake-lmstudio","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["crossengine-model"]}}`, lmstudioPort))
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":52,"method":"lmstudio-proxy:node/add-manual","params":{"id":"fake-lmstudio","engine":"lmstudio","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["crossengine-model"]}}`, lmstudioPort))
 	waitForResponse(t, msgs, 5*time.Second)
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":53,"method":"lmstudio-proxy:node/select","params":{"id":"fake-lmstudio"}}`)
 	waitForResponse(t, msgs, 5*time.Second)

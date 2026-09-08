@@ -71,7 +71,8 @@ describe('UUID node keying', () => {
                 host: 'merge-host-2',
                 port: 1234,
                 addresses: ['192.0.2.12'],
-                ip: '192.0.2.12'
+                ip: '192.0.2.12',
+                modelsByEngine: { lmstudio: [] }
             }
         })
         state.handleNotification({

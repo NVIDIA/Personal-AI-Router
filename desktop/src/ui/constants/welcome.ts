@@ -13,7 +13,13 @@ export const WELCOME_STEP_SUB_HEADINGS = ['', 'You can update later by clicking 
 
 export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
-    'lm-studio': true
+    'lm-studio': true,
+    // vLLM downloads a multi-gigabyte CUDA stack and then a model, and it runs
+    // on Linux only. Offer it, but never pre-select it during onboarding.
+    vllm: false,
+    // SGLang installs the same kind of multi-gigabyte GPU stack and then a
+    // model, and it too runs on Linux only. Same treatment as vLLM.
+    sglang: false
 }
 
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {

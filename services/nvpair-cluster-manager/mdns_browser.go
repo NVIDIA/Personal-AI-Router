@@ -103,12 +103,18 @@ func (b *Browser) Resolve(idOrUUID string) (hosts []string, port int, ok bool) {
 }
 
 // pickHosts returns the node's dialable addresses in ranked order, falling back
-// to whatever it advertised when none of them rank.
+// to its discovery host name when it published no address at all. netpick ranks
+// IP literals and DNS names alike, so a node reachable only by name is already
+// covered by the first branch; the host name is a separate source, not a second
+// reading of the same one.
 func pickHosts(n discovery.Node) []string {
 	if h := netpick.Candidates(n.TXT, n.Addresses); len(h) > 0 {
 		return h
 	}
-	return n.Addresses
+	if n.Host != "" {
+		return []string{n.Host}
+	}
+	return nil
 }
 
 // seed primes a known peer into the resolver map without a live event (tests).

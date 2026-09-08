@@ -189,9 +189,9 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 
 	busyHost, busyPort := e2eSplitHostPort(t, busy.URL)
 	goodHost, goodPort := e2eSplitHostPort(t, good.URL)
-	e2eSend(t, stdin, 1, "node/add-manual", map[string]any{"id": "busy", "host": busyHost, "port": busyPort, "addresses": []string{busyHost}, "models": []string{"m"}})
+	e2eSend(t, stdin, 1, "node/add-manual", map[string]any{"id": "busy", "engine": "lmstudio", "host": busyHost, "port": busyPort, "addresses": []string{busyHost}, "models": []string{"m"}})
 	e2eWaitResult(t, frames, "1", 5*time.Second)
-	e2eSend(t, stdin, 2, "node/add-manual", map[string]any{"id": "good", "host": goodHost, "port": goodPort, "addresses": []string{goodHost}, "models": []string{"m"}})
+	e2eSend(t, stdin, 2, "node/add-manual", map[string]any{"id": "good", "engine": "lmstudio", "host": goodHost, "port": goodPort, "addresses": []string{goodHost}, "models": []string{"m"}})
 	e2eWaitResult(t, frames, "2", 5*time.Second)
 	// Select the busy node so the failover path is deterministic.
 	e2eSend(t, stdin, 3, "node/select", map[string]any{"id": "busy"})

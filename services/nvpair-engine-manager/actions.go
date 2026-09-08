@@ -162,7 +162,7 @@ func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act
 		var pm map[string]any
 		if err := json.Unmarshal(params, &pm); err == nil {
 			for k, v := range pm {
-				if allowedPlaceholders[k] {
+				if reservedActionPlaceholders[k] {
 					continue
 				}
 				vars[k] = fmt.Sprint(v)
@@ -224,7 +224,7 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		var pm map[string]any
 		if err := json.Unmarshal(params, &pm); err == nil {
 			for k, v := range pm {
-				if allowedPlaceholders[k] {
+				if reservedActionPlaceholders[k] {
 					continue
 				}
 				vars[k] = fmt.Sprint(v)

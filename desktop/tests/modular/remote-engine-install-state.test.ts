@@ -138,7 +138,8 @@ describe('remote engine install state', () => {
                 host: remoteNodeId,
                 port: 1234,
                 addresses: ['192.0.2.63'],
-                ip: '192.0.2.63'
+                ip: '192.0.2.63',
+                modelsByEngine: { lmstudio: [] }
             }
         })
 
@@ -179,7 +180,8 @@ describe('remote engine install state', () => {
                 host: remoteNodeId,
                 port: 1234,
                 addresses: ['192.0.2.65'],
-                ip: '192.0.2.65'
+                ip: '192.0.2.65',
+                modelsByEngine: { lmstudio: [] }
             }
         })
 

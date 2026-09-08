@@ -39,6 +39,9 @@ const matchHfPullKeyOrName: DownloadedMatcher = (hubEntry, d) => {
 const MATCHERS: Partial<Record<EngineType, DownloadedMatcher>> = {
     ollama: matchOllama,
     'lm-studio': matchHfPullKeyOrName
+    // vLLM and SGLang declare no engineHub, so no hub row is ever rendered for
+    // them and they need no matcher. Adding one here without a hub would be dead
+    // code.
 }
 
 export function isHubEntryDownloaded(

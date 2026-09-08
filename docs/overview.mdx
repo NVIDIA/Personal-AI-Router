@@ -35,9 +35,9 @@ These terms have specific meanings in PAIR:
   is no server, controller, or primary node.
 - **Cluster** — the set of nodes you have paired together. A node belongs to at
   most one cluster, and it must leave before it can join another.
-- **Engine** — the local inference server that runs models: Ollama or LM Studio.
-  PAIR can install, start, stop, and update an engine, or adopt one you already
-  run yourself.
+- **Engine** — the local inference server that runs models: Ollama, LM Studio,
+  vLLM, or SGLang. PAIR can install, start, stop, and update an engine, or adopt
+  one you already run yourself.
 - **Model** — what you prepare on each node. Nodes do not share models, so a
   node can serve a request only for a model it already holds. Preparing the same
   model on several nodes is what makes those nodes interchangeable.
@@ -121,7 +121,8 @@ For the trust boundaries in detail, refer to
 
 - A local endpoint for compatible AI applications and development tools.
 - LAN discovery plus manually configured nodes.
-- Ollama-compatible and LM Studio/OpenAI-compatible routing proxies.
+- Ollama-compatible and OpenAI-compatible routing proxies. The
+  OpenAI-compatible one fronts LM Studio, vLLM, and SGLang.
 - Pairing and cluster membership managed by the background services.
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between machines: a request sent to another node travels over

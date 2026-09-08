@@ -43,13 +43,16 @@ func nodeFor(t *testing.T, id, serverURL string) Node {
 	if err != nil {
 		t.Fatalf("port %q: %v", portStr, err)
 	}
-	return Node{ID: id, Addresses: []string{host}, Port: port}
+	// Manual nodes always name the engine they were added for; the proxy keys its
+	// manual overlay by (engine, node) so one host can be added for both.
+	return Node{ID: id, Addresses: []string{host}, Port: port, Engine: "lmstudio"}
 }
 
 func nodeForModel(t *testing.T, id, serverURL, model string) Node {
 	t.Helper()
 	node := nodeFor(t, id, serverURL)
 	node.Models = []string{model}
+	node.ModelsByEngine = map[string][]string{node.Engine: {model}}
 	return node
 }
 

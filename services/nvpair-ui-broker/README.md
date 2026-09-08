@@ -21,14 +21,14 @@ namespace:
 | `nvpair-node-scanner` | Discovery daemon: advertises this host's one `_nvpair-node._tcp` record and browses the LAN | `discovery:*` |
 | `nvpair-node-info` | Local GPU / CPU / memory inventory over HTTP at `/v1/node-info` | — (HTTP only) |
 | `ollama-proxy` | Ollama-compatible inference proxy and router | `proxy:*` |
-| `lmstudio-proxy` | The LM Studio counterpart, supervised identically | `lmstudio-proxy:*` |
+| `lmstudio-proxy` | The OpenAI-compatible counterpart (LM Studio, vLLM, SGLang), supervised identically | `lmstudio-proxy:*` |
 | `nvpair-engine-manager` | Local engine and model control plane; also serves `GET /v1/models` to peers | `engine:*` |
 | `nvpair-cluster-manager` | Node identity, trusted-node store, PIN pairing | `cluster:*`, `nodes:*` |
 | `nvpair-workload-manager` | Cluster workload relay between this node and peers | `workloads:*` |
 | `nvpair-job-scheduler` | Ranks nodes by pending work and GPU pressure for the proxies | _internal_ |
 | `nvpair-errors` | Service-error datastore and cross-node sync | `errors:*` |
 | `nvpair-node-settings` | Typed per-node settings store | `settings/*` |
-| `nvpair-manual-nodes` | User-added nodes, merged into the discovery snapshot | `node/*`, `nodes/list` |
+| `nvpair-manual-nodes` | User-added nodes, merged into the discovery snapshot; a user-added PAIR node is folded into the discovery relay as a peer | `node/*`, `nodes/list` |
 
 Only the scanner is required. Every other worker is optional: a missing binary
 leaves the broker running without that capability rather than failing to start.
@@ -37,9 +37,14 @@ lifecycle, and relay rules.
 
 Two responsibilities live in the broker itself rather than in a worker:
 
-- **Engine advertising.** The broker polls local Ollama and LM Studio every 5 s
-  and registers each running engine's port (`ol` / `lm`) with the discovery
-  daemon, so both are carried in this host's single `_nvpair-node` record. The
+- **Engine advertising.** The broker polls local Ollama, LM Studio, vLLM and
+  SGLang every 5 s and registers each running engine's port
+  (`ol` / `lm` / `vl` / `sg`) with the discovery daemon, so all of them are
+  carried in this host's single `_nvpair-node` record. `lm`, `vl` and `sg` all
+  carry the port of the one OpenAI-compatible proxy, so a host serving from
+  several of those engines advertises the same port several times; which engine
+  owns a given model comes from engine-manager model attribution, not from the
+  key. The
   model list is not part of that record — it is served over HTTP by
   `nvpair-engine-manager` on the `em` service and fetched by a peer's daemon
   during discovery enrichment.
@@ -77,7 +82,7 @@ Bidirectional newline-delimited JSON-RPC 2.0 — same conventions as every other
 | `--settings-path <path>` | `./nvpair-node-settings[.exe]` in the CWD | Explicit path to the `nvpair-node-settings` binary the broker spawns for the typed settings store. Same optional semantics as `--node-info-path` |
 | `--cluster-manager-path <path>` | `./nvpair-cluster-manager[.exe]` in the CWD | Explicit path to the `nvpair-cluster-manager` binary the broker spawns for cluster pairing / membership. Same optional semantics as `--node-info-path` |
 | `--scheduler-path <path>` | `./nvpair-job-scheduler[.exe]` in the CWD | Explicit path to the `nvpair-job-scheduler` binary the broker spawns for responsive, node-wide workload and GPU-pressure ranking. Same optional semantics as `--node-info-path` |
-| `--cluster-dir <path>` | `cluster/` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) | Cluster config dir (`node.crt`/`node.key` + `trusted/`, minted by `nvpair-cluster-manager`). Threaded to the cluster-scoped workers (`nvpair-errors`, `nvpair-workload-manager`, `nvpair-node-scanner`, `nvpair-manual-nodes`, and `nvpair-engine-manager`), each of which derives its membership from it continuously — so a create, join, or leave takes effect in place and the broker does **not** restart them. The broker also passes the parent of this path to `nvpair-cluster-manager` as `--config-dir`, so the only writer of the cluster dir and the workers reading it cannot resolve different directories. `nvpair-node-info` is excluded — it stays plain HTTP even when clustered (see the repository-root `SECURITY.md`). Defaults so cluster mTLS auto-activates with nothing to pass; with an empty or cert-less dir this node is not a member, so it serves and dials no inter-node cluster traffic at all |
+| `--cluster-dir <path>` | `cluster/` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) | Cluster config dir (`node.crt`/`node.key` + `trusted/`, minted by `nvpair-cluster-manager`). Threaded to the cluster-scoped workers (`nvpair-errors`, `nvpair-workload-manager`, `nvpair-node-scanner`, `nvpair-manual-nodes`, and `nvpair-engine-manager`), each of which derives its membership from it continuously — so a create, join, or leave takes effect in place and the broker does **not** restart them. The broker also passes the parent of this path to `nvpair-cluster-manager` as `--config-dir`, so the only writer of the cluster dir and the workers reading it cannot resolve different directories. `nvpair-node-info` is excluded — it stays plain HTTP even when clustered (see the repository-root `SECURITY.md`), which is also what lets a peer that has not paired yet learn this node exists. Defaults so cluster mTLS auto-activates with nothing to pass; with an empty or cert-less dir this node is not a member, so it serves and dials no inter-node cluster traffic at all |
 | `--log-level <lvl>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
 | `--version` | | Print version and exit |
 
@@ -115,7 +120,7 @@ Two classes of proxy notification are **not** re-emitted under the `proxy:` name
 - **Inbound (peers -> manager -> broker).** The manager translates peer-origin lifecycle events into `workloads:upsert` and peer-origin removals into `workloads:remove` on stdout. The broker applies each accepted transition to the same store, fans it to the scheduler, and relays it to clients subscribed via `workloads:subscribe`.
 - **Local echo.** Local-origin proxy workloads are also emitted to the same `workloads:*` client stream (lifecycle translated to `workloads:upsert`), so a subscribed client sees a coherent cluster-wide view — its own workloads alongside peers'.
 
-**`nvpair-job-scheduler`** consumes the accepted workload stream, compact GPU telemetry, and discovery snapshot. It smooths fresh utilization into pressure 0–3, uses neutral pressure 1 for invalid/missing/older-than-10-second samples, and orders by `pending + gpuPressure`, then pressure, then stable UUID. Load is node-wide across Ollama and LM Studio because both normally contend for the same resources. Each engine-specific `schedule:priority` carries `{engine,nodes,ranks}` and refreshes when order, pending counts, or pressure changes. The broker caches, generation-orders, and replays the full `{nodes,ranks}` snapshot to the matching proxy, where a newly delivered snapshot resets optimistic reservation deltas. On scheduler spawn/restart the broker replays active workloads and telemetry before discovery, then resumes all three live feeds.
+**`nvpair-job-scheduler`** consumes the accepted workload stream, compact GPU telemetry, and discovery snapshot. It smooths fresh utilization into pressure 0–3, uses neutral pressure 1 for invalid/missing/older-than-10-second samples, and orders by `pending + gpuPressure`, then pressure, then stable UUID. Load is node-wide across Ollama, LM Studio, vLLM, and SGLang because they normally contend for the same resources. Each engine-specific `schedule:priority` carries `{engine,nodes,ranks}` and refreshes when order, pending counts, or pressure changes. The broker caches, generation-orders, and replays the full `{nodes,ranks}` snapshot to the matching proxy, where a newly delivered snapshot resets optimistic reservation deltas. On scheduler spawn/restart the broker replays active workloads and telemetry before discovery, then resumes all three live feeds.
 
 `schedule:priority` and `node/set-priority` are internal worker contracts: the broker does not expose either notification to its connected client.
 
@@ -475,9 +480,17 @@ Any `settings/*` request is forwarded to `nvpair-node-settings` and its response
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 
-Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, tls_port?, mtls? }`) registers a user-added node and probes it; `node/remove` (`{ id }`) drops it; `nodes/list` returns the tracked manual nodes. Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. A `nvpair-manual-nodes` restart loses the in-memory entries because neither that worker nor the broker persists an authoritative copy, so clients must re-add manual nodes after a restart. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
+Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, ports?, tls_port?, mtls? }`) registers a user-added node and probes it. `address` must carry no port — `ports` (`{ node_info, cluster, ollama, lmstudio, vllm, sglang }`) moves any single service off its default; `node/remove` (`{ id }`) drops it; `nodes/list` returns the tracked manual nodes. Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. A `nvpair-manual-nodes` restart loses the in-memory entries because neither that worker nor the broker persists an authoritative copy, so clients must re-add manual nodes after a restart. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
 
-**Manual → proxy bridge.** When the broker supervises both `nvpair-manual-nodes` and a proxy, it also bridges a manual node whose engine is reachable into that proxy via `node/add-manual` (host/port from the node's per-engine status), so inference can route to it through `proxy:node/select` / `lmstudio-proxy:node/select` just like a relay-discovered node. This is per-engine: a node whose `ollama_*` status is up is bridged into `ollama-proxy` (host/port from `ollama_port`), and one whose `lmstudio_*` status is up into `lmstudio-proxy` (from `lmstudio_port`) — a node running both is bridged into both. Manual nodes are by definition the ones that never appear via the daemon's `_nvpair-node` discovery, so this explicit add is what makes them routable. The bridge tracks reachability: an engine that goes down (or a node that is removed, or whose prober crashes) is pulled back out with `node/remove-manual`. A proxy that isn't supervised → that leg is a no-op; manual nodes still appear in the discovery snapshot as before.
+**A manual node reaches inference one of two ways, never both**, decided by what `nvpair-manual-nodes` reports for it.
+
+**A bare inference host** (`pair_node: false`) — Ollama, LM Studio, vLLM or SGLang on a machine that does not run PAIR — is bridged into the proxies via `node/add-manual` (host/port from the node's per-engine status), so inference can route to it through `proxy:node/select` / `lmstudio-proxy:node/select` just like a relay-discovered node. This is per-engine: a node whose `ollama_*` status is up is bridged into `ollama-proxy` (from `ollama_port`), and one whose `lmstudio_*`, `vllm_*` or `sglang_*` status is up into the OpenAI proxy once per engine (from that engine's port), so a host running several of them contributes one entry each. The bridge tracks reachability: an engine that goes down (or a node that is removed, or whose prober crashes) is pulled back out with `node/remove-manual`. A proxy that isn't supervised → that leg is a no-op.
+
+**A PAIR node** (`pair_node: true`, its node-info reported a `services` map) is instead folded into the **discovery relay**: the broker synthesizes the `DirectoryNode` the scanner would have produced — the typed address as its canonical one, the peer's cluster principal, its service map, its hardware and its models — and applies it to the same relay every consumer subscribes to. Both proxies, the scheduler, `nvpair-engine-manager`'s remote operations, the workload relay and the errors peer sync then treat it exactly as they treat a discovered pinned peer, and it is dialed over cluster mTLS to its own proxy ports. The raw-engine bridge is *withdrawn* for such a node rather than left alongside: those ports are the peer's proxy facades and refuse plaintext from anything but their own loopback, so a second plaintext candidate could only ever 403.
+
+The synthesis stands down in three cases, so it never fights another writer or points at this machine: the node's `hostUuid` is this node's own (a manual entry naming ourselves must not become a routing target), the scanner already claims that key (the daemon's record is authoritative and carries evidence the synthesis cannot), or the node is not a PAIR node. A withdrawal removes only what the broker itself synthesized.
+
+This is what makes a peer on a network that carries no multicast — a Tailscale tailnet, a WireGuard tunnel, a routed link — an ordinary cluster member. See [Running PAIR across a Tailscale tailnet](../../docs/remote-networks.mdx).
 
 #### `cluster:<method>` / `nodes:<method>` (generic relay)
 
