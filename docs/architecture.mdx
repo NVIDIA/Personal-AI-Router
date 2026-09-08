@@ -587,13 +587,17 @@ scanner mints one and persists it.
 ### Sharing UDP 5353
 
 PAIR runs its own mDNS responder rather than depending on a system one, because
-Windows ships none. That responder must coexist with whatever else is on the
-port, including Bonjour, Avahi, and PAIR's own sibling processes. It therefore
-sets `SO_REUSEADDR` on the socket to share UDP 5353.
+Windows ships none. Its receive socket and short-lived per-interface send
+sockets bind UDP 5353, as RFC 6762 requires for mDNS queries and responses.
+Binding each sender to the selected interface address also preserves reliable
+egress on multi-homed Windows hosts.
 
-It deliberately does **not** set `SO_REUSEPORT`. On Linux that load-balances
-incoming unicast datagrams across every socket sharing the port, which would let
-one process swallow mDNS replies meant for another.
+Those sockets set `SO_REUSEADDR` so they coexist with Bonjour, Avahi, and other
+PAIR processes. A Darwin sender also sets `SO_REUSEPORT`, matching the BSD
+multicast sharing behavior needed to coexist with the system mDNS responder.
+Linux deliberately omits `SO_REUSEPORT`: there it can load-balance incoming
+unicast datagrams into a short-lived send socket and steal replies from the
+long-lived receiver.
 
 ### Node Enrichment
 
