@@ -344,8 +344,10 @@ type workerPaths struct {
 	clusterDir string
 	// proxyResponseTimeout is passed to ollama-proxy as --response-timeout so
 	// it waits longer than its own 120s default for a real forwarded request's
-	// response headers (see spawnProxy). Zero means "don't pass the flag",
-	// leaving ollama-proxy's own default in effect.
+	// response headers (see spawnProxy). Zero means "wait indefinitely"
+	// (ollama-proxy's own zero-means-no-timeout semantics), explicitly passed
+	// through rather than omitted. Negative is invalid and skips the flag
+	// entirely, leaving ollama-proxy's own default in effect.
 	proxyResponseTimeout time.Duration
 }
 
@@ -657,7 +659,7 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 	// ingress (and dial peers over mTLS) once this node is clustered; empty/
 	// absent certs leave it loopback-plaintext only.
 	args = append(args, b.clusterDirArgs()...)
-	if b.proxyResponseTimeout > 0 {
+	if b.proxyResponseTimeout >= 0 {
 		args = append(args, "--response-timeout", b.proxyResponseTimeout.String())
 	}
 	pp, err := startProxy("proxy", b.proxyPath, applog.LevelString(), b.relayDir,

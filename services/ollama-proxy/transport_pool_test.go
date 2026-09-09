@@ -43,9 +43,21 @@ func TestSetResponseTimeoutOverridesTransport(t *testing.T) {
 	}
 }
 
-func TestSetResponseTimeoutIgnoresNonPositive(t *testing.T) {
+func TestSetResponseTimeoutZeroMeansNoTimeout(t *testing.T) {
 	p := testProxy(NewDiscovery(), 11435)
 	p.SetResponseTimeout(0)
+
+	if p.responseTimeout != 0 {
+		t.Fatalf("responseTimeout = %v, want 0 (no timeout)", p.responseTimeout)
+	}
+	tr := p.candidateTransport(candidate{})
+	if tr.ResponseHeaderTimeout != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 0 (no timeout)", tr.ResponseHeaderTimeout)
+	}
+}
+
+func TestSetResponseTimeoutIgnoresNegative(t *testing.T) {
+	p := testProxy(NewDiscovery(), 11435)
 	p.SetResponseTimeout(-1 * time.Second)
 
 	if p.responseTimeout != defaultProxyResponseTimeout {

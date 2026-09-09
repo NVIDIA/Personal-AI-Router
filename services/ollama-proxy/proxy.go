@@ -423,16 +423,62 @@ func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
 
 // SetResponseTimeout overrides the ResponseHeaderTimeout used by the
 // forwarding transports (plain and cluster-peer) for requests dispatched
-// after this call. A non-positive duration is ignored, leaving whatever
-// timeout is already configured (defaultProxyResponseTimeout unless this was
-// already called). Only safe to call before Run/serveHTTP starts accepting
-// traffic, or from the same goroutine that owns startup — it does not itself
-// synchronize with in-flight newProxyTransport callers.
+// after this call. Zero means "no timeout" — matching http.Transport's own
+// ResponseHeaderTimeout semantics — and is accepted deliberately: an engine
+// that only flushes once a tool call finishes composing, or a cold load on a
+// large model, can legitimately take longer than any fixed bound. A negative
+// duration is invalid and ignored, leaving whatever timeout is already
+// configured (defaultProxyResponseTimeout unless this was already called).
+// Only safe to call before Run/serveHTTP starts accepting traffic, or from
+// the same goroutine that owns startup — it does not itself synchronize with
+// in-flight newProxyTransport callers.
 func (p *Proxy) SetResponseTimeout(d time.Duration) {
-	if d <= 0 {
+	if d < 0 {
 		return
 	}
 	p.responseTimeout = d
+}
+
+// progressLogInterval is how often loggingRoundTripper reports that a
+// forwarded request is still awaiting response headers. Independent of
+// responseTimeout: it fires whether or not a timeout is even configured, so a
+// long wait (or an unbounded one, with --response-timeout 0) shows up as
+// periodic progress rather than silence that looks identical to a hang.
+const progressLogInterval = 30 * time.Second
+
+// loggingRoundTripper wraps a candidate's transport so a request in flight
+// logs periodic "still waiting" progress until RoundTrip returns — either a
+// response (success or a status the caller will retry/reject) or a transport
+// error (dial failure, or the ResponseHeaderTimeout itself firing). It adds no
+// timeout of its own; it only narrates the wait that responseTimeout (or the
+// lack of one) already governs.
+type loggingRoundTripper struct {
+	http.RoundTripper
+	reqID  string
+	nodeID string
+	target string
+	path   string
+}
+
+func (t loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(progressLogInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				slog.Info("proxy request still awaiting response headers",
+					"id", t.reqID, "node_id", t.nodeID, "target", t.target,
+					"path", t.path, "elapsed_ms", time.Since(start).Milliseconds())
+			}
+		}
+	}()
+	return t.RoundTripper.RoundTrip(req)
 }
 
 // activityReportInterval is how often a single node's streaming may raise a
@@ -1369,7 +1415,19 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
-			Transport: p.candidateTransport(cand),
+			// Wrapped so a long, legitimate wait (large-context prefill, a
+			// tool-call composing on the other end) shows up as periodic
+			// progress in the logs instead of silence indistinguishable from a
+			// hang — especially relevant once --response-timeout is raised or
+			// disabled (0), where nothing else will report that the request is
+			// still alive until it finally succeeds or fails.
+			Transport: loggingRoundTripper{
+				RoundTripper: p.candidateTransport(cand),
+				reqID:        reqID,
+				nodeID:       cand.id,
+				target:       cand.url.Host,
+				path:         r.URL.Path,
+			},
 			// ModifyResponse fires when the upstream's status line + headers
 			// have arrived but before the body streams. That's both the retry
 			// decision point and, on commit, the time-to-first-byte boundary.
