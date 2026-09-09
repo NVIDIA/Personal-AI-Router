@@ -25,6 +25,7 @@
  */
 import type {
     EngineCommandPayload,
+    EngineHubLookupResponse,
     EngineHubSearchResponse,
     EngineInitialState,
     EngineStatePatch
@@ -93,6 +94,12 @@ export interface WsInvokeChannelMap {
     'engines:get-initial': { request: void; response: EngineInitialState }
     'engine:command': { request: EngineCommandPayload; response: null }
     'engine:search-hub': { request: { engineType: EngineType }; response: EngineHubSearchResponse }
+    // Exact-name lookup, used only when a search matches nothing, so the
+    // catalog the app ships with cannot hide a model the engine could pull.
+    'engine:lookup-hub-model': {
+        request: { engineType: EngineType; name: string }
+        response: EngineHubLookupResponse
+    }
 
     // Errors
     'errors:get-initial': { request: void; response: ServiceError[] }

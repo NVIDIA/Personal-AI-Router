@@ -75,12 +75,14 @@ const EngineHubListRow = memo(function EngineHubListRow({
                             </Text>
                         )}
 
-                        <Text
-                            kind="body/regular/sm"
-                            className="text-subtle-color whitespace-nowrap"
-                        >
-                            Updated {formatRelativeTime(new Date(model.updatedAt).getTime())}
-                        </Text>
+                        {!!model.updatedAt && (
+                            <Text
+                                kind="body/regular/sm"
+                                className="text-subtle-color whitespace-nowrap"
+                            >
+                                Updated {formatRelativeTime(model.updatedAt.getTime())}
+                            </Text>
+                        )}
 
                         {!!model.url && (
                             <Button

@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { EngineType } from '@/shared/types/engines'
-import type { EngineHubModel, EngineHubSearchResponse } from '@/shared/types/engine-api'
+import type {
+    EngineHubLookupResponse,
+    EngineHubModel,
+    EngineHubSearchResponse
+} from '@/shared/types/engine-api'
 import { loadOllamaModels, type OllamaTagsModel } from '@/electron/model-hub/ollama-library'
+import { lookupOllamaModel } from '@/electron/model-hub/ollama-registry'
 import {
     lmStudioCatalogCache,
     type LmStudioCatalogModel
@@ -15,11 +20,16 @@ function ollamaToHubModel(m: OllamaTagsModel): EngineHubModel {
         id: m.name,
         name: m.name,
         author: '',
-        url: `https://ollama.com/library/${base}`,
+        // A namespaced name addresses that namespace's page; a bare one is a
+        // first-party model under `library`.
+        url: base.includes('/')
+            ? `https://ollama.com/${base}`
+            : `https://ollama.com/library/${base}`,
         size: m.size > 0 ? m.size : undefined,
         downloads: 0,
         likes: 0,
-        updatedAt: m.modified_at || new Date().toISOString(),
+        // Empty means the source reported no date; the row omits its age.
+        updatedAt: m.modified_at,
         tags: [],
         family: m.details.family || undefined,
         parameterSize: m.details.parameter_size || undefined
@@ -54,6 +64,30 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
             return { models: lmStudioCatalogCache.list().map(lmStudioToHubModel) }
         default:
             return { models: [] }
+    }
+}
+
+/**
+ * Resolve one exact model name {@link getEngineHubModels} did not return.
+ * Ollama's list is a committed snapshot, so a model published since it was taken
+ * is absent from the browse list even though the engine can pull it; this asks
+ * Ollama's registry for that one name.
+ *
+ * A null model means "not available" for every cause alike — no lookup source
+ * for the engine, no such model, or an unreachable registry. LM Studio has none
+ * because its catalog is fetched live and never falls behind a release.
+ */
+export async function lookupEngineHubModel(
+    engineType: EngineType,
+    name: string
+): Promise<EngineHubLookupResponse> {
+    switch (engineType) {
+        case 'ollama': {
+            const found = await lookupOllamaModel(name)
+            return { model: found ? ollamaToHubModel(found) : null }
+        }
+        default:
+            return { model: null }
     }
 }
 

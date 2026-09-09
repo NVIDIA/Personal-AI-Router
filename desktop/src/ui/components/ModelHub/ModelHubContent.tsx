@@ -8,9 +8,10 @@ import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import { ModelEntry, SortState } from '@/ui/types/model-hub'
 import { ModelHubList } from './ModelHubList'
-import { searchEngineHub } from '@/ui/utils/model-hub-search'
+import { lookupEngineHubModel, searchEngineHub } from '@/ui/utils/model-hub-search'
 import { resolveStoredSort, writeStoredSort } from '@/ui/utils/model-hub-content-storage'
 import { isHubEntryDownloaded } from '@/ui/utils/match-downloaded-model'
+import { resolveLookupQuery } from '@/ui/utils/model-hub-lookup'
 import { EngineType } from '@/shared/types/engines'
 import type { ModelItem } from '@/ui/types/engine-info'
 import getErrorString from '@/shared/utils/get-error-string'
@@ -22,6 +23,12 @@ type ModelHubContentProps = {
     /** Already-installed models for this engine; matching hub results are hidden. */
     downloadedModels?: readonly ModelItem[]
 }
+
+/** Stable empty list so the lookup memo does not churn every render. */
+const NO_DOWNLOADED_MODELS: readonly ModelItem[] = []
+
+/** How long typing has to settle before an unlisted name is looked up. */
+const LOOKUP_DEBOUNCE_MS = 400
 
 const SORT_DEFAULT_STATE: SortState = {
     sort: 'lastModified',
@@ -48,6 +55,9 @@ export const ModelHubContent = ({
         engine ? resolveStoredSort(engine, SORT_DEFAULT_STATE) : { ...SORT_DEFAULT_STATE }
     )
     const [errors, setErrors] = useState<{ id: string; message: string }[]>([])
+    // At most one, since a lookup resolves an exact name rather than searching.
+    const [lookupResult, setLookupResult] = useState<ModelEntry | null>(null)
+    const [lookingUp, setLookingUp] = useState(false)
 
     // Per-engine raw-response cache so reopening an engine is instant and
     // keystrokes filter locally instead of re-invoking the search IPC.
@@ -55,6 +65,8 @@ export const ModelHubContent = ({
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
     const fetchGenRef = useRef(0)
+    // The same guard for lookups, which race each other as the query changes.
+    const lookupGenRef = useRef(0)
 
     const loadModels = useCallback(async (backend: EngineType) => {
         const cached = cacheRef.current.get(backend)
@@ -111,6 +123,51 @@ export const ModelHubContent = ({
         return queryFiltered.filter(m => !isHubEntryDownloaded(engine, m, downloadedModels))
     }, [engine, queryFiltered, downloadedModels])
 
+    // A query that matches nothing locally may still name a real model, because
+    // the catalog is a snapshot. Resolve the exact name against the engine's
+    // registry and fold the answer in as an ordinary row.
+    //
+    // Runs only once the local list is known to be empty, and debounced, so
+    // filtering stays instant and a query the snapshot already answers never
+    // leaves the renderer.
+    useEffect(() => {
+        setLookupResult(null)
+        const name = loading || visibleModels.length > 0 ? null : resolveLookupQuery(engine, query)
+        if (!engine || !name) {
+            setLookingUp(false)
+            return
+        }
+
+        const generation = ++lookupGenRef.current
+        setLookingUp(true)
+        const timer = setTimeout(() => {
+            void lookupEngineHubModel(engine, name).then(found => {
+                if (lookupGenRef.current !== generation) return
+                setLookupResult(found)
+                setLookingUp(false)
+            })
+        }, LOOKUP_DEBOUNCE_MS)
+
+        return () => {
+            clearTimeout(timer)
+            // Supersede a request still in flight for the previous query.
+            lookupGenRef.current += 1
+        }
+    }, [engine, query, loading, visibleModels.length])
+
+    // A resolved model that is already installed stays hidden: the hub filters
+    // downloaded models out, which is what emptied the list and prompted the
+    // lookup to begin with.
+    const displayModels = useMemo(() => {
+        if (!engine || !lookupResult) return visibleModels
+        const installed = isHubEntryDownloaded(
+            engine,
+            lookupResult,
+            downloadedModels ?? NO_DOWNLOADED_MODELS
+        )
+        return installed ? visibleModels : [...visibleModels, lookupResult]
+    }, [visibleModels, lookupResult, engine, downloadedModels])
+
     const handleSortPersist = useCallback(
         (next: SortState) => {
             setSort(next)
@@ -121,8 +178,9 @@ export const ModelHubContent = ({
         [engine]
     )
 
-    const modelsRef = useRef(allModels)
-    modelsRef.current = allModels
+    // Covers the looked-up row too, so selecting it resolves like any other.
+    const modelsRef = useRef(displayModels)
+    modelsRef.current = displayModels
 
     const handleSubmit = useCallback(
         (ids: string[]) => {
@@ -192,8 +250,8 @@ export const ModelHubContent = ({
                     className="grow min-h-0"
                     disabled={disabledListClick}
                     multiple={multiple}
-                    loading={loading}
-                    models={visibleModels}
+                    loading={loading || (lookingUp && displayModels.length === 0)}
+                    models={displayModels}
                     selectedModels={selectedModels}
                     onToggleSelectModel={handleListToggle}
                     sort={sort}

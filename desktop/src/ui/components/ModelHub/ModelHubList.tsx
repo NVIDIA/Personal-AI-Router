@@ -84,9 +84,10 @@ export const ModelHubList = ({
 
         switch (sort.sort) {
             case 'lastModified': {
-                const lastModifiedSort = copy.sort(
-                    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-                )
+                // A row with no known date sorts oldest, rather than NaN-ing the
+                // comparator and leaving the whole order undefined.
+                const when = (m: ModelEntry): number => m.updatedAt?.getTime() ?? 0
+                const lastModifiedSort = copy.sort((a, b) => when(b) - when(a))
                 return sort.sortDescending ? lastModifiedSort.reverse() : lastModifiedSort
             }
             case 'name': {
