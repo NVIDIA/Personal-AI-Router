@@ -382,6 +382,14 @@ type Proxy struct {
 	plainTransport *http.Transport
 	peerTransports map[string]*http.Transport
 
+	// responseTimeout is the ResponseHeaderTimeout applied to every forwarding
+	// transport built by newProxyTransport (both the shared plain transport
+	// and per-peer cluster mTLS transports). Defaults to
+	// defaultProxyResponseTimeout in NewProxy; overridden by main.go from
+	// --response-timeout when the operator opts in (e.g. a large local model
+	// whose cold-load + prefill can exceed 120s).
+	responseTimeout time.Duration
+
 	// nextRequestID is a monotonic counter for tagging RequestStarted /
 	// RequestEvent pairs. Atomic add returns the new value, so request
 	// IDs start at 1 and never collide within a single proxy lifetime.
@@ -403,13 +411,28 @@ type Proxy struct {
 
 func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
 	return &Proxy{
-		codec:     codec,
-		discovery: discovery,
-		port:      port,
-		targets:   reach.NewChooser(),
-		runID:     newRunID(),
-		activity:  nodeactivity.NewReporter(activityReportInterval),
+		codec:           codec,
+		discovery:       discovery,
+		port:            port,
+		targets:         reach.NewChooser(),
+		runID:           newRunID(),
+		activity:        nodeactivity.NewReporter(activityReportInterval),
+		responseTimeout: defaultProxyResponseTimeout,
 	}
+}
+
+// SetResponseTimeout overrides the ResponseHeaderTimeout used by the
+// forwarding transports (plain and cluster-peer) for requests dispatched
+// after this call. A non-positive duration is ignored, leaving whatever
+// timeout is already configured (defaultProxyResponseTimeout unless this was
+// already called). Only safe to call before Run/serveHTTP starts accepting
+// traffic, or from the same goroutine that owns startup — it does not itself
+// synchronize with in-flight newProxyTransport callers.
+func (p *Proxy) SetResponseTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	p.responseTimeout = d
 }
 
 // activityReportInterval is how often a single node's streaming may raise a
@@ -526,11 +549,18 @@ func (p *Proxy) Run(ctx context.Context) error {
 // Timeouts for upstream connections. Logged at startup so they're always
 // present in any captured log for post-mortem analysis.
 const (
-	proxyDialTimeout     = 10 * time.Second
-	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
-	proxyMaxIdleConns    = 50
-	proxyIdleConnTimeout = 90 * time.Second
+	proxyDialTimeout = 10 * time.Second
+	proxyKeepAlive   = 30 * time.Second
+	// defaultProxyResponseTimeout is the ResponseHeaderTimeout applied to the
+	// main forwarding transport when nothing overrides it. It bounds how long
+	// the proxy waits for a backend (e.g. an Ollama/LM Studio node) to send
+	// the first response bytes for a real chat/completion request — cold model
+	// load, prefill, and a slow time-to-first-token all count against it.
+	// Configurable via --response-timeout (see main.go); this const is only
+	// the fallback for callers that don't set Proxy.responseTimeout.
+	defaultProxyResponseTimeout = 120 * time.Second
+	proxyMaxIdleConns           = 50
+	proxyIdleConnTimeout        = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
 	// IdleConnTimeout so idle keep-alives are reaped on both sides.
 	proxyReadHeaderTimeout = 10 * time.Second
@@ -604,7 +634,7 @@ func (p *Proxy) serveHTTP(ctx context.Context, ln net.Listener) {
 	slog.Info("proxy timeouts configured",
 		"dial_timeout", proxyDialTimeout,
 		"keep_alive", proxyKeepAlive,
-		"response_header_timeout", proxyResponseTimeout,
+		"response_header_timeout", p.responseTimeout,
 		"max_idle_conns", proxyMaxIdleConns,
 		"idle_conn_timeout", proxyIdleConnTimeout,
 	)
@@ -867,13 +897,20 @@ func (p *Proxy) candidateTransport(c candidate) *http.Transport {
 	return p.peerHTTPTransport(c.peerUUID)
 }
 
-func newProxyTransport(tlsCfg *tls.Config) *http.Transport {
+// newProxyTransport builds the main forwarding transport used to reach a
+// backend Ollama/LM Studio node — the shared plain transport for a local/self
+// candidate, or a per-peer transport for cluster mTLS. ResponseHeaderTimeout
+// is p.responseTimeout (defaultProxyResponseTimeout unless overridden via
+// SetResponseTimeout / --response-timeout), which bounds how long the proxy
+// waits for the backend to start responding to a real request before failing
+// over to the next candidate.
+func (p *Proxy) newProxyTransport(tlsCfg *tls.Config) *http.Transport {
 	tr := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   proxyDialTimeout,
 			KeepAlive: proxyKeepAlive,
 		}).DialContext,
-		ResponseHeaderTimeout: proxyResponseTimeout,
+		ResponseHeaderTimeout: p.responseTimeout,
 		MaxIdleConns:          proxyMaxIdleConns,
 		MaxIdleConnsPerHost:   proxyMaxIdleConns,
 		IdleConnTimeout:       proxyIdleConnTimeout,
@@ -888,7 +925,7 @@ func (p *Proxy) plainHTTPTransport() *http.Transport {
 	p.transportMu.Lock()
 	defer p.transportMu.Unlock()
 	if p.plainTransport == nil {
-		p.plainTransport = newProxyTransport(nil)
+		p.plainTransport = p.newProxyTransport(nil)
 	}
 	return p.plainTransport
 }
@@ -904,13 +941,13 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 		delete(p.peerTransports, peerUUID)
 	}
 	if p.mesh == nil {
-		return newProxyTransport(nil)
+		return p.newProxyTransport(nil)
 	}
 	cfg, ok := p.mesh.ClientTLSConfig(peerUUID)
 	if !ok {
-		return newProxyTransport(nil)
+		return p.newProxyTransport(nil)
 	}
-	tr := newProxyTransport(cfg)
+	tr := p.newProxyTransport(cfg)
 	if p.peerTransports == nil {
 		p.peerTransports = make(map[string]*http.Transport)
 	}
