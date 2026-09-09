@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
@@ -34,6 +35,7 @@ func main() {
 	clusterMgrPath := flag.String("cluster-manager-path", "", "path to nvpair-cluster-manager binary (default: ./nvpair-cluster-manager in the current working directory)")
 	schedulerPath := flag.String("scheduler-path", "", "path to nvpair-job-scheduler binary (default: ./nvpair-job-scheduler in the current working directory)")
 	clusterDirFlag := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/) the broker passes to its mDNS workers (nvpair-errors, nvpair-workload-manager, nvpair-node-info, nvpair-node-scanner, nvpair-manual-nodes) to enable cluster-scoped inter-node mTLS; defaults to the per-user Nvidia Corporation/Personal AI Router cluster/ dir, where nvpair-cluster-manager mints them")
+	proxyResponseTimeout := flag.Duration("proxy-response-timeout", 5*time.Minute, "response-header timeout the broker tells ollama-proxy to use for real forwarded requests (e.g. /v1/chat/completions). ollama-proxy's own standalone default is 120s; the broker asks for a longer 5m by default since a cold model load, a long prefill on a large context, or a tool-calling generation an engine only flushes once complete can easily exceed 120s on legitimate, healthy requests")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -249,18 +251,19 @@ func main() {
 
 	codec := NewCodec(transport)
 	paths := workerPaths{
-		scanner:       resolvedScanner,
-		nodeInfo:      resolvedNodeInfo,
-		proxy:         resolvedProxy,
-		lmstudioProxy: resolvedLMStudioProxy,
-		workloadMgr:   resolvedWorkloadMgr,
-		errors:        resolvedErrors,
-		engineMgr:     resolvedEngineMgr,
-		manualNodes:   resolvedManualNodes,
-		settings:      resolvedSettings,
-		clusterMgr:    resolvedClusterMgr,
-		scheduler:     resolvedScheduler,
-		clusterDir:    clusterDir,
+		scanner:              resolvedScanner,
+		nodeInfo:             resolvedNodeInfo,
+		proxy:                resolvedProxy,
+		lmstudioProxy:        resolvedLMStudioProxy,
+		workloadMgr:          resolvedWorkloadMgr,
+		errors:               resolvedErrors,
+		engineMgr:            resolvedEngineMgr,
+		manualNodes:          resolvedManualNodes,
+		settings:             resolvedSettings,
+		clusterMgr:           resolvedClusterMgr,
+		scheduler:            resolvedScheduler,
+		clusterDir:           clusterDir,
+		proxyResponseTimeout: *proxyResponseTimeout,
 	}
 	if err := NewBroker(codec, paths).Serve(ctx); err != nil && ctx.Err() == nil {
 		fatalf("broker error: %v", err)
