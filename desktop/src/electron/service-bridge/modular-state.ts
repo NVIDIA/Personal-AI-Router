@@ -14,7 +14,7 @@ import type { LogEntry, LogPage } from '@/shared/types/log'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
-import type { Workload, WorkloadState } from '@/shared/types/workloads'
+import type { Workload, WorkloadState, WorkloadStats } from '@/shared/types/workloads'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import {
@@ -368,7 +368,30 @@ function parseWorkload(value: JsonValue | undefined): Workload | null {
     }
     const scheduledOn = nullableStringValue(obj.scheduledOn)
     if (scheduledOn) workload.scheduledOn = scheduledOn
+    const stats = parseWorkloadStats(obj.stats)
+    if (stats) workload.stats = stats
     return workload
+}
+
+/**
+ * Parse a workload's optional `stats` object. A field is copied only when
+ * present with the right type, so a measurement the proxy omitted stays absent
+ * rather than becoming a zero the UI would render.
+ */
+function parseWorkloadStats(value: JsonValue | undefined): WorkloadStats | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const stats: WorkloadStats = {}
+    const promptTokens = nullableNumberValue(obj.promptTokens)
+    if (promptTokens !== null) stats.promptTokens = promptTokens
+    const completionTokens = nullableNumberValue(obj.completionTokens)
+    if (completionTokens !== null) stats.completionTokens = completionTokens
+    const tokensPerSecond = nullableNumberValue(obj.tokensPerSecond)
+    if (tokensPerSecond !== null) stats.tokensPerSecond = tokensPerSecond
+    const ttftMs = nullableNumberValue(obj.ttftMs)
+    if (ttftMs !== null) stats.ttftMs = ttftMs
+    if (booleanValue(obj.estimated)) stats.estimated = true
+    return Object.keys(stats).length > 0 ? stats : null
 }
 
 /**

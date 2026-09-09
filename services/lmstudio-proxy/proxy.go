@@ -29,6 +29,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/errors"
+	"nvpair-shared/inferstats"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -182,6 +183,11 @@ type Workload struct {
 	CompletedAt    *int64  `json:"completedAt"`
 	Error          *string `json:"error"`
 	RequesterID    *string `json:"requesterId"`
+	// Stats carries the inference statistics measured for the terminal
+	// (completed/errored) transition: token counts, decode throughput and time
+	// to first token. Additive: omitted while the workload is running and when
+	// nothing could be measured (see nvpair-shared/inferstats).
+	Stats *inferstats.Stats `json:"stats,omitempty"`
 }
 
 // workloadParams is the params envelope for a workload:* notification
@@ -238,6 +244,12 @@ type statusCapture struct {
 	// discovery cannot obtain for itself while the node is too busy to answer a
 	// probe. Called on the reverse proxy's copy goroutine, so it must be cheap.
 	upstreamAlive func()
+
+	// tap, when set, observes every body byte written to the client so the
+	// workload's terminal event can carry token counts and throughput. Like
+	// upstreamAlive it is set at the commit point, and only for a successful
+	// inference response, so the proxy's own error bodies are never measured.
+	tap *inferstats.Tap
 }
 
 // Unwrap exposes the underlying ResponseWriter so http.ResponseController can
@@ -276,6 +288,9 @@ func (sc *statusCapture) Write(b []byte) (int, error) {
 	// read.
 	if err == nil && sc.upstreamAlive != nil {
 		sc.upstreamAlive()
+	}
+	if err == nil && sc.tap != nil {
+		sc.tap.Observe(b)
 	}
 	return n, err
 }
@@ -1026,6 +1041,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		finalStatus  int
 		started      bool
 		wl           *Workload
+		tap          *inferstats.Tap
 	)
 
 	// Emit workload:started up front, the moment we begin forwarding, naming
@@ -1050,6 +1066,10 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			StartedAt:   &createdMs,
 		}
 		p.emitWorkload(workloadStartedMethod, *wl)
+		// The tap measures the response body for this workload's stats. It is
+		// allocated here, before the disconnect watcher goroutine starts, and
+		// armed only once a candidate commits (ModifyResponse below).
+		tap = inferstats.NewTap(start)
 	}
 
 	// The terminal workload transition (completed/errored) can be reached from
@@ -1075,6 +1095,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			wl.State = state
 			if errMsg != "" {
 				wl.Error = &errMsg
+			}
+			// Stats ride the terminal event only; a failed stream still reports
+			// what was generated before it broke.
+			if tap != nil {
+				wl.Stats = tap.Finish()
 			}
 			snapshot := *wl
 			wlMu.Unlock()
@@ -1165,6 +1190,13 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// came from the node. Same goroutine as the body copy, so no
 				// synchronization is needed.
 				sc.upstreamAlive = func() { p.reportActivity(cand.id) }
+				// Measure the body only for a successful inference response: an
+				// error body carries no tokens, and a control request has no
+				// workload to attach stats to.
+				if tap != nil && resp.StatusCode < http.StatusBadRequest {
+					tap.Arm(resp.Header)
+					sc.tap = tap
+				}
 				// The engine may enforce its own origin policy. Honor it:
 				// overwriting a declared Access-Control-Allow-Origin would
 				// silently widen the user's policy, and a wildcard is invalid

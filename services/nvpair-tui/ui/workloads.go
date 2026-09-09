@@ -4,6 +4,8 @@
 package ui
 
 import (
+	"strconv"
+
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -19,6 +21,14 @@ type workload struct {
 	State          string `json:"state"`
 	OriginatedFrom string `json:"originatedFrom"`
 	CreatedAt      int64  `json:"createdAt"` // Unix millis
+	// Stats arrives with the terminal event only (see nvpair-shared/inferstats).
+	Stats *workloadStats `json:"stats"`
+}
+
+// workloadStats is the subset of a workload's stats block the view shows.
+type workloadStats struct {
+	TokensPerSecond float64 `json:"tokensPerSecond"`
+	Estimated       bool    `json:"estimated"`
 }
 
 // workloadsView shows cluster-wide inference workloads. The table is built
@@ -54,15 +64,16 @@ func (v *workloadsView) Init() tea.Cmd {
 
 func (v *workloadsView) SetSize(w, h int) {
 	v.width, v.height = w, h
-	const engine, state, age = 10, 10, 6
-	id := clampWidth((w-engine-state-age-2)/3, 8)
-	model := clampWidth(w-engine-state-age-id-2, 10)
+	const engine, state, age, speed = 10, 10, 6, 7
+	id := clampWidth((w-engine-state-age-speed-2)/3, 8)
+	model := clampWidth(w-engine-state-age-speed-id-2, 10)
 	v.table.SetColumns([]table.Column{
 		{Title: "ID", Width: id},
 		{Title: "MODEL", Width: model},
 		{Title: "ENGINE", Width: engine},
 		{Title: "STATE", Width: state},
 		{Title: "AGE", Width: age},
+		{Title: "TOK/S", Width: speed},
 	})
 	v.table.SetWidth(w)
 	v.table.SetHeight(clampWidth(h-1, 1))
@@ -135,6 +146,7 @@ func (v *workloadsView) refreshRows() {
 			w.Engine,
 			w.State,
 			ageLabel(w.CreatedAt),
+			speedLabel(w.Stats),
 		})
 	}
 	v.table.SetRows(rows)
@@ -153,3 +165,22 @@ func (v *workloadsView) View() string {
 func (v *workloadsView) Help() []key.Binding { return nil }
 
 func workloadKey(origin, id string) string { return origin + "/" + id }
+
+// speedLabel renders decode throughput for the TOK/S column: one decimal below
+// 100 tok/s, whole tokens above, prefixed "~" when the proxy only estimated the
+// token count from stream chunks. Empty until the terminal event brings the
+// measurement.
+func speedLabel(s *workloadStats) string {
+	if s == nil || s.TokensPerSecond <= 0 {
+		return ""
+	}
+	prec := 1
+	if s.TokensPerSecond >= 100 {
+		prec = 0
+	}
+	label := strconv.FormatFloat(s.TokensPerSecond, 'f', prec, 64)
+	if s.Estimated {
+		label = "~" + label
+	}
+	return label
+}

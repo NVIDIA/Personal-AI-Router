@@ -8,6 +8,7 @@ import { workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
 import { getWorkloadColorBar } from '@/ui/utils/colors'
+import { formatWorkloadStats } from '@/ui/utils/format-workload-stats'
 import EngineIcon from '@/ui/components/EngineIcon'
 
 const formatDate = (timestamp: number) => {
@@ -56,6 +57,7 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
     })
     const ranOnLabel = workload.state === 'running' ? 'Running on' : 'Ran on'
     const barColor = useMemo(() => getWorkloadColorBar(workload.state), [workload.state])
+    const statsParts = useMemo(() => formatWorkloadStats(workload.stats), [workload.stats])
 
     const subtext = useMemo(() => {
         const state = workload.state
@@ -156,6 +158,15 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                 <Flex align="center" gap="2">
                     {subtext}
                 </Flex>
+                {statsParts.length > 0 && (
+                    <Flex align="center" wrap="wrap" gap="1">
+                        {statsParts.map((part, index) => (
+                            <Text key={part} kind="body/regular/sm" className="text-subtle-color">
+                                {index > 0 ? `\u00b7 ${part}` : part}
+                            </Text>
+                        ))}
+                    </Flex>
+                )}
                 {workload.error && workload.state === 'failed' && (
                     <Text
                         kind="body/regular/sm"
