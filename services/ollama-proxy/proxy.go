@@ -444,7 +444,11 @@ func (p *Proxy) SetResponseTimeout(d time.Duration) {
 // responseTimeout: it fires whether or not a timeout is even configured, so a
 // long wait (or an unbounded one, with --response-timeout 0) shows up as
 // periodic progress rather than silence that looks identical to a hang.
-const progressLogInterval = 30 * time.Second
+//
+// A var (not a const), matching idleClientWriteTimeout above, only so a test
+// can shorten it to observe a log line without waiting 30 real seconds;
+// production never reassigns it.
+var progressLogInterval = 30 * time.Second
 
 // loggingRoundTripper wraps a candidate's transport so a request in flight
 // logs periodic "still waiting" progress until RoundTrip returns — either a
