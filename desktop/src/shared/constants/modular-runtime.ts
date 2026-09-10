@@ -26,6 +26,19 @@ export function isModularLogLevel(value: string): value is ModularLogLevel {
 
 export const MODULAR_DEFAULT_LOG_LEVEL: ModularLogLevel = 'warn'
 
+// Default for the broker's `--proxy-response-timeout`, in minutes. Mirrors the
+// broker's own hardcoded default (5*time.Minute in
+// services/nvpair-ui-broker/main.go) so a user who never touches this setting
+// gets byte-for-byte the same spawn args as before this setting existed.
+//
+// This is how long the broker tells ollama-proxy to wait for a forwarded
+// request's response headers before giving up and failing over to another
+// node — see --response-timeout in services/ollama-proxy/main.go. 0 disables
+// the timeout entirely (wait indefinitely): only safe against a backend
+// trusted to eventually respond or fail on its own, since a genuinely wedged
+// backend then hangs the request forever with no automatic failover.
+export const MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES = 5
+
 // Local `/v1/node-info` HTTP poll. This is the single sanctioned HTTP exception
 // for the modular bridge: the broker does not yet expose rich per-node
 // telemetry, so Electron polls each discovered node's `/v1/node-info` endpoint

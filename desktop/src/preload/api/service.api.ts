@@ -14,6 +14,9 @@ export interface IServiceApi {
     restart(): Promise<void>
     getLogLevel(): Promise<ModularLogLevel>
     setLogLevel(level: ModularLogLevel): Promise<void>
+    /** Minutes; applies on the next service restart. */
+    getProxyResponseTimeout(): Promise<number>
+    setProxyResponseTimeout(minutes: number): Promise<void>
     openLogFile(): Promise<void>
     openLogDir(): Promise<void>
     openLicense(): Promise<void>
@@ -31,6 +34,12 @@ export const serviceApi: IServiceApi = {
         invokeAndUnwrap<ModularLogLevel>(ipcRenderer.invoke('service:get-log-level')),
     setLogLevel: level =>
         invokeAndUnwrap<void>(ipcRenderer.invoke('service:set-log-level', { level })),
+    getProxyResponseTimeout: () =>
+        invokeAndUnwrap<number>(ipcRenderer.invoke('service:get-proxy-response-timeout')),
+    setProxyResponseTimeout: minutes =>
+        invokeAndUnwrap<void>(
+            ipcRenderer.invoke('service:set-proxy-response-timeout', { minutes })
+        ),
     openLogFile: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:open-log-file')),
     openLogDir: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:open-log-dir')),
     openLicense: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:open-license')),

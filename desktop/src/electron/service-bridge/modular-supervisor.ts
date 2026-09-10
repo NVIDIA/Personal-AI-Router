@@ -33,11 +33,16 @@ import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-jso
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
+    MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
+import {
+    isValidProxyResponseTimeoutMinutes,
+    proxyResponseTimeoutArg
+} from '@/shared/utils/proxy-response-timeout'
 import { listManualNodeEntries } from './manual-nodes-store'
 import {
     MODULAR_RUNTIME_BINARIES,
@@ -350,6 +355,11 @@ class ModularSupervisor {
     // connector seeds it via setLogLevel() before start() so spawn args use it.
     // This default only applies if start() runs before the connector seeds.
     private logLevel: ModularLogLevel = MODULAR_DEFAULT_LOG_LEVEL
+    // Same pattern as logLevel above, for the broker's `--proxy-response-timeout`
+    // (see ui-config's `proxyResponseTimeoutMinutes`). Unlike log level this has
+    // no live JSON-RPC fan-out — the broker only reads it at spawn — so a change
+    // takes effect on the next service restart, not immediately.
+    private proxyResponseTimeoutMinutes: number = MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES
     private brokerReady = false
     private isReady = false
     // True only while stop() is intentionally tearing down the subprocess tree.
@@ -739,6 +749,21 @@ class ModularSupervisor {
         return this.logLevel
     }
 
+    /**
+     * Update the in-memory value used for the broker's next
+     * `--proxy-response-timeout` spawn arg. No live effect on a running broker
+     * (it is a spawn-time flag, not a JSON-RPC-settable one) — the caller is
+     * expected to restart the service for this to take effect.
+     */
+    setProxyResponseTimeout(minutes: number): void {
+        if (!isValidProxyResponseTimeoutMinutes(minutes)) return
+        this.proxyResponseTimeoutMinutes = minutes
+    }
+
+    getProxyResponseTimeout(): number {
+        return this.proxyResponseTimeoutMinutes
+    }
+
     private validateRequiredBinaries(): void {
         for (const definition of MODULAR_RUNTIME_BINARIES) {
             if (definition.optional) continue
@@ -838,6 +863,10 @@ class ModularSupervisor {
         // streams, and fans its schedule:priority out to the proxies via
         // node/set-priority (all broker-internal).
         passPath('--scheduler-path', 'job-scheduler')
+        args.push(
+            '--proxy-response-timeout',
+            proxyResponseTimeoutArg(this.proxyResponseTimeoutMinutes)
+        )
         return [...args, ...this.logLevelArgs()]
     }
 

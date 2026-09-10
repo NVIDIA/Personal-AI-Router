@@ -89,6 +89,9 @@ export interface IpcChannelMap {
     'service:restart': { request: void; response: void }
     'service:get-log-level': { request: void; response: ModularLogLevel }
     'service:set-log-level': { request: { level: ModularLogLevel }; response: void }
+    /** Minutes; applies on the next service restart (spawn-arg only, no live fan-out). */
+    'service:get-proxy-response-timeout': { request: void; response: number }
+    'service:set-proxy-response-timeout': { request: { minutes: number }; response: void }
     'service:open-log-file': { request: void; response: void }
     'service:open-log-dir': { request: void; response: void }
     'service:get-versions': { request: void; response: ServiceVersions }

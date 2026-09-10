@@ -16,12 +16,18 @@ import {
     destroyConnector,
     restartConnector
 } from '@/electron/connector'
-import { getModularLogLevel, setModularLogLevel } from '@/electron/config/ui-config'
+import {
+    getModularLogLevel,
+    setModularLogLevel,
+    getProxyResponseTimeoutMinutes,
+    setProxyResponseTimeoutMinutes
+} from '@/electron/config/ui-config'
 import {
     getModularSupervisor,
     readCliBinManifest
 } from '@/electron/service-bridge/modular-supervisor'
 import { modularShippedBinaryBaseNames } from '@/shared/constants/modular-binaries'
+import { isValidProxyResponseTimeoutMinutes } from '@/shared/utils/proxy-response-timeout'
 
 const LICENSE_FILE = 'LICENSE'
 const THIRD_PARTY_LICENSE_FILE = 'THIRD_PARTY_NOTICES.md'
@@ -96,6 +102,22 @@ export function registerServiceIpc(): void {
         // so the change applies without a restart.
         setModularLogLevel(payload.level)
         getModularSupervisor().setLogLevel(payload.level)
+    })
+
+    safeHandle('service:get-proxy-response-timeout', async () => {
+        return getProxyResponseTimeoutMinutes()
+    })
+
+    safeHandle('service:set-proxy-response-timeout', async (_event, payload) => {
+        if (!isValidProxyResponseTimeoutMinutes(payload.minutes)) {
+            throw new Error('Proxy response timeout must be a non-negative number of minutes')
+        }
+        // Spawn-arg only (no JSON-RPC equivalent to fan out live like log level) —
+        // persist for the next broker restart. Reflected in the supervisor's
+        // in-memory value too, so a restart triggered right after saving already
+        // picks up the new value even before the renderer refetches it.
+        setProxyResponseTimeoutMinutes(payload.minutes)
+        getModularSupervisor().setProxyResponseTimeout(payload.minutes)
     })
 
     safeHandle('service:open-log-file', async () => {

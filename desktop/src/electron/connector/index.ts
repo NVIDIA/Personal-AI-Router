@@ -3,7 +3,7 @@
 
 import { BrowserWindow } from 'electron'
 import { createStructuredLogger } from '@/shared/utils/log'
-import { getModularLogLevel } from '@/electron/config/ui-config'
+import { getModularLogLevel, getProxyResponseTimeoutMinutes } from '@/electron/config/ui-config'
 import getErrorString from '@/shared/utils/get-error-string'
 import {
     getModularSupervisor,
@@ -141,6 +141,9 @@ export const initializeConnector = async (): Promise<void> => {
         // Seed the persisted log level so spawn passes the right `--log-level`.
         const supervisor = getModularSupervisor()
         supervisor.setLogLevel(getModularLogLevel())
+        // Same for the broker's --proxy-response-timeout (spawn-arg only, no
+        // live JSON-RPC equivalent — see setProxyResponseTimeout's doc comment).
+        supervisor.setProxyResponseTimeout(getProxyResponseTimeoutMinutes())
         ensureBrokerCrashHandler()
         supervisor.start()
         weSpawned = true

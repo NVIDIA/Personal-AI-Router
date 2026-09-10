@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => {
 
     const supervisor = {
         setLogLevel: vi.fn((_level: string): void => {}),
+        setProxyResponseTimeout: vi.fn((_minutes: number): void => {}),
         setOnBrokerCrash: vi.fn((_callback: (info: { code: number | null }) => void): void => {}),
         setOnReady: vi.fn((callback: () => void): void => {
             readyCallback = callback
@@ -43,7 +44,8 @@ vi.mock('@/shared/utils/log', () => ({
 }))
 
 vi.mock('@/electron/config/ui-config', () => ({
-    getModularLogLevel: () => 'debug'
+    getModularLogLevel: () => 'debug',
+    getProxyResponseTimeoutMinutes: () => 5
 }))
 
 vi.mock('@/electron/service-bridge/modular-supervisor', () => ({
