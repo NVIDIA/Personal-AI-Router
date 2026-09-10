@@ -6,9 +6,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
 	"time"
 
+	"nvpair-shared/appdir"
 	"nvpair-shared/noderec"
 )
 
@@ -44,6 +49,157 @@ type manualNodeStatus struct {
 type manualNodeStatusEntry struct {
 	status     manualNodeStatus
 	receivedAt time.Time
+}
+
+type persistedManualNode struct {
+	ID      string `json:"id,omitempty"`
+	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
+	TLSPort int    `json:"tls_port,omitempty"`
+	MTLS    bool   `json:"mtls,omitempty"`
+}
+
+func (e persistedManualNode) key() string {
+	if e.ID != "" {
+		return e.ID
+	}
+	if e.Name != "" {
+		return e.Name
+	}
+	return "manual:" + e.Address
+}
+
+func defaultManualNodesConfigPath() string {
+	if path, err := appdir.Path("configs", "manual-nodes.json"); err == nil {
+		return path
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "configs", "manual-nodes.json")
+	}
+	return filepath.Join("configs", "manual-nodes.json")
+}
+
+func loadPersistedManualNodes(path string) ([]persistedManualNode, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var entries []persistedManualNode
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, err
+	}
+	valid := entries[:0]
+	for _, entry := range entries {
+		if entry.Address != "" {
+			valid = append(valid, entry)
+		}
+	}
+	return valid, nil
+}
+
+func writePersistedManualNodes(path string, entries []persistedManualNode) error {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].key() < entries[j].key() })
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func (b *Broker) persistManualNode(entry persistedManualNode) error {
+	if entry.ID == "" {
+		entry.ID = entry.key()
+	}
+	b.manualPersistMu.Lock()
+	defer b.manualPersistMu.Unlock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for i := range entries {
+		if entries[i].key() == entry.key() {
+			entries[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		entries = append(entries, entry)
+	}
+	return writePersistedManualNodes(b.manualNodesConfigPath, entries)
+}
+
+func (b *Broker) removePersistedManualNode(id string) error {
+	b.manualPersistMu.Lock()
+	defer b.manualPersistMu.Unlock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	if err != nil {
+		return err
+	}
+	out := entries[:0]
+	for _, entry := range entries {
+		if entry.key() != id && entry.ID != id && entry.Name != id {
+			out = append(out, entry)
+		}
+	}
+	return writePersistedManualNodes(b.manualNodesConfigPath, out)
+}
+
+func (b *Broker) replayPersistedManualNodes(worker *rpcWorker) {
+	b.manualMutationMu.Lock()
+	defer b.manualMutationMu.Unlock()
+	b.manualPersistMu.Lock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	b.manualPersistMu.Unlock()
+	if err != nil {
+		slog.Warn("failed to load persisted manual nodes", "err", err)
+		return
+	}
+	for _, entry := range entries {
+		params, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		if _, rpcErr, err := worker.Call(context.Background(), "node/add", params); err != nil {
+			slog.Warn("failed to replay manual node", "id", entry.key(), "err", err)
+		} else if rpcErr != nil {
+			slog.Warn("manual node replay rejected", "id", entry.key(), "code", rpcErr.Code, "msg", rpcErr.Message)
+		}
+	}
+}
+
+func (b *Broker) manualAliasForKey(id string) string {
+	b.manualMu.Lock()
+	defer b.manualMu.Unlock()
+	if _, ok := b.manualNodeKeys[id]; ok {
+		return id
+	}
+	best := ""
+	for alias, key := range b.manualNodeKeys {
+		if key == id && (best == "" || alias < best) {
+			best = alias
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return id
 }
 
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {

@@ -38,7 +38,6 @@ import {
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
-import { listManualNodeEntries } from './manual-nodes-store'
 import {
     MODULAR_RUNTIME_BINARIES,
     modularBinaryFileName
@@ -841,29 +840,6 @@ class ModularSupervisor {
         return [...args, ...this.logLevelArgs()]
     }
 
-    /**
-     * Re-add persisted manual nodes through the broker's `node/add` relay. The
-     * broker's `nvpair-manual-nodes` loses its in-memory entries on restart (N86),
-     * so PAIR UI owns the durable list (`manual-nodes.json`) and replays it once
-     * the broker is ready.
-     */
-    private async replayManualNodes(): Promise<void> {
-        const entries = listManualNodeEntries()
-        for (const entry of entries) {
-            try {
-                await this.callProcess('broker', 'node/add', {
-                    address: entry.address,
-                    name: entry.name
-                })
-            } catch (err) {
-                log.warn({
-                    sublevel: 'manual-nodes',
-                    message: `Failed to replay manual node ${entry.address}: ${getErrorString(err)}`
-                })
-            }
-        }
-    }
-
     private async onBrokerReady(): Promise<void> {
         const subscribe = async (method: string, label: string): Promise<void> => {
             try {
@@ -885,7 +861,6 @@ class ModularSupervisor {
 
         await this.syncClusterIdentityToManager()
         await this.resolveSelfId()
-        await this.replayManualNodes()
         await this.hydrateEngineManager()
         this.startInstalledEnginesOnFirstOpen()
         await this.seedClusterPeerIds()

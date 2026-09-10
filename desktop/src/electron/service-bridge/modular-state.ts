@@ -1016,31 +1016,6 @@ class ModularBridgeState {
         return this.selfId
     }
 
-    /**
-     * The display hostname for a node key (UUID), or '' when unknown. Used as a
-     * last-resort manual-removal key when address matching finds no persisted
-     * entry (see {@link resolveManualNodeKey}).
-     */
-    getNodeHostname(nodeId: string): string {
-        return this.nodes.get(nodeId)?.name ?? ''
-    }
-
-    /**
-     * Every address a node key (UUID) is known to be reachable at — its
-     * canonical `reachableAddress`, its discovered addresses, and its `host`.
-     * Used to map a UUID back to the manual-nodes store entry (keyed by the
-     * user-entered address) when removing a manual node. Empty for an unknown id.
-     */
-    getNodeAddresses(nodeId: string): string[] {
-        const node = this.nodes.get(nodeId)
-        if (!node) return []
-        const out = new Set<string>()
-        if (node.reachableAddress) out.add(node.reachableAddress)
-        for (const address of nodeAddresses(node)) out.add(address)
-        if (node.host) out.add(node.host)
-        return Array.from(out)
-    }
-
     /** The authoritative live inbound invites awaiting a PIN, oldest first. */
     getPendingInvites(): Invite[] {
         return Array.from(this.pendingInvites.values()).sort((a, b) => a.createdAt - b.createdAt)
