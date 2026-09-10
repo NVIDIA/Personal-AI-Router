@@ -28,6 +28,7 @@ ollama-proxy [flags]
 | `--ignore-persisted-port` | `false` | Use `--port` even when `proxy-port.json` contains a saved port (used by broker-managed startup) |
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
+| `--response-timeout` | `120s` | `ResponseHeaderTimeout` for a forwarded request (e.g. `/v1/chat/completions`) — how long the proxy waits for a backend Ollama/LM Studio node to start sending its response before failing over to the next candidate. Raise this (e.g. `--response-timeout 5m`) if a large or cold-loading local model needs longer than the default to produce its first response bytes. Accepts a Go duration string (`90s`, `5m`, `2m30s`). Does not affect the fast model-list/probe client, which stays fixed at the dial timeout. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
 | `--version` | | Print version and exit |
 

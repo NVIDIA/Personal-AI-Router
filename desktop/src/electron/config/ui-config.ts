@@ -6,9 +6,11 @@ import path from 'path'
 import { getPaths } from '@/electron/globals'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
+    MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES,
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
+import { isValidProxyResponseTimeoutMinutes } from '@/shared/utils/proxy-response-timeout'
 
 interface UiConfig {
     /** When true, first-run onboarding has not been completed or explicitly dismissed. */
@@ -17,12 +19,15 @@ interface UiConfig {
     modularLogLevel: ModularLogLevel
     /** macOS only: the one-time privileged-helper setup (register the SMAppService daemon + configure the Application Firewall) has completed. Gates the first-run admin prompt; left false until the daemon is enabled and firewall configuration succeeds, so an approval-pending launch retries next time. */
     macHelperSetupComplete: boolean
+    /** Minutes passed to the broker as `--proxy-response-timeout` at spawn. 0 means wait indefinitely (no automatic failover). Takes effect on the next service restart. */
+    proxyResponseTimeoutMinutes: number
 }
 
 const DEFAULTS: UiConfig = {
     firstRun: true,
     modularLogLevel: MODULAR_DEFAULT_LOG_LEVEL,
-    macHelperSetupComplete: false
+    macHelperSetupComplete: false,
+    proxyResponseTimeoutMinutes: MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES
 }
 
 let config: UiConfig = { ...DEFAULTS }
@@ -119,5 +124,17 @@ export function isMacHelperSetupComplete(): boolean {
 
 export function setMacHelperSetupComplete(value: boolean): void {
     config.macHelperSetupComplete = value
+    save()
+}
+
+export function getProxyResponseTimeoutMinutes(): number {
+    // Guard against a hand-edited / legacy config value that isn't valid.
+    return isValidProxyResponseTimeoutMinutes(config.proxyResponseTimeoutMinutes)
+        ? config.proxyResponseTimeoutMinutes
+        : MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES
+}
+
+export function setProxyResponseTimeoutMinutes(value: number): void {
+    config.proxyResponseTimeoutMinutes = value
     save()
 }

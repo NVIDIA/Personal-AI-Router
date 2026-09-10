@@ -6,6 +6,7 @@ package main
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
@@ -20,6 +21,47 @@ func TestCandidateTransportReusesPlainTransport(t *testing.T) {
 	}
 	if a == nil {
 		t.Fatal("plain Transport is nil")
+	}
+}
+
+func TestNewProxyDefaultsResponseTimeout(t *testing.T) {
+	p := testProxy(NewDiscovery(), 11435)
+	tr := p.candidateTransport(candidate{})
+	if tr.ResponseHeaderTimeout != defaultProxyResponseTimeout {
+		t.Fatalf("ResponseHeaderTimeout = %v, want default %v", tr.ResponseHeaderTimeout, defaultProxyResponseTimeout)
+	}
+}
+
+func TestSetResponseTimeoutOverridesTransport(t *testing.T) {
+	p := testProxy(NewDiscovery(), 11435)
+	const custom = 5 * time.Minute
+	p.SetResponseTimeout(custom)
+
+	tr := p.candidateTransport(candidate{})
+	if tr.ResponseHeaderTimeout != custom {
+		t.Fatalf("ResponseHeaderTimeout = %v, want %v", tr.ResponseHeaderTimeout, custom)
+	}
+}
+
+func TestSetResponseTimeoutZeroMeansNoTimeout(t *testing.T) {
+	p := testProxy(NewDiscovery(), 11435)
+	p.SetResponseTimeout(0)
+
+	if p.responseTimeout != 0 {
+		t.Fatalf("responseTimeout = %v, want 0 (no timeout)", p.responseTimeout)
+	}
+	tr := p.candidateTransport(candidate{})
+	if tr.ResponseHeaderTimeout != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 0 (no timeout)", tr.ResponseHeaderTimeout)
+	}
+}
+
+func TestSetResponseTimeoutIgnoresNegative(t *testing.T) {
+	p := testProxy(NewDiscovery(), 11435)
+	p.SetResponseTimeout(-1 * time.Second)
+
+	if p.responseTimeout != defaultProxyResponseTimeout {
+		t.Fatalf("responseTimeout = %v, want unchanged default %v", p.responseTimeout, defaultProxyResponseTimeout)
 	}
 }
 

@@ -145,22 +145,23 @@ type ProxyStatusResult struct {
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
-	codec             *Codec
-	cancel            context.CancelFunc
-	startedAt         time.Time
-	nodeID            string
-	scannerPath       string
-	nodeInfoPath      string
-	proxyPath         string
-	lmstudioProxyPath string
-	workloadMgrPath   string
-	errorsPath        string
-	engineMgrPath     string
-	manualNodesPath   string
-	settingsPath      string
-	clusterMgrPath    string
-	schedulerPath     string
-	clusterDir        string
+	codec                *Codec
+	cancel               context.CancelFunc
+	startedAt            time.Time
+	nodeID               string
+	scannerPath          string
+	nodeInfoPath         string
+	proxyPath            string
+	proxyResponseTimeout time.Duration
+	lmstudioProxyPath    string
+	workloadMgrPath      string
+	errorsPath           string
+	engineMgrPath        string
+	manualNodesPath      string
+	settingsPath         string
+	clusterMgrPath       string
+	schedulerPath        string
+	clusterDir           string
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
@@ -341,6 +342,13 @@ type workerPaths struct {
 	// trusted/). Threaded to every worker that does cluster-scoped inter-node
 	// mTLS so they serve/dial pinned peers once this node joins a cluster.
 	clusterDir string
+	// proxyResponseTimeout is passed to ollama-proxy as --response-timeout so
+	// it waits longer than its own 120s default for a real forwarded request's
+	// response headers (see spawnProxy). Zero means "wait indefinitely"
+	// (ollama-proxy's own zero-means-no-timeout semantics), explicitly passed
+	// through rather than omitted. Negative is invalid and skips the flag
+	// entirely, leaving ollama-proxy's own default in effect.
+	proxyResponseTimeout time.Duration
 }
 
 // NewBroker constructs a per-session broker. paths.scanner is required —
@@ -362,30 +370,31 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	return &Broker{
-		codec:              codec,
-		startedAt:          time.Now(),
-		nodeID:             nodeID,
-		scannerPath:        paths.scanner,
-		nodeInfoPath:       paths.nodeInfo,
-		proxyPath:          paths.proxy,
-		lmstudioProxyPath:  paths.lmstudioProxy,
-		workloadMgrPath:    paths.workloadMgr,
-		errorsPath:         paths.errors,
-		engineMgrPath:      paths.engineMgr,
-		manualNodesPath:    paths.manualNodes,
-		settingsPath:       paths.settings,
-		clusterMgrPath:     paths.clusterMgr,
-		schedulerPath:      paths.scheduler,
-		clusterDir:         paths.clusterDir,
-		store:              newDiscoveryStore(),
-		telemetry:          newTelemetryCache(),
-		relayDir:           relay.NewDirectory(),
-		regCache:           relay.NewRegistrationCache(),
-		manualNodeKeys:     make(map[string]string),
-		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
-		workloads:          workloadstore.New(),
-		ollamaPortReady:    make(chan struct{}),
-		lmstudioPortReady:  make(chan struct{}),
+		codec:                codec,
+		startedAt:            time.Now(),
+		nodeID:               nodeID,
+		scannerPath:          paths.scanner,
+		nodeInfoPath:         paths.nodeInfo,
+		proxyPath:            paths.proxy,
+		proxyResponseTimeout: paths.proxyResponseTimeout,
+		lmstudioProxyPath:    paths.lmstudioProxy,
+		workloadMgrPath:      paths.workloadMgr,
+		errorsPath:           paths.errors,
+		engineMgrPath:        paths.engineMgr,
+		manualNodesPath:      paths.manualNodes,
+		settingsPath:         paths.settings,
+		clusterMgrPath:       paths.clusterMgr,
+		schedulerPath:        paths.scheduler,
+		clusterDir:           paths.clusterDir,
+		store:                newDiscoveryStore(),
+		telemetry:            newTelemetryCache(),
+		relayDir:             relay.NewDirectory(),
+		regCache:             relay.NewRegistrationCache(),
+		manualNodeKeys:       make(map[string]string),
+		manualNodeStatuses:   make(map[string]manualNodeStatusEntry),
+		workloads:            workloadstore.New(),
+		ollamaPortReady:      make(chan struct{}),
+		lmstudioPortReady:    make(chan struct{}),
 	}
 }
 
@@ -650,6 +659,9 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 	// ingress (and dial peers over mTLS) once this node is clustered; empty/
 	// absent certs leave it loopback-plaintext only.
 	args = append(args, b.clusterDirArgs()...)
+	if b.proxyResponseTimeout >= 0 {
+		args = append(args, "--response-timeout", b.proxyResponseTimeout.String())
+	}
 	pp, err := startProxy("proxy", b.proxyPath, applog.LevelString(), b.relayDir,
 		func(method string, params json.RawMessage) {
 			b.forwardProxyNotificationForGeneration(generation, method, params)

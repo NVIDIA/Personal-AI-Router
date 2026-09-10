@@ -9,6 +9,7 @@ import {
     Flex,
     Stack,
     Text,
+    TextInput,
     type DropdownEntry
 } from '@nvidia/foundations-react-core'
 import { useConnectionStore } from '@/ui/stores/connection.store'
@@ -16,9 +17,11 @@ import { Download, OpenInNew } from '@/ui/components/icons'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
+    MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES,
     MODULAR_LOG_LEVELS,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
+import { isValidProxyResponseTimeoutMinutes } from '@/shared/utils/proxy-response-timeout'
 import getErrorString from '@/shared/utils/get-error-string'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import { isElectron } from '@/ui/api/bootstrap'
@@ -101,6 +104,16 @@ export default function ServiceSettings() {
     const [error, setError] = useState<string | null>(null)
     const [loading, setLoading] = useState<string | null>(null)
     const [logLevel, setLogLevel] = useState<ModularLogLevel>(MODULAR_DEFAULT_LOG_LEVEL)
+    // Persisted value (minutes), and the input's own draft text — kept apart so
+    // typing an in-progress/invalid value never clobbers the saved one, and so
+    // "changed" can be judged against what is actually stored.
+    const [proxyTimeoutMinutes, setProxyTimeoutMinutes] = useState(
+        MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES
+    )
+    const [proxyTimeoutInput, setProxyTimeoutInput] = useState(
+        String(MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES)
+    )
+    const [savingProxyTimeout, setSavingProxyTimeout] = useState(false)
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const [startingDemo, setStartingDemo] = useState(false)
     const setActiveTab = useOverviewUiStore(state => state.setActiveTab)
@@ -140,6 +153,17 @@ export default function ServiceSettings() {
             .catch(() => {})
     }, [])
 
+    useEffect(() => {
+        if (!isElectron) return
+        window.windowApi.service
+            .getProxyResponseTimeout()
+            .then(minutes => {
+                setProxyTimeoutMinutes(minutes)
+                setProxyTimeoutInput(String(minutes))
+            })
+            .catch(() => {})
+    }, [])
+
     const handleLogLevelChange = useCallback(
         async (level: ModularLogLevel) => {
             const prev = logLevel
@@ -153,6 +177,28 @@ export default function ServiceSettings() {
         },
         [logLevel]
     )
+
+    const parsedProxyTimeout = Number(proxyTimeoutInput.trim())
+    const proxyTimeoutValid = isValidProxyResponseTimeoutMinutes(parsedProxyTimeout)
+    const proxyTimeoutChanged = proxyTimeoutValid && parsedProxyTimeout !== proxyTimeoutMinutes
+
+    const handleSaveProxyTimeout = useCallback(async () => {
+        if (!proxyTimeoutValid) {
+            setError('Enter a non-negative number of minutes (0 waits indefinitely).')
+            return
+        }
+        setSavingProxyTimeout(true)
+        setError(null)
+        try {
+            await window.windowApi.service.setProxyResponseTimeout(parsedProxyTimeout)
+            setProxyTimeoutMinutes(parsedProxyTimeout)
+            setProxyTimeoutInput(String(parsedProxyTimeout))
+        } catch (err) {
+            setError(getErrorString(err))
+        } finally {
+            setSavingProxyTimeout(false)
+        }
+    }, [parsedProxyTimeout, proxyTimeoutValid])
 
     const logLevelItems: DropdownEntry[] = useMemo(
         () =>
@@ -372,6 +418,64 @@ export default function ServiceSettings() {
                                     </button>
                                 </Flex>
                             )}
+                        </Stack>
+
+                        <Stack gap="1">
+                            <Flex align="center" justify="between" gap="4">
+                                <Text kind="body/semibold/md">Proxy response timeout</Text>
+                                {isElectron ? (
+                                    <Flex align="center" gap="2">
+                                        <TextInput
+                                            value={proxyTimeoutInput}
+                                            onValueChange={setProxyTimeoutInput}
+                                            disabled={savingProxyTimeout}
+                                            size="small"
+                                            className="w-18 min-w-18"
+                                            aria-label="Proxy response timeout, in minutes"
+                                        />
+                                        <Text kind="body/regular/sm" className="text-subtle-color">
+                                            min
+                                        </Text>
+                                        <Button
+                                            kind="secondary"
+                                            size="small"
+                                            onClick={() => void handleSaveProxyTimeout()}
+                                            disabled={
+                                                savingProxyTimeout ||
+                                                !proxyTimeoutChanged ||
+                                                proxyTimeoutInput.trim() === ''
+                                            }
+                                        >
+                                            {savingProxyTimeout ? (
+                                                <span
+                                                    className="spinner-element"
+                                                    role="status"
+                                                    aria-label=""
+                                                />
+                                            ) : (
+                                                'Save'
+                                            )}
+                                        </Button>
+                                    </Flex>
+                                ) : (
+                                    <DismissibleTooltip slotContent={BROWSER_TOOLTIP}>
+                                        <span className="inline-flex">
+                                            <Button kind="secondary" size="small" disabled>
+                                                {proxyTimeoutMinutes} min
+                                            </Button>
+                                        </span>
+                                    </DismissibleTooltip>
+                                )}
+                            </Flex>
+                            <Text kind="body/regular/sm" className="text-subtle-color">
+                                How long the proxy waits for a node&apos;s response before failing
+                                over to another node. Default is{' '}
+                                {MODULAR_DEFAULT_PROXY_RESPONSE_TIMEOUT_MINUTES} minutes, matching
+                                the broker&apos;s own default — leaving this unset changes nothing.
+                                Set to 0 to wait indefinitely: useful for a very slow model, but it
+                                means no automatic failover if a node hangs. Takes effect the next
+                                time the service restarts.
+                            </Text>
                         </Stack>
 
                         <WipeAppDataCard />

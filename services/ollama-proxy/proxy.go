@@ -382,6 +382,14 @@ type Proxy struct {
 	plainTransport *http.Transport
 	peerTransports map[string]*http.Transport
 
+	// responseTimeout is the ResponseHeaderTimeout applied to every forwarding
+	// transport built by newProxyTransport (both the shared plain transport
+	// and per-peer cluster mTLS transports). Defaults to
+	// defaultProxyResponseTimeout in NewProxy; overridden by main.go from
+	// --response-timeout when the operator opts in (e.g. a large local model
+	// whose cold-load + prefill can exceed 120s).
+	responseTimeout time.Duration
+
 	// nextRequestID is a monotonic counter for tagging RequestStarted /
 	// RequestEvent pairs. Atomic add returns the new value, so request
 	// IDs start at 1 and never collide within a single proxy lifetime.
@@ -403,13 +411,78 @@ type Proxy struct {
 
 func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
 	return &Proxy{
-		codec:     codec,
-		discovery: discovery,
-		port:      port,
-		targets:   reach.NewChooser(),
-		runID:     newRunID(),
-		activity:  nodeactivity.NewReporter(activityReportInterval),
+		codec:           codec,
+		discovery:       discovery,
+		port:            port,
+		targets:         reach.NewChooser(),
+		runID:           newRunID(),
+		activity:        nodeactivity.NewReporter(activityReportInterval),
+		responseTimeout: defaultProxyResponseTimeout,
 	}
+}
+
+// SetResponseTimeout overrides the ResponseHeaderTimeout used by the
+// forwarding transports (plain and cluster-peer) for requests dispatched
+// after this call. Zero means "no timeout" — matching http.Transport's own
+// ResponseHeaderTimeout semantics — and is accepted deliberately: an engine
+// that only flushes once a tool call finishes composing, or a cold load on a
+// large model, can legitimately take longer than any fixed bound. A negative
+// duration is invalid and ignored, leaving whatever timeout is already
+// configured (defaultProxyResponseTimeout unless this was already called).
+// Only safe to call before Run/serveHTTP starts accepting traffic, or from
+// the same goroutine that owns startup — it does not itself synchronize with
+// in-flight newProxyTransport callers.
+func (p *Proxy) SetResponseTimeout(d time.Duration) {
+	if d < 0 {
+		return
+	}
+	p.responseTimeout = d
+}
+
+// progressLogInterval is how often loggingRoundTripper reports that a
+// forwarded request is still awaiting response headers. Independent of
+// responseTimeout: it fires whether or not a timeout is even configured, so a
+// long wait (or an unbounded one, with --response-timeout 0) shows up as
+// periodic progress rather than silence that looks identical to a hang.
+//
+// A var (not a const), matching idleClientWriteTimeout above, only so a test
+// can shorten it to observe a log line without waiting 30 real seconds;
+// production never reassigns it.
+var progressLogInterval = 30 * time.Second
+
+// loggingRoundTripper wraps a candidate's transport so a request in flight
+// logs periodic "still waiting" progress until RoundTrip returns — either a
+// response (success or a status the caller will retry/reject) or a transport
+// error (dial failure, or the ResponseHeaderTimeout itself firing). It adds no
+// timeout of its own; it only narrates the wait that responseTimeout (or the
+// lack of one) already governs.
+type loggingRoundTripper struct {
+	http.RoundTripper
+	reqID  string
+	nodeID string
+	target string
+	path   string
+}
+
+func (t loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(progressLogInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				slog.Info("proxy request still awaiting response headers",
+					"id", t.reqID, "node_id", t.nodeID, "target", t.target,
+					"path", t.path, "elapsed_ms", time.Since(start).Milliseconds())
+			}
+		}
+	}()
+	return t.RoundTripper.RoundTrip(req)
 }
 
 // activityReportInterval is how often a single node's streaming may raise a
@@ -526,11 +599,18 @@ func (p *Proxy) Run(ctx context.Context) error {
 // Timeouts for upstream connections. Logged at startup so they're always
 // present in any captured log for post-mortem analysis.
 const (
-	proxyDialTimeout     = 10 * time.Second
-	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
-	proxyMaxIdleConns    = 50
-	proxyIdleConnTimeout = 90 * time.Second
+	proxyDialTimeout = 10 * time.Second
+	proxyKeepAlive   = 30 * time.Second
+	// defaultProxyResponseTimeout is the ResponseHeaderTimeout applied to the
+	// main forwarding transport when nothing overrides it. It bounds how long
+	// the proxy waits for a backend (e.g. an Ollama/LM Studio node) to send
+	// the first response bytes for a real chat/completion request — cold model
+	// load, prefill, and a slow time-to-first-token all count against it.
+	// Configurable via --response-timeout (see main.go); this const is only
+	// the fallback for callers that don't set Proxy.responseTimeout.
+	defaultProxyResponseTimeout = 120 * time.Second
+	proxyMaxIdleConns           = 50
+	proxyIdleConnTimeout        = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
 	// IdleConnTimeout so idle keep-alives are reaped on both sides.
 	proxyReadHeaderTimeout = 10 * time.Second
@@ -604,7 +684,7 @@ func (p *Proxy) serveHTTP(ctx context.Context, ln net.Listener) {
 	slog.Info("proxy timeouts configured",
 		"dial_timeout", proxyDialTimeout,
 		"keep_alive", proxyKeepAlive,
-		"response_header_timeout", proxyResponseTimeout,
+		"response_header_timeout", p.responseTimeout,
 		"max_idle_conns", proxyMaxIdleConns,
 		"idle_conn_timeout", proxyIdleConnTimeout,
 	)
@@ -867,13 +947,20 @@ func (p *Proxy) candidateTransport(c candidate) *http.Transport {
 	return p.peerHTTPTransport(c.peerUUID)
 }
 
-func newProxyTransport(tlsCfg *tls.Config) *http.Transport {
+// newProxyTransport builds the main forwarding transport used to reach a
+// backend Ollama/LM Studio node — the shared plain transport for a local/self
+// candidate, or a per-peer transport for cluster mTLS. ResponseHeaderTimeout
+// is p.responseTimeout (defaultProxyResponseTimeout unless overridden via
+// SetResponseTimeout / --response-timeout), which bounds how long the proxy
+// waits for the backend to start responding to a real request before failing
+// over to the next candidate.
+func (p *Proxy) newProxyTransport(tlsCfg *tls.Config) *http.Transport {
 	tr := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   proxyDialTimeout,
 			KeepAlive: proxyKeepAlive,
 		}).DialContext,
-		ResponseHeaderTimeout: proxyResponseTimeout,
+		ResponseHeaderTimeout: p.responseTimeout,
 		MaxIdleConns:          proxyMaxIdleConns,
 		MaxIdleConnsPerHost:   proxyMaxIdleConns,
 		IdleConnTimeout:       proxyIdleConnTimeout,
@@ -888,7 +975,7 @@ func (p *Proxy) plainHTTPTransport() *http.Transport {
 	p.transportMu.Lock()
 	defer p.transportMu.Unlock()
 	if p.plainTransport == nil {
-		p.plainTransport = newProxyTransport(nil)
+		p.plainTransport = p.newProxyTransport(nil)
 	}
 	return p.plainTransport
 }
@@ -904,13 +991,13 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 		delete(p.peerTransports, peerUUID)
 	}
 	if p.mesh == nil {
-		return newProxyTransport(nil)
+		return p.newProxyTransport(nil)
 	}
 	cfg, ok := p.mesh.ClientTLSConfig(peerUUID)
 	if !ok {
-		return newProxyTransport(nil)
+		return p.newProxyTransport(nil)
 	}
-	tr := newProxyTransport(cfg)
+	tr := p.newProxyTransport(cfg)
 	if p.peerTransports == nil {
 		p.peerTransports = make(map[string]*http.Transport)
 	}
@@ -1332,7 +1419,19 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
-			Transport: p.candidateTransport(cand),
+			// Wrapped so a long, legitimate wait (large-context prefill, a
+			// tool-call composing on the other end) shows up as periodic
+			// progress in the logs instead of silence indistinguishable from a
+			// hang — especially relevant once --response-timeout is raised or
+			// disabled (0), where nothing else will report that the request is
+			// still alive until it finally succeeds or fails.
+			Transport: loggingRoundTripper{
+				RoundTripper: p.candidateTransport(cand),
+				reqID:        reqID,
+				nodeID:       cand.id,
+				target:       cand.url.Host,
+				path:         r.URL.Path,
+			},
 			// ModifyResponse fires when the upstream's status line + headers
 			// have arrived but before the body streams. That's both the retry
 			// decision point and, on commit, the time-to-first-byte boundary.

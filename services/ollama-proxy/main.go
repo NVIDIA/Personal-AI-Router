@@ -34,6 +34,7 @@ func main() {
 	ignorePersistedPort := flag.Bool("ignore-persisted-port", false, "use --port even when a persisted port exists")
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
+	responseTimeout := flag.Duration("response-timeout", defaultProxyResponseTimeout, "how long to wait for a backend's response headers on a forwarded request (e.g. chat/completion) before failing over to the next candidate; raise this for large/cold-loading local models. 0 disables the timeout entirely (wait indefinitely) — only safe against a backend you trust to eventually respond or fail on its own, since a genuinely wedged backend will then hang the request forever with no automatic failover")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -84,6 +85,7 @@ func main() {
 	codec := NewCodec(transport)
 	disc := NewDiscovery()
 	proxy := NewProxy(codec, disc, effectivePort)
+	proxy.SetResponseTimeout(*responseTimeout)
 	for _, aliasAddress := range aliasAddresses {
 		if err := proxy.setLoopbackAlias(aliasAddress); err != nil {
 			log.Fatalf("invalid alias address: %v", err)
