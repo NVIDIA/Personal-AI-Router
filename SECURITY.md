@@ -118,9 +118,11 @@ submit inference or observe behavior allowed by that endpoint.
 
 Do not bind local APIs or inference engines to untrusted interfaces, forward
 PAIR ports through a router, or place an unauthenticated public reverse proxy in
-front of them. Review browser access and CORS behavior before allowing web
-content to reach a proxy. Prompts, messages, chunks, and response bodies should
-not be written to logs.
+front of them. Browser clients are unsupported, and the inference proxies do not
+opt into cross-origin browser access. This is defense in depth, not
+authentication: native processes and direct engine access remain governed by
+operating-system and engine security. Prompts, messages, chunks, and response
+bodies should not be written to logs.
 
 ### Supervised Workers Share the User's Authority
 

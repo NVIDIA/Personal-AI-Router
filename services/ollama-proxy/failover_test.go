@@ -53,137 +53,91 @@ func nodeForModel(t *testing.T, id, serverURL, model string) Node {
 	return node
 }
 
-// TestHandlePlain_OptionsPreflight: a CORS preflight is answered locally with
-// 204 + permissive headers and never forwarded.
-func TestHandlePlain_OptionsPreflight(t *testing.T) {
-	p := testProxy(NewDiscovery(), 11434)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodOptions, "/api/chat", nil)
+// TestHandlePlainRejectsBrowserRequestBeforeRouting proves that browser-marked
+// traffic is denied at ingress and never reaches an engine.
+func TestHandlePlainRejectsBrowserRequestBeforeRouting(t *testing.T) {
+	engineHits := 0
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		engineHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer engine.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "engine", engine.URL, "llama"))
+	p := testProxy(disc, 11434)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama"}`))
 	req.RemoteAddr = "127.0.0.1:40000"
-	req.Header.Set("Access-Control-Request-Headers", "X-Custom-Token")
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+
 	p.handlePlain(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	if engineHits != 0 {
+		t.Errorf("engine hits = %d, want 0", engineHits)
 	}
-	if rec.Header().Get("Access-Control-Allow-Methods") == "" {
-		t.Errorf("missing Access-Control-Allow-Methods")
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want absent", got)
+	}
+}
+
+func TestHandlePlainRejectsPreflight(t *testing.T) {
+	p := testProxy(NewDiscovery(), 11434)
+	req := httptest.NewRequest(http.MethodOptions, "/api/chat", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	rec := httptest.NewRecorder()
+
+	p.handlePlain(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want absent", got)
+	}
+}
+
+// TestHandleHTTPStripsEngineAllowOrigin proves an engine cannot widen PAIR's
+// browser-origin boundary with its own Access-Control-Allow-Origin value.
+func TestHandleHTTPStripsEngineAllowOrigin(t *testing.T) {
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"done":true}`)
+	}))
+	defer engine.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "engine", engine.URL, "llama"))
+	p := testProxy(disc, 11434)
+
+	rec := httptest.NewRecorder()
+	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama"}`)))
+
+	if rec.Code != http.StatusOK || rec.Body.String() != `{"done":true}` {
+		t.Errorf("native response = status %d body %q, want forwarded success", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want absent", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want preserved", got)
 	}
 	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "*" {
-		t.Errorf("Access-Control-Expose-Headers = %q, want *", got)
-	}
-	// The browser's requested headers are echoed so an arbitrary header clears preflight.
-	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "X-Custom-Token" {
-		t.Errorf("Access-Control-Allow-Headers = %q, want echoed X-Custom-Token", got)
-	}
-}
-
-// TestHandlePlain_EngineCredentialedPreflightPreserved: when an engine opts an
-// exact origin into credentialed CORS, its preflight policy reaches the browser
-// instead of being replaced by the proxy's uncredentialed wildcard fallback.
-func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
-	preflightSeen := make(chan struct{}, 1)
-	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodOptions {
-			t.Errorf("engine method = %s, want OPTIONS", r.Method)
-		}
-		preflightSeen <- struct{}{}
-		w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Methods", "POST")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer engine.Close()
-
-	disc := NewDiscovery()
-	disc.AddManual(nodeFor(t, "engine", engine.URL))
-	p := testProxy(disc, 11434)
-	req := httptest.NewRequest(http.MethodOptions, "/api/chat", nil)
-	req.RemoteAddr = "127.0.0.1:40000"
-	req.Header.Set("Origin", "https://app.example")
-	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
-	rec := httptest.NewRecorder()
-
-	p.handlePlain(rec, req)
-
-	select {
-	case <-preflightSeen:
-	default:
-		t.Fatal("engine did not receive the credentialed preflight")
-	}
-	if rec.Code != http.StatusNoContent {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusNoContent)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want the engine's exact origin", got)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-		t.Errorf("Access-Control-Allow-Credentials = %q, want the engine's true", got)
-	}
-}
-
-// TestHandleHTTP_EngineCORSPolicyPreserved: an engine that declares its own
-// origin policy keeps it. Replacing it with the proxy's wildcard would widen
-// what the user configured, and would break a credentialed response outright.
-func TestHandleHTTP_EngineCORSPolicyPreserved(t *testing.T) {
-	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `{"done":true}`)
-	}))
-	defer engine.Close()
-
-	disc := NewDiscovery()
-	disc.AddManual(nodeForModel(t, "engine", engine.URL, "llama"))
-	p := testProxy(disc, 11434)
-
-	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama"}`)))
-
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want the engine's own origin", got)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-		t.Errorf("Access-Control-Allow-Credentials = %q, want the engine's true", got)
-	}
-}
-
-// TestHandleHTTP_EngineCredentialsWithoutOriginDropped: an engine (or an
-// intermediary in front of it) that sends Allow-Credentials but no origin has
-// declared no policy to keep, so the proxy supplies its own. The wildcard it
-// writes is invalid next to Allow-Credentials: true, and a browser rejects that
-// pair, so the inherited header must not survive the forward.
-func TestHandleHTTP_EngineCredentialsWithoutOriginDropped(t *testing.T) {
-	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `{"done":true}`)
-	}))
-	defer engine.Close()
-
-	disc := NewDiscovery()
-	disc.AddManual(nodeForModel(t, "engine", engine.URL, "llama"))
-	p := testProxy(disc, 11434)
-
-	rec := httptest.NewRecorder()
-	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama"}`)))
-
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want the proxy's wildcard", got)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
-		t.Errorf("Access-Control-Allow-Credentials = %q, want cleared alongside the wildcard origin", got)
+		t.Errorf("Access-Control-Expose-Headers = %q, want preserved", got)
 	}
 }
 
 // TestHandleHTTP_HappyPathSingleNode: the common case — one healthy node
-// answers directly, body forwarded, CORS present on the success response.
+// answers directly and its body is forwarded to the native client.
 func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 	var gotBody string
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,9 +160,6 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 	}
 	if gotBody != `{"model":"llama"}` {
 		t.Errorf("node got body %q, want the original request body", gotBody)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on success", got)
 	}
 }
 
@@ -244,9 +195,7 @@ func TestHandleHTTP_NoRetryOn400(t *testing.T) {
 	}
 }
 
-// TestHandleHTTP_RejectionHasCORS: even the no-node rejection carries CORS so a
-// browser sees the real 502 instead of an opaque CORS error.
-func TestHandleHTTP_RejectionHasCORS(t *testing.T) {
+func TestHandleHTTPRejectionHasNoCORS(t *testing.T) {
 	p := testProxy(NewDiscovery(), 11434)
 	rec := httptest.NewRecorder()
 	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"x"}`)))
@@ -254,8 +203,8 @@ func TestHandleHTTP_RejectionHasCORS(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on rejection", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want absent", got)
 	}
 }
 
@@ -292,13 +241,10 @@ func TestHandleHTTP_FailoverOn503(t *testing.T) {
 	if gotBody != `{"model":"llama"}` {
 		t.Errorf("failover node got body %q, want the original request body", gotBody)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on proxied success", got)
-	}
 }
 
 // TestHandleHTTP_AllNodesDownReturnsError: when every candidate fails at the
-// transport, the client gets one clean 502 (not a hang), still with CORS.
+// transport, the client gets one clean 502 rather than hanging.
 func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 	// Two servers we immediately close so dials fail.
 	a := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -318,9 +264,6 @@ func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 when all nodes are down", rec.Code)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want * on exhausted error", got)
 	}
 }
 
@@ -442,9 +385,6 @@ func TestHandleHTTP_AggregatesModelList(t *testing.T) {
 	}
 	if got.Models[1].Digest != "first" {
 		t.Errorf("duplicate metadata = %q, want deterministic first candidate", got.Models[1].Digest)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
 	}
 	if !events.has(`"method":"proxy/request-started"`) || !events.has(`"method":"proxy/request"`) || !events.has(`"target":"cluster"`) {
 		t.Errorf("aggregate telemetry missing paired cluster events: %s", events.b)

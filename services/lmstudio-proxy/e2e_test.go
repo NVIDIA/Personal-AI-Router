@@ -144,9 +144,9 @@ func e2eSplitHostPort(t *testing.T, serverURL string) (string, int) {
 // drives it the way the broker/UI does: register a busy (503) and a healthy
 // (200) upstream as manual nodes over JSON-RPC stdio, then send a genuine
 // OpenAI inference POST to the proxy's real HTTP port. It asserts the request
-// fails over from the busy node to the healthy one, the original body is
-// replayed, and CORS headers are present — the whole shipped path (binary +
-// stdio control plane + HTTP forwarding + failover) end-to-end, no mocks.
+// fails over from the busy node to the healthy one and the original body is
+// replayed — the whole shipped path (binary + stdio control plane + HTTP
+// forwarding + failover) end-to-end, no mocks.
 func TestE2EFailoverOverRealBinary(t *testing.T) {
 	var gotBody string
 	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -205,8 +205,8 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (should fail over from the 503 node)", resp.StatusCode)
 	}
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want absent", got)
 	}
 	if gotBody != `{"model":"m"}` {
 		t.Errorf("healthy upstream got body %q, want the original request body", gotBody)

@@ -815,7 +815,6 @@ type modelListResult struct {
 // deterministic while an unavailable peer cannot hide healthy inventories.
 func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidates []candidate) (int, error) {
 	writeJSON := func(status int, body []byte) {
-		cors.Apply(w.Header())
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(status)
@@ -973,12 +972,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(candidates) == 0 {
-		// With no engine to consult, retain the local permissive preflight used
-		// for engines that do not publish a CORS policy.
-		if cors.WritePreflight(w, r) {
-			return
-		}
-		cors.Apply(w.Header())
 		rejectionBody := `{"error":"no active node selected or available"}`
 		rejectionError := "no active node"
 		if isInf && model != "" {
@@ -1148,10 +1141,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					retry = true
 					return retrySignal{}
 				}
-				// Prefer an engine-declared preflight policy so an exact origin plus
-				// Allow-Credentials can pass a credentialed browser fetch. Engines
-				// that publish no policy retain the proxy's permissive 204 fallback.
-				cors.CompletePreflightFallback(resp)
+				cors.StripAllowOrigin(resp.Header)
 				// Committing to this candidate — body stream is about to begin.
 				ttfbMs = time.Since(start).Milliseconds()
 				servedNodeID = cand.id
@@ -1165,15 +1155,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// came from the node. Same goroutine as the body copy, so no
 				// synchronization is needed.
 				sc.upstreamAlive = func() { p.reportActivity(cand.id) }
-				// The engine may enforce its own origin policy. Honor it:
-				// overwriting a declared Access-Control-Allow-Origin would
-				// silently widen the user's policy, and a wildcard is invalid
-				// alongside Allow-Credentials, so it would break a credentialed
-				// response outright. An engine that omits the header has
-				// expressed nothing to preserve, so the proxy supplies its own.
-				if resp.Header.Get("Access-Control-Allow-Origin") == "" {
-					cors.Apply(resp.Header)
-				}
 				if !started {
 					started = true
 					p.codec.Notify("proxy/request-started", RequestStartedEvent{
@@ -1226,10 +1207,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// Last candidate failed at the transport: terminal, surface it.
 				servedNodeID = cand.id
 				servedTarget = cand.url.Host
-				if cors.WritePreflight(ew, r) {
-					proxyErr = ""
-					return
-				}
 				proxyErr = err.Error()
 				slog.Warn("proxy upstream error, candidates exhausted",
 					"id", reqID, "node_id", cand.id, "target", cand.url.Host,
@@ -1241,7 +1218,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				if mErr != nil {
 					body = []byte(`{"error":"upstream error"}`)
 				}
-				cors.Apply(ew.Header())
 				ew.Header().Set("Content-Type", "application/json")
 				ew.Header().Set("X-Content-Type-Options", "nosniff")
 				ew.WriteHeader(http.StatusBadGateway)

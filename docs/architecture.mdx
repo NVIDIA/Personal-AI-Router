@@ -513,6 +513,8 @@ The practical consequence is the one in
 [Troubleshooting](troubleshooting.mdx#requests-work-but-pair-shows-no-jobs). Start
 the Ollama desktop application and it takes `11434` for itself, so PAIR cannot,
 and requests reach that local Ollama without ever being routed.
+PAIR cannot impose security policies on listeners it does not own, so make
+sure things like CORS are properly set on engines.
 
 ### Port Map
 
@@ -685,8 +687,9 @@ The important boundaries are:
 2. **Electron or terminal interface to broker.** Stdio has one parent peer.
    Optional socket or named-pipe mode relies on operating-system endpoint
    permissions. JSON-RPC has no independent per-message token.
-3. **Loopback HTTP.** Local clients can submit sensitive inference content.
-   Listener addresses, browser access, CORS, and host account security matter.
+3. **Loopback HTTP.** Local native clients can submit sensitive inference
+   content. Browser clients are unsupported. Engine configurations of listener
+   addresses, browser access, CORS, and host account security also matter.
 4. **LAN discovery and metadata.** The network can reveal service presence and
    selected host information. Some enrichment endpoints use plain HTTP.
 5. **Pairing bootstrap.** A six-digit PIN bootstraps certificate trust. It is a
