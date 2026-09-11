@@ -23,10 +23,11 @@ const chromeHeight = 3
 // header showing broker status, and a footer of contextual help. It owns
 // the broker notification loop and routes messages to the views.
 type Model struct {
-	client *rpc.Client
-	logCh  <-chan string
-	keys   globalKeyMap
-	help   help.Model
+	client        *rpc.Client
+	notifications <-chan *rpc.Message
+	logCh         <-chan string
+	keys          globalKeyMap
+	help          help.Model
 
 	views  []View
 	active int
@@ -39,22 +40,23 @@ type Model struct {
 	showFullHelp  bool
 }
 
-// New builds the root model over a connected broker client, the broker's
+// New builds the root model over the program's dependencies, the broker's
 // captured stderr line channel, and the set of views (tabs) to present,
 // in tab order.
-func New(client *rpc.Client, logCh <-chan string, views []View) Model {
+func New(deps Deps, logCh <-chan string, views []View) Model {
 	return Model{
-		client: client,
-		logCh:  logCh,
-		keys:   newGlobalKeyMap(),
-		help:   help.New(),
-		views:  views,
+		client:        deps.Client,
+		notifications: deps.Notifications,
+		logCh:         logCh,
+		keys:          newGlobalKeyMap(),
+		help:          help.New(),
+		views:         views,
 	}
 }
 
 // Init starts each view and arms the broker notification + log loops.
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{waitForNotification(m.client), waitForLog(m.logCh)}
+	cmds := []tea.Cmd{waitForNotification(m.notifications), waitForLog(m.logCh)}
 	for _, v := range m.views {
 		if c := v.Init(); c != nil {
 			cmds = append(cmds, c)
@@ -106,7 +108,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.brokerVersion = readyVersion(msg.Msg)
 		}
 		cmds := m.broadcast(msg)
-		cmds = append(cmds, waitForNotification(m.client))
+		cmds = append(cmds, waitForNotification(m.notifications))
 		return m, tea.Batch(cmds...)
 
 	case DisconnectedMsg:

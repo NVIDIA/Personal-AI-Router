@@ -5,10 +5,10 @@ package ui
 
 import (
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -36,15 +36,6 @@ type clusterNode struct {
 	State     string `json:"state"`
 }
 
-// clusterInvite is the broker-facing view of a pairing session
-// (cluster:invite-received push / cluster:invite-node result).
-type clusterInvite struct {
-	InviteID     string  `json:"inviteId"`
-	FromNodeName string  `json:"fromNodeName"`
-	Pin          *string `json:"pin"`
-	State        string  `json:"state"`
-}
-
 type clusterInputMode int
 
 const (
@@ -57,11 +48,15 @@ const (
 // roster (live from nodes:changed), outbound invites (showing the PIN to
 // read to the joiner), and inbound invites (entering the PIN to accept).
 type clusterView struct {
-	client   *rpc.Client
+	client *rpc.Client
+	// pairs is the process-wide pairing service. It owns which invites are
+	// waiting and it is what the control socket drives too, which is how an
+	// invite created or answered from a script shows up on this tab.
+	pairs    *pairing.Service
+	events   <-chan pairing.Event
 	table    table.Model
 	identity clusterIdentity
 	nodes    []clusterNode
-	pending  *clusterInvite // most recent inbound invite awaiting a response
 	input    textinput.Model
 	mode     clusterInputMode
 	status   string
@@ -79,12 +74,13 @@ type clusterNodesMsg struct {
 	err   error
 }
 
+// clusterActionMsg carries the outcome of a non-pairing cluster action fired
+// from this tab (remove a member, leave the cluster). A pairing outcome
+// arrives as a pairing event instead, so that one driven from the control
+// socket is reported here identically to one driven from the keyboard.
 type clusterActionMsg struct {
-	what     string
-	pin      string
-	rejected bool
-	reason   string
-	err      error
+	what string
+	err  error
 }
 
 var (
@@ -95,9 +91,10 @@ var (
 	clLeaveKey   = key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "leave cluster"))
 )
 
-func newClusterView(client *rpc.Client) *clusterView {
+func newClusterView(client *rpc.Client, pairs *pairing.Service) *clusterView {
 	ti := textinput.New()
-	v := &clusterView{client: client, input: ti}
+	events, _ := pairs.Subscribe()
+	v := &clusterView{client: client, pairs: pairs, events: events, input: ti}
 	v.table = newTable(nil)
 	return v
 }
@@ -105,7 +102,7 @@ func newClusterView(client *rpc.Client) *clusterView {
 func (v *clusterView) Title() string { return "Cluster" }
 
 func (v *clusterView) Init() tea.Cmd {
-	return tea.Batch(v.identityCmd(), v.nodesCmd())
+	return tea.Batch(v.identityCmd(), v.nodesCmd(), waitForPairingEvent(v.events))
 }
 
 func (v *clusterView) identityCmd() tea.Cmd {
@@ -164,14 +161,13 @@ func (v *clusterView) Update(msg tea.Msg) tea.Cmd {
 	case clusterActionMsg:
 		if msg.err != nil {
 			v.status = msg.what + " failed: " + msg.err.Error()
-		} else if msg.rejected {
-			v.status = fmt.Sprintf("invite rejected (%s) - remove the existing relationship first", rejectReason(msg.reason))
-		} else if msg.pin != "" {
-			v.status = fmt.Sprintf("invite sent - PIN %s (read it to the joining node)", msg.pin)
 		} else {
 			v.status = msg.what + " ok"
 		}
 		return nil
+	case pairingEventMsg:
+		v.applyPairingEvent(msg.Event)
+		return waitForPairingEvent(v.events)
 	case NotificationMsg:
 		return v.handleNotification(msg.Msg)
 	case tea.KeyMsg:
@@ -194,12 +190,10 @@ func (v *clusterView) handleNotification(msg *rpc.Message) tea.Cmd {
 		}
 		_ = decodeParams(msg.Params, &r)
 		v.identity.ClusterID = r.ClusterID
-	case "cluster:invite-received":
-		var inv clusterInvite
-		_ = decodeParams(msg.Params, &inv)
-		v.pending = &inv
-		v.status = "invite received from " + inv.FromNodeName + " - press a to accept, d to decline"
 	}
+	// The pairing pushes (cluster:invite-received and the invite-canceled /
+	// -expired that retract one) are folded into the pairing service by the
+	// process's notification fan-out; this tab hears about them as events.
 	return nil
 }
 
@@ -222,7 +216,7 @@ func (v *clusterView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.beginInput(clusterInputAddress, "host (or host:port; default 14321)")
 		return textinput.Blink
 	case key.Matches(msg, clAcceptKey):
-		if v.pending != nil {
+		if len(v.pairs.Pending()) > 0 {
 			v.beginInput(clusterInputPin, "PIN from inviting node")
 			return textinput.Blink
 		}
@@ -261,30 +255,14 @@ func (v *clusterView) submit() tea.Cmd {
 			v.status = "address required"
 			return nil
 		}
-		// nvpair-cluster-manager treats "address" as a bare host and appends the
-		// port itself (default 14321). If the operator typed host:port, split
-		// it so the port lands in the manager's separate int field instead of
-		// being glued onto the host (which would dial [host:port]:14321).
-		params := map[string]any{"address": val}
-		if host, portStr, err := net.SplitHostPort(val); err == nil {
-			if port, perr := strconv.Atoi(portStr); perr == nil {
-				params["address"] = host
-				params["port"] = port
-			}
-		}
+		// The pairing service splits a typed "host:port" into the manager's
+		// separate address and port fields; a bare host gets the manager's own
+		// default port appended.
 		v.status = "inviting " + val + "..."
-		return inviteNodeCmd(v.client, params, func(res inviteNodeResult, err error) tea.Msg {
-			if err != nil {
-				return clusterActionMsg{what: "invite", err: err}
-			}
-			if res.State == "rejected" {
-				return clusterActionMsg{what: "invite", rejected: true, reason: res.Reason}
-			}
-			pin := ""
-			if res.Pin != nil {
-				pin = *res.Pin
-			}
-			return clusterActionMsg{what: "invite", pin: pin}
+		return inviteCmd(v.pairs, pairing.InviteRequest{Address: val}, func(pairing.Invite, error) tea.Msg {
+			// The status line is written from the pairing event, so that an
+			// invite from the control socket reads the same as this one.
+			return nil
 		})
 	case clusterInputPin:
 		return v.respondToInvite(true, val)
@@ -292,22 +270,79 @@ func (v *clusterView) submit() tea.Cmd {
 	return nil
 }
 
+// respondToInvite answers the invite this tab is showing. Which one that is
+// comes from the pairing service, so the keyboard and the control socket agree
+// on it even when several arrived.
 func (v *clusterView) respondToInvite(accept bool, pin string) tea.Cmd {
-	if v.pending == nil {
+	waiting := v.pairs.Pending()
+	if len(waiting) == 0 {
+		v.status = "no invite is waiting for an answer"
 		return nil
 	}
-	params := map[string]any{"inviteId": v.pending.InviteID, "accept": accept}
-	if accept && pin != "" {
-		params["pin"] = pin
+	return respondCmd(v.pairs, waiting[0].InviteID, accept, pin)
+}
+
+// applyPairingEvent renders one pairing state change on the status line,
+// whichever driver caused it. An invite created over the control socket shows
+// its PIN here exactly like one created with `i`, and an accept made there
+// clears a PIN prompt this tab left open.
+func (v *clusterView) applyPairingEvent(ev pairing.Event) {
+	switch ev.Kind {
+	case pairing.EventInviteSent:
+		v.status = fmt.Sprintf("invite sent - PIN %s (read it to the joining node)", ev.Invite.PIN())
+	case pairing.EventInviteRejected:
+		v.status = fmt.Sprintf("invite rejected (%s) - remove the existing relationship first", rejectReason(ev.Invite.Reason))
+	case pairing.EventInviteFailed:
+		v.status = "invite failed: " + ev.Err.Error()
+	case pairing.EventInviteReceived:
+		v.status = "invite received from " + ev.Invite.FromNodeName + " - press a to accept, d to decline"
+	case pairing.EventInviteCleared:
+		v.status = fmt.Sprintf("invite from %s %s", ev.Invite.FromNodeName, ev.Invite.State)
+		v.closePinPromptIfIdle()
+	case pairing.EventResponded:
+		v.status = respondedStatus(ev)
+		v.closePinPromptIfIdle()
+	case pairing.EventRespondFailed:
+		what := "decline invite"
+		if ev.Accept {
+			what = "accept invite"
+		}
+		v.status = what + " failed: " + ev.Err.Error()
+		v.closePinPromptIfIdle()
 	}
-	v.pending = nil
-	what := "decline invite"
-	if accept {
-		what = "accept invite"
+}
+
+// closePinPromptIfIdle dismisses a PIN prompt once nothing is waiting for an
+// answer any more — the case where a script accepted or declined the very
+// invite the operator was still typing a PIN for.
+func (v *clusterView) closePinPromptIfIdle() {
+	if v.mode == clusterInputPin && len(v.pairs.Pending()) == 0 {
+		v.cancelInput()
 	}
-	return call(v.client, "cluster:respond-to-invite", params, func(_ *rpc.Message, err error) tea.Msg {
-		return clusterActionMsg{what: what, err: err}
-	})
+}
+
+// respondedStatus words the outcome of an answered invite. A wrong PIN is a
+// successful response in a failed state rather than an error, so it is
+// reported here and not on the failure path.
+func respondedStatus(ev pairing.Event) string {
+	if !ev.Accept {
+		return "invite declined"
+	}
+	switch ev.Invite.State {
+	case pairing.StatePaired:
+		name := ev.Invite.FromNodeName
+		if name == "" {
+			name = "the inviting node"
+		}
+		return "paired with " + name
+	case pairing.StateFailed:
+		if ev.Invite.Reason == pairing.ReasonIncorrectPin {
+			return "incorrect PIN - ask for it again and retry"
+		}
+		return "pairing failed"
+	default:
+		return "accept invite: " + ev.Invite.State
+	}
 }
 
 // leaveCluster unjoins this node from its cluster (cluster:leave). The

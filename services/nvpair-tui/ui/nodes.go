@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -44,7 +45,10 @@ func (n availableNode) key() string {
 // subscribe and then pushes discovery:nodes-changed (a full list) on
 // every change.
 type nodesView struct {
-	client        *rpc.Client
+	client *rpc.Client
+	// pairs is the shared pairing service, so an invite sent from this tab is
+	// the same call the Cluster tab and the control socket make.
+	pairs         *pairing.Service
 	table         table.Model
 	nodes         []availableNode
 	status        string
@@ -66,8 +70,8 @@ type nodeInviteMsg struct {
 
 var niInviteKey = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "invite to cluster"))
 
-func newNodesView(client *rpc.Client) *nodesView {
-	v := &nodesView{client: client}
+func newNodesView(client *rpc.Client, pairs *pairing.Service) *nodesView {
+	v := &nodesView{client: client, pairs: pairs}
 	v.table = newTable(nil)
 	return v
 }
@@ -160,21 +164,17 @@ func (v *nodesView) inviteSelected() tea.Cmd {
 	}
 	// Identify the invite target by its stable UUID (the address is still the
 	// dial target); the manager stamps this as the invite's target identity.
-	params := map[string]any{"address": n.IPAddress, "nodeId": n.key()}
+	req := pairing.InviteRequest{Address: n.IPAddress, NodeID: n.key()}
 	name := n.Name
 	v.status = "inviting " + name + "..."
-	return inviteNodeCmd(v.client, params, func(res inviteNodeResult, err error) tea.Msg {
+	return inviteCmd(v.pairs, req, func(inv pairing.Invite, err error) tea.Msg {
 		if err != nil {
 			return nodeInviteMsg{name: name, err: err}
 		}
-		if res.State == "rejected" {
-			return nodeInviteMsg{name: name, rejected: true, reason: res.Reason}
+		if inv.State == pairing.StateRejected {
+			return nodeInviteMsg{name: name, rejected: true, reason: inv.Reason}
 		}
-		pin := ""
-		if res.Pin != nil {
-			pin = *res.Pin
-		}
-		return nodeInviteMsg{name: name, pin: pin}
+		return nodeInviteMsg{name: name, pin: inv.PIN()}
 	})
 }
 

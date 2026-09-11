@@ -51,7 +51,7 @@ This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service 
 | `nvpair-node-settings` | Typed key-value store for per-node preferences. |
 | `nvpair-cluster-manager` | Node identity, PIN pairing, and the trusted-node store. |
 | `nvpair-job-scheduler` | Responsive scheduler combining total node queue depth across engines with smoothed GPU pressure. |
-| `nvpair-tui` | Terminal interface for headless and SSH operation; launches and supervises its own broker. |
+| `nvpair-tui` | Terminal interface for headless and SSH operation; launches and supervises its own broker, and serves a per-user control socket so pairing can also be driven by `nvpair-tui invite` / `accept` from a script. |
 
 Shared code lives in the local `shared/` Go module (imported as `nvpair-shared/…`, replaced via `replace nvpair-shared => ../shared`). It provides logging, wire types, JSON-RPC and IPC, discovery records, mDNS, network monitoring, stable node identity, application data paths, and cluster trust helpers.
 
