@@ -40,6 +40,12 @@ type Node struct {
 	// advertises the requested model; an empty list stays in discovery but is
 	// not an inference candidate until a later inventory update.
 	Models []string `json:"models,omitempty"`
+	// BasePath is the endpoint's API path prefix (e.g. "/v1") for external
+	// OpenAI-compatible endpoints bridged with a declared base URL. The proxy
+	// joins it onto its own /v1 root when forwarding. Empty for every
+	// discovered node and for classic manual nodes, whose engines serve the
+	// OpenAI API at their own /v1 root.
+	BasePath string `json:"base_path,omitempty"`
 	// IP is the single canonical LAN address a consumer should dial/display for
 	// this node, resolved via the shared netpick ranker: the node's
 	// own ip= TXT if present, else the best-scored advertised IPv4. It is
@@ -135,6 +141,7 @@ func (d *Discovery) SetSubscribed(nodes []Node) (discovered, updated, removed []
 // warrants a node/updated.
 func nodeEqual(a, b Node) bool {
 	return a.ID == b.ID && a.Host == b.Host && a.Port == b.Port && a.IP == b.IP &&
+		a.BasePath == b.BasePath &&
 		slices.Equal(a.Addresses, b.Addresses) && slices.Equal(a.TXT, b.TXT) &&
 		slices.Equal(a.Models, b.Models)
 }

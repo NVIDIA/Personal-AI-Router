@@ -12,7 +12,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +95,11 @@ type ManualEntry struct {
 	Name    string `json:"name"`
 	TLSPort int    `json:"tls_port,omitempty"`
 	MTLS    bool   `json:"mtls,omitempty"`
+	// OpenAIBaseURL declares an externally-managed OpenAI-compatible
+	// endpoint by its base URL (e.g. http://host:8888/v1) instead of
+	// probing a host for the default engine ports. Mutually exclusive
+	// with Address; exactly one of the two must be set.
+	OpenAIBaseURL string `json:"openai_base_url,omitempty"`
 }
 
 // ManualNodeStatus mirrors a manual entry plus the latest probe
@@ -115,7 +122,19 @@ type ManualNodeStatus struct {
 	LMStudioUp     bool        `json:"lmstudio_up"`
 	LMStudioPort   int         `json:"lmstudio_port"`
 	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
-	NodeInfoUp     bool        `json:"node_info_up"`
+	// The openai_* fields describe a declared OpenAI-compatible endpoint
+	// (an entry added with openai_base_url). OpenAIBaseURL echoes the
+	// declared URL so the UI shows what was configured; OpenAIHost/Port
+	// and OpenAIBasePath are the parsed parts a supervising broker hands
+	// to the proxy (host for dialing, path prefix for forwarding). For
+	// address-based entries every field stays zero/empty.
+	OpenAIUp       bool     `json:"openai_up"`
+	OpenAIBaseURL  string   `json:"openai_base_url,omitempty"`
+	OpenAIHost     string   `json:"openai_host,omitempty"`
+	OpenAIPort     int      `json:"openai_port,omitempty"`
+	OpenAIBasePath string   `json:"openai_base_path,omitempty"`
+	OpenAIModels   []string `json:"openai_models,omitempty"`
+	NodeInfoUp     bool     `json:"node_info_up"`
 	NodeInfoPort   int         `json:"node_info_port"`
 	TLSEnabled     bool        `json:"tls_enabled,omitempty"`
 	MTLSRequired   bool        `json:"mtls_required,omitempty"`
@@ -208,6 +227,10 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.cancel = cancel
 	defer cancel()
 
+	// Restore the durable list before announcing ready, so supervisors that
+	// replay only their own state see the full node set immediately.
+	m.loadPersistedEntries()
+
 	if err := m.codec.Notify("ready", ReadyParams{Version: Version}); err != nil {
 		return fmt.Errorf("failed to send ready notification: %w", err)
 	}
@@ -251,8 +274,30 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
 
-	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
-	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
+	// A declared OpenAI endpoint is probed at its own URL (and node-info on
+	// the URL's host); the default engine-port legs only apply to address
+	// entries, which name a host that may run any of our engines.
+	ollamaUp, ollamaModels := false, []string(nil)
+	lmStudioUp, lmStudioModels := false, []string(nil)
+	openAIUp, openAIModels := false, []string(nil)
+	var openAI endpointTarget
+	if entry.OpenAIBaseURL != "" {
+		target, err := parseEndpointTarget(entry.OpenAIBaseURL)
+		if err != nil {
+			// Unreachable in practice — node/add validates the URL before
+			// the entry exists. Surface it as a down endpoint rather than
+			// crashing the probe loop.
+			slog.Warn("manual endpoint entry has an invalid base URL",
+				"node_id", id, "err", err)
+		} else {
+			openAI = target
+			addr = target.host
+			openAIUp, openAIModels = m.probeOpenAI(target)
+		}
+	} else {
+		ollamaUp, ollamaModels = m.probeOllama(addr, 11434)
+		lmStudioUp, lmStudioModels = m.probeLMStudio(addr, lmStudioPort)
+	}
 
 	// Pick scheme + port + client based on the entry's TLS hint.
 	// The operator decides which scheme this manual node uses; we
@@ -290,6 +335,12 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		LMStudioUp:     lmStudioUp,
 		LMStudioPort:   lmStudioPort,
 		LMStudioModels: lmStudioModels,
+		OpenAIUp:       openAIUp,
+		OpenAIBaseURL:  entry.OpenAIBaseURL,
+		OpenAIHost:     openAI.host,
+		OpenAIPort:     openAI.port,
+		OpenAIBasePath: openAI.basePath,
+		OpenAIModels:   openAIModels,
 		NodeInfoUp:     nodeInfoUp,
 		NodeInfoPort:   nodeInfoPort,
 		TLSEnabled:     entry.TLSPort > 0,
@@ -302,7 +353,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		HostUUID:       info.HostUUID,
 	}
 
-	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
+	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.OpenAIUp || newStatus.NodeInfoUp
 
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
@@ -329,17 +380,24 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	curFails := tn.consecutiveFails
 	m.mu.Unlock()
 
+	// MSSince is deliberately excluded from the diff: it is the node-info
+	// telemetry sample's age, which advances on every probe by
+	// construction, so counting it as a change would emit node/updated on
+	// every probe cycle for every node-info-up node and make the broker
+	// re-bridge each one into the proxies each time. It is display-only —
+	// the store always holds the fresh value for nodes/list consumers.
 	changed := prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
+		prev.OpenAIUp != newStatus.OpenAIUp ||
 		prev.NodeInfoUp != newStatus.NodeInfoUp ||
 		prev.HostUUID != newStatus.HostUUID ||
 		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
 		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
+		!sliceEqual(prev.OpenAIModels, newStatus.OpenAIModels) ||
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
-		prev.TelemetryValid != newStatus.TelemetryValid ||
-		prev.MSSince != newStatus.MSSince
+		prev.TelemetryValid != newStatus.TelemetryValid
 
 	if changed {
 		slog.Info("manual node state changed",
@@ -403,23 +461,79 @@ func probeFailedID(nodeID string) string {
 // manager (which only governs the local engine).
 const lmStudioPort = 1234
 
+// endpointTarget is a parsed, validated openai_base_url. baseURL is the full
+// OpenAI-client base (e.g. http://host:8888/v1); host/port serve the node-info
+// probe and display; basePath is the URL's path prefix ("" or "/v1"), trailing
+// slash stripped, that the proxy prepends to forwarded OpenAI paths.
+type endpointTarget struct {
+	baseURL  *url.URL
+	host     string
+	port     int
+	basePath string
+}
+
+// parseEndpointTarget validates an operator-supplied OpenAI-compatible base
+// URL. v1 accepts http only: the proxy dials manual nodes over plain HTTP.
+func parseEndpointTarget(raw string) (endpointTarget, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return endpointTarget{}, fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	if u.Scheme != "http" {
+		return endpointTarget{}, fmt.Errorf("unsupported scheme %q in %q (http only for now)", u.Scheme, raw)
+	}
+	if u.Hostname() == "" {
+		return endpointTarget{}, fmt.Errorf("missing host in %q", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return endpointTarget{}, fmt.Errorf("query or fragment not allowed in base URL %q", raw)
+	}
+	port := 80
+	if p := u.Port(); p != "" {
+		port, err = strconv.Atoi(p)
+		if err != nil {
+			return endpointTarget{}, fmt.Errorf("invalid port in %q", raw)
+		}
+	}
+	return endpointTarget{
+		baseURL:  u,
+		host:     u.Hostname(),
+		port:     port,
+		basePath: strings.TrimSuffix(u.Path, "/"),
+	}, nil
+}
+
 // probeLMStudio checks LM Studio's OpenAI-compatible server on addr:port. A
 // single GET /v1/models doubles as the liveness check and the model list (the
 // response is {"data":[{"id":"..."}],...}). Returns whether it is up and the
 // model ids it serves.
 func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
-	url := "http://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
+	return m.probeModelsAPI("http://"+net.JoinHostPort(addr, strconv.Itoa(port))+"/v1/models")
+}
+
+// probeOpenAI GETs the declared endpoint's model list ({base}/models). Like
+// probeLMStudio, one call doubles as liveness and inventory.
+func (m *Manager) probeOpenAI(t endpointTarget) (bool, []string) {
+	return m.probeModelsAPI(t.baseURL.String() + "/models")
+}
+
+// probeModelsAPI checks an OpenAI-compatible model list endpoint. A single GET
+// doubles as the liveness check and the model list (the response is
+// {"data":[{"id":"..."}],...}). Returns whether it is up and the model ids it
+// serves; a reachable endpoint whose list doesn't parse reports up with no
+// models.
+func (m *Manager) probeModelsAPI(modelsURL string) (bool, []string) {
 	start := time.Now()
-	resp, err := m.client.Get(url)
+	resp, err := m.client.Get(modelsURL)
 	if err != nil {
-		slog.Debug("manual probe lmstudio failed",
-			"addr", addr, "port", port, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		slog.Debug("manual probe models failed",
+			"url", modelsURL, "duration_ms", time.Since(start).Milliseconds(), "err", err)
 		return false, nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		slog.Debug("manual probe lmstudio non-OK",
-			"addr", addr, "port", port, "status", resp.StatusCode,
+		slog.Debug("manual probe models non-OK",
+			"url", modelsURL, "status", resp.StatusCode,
 			"duration_ms", time.Since(start).Milliseconds())
 		return false, nil
 	}
@@ -430,8 +544,8 @@ func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		// Reachable, but the model list didn't parse — still report it up.
-		slog.Debug("manual probe lmstudio up (models parse failed)",
-			"addr", addr, "port", port, "err", err)
+		slog.Debug("manual probe models up (models parse failed)",
+			"url", modelsURL, "err", err)
 		return true, nil
 	}
 	models := make([]string, 0, len(result.Data))
@@ -440,8 +554,8 @@ func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
 			models = append(models, d.ID)
 		}
 	}
-	slog.Debug("manual probe lmstudio up",
-		"addr", addr, "port", port, "models", len(models),
+	slog.Debug("manual probe models up",
+		"url", modelsURL, "models", len(models),
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, models
 }
@@ -544,6 +658,18 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 		TLSEnabled:   entry.TLSPort > 0,
 		MTLSRequired: entry.TLSPort > 0 && entry.MTLS,
 	}
+	// Pre-echo the endpoint's configured parts (and the URL's host as the
+	// display address) so the unprobed initial status already carries the
+	// operator's configuration, mirroring the fixed-port pre-echoes above.
+	if entry.OpenAIBaseURL != "" {
+		if t, err := parseEndpointTarget(entry.OpenAIBaseURL); err == nil {
+			status.Address = t.host
+			status.OpenAIBaseURL = entry.OpenAIBaseURL
+			status.OpenAIHost = t.host
+			status.OpenAIPort = t.port
+			status.OpenAIBasePath = t.basePath
+		}
+	}
 
 	m.mu.Lock()
 	m.nodes[id] = &trackedNode{entry: entry, status: status}
@@ -645,17 +771,26 @@ func (m *Manager) handleMessage(msg *Message) {
 	case "node/add":
 		var entry ManualEntry
 		if err := json.Unmarshal(msg.Params, &entry); err != nil {
-			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"address\": \"...\"}")
+			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"address\": \"...\"} or {\"openai_base_url\": \"...\"}")
 			return
 		}
-		if entry.Address == "" {
-			m.codec.RespondError(msg.ID, -32602, "address is required")
+		hasAddress := entry.Address != ""
+		hasBaseURL := entry.OpenAIBaseURL != ""
+		if hasAddress == hasBaseURL {
+			m.codec.RespondError(msg.ID, -32602, "exactly one of address or openai_base_url is required")
 			return
+		}
+		if hasBaseURL {
+			if _, err := parseEndpointTarget(entry.OpenAIBaseURL); err != nil {
+				m.codec.RespondError(msg.ID, -32602, err.Error())
+				return
+			}
 		}
 		status := m.addNode(entry)
 		if err := m.codec.Respond(msg.ID, status); err != nil {
 			log.Printf("failed to respond to node/add: %v", err)
 		}
+		m.saveNow()
 		log.Printf("manual node added: %s (%s)", status.ID, entry.Address)
 
 	case "node/remove":
@@ -671,6 +806,7 @@ func (m *Manager) handleMessage(msg *Message) {
 			log.Printf("failed to respond to node/remove: %v", err)
 		}
 		if removed {
+			m.saveNow()
 			log.Printf("manual node removed: %s", params.ID)
 		}
 
@@ -697,6 +833,12 @@ func (m *Manager) handleMessage(msg *Message) {
 func nodeID(entry ManualEntry) string {
 	if entry.Name != "" {
 		return entry.Name
+	}
+	if entry.OpenAIBaseURL != "" {
+		if t, err := parseEndpointTarget(entry.OpenAIBaseURL); err == nil {
+			return "manual:" + net.JoinHostPort(t.host, strconv.Itoa(t.port))
+		}
+		return "manual:" + entry.OpenAIBaseURL
 	}
 	return "manual:" + entry.Address
 }

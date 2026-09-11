@@ -19,8 +19,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,7 +143,22 @@ const (
 	// workloadEngine is the opaque engine identifier carried in every
 	// workload this proxy produces. This proxy only ever fronts LM Studio.
 	workloadEngine = "lmstudio"
+
+	// externalEndpointEngine labels workloads served by an external
+	// OpenAI-compatible endpoint (a base-path manual node), which is not LM
+	// Studio — the workload's engine must name what actually served it.
+	externalEndpointEngine = "openai"
 )
+
+// engineForCandidate returns the workload engine label for a forwarding
+// candidate: external endpoints label "openai", everything else is this
+// proxy's LM Studio family.
+func engineForCandidate(basePath string) string {
+	if basePath != "" {
+		return externalEndpointEngine
+	}
+	return workloadEngine
+}
 
 // inferenceEndpoints is the set of request paths that count as cluster
 // workloads. Health checks, model listings (/v1/models), and other control
@@ -700,6 +717,10 @@ type candidate struct {
 	id       string
 	url      *url.URL
 	peerUUID string
+	// basePath is the endpoint's API prefix (e.g. "/v1") carried by the node
+	// for external OpenAI-compatible endpoints; "" means the OpenAI paths
+	// forward verbatim.
+	basePath string
 }
 
 // candidateTransport returns the reverse-proxy / model-list transport for a
@@ -825,8 +846,10 @@ func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidate
 	var wg sync.WaitGroup
 	for i, cand := range candidates {
 		target := *cand.url
-		target.Path = r.URL.Path
-		target.RawPath = r.URL.RawPath
+		// The endpoint's own /models lives under its base path, so the fanout
+		// uses the same join the forward path does.
+		target.Path = joinedPath(cand.basePath, r.URL.Path)
+		target.RawPath = ""
 		target.RawQuery = r.URL.RawQuery
 		upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
 		if err != nil {
@@ -1042,7 +1065,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		wl = &Workload{
 			ID:          reqID,
 			Model:       model,
-			Engine:      workloadEngine,
+			Engine:      engineForCandidate(candidates[0].basePath),
 			RunID:       p.runID,
 			State:       "running",
 			ScheduledOn: candidates[0].id,
@@ -1134,6 +1157,13 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				req.URL.Scheme = cand.url.Scheme
 				req.URL.Host = cand.url.Host
 				req.Host = cand.url.Host
+				// External endpoints rooted at a base path (e.g. /v1) receive
+				// the proxy's /v1-prefixed path rewritten onto their root.
+				// Clear RawPath so the rewritten Path is what goes on the wire.
+				if cand.basePath != "" {
+					req.URL.Path = joinedPath(cand.basePath, req.URL.Path)
+					req.URL.RawPath = ""
+				}
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
@@ -1190,17 +1220,20 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					// the node that actually served. Guarded by wlMu against the
 					// disconnect watcher, and skipped once terminated so a late
 					// re-point can't resurrect a workload we've already failed.
-					if wl != nil {
-						wlMu.Lock()
-						if !terminated && wl.ScheduledOn != cand.id {
-							wl.ScheduledOn = cand.id
-							snapshot := *wl
-							wlMu.Unlock()
-							p.emitWorkload(workloadStartedMethod, snapshot)
-						} else {
-							wlMu.Unlock()
-						}
+				if wl != nil {
+					wlMu.Lock()
+					if !terminated && wl.ScheduledOn != cand.id {
+						wl.ScheduledOn = cand.id
+						// Failover can land on (or off) an external endpoint;
+						// the engine label must follow the node that serves.
+						wl.Engine = engineForCandidate(cand.basePath)
+						snapshot := *wl
+						wlMu.Unlock()
+						p.emitWorkload(workloadStartedMethod, snapshot)
+					} else {
+						wlMu.Unlock()
 					}
+				}
 				}
 				return nil
 			},
@@ -1433,6 +1466,7 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 			id:       n.ID,
 			url:      u,
 			peerUUID: peerUUID,
+			basePath: n.BasePath,
 		})
 	}
 
@@ -1554,6 +1588,21 @@ func isSelfTarget(u *url.URL, selfPort int) bool {
 		return true
 	}
 	return false
+}
+
+// joinedPath rewrites the proxy's /v1-prefixed request path for a candidate
+// whose API is rooted at basePath (e.g. "/v1"): the inbound path's "/v1"
+// prefix is the proxy's own API root and is replaced by the endpoint's.
+// Candidates without a base path, and inbound paths outside /v1 (control
+// traffic), pass through unchanged.
+func joinedPath(basePath, inbound string) string {
+	if basePath == "" {
+		return inbound
+	}
+	if !strings.HasPrefix(inbound, "/v1/") {
+		return inbound
+	}
+	return path.Join(basePath, strings.TrimPrefix(inbound, "/v1"))
 }
 
 // nodeURL returns the single best forward URL for a node (the first candidate

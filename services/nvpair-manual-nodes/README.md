@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-manual-nodes
 
-A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
+A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses or OpenAI-compatible endpoint URLs via JSON-RPC, probes each, and emits status events.
 
 ## Communication
 
@@ -62,6 +62,8 @@ Emitted when a manually added node has been probed and its initial status determ
 
 Each node is probed for both inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`) and LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list). `lmstudio_up` / `lmstudio_port` / `lmstudio_models` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run either engine, both, or neither.
 
+For an entry added with `openai_base_url`, the `openai_*` fields describe the declared endpoint instead: `openai_up` is liveness, `openai_base_url` echoes the declared URL, `openai_host` / `openai_port` / `openai_base_path` are the parsed parts a supervising broker hands to the proxy (host for dialing, path prefix for forwarding), and `openai_models` is the inventory fetched from the endpoint. Address-based entries keep every `openai_*` field empty/false.
+
 ### `node/updated`
 
 Emitted when a periodic probe detects a change (service going up/down, models,
@@ -81,20 +83,27 @@ Emitted so the supervising broker can forward them into the `nvpair-errors` pipe
 
 ### `node/add`
 
-Add a node by address. The manager immediately probes it and emits a `node/discovered` event.
+Add a node by address or by OpenAI-compatible endpoint URL. The manager immediately probes it and emits a `node/discovered` event.
 
-A hostname is preferred over an IP literal: probe clients disable keep-alives specifically so every probe re-resolves the name, which lets a node that gets a new address recover on its own. An IP-literal entry is dead once the device is renumbered. Supply the address on its own — a `host:port` string is not parsed, because ports are appended to it, so such an entry reads permanently down.
+Exactly one of `address` / `openai_base_url` must be supplied:
+
+- `address` names a host the manager probes on the default engine ports (see [Probing](#probing)). A hostname is preferred over an IP literal: probe clients disable keep-alives specifically so every probe re-resolves the name, which lets a node that gets a new address recover on its own. An IP-literal entry is dead once the device is renumbered. Supply the address on its own — a `host:port` string is not parsed, because ports are appended to it, so such an entry reads permanently down.
+- `openai_base_url` declares an externally-managed OpenAI-compatible endpoint at that exact URL (see [OpenAI-compatible endpoints](#openai-compatible-endpoints)).
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"my-server"}}
+{"jsonrpc":"2.0","id":1,"method":"node/add","params":{"openai_base_url":"http://192.168.1.50:8888/v1"}}
 ```
 
 | Param | Required | Description |
 |---|---|---|
-| `address` | Yes | IP address or hostname of the node, with no port |
-| `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`) |
+| `address` | Yes* | IP address or hostname of the node, with no port |
+| `openai_base_url` | Yes* | OpenAI-compatible endpoint base URL, e.g. `http://192.168.1.50:8888/v1`. http only in this release |
+| `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`, or `manual:<host>:<port>` for an endpoint) |
 | `tls_port` | No | Probe node-info over HTTPS on this port instead of plain HTTP on `14318`. Echoed back as `tls_enabled` |
 | `mtls` | No | Stored and echoed back as `mtls_required`. The probe transport itself is chosen by `tls_port` and live cluster membership, so this field records intent rather than driving it |
+
+\*Exactly one of `address` / `openai_base_url` is required; supplying both (or neither) is rejected.
 
 Response: the initial node status object.
 
@@ -140,7 +149,18 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 
 A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
 
-The three engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
+The default engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. An address-based entry that runs a remote engine on a non-default port is not discovered — but the same engine remains reachable by declaring its exact URL as an OpenAI-compatible endpoint.
+
+## OpenAI-compatible endpoints
+
+An entry added with `openai_base_url` adopts an externally-managed OpenAI-compatible API (any server that speaks the OpenAI HTTP API — vLLM, llama.cpp server, TGI, and the like) without the manager needing to know which software sits behind it. For this entry type the manager probes:
+
+- **The endpoint itself**: `GET {base}/models` — liveness check and model list in one (`openai_up`, `openai_models`)
+- **Node Info**, best effort: on the URL's host, on the default `14318` (or `tls_port`), for hardware inventory and identity so the node folds into the same directory as a discovered one
+
+The default engine-port legs (Ollama `:11434`, LM Studio `:1234`) are not probed for this entry type; their status fields stay false/empty.
+
+The manager persists its entry list in the application data directory (`manual-nodes.json`) on every add and remove and restores it at startup, so manual nodes — declared endpoints included — survive a service restart.
 
 ## Shutdown
 

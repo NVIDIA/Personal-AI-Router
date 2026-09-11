@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"time"
 
 	"nvpair-shared/noderec"
@@ -28,7 +29,18 @@ type manualNodeStatus struct {
 	LMStudioUp     bool        `json:"lmstudio_up"`
 	LMStudioPort   int         `json:"lmstudio_port"`
 	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
-	NodeInfoPort   int         `json:"node_info_port"`
+	// The openai_* fields mirror a declared OpenAI-compatible endpoint
+	// (an entry added with openai_base_url). OpenAIBaseURL is the operator's
+	// declaration (echoed for display); OpenAIHost/Port and OpenAIBasePath
+	// are the parsed parts the bridge hands to the proxy. Tags match the
+	// prober's producer so the payloads unmarshal straight across.
+	OpenAIUp       bool     `json:"openai_up"`
+	OpenAIBaseURL  string   `json:"openai_base_url,omitempty"`
+	OpenAIHost     string   `json:"openai_host,omitempty"`
+	OpenAIPort     int      `json:"openai_port,omitempty"`
+	OpenAIBasePath string   `json:"openai_base_path,omitempty"`
+	OpenAIModels   []string `json:"openai_models,omitempty"`
+	NodeInfoPort   int      `json:"node_info_port"`
 	GPUs           []GPUInfo   `json:"gpus"`
 	CPU            *CPUInfo    `json:"cpu"`
 	Memory         *MemoryInfo `json:"memory"`
@@ -75,9 +87,17 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 	// manual-node ingestion boundary — downstream keys off HostUUID with no
 	// fallback. Once the real UUID is learned, a manually-added machine
 	// that's also discovered over mDNS collapses to the one hostUuid-keyed entry.
-	hostUUID := s.HostUUID
-	if hostUUID == "" {
-		hostUUID = s.ID
+	//
+	// Declared endpoints are the exception: an endpoint's identity is the URL
+	// the operator declared, not the PAIR identity of the machine that happens
+	// to run it. An endpoint on this host (or on a peer that also runs
+	// node-info) must keep its manual key or it folds into that machine's own
+	// node — and two endpoints on one host collapse into a single slot that
+	// clobbers itself on every probe. Node-info hardware data still merges;
+	// only the key stays manual.
+	hostUUID := s.ID
+	if s.OpenAIBaseURL == "" && s.HostUUID != "" {
+		hostUUID = s.HostUUID
 	}
 	en := EnrichedNode{
 		ID:             s.ID,
@@ -87,7 +107,7 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 		GPUs:           s.GPUs,
 		CPU:            s.CPU,
 		Memory:         s.Memory,
-		Models:         mergeModels(s.OllamaModels, s.LMStudioModels),
+		Models:         mergeModels(s.OllamaModels, s.LMStudioModels, s.OpenAIModels),
 		ModelsByEngine: manualModelsByEngine(s),
 	}
 	if s.Address != "" {
@@ -99,8 +119,10 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 // manualModelsByEngine builds the per-engine attribution for a manual node from
 // the per-engine lists the prober already collected, keyed by the same
 // engine-manager engine names discovered nodes use ("ollama", "lmstudio") so the
-// two discovery sources present ModelsByEngine identically. An engine with no
-// models adds no key; returns nil when neither engine reports any.
+// two discovery sources present ModelsByEngine identically. A declared
+// OpenAI-compatible endpoint attributes under "openai" — the node isn't LM
+// Studio, and the label must say what actually serves it. An engine with no
+// models adds no key; returns nil when no engine reports any.
 func manualModelsByEngine(s manualNodeStatus) map[string][]string {
 	byEngine := map[string][]string{}
 	if len(s.OllamaModels) > 0 {
@@ -108,6 +130,9 @@ func manualModelsByEngine(s manualNodeStatus) map[string][]string {
 	}
 	if len(s.LMStudioModels) > 0 {
 		byEngine["lmstudio"] = s.LMStudioModels
+	}
+	if len(s.OpenAIModels) > 0 {
+		byEngine["openai"] = s.OpenAIModels
 	}
 	if len(byEngine) == 0 {
 		return nil
@@ -145,6 +170,48 @@ type proxyManualNode struct {
 	Addresses []string `json:"addresses"`
 	TXT       []string `json:"txt,omitempty"`
 	Models    []string `json:"models,omitempty"`
+	// BasePath is the declared endpoint's API prefix (e.g. "/v1"); the proxy
+	// joins it onto its own /v1 root when forwarding. Empty for classic
+	// manual nodes, whose engines serve the OpenAI API at their own /v1 root.
+	BasePath string `json:"base_path,omitempty"`
+}
+
+// bridgeIntent is what the bridge last applied to one (proxy, engine, key)
+// slot: a remove, or an add with the exact payload that was sent.
+type bridgeIntent struct {
+	removed bool
+	node    proxyManualNode
+}
+
+// bridgeSeenKey identifies one bridge slot: the proxy process instance (a
+// respawned proxy is a new pointer, so a restarted proxy is re-seeded
+// automatically), the engine leg, and the node's operational key.
+type bridgeSeenKey struct {
+	p      *proxyProcess
+	engine string
+	key    string
+}
+
+// bridgeIntentsEqual reports whether two intents are routing-equivalent: the
+// same remove, or the same add payload. Only fields the proxy payload
+// carries are compared — telemetry that lives in the node's status but not
+// in the payload (sample age, utilization, CPU/memory) must not force a
+// re-bridge.
+func bridgeIntentsEqual(a, b bridgeIntent) bool {
+	if a.removed != b.removed {
+		return false
+	}
+	if a.removed {
+		return true
+	}
+	n, m := a.node, b.node
+	return n.ID == m.ID &&
+		n.Host == m.Host &&
+		n.Port == m.Port &&
+		n.BasePath == m.BasePath &&
+		slices.Equal(n.Addresses, m.Addresses) &&
+		slices.Equal(n.TXT, m.TXT) &&
+		slices.Equal(n.Models, m.Models)
 }
 
 // bridgeManualNode keeps every supervised proxy's manual-node set in step with
@@ -160,42 +227,90 @@ type proxyManualNode struct {
 // daemon to carry — so without this explicit add the proxies can't route
 // inference to them even though both workers are broker-owned.
 func (b *Broker) bridgeManualNode(s manualNodeStatus, key string) {
-	b.bridgeToProxy(b.getProxy(), "ollama", s, key, s.OllamaUp, s.OllamaPort, s.OllamaModels)
-	b.bridgeToProxy(b.getLMStudioProxy(), "lmstudio", s, key, s.LMStudioUp, s.LMStudioPort, s.LMStudioModels)
+	b.bridgeToProxy(b.getProxy(), "ollama", s, key, s.OllamaUp, s.OllamaPort, s.OllamaModels, "")
+	b.bridgeToProxy(b.getLMStudioProxy(), "lmstudio", s, key, s.LMStudioUp, s.LMStudioPort, s.LMStudioModels, "")
+	// A declared OpenAI endpoint rides the same OpenAI proxy as LM Studio,
+	// but carries its base path so the proxy can join it onto forwarded
+	// paths, and it is labeled "openai", not "lmstudio". The leg is gated on
+	// a declared base URL: a classic address entry must not issue an openai
+	// remove — the remove would land on the same proxy+key the lmstudio leg
+	// just added and evict the node it was meant to keep.
+	if s.OpenAIBaseURL != "" {
+		b.bridgeToProxy(b.getLMStudioProxy(), "openai", s, key, s.OpenAIUp, s.OpenAIPort, s.OpenAIModels, s.OpenAIBasePath)
+	}
 }
 
 // bridgeToProxy adds the node to p when its engine is reachable, or removes it
 // otherwise. up/port/models are the engine-specific fields the caller pulled
-// off the node's status. The proxy candidate is keyed by `key` — the node's
+// off the node's status; basePath is the endpoint's API prefix ("" for
+// classic manual nodes). The proxy candidate is keyed by `key` — the node's
 // operational identity (its hostUuid once node-info reports it, else the manual
-// id) — the same key the discovery store and scheduler use, so the scheduler's
+// id; declared endpoints keep their manual id, see manualToEnriched) — the
+// same key the discovery store and scheduler use, so the scheduler's
 // priority list and scheduledOn resolve to this candidate.
-func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatus, key string, up bool, port int, models []string) {
+func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatus, key string, up bool, port int, models []string, basePath string) {
 	if p == nil {
 		return
 	}
+	var intent bridgeIntent
 	if up && s.Address != "" && port > 0 {
-		node := proxyManualNode{
+		intent.node = proxyManualNode{
 			ID:        key,
 			Host:      s.Address,
 			Port:      port,
 			Addresses: []string{s.Address},
 			Models:    models,
+			BasePath:  basePath,
 		}
-		b.callProxyManual(p, engine, "node/add-manual", node, key)
+	} else {
+		// Engine unreachable (down, or this node doesn't run it): make sure
+		// the proxy isn't left holding a stale manual entry it would try to
+		// route to.
+		intent.removed = true
+	}
+
+	// The prober re-emits node/updated on telemetry-only wobble (sample age,
+	// GPU utilization), and each emission re-enters this bridge with the same
+	// routing intent. A repeat add-manual is not a no-op on the proxy side —
+	// it re-inserts the candidate (remove + add log lines, a rebuilt
+	// priority snapshot, and a brief window in which the node is absent) —
+	// so skip the RPC when the exact intent was already applied to this slot.
+	b.bridgeMu.Lock()
+	k := bridgeSeenKey{p: p, engine: engine, key: key}
+	if prev, ok := b.bridgeSeen[k]; ok && bridgeIntentsEqual(prev, intent) {
+		b.bridgeMu.Unlock()
 		return
 	}
-	// Engine unreachable (down, or this node doesn't run it): make sure the
-	// proxy isn't left holding a stale manual entry it would try to route to.
-	b.callProxyManual(p, engine, "node/remove-manual", map[string]string{"id": key}, key)
+	b.bridgeSeen[k] = intent
+	b.bridgeMu.Unlock()
+
+	if intent.removed {
+		b.callProxyManual(p, engine, "node/remove-manual", map[string]string{"id": key}, key)
+		return
+	}
+	b.callProxyManual(p, engine, "node/add-manual", intent.node, key)
 }
 
 // removeManualNodeFromProxies drops a manual node from every supervised proxy.
 // Idempotent: a no-op for a proxy where the node was never bridged or that
 // isn't supervised (the proxy's RemoveManual just reports removed=false).
 func (b *Broker) removeManualNodeFromProxies(id string) {
+	// Forget the applied intents for this key: an explicit user removal (or a
+	// crashed prober's cleanup) must let a later re-add of the same node
+	// re-bridge instead of being skipped as "already applied".
+	b.bridgeMu.Lock()
+	for k := range b.bridgeSeen {
+		if k.key == id {
+			delete(b.bridgeSeen, k)
+		}
+	}
+	b.bridgeMu.Unlock()
 	b.callProxyManual(b.getProxy(), "ollama", "node/remove-manual", map[string]string{"id": id}, id)
 	b.callProxyManual(b.getLMStudioProxy(), "lmstudio", "node/remove-manual", map[string]string{"id": id}, id)
+	// The openai leg shares lmstudio-proxy with the leg above; the duplicate
+	// remove is an idempotent no-op there, and keeps a standalone endpoint
+	// entry (never bridged as lmstudio) fully cleaned up.
+	b.callProxyManual(b.getLMStudioProxy(), "openai", "node/remove-manual", map[string]string{"id": id}, id)
 }
 
 // callProxyManual issues a best-effort node/add-manual|remove-manual to a

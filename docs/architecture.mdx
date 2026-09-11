@@ -648,9 +648,12 @@ its address.
 
 Some networks block or filter multicast, so discovery is not the only path in.
 `nvpair-manual-nodes` takes an address you enter directly and probes it on a
-fixed interval, and a manual node that answers is folded into the same directory
-as a discovered one. It is initially keyed by the address you typed, and re-keyed
-to the peer's real UUID as soon as that node reports it.
+fixed interval, or an OpenAI-compatible endpoint you declare by base URL and
+probes at that exact URL, and a manual node that answers is folded into the
+same directory as a discovered one. It is initially keyed by the address you
+typed, and re-keyed to the peer's real UUID as soon as that node reports it.
+The service owns its entry list in the application data directory and restores
+it at startup, so manual nodes survive a restart.
 
 ## Trust Boundaries
 

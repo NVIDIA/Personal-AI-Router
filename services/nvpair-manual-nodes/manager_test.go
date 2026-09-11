@@ -474,6 +474,28 @@ func TestProbeNodeNoUpdateWhenStable(t *testing.T) {
 	assertNoCaptureMethod(t, rw, "node/updated")
 }
 
+// msSince is the age of the node-info telemetry sample: it advances on
+// every probe by construction and is display-only (the store always holds
+// the fresh value for nodes/list). It must not count as a state change, or
+// every node-info-up manual node emits node/updated on every probe cycle
+// and the broker re-bridges it into the proxies each time.
+func TestProbeNodeNoUpdateWhenOnlyTelemetryAgeChanges(t *testing.T) {
+	m, rw, rt := newTestManager()
+	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
+	info := sampleInfo()
+	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
+
+	m.probeNode(entry)
+	_ = readCaptureUntil(t, rw, methodIs("node/updated"))
+
+	info.MSSince = 12347
+	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
+	m.probeNode(entry)
+
+	assertNoCaptureMethod(t, rw, "node/updated")
+}
+
 func TestProbeFailuresClearAvailability(t *testing.T) {
 	m, rw, rt := newTestManager()
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
@@ -687,5 +709,158 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 	data = append(data, '\n')
 	if _, err := conn.Write(data); err != nil {
 		t.Fatalf("write request: %v", err)
+	}
+}
+
+func TestParseEndpointTarget(t *testing.T) {
+	cases := []struct {
+		raw, host string
+		port      int
+		basePath  string
+		wantErr   bool
+	}{
+		{raw: "http://localhost:8888/v1", host: "localhost", port: 8888, basePath: "/v1"},
+		{raw: "http://dgx:8000", host: "dgx", port: 8000, basePath: ""},
+		{raw: "http://dgx", host: "dgx", port: 80, basePath: ""},
+		{raw: "http://dgx:8000/", host: "dgx", port: 8000, basePath: ""},
+		{raw: "https://localhost:8888/v1", wantErr: true},
+		{raw: "http://:8888/v1", wantErr: true},
+		{raw: "http://localhost:8888/v1?x=1", wantErr: true},
+		{raw: "not a url", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := parseEndpointTarget(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("parseEndpointTarget(%q): expected error, got %+v", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("parseEndpointTarget(%q): %v", tc.raw, err)
+		}
+		if got.host != tc.host || got.port != tc.port || got.basePath != tc.basePath {
+			t.Fatalf("parseEndpointTarget(%q) = %+v, want host=%s port=%d basePath=%q",
+				tc.raw, got, tc.host, tc.port, tc.basePath)
+		}
+	}
+}
+
+func TestProbeOpenAI(t *testing.T) {
+	m, _, rt := newTestManager()
+	rt.set("GET", "localhost:8888", "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"object":"list","data":[{"id":"m1"},{"id":"m2"}]}`)
+	})
+	up, models := m.probeOpenAI(mustParseForTest(t, "http://localhost:8888/v1"))
+	if !up || len(models) != 2 || models[0] != "m1" || models[1] != "m2" {
+		t.Fatalf("probeOpenAI = %v %v, want up [m1 m2]", up, models)
+	}
+
+	rt.set("GET", "other:9999", "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusNotFound, `{"error":"nope"}`)
+	})
+	up, models = m.probeOpenAI(mustParseForTest(t, "http://other:9999/v1"))
+	if up || models != nil {
+		t.Fatalf("probeOpenAI down case = %v %v, want false nil", up, models)
+	}
+
+	// Reachable but unparseable: up with no models (same contract as probeLMStudio).
+	rt.set("GET", "weird:7777", "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `not json`)
+	})
+	up, models = m.probeOpenAI(mustParseForTest(t, "http://weird:7777/v1"))
+	if !up || models != nil {
+		t.Fatalf("probeOpenAI unparseable case = %v %v, want up nil", up, models)
+	}
+}
+
+// mustParseForTest is a test-only helper: parseEndpointTarget or t.Fatal.
+func mustParseForTest(t *testing.T, raw string) endpointTarget {
+	t.Helper()
+	got, err := parseEndpointTarget(raw)
+	if err != nil {
+		t.Fatalf("parseEndpointTarget(%q): %v", raw, err)
+	}
+	return got
+}
+
+func TestNodeIDForEndpointEntry(t *testing.T) {
+	if got := nodeID(ManualEntry{OpenAIBaseURL: "http://vllm-box:8888/v1"}); got != "manual:vllm-box:8888" {
+		t.Fatalf("endpoint nodeID = %q", got)
+	}
+	if got := nodeID(ManualEntry{Name: "my-vllm", OpenAIBaseURL: "http://vllm-box:8888/v1"}); got != "my-vllm" {
+		t.Fatalf("named endpoint nodeID = %q", got)
+	}
+}
+
+func TestAddEndpointNode(t *testing.T) {
+	m, rw, rt := newTestManager()
+	rt.set("GET", "localhost:8888", "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"object":"list","data":[{"id":"stub-model"}]}`)
+	})
+	rt.set("GET", "localhost:14318", "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(sampleInfo())
+		return httpJSON(http.StatusOK, string(data))
+	})
+
+	m.handleMessage(requestMessage(1, "node/add", ManualEntry{OpenAIBaseURL: "http://localhost:8888/v1", Name: "my-vllm"}))
+
+	resp := readCaptureUntil(t, rw, responseWithID(1))
+	initial := decodeResult[ManualNodeStatus](t, resp)
+	if initial.ID != "my-vllm" {
+		t.Fatalf("initial status id = %+v", initial)
+	}
+	if initial.Address != "localhost" {
+		t.Fatalf("initial status address = %q, want localhost (the URL's host)", initial.Address)
+	}
+	if initial.OpenAIBaseURL != "http://localhost:8888/v1" || initial.OpenAIHost != "localhost" ||
+		initial.OpenAIPort != 8888 || initial.OpenAIBasePath != "/v1" {
+		t.Fatalf("initial status endpoint echo = %+v", initial)
+	}
+	if initial.OpenAIUp {
+		t.Fatalf("initial status should be unprobed: %+v", initial)
+	}
+
+	discovered := readCaptureUntil(t, rw, methodIs("node/discovered"))
+	status := decodeParams[ManualNodeStatus](t, discovered)
+	if !status.OpenAIUp || !status.NodeInfoUp {
+		t.Fatalf("discovered status did not include openai endpoint + node-info: %+v", status)
+	}
+	if len(status.OpenAIModels) != 1 || status.OpenAIModels[0] != "stub-model" {
+		t.Fatalf("openai models = %#v", status.OpenAIModels)
+	}
+	if status.OpenAIBasePath != "/v1" || status.OpenAIHost != "localhost" || status.OpenAIPort != 8888 {
+		t.Fatalf("discovered endpoint fields = %+v", status)
+	}
+	if status.OllamaUp || status.LMStudioUp {
+		t.Fatalf("endpoint entry must not probe the default engine ports: %+v", status)
+	}
+	if !status.TelemetryValid || status.MSSince != 137 {
+		t.Fatalf("telemetry = valid:%v age:%d, want true/137", status.TelemetryValid, status.MSSince)
+	}
+}
+
+func TestAddNodeRequiresExactlyOneOfAddressOrBaseURL(t *testing.T) {
+	m, rw, _ := newTestManager()
+
+	m.handleMessage(requestMessage(1, "node/add",
+		ManualEntry{Address: "node.local", OpenAIBaseURL: "http://node.local:8888/v1"}))
+	resp := readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("both address and base URL error = %+v", resp.Error)
+	}
+
+	m.handleMessage(requestMessage(2, "node/add",
+		ManualEntry{OpenAIBaseURL: "https://node.local:8888/v1"}))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("https base URL error = %+v", resp.Error)
+	}
+	if resp.Error != nil && !strings.Contains(resp.Error.Message, "http only") {
+		t.Fatalf("https error message %q should say http only", resp.Error.Message)
+	}
+
+	if got := m.listNodes(); len(got) != 0 {
+		t.Fatalf("validation errors added nodes: %#v", got)
 	}
 }

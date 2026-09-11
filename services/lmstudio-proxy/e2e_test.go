@@ -215,3 +215,125 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 	e2eSend(t, stdin, 9, "shutdown", nil)
 	e2eWaitResult(t, frames, "9", 5*time.Second)
 }
+
+// TestE2EBasePathForwardingOverRealBinary spawns the real lmstudio-proxy
+// binary and registers an external OpenAI endpoint whose API is rooted at
+// /v1 (base_path "/v1"). It asserts the model list fanout and a genuine
+// inference POST both land on the endpoint's /v1-rooted paths (not doubled
+// /v1/v1/...), and that the workload is labeled engine "openai".
+func TestE2EBasePathForwardingOverRealBinary(t *testing.T) {
+	var chatPath, modelsPath string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+			modelsPath = r.URL.Path
+			io.WriteString(w, `{"object":"list","data":[{"id":"stub-model","object":"model"}]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
+			chatPath = r.URL.Path
+			io.Copy(io.Discard, r.Body)
+			io.WriteString(w, `{"id":"c1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"hi"}}]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"error":"unexpected path `+r.URL.Path+`"}`)
+		}
+	}))
+	defer stub.Close()
+
+	port := e2eFreePort(t)
+	cmd := exec.Command(proxyBin, "--port", strconv.Itoa(port))
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	frames := make(chan e2eFrame, 256)
+	go e2eReadFrames(stdout, frames)
+	if got := e2eWaitReadyPort(t, frames, 10*time.Second); got != port {
+		t.Fatalf("ready port = %d, want %d", got, port)
+	}
+
+	host, stubPort := e2eSplitHostPort(t, stub.URL)
+	e2eSend(t, stdin, 1, "node/add-manual", map[string]any{
+		"id": "ep", "host": host, "port": stubPort,
+		"addresses": []string{host}, "models": []string{"stub-model"},
+		"base_path": "/v1",
+	})
+	e2eWaitResult(t, frames, "1", 5*time.Second)
+
+	// Model list fanout must hit the endpoint's /v1/models.
+	list, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", port))
+	if err != nil {
+		t.Fatalf("model list GET: %v", err)
+	}
+	listBody, _ := io.ReadAll(list.Body)
+	list.Body.Close()
+	if list.StatusCode != http.StatusOK {
+		t.Fatalf("model list status = %d (body %s)", list.StatusCode, listBody)
+	}
+	if !strings.Contains(string(listBody), "stub-model") {
+		t.Fatalf("model list missing stub-model: %s", listBody)
+	}
+	if modelsPath != "/v1/models" {
+		t.Fatalf("endpoint served model list at %q, want /v1/models", modelsPath)
+	}
+
+	// Inference POST must be joined onto the endpoint's /v1 root, verbatim.
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), "application/json", strings.NewReader(`{"model":"stub-model","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("inference POST: %v", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (body %s), want 200", resp.StatusCode, respBody)
+	}
+	if chatPath != "/v1/chat/completions" {
+		t.Fatalf("endpoint served chat at %q, want /v1/chat/completions (no /v1 doubling)", chatPath)
+	}
+
+	// The workload must name the endpoint as the honest "openai" engine.
+	deadline := time.After(5 * time.Second)
+	gotWorkload := false
+	for !gotWorkload {
+		select {
+		case f := <-frames:
+			if f.Method != "workload:started" {
+				continue
+			}
+			var wp struct {
+				WorkloadInfo struct {
+					Engine      string `json:"engine"`
+					ScheduledOn string `json:"scheduledOn"`
+				} `json:"workloadInfo"`
+			}
+			if err := json.Unmarshal(f.Params, &wp); err != nil {
+				t.Fatalf("parse workload:started params: %v", err)
+			}
+			if wp.WorkloadInfo.Engine != "openai" {
+				t.Fatalf("workload engine = %q, want openai", wp.WorkloadInfo.Engine)
+			}
+			if wp.WorkloadInfo.ScheduledOn != "ep" {
+				t.Fatalf("workload scheduledOn = %q, want ep", wp.WorkloadInfo.ScheduledOn)
+			}
+			gotWorkload = true
+		case <-deadline:
+			t.Fatal("timed out waiting for workload:started")
+		}
+	}
+
+	e2eSend(t, stdin, 9, "shutdown", nil)
+	e2eWaitResult(t, frames, "9", 5*time.Second)
+}

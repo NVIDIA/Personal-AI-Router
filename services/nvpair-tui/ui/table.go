@@ -16,7 +16,13 @@ func newTable(cols []table.Column) table.Model {
 		table.WithFocused(true),
 	)
 	s := table.DefaultStyles()
-	s.Header = s.Header.
+	// The default Cell/Header styles add one space of padding to each side of
+	// every cell, so rows render 2*n_columns wider than the budgeted column
+	// widths; the table's viewport then hard-truncates rows at the terminal
+	// width, silently clipping the rightmost column. Keep cells at their
+	// exact budgeted widths instead.
+	s.Cell = lipgloss.NewStyle()
+	s.Header = lipgloss.NewStyle().
 		Bold(true).
 		Foreground(colorAccent).
 		BorderStyle(lipgloss.NormalBorder()).

@@ -69,6 +69,12 @@ export interface WsInvokeChannelMap {
         request: { nodeId: string }
         response: { nodeId: string; removed: boolean }
     }
+    // Adopt an externally-managed OpenAI-compatible endpoint by base URL
+    // (relayed to the broker's `node/add`; nvpair-manual-nodes persists it).
+    'nodes:add-endpoint': {
+        request: { url: string }
+        response: { ok: boolean; error?: string }
+    }
 
     // Discovery
     'discovery:get-nodes': { request: void; response: AvailableNode[] }

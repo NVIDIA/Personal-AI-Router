@@ -143,6 +143,9 @@ func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 // shows up in proxy:nodes/list and can be routed to — even though it never
 // appears over mDNS.
 func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
+	// node/add now persists via the manual-nodes service-owned store (appdir);
+	// point it at a temp dir so the test can't pollute the user's real store.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if portBusy(11435) {
 		t.Skip("ollama-proxy port 11435 already in use; skipping")
 	}
@@ -197,6 +200,8 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 // resolve to it. The candidate must therefore appear in proxy:nodes/list under
 // the learned hostUuid, not the user-supplied manual name.
 func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
+	// Isolate the manual-nodes service-owned persistence (appdir).
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if portBusy(11435) {
 		t.Skip("ollama-proxy port 11435 already in use; skipping")
 	}
@@ -254,6 +259,8 @@ func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 // into lmstudio-proxy (node/add-manual) so it shows up in
 // lmstudio-proxy:nodes/list — even though it never appears over mDNS.
 func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
+	// Isolate the manual-nodes service-owned persistence (appdir).
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	configDir := persistLMStudioProxyPort(t, freePort(t))
 	stopLM := fakeLMStudio(t) // skips if 1234 unavailable
 	t.Cleanup(stopLM)
@@ -292,6 +299,78 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 			sendReq(t, stdin, reqID, "lmstudio-proxy:nodes/list")
 		case <-deadline:
 			t.Fatalf("timed out waiting for manual node %q in lmstudio-proxy:nodes/list", nodeName)
+		}
+	}
+}
+
+// fakeOpenAIEndpoint serves a minimal OpenAI-compatible API at the ROOT of
+// 127.0.0.1:port (no /v1 prefix — the declared base URL therefore carries an
+// empty base path, which exercises the proxy's path join in both directions).
+// It returns a stop function, and skips the test if the port is unavailable.
+func fakeOpenAIEndpoint(t *testing.T, port int) func() {
+	t.Helper()
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Skipf("cannot bind fake OpenAI endpoint on 127.0.0.1:%d (%v); skipping", port, err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"stub-model","object":"model"}]}`)
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	return func() { _ = srv.Close() }
+}
+
+// TestBrokerBridgesOpenAIEndpointIntoLMStudioProxy: with the broker supervising
+// both nvpair-manual-nodes and lmstudio-proxy, a manual node declared by an
+// OpenAI base URL must be bridged into lmstudio-proxy (node/add-manual,
+// carrying the endpoint's base_path) so it shows up in
+// lmstudio-proxy:nodes/list — even though it never appears over mDNS.
+func TestBrokerBridgesOpenAIEndpointIntoLMStudioProxy(t *testing.T) {
+	// node/add now persists via the manual-nodes service-owned store (appdir);
+	// point it at a temp dir so the test can't pollute the user's real store.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	configDir := persistLMStudioProxyPort(t, freePort(t))
+	endpointPort := freePort(t)
+	stopEP := fakeOpenAIEndpoint(t, endpointPort)
+	t.Cleanup(stopEP)
+
+	stdin, msgs, _, cleanup := startBrokerWithConfigDir(t, configDir,
+		"--manual-nodes-path", manualNodesBin,
+		"--lmstudio-proxy-path", lmstudioProxyBin,
+	)
+	t.Cleanup(cleanup)
+
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+
+	const nodeName = "xproc-manual-openai-bridge"
+	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":930,"method":"node/add","params":{"openai_base_url":"http://127.0.0.1:%d","name":%q}}`, endpointPort, nodeName) + "\n"
+	if _, err := stdin.Write([]byte(addReq)); err != nil {
+		t.Fatalf("write node/add: %v", err)
+	}
+
+	deadline := time.After(25 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	reqID := 931
+	sendReq(t, stdin, reqID, "lmstudio-proxy:nodes/list")
+	for {
+		select {
+		case msg, ok := <-msgs:
+			if !ok {
+				t.Fatal("broker stream closed before the endpoint bridged into lmstudio-proxy")
+			}
+			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, nodeName) {
+				t.Logf("endpoint %q bridged into lmstudio-proxy nodes/list", nodeName)
+				return
+			}
+		case <-ticker.C:
+			reqID++
+			sendReq(t, stdin, reqID, "lmstudio-proxy:nodes/list")
+		case <-deadline:
+			t.Fatalf("timed out waiting for endpoint %q in lmstudio-proxy:nodes/list", nodeName)
 		}
 	}
 }

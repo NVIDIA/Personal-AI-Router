@@ -93,6 +93,7 @@ Nodes are represented throughout the protocol with this shape:
 | `txt` | string[] | The discovery record's TXT pairs, carried verbatim |
 | `models` | string[] | The node's LM Studio model inventory from the discovery snapshot. Model-bearing inference is eligible only when this list advertises the exact requested model ID. An omitted or empty list excludes the node from that request until inventory updates; it remains available for non-inference routes and model-list aggregation |
 | `ip` | string | The single canonical LAN address to dial or display, resolved from the node's `ip=` TXT if present and otherwise the best-scored advertised IPv4. Stamped onto outbound `node/*` notifications so consumers agree with the address the proxy routes to |
+| `base_path` | string | API path prefix (e.g. `/v1`) carried by an external OpenAI-compatible endpoint bridged with a declared base URL. The proxy joins it onto its own `/v1` root when forwarding requests and when fetching the node's model list. Absent for discovered nodes and for classic manual nodes, whose API is served at their own `/v1` root and forwards verbatim |
 
 ---
 
@@ -350,6 +351,7 @@ Add a node manually (for networks where mDNS is blocked). If the node ID already
 **Request:**
 ```json
 {"jsonrpc":"2.0","id":5,"method":"node/add-manual","params":{"id":"remote-server","host":"remote-server","port":1234,"addresses":["10.0.1.50"]}}
+{"jsonrpc":"2.0","id":5,"method":"node/add-manual","params":{"id":"vllm-host","host":"vllm-host","port":8888,"addresses":["192.168.1.50"],"models":["llama3.1:8b"],"base_path":"/v1"}}
 ```
 
 **Response:**
@@ -358,6 +360,8 @@ Add a node manually (for networks where mDNS is blocked). If the node ID already
 ```
 
 The proxy emits a `node/discovered` notification (or `node/updated` if the node was already registered). Manual nodes are a separate overlay that discovery snapshots never touch — they persist until explicitly removed.
+
+A manual node carrying `base_path` is an external OpenAI-compatible endpoint adopted by declared base URL: the proxy rewrites its `/v1`-prefixed paths onto the endpoint's root (see the Node Object) and labels the workloads it serves with `engine: "openai"`, since the serving software is not LM Studio.
 
 #### `node/remove-manual`
 

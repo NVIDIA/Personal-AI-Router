@@ -16,6 +16,7 @@ import {
 } from '@nvidia/foundations-react-core'
 import { DialogHeader } from './DialogHeader'
 import { InvitePairingPanel } from './InvitePairingPanel'
+import getErrorString from '@/shared/utils/get-error-string'
 import { useBlurOnOpen } from '@/ui/hooks/useBlurOnOpen'
 import { useInvitePairing } from '@/ui/hooks/useInvitePairing'
 import { useInvitablePeers } from '@/ui/hooks/useInvitablePeers'
@@ -28,12 +29,17 @@ interface AddNodeModalProps {
 export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
     useBlurOnOpen(open)
     const [manualIp, setManualIp] = useState('')
+    const [endpointUrl, setEndpointUrl] = useState('')
+    const [endpointError, setEndpointError] = useState<string | null>(null)
+    const [endpointInFlight, setEndpointInFlight] = useState(false)
     const pairing = useInvitePairing()
     const nodesThatCanBeAdded = useInvitablePeers()
 
     const handleOpenChange = useCallback(
         (next: boolean) => {
             setManualIp('')
+            setEndpointUrl('')
+            setEndpointError(null)
             pairing.reset()
             onOpenChange(next)
         },
@@ -45,6 +51,25 @@ export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
         if (!ip) return
         void pairing.start(ip)
     }, [manualIp, pairing])
+
+    const handleAddEndpoint = useCallback(async () => {
+        const url = endpointUrl.trim()
+        if (!url || endpointInFlight) return
+        setEndpointInFlight(true)
+        setEndpointError(null)
+        try {
+            const result = await window.pairApi.nodes.addEndpoint(url)
+            if (result.ok) {
+                handleOpenChange(false)
+            } else {
+                setEndpointError(result.error ?? 'Failed to add the endpoint.')
+            }
+        } catch (err) {
+            setEndpointError(getErrorString(err))
+        } finally {
+            setEndpointInFlight(false)
+        }
+    }, [endpointUrl, endpointInFlight, handleOpenChange])
 
     const showPairing = pairing.invite !== null || pairing.error !== null
     const inviteInFlight = pairing.submitting || pairing.invite?.state === 'pending'
@@ -93,6 +118,39 @@ export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
                                         Invite
                                     </Button>
                                 </Flex>
+
+                                <Stack gap="1" className="mt-1">
+                                    <Divider />
+                                    <Flex align="end" gap="2">
+                                        <FormField slotLabel="OpenAI endpoint" className="flex-1">
+                                            <TextInput
+                                                value={endpointUrl}
+                                                onValueChange={value => {
+                                                    setEndpointUrl(value)
+                                                    setEndpointError(null)
+                                                }}
+                                                placeholder="http://192.168.1.50:8888/v1"
+                                                onKeyDown={event => {
+                                                    if (event.key === 'Enter') {
+                                                        void handleAddEndpoint()
+                                                    }
+                                                }}
+                                                disabled={endpointInFlight}
+                                            />
+                                        </FormField>
+                                        <Button
+                                            kind="primary"
+                                            color="brand"
+                                            onClick={() => void handleAddEndpoint()}
+                                            disabled={!endpointUrl.trim() || endpointInFlight}
+                                        >
+                                            Add
+                                        </Button>
+                                    </Flex>
+                                    {endpointError && (
+                                        <Text kind="body/regular/sm">{endpointError}</Text>
+                                    )}
+                                </Stack>
 
                                 {nodesThatCanBeAdded.length > 0 && (
                                     <Stack gap="4" className="mt-1">
