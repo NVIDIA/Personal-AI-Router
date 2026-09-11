@@ -9,6 +9,7 @@
  */
 import type { PreloadServiceTransport as ServiceTransport } from '@/shared/types/service-bridge'
 import type {
+    EngineHubLookupResponse,
     EngineHubSearchResponse,
     EngineInitialState,
     EngineStatePatch,
@@ -49,6 +50,8 @@ export interface IEngineApi {
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
     /** Search the model registry/hub for available models. */
     searchHub(engineType: EngineType): Promise<EngineHubSearchResponse>
+    /** Resolve one exact model name the hub catalog does not list. */
+    lookupHubModel(engineType: EngineType, name: string): Promise<EngineHubLookupResponse>
 
     /** Durable engine state changed. Prefer this for new renderer state. */
     onStateChanged(callback: (patch: EngineStatePatch) => void): () => void
@@ -103,6 +106,8 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 expiry
             }),
         searchHub: engineType => transport.invoke('engine:search-hub', { engineType }),
+        lookupHubModel: (engineType, name) =>
+            transport.invoke('engine:lookup-hub-model', { engineType, name }),
 
         onStateChanged: cb => transport.subscribePush('engines:state-changed', cb),
         onProgress: cb => transport.subscribePush('engines:progress-changed', cb),

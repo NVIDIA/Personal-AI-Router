@@ -37,6 +37,15 @@ export interface EngineHubSearchResponse {
     models: EngineHubModel[]
 }
 
+/**
+ * Response for the `engine:lookup-hub-model` channel. `null` means the name is
+ * not available, whether because it does not exist, the engine has no registry
+ * to ask, or that registry could not be reached.
+ */
+export interface EngineHubLookupResponse {
+    model: EngineHubModel | null
+}
+
 /** Engine command discriminator. */
 export type EngineCommandType =
     | 'toggle'

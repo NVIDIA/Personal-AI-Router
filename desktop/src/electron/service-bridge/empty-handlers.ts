@@ -11,7 +11,7 @@ import {
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
-import { getEngineHubModels } from '@/electron/model-hub'
+import { getEngineHubModels, lookupEngineHubModel } from '@/electron/model-hub'
 import { getModularSupervisor } from './modular-supervisor'
 import {
     getModularBridgeState,
@@ -966,6 +966,8 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'engine:command': payload => handleEngineCommand(payload),
     'engine:search-hub': payload =>
         payload ? getEngineHubModels(payload.engineType) : { models: [] },
+    'engine:lookup-hub-model': payload =>
+        payload ? lookupEngineHubModel(payload.engineType, payload.name) : { model: null },
 
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),

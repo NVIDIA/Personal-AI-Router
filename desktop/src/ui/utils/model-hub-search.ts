@@ -32,7 +32,9 @@ function hubModelToEntry(m: EngineHubModel): ModelEntry {
         author: m.author,
         url: m.url,
         size: m.size,
-        updatedAt: m.updatedAt ? new Date(m.updatedAt) : new Date(),
+        // Empty means the source reported no date; the row omits its age rather
+        // than showing the current time as a publication date.
+        updatedAt: m.updatedAt ? new Date(m.updatedAt) : undefined,
         family: m.family,
         parameterSize: m.parameterSize
     }
@@ -47,4 +49,26 @@ export async function searchEngineHub(engine: EngineType): Promise<ModelEntry[]>
     if (!getEngineHub(engine)) return []
     const { models } = await window.pairApi.engines.searchHub(engine)
     return models.map(hubModelToEntry)
+}
+
+/**
+ * Resolve one exact model name against the engine's own registry, for a name
+ * the catalog does not carry.
+ *
+ * Failures resolve to null rather than throwing. The user asked to search, not
+ * to make this request, so a banner about it failing would be noise — but that
+ * also swallows a broken channel, hence the warning.
+ */
+export async function lookupEngineHubModel(
+    engine: EngineType,
+    name: string
+): Promise<ModelEntry | null> {
+    if (!getEngineHub(engine)) return null
+    try {
+        const { model } = await window.pairApi.engines.lookupHubModel(engine, name)
+        return model ? hubModelToEntry(model) : null
+    } catch (error) {
+        console.warn('Model hub lookup failed', error)
+        return null
+    }
 }

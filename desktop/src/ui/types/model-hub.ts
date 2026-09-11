@@ -14,7 +14,12 @@ export interface ModelEntry {
     author: string
     url: string
     size?: number
-    updatedAt: Date
+    /**
+     * Publication date, when the source reports one. Undefined for a model
+     * resolved by exact-name lookup, since an OCI manifest carries no date and
+     * the current time would give the row an age it never had.
+     */
+    updatedAt?: Date
     family?: string
     parameterSize?: string
 }
