@@ -120,6 +120,43 @@ func TestTrustStoreAnnouncesNewEndorsementOnce(t *testing.T) {
 	}
 }
 
+func TestTrustStoreAnnouncesNewEndorsementOnIdenticalPinOnce(t *testing.T) {
+	ts, count := newAnnouncingStore(t)
+	const uuid = "principal-peer"
+	pin := testPin(t, uuid)
+
+	if err := ts.Pin(pin); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	endorsement := Endorsement{
+		By:          "trusted-peer",
+		Fingerprint: "sha256:target",
+		ClusterID:   "cluster-1",
+		IssuedAt:    1,
+		Sig:         "signature-1",
+	}
+	withEndorsement := *pin
+	withEndorsement.Endorsements = []Endorsement{endorsement}
+
+	if err := ts.Pin(&withEndorsement); err != nil {
+		t.Fatalf("re-pin with new endorsement: %v", err)
+	}
+	if count() != 2 {
+		t.Fatalf("announcements after new endorsement on identical pin = %d, want 2", count())
+	}
+	stored, ok := ts.Get(uuid)
+	if !ok || len(stored.Endorsements) != 1 || stored.Endorsements[0] != endorsement {
+		t.Fatalf("endorsement was not persisted through identical pin: %+v", stored)
+	}
+
+	if err := ts.Pin(&withEndorsement); err != nil {
+		t.Fatalf("repeat re-pin with endorsement: %v", err)
+	}
+	if count() != 2 {
+		t.Fatalf("announcements after duplicate endorsement on identical pin = %d, want 2", count())
+	}
+}
+
 func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 	ts, count := newAnnouncingStore(t)
 	const uuid = "principal-peer"
