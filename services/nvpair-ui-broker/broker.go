@@ -306,6 +306,12 @@ type Broker struct {
 	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
 
+	// bridgeMu guards bridgeSeen: the last intent the manual→proxy bridge
+	// applied per (proxy instance, engine, key) slot, so a repeated identical
+	// intent (telemetry-only re-probe) does not re-issue the add/remove RPC.
+	bridgeMu   sync.Mutex
+	bridgeSeen map[bridgeSeenKey]bridgeIntent
+
 	// schedMu guards each engine's cached priority and generation. Per-engine
 	// delivery locks serialize asynchronous node/set-priority calls; a stale
 	// generation is skipped before it can overwrite a newer proxy order.
@@ -383,6 +389,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		regCache:           relay.NewRegistrationCache(),
 		manualNodeKeys:     make(map[string]string),
 		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
+		bridgeSeen:         make(map[bridgeSeenKey]bridgeIntent),
 		workloads:          workloadstore.New(),
 		ollamaPortReady:    make(chan struct{}),
 		lmstudioPortReady:  make(chan struct{}),
@@ -1396,6 +1403,9 @@ func (b *Broker) clearManualNodesState() {
 	b.manualNodeKeys = make(map[string]string)
 	b.manualNodeStatuses = make(map[string]manualNodeStatusEntry)
 	b.manualMu.Unlock()
+	b.bridgeMu.Lock()
+	b.bridgeSeen = make(map[bridgeSeenKey]bridgeIntent)
+	b.bridgeMu.Unlock()
 	seen := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		// Aliases can share a key; drop each unique claim once.

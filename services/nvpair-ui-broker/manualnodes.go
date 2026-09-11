@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"time"
 
 	"nvpair-shared/noderec"
@@ -175,6 +176,44 @@ type proxyManualNode struct {
 	BasePath string `json:"base_path,omitempty"`
 }
 
+// bridgeIntent is what the bridge last applied to one (proxy, engine, key)
+// slot: a remove, or an add with the exact payload that was sent.
+type bridgeIntent struct {
+	removed bool
+	node    proxyManualNode
+}
+
+// bridgeSeenKey identifies one bridge slot: the proxy process instance (a
+// respawned proxy is a new pointer, so a restarted proxy is re-seeded
+// automatically), the engine leg, and the node's operational key.
+type bridgeSeenKey struct {
+	p      *proxyProcess
+	engine string
+	key    string
+}
+
+// bridgeIntentsEqual reports whether two intents are routing-equivalent: the
+// same remove, or the same add payload. Only fields the proxy payload
+// carries are compared — telemetry that lives in the node's status but not
+// in the payload (sample age, utilization, CPU/memory) must not force a
+// re-bridge.
+func bridgeIntentsEqual(a, b bridgeIntent) bool {
+	if a.removed != b.removed {
+		return false
+	}
+	if a.removed {
+		return true
+	}
+	n, m := a.node, b.node
+	return n.ID == m.ID &&
+		n.Host == m.Host &&
+		n.Port == m.Port &&
+		n.BasePath == m.BasePath &&
+		slices.Equal(n.Addresses, m.Addresses) &&
+		slices.Equal(n.TXT, m.TXT) &&
+		slices.Equal(n.Models, m.Models)
+}
+
 // bridgeManualNode keeps every supervised proxy's manual-node set in step with
 // a manual node's per-engine reachability: a node whose Ollama is up is bridged
 // into ollama-proxy and one whose LM Studio is up into lmstudio-proxy
@@ -213,8 +252,9 @@ func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatu
 	if p == nil {
 		return
 	}
+	var intent bridgeIntent
 	if up && s.Address != "" && port > 0 {
-		node := proxyManualNode{
+		intent.node = proxyManualNode{
 			ID:        key,
 			Host:      s.Address,
 			Port:      port,
@@ -222,18 +262,49 @@ func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatu
 			Models:    models,
 			BasePath:  basePath,
 		}
-		b.callProxyManual(p, engine, "node/add-manual", node, key)
+	} else {
+		// Engine unreachable (down, or this node doesn't run it): make sure
+		// the proxy isn't left holding a stale manual entry it would try to
+		// route to.
+		intent.removed = true
+	}
+
+	// The prober re-emits node/updated on telemetry-only wobble (sample age,
+	// GPU utilization), and each emission re-enters this bridge with the same
+	// routing intent. A repeat add-manual is not a no-op on the proxy side —
+	// it re-inserts the candidate (remove + add log lines, a rebuilt
+	// priority snapshot, and a brief window in which the node is absent) —
+	// so skip the RPC when the exact intent was already applied to this slot.
+	b.bridgeMu.Lock()
+	k := bridgeSeenKey{p: p, engine: engine, key: key}
+	if prev, ok := b.bridgeSeen[k]; ok && bridgeIntentsEqual(prev, intent) {
+		b.bridgeMu.Unlock()
 		return
 	}
-	// Engine unreachable (down, or this node doesn't run it): make sure the
-	// proxy isn't left holding a stale manual entry it would try to route to.
-	b.callProxyManual(p, engine, "node/remove-manual", map[string]string{"id": key}, key)
+	b.bridgeSeen[k] = intent
+	b.bridgeMu.Unlock()
+
+	if intent.removed {
+		b.callProxyManual(p, engine, "node/remove-manual", map[string]string{"id": key}, key)
+		return
+	}
+	b.callProxyManual(p, engine, "node/add-manual", intent.node, key)
 }
 
 // removeManualNodeFromProxies drops a manual node from every supervised proxy.
 // Idempotent: a no-op for a proxy where the node was never bridged or that
 // isn't supervised (the proxy's RemoveManual just reports removed=false).
 func (b *Broker) removeManualNodeFromProxies(id string) {
+	// Forget the applied intents for this key: an explicit user removal (or a
+	// crashed prober's cleanup) must let a later re-add of the same node
+	// re-bridge instead of being skipped as "already applied".
+	b.bridgeMu.Lock()
+	for k := range b.bridgeSeen {
+		if k.key == id {
+			delete(b.bridgeSeen, k)
+		}
+	}
+	b.bridgeMu.Unlock()
 	b.callProxyManual(b.getProxy(), "ollama", "node/remove-manual", map[string]string{"id": id}, id)
 	b.callProxyManual(b.getLMStudioProxy(), "lmstudio", "node/remove-manual", map[string]string{"id": id}, id)
 	// The openai leg shares lmstudio-proxy with the leg above; the duplicate

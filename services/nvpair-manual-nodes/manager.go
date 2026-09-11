@@ -380,6 +380,12 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	curFails := tn.consecutiveFails
 	m.mu.Unlock()
 
+	// MSSince is deliberately excluded from the diff: it is the node-info
+	// telemetry sample's age, which advances on every probe by
+	// construction, so counting it as a change would emit node/updated on
+	// every probe cycle for every node-info-up node and make the broker
+	// re-bridge each one into the proxies each time. It is display-only —
+	// the store always holds the fresh value for nodes/list consumers.
 	changed := prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
 		prev.OpenAIUp != newStatus.OpenAIUp ||
@@ -391,8 +397,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
-		prev.TelemetryValid != newStatus.TelemetryValid ||
-		prev.MSSince != newStatus.MSSince
+		prev.TelemetryValid != newStatus.TelemetryValid
 
 	if changed {
 		slog.Info("manual node state changed",

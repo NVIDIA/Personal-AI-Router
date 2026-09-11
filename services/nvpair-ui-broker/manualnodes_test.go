@@ -162,3 +162,40 @@ func TestManualToEnrichedEndpointKeepsManualKey(t *testing.T) {
 		t.Fatalf("address-entry storeKey = %q, want the learned uuid", got)
 	}
 }
+
+// TestBridgeIntentEquality pins the comparison that keeps the manual→proxy
+// bridge idempotent: an identical intent (same add payload, or a remove) is
+// equal, while any routing-relevant difference (model list, base path,
+// add↔remove) is not. The bridge skips re-issuing the RPC for an equal
+// intent, so a repeated telemetry-only probe can't churn the proxy.
+func TestBridgeIntentEquality(t *testing.T) {
+	add := bridgeIntent{node: proxyManualNode{
+		ID: "k", Host: "h", Port: 8888, Addresses: []string{"h"},
+		Models: []string{"m1"}, BasePath: "/v1",
+	}}
+	rem := bridgeIntent{removed: true}
+
+	if !bridgeIntentsEqual(add, bridgeIntent{node: proxyManualNode{
+		ID: "k", Host: "h", Port: 8888, Addresses: []string{"h"},
+		Models: []string{"m1"}, BasePath: "/v1",
+	}}) {
+		t.Fatal("identical add intents must be equal")
+	}
+	if !bridgeIntentsEqual(rem, bridgeIntent{removed: true}) {
+		t.Fatal("identical remove intents must be equal")
+	}
+
+	changedModels := add
+	changedModels.node.Models = []string{"m1", "m2"}
+	if bridgeIntentsEqual(add, changedModels) {
+		t.Fatal("a model-list change must not be equal")
+	}
+	changedPath := add
+	changedPath.node.BasePath = ""
+	if bridgeIntentsEqual(add, changedPath) {
+		t.Fatal("a base-path change must not be equal")
+	}
+	if bridgeIntentsEqual(add, rem) {
+		t.Fatal("add and remove intents must not be equal")
+	}
+}

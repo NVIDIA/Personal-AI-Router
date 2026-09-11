@@ -474,6 +474,28 @@ func TestProbeNodeNoUpdateWhenStable(t *testing.T) {
 	assertNoCaptureMethod(t, rw, "node/updated")
 }
 
+// msSince is the age of the node-info telemetry sample: it advances on
+// every probe by construction and is display-only (the store always holds
+// the fresh value for nodes/list). It must not count as a state change, or
+// every node-info-up manual node emits node/updated on every probe cycle
+// and the broker re-bridges it into the proxies each time.
+func TestProbeNodeNoUpdateWhenOnlyTelemetryAgeChanges(t *testing.T) {
+	m, rw, rt := newTestManager()
+	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
+	info := sampleInfo()
+	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
+
+	m.probeNode(entry)
+	_ = readCaptureUntil(t, rw, methodIs("node/updated"))
+
+	info.MSSince = 12347
+	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
+	m.probeNode(entry)
+
+	assertNoCaptureMethod(t, rw, "node/updated")
+}
+
 func TestProbeFailuresClearAvailability(t *testing.T) {
 	m, rw, rt := newTestManager()
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
