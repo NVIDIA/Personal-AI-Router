@@ -100,6 +100,11 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
         })
     }, [hasGpu, node, nodeMetrics])
 
+    // Memoized so the label's segment list keeps a stable identity across
+    // renders; NodeLabel observes its segments and would otherwise rebuild the
+    // ResizeObserver every render.
+    const gpuLabels = useMemo(() => gpuInfo.map(gpu => gpu.name), [gpuInfo])
+
     const cpuFallbackInfo: CpuFallbackInfo | null = useMemo(() => {
         if (hasGpu) return null
         const ramTotal = node.topology.ram
@@ -273,7 +278,7 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                             <NodeLabel
                                 name={node.name}
                                 ipAddress={node.ipAddress}
-                                gpuLabel={gpuInfo.length > 0 ? gpuInfo[0].name : undefined}
+                                gpuLabels={gpuLabels}
                                 isLocal={isLocal}
                             />
                         </div>
