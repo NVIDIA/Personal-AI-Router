@@ -23,6 +23,8 @@ const (
 	// These ports are fixed by the broker-owned service topology. Keep the
 	// values here as the broker's single source and use them when registering
 	// the corresponding workers as well as when reserving an OLLAMA_HOST alias.
+	// Tests override them per-broker (servicePorts) so two brokers — or a
+	// broker and a dev machine's real one — never fight over a fixed port.
 	nodeInfoHTTPPort       = 14318
 	errorsHTTPPort         = 14319
 	workloadHTTPPort       = 14320
@@ -30,6 +32,59 @@ const (
 
 	lmstudioProxyPortFile = "lmstudio-proxy-port.json"
 )
+
+// servicePorts is the resolved set of broker-owned service ports. The zero
+// value means "use the spec defaults".
+type servicePorts struct {
+	NodeInfo       int
+	Errors         int
+	Workload       int
+	ClusterManager int
+	EngineHTTP     int
+	EngineControl  int
+	// Proxy listens. Zero keeps the proxy's own default/persisted port; tests
+	// set explicit free ports so spawn never fights a dev process on
+	// 11435/1234.
+	OllamaProxy   int
+	LMStudioProxy int
+}
+
+// resolveServicePorts reads the NVPAIR_SERVICE_*_PORT env overrides (set by
+// cross-process tests) over the spec defaults. A value outside 1–65535 is
+// ignored with a warning rather than trusted. Keeping this in the broker (not
+// the workers) means each spawned worker gets an explicit --port, so the
+// override is authoritative no matter what the worker's own default is.
+func resolveServicePorts(getenv func(string) string) servicePorts {
+	defaults := servicePorts{
+		NodeInfo:       nodeInfoHTTPPort,
+		Errors:         errorsHTTPPort,
+		Workload:       workloadHTTPPort,
+		ClusterManager: clusterManagerHTTPPort,
+		EngineHTTP:     engineManagerHTTPPort,
+		EngineControl:  engineControlPort,
+	}
+	over := func(name string, target *int) {
+		v := getenv(name)
+		if v == "" {
+			return
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			slog.Warn("ignoring invalid service port override", "env", name, "value", v)
+			return
+		}
+		*target = n
+	}
+	over("NVPAIR_SERVICE_NODE_INFO_PORT", &defaults.NodeInfo)
+	over("NVPAIR_SERVICE_ERRORS_PORT", &defaults.Errors)
+	over("NVPAIR_SERVICE_WORKLOAD_PORT", &defaults.Workload)
+	over("NVPAIR_SERVICE_CLUSTER_MANAGER_PORT", &defaults.ClusterManager)
+	over("NVPAIR_SERVICE_ENGINE_HTTP_PORT", &defaults.EngineHTTP)
+	over("NVPAIR_SERVICE_ENGINE_CONTROL_PORT", &defaults.EngineControl)
+	over("NVPAIR_SERVICE_OLLAMA_PROXY_PORT", &defaults.OllamaProxy)
+	over("NVPAIR_SERVICE_LMSTUDIO_PROXY_PORT", &defaults.LMStudioProxy)
+	return defaults
+}
 
 type ollamaHostAlias struct {
 	Address          string
@@ -186,7 +241,7 @@ func (b *Broker) prepareOllamaHostAlias(enabled bool, backendPort int) {
 	if backendPort > 0 {
 		enginePorts[backendPort] = "ollama"
 	}
-	if reason := reservedOllamaHostAliasPort(alias.Port, enginePorts, configuredLMStudioProxyPort()); reason != "" {
+	if reason := b.reservedOllamaHostAliasPort(alias.Port, enginePorts, configuredLMStudioProxyPort()); reason != "" {
 		b.reportOllamaHostAliasBlocked(alias.displayAddress(), reason)
 		return
 	}
@@ -344,7 +399,7 @@ func configuredLMStudioProxyPort() int {
 	return stored.Port
 }
 
-func reservedOllamaHostAliasPort(port int, enginePorts map[int]string, lmstudioProxy int) string {
+func (b *Broker) reservedOllamaHostAliasPort(port int, enginePorts map[int]string, lmstudioProxy int) string {
 	if engine, ok := enginePorts[port]; ok {
 		if engine == "" {
 			engine = "an engine"
@@ -360,17 +415,17 @@ func reservedOllamaHostAliasPort(port int, enginePorts map[int]string, lmstudioP
 		// Managed LM Studio ownership is prepared after this check and moves a
 		// colliding backend here, so the alias must not be sitting on it.
 		return fmt.Sprintf("the managed LM Studio backend uses port %d", port)
-	case nodeInfoHTTPPort:
+	case b.servicePorts.NodeInfo:
 		return fmt.Sprintf("the node-info service uses port %d", port)
-	case errorsHTTPPort:
+	case b.servicePorts.Errors:
 		return fmt.Sprintf("the errors service uses port %d", port)
-	case workloadHTTPPort:
+	case b.servicePorts.Workload:
 		return fmt.Sprintf("the workload service uses port %d", port)
-	case clusterManagerHTTPPort:
+	case b.servicePorts.ClusterManager:
 		return fmt.Sprintf("the cluster manager uses port %d", port)
-	case engineManagerHTTPPort:
+	case b.servicePorts.EngineHTTP:
 		return fmt.Sprintf("the engine model service uses port %d", port)
-	case engineControlPort:
+	case b.servicePorts.EngineControl:
 		return fmt.Sprintf("the engine control service uses port %d", port)
 	}
 	return ""

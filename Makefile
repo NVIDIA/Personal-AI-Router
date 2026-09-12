@@ -120,10 +120,10 @@ test-desktop: $(NODE_MODULES) ## Run the desktop unit tests
 
 # services/tests builds the component binaries it drives into a temporary
 # directory, so the cross-process suite does not need build-services first.
-test-services: ## Run go test in every services module
+test-services: ## Run go test (with -race) in every services module
 	@for module in $(GO_MODULES); do \
 		printf '\ngo test: %s\n' "$$module"; \
-		(cd "$$module" && go test ./...) || exit 1; \
+		(cd "$$module" && go test -race ./...) || exit 1; \
 	done
 
 build-binaries: $(NODE_MODULES) ## Compile the Go service binaries into desktop/cli-bin

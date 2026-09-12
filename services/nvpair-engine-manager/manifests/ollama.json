@@ -16,7 +16,7 @@
     "windows/amd64": {
       "detect": ["{install_dir}\\ollama.exe", "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-windows-amd64.zip" },
+        "fetch": { "url": "https://ollama.com/download/ollama-windows-amd64.zip", "sha256": "52cb36a62e7e501f61514f60212dec7117b6c098811357585e02fffe32d2fcd7" },
         "run": ["tar", "-xf", "{download}", "-C", "{install_dir}"]
       },
       "uninstall": { "run": ["cmd", "/c", "rmdir", "/s", "/q", "{install_dir}"] },
@@ -25,7 +25,7 @@
     "windows/arm64": {
       "detect": ["{install_dir}\\ollama.exe", "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-windows-arm64.zip" },
+        "fetch": { "url": "https://ollama.com/download/ollama-windows-arm64.zip", "sha256": "98b9ddaab6baece0418c6d1231526eb1e4e66944985e0a8eeb7d6171bcd7b6d8" },
         "run": ["tar", "-xf", "{download}", "-C", "{install_dir}"]
       },
       "uninstall": { "run": ["cmd", "/c", "rmdir", "/s", "/q", "{install_dir}"] },
@@ -38,7 +38,7 @@
         "{install_dir}/Ollama.app/Contents/Resources/ollama"
       ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip" },
+        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip", "sha256": "335f1a11299f5f60dc2d5f2651cf12af9d3c303812c68e978be3e45ea7d6eaf4" },
         "run": ["unzip", "-o", "{download}", "-d", "{install_dir}"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}/Ollama.app"] },
@@ -51,7 +51,7 @@
         "{install_dir}/Ollama.app/Contents/Resources/ollama"
       ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip" },
+        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip", "sha256": "335f1a11299f5f60dc2d5f2651cf12af9d3c303812c68e978be3e45ea7d6eaf4" },
         "run": ["unzip", "-o", "{download}", "-d", "{install_dir}"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}/Ollama.app"] },
@@ -60,7 +60,7 @@
     "linux/amd64": {
       "detect": ["{install_dir}/bin/ollama"],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-linux-amd64.tar.zst" },
+        "fetch": { "url": "https://ollama.com/download/ollama-linux-amd64.tar.zst", "sha256": "c13cea8f3389db4145f8a6cb88d1747242a48639d7c13e3bda7c1ebdc6eebb2f" },
         "run": ["tar", "--zstd", "-xf", "{download}", "-C", "{install_dir}"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
@@ -72,7 +72,7 @@
     "linux/arm64": {
       "detect": ["{install_dir}/bin/ollama"],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-linux-arm64.tar.zst" },
+        "fetch": { "url": "https://ollama.com/download/ollama-linux-arm64.tar.zst", "sha256": "4425a112af999ae6572c1ce211fbabeaca7bab23ed5860972acdfc0cc2358420" },
         "run": ["tar", "--zstd", "-xf", "{download}", "-C", "{install_dir}"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },

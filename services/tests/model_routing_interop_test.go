@@ -39,15 +39,11 @@ func newRoutingUpstream(t *testing.T, status int) *routingUpstream {
 }
 
 func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
-	if portBusy(11435) || portBusy(1234) {
-		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
-	}
-
 	owner404 := newRoutingUpstream(t, http.StatusNotFound)
 	ownerOK := newRoutingUpstream(t, http.StatusOK)
 	ineligible := newRoutingUpstream(t, http.StatusOK)
 
-	stdin, msgs, stderr, cleanup := startBrokerWith(t,
+	stdin, msgs, stderr, cleanup := startBrokerWithEnv(t, proxyPortEnv(t),
 		"--proxy-path", proxyBin,
 		"--lmstudio-proxy-path", lmstudioProxyBin,
 	)

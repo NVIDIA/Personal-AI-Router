@@ -125,6 +125,11 @@ func (b *Broker) reportLMStudioPortOwnershipBlocked(reason string) {
 }
 
 func (b *Broker) setLMStudioProxyFallback(excludedPorts ...int) int {
+	// An explicit env override is authoritative (see setOllamaProxyFallback).
+	if p := b.servicePorts.LMStudioProxy; p != 0 {
+		b.lmstudioProxyStartupPort.Store(int32(p))
+		return p
+	}
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		excludedPorts = append(excludedPorts, aliasPort)
 	}

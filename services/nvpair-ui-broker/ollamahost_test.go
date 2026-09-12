@@ -114,7 +114,7 @@ func TestReservedOllamaHostAliasPort(t *testing.T) {
 			if tc.lmstudioBackend > 0 {
 				enginePorts[tc.lmstudioBackend] = "lmstudio"
 			}
-			reason := reservedOllamaHostAliasPort(tc.port, enginePorts, tc.lmstudioProxy)
+			reason := (&Broker{servicePorts: resolveServicePorts(func(string) string { return "" })}).reservedOllamaHostAliasPort(tc.port, enginePorts, tc.lmstudioProxy)
 			if tc.wantReasonSubstr == "" && reason != "" {
 				t.Fatalf("reason = %q, want none", reason)
 			}
@@ -613,4 +613,52 @@ func TestStaleAliasBindFailureDoesNotReleaseReplacementReservation(t *testing.T)
 	if warning != nil {
 		t.Fatal("stale failure published a warning for the replacement generation")
 	}
+}
+
+// TestResolveServicePorts covers the env-override contract: spec defaults when
+// nothing is set, per-service overrides when valid, and out-of-range or
+// non-numeric values ignored with the default kept.
+func TestResolveServicePorts(t *testing.T) {
+	t.Run("defaults with no overrides", func(t *testing.T) {
+		ports := resolveServicePorts(func(string) string { return "" })
+		if ports.NodeInfo != nodeInfoHTTPPort || ports.Errors != errorsHTTPPort ||
+			ports.Workload != workloadHTTPPort || ports.ClusterManager != clusterManagerHTTPPort ||
+			ports.EngineHTTP != engineManagerHTTPPort || ports.EngineControl != engineControlPort ||
+			ports.OllamaProxy != 0 || ports.LMStudioProxy != 0 {
+			t.Fatalf("defaults = %+v, want spec defaults and zero proxy ports", ports)
+		}
+	})
+
+	t.Run("valid overrides applied", func(t *testing.T) {
+		env := map[string]string{
+			"NVPAIR_SERVICE_NODE_INFO_PORT":       "24318",
+			"NVPAIR_SERVICE_ERRORS_PORT":          "24319",
+			"NVPAIR_SERVICE_WORKLOAD_PORT":        "24320",
+			"NVPAIR_SERVICE_CLUSTER_MANAGER_PORT": "24321",
+			"NVPAIR_SERVICE_ENGINE_HTTP_PORT":     "24322",
+			"NVPAIR_SERVICE_ENGINE_CONTROL_PORT":  "24323",
+			"NVPAIR_SERVICE_OLLAMA_PROXY_PORT":    "24324",
+			"NVPAIR_SERVICE_LMSTUDIO_PROXY_PORT":  "24325",
+		}
+		ports := resolveServicePorts(func(k string) string { return env[k] })
+		if ports.NodeInfo != 24318 || ports.Errors != 24319 || ports.Workload != 24320 ||
+			ports.ClusterManager != 24321 || ports.EngineHTTP != 24322 ||
+			ports.EngineControl != 24323 || ports.OllamaProxy != 24324 || ports.LMStudioProxy != 24325 {
+			t.Fatalf("overrides = %+v, want every valid override applied", ports)
+		}
+	})
+
+	t.Run("invalid overrides ignored", func(t *testing.T) {
+		env := map[string]string{
+			"NVPAIR_SERVICE_NODE_INFO_PORT":       "not-a-port",
+			"NVPAIR_SERVICE_ERRORS_PORT":          "0",
+			"NVPAIR_SERVICE_WORKLOAD_PORT":        "65536",
+			"NVPAIR_SERVICE_CLUSTER_MANAGER_PORT": "-1",
+		}
+		ports := resolveServicePorts(func(k string) string { return env[k] })
+		if ports.NodeInfo != nodeInfoHTTPPort || ports.Errors != errorsHTTPPort ||
+			ports.Workload != workloadHTTPPort || ports.ClusterManager != clusterManagerHTTPPort {
+			t.Fatalf("invalid overrides = %+v, want defaults kept", ports)
+		}
+	})
 }

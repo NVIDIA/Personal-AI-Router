@@ -382,6 +382,20 @@ active man-in-the-middle** on the LAN, and must be replaced by a
 high-entropy pairing code before cluster trust is relied on in production.
 The repository [`SECURITY.md`](../../SECURITY.md) records the same boundary.
 
+Two hardening measures bound what a captured transcript or a learned invite
+ID is worth:
+
+- **PIN stretching.** The PIN key is derived with PBKDF2-HMAC-SHA256 (50k
+  iterations, per-invite salt inside the EAP-MAC-covered ServerInfo), so an
+  eavesdropped NoobId cannot be offline-checked against the 10^6 PIN
+  keyspace — guessing must happen online, where it is rate-limited.
+- **Authenticated terminal signals.** Cancel, decline, fail, and expire
+  require an HMAC tag computed over the invite ID and phase with the
+  session's ephemeral Key Exchange secret; a peer who only learned the
+  invite ID cannot kill a pairing. Completion attempts are capped (5 per
+  invite, every attempt counted including empty/incorrect-PIN bodies, with
+  invite teardown on exhaustion) so the online-guessing path stays online.
+
 Trust is also **transitive** now (see fan-out above): a compromised member
 can endorse certs the whole cluster will pin, widening the blast radius of
 one bad node. This deliberate trade-off is why pairing should occur only on

@@ -156,14 +156,16 @@ func TestEvictNodeRemovesPeerEntries(t *testing.T) {
 }
 
 // TestHTTPIngestReconciles: the POST /v1/errors handler decodes a
-// SyncEnvelope and merges it, returning 204.
+// SyncEnvelope and merges it, returning 204. The envelope's nodeId must
+// match the mTLS-authenticated caller UUID — the pin store keys peers by
+// the same UUID the push side uses as nodeId.
 func TestHTTPIngestReconciles(t *testing.T) {
 	m := managerForNode("node-a")
 	srv, client := servePinnedErrorsMux(t, m)
 
 	env := errors.SyncEnvelope{
-		NodeID: "node-b",
-		Errors: []ServiceError{localErr("b:one", "node-b", 1000)},
+		NodeID: "uuid-peer",
+		Errors: []ServiceError{localErr("b:one", "uuid-peer", 1000)},
 	}
 	body, _ := json.Marshal(env)
 	resp, err := client.Post(srv.URL+"/v1/errors", "application/json", bytes.NewReader(body))
@@ -176,8 +178,34 @@ func TestHTTPIngestReconciles(t *testing.T) {
 	}
 
 	got := m.snapshot()
-	if len(got) != 1 || got[0].ID != "b:one" || got[0].NodeID != "node-b" {
-		t.Fatalf("after ingest, snapshot = %+v, want single node-b entry", got)
+	if len(got) != 1 || got[0].ID != "b:one" || got[0].NodeID != "uuid-peer" {
+		t.Fatalf("after ingest, snapshot = %+v, want single uuid-peer entry", got)
+	}
+}
+
+// TestHTTPIngestRejectsSpoofedNodeID: a pinned caller cannot reconcile
+// under another node's identity — the envelope's nodeId must equal the
+// authenticated caller UUID, otherwise the push is a 400 and nothing is
+// reconciled.
+func TestHTTPIngestRejectsSpoofedNodeID(t *testing.T) {
+	m := managerForNode("node-a")
+	srv, client := servePinnedErrorsMux(t, m)
+
+	env := errors.SyncEnvelope{
+		NodeID: "uuid-victim",
+		Errors: []ServiceError{localErr("v:one", "uuid-victim", 1000)},
+	}
+	body, _ := json.Marshal(env)
+	resp, err := client.Post(srv.URL+"/v1/errors", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST status = %d, want 400", resp.StatusCode)
+	}
+	if got := m.snapshot(); len(got) != 0 {
+		t.Fatalf("spoofed ingest reconciled %+v, want empty snapshot", got)
 	}
 }
 

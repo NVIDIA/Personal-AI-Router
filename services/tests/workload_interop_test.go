@@ -72,7 +72,14 @@ type wlParams struct {
 // plane use startBrokerProcInCluster.
 func startBrokerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
-	return startBrokerProcInCluster(t, t.TempDir(), args...)
+	return startBrokerProcWithEnv(t, nil, args...)
+}
+
+// startBrokerProcWithEnv is startBrokerProc plus env entries for the broker
+// process (service-port overrides and the like).
+func startBrokerProcWithEnv(t *testing.T, extraEnv []string, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
+	t.Helper()
+	return startBrokerProcInClusterWithEnv(t, t.TempDir(), extraEnv, args...)
 }
 
 // startBrokerProcInCluster starts the broker with clusterDir as its cluster
@@ -80,9 +87,19 @@ func startBrokerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan jsonr
 // cluster that directory describes (see newInterNodeCluster).
 func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
+	return startBrokerProcInClusterWithEnv(t, clusterDir, nil, args...)
+}
+
+// startBrokerProcInClusterWithEnv is startBrokerProcInCluster plus env entries
+// passed to the broker process (service-port overrides and the like).
+func startBrokerProcInClusterWithEnv(t *testing.T, clusterDir string, extraEnv []string, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
+	t.Helper()
 	args = append([]string{"--cluster-dir", clusterDir}, args...)
 	cmd := exec.Command(brokerBin, args...)
 	cmd.Stderr = os.Stderr
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -109,6 +126,17 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 			<-done
 		}
 	}
+}
+
+// workloadEventsEndpoint returns the supervised workload-manager's inter-node
+// endpoint on the broker under test. The port is the NVPAIR_SERVICE_WORKLOAD_PORT
+// override when set (startBrokerProc*WithEnv), else the spec default.
+func workloadEventsEndpoint(t *testing.T) string {
+	t.Helper()
+	if v := os.Getenv("NVPAIR_SERVICE_WORKLOAD_PORT"); v != "" {
+		return fmt.Sprintf("https://127.0.0.1:%s/v1/workloads/events", v)
+	}
+	return "https://127.0.0.1:14320/v1/workloads/events"
 }
 
 // writeRawFrame writes a raw JSON-RPC frame (newline-terminated) to the
@@ -145,9 +173,9 @@ func TestWorkloadManagerInboundRelay(t *testing.T) {
 	t.Log("subscribed to workloads stream")
 
 	// POST a peer workload to the manager's inter-node endpoint over cluster mTLS.
-	// The manager binds :14320 in a goroutine, so retry until it accepts.
+	// The manager binds its inter-node port in a goroutine, so retry until it accepts.
 	const peerEvent = `{"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"peer-wl-1","model":"llama-3-70b","engine":"trt-llm","state":"running","originatedFrom":"peer-node-A","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}`
-	postPeerEvent(t, fx.clientAsPeer(t), "https://127.0.0.1:14320/v1/workloads/events", peerEvent, 15*time.Second)
+	postPeerEvent(t, fx.clientAsPeer(t), workloadEventsEndpoint(t), peerEvent, 15*time.Second)
 	t.Log("peer workload accepted by manager")
 
 	// The manager translates the peer lifecycle event into workloads:upsert
@@ -184,7 +212,7 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 		t.Fatalf("subscribe ack = %s (err %v), want subscribed:true", ack.Result, err)
 	}
 
-	const endpoint = "https://127.0.0.1:14320/v1/workloads/events"
+	endpoint := workloadEventsEndpoint(t)
 	peer := fx.clientAsPeer(t)
 	// Same (originatedFrom, id, createdAt) — one workload, two lifecycle events,
 	// delivered terminal-first (the inversion the network can produce).
@@ -311,7 +339,7 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	// tracked workloads:upsert. Stamped with the peer's HostUUID (not its
 	// name), as a real proxy does.
 	peerEvent := fmt.Sprintf(`{"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"wl-nodeloss-1","model":"llama-3-8b","engine":"ollama","state":"running","originatedFrom":%q,"scheduledOn":%q,"createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}`, peerUUID, peerUUID)
-	postPeerEvent(t, fx.clientAsPeer(t), "https://127.0.0.1:14320/v1/workloads/events", peerEvent, 15*time.Second)
+	postPeerEvent(t, fx.clientAsPeer(t), workloadEventsEndpoint(t), peerEvent, 15*time.Second)
 
 	running := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 10*time.Second)
 	if running.WorkloadInfo.State != "running" {
@@ -365,7 +393,7 @@ func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
 	fx := newInterNodeCluster(t)
 	received := fx.startStubClusterPeer(t, "stub-wm-peer", "stub-wm-peer-uuid")
 
-	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
+	stdin, msgs, cleanup := startBrokerProcInClusterWithEnv(t, fx.nodeDir, proxyPortEnv(t),
 		"--scanner-path", scannerBin,
 		"--proxy-path", proxyBin,
 		"--workload-manager-path", workloadMgrBin,

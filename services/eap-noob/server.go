@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // ServerConfig configures the EAP server role.
@@ -192,14 +193,14 @@ func (s *Server) onNegotiation(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return s.fail(ErrInvalidData, "bad Verp")
 	}
-	if !containsInt(s.cfg.Versions, verp) {
+	if !slices.Contains(s.cfg.Versions, verp) {
 		return s.fail(ErrUnsupportedVersion, "peer selected unsupported version")
 	}
 	csp, err := rawToInt(wm.Cryptosuitep)
 	if err != nil {
 		return s.fail(ErrInvalidData, "bad Cryptosuitep")
 	}
-	if !containsInt(s.cfg.Cryptosuites, csp) || !isSupportedCryptosuite(csp) {
+	if !slices.Contains(s.cfg.Cryptosuites, csp) || !isSupportedCryptosuite(csp) {
 		return s.fail(ErrUnsupportedCryptosuite, "peer selected unsupported cryptosuite")
 	}
 	dirp, err := rawToInt(wm.Dirp)

@@ -71,14 +71,24 @@ func (p *Proxy) handlePlain(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Warn("rejected non-loopback plaintext request; cluster peers must use mTLS",
 			"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
-		writeIngressError(w, http.StatusForbidden, "loopback-only",
+		writeIngressError(w, r, http.StatusForbidden, "loopback-only",
 			"plaintext requests are accepted only from loopback; cluster peers must use the mTLS ingress")
+		return
+	}
+	// Cross-origin browser gate: a loopback bind does not exclude browser
+	// pages (they connect from loopback), so any Origin this process's
+	// allowlist does not name is refused before it can drive an engine.
+	if !cors.AllowRequest(r) {
+		slog.Warn("rejected cross-origin browser request not on the allowlist",
+			"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path,
+			"origin", r.Header.Get("Origin"))
+		cors.RejectOrigin(w)
 		return
 	}
 	// Engine-manager marks its private identity/action requests so this
 	// compatibility facade can never be mistaken for the local Ollama backend.
 	if r.Header.Get(engineIdentityProbeHeader) == "1" {
-		writeIngressError(w, http.StatusConflict, "proxy-facade", "the compatibility facade is not an Ollama engine")
+		writeIngressError(w, r, http.StatusConflict, "proxy-facade", "the compatibility facade is not an Ollama engine")
 		return
 	}
 	p.handleHTTP(w, r)
@@ -99,13 +109,13 @@ func (p *Proxy) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 	p.mesh.Refresh()
 	peer, ok := p.mesh.VerifyClientPin(r)
 	if !ok {
-		writeIngressError(w, http.StatusForbidden, "cluster-auth",
+		writeIngressError(w, r, http.StatusForbidden, "cluster-auth",
 			"client certificate is not a pinned member of this node's cluster")
 		return
 	}
 	target, ok := p.localBackendTarget()
 	if !ok {
-		writeIngressError(w, http.StatusServiceUnavailable, "no-local-backend",
+		writeIngressError(w, r, http.StatusServiceUnavailable, "no-local-backend",
 			"no local inference backend is available on this node")
 		return
 	}
@@ -129,9 +139,9 @@ func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
 			req.Host = target.Host
 		},
 		Transport: p.plainHTTPTransport(),
-		ErrorHandler: func(ew http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(ew http.ResponseWriter, er *http.Request, err error) {
 			slog.Warn("cluster ingress upstream error", "target", target.Host, "err", err)
-			writeIngressError(ew, http.StatusBadGateway, "backend-error", "local inference backend error")
+			writeIngressError(ew, er, http.StatusBadGateway, "backend-error", "local inference backend error")
 		},
 	}
 }
@@ -152,8 +162,8 @@ func isLoopbackRemote(remoteAddr string) bool {
 // request body or any generated output. CORS headers are included because these
 // are the proxy's own rejections: without them a browser client cannot read the
 // status or reason, and every one of them looks like a generic CORS failure.
-func writeIngressError(w http.ResponseWriter, status int, code, msg string) {
-	cors.Apply(w.Header())
+func writeIngressError(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+	cors.Apply(w.Header(), r.Header.Get("Origin"))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)

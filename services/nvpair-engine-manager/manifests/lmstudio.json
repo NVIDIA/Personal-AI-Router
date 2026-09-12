@@ -4,7 +4,7 @@
   "manifest_version": 1,
   "detect": ["~/.lmstudio/bin/lms"],
   "install": {
-    "fetch": { "url": "https://lmstudio.ai/install.sh" },
+    "fetch": { "url": "https://lmstudio.ai/install.sh", "sha256": "f6492caf54327951d55f281133d0d9646efd62985c2465c597bfff8d35b6795f" },
     "run": ["bash", "{download}"],
     "mode": "user"
   },
@@ -25,7 +25,7 @@
       "detect": ["%USERPROFILE%\\.lmstudio\\bin\\lms.exe"],
       "install": {
         "script": [],
-        "fetch": { "url": "https://lmstudio.ai/install.ps1" },
+        "fetch": { "url": "https://lmstudio.ai/install.ps1", "sha256": "413d56edb320068811142501bf13211f2384eb0ad68676333b54f39b789f5df0" },
         "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "{download}"],
         "mode": "user"
       },
@@ -38,7 +38,7 @@
       "detect": ["%USERPROFILE%\\.lmstudio\\bin\\lms.exe"],
       "install": {
         "script": [],
-        "fetch": { "url": "https://lmstudio.ai/install.ps1" },
+        "fetch": { "url": "https://lmstudio.ai/install.ps1", "sha256": "413d56edb320068811142501bf13211f2384eb0ad68676333b54f39b789f5df0" },
         "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "{download}"],
         "mode": "user"
       },

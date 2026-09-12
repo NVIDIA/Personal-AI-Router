@@ -45,9 +45,6 @@ import (
 // broker's workloads:* stream. Before the identity fix the (origin,id) store
 // key collapsed them into one.
 func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
-	if portBusy(11435) || portBusy(1234) {
-		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
-	}
 
 	// Fake engines: 200 on any request so each inference completes promptly.
 	fakeEngine := func(body string) *httptest.Server {
@@ -65,7 +62,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	ollamaPort := portOfURL(t, ollama.URL)
 	lmstudioPort := portOfURL(t, lmstudio.URL)
 
-	stdin, msgs, _, cleanup := startBrokerWith(t,
+	stdin, msgs, _, cleanup := startBrokerWithEnv(t, proxyPortEnv(t),
 		"--proxy-path", proxyBin,
 		"--lmstudio-proxy-path", lmstudioProxyBin,
 		"--workload-manager-path", workloadMgrBin,
@@ -158,9 +155,6 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 // hear the running workload AGAIN from the restarted manager — which only
 // happens if the broker rehydrated the fresh process's active set.
 func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
-	if portBusy(11435) {
-		t.Skip("ollama-proxy default port 11435 already in use; skipping")
-	}
 
 	// Fake Ollama that accepts the request then blocks, keeping the proxied
 	// inference in-flight so the workload never reaches a terminal state. The
@@ -191,7 +185,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	fx := newInterNodeCluster(t)
 	received := fx.startStubClusterPeer(t, "rehydrate-wm-peer", "rehydrate-peer-uuid")
 
-	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
+	stdin, msgs, stderr, cleanup := startBrokerWithDirsAndEnv(t, t.TempDir(), fx.nodeDir, proxyPortEnv(t),
 		"--proxy-path", proxyBin,
 		"--workload-manager-path", workloadMgrBin,
 	)
@@ -274,9 +268,6 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 // state — otherwise a peer's wrongly-inferred "failed" (or a missed terminal)
 // can never be repaired after a restart.
 func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
-	if portBusy(11435) {
-		t.Skip("ollama-proxy default port 11435 already in use; skipping")
-	}
 
 	// Fake Ollama that completes immediately, so the workload reaches a terminal
 	// (completed) state right away.
@@ -292,7 +283,7 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	fx := newInterNodeCluster(t)
 	received := fx.startStubClusterPeer(t, "rehydrate-term-peer", "rehydrate-term-peer-uuid")
 
-	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
+	stdin, msgs, stderr, cleanup := startBrokerWithDirsAndEnv(t, t.TempDir(), fx.nodeDir, proxyPortEnv(t),
 		"--proxy-path", proxyBin,
 		"--workload-manager-path", workloadMgrBin,
 	)
