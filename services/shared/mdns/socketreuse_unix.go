@@ -7,6 +7,12 @@ package mdns
 
 import "syscall"
 
+// sendFromRecvSocket makes Run transmit from its own receive socket. That
+// socket is already bound to 5353, so sends originate from the well-known
+// port without opening a second socket on 5353 — which would capture unicast
+// queries destined for the receive socket for as long as it lived.
+const sendFromRecvSocket = true
+
 // setReuseAddr is a net.ListenConfig.Control hook that sets SO_REUSEADDR on
 // the socket before bind. mDNS requires multiple processes on one host to
 // share UDP 5353; SO_REUSEADDR (the same option Go's ListenMulticastUDP and

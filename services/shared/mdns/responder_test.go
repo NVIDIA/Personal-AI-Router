@@ -4,10 +4,14 @@
 package mdns
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
+	"golang.org/x/net/ipv4"
 )
 
 // testResponder builds a Responder with fixed fields so the record-building
@@ -182,6 +186,87 @@ func TestAppendBrowseRRs(t *testing.T) {
 	// ifIndex 1 scopes to that interface's single address.
 	if aCount != 1 {
 		t.Errorf("browse Extra A count = %d, want 1 (iface-scoped)", aCount)
+	}
+}
+
+// TestOpenSendConnUsesEphemeralPort guards the unicast-steal fix: the fallback
+// send socket must not bind 5353, because a unicast-bound 5353 socket is more
+// specific than Run's receive socket and would capture its unicast traffic.
+func TestOpenSendConnUsesEphemeralPort(t *testing.T) {
+	conn, err := openSendConn(net.IPv4(127, 0, 0, 1))
+	if err != nil {
+		t.Fatalf("openSendConn: %v", err)
+	}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("LocalAddr = %T, want *net.UDPAddr", conn.LocalAddr())
+	}
+	if addr.Port == mdnsPort {
+		t.Fatalf("fallback send socket bound %d; it would capture unicast", mdnsPort)
+	}
+}
+
+// TestOpenSendConnCoexistsWithGroupSocket guards the bind path Run relies on:
+// the fallback send socket must open while the multicast-group receive socket
+// is already bound to 5353 in the same process.
+func TestOpenSendConnCoexistsWithGroupSocket(t *testing.T) {
+	lc := net.ListenConfig{Control: setReuseAddr}
+	group, err := lc.ListenPacket(context.Background(), "udp4", net.JoinHostPort(mdnsGroupV4.String(), fmt.Sprint(mdnsPort)))
+	if err != nil {
+		t.Skipf("cannot bind group receive socket: %v", err)
+	}
+	defer group.Close()
+
+	conn, err := openSendConn(net.IPv4(127, 0, 0, 1))
+	if err != nil {
+		t.Fatalf("openSendConn alongside group socket: %v", err)
+	}
+	defer conn.Close()
+}
+
+// TestSendOnInterfaceFreshConnGuard covers the fallback path when no shared
+// socket is installed: an interface with no addresses must error rather than
+// panic.
+func TestSendOnInterfaceFreshConnGuard(t *testing.T) {
+	r := &Responder{ifaceAddrs: map[int][]net.IP{}}
+	if err := r.sendOnInterface([]byte("x"), 42, mdnsTargetV4); err == nil {
+		t.Fatal("sendOnInterface with no addresses on the interface = nil error, want error")
+	}
+}
+
+// TestSendOnInterfaceUsesSharedSocket verifies the Unix send path: once Run
+// installs its receive socket, sends go out that socket, so the datagram
+// source port is the shared socket's port (5353 in production) instead of a
+// fresh per-send socket's.
+func TestSendOnInterfaceUsesSharedSocket(t *testing.T) {
+	rcv, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen receiver: %v", err)
+	}
+	defer rcv.Close()
+
+	shared, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen shared: %v", err)
+	}
+	defer shared.Close()
+	sharedPort := shared.LocalAddr().(*net.UDPAddr).Port
+
+	r := &Responder{ifaceAddrs: map[int][]net.IP{1: {net.IPv4(127, 0, 0, 1)}}}
+	r.setSendPC(ipv4.NewPacketConn(shared))
+
+	if err := r.sendOnInterface([]byte("hi"), 1, rcv.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("sendOnInterface: %v", err)
+	}
+	_ = rcv.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 16)
+	_, from, err := rcv.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("receive: %v", err)
+	}
+	if from.Port != sharedPort {
+		t.Fatalf("datagram source port = %d, want shared socket port %d", from.Port, sharedPort)
 	}
 }
 
