@@ -381,6 +381,13 @@ type Proxy struct {
 	transportMu    sync.Mutex
 	plainTransport *http.Transport
 	peerTransports map[string]*http.Transport
+	// responseHeaderTimeout is the ResponseHeaderTimeout applied to every
+	// inference transport (plain, manual and mTLS peer alike); 0 disables it.
+	// Defaults to defaultResponseHeaderTimeout; main overrides it from
+	// --response-header-timeout / $NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT
+	// before serving. Transports are built lazily, so it must be final by
+	// the first forwarded request.
+	responseHeaderTimeout time.Duration
 
 	// nextRequestID is a monotonic counter for tagging RequestStarted /
 	// RequestEvent pairs. Atomic add returns the new value, so request
@@ -409,6 +416,8 @@ func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
 		targets:   reach.NewChooser(),
 		runID:     newRunID(),
 		activity:  nodeactivity.NewReporter(activityReportInterval),
+
+		responseHeaderTimeout: defaultResponseHeaderTimeout,
 	}
 }
 
@@ -528,7 +537,6 @@ func (p *Proxy) Run(ctx context.Context) error {
 const (
 	proxyDialTimeout     = 10 * time.Second
 	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
 	proxyMaxIdleConns    = 50
 	proxyIdleConnTimeout = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
@@ -537,6 +545,20 @@ const (
 	proxyServerIdleTimeout = 90 * time.Second
 	maxModelListBytes      = 16 << 20
 )
+
+// defaultResponseHeaderTimeout bounds how long the proxy waits for the
+// FIRST response header byte from an upstream engine or peer. It starts
+// when the request is sent, so for a non-streaming completion it covers
+// queueing, prefill and the whole generation: the engine sends nothing
+// until the answer is complete. The old 120s cut off any non-streaming
+// request that queued behind other jobs or ran a long reasoning model,
+// and the peer's ingress hop applied the same limit again. Unreachable
+// hosts are still caught by proxyDialTimeout, dead clients by
+// idleClientWriteTimeout, and a client that gives up cancels the upstream
+// request through its context; this deadline only remains as a backstop
+// for an engine that accepted the connection and never answers.
+// Overridable per install: see Proxy.responseHeaderTimeout.
+const defaultResponseHeaderTimeout = 30 * time.Minute
 
 // idleClientWriteTimeout bounds how long a single write of streamed response
 // bytes to the client may block. A killed client can leave a half-open socket
@@ -604,7 +626,7 @@ func (p *Proxy) serveHTTP(ctx context.Context, ln net.Listener) {
 	slog.Info("proxy timeouts configured",
 		"dial_timeout", proxyDialTimeout,
 		"keep_alive", proxyKeepAlive,
-		"response_header_timeout", proxyResponseTimeout,
+		"response_header_timeout", p.responseHeaderTimeout,
 		"max_idle_conns", proxyMaxIdleConns,
 		"idle_conn_timeout", proxyIdleConnTimeout,
 	)
@@ -867,13 +889,13 @@ func (p *Proxy) candidateTransport(c candidate) *http.Transport {
 	return p.peerHTTPTransport(c.peerUUID)
 }
 
-func newProxyTransport(tlsCfg *tls.Config) *http.Transport {
+func newProxyTransport(tlsCfg *tls.Config, responseHeaderTimeout time.Duration) *http.Transport {
 	tr := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   proxyDialTimeout,
 			KeepAlive: proxyKeepAlive,
 		}).DialContext,
-		ResponseHeaderTimeout: proxyResponseTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		MaxIdleConns:          proxyMaxIdleConns,
 		MaxIdleConnsPerHost:   proxyMaxIdleConns,
 		IdleConnTimeout:       proxyIdleConnTimeout,
@@ -888,7 +910,7 @@ func (p *Proxy) plainHTTPTransport() *http.Transport {
 	p.transportMu.Lock()
 	defer p.transportMu.Unlock()
 	if p.plainTransport == nil {
-		p.plainTransport = newProxyTransport(nil)
+		p.plainTransport = newProxyTransport(nil, p.responseHeaderTimeout)
 	}
 	return p.plainTransport
 }
@@ -904,13 +926,13 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 		delete(p.peerTransports, peerUUID)
 	}
 	if p.mesh == nil {
-		return newProxyTransport(nil)
+		return newProxyTransport(nil, p.responseHeaderTimeout)
 	}
 	cfg, ok := p.mesh.ClientTLSConfig(peerUUID)
 	if !ok {
-		return newProxyTransport(nil)
+		return newProxyTransport(nil, p.responseHeaderTimeout)
 	}
-	tr := newProxyTransport(cfg)
+	tr := newProxyTransport(cfg, p.responseHeaderTimeout)
 	if p.peerTransports == nil {
 		p.peerTransports = make(map[string]*http.Transport)
 	}

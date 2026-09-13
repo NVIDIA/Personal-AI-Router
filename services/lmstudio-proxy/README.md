@@ -29,6 +29,7 @@ lmstudio-proxy [flags]
 | `--ignore-persisted-port` | `false` | Use `--port` even when a prior runtime port was saved |
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
+| `--response-header-timeout` | *(`$NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT`, else `30m`)* | How long to wait for an upstream's first response header byte (Go duration; `0` waits indefinitely). The clock starts when the request is sent, so for a **non-streaming** completion it covers queueing and the whole generation — the engine sends nothing until the answer is complete. Streaming requests are unaffected. Applies to every inference transport, including the mTLS ingress hop on a peer, so raise it on every node a request may traverse. Unreachable hosts are still cut off by the 10 s dial timeout. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
 | `--version` | | Print version and exit |
 

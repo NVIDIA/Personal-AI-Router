@@ -16,6 +16,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/envflag"
 )
 
 func main() {
@@ -25,6 +26,8 @@ func main() {
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
+	resolveResponseHeaderTimeout := envflag.RegisterDuration(nil, "response-header-timeout", "NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT",
+		defaultResponseHeaderTimeout, "how long to wait for an upstream's first response header byte, e.g. 30m or 0 to wait indefinitely; a non-streaming completion sends none until it is fully generated")
 	flag.Parse()
 
 	if *showVersion {
@@ -73,6 +76,11 @@ func main() {
 	codec := NewCodec(transport)
 	disc := NewDiscovery()
 	proxy := NewProxy(codec, disc, effectivePort)
+	responseHeaderTimeout, err := resolveResponseHeaderTimeout()
+	if err != nil {
+		log.Fatalf("invalid response header timeout: %v", err)
+	}
+	proxy.responseHeaderTimeout = responseHeaderTimeout
 	// Open a live view of this node's cluster mTLS trust fabric. While unclustered
 	// the proxy serves only the loopback plaintext personality; once this node is
 	// a member the same listener also serves the pin-gated LAN mTLS ingress, and

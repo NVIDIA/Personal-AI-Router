@@ -167,6 +167,14 @@ NVPAIR_LOG_LEVEL=debug ./build/bin/nvpair-ui-broker
 
 Accepted values: `debug`, `info`, `warn`, `error`. The level can also be changed live over the broker's `log/set-level` JSON-RPC method (not persisted across restarts), so for launch-time issues use the env var or the flag.
 
+## Inference timeouts
+
+`ollama-proxy` and `lmstudio-proxy` wait up to **30 minutes** for an upstream's first response header byte (`--response-header-timeout`, or `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT` in the environment the proxies inherit; `0` waits indefinitely). For a non-streaming completion that clock covers queueing and the whole generation, because the engine sends nothing until the answer is complete; streaming requests are unaffected. The same deadline runs on a peer's ingress hop, so set it on every node a request may traverse — on a headless install export it in `pair-start.sh` before the broker starts. Unreachable hosts are still cut off by the 10 s dial timeout, and a client that disconnects cancels the upstream request immediately.
+
+```bash
+NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT=1h ./build/bin/nvpair-ui-broker   # or 0 to disable
+```
+
 ## Testing
 
 There are two layers, and while you are editing a component you want the first
