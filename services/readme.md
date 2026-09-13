@@ -55,7 +55,7 @@ This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service 
 
 Shared code lives in the local `shared/` Go module (imported as `nvpair-shared/…`, replaced via `replace nvpair-shared => ../shared`). It provides logging, wire types, JSON-RPC and IPC, discovery records, mDNS, network monitoring, stable node identity, application data paths, and cluster trust helpers.
 
-The mDNS responder is our own rather than the host's, because Windows ships none. It sets `SO_REUSEADDR` so it shares UDP 5353 with sibling PAIR processes and with a system responder — `avahi-daemon` on Linux, Bonjour where present — needing no configuration on either platform.
+The mDNS responder is our own rather than the host's, because Windows ships none. It sets `SO_REUSEADDR` so it shares UDP 5353 with sibling PAIR processes and with a system responder — `avahi-daemon` on Linux, Bonjour where present — needing no configuration on either platform. On macOS it also sets `SO_REUSEPORT`, because the system `mDNSResponder` holds the port and a bare `SO_REUSEADDR` bind races with it.
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination

@@ -369,6 +369,20 @@ func TestRankLocal_SendFailureDisqualifies(t *testing.T) {
 	}
 }
 
+// TestRankLocal_NoSendFailedSignalStillRanks: on platforms where the mDNS query
+// is not the per-interface workaround re-send, SendFailed is never populated, so
+// the ranking must hold on the route/physical/score tiers alone. A host with a
+// default route still picks the right canonical address with zero send evidence.
+func TestRankLocal_NoSendFailedSignalStillRanks(t *testing.T) {
+	ifaces := []localIface{
+		{name: "en0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
+		{name: "en1", addrs: []localAddr{{ip: "10.9.9.1", prefixLen: 24}}},
+	}
+	if got := rankLocal(ifaces, Evidence{}, "10.9.9.1"); got[0] != "10.9.9.1" {
+		t.Fatalf("canonical = %q, want 10.9.9.1 (route source) with no SendFailed evidence", got[0])
+	}
+}
+
 // TestRankLocal_EvidencePrecedence pins the tier order: proof from a peer beats a
 // peer merely being on-link, which beats the kernel's default route, which beats
 // every name or address heuristic.
