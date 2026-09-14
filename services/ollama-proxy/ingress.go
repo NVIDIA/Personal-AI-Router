@@ -40,7 +40,10 @@ func (p *Proxy) setLocalBackend(b localBackend) {
 
 // localBackendTarget returns the loopback URL of the current local engine, and
 // false when none is set/healthy (the ingress then answers 503 rather than
-// forwarding). The host defaults to 127.0.0.1 and is always loopback.
+// forwarding). The host defaults to 127.0.0.1 and is always loopback: a
+// non-loopback host is refused rather than dialed, so a compromised or buggy
+// broker can never turn the cluster mTLS ingress into a forwarder to an
+// arbitrary LAN address.
 func (p *Proxy) localBackendTarget() (*url.URL, bool) {
 	p.backendMu.RLock()
 	b := p.backend
@@ -51,6 +54,10 @@ func (p *Proxy) localBackendTarget() (*url.URL, bool) {
 	host := b.Host
 	if host == "" {
 		host = "127.0.0.1"
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		slog.Warn("refusing non-loopback local backend", "host", host, "port", b.Port)
+		return nil, false
 	}
 	return &url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(b.Port))}, true
 }
