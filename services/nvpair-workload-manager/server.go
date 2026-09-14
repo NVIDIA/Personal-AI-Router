@@ -170,10 +170,22 @@ func (s *Server) handleLifecycle(w http.ResponseWriter, msg *Message) {
 	// discovery backfill), which intentionally re-asserts the same key and must
 	// reach the broker so its store can reconcile (e.g. un-stick a wrongly
 	// inferred failed). The store is idempotent, so bypassing dedup here is safe.
-	if !isResyncFrame(msg.Params) && s.dedup.seenOrAdd(keyLifecycle(wl)) {
-		slog.Debug("inter-node lifecycle deduplicated", "method", msg.Method, "id", wl.ID, "state", wl.State)
-		s.ok(w)
-		return
+	//
+	// The key is recorded only after the broker emit succeeds: a failed emit
+	// answers 500 so the peer's retry budget kicks in, and that retry must not
+	// be mistaken for a duplicate (the old code recorded the key first, so a
+	// failed emit permanently dropped the event with no anti-entropy repair).
+	// A concurrent duplicate that passes seen() before either emit runs just
+	// emits twice, which the idempotent store absorbs.
+	resync := isResyncFrame(msg.Params)
+	lifecycleKey := ""
+	if !resync {
+		lifecycleKey = keyLifecycle(wl)
+		if s.dedup.seen(lifecycleKey) {
+			slog.Debug("inter-node lifecycle deduplicated", "method", msg.Method, "id", wl.ID, "state", wl.State)
+			s.ok(w)
+			return
+		}
 	}
 
 	if err := s.emitUpsert(wl); err != nil {
@@ -183,6 +195,9 @@ func (s *Server) handleLifecycle(w http.ResponseWriter, msg *Message) {
 		slog.Error("failed to emit workloads:upsert", "id", wl.ID, "err", err)
 		http.Error(w, "broker unavailable", http.StatusInternalServerError)
 		return
+	}
+	if !resync {
+		s.dedup.add(lifecycleKey)
 	}
 	slog.Info("relayed remote lifecycle as upsert", "method", msg.Method, "id", wl.ID, "state", wl.State, "node", wl.OriginatedFrom)
 	s.ok(w)
@@ -204,7 +219,11 @@ func (s *Server) handleRemove(w http.ResponseWriter, msg *Message) {
 		return
 	}
 
-	if s.dedup.seenOrAdd(keyRemove(nodeID, workloadID)) {
+	// The removal key, like the lifecycle key, is recorded only after the
+	// broker emit succeeds, so a failed emit's retry isn't swallowed as a
+	// duplicate.
+	removeKey := keyRemove(nodeID, workloadID)
+	if s.dedup.seen(removeKey) {
 		slog.Debug("inter-node removal deduplicated", "workloadId", workloadID, "node", nodeID)
 		s.ok(w)
 		return
@@ -215,6 +234,7 @@ func (s *Server) handleRemove(w http.ResponseWriter, msg *Message) {
 		http.Error(w, "broker unavailable", http.StatusInternalServerError)
 		return
 	}
+	s.dedup.add(removeKey)
 	slog.Info("relayed remote removal", "workloadId", workloadID, "node", nodeID)
 	s.ok(w)
 }

@@ -47,14 +47,38 @@ func newDedupIndex(capacity int) *dedupIndex {
 // first sighting it records the key and returns false. Either way the key is
 // promoted to most-recently-seen.
 func (d *dedupIndex) seenOrAdd(key string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if el, ok := d.items[key]; ok {
-		d.ll.MoveToFront(el)
+	if d.seen(key) {
+		d.mu.Lock()
+		d.ll.MoveToFront(d.items[key])
+		d.mu.Unlock()
 		return true
 	}
+	d.add(key)
+	return false
+}
 
+// seen reports whether the key is already recorded, without recording it.
+// Split from add so a caller can record the key only after the work the key
+// guards has actually succeeded (e.g. the inter-node server records a peer
+// event's dedup key only once the broker emit succeeded, so a failed emit's
+// retry isn't mistaken for a duplicate).
+func (d *dedupIndex) seen(key string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.items[key]
+	return ok
+}
+
+// add records the key, promoting it to most-recently-seen and evicting the
+// least-recently-seen key past capacity. Recording an already-present key is a
+// no-op recency promotion.
+func (d *dedupIndex) add(key string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if el, ok := d.items[key]; ok {
+		d.ll.MoveToFront(el)
+		return
+	}
 	el := d.ll.PushFront(key)
 	d.items[key] = el
 	if d.ll.Len() > d.capacity {
@@ -64,7 +88,6 @@ func (d *dedupIndex) seenOrAdd(key string) bool {
 			delete(d.items, oldest.Value.(string))
 		}
 	}
-	return false
 }
 
 // keyLifecycle builds the dedup key for a lifecycle event. Workload.id is only
