@@ -211,6 +211,10 @@ function listFingerprintFiles(repo: string): string[] {
                 out.push(full)
             } else if (entry === 'go.mod' || entry === 'go.sum') {
                 out.push(full)
+            } else if (entry.endsWith('.json') && path.basename(dir) === 'manifests') {
+                // Engine manifests are go:embed'ed, so editing one changes the
+                // built binary even though no .go file moved.
+                out.push(full)
             }
         }
     }

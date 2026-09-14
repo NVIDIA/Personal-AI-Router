@@ -53,7 +53,7 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 			restore <- msg.Method
 		}
 	}()
-	advertised := make(chan string, 2)
+	advertised := make(chan string, 3)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan bool, 1)
@@ -62,6 +62,7 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 			ctx,
 			func(context.Context) { advertised <- "ollama" },
 			func(context.Context) { advertised <- "lmstudio" },
+			func(context.Context) { advertised <- "mlx" },
 		)
 	}()
 

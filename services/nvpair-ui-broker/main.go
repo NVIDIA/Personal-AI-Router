@@ -27,6 +27,7 @@ func main() {
 	nodeInfoPath := flag.String("node-info-path", "", "path to nvpair-node-info binary (default: ./nvpair-node-info in the current working directory)")
 	proxyPath := flag.String("proxy-path", "", "path to ollama-proxy binary (default: ./ollama-proxy in the current working directory)")
 	lmstudioProxyPath := flag.String("lmstudio-proxy-path", "", "path to lmstudio-proxy binary (default: ./lmstudio-proxy in the current working directory)")
+	mlxProxyPath := flag.String("mlx-proxy-path", "", "path to mlx-proxy binary (default: ./mlx-proxy in the current working directory)")
 	workloadMgrPath := flag.String("workload-manager-path", "", "path to nvpair-workload-manager binary (default: ./nvpair-workload-manager in the current working directory)")
 	errorsPath := flag.String("errors-path", "", "path to nvpair-errors binary (default: ./nvpair-errors in the current working directory)")
 	engineMgrPath := flag.String("engine-manager-path", "", "path to nvpair-engine-manager binary (default: ./nvpair-engine-manager in the current working directory)")
@@ -135,6 +136,18 @@ func main() {
 		}
 		slog.Warn("lmstudio-proxy binary not found; broker will run without local LM Studio proxy", "err", err)
 		resolvedLMStudioProxy = ""
+	}
+
+	// mlx-proxy is auxiliary too, resolved with the same rules. On a machine
+	// that is not Apple Silicon the binary is simply absent, which is the same
+	// degrade-quietly path as any other unresolved sibling.
+	resolvedMLXProxy, err := resolveMLXProxyPath(*mlxProxyPath)
+	if err != nil {
+		if *mlxProxyPath != "" {
+			fatalf("mlx-proxy binary: %v", err)
+		}
+		slog.Warn("mlx-proxy binary not found; broker will run without local MLX proxy", "err", err)
+		resolvedMLXProxy = ""
 	}
 
 	// nvpair-workload-manager is auxiliary too, resolved with the same rules:
@@ -260,6 +273,7 @@ func main() {
 		nodeInfo:      resolvedNodeInfo,
 		proxy:         resolvedProxy,
 		lmstudioProxy: resolvedLMStudioProxy,
+		mlxProxy:      resolvedMLXProxy,
 		workloadMgr:   resolvedWorkloadMgr,
 		errors:        resolvedErrors,
 		engineMgr:     resolvedEngineMgr,
@@ -325,6 +339,14 @@ func resolveProxyPath(override string) (string, error) {
 // Studio proxy" rather than aborting the broker.
 func resolveLMStudioProxyPath(override string) (string, error) {
 	return resolveSiblingBinary(override, "lmstudio-proxy", "--lmstudio-proxy-path")
+}
+
+// resolveMLXProxyPath mirrors resolveProxyPath for the mlx-proxy binary. Its
+// result is optional at the call site for the usual reason plus one more: MLX
+// runs only on Apple Silicon, so on any other host the binary is legitimately
+// absent and the broker degrades to "no local MLX proxy".
+func resolveMLXProxyPath(override string) (string, error) {
+	return resolveSiblingBinary(override, "mlx-proxy", "--mlx-proxy-path")
 }
 
 // resolveWorkloadManagerPath mirrors resolveProxyPath for the

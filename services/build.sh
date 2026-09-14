@@ -57,6 +57,8 @@ echo
 V_PRODUCT=$(jq -r '.product'                                   "$VERSIONS_FILE")
 V_PROXY=$(  jq -r --arg k 'ollama-proxy'     '.components[$k]' "$VERSIONS_FILE")
 V_LMPROXY=$(jq -r --arg k 'lmstudio-proxy'   '.components[$k]' "$VERSIONS_FILE")
+V_MLXPROXY=$(jq -r --arg k 'mlx-proxy'      '.components[$k]' "$VERSIONS_FILE")
+V_MLXPOOL=$(jq -r --arg k 'mlx-pool'       '.components[$k]' "$VERSIONS_FILE")
 V_NINFO=$(  jq -r --arg k 'nvpair-node-info'    '.components[$k]' "$VERSIONS_FILE")
 V_NSCAN=$(  jq -r --arg k 'nvpair-node-scanner' '.components[$k]' "$VERSIONS_FILE")
 V_MNODES=$( jq -r --arg k 'nvpair-manual-nodes' '.components[$k]' "$VERSIONS_FILE")
@@ -77,6 +79,8 @@ fi
 printf '  product           = %s\n' "$V_PRODUCT"
 printf '  ollama-proxy      = %s\n' "$V_PROXY"
 printf '  lmstudio-proxy    = %s\n' "$V_LMPROXY"
+printf '  mlx-proxy         = %s\n' "$V_MLXPROXY"
+printf '  mlx-pool          = %s\n' "$V_MLXPOOL"
 printf '  nvpair-node-info     = %s\n' "$V_NINFO"
 printf '  nvpair-node-scanner  = %s\n' "$V_NSCAN"
 printf '  nvpair-manual-nodes  = %s\n' "$V_MNODES"
@@ -97,12 +101,21 @@ echo
 
 build_subbinary() {
     local idx="$1" name="$2" version="$3"
-    echo "[$idx/13] Building $name (v$version)..."
+    echo "[$idx/15] Building $name (v$version)..."
     (cd "$ROOT/$name" && go build -ldflags "-X main.Version=$version" -o "$name" .)
     echo "      OK"
 }
 build_subbinary 1 ollama-proxy      "$V_PROXY"
 build_subbinary 2 lmstudio-proxy    "$V_LMPROXY"
+# mlx-proxy is built on every platform even though MLX itself runs only on
+# Apple Silicon: it is pure Go, and a host with no MLX engine manifest simply
+# never advertises the mx service, so the binary sits inert rather than needing
+# a platform branch here.
+build_subbinary 14 mlx-proxy         "$V_MLXPROXY"
+# mlx-pool is not a PAIR service: nvpair-engine-manager starts it AS the MLX
+# engine (see the manifest's {pair_bin}/mlx-pool), so it speaks OpenAI HTTP
+# rather than JSON-RPC and the broker never supervises it.
+build_subbinary 15 mlx-pool          "$V_MLXPOOL"
 build_subbinary 3 nvpair-node-info     "$V_NINFO"
 build_subbinary 4 nvpair-node-scanner  "$V_NSCAN"
 build_subbinary 5 nvpair-manual-nodes  "$V_MNODES"
@@ -132,6 +145,8 @@ rm -rf "$BIN_OUT"
 mkdir -p "$BIN_OUT"
 cp "$ROOT/ollama-proxy/ollama-proxy"         "$BIN_OUT/ollama-proxy"
 cp "$ROOT/lmstudio-proxy/lmstudio-proxy"     "$BIN_OUT/lmstudio-proxy"
+cp "$ROOT/mlx-proxy/mlx-proxy"               "$BIN_OUT/mlx-proxy"
+cp "$ROOT/mlx-pool/mlx-pool"                 "$BIN_OUT/mlx-pool"
 cp "$ROOT/nvpair-node-info/nvpair-node-info"       "$BIN_OUT/nvpair-node-info"
 cp "$ROOT/nvpair-node-scanner/nvpair-node-scanner" "$BIN_OUT/nvpair-node-scanner"
 cp "$ROOT/nvpair-manual-nodes/nvpair-manual-nodes" "$BIN_OUT/nvpair-manual-nodes"
@@ -151,6 +166,8 @@ echo "========================================"
 echo
 printf '  Proxy:        %s\n' "$BIN_OUT/ollama-proxy"
 printf '  LM Studio Proxy: %s\n' "$BIN_OUT/lmstudio-proxy"
+printf '  MLX Proxy:    %s\n' "$BIN_OUT/mlx-proxy"
+printf '  MLX Pool:     %s\n' "$BIN_OUT/mlx-pool"
 printf '  Node Info:    %s\n' "$BIN_OUT/nvpair-node-info"
 printf '  Node Scanner: %s\n' "$BIN_OUT/nvpair-node-scanner"
 printf '  Manual Nodes: %s\n' "$BIN_OUT/nvpair-manual-nodes"

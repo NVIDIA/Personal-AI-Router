@@ -153,6 +153,7 @@ type Broker struct {
 	nodeInfoPath      string
 	proxyPath         string
 	lmstudioProxyPath string
+	mlxProxyPath      string
 	workloadMgrPath   string
 	errorsPath        string
 	engineMgrPath     string
@@ -185,6 +186,9 @@ type Broker struct {
 	lmstudioBackendPort              atomic.Int32
 	lmstudioProxyStartupPort         atomic.Int32
 	lmstudioProxyGeneration          atomic.Uint64
+	mlxProxyGeneration               atomic.Uint64
+	mlxProxyStartupPort              atomic.Int32
+	mlxProxyRebinding                atomic.Bool
 	lmstudioProxyPublishedGeneration atomic.Uint64
 	lmstudioPortReady                chan struct{}
 	lmstudioPortReadyOnce            sync.Once
@@ -213,6 +217,7 @@ type Broker struct {
 	nodeInfo      *nodeInfoProcess
 	proxy         *proxyProcess
 	lmstudioProxy *proxyProcess
+	mlxProxy      *proxyProcess
 	workloadMgr   *workloadManagerProcess
 	errorsProc    *errorsProcess
 	engineMgr     *rpcWorker
@@ -228,6 +233,7 @@ type Broker struct {
 	nodeInfoSup      *supervisor
 	proxySup         *supervisor
 	lmstudioProxySup *supervisor
+	mlxProxySup      *supervisor
 	workloadMgrSup   *supervisor
 	errorsSup        *supervisor
 	engineMgrSup     *supervisor
@@ -252,6 +258,7 @@ type Broker struct {
 	proxyMu                 sync.Mutex
 	proxySubscribed         bool
 	lmstudioProxySubscribed bool
+	mlxProxySubscribed      bool
 
 	// workloadsMu guards workloadsSubscribed. The workloads:* stream is
 	// opt-in too: emitWorkloadEvent (called on the proxy reader goroutine
@@ -330,6 +337,7 @@ type workerPaths struct {
 	nodeInfo      string
 	proxy         string
 	lmstudioProxy string
+	mlxProxy      string
 	workloadMgr   string
 	errors        string
 	engineMgr     string
@@ -369,6 +377,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		nodeInfoPath:       paths.nodeInfo,
 		proxyPath:          paths.proxy,
 		lmstudioProxyPath:  paths.lmstudioProxy,
+		mlxProxyPath:       paths.mlxProxy,
 		workloadMgrPath:    paths.workloadMgr,
 		errorsPath:         paths.errors,
 		engineMgrPath:      paths.engineMgr,
@@ -509,11 +518,13 @@ func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
 	runOllama func(context.Context),
 	runLMStudio func(context.Context),
+	runMLX func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
 	go runOllama(ctx)
+	go runMLX(ctx)
 	runLMStudio(ctx)
 	return true
 }
@@ -626,6 +637,8 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// /v1/node-info but holds no cluster dir to read it from, so this push is the
 	// only source. It runs on every spawn, which also covers a supervised restart.
 	b.pushClusterIdentityToNodeInfo()
+	// Same for the peer set: a respawned node-info starts fail-open until told.
+	b.pushTrustedReadersToNodeInfo()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.
@@ -1128,6 +1141,48 @@ func (b *Broker) clusterPrincipal() string {
 // the next spawn pushes again. A failed write is warned about rather than traced,
 // because until the next push lands peers cannot learn this node's membership
 // over HTTP — which is the whole point of reporting it.
+// pushTrustedReadersToNodeInfo hands node-info every address the discovery
+// store currently sees a peer on. node-info answers its plaintext inventory to
+// those and to loopback, and refuses the rest -- so a GPU/CPU inventory, live
+// utilisation and a stable host UUID stop being readable by any printer, phone
+// or guest laptop that can reach port 14318.
+//
+// The set is derived from discovery rather than from cluster pins on purpose:
+// the desktop app polls a PEER's node-info directly and holds no cluster
+// identity of its own, so pin-based gating would blank the UI's node cards --
+// the exact regression spawnNodeInfo warns about. Every machine running PAIR is
+// already announcing itself on mDNS, so keying on "is a discovered node" costs
+// nothing that discovery has not already published.
+//
+// Pushed on every discovery change, so a peer that leaves loses access on the
+// next snapshot rather than at some TTL.
+func (b *Broker) pushTrustedReadersToNodeInfo() {
+	np := b.getNodeInfo()
+	if np == nil {
+		return
+	}
+	seen := map[string]struct{}{}
+	addresses := []string{}
+	for _, n := range b.store.Snapshot() {
+		// Every address the peer published, not just its canonical one: a
+		// multi-homed peer may reach us from any of them, and a poll arriving
+		// on an unlisted interface would be refused.
+		for _, ip := range append([]string{n.IPAddress}, n.IPAddresses...) {
+			if ip == "" {
+				continue
+			}
+			if _, dup := seen[ip]; dup {
+				continue
+			}
+			seen[ip] = struct{}{}
+			addresses = append(addresses, ip)
+		}
+	}
+	if err := np.SetTrustedReaders(addresses); err != nil {
+		slog.Warn("failed to push trusted readers to node-info", "err", err)
+	}
+}
+
 func (b *Broker) pushClusterIdentityToNodeInfo() {
 	np := b.getNodeInfo()
 	if np == nil {
@@ -1464,6 +1519,8 @@ func (b *Broker) proxyForEngine(engine string) *proxyProcess {
 		return b.getProxy()
 	case "lmstudio":
 		return b.getLMStudioProxy()
+	case "mlx":
+		return b.getMLXProxy()
 	default:
 		return nil
 	}
@@ -1775,11 +1832,27 @@ func (b *Broker) Serve(ctx context.Context) error {
 		b.finishLMStudioProxyTerminal()
 	}
 
+	// mlx-proxy is the third sibling. It needs neither an ownership gate nor a
+	// terminal-outcome hook: it reserves no compatibility port, so a failure to
+	// start costs only MLX routing and blocks nothing else (see mlxproxy.go).
+	if b.mlxProxyPath != "" {
+		b.mlxProxySup = newSupervisor("mlx-proxy", defaultRestartPolicy(), b.spawnMLXProxy)
+		b.configureMLXProxySupervisorCallbacks(b.mlxProxySup)
+		if err := b.mlxProxySup.Start(); err != nil {
+			slog.Warn("mlx-proxy failed to start; continuing without local MLX proxy", "path", b.mlxProxyPath, "err", err)
+			b.mlxProxySup = nil
+		} else {
+			defer b.mlxProxySup.Stop()
+		}
+	} else {
+		slog.Info("mlx-proxy path not resolved; running without local MLX proxy")
+	}
+
 	// Restore engines and begin both advertising loops only after both proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseMLX)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -1860,6 +1933,10 @@ func (b *Broker) shutdownInferenceStack() {
 		b.lmstudioProxySup.Stop()
 		b.setLMStudioProxy(nil)
 	}
+	if b.mlxProxySup != nil {
+		b.mlxProxySup.Stop()
+		b.setMLXProxy(nil)
+	}
 	if b.proxySup != nil {
 		b.proxySup.Stop()
 		b.setProxy(nil)
@@ -1901,6 +1978,10 @@ func (b *Broker) emitNodesChanged() {
 	// internal consumer, not a subscribing client), independent of whether the
 	// external peer opted into discovery:nodes-changed.
 	b.fanDiscoveryToScheduler()
+
+	// So is node-info's reader set: who may read this host's inventory cannot
+	// depend on whether a UI happens to be subscribed to the node stream.
+	b.pushTrustedReadersToNodeInfo()
 
 	b.subMu.Lock()
 	subscribed := b.subscribed
@@ -2234,6 +2315,11 @@ func (b *Broker) forwardLogLevel(level string) {
 	if p := b.getProxy(); p != nil {
 		if err := p.SetLogLevel(level); err != nil {
 			slog.Warn("failed to forward log/set-level to proxy", "err", err)
+		}
+	}
+	if p := b.getMLXProxy(); p != nil {
+		if err := p.SetLogLevel(level); err != nil {
+			slog.Warn("failed to forward log/set-level to mlx-proxy", "err", err)
 		}
 	}
 	if p := b.getLMStudioProxy(); p != nil {
@@ -2819,6 +2905,45 @@ func (b *Broker) handleMessage(msg *Message) {
 		// is bumped) before handing the proxy the port to bind.
 		b.handleProxySetPort(msg)
 
+	case "mlx-proxy:get-status":
+		// Answered locally from the mlx-proxy handle's captured state,
+		// mirroring proxy:get-status. Zero value when none is supervised.
+		var mlxResult ProxyStatusResult
+		if p := b.getMLXProxy(); p != nil {
+			ready, port := p.Status()
+			mlxResult.Ready = ready
+			mlxResult.Port = port
+		}
+		if err := b.codec.Respond(msg.ID, mlxResult); err != nil {
+			log.Printf("failed to respond to mlx-proxy:get-status: %v", err)
+		}
+
+	case "mlx-proxy:subscribe":
+		b.proxyMu.Lock()
+		mlxWasSubscribed := b.mlxProxySubscribed
+		b.mlxProxySubscribed = true
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
+			log.Printf("failed to respond to mlx-proxy:subscribe: %v", err)
+		}
+		if !mlxWasSubscribed {
+			if p := b.getMLXProxy(); p != nil {
+				if rp := p.ReadyParams(); rp != nil {
+					if err := b.codec.Notify("mlx-proxy:ready", rp); err != nil {
+						slog.Warn("emit baseline mlx-proxy:ready failed", "err", err)
+					}
+				}
+			}
+		}
+
+	case "mlx-proxy:unsubscribe":
+		b.proxyMu.Lock()
+		b.mlxProxySubscribed = false
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
+			log.Printf("failed to respond to mlx-proxy:unsubscribe: %v", err)
+		}
+
 	case "lmstudio-proxy:set-port":
 		b.handleLMStudioProxySetPort(msg)
 
@@ -2943,6 +3068,10 @@ func (b *Broker) handleMessage(msg *Message) {
 		// lmstudio-proxy:* is checked before proxy:* — though the prefixes
 		// don't actually overlap (lmstudio-proxy: vs proxy:), keeping it
 		// first makes the LM Studio namespace explicit.
+		if strings.HasPrefix(msg.Method, "mlx-proxy:") {
+			b.relayToMLXProxy(msg)
+			return
+		}
 		if strings.HasPrefix(msg.Method, "lmstudio-proxy:") {
 			b.relayToLMStudioProxy(msg)
 			return

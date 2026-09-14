@@ -58,6 +58,12 @@ func (n *nodeInfoProcess) SetClusterIdentity(clusterUUID string) error {
 	return writeClusterIdentityFrame(&n.stdinMu, n.stdin, clusterUUID)
 }
 
+// SetTrustedReaders tells node-info which addresses currently host a PAIR peer,
+// so its plaintext inventory stops answering every device on the LAN.
+func (n *nodeInfoProcess) SetTrustedReaders(addresses []string) error {
+	return writeTrustedReadersFrame(&n.stdinMu, n.stdin, addresses)
+}
+
 // Done implements supervisedHandle: the returned channel closes once the
 // node-info process has exited (cmd.Wait returned).
 func (n *nodeInfoProcess) Done() <-chan struct{} { return n.done }

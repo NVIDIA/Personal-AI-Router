@@ -35,13 +35,14 @@ see the [root README](../README.md#what-is-supported).
 
 ## Architecture
 
-This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the eleven workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is the thirteenth: a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
+This tree builds fifteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the eleven workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is the thirteenth: a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
 
 | Binary | Role |
 | --- | --- |
 | `nvpair-ui-broker` | Parent service and JSON-RPC API surface used by the bundled UI and other clients. Supervises workers, relays consolidated discovery, and coordinates routing and scheduling. |
 | `ollama-proxy` | Ollama-compatible HTTP reverse proxy. Routes only to advertised model owners, with owner failover and scheduler priorities. |
 | `lmstudio-proxy` | LM Studio counterpart to `ollama-proxy`, forwarding OpenAI-compatible inference routes with equivalent owner-only routing and failover behavior. |
+| `mlx-proxy` | MLX counterpart to `lmstudio-proxy` (Apple Silicon). Identical except for one rule: because `mlx_lm.server` holds a single model, it prefers an owner that already has the requested model resident and falls back to on-disk owners. See [`docs/mlx.mdx`](../docs/mlx.mdx). |
 | `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
 | `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
 | `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
@@ -70,6 +71,7 @@ so bursts spread without waiting for workload feedback.
 nvpair-ui-broker/        Parent service / JSON-RPC API surface
 ollama-proxy/            Ollama-compatible routing proxy
 lmstudio-proxy/          OpenAI-compatible routing proxy for LM Studio
+mlx-proxy/               OpenAI-compatible routing proxy for MLX (Apple Silicon)
 nvpair-node-info/        Local GPU-inventory HTTP service
 nvpair-node-scanner/     Consolidated _nvpair-node._tcp discovery daemon
 nvpair-manual-nodes/     Manual-node manager
@@ -84,8 +86,8 @@ shared/                   Shared Go module (nvpair-shared/…)
 eap-noob/                 EAP-NOOB implementation used by cluster pairing
 tests/                    Cross-process integration tests (separate go.mod)
 versions.json             Single source of truth for every component version
-build.bat                 Builds all thirteen binaries (Windows)
-build.sh                  Builds all thirteen binaries (Linux)
+build.bat                 Builds all thirteen binaries (Windows; no mlx-proxy)
+build.sh                  Builds all fourteen binaries (Linux and macOS)
 VERSIONING.md             SemVer rules and version-bump workflow
 ```
 
@@ -115,7 +117,7 @@ On Linux and macOS:
 ./build.sh
 ```
 
-Both scripts read `versions.json`, build all thirteen Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
+Both scripts read `versions.json`, build the Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
 
 Do **not** build individual components by hand without also copying their binaries into `build/bin/`: the broker will silently keep using the older binary there.
 
@@ -190,7 +192,7 @@ cd shared
 go test ./...
 ```
 
-**Every one of the thirteen binaries has tests**, as do `shared/` and
+**Every one of the fourteen binaries has tests**, as do `shared/` and
 `eap-noob/`. Depth varies with how much behaviour a component carries:
 `nvpair-engine-manager` and `nvpair-cluster-manager` have the largest suites,
 while a component with one test file may still hold twenty test functions in it.

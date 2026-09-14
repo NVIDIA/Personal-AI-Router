@@ -38,6 +38,7 @@ enum Firewall {
     static let networkedBinaries = [
         "ollama-proxy",
         "lmstudio-proxy",
+        "mlx-proxy",
         "nvpair-node-info",
         "nvpair-node-scanner",
         "nvpair-workload-manager",

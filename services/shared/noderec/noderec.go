@@ -87,6 +87,11 @@ const (
 	ServiceNodeInfo ServiceKey = "ni"
 	ServiceOllama   ServiceKey = "ol"
 	ServiceLMStudio ServiceKey = "lm"
+	// ServiceMLX is mlx-proxy's listener. MLX is its own service rather than a
+	// flavour of lm because a node's eligibility for a request is per-engine:
+	// mlx_lm.server holds one model at a time, so an MLX node advertises a
+	// different inventory than an LM Studio node on the same machine.
+	ServiceMLX ServiceKey = "mx"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -104,7 +109,7 @@ const (
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
-	ServiceNodeInfo, ServiceOllama, ServiceLMStudio,
+	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceMLX,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
 	ServiceEngineControl,
 }
@@ -325,6 +330,23 @@ const (
 	// cluster-uuid= TXT key, and a consumer that stops receiving this node's mDNS
 	// record keeps its last observed value indefinitely.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
+
+	// MethodSetTrustedReaders tells nvpair-node-info which peer addresses are
+	// currently known PAIR nodes, so its plaintext inventory answers those and
+	// loopback instead of every device on the LAN.
+	//
+	// It exists because node-info is the one inter-node surface deliberately
+	// kept plain (see MethodSetClusterIdentity above), which also made a GPU/CPU
+	// inventory, live utilisation, and a stable host UUID readable by any
+	// printer, phone or guest laptop on the network. The broker knows who the
+	// real peers are and node-info does not, so the broker tells it.
+	//
+	// This is an exposure reduction, NOT an authentication boundary: source
+	// addresses are forgeable on a LAN, and anything advertising
+	// _nvpair-node._tcp joins the set by design. What it removes is the passive
+	// case -- reading the inventory without announcing yourself as a node, which
+	// every peer's UI would show.
+	MethodSetTrustedReaders = "nodeinfo:set-trusted-readers"
 
 	// NotifyObservedAddresses is nvpair-node-info -> broker: the local addresses
 	// peers have actually reached this node on, learned from its own accepted
@@ -575,6 +597,34 @@ func (n DirectoryNode) EngineModels(engine string) []string {
 		return n.ModelsByEngine[engine]
 	}
 	return n.Models
+}
+
+// EngineLoaded returns the models one engine currently holds in memory on this
+// node, by engine-manager engine name. It is the residency counterpart of
+// EngineModels, for a consumer that must distinguish "this node can serve the
+// model right now" from "this node has the file on disk".
+//
+// It deliberately does NOT fall back to EngineModels for a node that reports no
+// residency: absent residency means unknown, and treating unknown as "loaded"
+// would let a caller that prefers resident owners silently prefer an arbitrary
+// one. A caller that wants a fallback picks it explicitly.
+func (n DirectoryNode) EngineLoaded(engine string) []string {
+	if n.LoadedByEngine == nil {
+		return nil
+	}
+	return n.LoadedByEngine[engine]
+}
+
+// TrustedReadersParams is the payload of MethodSetTrustedReaders: every address
+// this node currently sees a PAIR peer on. Replaces the previous set wholesale,
+// so a departed peer loses access on the next push.
+//
+// An empty list is meaningful and is NOT "trust nobody": it means the broker
+// knows of no peers, which is the normal state of a single machine. The receiver
+// keeps its own "have I ever been told" flag to separate that from a broker that
+// never pushes at all.
+type TrustedReadersParams struct {
+	Addresses []string `json:"addresses"`
 }
 
 // SubscribeParams filters a subscription to nodes advertising any of the listed

@@ -6,6 +6,7 @@ import type { SupportedPlatform } from '@/shared/types/platform'
 export type ModularProcessName =
     | 'proxy'
     | 'lmstudio-proxy'
+    | 'mlx-proxy'
     | 'broker'
     | 'node-info'
     | 'scanner'
@@ -70,6 +71,19 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         // access to be reachable.
         processName: 'lmstudio-proxy',
         baseName: 'lmstudio-proxy',
+        args: [],
+        launchOwner: 'broker',
+        needsFirewallAccess: true,
+        optional: true
+    },
+    {
+        // MLX reverse proxy — the third sibling of `ollama-proxy`, relayed under
+        // the `mlx-proxy:` namespace (`--mlx-proxy-path`). Optional for the
+        // usual reason plus one more: MLX runs only on Apple Silicon, so on any
+        // other host the binary is legitimately absent and the broker degrades
+        // to "no local MLX proxy".
+        processName: 'mlx-proxy',
+        baseName: 'mlx-proxy',
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: true,
@@ -171,7 +185,13 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
  * `nvpair-tui` is a headless terminal client that spawns its own `nvpair-ui-broker` —
  * see `services/nvpair-tui/README.md`.
  */
-export const MODULAR_BUNDLED_BINARIES: { baseName: string }[] = [{ baseName: 'nvpair-tui' }]
+export const MODULAR_BUNDLED_BINARIES: { baseName: string }[] = [
+    { baseName: 'nvpair-tui' },
+    // Started by nvpair-engine-manager AS the MLX engine (the manifest's
+    // {pair_bin}/mlx-pool), not by Electron or the broker — so it ships in the
+    // bundle but appears in no supervisor's worker list.
+    { baseName: 'mlx-pool' }
+]
 
 /** Every backend binary shipped in the installer (runtime workers + bundled tools). */
 export function modularShippedBinaryBaseNames(): string[] {
