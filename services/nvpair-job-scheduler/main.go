@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/parentwatch"
 )
 
 // defaultInterval is the scheduler's default recompute cadence (spec §4).
@@ -51,6 +52,12 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Stdin EOF is this process's usual "my parent is gone" signal, but it is
+	// only delivered once EVERY holder of the pipe closes it -- and an Electron
+	// helper that outlives the app inherits that descriptor. Watching the parent
+	// directly is what actually guarantees no orphan is left holding a port.
+	defer parentwatch.Start("nvpair-job-scheduler", cancel)()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

@@ -24,6 +24,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
+	"nvpair-shared/parentwatch"
 	"nvpair-shared/splitlisten"
 )
 
@@ -516,6 +517,12 @@ func main() {
 	// stamp is carried by the daemon for the whole node.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Stdin EOF is this process's usual "my parent is gone" signal, but it is
+	// only delivered once EVERY holder of the pipe closes it -- and an Electron
+	// helper that outlives the app inherits that descriptor. Watching the parent
+	// directly is what actually guarantees no orphan is left holding a port.
+	defer parentwatch.Start("nvpair-node-info", cancel)()
 
 	// Keep membership converging on its own when cluster-gated. Every other gate
 	// here is refreshed by the request handler, but the TLS personality is chosen

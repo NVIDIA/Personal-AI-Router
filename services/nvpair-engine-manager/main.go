@@ -20,6 +20,7 @@ import (
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/parentwatch"
 )
 
 // bundledManifests are the default engine manifests compiled into the
@@ -64,6 +65,12 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Stdin EOF is this process's usual "my parent is gone" signal, but it is
+	// only delivered once EVERY holder of the pipe closes it -- and an Electron
+	// helper that outlives the app inherits that descriptor. Watching the parent
+	// directly is what actually guarantees no orphan is left holding a port.
+	defer parentwatch.Start("nvpair-engine-manager", cancel)()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
