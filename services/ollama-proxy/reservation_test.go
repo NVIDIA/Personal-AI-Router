@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -20,7 +21,8 @@ func reservationCandidates(ids ...string) []candidate {
 
 func reservedID(p *Proxy, candidates []candidate) string {
 	candidates = append([]candidate(nil), candidates...)
-	return p.reserveCandidate(candidates)[0].id
+	reserved, _ := p.reserveCandidate(context.Background(), candidates, nil)
+	return reserved[0].id
 }
 
 func TestReserveCandidate_ConcurrentEqualLoadHasAtMostOneSkew(t *testing.T) {
@@ -209,7 +211,7 @@ func TestReserveCandidate_PreservesFailoverAndSnapshotReset(t *testing.T) {
 			{ID: "c", Pending: 6},
 		},
 	})
-	got := p.reserveCandidate(reservationCandidates("a", "b", "c"))
+	got, _ := p.reserveCandidate(context.Background(), reservationCandidates("a", "b", "c"), nil)
 	want := []string{"b", "a", "c"}
 	for i, id := range want {
 		if got[i].id != id {
