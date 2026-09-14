@@ -523,6 +523,18 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 void supervisor.pullModel(engine, payload.engineType, payload.model)
             }
             break
+        case 'copyModelFrom':
+            // On the local card this means "fetch it from that peer", so this
+            // node does the copying. The remote branch below is the mirror:
+            // "you fetch it from that peer".
+            if (payload.model && payload.sourceNodeId) {
+                void supervisor.copyModelFromPeer(
+                    payload.sourceNodeId,
+                    payload.engineType,
+                    payload.model
+                )
+            }
+            break
         case 'deleteModel':
             if (payload.model) {
                 void supervisor.deleteModel(engine, payload.engineType, payload.model)
@@ -635,6 +647,17 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
         case 'pullModel':
             if (payload.model) {
                 void supervisor.pullModelRemote(nodeId, engine, payload.engineType, payload.model)
+            }
+            break
+        case 'copyModelFrom':
+            if (payload.model && payload.sourceNodeId) {
+                void supervisor.copyModelToRemote(
+                    nodeId,
+                    payload.sourceNodeId,
+                    engine,
+                    payload.engineType,
+                    payload.model
+                )
             }
             break
         case 'uninstall':

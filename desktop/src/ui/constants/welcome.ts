@@ -13,7 +13,12 @@ export const WELCOME_STEP_SUB_HEADINGS = ['', 'You can update later by clicking 
 
 export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
-    'lm-studio': true
+    'lm-studio': true,
+    // Off by default: installing MLX builds a Python environment and downloads
+    // several hundred megabytes, which is not a reasonable thing to do to
+    // someone who just clicked through a welcome screen. getWelcomeEngineCandidates
+    // still offers it on macOS; this only decides whether it starts ticked.
+    mlx: false
 }
 
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {

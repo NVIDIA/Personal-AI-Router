@@ -39,5 +39,32 @@ export default function EngineIcon({ type, size = 32 }: { type: EngineType; size
         )
     }
 
+    if (type === 'mlx') {
+        // Drawn inline rather than shipped as an asset: MLX publishes no icon
+        // for third parties to bundle, and a lettermark states what the engine
+        // is without borrowing someone's mark. Same white rounded square as the
+        // other two so the row reads as one set.
+        return (
+            <div style={containerStyle}>
+                <svg viewBox="0 0 64 64" style={imgStyle} role="img" aria-label="MLX">
+                    <rect width="64" height="64" fill="#fff" />
+                    <text
+                        x="32"
+                        y="32"
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontFamily="system-ui, -apple-system, sans-serif"
+                        fontSize="20"
+                        fontWeight="700"
+                        letterSpacing="-0.5"
+                        fill="#111"
+                    >
+                        MLX
+                    </text>
+                </svg>
+            </div>
+        )
+    }
+
     return null
 }

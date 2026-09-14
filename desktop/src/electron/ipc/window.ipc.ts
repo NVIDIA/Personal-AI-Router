@@ -6,6 +6,7 @@ import { safeHandle } from '@/electron/ipc/safe-handle'
 import { openExternalSafe } from '@/electron/open-external'
 import { createOverviewWindow, focusNodeInOverview, markOverviewReady } from '@/electron/window'
 import { warmEngineHubs } from '@/electron/model-hub'
+import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 import { resizeTrayWindow } from '@/electron/tray'
 import { saveDebugLogs } from './debug-log-export'
@@ -29,7 +30,7 @@ export function registerWindowIpc(): void {
     // hanging catalog fetch off the startup path the window's first paint shares.
     safeHandle('overview:ready', () => {
         markOverviewReady()
-        warmEngineHubs()
+        warmEngineHubs(engine => getModularBridgeState().isEngineInstalledLocally(engine))
     })
 
     safeHandle('window:open-external', (_event, url) => {

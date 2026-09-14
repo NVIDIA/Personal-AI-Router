@@ -46,6 +46,10 @@ export type EngineCommandType =
     | 'update'
     | 'setPorts'
     | 'pullModel'
+    // Copy a model this node lacks from a peer that already has it, over the
+    // LAN rather than from the Hub. Remote-only: it is issued against the node
+    // that should RECEIVE the model, with sourceNodeId naming the one that has it.
+    | 'copyModelFrom'
     | 'loadModel'
     | 'unloadModel'
     | 'deleteModel'
@@ -57,6 +61,8 @@ export interface EngineCommandPayload {
     engineType: EngineType
     nodeId: string
     model?: string
+    /** `copyModelFrom` only: the node that already holds `model`. */
+    sourceNodeId?: string
     /**
      * `setPorts` only. The engine HTTP server port to apply. Omitted when the
      * server port did not change so the bridge sends only what the user edited.

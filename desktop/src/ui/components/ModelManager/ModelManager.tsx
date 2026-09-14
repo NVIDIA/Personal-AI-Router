@@ -15,6 +15,9 @@ import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
 
 import ModelRow from './ModelRow'
+import { PeerModelRow } from './PeerModelRow'
+import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
+import { useNodesStore } from '@/ui/stores/nodes.store'
 import { IncomingSyncPullRow } from './IncomingSyncPullRow'
 import { TransientModelStatusRow } from './TransientModelStatusRow'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
@@ -22,6 +25,30 @@ import type { ModelEntry } from '@/ui/types/model-hub'
 
 export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId: string }) {
     const [openModelHubModal, setOpenModelHubModal] = useState(false)
+    const engineModels = useEngineModelsStore(s => s.models)
+    const nodes = useNodesStore(s => s.nodes)
+
+    // Models a PEER holds for this engine that this node does not. Offering
+    // them here is what turns "laptop 2 has nothing" into one click, instead of
+    // downloading gigabytes a second time over a link that already carried them.
+    const peerOffers = useMemo(() => {
+        const mine = new Set((backend.models ?? []).map(m => m.name))
+        const offers: Array<{ model: string; sourceNodeId: string; sourceNodeName: string }> = []
+        const seen = new Set<string>()
+        for (const entry of engineModels.values()) {
+            if (entry.engineType !== backend.type || entry.nodeId === nodeId) continue
+            for (const m of entry.models) {
+                if (mine.has(m.name) || seen.has(m.name)) continue
+                seen.add(m.name)
+                offers.push({
+                    model: m.name,
+                    sourceNodeId: entry.nodeId,
+                    sourceNodeName: nodes.get(entry.nodeId)?.name ?? entry.nodeId
+                })
+            }
+        }
+        return offers.sort((a, b) => a.model.localeCompare(b.model))
+    }, [engineModels, nodes, backend.models, backend.type, nodeId])
     const [modelPendingDelete, setModelPendingDelete] = useState<string | null>(null)
     const models = (backend.models ?? []).sort((a, b) =>
         formatModelDisplayName(a.name, backend.type).localeCompare(
@@ -250,6 +277,40 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                 onConfirm={handleConfirmDelete}
             />
 
+            {peerOffers.length > 0 && (
+                <Stack gap="1">
+                    <Text kind="body/regular/sm" className="text-subtle-color pl-2">
+                        Available from another node
+                    </Text>
+                    {peerOffers.map(offer => (
+                        <PeerModelRow
+                            key={`${offer.sourceNodeId}:${offer.model}`}
+                            model={offer.model}
+                            engineType={backend.type}
+                            sourceNodeId={offer.sourceNodeId}
+                            sourceNodeName={offer.sourceNodeName}
+                            busy={isEnginePullInProgress(
+                                useEngineProgressStore
+                                    .getState()
+                                    .getProgressForNode(nodeId)
+                                    .find(
+                                        pr =>
+                                            pr.engineType === backend.type &&
+                                            pr.model === offer.model
+                                    )
+                            )}
+                            onCopy={(model, sourceNodeId) =>
+                                window.pairApi.engines.copyModelFrom(
+                                    backend.type,
+                                    nodeId,
+                                    model,
+                                    sourceNodeId
+                                )
+                            }
+                        />
+                    ))}
+                </Stack>
+            )}
             {supportsSearch && (
                 <Flex justify="end">
                     <Button

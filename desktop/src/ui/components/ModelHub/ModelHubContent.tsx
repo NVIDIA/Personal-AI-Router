@@ -12,6 +12,7 @@ import { searchEngineHub } from '@/ui/utils/model-hub-search'
 import { resolveStoredSort, writeStoredSort } from '@/ui/utils/model-hub-content-storage'
 import { isHubEntryDownloaded } from '@/ui/utils/match-downloaded-model'
 import { EngineType } from '@/shared/types/engines'
+import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import type { ModelItem } from '@/ui/types/engine-info'
 import getErrorString from '@/shared/utils/get-error-string'
 
@@ -106,10 +107,47 @@ export const ModelHubContent = ({
         return allModels.filter(m => m.name.toLowerCase().includes(q))
     }, [allModels, query])
 
-    const visibleModels = useMemo(() => {
+    const catalogueModels = useMemo(() => {
         if (!engine || !downloadedModels || downloadedModels.length === 0) return queryFiltered
         return queryFiltered.filter(m => !isHubEntryDownloaded(engine, m, downloadedModels))
     }, [engine, queryFiltered, downloadedModels])
+
+    /**
+     * The identifier the user typed, offered as a row when the catalogue cannot
+     * offer it.
+     *
+     * MLX has no catalogue at all -- `getEngineHubModels` returns `[]` for it --
+     * so without this the modal is permanently "No models found" and there is no
+     * way to add anything. A locally built model (a quantization) has no repo id
+     * either, and can only ever be named by its path.
+     *
+     * Deliberately not validated here beyond containing a `/`, which separates a
+     * repo id or a path from a stray word. Whether the thing exists is the
+     * engine's question, and it answers it properly: `pull_model` checks a path
+     * really is a servable model directory before recording it, and reports a
+     * specific error if not. Guessing in the renderer would only duplicate that
+     * check and disagree with it.
+     */
+    const typedEntry = useMemo(() => {
+        if (!engine || !EngineCapabilities[engine]?.acceptsTypedModelId) return null
+        const typed = query.trim()
+        if (!typed || !typed.includes('/')) return null
+        if (allModels.some(m => m.name === typed)) return null
+        const entry: ModelEntry = {
+            id: typed,
+            name: typed,
+            author: '',
+            url: '',
+            updatedAt: new Date(0)
+        }
+        if (downloadedModels && isHubEntryDownloaded(engine, entry, downloadedModels)) return null
+        return entry
+    }, [engine, query, allModels, downloadedModels])
+
+    const visibleModels = useMemo(
+        () => (typedEntry ? [typedEntry, ...catalogueModels] : catalogueModels),
+        [typedEntry, catalogueModels]
+    )
 
     const handleSortPersist = useCallback(
         (next: SortState) => {

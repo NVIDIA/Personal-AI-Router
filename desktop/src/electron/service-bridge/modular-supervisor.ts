@@ -14,6 +14,7 @@ import {
 } from './json-rpc-subprocess'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
+import { deleteModelAction } from '@/electron/service-bridge/model-delete-action'
 import { currentPlatform } from '@/shared/utils/platform'
 import {
     getModularBridgeState,
@@ -201,17 +202,20 @@ function normalizeLogLevel(value: string | undefined): ModularLogLevel {
 }
 
 /**
- * Shape the `pull_model` action params per engine. Ollama's `pull_model` body is
- * sent verbatim to `/api/pull` (reads `name`); LM Studio's CLI action templates
- * `{model}` into `lms get {model} --yes`. Sending the wrong key leaves the
- * placeholder unresolved and the engine-manager rejects the call.
+ * Engines whose model actions are CLI commands that template `{model}`, rather
+ * than an HTTP body sent verbatim. LM Studio runs `lms get {model} --yes`; MLX
+ * runs `hf download {model}` and `hf cache rm -y {model}`. Ollama posts its
+ * params straight to `/api/pull`, which reads `name`. Sending the wrong key
+ * leaves the placeholder unresolved and the engine-manager rejects the call.
  */
+const MODEL_KEY_ENGINES = new Set(['lmstudio', 'mlx'])
+
 function pullModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+    return MODEL_KEY_ENGINES.has(engineManagerEngine) ? { model } : { name: model }
 }
 
 function deleteModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+    return MODEL_KEY_ENGINES.has(engineManagerEngine) ? { model } : { name: model }
 }
 
 /**
@@ -299,12 +303,33 @@ function engineManagerId(engine: ProxyEngine): string {
 function proxyEngineFromManagerId(id: string): ProxyEngine | null {
     if (id === 'ollama') return 'ollama'
     if (id === 'lmstudio') return 'lm-studio'
+    if (id === 'mlx') return 'mlx'
     return null
 }
 
-/** The broker relay namespace fronting an engine's reverse proxy. */
+/**
+ * The broker relay namespace fronting an engine's reverse proxy, which doubles
+ * as the notification `source` for frames from that proxy. A Record rather than
+ * a conditional: `JsonRpcNotification.source` is a bare `string`, so a two-way
+ * ternary here mislabelled every non-Ollama frame as LM Studio's with nothing
+ * to catch it. Adding an engine is now a compile error until it is answered.
+ */
+const PROXY_RELAY_PREFIX: Record<ProxyEngine, string> = {
+    ollama: 'proxy',
+    'lm-studio': 'lmstudio-proxy',
+    mlx: 'mlx-proxy'
+}
+
 function proxyRelayPrefix(engine: ProxyEngine): string {
-    return engine === 'ollama' ? 'proxy' : 'lmstudio-proxy'
+    return PROXY_RELAY_PREFIX[engine]
+}
+
+/** Inverse of {@link PROXY_RELAY_PREFIX}: a notification source to its engine. */
+function proxyEngineFromSource(source: string): ProxyEngine | null {
+    for (const engine of PROXY_ENGINES) {
+        if (PROXY_RELAY_PREFIX[engine] === source) return engine
+    }
+    return null
 }
 
 /**
@@ -827,6 +852,7 @@ class ModularSupervisor {
         passPath('--node-info-path', 'node-info')
         passPath('--proxy-path', 'proxy')
         passPath('--lmstudio-proxy-path', 'lmstudio-proxy')
+        passPath('--mlx-proxy-path', 'mlx-proxy')
         passPath('--workload-manager-path', 'workload-manager')
         passPath('--cluster-manager-path', 'cluster-manager')
         passPath('--settings-path', 'node-settings')
@@ -878,6 +904,7 @@ class ModularSupervisor {
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
         await subscribe('proxy:subscribe', 'subscribe to broker ollama-proxy relay')
         await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
+        await subscribe('mlx-proxy:subscribe', 'subscribe to broker mlx-proxy relay')
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1079,7 +1106,7 @@ class ModularSupervisor {
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxyRelayPrefix(engine),
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1100,7 +1127,7 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxyRelayPrefix(engine),
                     method: 'node/discovered',
                     params: node
                 })
@@ -1266,12 +1293,7 @@ class ModularSupervisor {
             this.scheduleRemoteEngineStatusRefresh()
         }
 
-        const proxyEngine: ProxyEngine | null =
-            event.source === 'proxy'
-                ? 'ollama'
-                : event.source === 'lmstudio-proxy'
-                  ? 'lm-studio'
-                  : null
+        const proxyEngine: ProxyEngine | null = proxyEngineFromSource(event.source)
         if (proxyEngine && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
@@ -1316,14 +1338,19 @@ class ModularSupervisor {
         this.readinessWaiters.clear()
     }
 
-    /** Rewrite broker `proxy:`/`lmstudio-proxy:` relay frames into proxy-source events. */
+    /** Rewrite broker `proxy:`/`lmstudio-proxy:`/`mlx-proxy:` relay frames into proxy-source events. */
     private normalizeBrokerProxy(notification: JsonRpcNotification): JsonRpcNotification {
         if (notification.source !== 'broker') return notification
-        if (notification.method.startsWith('lmstudio-proxy:')) {
-            return {
-                source: 'lmstudio-proxy',
-                method: notification.method.slice('lmstudio-proxy:'.length),
-                params: notification.params
+        // The engine-specific prefixes are tested before the bare `proxy:` one.
+        // They do not actually overlap, but keeping each namespace explicit is
+        // what makes a new one visible here rather than silently falling through.
+        for (const prefix of ['lmstudio-proxy:', 'mlx-proxy:']) {
+            if (notification.method.startsWith(prefix)) {
+                return {
+                    source: prefix.slice(0, -1),
+                    method: notification.method.slice(prefix.length),
+                    params: notification.params
+                }
             }
         }
         if (notification.method.startsWith('proxy:')) {
@@ -1736,7 +1763,11 @@ class ModularSupervisor {
             await this.callProcess(
                 'broker',
                 'engine:action',
-                { engine, action: 'delete_model', params: deleteModelParams(engine, model) },
+                {
+                    engine,
+                    action: deleteModelAction(engine, model),
+                    params: deleteModelParams(engine, model)
+                },
                 MODULAR_MODEL_ACTION_TIMEOUT_MS
             )
         } catch (err) {
@@ -1758,6 +1789,82 @@ class ModularSupervisor {
             return
         }
         await this.refreshEngineModels(engine, engineType)
+    }
+
+    /**
+     * Copy a model from a peer that already holds it INTO this node, over the
+     * cluster's pinned mTLS rather than from the Hub.
+     *
+     * The distinction from {@link pullModelRemote} is which machine downloads:
+     * that one tells a peer to fetch from the internet, this one moves bytes
+     * that are already on the LAN. It is the only variant that works with no
+     * internet at all, and on a gigabit link it is far faster than the Hub.
+     */
+    async copyModelFromPeer(
+        sourceNodeId: string,
+        engineType: EngineType,
+        model: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        const selfId = state.getSelfId()
+        if (!selfId) return
+        if (state.isRemoteModelPullActive(selfId, engineType, model)) return
+        state.beginRemoteModelPull(selfId, engineType, model)
+        try {
+            await this.callProcess(
+                'broker',
+                'engine:copy-model-from',
+                { node: sourceNodeId, model },
+                PULL_TIMEOUT_MS
+            )
+        } catch (err) {
+            this.reportError(
+                `Could not copy ${model} from that node: ${getErrorString(err)}`,
+                'error',
+                `engine-copy:${sourceNodeId}:${model}`,
+                { engineType, nodeId: selfId, operation: 'pull' }
+            )
+        } finally {
+            state.finishRemoteModelPull(selfId, engineType, model)
+            this.emitStateRefreshIfHydrated()
+        }
+    }
+
+    /**
+     * Tell `nodeId` to copy `model` from `sourceNodeId`. The mirror of
+     * {@link copyModelFromPeer}: neither machine is the one running the UI, so
+     * from one laptop you can hand a model to another without either of them
+     * contacting the Hub.
+     */
+    async copyModelToRemote(
+        nodeId: string,
+        sourceNodeId: string,
+        engine: string,
+        engineType: EngineType,
+        model: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        if (state.isRemoteModelPullActive(nodeId, engineType, model)) return
+        state.beginRemoteModelPull(nodeId, engineType, model)
+        try {
+            await this.callProcess(
+                'broker',
+                'engine:remote-copy-model',
+                { node: nodeId, sourceNode: sourceNodeId, engine, model },
+                PULL_TIMEOUT_MS
+            )
+            await this.refreshRemoteEngineStatus(nodeId)
+        } catch (err) {
+            this.reportError(
+                `Could not copy ${model} to that node: ${getErrorString(err)}`,
+                'error',
+                `engine-remote-copy:${nodeId}:${model}`,
+                { engineType, nodeId, operation: 'pull' }
+            )
+        } finally {
+            state.finishRemoteModelPull(nodeId, engineType, model)
+            this.emitStateRefreshIfHydrated()
+        }
     }
 
     /**

@@ -39,6 +39,13 @@ export interface IEngineApi {
     ): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
+    /**
+     * Copy a model onto `nodeId` from `sourceNodeId`, which already has it,
+     * over the cluster's LAN link instead of the Hub. Works with no internet,
+     * and on a local network moves the bytes far faster than downloading them
+     * a second time would.
+     */
+    copyModelFrom(engineType: EngineType, nodeId: string, model: string, sourceNodeId: string): void
     /** Load a model into memory on a node. */
     loadModel(engineType: EngineType, nodeId: string, model: string): void
     /** Unload a model from memory on a node. */
@@ -88,6 +95,14 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
             }),
         pullModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
+        copyModelFrom: (engineType, nodeId, model, sourceNodeId) =>
+            fireCommand(transport, {
+                command: 'copyModelFrom',
+                engineType,
+                nodeId,
+                model,
+                sourceNodeId
+            }),
         loadModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'loadModel', engineType, nodeId, model }),
         unloadModel: (engineType, nodeId, model) =>

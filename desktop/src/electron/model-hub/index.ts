@@ -66,7 +66,20 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
  * Called once the Overview renderer reports ready, deliberately not on service
  * connect: a network fetch started before the window has painted competes with
  * the renderer's own load, and a hanging one leaves an unpainted window behind.
+ *
+ * Gated on LM Studio actually being installed. Warming is purely a latency
+ * optimisation for the first modal open -- `getEngineHubModels` awaits
+ * `ensureLoaded()` regardless -- so skipping it costs a cold user one fetch and
+ * costs everyone else the only unprompted outbound request PAIR makes. A
+ * machine running Ollama or MLX has no reason to announce itself to
+ * huggingface.co at every launch.
+ *
+ * If the fact has not arrived yet the answer is "not installed" and nothing is
+ * warmed; engine-manager reports roughly a second before the renderer signals
+ * ready, so that ordering is the exception rather than the rule, and the
+ * fallback for it is the same `ensureLoaded()` path.
  */
-export function warmEngineHubs(): void {
+export function warmEngineHubs(isEngineInstalledLocally: (engine: EngineType) => boolean): void {
+    if (!isEngineInstalledLocally('lm-studio')) return
     lmStudioCatalogCache.refresh()
 }

@@ -37,6 +37,12 @@ export interface EngineCaps {
     /** When true, show the Delete action in the model action menu. */
     hasDeleteModel: boolean
     /**
+     * Whether the hub accepts an identifier the user typed that is not in the
+     * catalogue. MLX has no catalogue to browse, and a model built locally has
+     * no repo id at all, so naming it is the only way to add it.
+     */
+    acceptsTypedModelId?: boolean
+    /**
      * When true, the engine restarts as part of deleting a model, so Delete asks
      * for confirmation first. The engine manager owns the restart; this flag only
      * tells the UI that deleting has that side effect.
