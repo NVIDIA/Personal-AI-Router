@@ -598,3 +598,52 @@ func TestResolveCandidates_SelfGuard(t *testing.T) {
 		t.Errorf("expected the real node to survive the self-guard, candidates = %+v", cands)
 	}
 }
+
+// TestHandleHTTP_InferenceRouting proves each request family applies
+// model-based candidate filtering and forwards the request unchanged.
+func TestHandleHTTP_InferenceRouting(t *testing.T) {
+	test := func(name, path string) {
+		t.Run(name, func(t *testing.T) {
+			var gotBody string
+			var gotPath string
+			good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				gotBody = string(b)
+				gotPath = r.URL.Path
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer good.Close()
+
+			wrongModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("wrong-model node should not receive request")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer wrongModel.Close()
+
+			disc := NewDiscovery()
+			disc.AddManual(nodeForModel(t, "wrong", wrongModel.URL, "different-model"))
+			disc.AddManual(nodeForModel(t, "good", good.URL, "requested-model"))
+			p := testProxy(disc, 11434)
+			p.SetSelected("wrong")
+
+			body := `{"model":"requested-model","messages":[]}`
+			rec := httptest.NewRecorder()
+			p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if gotBody != body {
+				t.Errorf("node got body %q, want %q", gotBody, body)
+			}
+			if gotPath != path {
+				t.Errorf("path = %q, want %q", gotPath, path)
+			}
+		})
+	}
+
+	test("OpenAI chat completions", "/v1/chat/completions")
+	test("OpenAI completions", "/v1/completions")
+	test("OpenAI embeddings", "/v1/embeddings")
+	test("Anthropic messages", "/v1/messages")
+}

@@ -70,6 +70,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	cases := []proxyCase{
 		{name: "ollama", rpcPrefix: "proxy", path: "/api/chat", port: ollamaPort},
 		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", path: "/v1/chat/completions", port: lmstudioPort},
+		{name: "lmstudio-anthropic", rpcPrefix: "lmstudio-proxy", path: "/v1/messages", port: lmstudioPort},
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
