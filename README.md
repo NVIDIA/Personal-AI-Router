@@ -239,6 +239,9 @@ Each entry assumes the ones before it.
 8. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
+9. **[Proxy request hardening](docs/proxy-request-hardening.mdx)** — request
+   body limits, the loopback-only local engine invariant, and fail-closed peer
+   TLS in the inference proxies.
 
 Component references, for when you already know what you are looking for:
 
