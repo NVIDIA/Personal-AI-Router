@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -526,17 +527,54 @@ func (p *Proxy) Run(ctx context.Context) error {
 // Timeouts for upstream connections. Logged at startup so they're always
 // present in any captured log for post-mortem analysis.
 const (
-	proxyDialTimeout     = 10 * time.Second
-	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
-	proxyMaxIdleConns    = 50
-	proxyIdleConnTimeout = 90 * time.Second
+	proxyDialTimeout = 10 * time.Second
+	proxyKeepAlive   = 30 * time.Second
+	// defaultProxyResponseTimeout is the upstream response-header timeout
+	// unless --response-header-timeout (or NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT)
+	// overrides it. Ollama sends no headers until generation starts, so a
+	// request queued behind other work, or waiting on a slow model load, needs
+	// longer than this to survive the proxy.
+	defaultProxyResponseTimeout = 120 * time.Second
+	proxyMaxIdleConns           = 50
+	proxyIdleConnTimeout        = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
 	// IdleConnTimeout so idle keep-alives are reaped on both sides.
 	proxyReadHeaderTimeout = 10 * time.Second
 	proxyServerIdleTimeout = 90 * time.Second
 	maxModelListBytes      = 16 << 20
 )
+
+// responseHeaderTimeoutEnv carries the upstream response-header timeout when
+// the --response-header-timeout flag is empty. The broker spawns the proxy as
+// a child process, so the variable set on the broker (or desktop) is inherited
+// without any broker change.
+const responseHeaderTimeoutEnv = "NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT"
+
+// proxyResponseTimeout is the effective upstream response-header timeout,
+// resolved at startup: --response-header-timeout flag, then
+// NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT, then the 120 s default. Upstream
+// transports are built lazily via newProxyTransport, so assigning it before
+// serving is sufficient.
+var proxyResponseTimeout = defaultProxyResponseTimeout
+
+// resolveResponseHeaderTimeout applies the flag > env > default precedence. A
+// missing, unparseable, or non-positive value falls back to the default, so a
+// bad setting can never silently disable the timeout.
+func resolveResponseHeaderTimeout(flagVal string) time.Duration {
+	raw := flagVal
+	if raw == "" {
+		raw = os.Getenv(responseHeaderTimeoutEnv)
+	}
+	if raw == "" {
+		return defaultProxyResponseTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("invalid response-header timeout %q, using default %s", raw, defaultProxyResponseTimeout)
+		return defaultProxyResponseTimeout
+	}
+	return d
+}
 
 // idleClientWriteTimeout bounds how long a single write of streamed response
 // bytes to the client may block. A killed client can leave a half-open socket
