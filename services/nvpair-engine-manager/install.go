@@ -296,12 +296,17 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 			return "", fmt.Errorf("checksum mismatch for %s: got %s, want %s", f.URL, sum, want)
 		}
 	} else {
-		// Unpinned download: bytes are not integrity-checked, only
-		// transport-secured (HTTPS, enforced above) — the same weaker
-		// guarantee as a `script` install. Logged loudly, and the computed
+		// Unpinned download: bytes carry no publisher checksum, only transport
+		// security (HTTPS, enforced above). Logged loudly, and the computed
 		// digest is surfaced so a manifest author can pin it later.
 		slog.Warn("UNPINNED download: manifest has no sha256, integrity not verified",
 			"engine", engine, "url", f.URL, "computed_sha256", sum)
+		// Trust on first use, fail closed afterwards. See tofu.go for why this
+		// is the strongest control available for a versionless vendor URL.
+		if err := checkInstallerPin(engine, f.URL, sum); err != nil {
+			os.Remove(tmp.Name())
+			return "", err
+		}
 	}
 	return tmp.Name(), nil
 }

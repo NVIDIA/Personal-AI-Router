@@ -40,6 +40,23 @@ const controlEnginesPath = "/v1/engines"
 type controlServer struct {
 	exec *Executor
 	mesh *clustertrust.Mesh
+	// copyFrom asks THIS node to copy a model from a third node. Injected
+	// because resolving a peer and minting a pinned client belongs to the
+	// Manager, and the control surface should not grow a second copy of it.
+	copyFrom func(ctx context.Context, sourceNode, engine, model string) error
+	// hub is the Hugging Face cache this node serves models from. A field
+	// rather than a call to hubRoot() inside the handler, because a handler
+	// that reads the environment cannot be tested against a second node
+	// without the two of them fighting over one process-wide value.
+	hub string
+}
+
+// hubDir returns the configured cache, falling back to the ambient one.
+func (s *controlServer) hubDir() string {
+	if s.hub != "" {
+		return s.hub
+	}
+	return hubRoot()
 }
 
 // requirePin gates a handler on cluster-peer mTLS, sharing the one gate the
@@ -61,6 +78,12 @@ func (s *controlServer) mux() *http.ServeMux {
 	mux.HandleFunc(controlDeletePath, s.requirePin(s.handleDelete))
 	mux.HandleFunc(controlStartPath, s.requirePin(s.handleStart))
 	mux.HandleFunc(controlStopPath, s.requirePin(s.handleStop))
+	// LAN model transfer: what this node holds, and the bytes themselves.
+	// Pin-gated like everything else here — a model list and its weights go
+	// only to a peer this node has actually paired with.
+	mux.HandleFunc(controlCacheManifestPath, s.requirePin(s.handleCacheManifest))
+	mux.HandleFunc(controlCacheBlobPath, s.requirePin(s.handleCacheBlob))
+	mux.HandleFunc(controlCopyFromPath, s.requirePin(s.handleCopyFrom))
 	return mux
 }
 
@@ -79,7 +102,8 @@ func (s *controlServer) handleEngines(w http.ResponseWriter, r *http.Request) {
 // serveControl runs the ec mTLS control surface on 0.0.0.0:port until ctx is
 // cancelled. A bind failure is non-fatal: stdio engine management (and local
 // peers' remote calls being unavailable) must not take the process down.
-func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertrust.Mesh) {
+func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertrust.Mesh,
+	copyFrom func(ctx context.Context, sourceNode, engine, model string) error) {
 	addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -88,7 +112,7 @@ func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertr
 	}
 	ln = tls.NewListener(ln, mesh.ServerTLSConfig())
 	srv := &http.Server{
-		Handler:           (&controlServer{exec: exec, mesh: mesh}).mux(),
+		Handler:           (&controlServer{exec: exec, mesh: mesh, hub: hubRoot(), copyFrom: copyFrom}).mux(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       clustertrust.PeerListenerIdleTimeout,
 	}

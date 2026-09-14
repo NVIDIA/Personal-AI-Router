@@ -113,9 +113,9 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 
-	var body io.Reader
-	if len(params) > 0 && string(params) != "null" {
-		body = bytes.NewReader(params)
+	body, err := actionBody(act, params)
+	if err != nil {
+		return nil, fmt.Errorf("action %q: %w", action, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(act.HTTP.Method), url, body)
 	if err != nil {
@@ -126,8 +126,16 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	}
 	req.Header.Set(engineIdentityProbeHeader, "1")
 	client := e.client
-	if engine == "ollama" && action == "run_model" && e.ollamaLoadClient != nil {
-		client = e.ollamaLoadClient
+	// A model load is slow on any engine: weights have to come off disk before
+	// the first response header can be written. The engine's default 30s header
+	// timeout is right for a control call and wrong for this one, so an action
+	// declares long_running and gets the patient client. The Ollama pair below
+	// predates the flag and is kept as-is so its manifest needs no change.
+	if act.LongRunning && e.slowActionClient != nil {
+		client = e.slowActionClient
+	}
+	if engine == "ollama" && action == "run_model" && e.slowActionClient != nil {
+		client = e.slowActionClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -148,6 +156,47 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	return wrapped, nil
 }
 
+// actionBody builds an HTTP action's request body. By default the caller's
+// params are the body verbatim. A manifest that declares http.body instead
+// supplies a fixed JSON document whose {placeholder} tokens are filled from
+// those params, JSON-escaped, so an engine whose only way to perform an
+// operation is a request the caller cannot compose (mlx-lm has no load
+// endpoint, so load_model is a one-token chat completion) keeps that shape in
+// the manifest rather than in every caller.
+func actionBody(act Action, params json.RawMessage) (io.Reader, error) {
+	if len(act.HTTP.Body) == 0 {
+		if len(params) > 0 && string(params) != "null" {
+			return bytes.NewReader(params), nil
+		}
+		return nil, nil
+	}
+	vars := map[string]string{}
+	if len(params) > 0 {
+		var pm map[string]any
+		if err := json.Unmarshal(params, &pm); err == nil {
+			for k, v := range pm {
+				enc, err := json.Marshal(fmt.Sprint(v))
+				if err != nil {
+					continue
+				}
+				// Strip the quotes json.Marshal adds: the manifest template
+				// carries them, so what is substituted is the escaped inner
+				// text. Without this a model name holding a quote or
+				// backslash would produce a malformed body.
+				vars[k] = string(enc[1 : len(enc)-1])
+			}
+		}
+	}
+	resolved, err := resolvePlaceholders(string(act.HTTP.Body), vars)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid([]byte(resolved)) {
+		return nil, fmt.Errorf("http.body did not resolve to valid JSON")
+	}
+	return strings.NewReader(resolved), nil
+}
+
 // runRemovePathAction resolves templated path/root placeholders and deletes
 // the target when it stays under the declared root.
 func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act Action, params json.RawMessage) (json.RawMessage, error) {
@@ -156,7 +205,7 @@ func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act
 	}
 	vars := map[string]string{
 		"install_dir": st.installDir,
-		"models_dir":  lmstudioModelsDir(),
+		"models_dir":  engineModelsDir(st.manifest.Engine),
 	}
 	if len(params) > 0 {
 		var pm map[string]any
@@ -233,8 +282,22 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 	}
 	vars["port"] = strconv.Itoa(port)
 	vars["install_dir"] = st.installDir
+	vars["pair_bin"] = pairBinDir()
 	if cli := st.plat.Runtime.CLI; cli != "" {
-		vars["cli"] = expandPath(cli)
+		// The manifest's cli may itself be templated ("{install_dir}/venv/bin/hf"
+		// for an engine PAIR installs into its own directory, rather than a fixed
+		// path like LM Studio's ~/.lmstudio/bin/lms). resolveArgs substitutes in a
+		// single pass, so a {cli} that expands to another placeholder would reach
+		// exec as a literal "{install_dir}/..." path. Resolve the runner-owned
+		// values inside it first. expandPath still runs after, for ~ and $VAR.
+		resolved, err := resolvePlaceholders(cli, map[string]string{
+			"install_dir": st.installDir,
+			"port":        strconv.Itoa(port),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("runtime.cli: %w", err)
+		}
+		vars["cli"] = expandPath(resolved)
 	}
 
 	// Most cmd actions run once with the params as given. An action that

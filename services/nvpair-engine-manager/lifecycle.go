@@ -169,6 +169,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		"host":        effectiveBind(rt.Bind, opts.Bind),
 		"port":        strconv.Itoa(port),
 		"install_dir": st.installDir,
+		"pair_bin":    pairBinDir(),
 	}
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
@@ -227,6 +228,21 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	}
 	vars["bin"] = binPath
 
+	// A launcher runs in the binary's place, with {bin} pointing at what was
+	// detected — so the manifest can hand the real engine binary to its
+	// supervisor without restating where the installer put it.
+	launchPath := binPath
+	if rt.Launcher != "" {
+		l, err := resolvePlaceholders(rt.Launcher, vars)
+		if err != nil {
+			return err
+		}
+		launchPath = expandPath(l)
+		if _, statErr := os.Stat(launchPath); statErr != nil {
+			return fmt.Errorf("launcher %q for engine %q is missing: %w", launchPath, engine, statErr)
+		}
+	}
+
 	args, err := resolveArgs(rt.Args, vars)
 	if err != nil {
 		return err
@@ -240,7 +256,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		env[k] = rv
 	}
 
-	proc, err := startManagedProc(binPath, args, env, func(stream, line string) {
+	proc, err := startManagedProc(launchPath, args, env, func(stream, line string) {
 		st.logs.append(stream, line)
 	})
 	if err != nil {
@@ -456,7 +472,7 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	if sp == nil || len(sp.Cmd) == 0 {
 		return fmt.Errorf("cannot stop engine %q: no stop command is configured", engine)
 	}
-	vars := map[string]string{"port": strconv.Itoa(port), "install_dir": st.installDir}
+	vars := map[string]string{"port": strconv.Itoa(port), "install_dir": st.installDir, "pair_bin": pairBinDir()}
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}

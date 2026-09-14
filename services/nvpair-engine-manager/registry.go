@@ -37,6 +37,13 @@ var allowedPlaceholders = map[string]bool{
 	"download":    true,
 	"install_dir": true,
 	"models_dir":  true,
+	// pair_bin is the directory holding PAIR's own binaries. It lets a manifest
+	// run a helper PAIR ships rather than one the engine vendor publishes --
+	// the MLX manifest starts mlx-pool, which supervises the vendor's
+	// mlx_lm.server processes. Runner-owned like the rest: a caller param can
+	// never set it, so a manifest cannot be tricked into executing an arbitrary
+	// path through it.
+	"pair_bin": true,
 }
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
@@ -115,6 +122,20 @@ type Fetch struct {
 type Runtime struct {
 	Mode  string            `json:"mode,omitempty"`
 	Bin   string            `json:"bin,omitempty"`
+	// Launcher runs INSTEAD of the detected/declared Bin, with Bin still
+	// available to it as {bin}.
+	//
+	// It exists because for one engine the thing that proves installation and
+	// the thing to execute are not the same file. MLX is installed as a Python
+	// virtualenv, so detection finds mlx_lm.server -- but what PAIR starts is
+	// mlx-pool, which supervises several mlx_lm.server processes and evicts the
+	// least recently used. Without this the detected binary always wins (see
+	// bringUpProcess: a detected path is cached as st.binPath and preferred, so
+	// an Ollama the user installed themselves is adopted rather than ignored),
+	// and the pool's flags would be handed to mlx_lm.server.
+	//
+	// Unset for every other engine, so nothing else changes behaviour.
+	Launcher string `json:"launcher,omitempty"`
 	Args  []string          `json:"args,omitempty"`
 	Env   map[string]string `json:"env,omitempty"`
 	Port  int               `json:"port"`            // 0 => auto-assign a free loopback port
@@ -183,12 +204,28 @@ type Action struct {
 	// only a restart makes the deletion visible to clients. A stopped engine is
 	// left stopped; a restart failure fails the action.
 	RestartAfter bool `json:"restart_after,omitempty"`
+	// LongRunning marks an HTTP action whose first response header can be
+	// minutes away because the engine is doing real work before it answers --
+	// loading multi-gigabyte weights, in practice. It selects a client with a
+	// ten-minute response-header timeout instead of the thirty seconds that
+	// suits a control call. It does not extend the overall action deadline,
+	// which is the executor's actionTimeout either way.
+	LongRunning bool `json:"long_running,omitempty"`
 }
 
 // ActionResult is the list-extraction spec on an Action (see Action.Result).
 type ActionResult struct {
 	Array string `json:"array"` // top-level array field, e.g. "models" / "data"
 	Field string `json:"field"` // string field per element, e.g. "name" / "id"
+	// Scalar names a top-level string field to read instead of an array,
+	// yielding a zero- or one-element list. It is set INSTEAD of
+	// Array+Field, for an engine that reports a single current model rather
+	// than a list: mlx-lm's GET /health answers {"status":"ok","model":"X"}
+	// and holds exactly one model at a time. A JSON null is an
+	// authoritative empty ("running, nothing loaded"), matching the
+	// present-but-empty-array case; a missing or wrong-typed field is
+	// unknown.
+	Scalar string `json:"scalar,omitempty"`
 	// Match, when set, keeps only array elements that pass the ResultMatch
 	// filter. It lets loaded_models reuse the same extractor as list_models
 	// across engines whose list endpoint tags residency (LM Studio's
@@ -223,6 +260,14 @@ type ActionHTTP struct {
 	Method     string          `json:"method"`
 	Path       string          `json:"path"`
 	BodySchema json.RawMessage `json:"body_schema,omitempty"`
+	// Body is a fixed JSON request body declared by the manifest, with
+	// {placeholder} tokens filled from the caller's params (JSON-escaped).
+	// It exists for an engine whose only way to perform an operation is a
+	// request the caller cannot be asked to compose: mlx-lm has no load
+	// endpoint, so its load_model is a one-token chat completion whose
+	// shape belongs in the manifest, not in every caller. When set, it
+	// replaces the caller's params as the body; BodySchema does not apply.
+	Body json.RawMessage `json:"body,omitempty"`
 }
 
 // ModeOrDefault returns the effective install mode ("user" when unset).
@@ -647,8 +692,18 @@ func (a *Action) validate(name string) error {
 	if hasHTTP && (strings.TrimSpace(a.HTTP.Method) == "" || strings.TrimSpace(a.HTTP.Path) == "") {
 		return fmt.Errorf("action %q: http.method and http.path are required", name)
 	}
-	if a.Result != nil && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
-		return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)
+	if a.Result != nil {
+		hasScalar := strings.TrimSpace(a.Result.Scalar) != ""
+		hasArray := strings.TrimSpace(a.Result.Array) != "" || strings.TrimSpace(a.Result.Field) != ""
+		if hasScalar && hasArray {
+			return fmt.Errorf("action %q: result.scalar cannot be combined with result.array/result.field", name)
+		}
+		if !hasScalar && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
+			return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)
+		}
+		if hasScalar && a.Result.Match != nil {
+			return fmt.Errorf("action %q: result.match does not apply to result.scalar", name)
+		}
 	}
 	if a.Result != nil && a.Result.Match != nil {
 		m := a.Result.Match

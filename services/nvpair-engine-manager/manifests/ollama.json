@@ -2,34 +2,97 @@
   "engine": "ollama",
   "display_name": "Ollama",
   "manifest_version": 1,
-  "install": { "mode": "user" },
+  "install": {
+    "mode": "user"
+  },
   "runtime": {
-    "args": ["serve"],
-    "env": { "OLLAMA_HOST": "{host}:{port}" },
+    "args": [
+      "serve"
+    ],
+    "env": {
+      "OLLAMA_HOST": "{host}:{port}"
+    },
     "bind": "127.0.0.1",
     "port": 11434,
-    "ready": { "http": "http://127.0.0.1:{port}/api/version", "status": 200, "timeout_s": 600 },
-    "stop": { "signal": "term", "grace_s": 5 },
-    "health": { "http": "http://127.0.0.1:{port}/api/version", "status": 200, "interval_s": 5 }
+    "ready": {
+      "http": "http://127.0.0.1:{port}/api/version",
+      "status": 200,
+      "timeout_s": 600
+    },
+    "stop": {
+      "signal": "term",
+      "grace_s": 5
+    },
+    "health": {
+      "http": "http://127.0.0.1:{port}/api/version",
+      "status": 200,
+      "interval_s": 5
+    }
   },
   "platforms": {
     "windows/amd64": {
-      "detect": ["{install_dir}\\ollama.exe", "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"],
+      "detect": [
+        "{install_dir}\\ollama.exe",
+        "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"
+      ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-windows-amd64.zip" },
-        "run": ["tar", "-xf", "{download}", "-C", "{install_dir}"]
+        "fetch": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.33.3/ollama-windows-amd64.zip",
+          "sha256": "52cb36a62e7e501f61514f60212dec7117b6c098811357585e02fffe32d2fcd7"
+        },
+        "run": [
+          "tar",
+          "-xf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ]
       },
-      "uninstall": { "run": ["cmd", "/c", "rmdir", "/s", "/q", "{install_dir}"] },
-      "runtime": { "bin": "{install_dir}\\ollama.exe" }
+      "uninstall": {
+        "run": [
+          "cmd",
+          "/c",
+          "rmdir",
+          "/s",
+          "/q",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}\\ollama.exe"
+      }
     },
     "windows/arm64": {
-      "detect": ["{install_dir}\\ollama.exe", "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"],
+      "detect": [
+        "{install_dir}\\ollama.exe",
+        "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"
+      ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-windows-arm64.zip" },
-        "run": ["tar", "-xf", "{download}", "-C", "{install_dir}"]
+        "fetch": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.33.3/ollama-windows-arm64.zip",
+          "sha256": "98b9ddaab6baece0418c6d1231526eb1e4e66944985e0a8eeb7d6171bcd7b6d8"
+        },
+        "run": [
+          "tar",
+          "-xf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ]
       },
-      "uninstall": { "run": ["cmd", "/c", "rmdir", "/s", "/q", "{install_dir}"] },
-      "runtime": { "bin": "{install_dir}\\ollama.exe" }
+      "uninstall": {
+        "run": [
+          "cmd",
+          "/c",
+          "rmdir",
+          "/s",
+          "/q",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}\\ollama.exe"
+      }
     },
     "darwin/arm64": {
       "detect": [
@@ -38,11 +101,28 @@
         "{install_dir}/Ollama.app/Contents/Resources/ollama"
       ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip" },
-        "run": ["unzip", "-o", "{download}", "-d", "{install_dir}"]
+        "fetch": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.33.3/Ollama-darwin.zip",
+          "sha256": "335f1a11299f5f60dc2d5f2651cf12af9d3c303812c68e978be3e45ea7d6eaf4"
+        },
+        "run": [
+          "unzip",
+          "-o",
+          "{download}",
+          "-d",
+          "{install_dir}"
+        ]
       },
-      "uninstall": { "run": ["rm", "-rf", "{install_dir}/Ollama.app"] },
-      "runtime": { "bin": "{install_dir}/Ollama.app/Contents/Resources/ollama" }
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}/Ollama.app"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}/Ollama.app/Contents/Resources/ollama"
+      }
     },
     "darwin/amd64": {
       "detect": [
@@ -51,63 +131,159 @@
         "{install_dir}/Ollama.app/Contents/Resources/ollama"
       ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/Ollama-darwin.zip" },
-        "run": ["unzip", "-o", "{download}", "-d", "{install_dir}"]
+        "fetch": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.33.3/Ollama-darwin.zip",
+          "sha256": "335f1a11299f5f60dc2d5f2651cf12af9d3c303812c68e978be3e45ea7d6eaf4"
+        },
+        "run": [
+          "unzip",
+          "-o",
+          "{download}",
+          "-d",
+          "{install_dir}"
+        ]
       },
-      "uninstall": { "run": ["rm", "-rf", "{install_dir}/Ollama.app"] },
-      "runtime": { "bin": "{install_dir}/Ollama.app/Contents/Resources/ollama" }
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}/Ollama.app"
+        ]
+      },
+      "runtime": {
+        "bin": "{install_dir}/Ollama.app/Contents/Resources/ollama"
+      }
     },
     "linux/amd64": {
-      "detect": ["{install_dir}/bin/ollama"],
+      "detect": [
+        "{install_dir}/bin/ollama"
+      ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-linux-amd64.tar.zst" },
-        "run": ["tar", "--zstd", "-xf", "{download}", "-C", "{install_dir}"]
+        "fetch": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.33.3/ollama-linux-amd64.tar.zst",
+          "sha256": "c13cea8f3389db4145f8a6cb88d1747242a48639d7c13e3bda7c1ebdc6eebb2f"
+        },
+        "run": [
+          "tar",
+          "--zstd",
+          "-xf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ]
       },
-      "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}"
+        ]
+      },
       "runtime": {
         "bin": "{install_dir}/bin/ollama",
-        "env": { "LD_LIBRARY_PATH": "{install_dir}/lib/ollama" }
+        "env": {
+          "LD_LIBRARY_PATH": "{install_dir}/lib/ollama"
+        }
       }
     },
     "linux/arm64": {
-      "detect": ["{install_dir}/bin/ollama"],
+      "detect": [
+        "{install_dir}/bin/ollama"
+      ],
       "install": {
-        "fetch": { "url": "https://ollama.com/download/ollama-linux-arm64.tar.zst" },
-        "run": ["tar", "--zstd", "-xf", "{download}", "-C", "{install_dir}"]
+        "fetch": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.33.3/ollama-linux-arm64.tar.zst",
+          "sha256": "4425a112af999ae6572c1ce211fbabeaca7bab23ed5860972acdfc0cc2358420"
+        },
+        "run": [
+          "tar",
+          "--zstd",
+          "-xf",
+          "{download}",
+          "-C",
+          "{install_dir}"
+        ]
       },
-      "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}"
+        ]
+      },
       "runtime": {
         "bin": "{install_dir}/bin/ollama",
-        "env": { "LD_LIBRARY_PATH": "{install_dir}/lib/ollama" }
+        "env": {
+          "LD_LIBRARY_PATH": "{install_dir}/lib/ollama"
+        }
       }
     }
   },
   "actions": {
     "list_models": {
       "description": "List models installed on this engine.",
-      "http": { "method": "GET", "path": "/api/tags" },
-      "result": { "array": "models", "field": "name" }
+      "http": {
+        "method": "GET",
+        "path": "/api/tags"
+      },
+      "result": {
+        "array": "models",
+        "field": "name"
+      }
     },
     "loaded_models": {
       "description": "List models currently loaded in memory (every /api/ps entry is resident).",
-      "http": { "method": "GET", "path": "/api/ps" },
-      "result": { "array": "models", "field": "name" }
+      "http": {
+        "method": "GET",
+        "path": "/api/ps"
+      },
+      "result": {
+        "array": "models",
+        "field": "name"
+      }
     },
     "pull_model": {
       "description": "Pull a model by name (params: {\"name\": \"<model>\"}).",
-      "http": { "method": "POST", "path": "/api/pull", "body_schema": { "name": "string" } }
+      "http": {
+        "method": "POST",
+        "path": "/api/pull",
+        "body_schema": {
+          "name": "string"
+        }
+      }
     },
     "run_model": {
       "description": "Run a one-shot generation (params: {\"model\": \"<model>\", \"prompt\": \"<text>\", \"stream\": false}).",
-      "http": { "method": "POST", "path": "/api/generate", "body_schema": { "model": "string", "prompt": "string", "stream": "bool" } }
+      "http": {
+        "method": "POST",
+        "path": "/api/generate",
+        "body_schema": {
+          "model": "string",
+          "prompt": "string",
+          "stream": "bool"
+        }
+      }
     },
     "unload_model": {
       "description": "Unload a model from memory (params: {\"model\": \"<model>\", \"keep_alive\": 0}).",
-      "http": { "method": "POST", "path": "/api/generate", "body_schema": { "model": "string", "keep_alive": "number" } }
+      "http": {
+        "method": "POST",
+        "path": "/api/generate",
+        "body_schema": {
+          "model": "string",
+          "keep_alive": "number"
+        }
+      }
     },
     "delete_model": {
       "description": "Delete a model by name (params: {\"name\": \"<model>\"}).",
-      "http": { "method": "DELETE", "path": "/api/delete", "body_schema": { "name": "string" } }
+      "http": {
+        "method": "DELETE",
+        "path": "/api/delete",
+        "body_schema": {
+          "name": "string"
+        }
+      }
     }
   }
 }

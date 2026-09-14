@@ -73,8 +73,8 @@ func TestEngineHTTPClientsBoundResponseHeaders(t *testing.T) {
 	if got := responseHeaderTimeout(t, ex.client); got != engineResponseHeaderTimeout {
 		t.Fatalf("ordinary response-header timeout = %s, want %s", got, engineResponseHeaderTimeout)
 	}
-	if got := responseHeaderTimeout(t, ex.ollamaLoadClient); got != ollamaLoadResponseHeaderTimeout {
-		t.Fatalf("Ollama load response-header timeout = %s, want %s", got, ollamaLoadResponseHeaderTimeout)
+	if got := responseHeaderTimeout(t, ex.slowActionClient); got != slowActionResponseHeaderTimeout {
+		t.Fatalf("Ollama load response-header timeout = %s, want %s", got, slowActionResponseHeaderTimeout)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 	ex.client = newEngineHTTPClient(20 * time.Millisecond)
-	ex.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
+	ex.slowActionClient = newEngineHTTPClient(500 * time.Millisecond)
 	st, err := ex.state("ollama")
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	}
 	otherEx := newTestExecutor(t, other)
 	otherEx.client = newEngineHTTPClient(20 * time.Millisecond)
-	otherEx.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
+	otherEx.slowActionClient = newEngineHTTPClient(500 * time.Millisecond)
 	otherState, err := otherEx.state("other")
 	if err != nil {
 		t.Fatal(err)

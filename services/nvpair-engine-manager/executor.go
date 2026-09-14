@@ -21,7 +21,7 @@ var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
 
 const (
 	engineResponseHeaderTimeout     = 30 * time.Second
-	ollamaLoadResponseHeaderTimeout = 10 * time.Minute
+	slowActionResponseHeaderTimeout = 10 * time.Minute
 )
 
 // EngineStatus is the snapshot returned by engine:status and
@@ -73,7 +73,7 @@ type Executor struct {
 	reporter         *Reporter
 	emit             func(method string, params any)
 	client           *http.Client
-	ollamaLoadClient *http.Client
+	slowActionClient *http.Client
 	// progress fans install/pull progress to transient subscribers (the ec
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
@@ -92,6 +92,9 @@ type Executor struct {
 	// actionTimeout bounds a single engine:action call (HTTP or CLI) so a
 	// hung engine can't park the goroutine or starve the caller forever.
 	actionTimeout time.Duration
+	// hub overrides the Hugging Face cache this node reads and writes; empty
+	// means the ambient one. Set only by tests, which stand in for two nodes.
+	hub string
 	// loadedPollInterval is the cadence of the loaded-model watcher
 	// (loadedwatch.go), which polls each running engine's resident set and emits
 	// engine:models-changed on change. 0 disables it. Overridable via
@@ -115,7 +118,7 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 		reporter:           reporter,
 		emit:               emit,
 		client:             newEngineHTTPClient(engineResponseHeaderTimeout),
-		ollamaLoadClient:   newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
+		slowActionClient:   newEngineHTTPClient(slowActionResponseHeaderTimeout),
 		progress:           newProgressHub(),
 		baseDir:            baseDir,
 		desired:            newDesiredStateStore(baseDir),

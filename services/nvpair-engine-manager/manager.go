@@ -265,6 +265,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		go m.runAction(ctx, msg)
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
+		"engine:copy-model-from", "engine:remote-copy-model",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
 		"engine:remote-start", "engine:remote-stop":
 		go m.runRemote(ctx, msg)

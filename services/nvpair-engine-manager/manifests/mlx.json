@@ -1,0 +1,164 @@
+{
+  "engine": "mlx",
+  "display_name": "MLX",
+  "manifest_version": 1,
+  "install": {
+    "mode": "user"
+  },
+  "runtime": {
+    "args": [
+      "--host",
+      "{host}",
+      "--port",
+      "{port}",
+      "--server-bin",
+      "{bin}",
+      "--child-port-base",
+      "8200",
+      "--registered-models-file",
+      "{install_dir}/registered-models.txt"
+    ],
+    "bind": "127.0.0.1",
+    "port": 8081,
+    "ready": {
+      "http": "http://127.0.0.1:{port}/health",
+      "status": 200,
+      "timeout_s": 60
+    },
+    "stop": {
+      "signal": "term",
+      "grace_s": 45
+    },
+    "health": {
+      "http": "http://127.0.0.1:{port}/health",
+      "status": 200,
+      "interval_s": 10
+    },
+    "env": {
+      "MLX_MAX_MODELS": "1",
+      "HF_HUB_DISABLE_TELEMETRY": "1",
+      "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+      "HF_HUB_DISABLE_UPDATE_CHECK": "1"
+    },
+    "launcher": "{pair_bin}/mlx-pool"
+  },
+  "platforms": {
+    "darwin/arm64": {
+      "detect": [
+        "{install_dir}/venv/bin/mlx_lm.server"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.10/uv-aarch64-apple-darwin.tar.gz",
+          "sha256": "51c6170e8e3a01cef9f33b94f582b7b81ac65046f55d40afb35f9cff5a68c179"
+        },
+        "run": [
+          "sh",
+          "-c",
+          "set -e; tar -xzf \"{download}\" -C \"{install_dir}\" --strip-components=1; \"{install_dir}/uv\" venv --no-config --clear --python 3.13 \"{install_dir}/venv\"; \"{install_dir}/uv\" pip install --no-config --refresh-package mlx-lm --python \"{install_dir}/venv/bin/python\" mlx-lm==0.31.3; \"{install_dir}/venv/bin/python\" -c 'import mlx.core, mlx_lm'; \"{install_dir}/venv/bin/python\" -c \"import mlx_lm,pathlib,json;pathlib.Path('{install_dir}/installed.json').write_text(json.dumps({'mlx_lm_version':mlx_lm.__version__,'source':'pypi:mlx-lm==0.31.3'}))\""
+        ],
+        "description": "mlx-lm is installed from PyPI at a pinned version rather than bundled: uv verifies the published hashes, nothing has to ship inside the app, and 0.31.3 is the current release. To run a fork instead -- upstream's tool-call and thinking-mode handling has known gaps -- override only this install block with a user manifest in <app data>/engines/mlx.json; it is deep-merged over this one, so everything else keeps inheriting. See docs/mlx.mdx."
+      },
+      "uninstall": {
+        "run": [
+          "rm",
+          "-rf",
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "bin": "{pair_bin}/mlx-pool",
+        "cli": "{install_dir}/venv/bin/hf"
+      }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List MLX models downloaded to the Hugging Face cache. This is the catalogue the UI offers, NOT the routing inventory -- mlx-lm holds one model at a time, so eligibility comes from loaded_models.",
+      "http": {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      "result": {
+        "array": "data",
+        "field": "id"
+      }
+    },
+    "loaded_models": {
+      "description": "Models currently resident, most recently used first. mlx-pool keeps up to MLX_MAX_MODELS alive and evicts the least recently used, so this is a list rather than the single model a bare mlx_lm.server would report.",
+      "http": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "result": {
+        "array": "models",
+        "field": "id"
+      }
+    },
+    "load_model": {
+      "description": "Make a model resident (params: {\"model\": \"<repo id>\"}). mlx-lm has no load endpoint, so this is a one-token completion whose only purpose is the load it forces; the generated token is discarded.",
+      "http": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "{model}",
+          "messages": [
+            {
+              "role": "user",
+              "content": "ok"
+            }
+          ],
+          "max_tokens": 1,
+          "temperature": 0,
+          "stream": false
+        }
+      },
+      "long_running": true
+    },
+    "pull_model": {
+      "description": "Add a model (params: {\"model\": \"<repo id or absolute path>\"}). A Hugging Face repo id is downloaded to the cache. An absolute path is instead REGISTERED: MLX has no catalogue to browse, and a model built locally (a quantization, say) has no repo id, so naming its directory is the only way to add it. The path is validated as a servable model directory before it is recorded, and mlx-pool re-reads the file on every /v1/models, so it appears without restarting the engine. Hugging Face telemetry is suppressed on argv because runtime.env does not reach a cmd action.",
+      "cmd": [
+        "/usr/bin/env",
+        "HF_HUB_DISABLE_TELEMETRY=1",
+        "HF_HUB_DISABLE_IMPLICIT_TOKEN=1",
+        "HF_HUB_DISABLE_UPDATE_CHECK=1",
+        "sh",
+        "-c",
+        "set -e\nm=$1; cli=$2; reg=$3\ncase $m in \"~/\"*) m=$HOME/${m#\"~/\"} ;; esac\ncase $m in\n/*)\n  [ -d \"$m\" ] || { echo \"no such directory: $m\" >&2; exit 1; }\n  [ -f \"$m/config.json\" ] || { echo \"not an MLX model directory (no config.json): $m\" >&2; exit 1; }\n  if [ ! -f \"$m/tokenizer_config.json\" ] && [ ! -f \"$m/tokenizer.json\" ]; then\n    echo \"not an MLX model directory (no tokenizer): $m\" >&2; exit 1\n  fi\n  mkdir -p \"$(dirname \"$reg\")\"; touch \"$reg\"\n  grep -qxF \"$m\" \"$reg\" || printf '%s\\n' \"$m\" >> \"$reg\"\n  echo \"registered local model $m\"\n  ;;\n*)\n  exec \"$cli\" download \"$m\"\n  ;;\nesac",
+        "mlx-pull-model",
+        "{model}",
+        "{cli}",
+        "{install_dir}/registered-models.txt"
+      ]
+    },
+    "delete_model": {
+      "description": "Delete a cached model (params: {\"model\": \"<repo id>\"}). The Hugging Face cache is shared with every other Hugging Face tool on this machine. A model addressed by absolute path is not in the cache and is routed to delete_model_path instead. No restart_after: the catalogue is rescanned on every /v1/models.",
+      "cmd": [
+        "/usr/bin/env",
+        "HF_HUB_DISABLE_TELEMETRY=1",
+        "HF_HUB_DISABLE_IMPLICIT_TOKEN=1",
+        "HF_HUB_DISABLE_UPDATE_CHECK=1",
+        "{cli}",
+        "cache",
+        "rm",
+        "-y",
+        "{model}"
+      ]
+    },
+    "delete_model_path": {
+      "description": "Delete a model that lives as a directory rather than a cache entry (params: {\"model\": \"<absolute path>\"}). Locally built models -- a quantization, say -- have no repo id, so this is the only way to remove one; without it a model found by the models-directory scan could never be removed from the catalogue at all. The delete is confined to the engine's model directory, so a path outside it is refused.",
+      "remove_path": {
+        "root": "{models_dir}",
+        "path": "{model}"
+      }
+    },
+    "unload_model": {
+      "description": "Release a resident model's memory (params: {\"model\": \"<id>\"}). mlx-lm has no unload of its own -- a model leaves memory only when the process ends -- but mlx-pool runs one model per child process, so ending that child IS the unload and frees the weights deterministically. Refused with 409 while the model is serving a request, so an unload cannot truncate an answer in flight.",
+      "http": {
+        "method": "POST",
+        "path": "/unload",
+        "body": "{\"model\": \"{model}\"}"
+      }
+    }
+  }
+}
