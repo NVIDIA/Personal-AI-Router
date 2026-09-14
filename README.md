@@ -239,6 +239,9 @@ Each entry assumes the ones before it.
 8. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
+9. **[Workload broadcast reliability](docs/workload-broadcast-reliability.mdx)**
+   — ordered inter-node broadcasts and dedup-after-emit in the workload
+   manager.
 
 Component references, for when you already know what you are looking for:
 
