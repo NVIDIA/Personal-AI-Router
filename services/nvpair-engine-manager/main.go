@@ -134,7 +134,7 @@ func main() {
 	// the process on a node that joins a cluster after engine-manager started —
 	// exactly the window in which the broker mints the identity.
 	if *controlPort > 0 {
-		go serveControl(ctx, *controlPort, exec, mesh)
+		go serveControl(ctx, *controlPort, exec, mesh, mgr.CopyModelFromPeer)
 	}
 
 	if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {

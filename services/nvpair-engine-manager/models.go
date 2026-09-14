@@ -188,6 +188,9 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, false
 	}
+	if spec.Scalar != "" {
+		return extractScalarResult(obj, spec.Scalar)
+	}
 	arrRaw, ok := obj[spec.Array]
 	if !ok || bytes.Equal(bytes.TrimSpace(arrRaw), []byte("null")) {
 		return nil, false
@@ -214,6 +217,32 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 		return nil, false
 	}
 	return out, true
+}
+
+// extractScalarResult reads one top-level string field as a zero- or
+// one-element inventory, for an engine that reports a single current model
+// instead of a list (mlx-lm's GET /health answers
+// {"status":"ok","model":"<repo>"} and holds exactly one model at a time).
+// A JSON null or empty string is the authoritative "running, nothing loaded" --
+// the scalar counterpart of a present empty array -- while a missing or
+// wrong-typed field is unknown and returns ok=false, so a response we cannot
+// read is never labelled an authoritative empty.
+func extractScalarResult(obj map[string]json.RawMessage, field string) ([]string, bool) {
+	fv, ok := obj[field]
+	if !ok {
+		return nil, false
+	}
+	if bytes.Equal(bytes.TrimSpace(fv), []byte("null")) {
+		return []string{}, true
+	}
+	var s string
+	if err := json.Unmarshal(fv, &s); err != nil {
+		return nil, false
+	}
+	if s == "" {
+		return []string{}, true
+	}
+	return []string{s}, true
 }
 
 // matchRow reports whether an element passes an ActionResult row filter.

@@ -122,6 +122,62 @@ func (c *remoteClient) getEngines(ctx context.Context) (json.RawMessage, error) 
 	return json.RawMessage(data), nil
 }
 
+// get fetches a small JSON body from an ec route.
+func (c *remoteClient) get(ctx context.Context, path string) (json.RawMessage, error) {
+	return c.getWith(ctx, path, c.http)
+}
+
+// getSlow is get on the readiness budget, for a route whose peer legitimately
+// takes minutes to produce its FIRST byte. Building a directory model's manifest
+// hashes the whole model -- 33s for an 11 GB one here -- so on the ordinary 30s
+// response-header budget the request dies before the peer has anything to say.
+func (c *remoteClient) getSlow(ctx context.Context, path string) (json.RawMessage, error) {
+	client := c.http
+	if c.readyHTTP != nil {
+		client = c.readyHTTP
+	}
+	return c.getWith(ctx, path, client)
+}
+
+func (c *remoteClient) getWith(ctx context.Context, path string, client *http.Client) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.forgetAddress()
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return json.RawMessage(data), nil
+}
+
+// getStream opens an ec route for streaming and hands the body to the caller,
+// which must close it. Used for model blobs, which are gigabytes and must never
+// be buffered.
+func (c *remoteClient) getStream(ctx context.Context, path string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.forgetAddress()
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		resp.Body.Close()
+		return nil, fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return resp.Body, nil
+}
+
 // postJSON POSTs body to a non-streaming ec endpoint and returns the raw JSON
 // response (e.g. an EngineStatus from start/stop).
 func (c *remoteClient) postJSON(ctx context.Context, path, engine string, body any) (json.RawMessage, error) {

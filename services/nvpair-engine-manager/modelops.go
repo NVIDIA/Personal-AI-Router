@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 )
 
 // modelActionRequest is the shared body for ec model load/unload/delete endpoints.
@@ -65,6 +66,14 @@ func modelActionWire(engine, op, model string) (string, json.RawMessage, error) 
 		switch engine {
 		case "ollama":
 			return marshalModelAction("delete_model", map[string]string{"name": model})
+		case "mlx":
+			// A model outside the Hugging Face cache is advertised by absolute
+			// path and has no repo id for `hf cache rm` to delete. It is removed
+			// from disk instead, confined to the engine's model directory.
+			if filepath.IsAbs(model) {
+				return marshalModelAction("delete_model_path", map[string]string{"model": model})
+			}
+			return marshalModelAction("delete_model", map[string]string{"model": model})
 		default:
 			return marshalModelAction("delete_model", map[string]string{"model": model})
 		}
