@@ -22,3 +22,9 @@ __pycache__/
 
 # Per-machine bookkeeping written by the Cursor agent hooks, not configuration.
 /.cursor/hooks/state/
+
+# Benchmark scratch
+tests/__pycache__/
+
+# Local benchmark output (see tests/README.md for how to regenerate)
+numbers.md

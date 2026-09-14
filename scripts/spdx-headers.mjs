@@ -29,7 +29,22 @@ import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-const COPYRIGHT_HOLDER = 'NVIDIA CORPORATION & AFFILIATES. All rights reserved.'
+// Two holders are valid in this fork, and which one a file carries is not a
+// style choice.
+//
+// Files inherited from upstream keep NVIDIA's notice: Apache-2.0 section 4
+// requires retaining the copyright notices of the work you are deriving from,
+// so a modified upstream file must not have its notice rewritten. Files that
+// exist only here are this fork's own work and carry its author instead --
+// leaving them stamped NVIDIA would attribute someone else's copyright to code
+// NVIDIA never wrote.
+//
+// FORK_COPYRIGHT_HOLDER is what `--fix` inserts, because anything missing a
+// header in this repo is by definition a new file.
+const UPSTREAM_COPYRIGHT_HOLDER = 'NVIDIA CORPORATION & AFFILIATES. All rights reserved.'
+const FORK_COPYRIGHT_HOLDER = 'Denis Akimov'
+const ACCEPTED_COPYRIGHT_HOLDERS = [UPSTREAM_COPYRIGHT_HOLDER, FORK_COPYRIGHT_HOLDER]
+const COPYRIGHT_HOLDER = FORK_COPYRIGHT_HOLDER
 const LICENSE_IDENTIFIER = 'Apache-2.0'
 
 // A header may sit below a shebang, an XML prologue, or YAML frontmatter, so the
@@ -201,7 +216,7 @@ function inspect(text) {
     // Strip a block-comment terminator the tag regex swept up on a one-line header.
     const notice = copyright[1].replace(/\s*(-->|\*\/)\s*$/, '').trim()
     const parsed = notice.match(COPYRIGHT_TEXT)
-    if (parsed === null || parsed[1] !== COPYRIGHT_HOLDER) {
+    if (parsed === null || !ACCEPTED_COPYRIGHT_HOLDERS.includes(parsed[1])) {
         return { state: 'review', detail: `nonstandard copyright line: ${notice}` }
     }
     return { state: 'ok' }
@@ -245,6 +260,7 @@ function gitPaths(args) {
     })
     return stdout.split('\0').filter(entry => entry !== '')
 }
+
 
 function candidates(staged, prefixes) {
     // Tracked plus untracked-but-not-ignored, so a file created and not yet added

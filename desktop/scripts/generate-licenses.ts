@@ -149,6 +149,7 @@ function renderMarkdown(entries: Entry[]): string {
         'binaries across the Windows, Linux, and macOS targets. First-party modules',
         '(`nvpair-shared`, `eapnoob`) are excluded.',
         '',
+        '',
         '## Components',
         '',
         '| Component | Version | License |',
