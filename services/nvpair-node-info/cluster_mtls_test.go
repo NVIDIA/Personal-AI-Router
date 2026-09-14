@@ -101,7 +101,7 @@ func TestNodeInfoHandler_MTLSGate(t *testing.T) {
 
 	const wantBody = `{"GPUs":[]}`
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/node-info", nodeInfoHandler(meshA, func() []byte { return []byte(wantBody) }))
+	mux.HandleFunc("/v1/node-info", nodeInfoHandler(meshA, nil, func() []byte { return []byte(wantBody) }))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.TLS = meshA.ServerTLSConfig()
 	srv.StartTLS()

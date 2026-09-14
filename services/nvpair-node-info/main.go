@@ -258,7 +258,7 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 // host's GPU inventory in the clear, and neither can a plain-HTTP caller on the
 // shared port. Refresh picks up a membership change or a peer paired after
 // startup.
-func nodeInfoHandler(mesh *clustertrust.Mesh, body func() []byte) http.HandlerFunc {
+func nodeInfoHandler(mesh *clustertrust.Mesh, readers *trustedReaders, body func() []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mesh.Refresh()
 		if mesh.Clustered() {
@@ -266,6 +266,12 @@ func nodeInfoHandler(mesh *clustertrust.Mesh, body func() []byte) http.HandlerFu
 				http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
 				return
 			}
+		} else if !readers.allows(r.RemoteAddr) {
+			// Not clustered, so the mTLS gate above is inert and this is the
+			// only control. Answer loopback and known PAIR peers; a device that
+			// has not announced itself as a node gets nothing.
+			denyUntrustedReader(w, r.RemoteAddr)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body())
@@ -393,6 +399,8 @@ func main() {
 	// push the answer is genuinely unknown and the field is omitted. The two
 	// sources are mutually exclusive by construction.
 	identity := &clusterIdentity{}
+	// Fail-open until the broker pushes; see trustedreaders.go.
+	readers := newTrustedReaders()
 	clusterPrincipal := func() *string {
 		if !clusterGated {
 			uuid, told := identity.get()
@@ -409,7 +417,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func() []byte {
+	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, readers, func() []byte {
 		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal())
 	}))
 
@@ -556,6 +564,7 @@ func main() {
 
 	go applog.StdinRPC(notifier, func(msg applog.StdinMessage) {
 		handleClusterIdentity(msg, identity)
+		handleTrustedReaders(msg, readers)
 	}, func() {
 		log.Print("stdin closed, shutting down")
 		cancel()
