@@ -147,9 +147,20 @@ func parseXpuSmiDiscovery(out []byte) ([]GPUInfo, bool) {
 		if name == "" {
 			name = "Intel GPU"
 		}
+		vram := intelMemoryBytes(d.MemoryPhysicalSizeByte)
+		if vram == 0 {
+			// Some xpu-smi builds omit memory_physical_size_byte for
+			// discrete Arc adapters. Ask the DRM ioctl directly the same
+			// way the sysfs path does — cheap, reliable, no extra deps.
+			if node := intelRenderNodeForBDF(strings.TrimPrefix(key, intelStatsKeyPrefix)); node != "" {
+				if total, _, ok := intelVRAMFromDRM(node); ok {
+					vram = total
+				}
+			}
+		}
 		gpus = append(gpus, GPUInfo{
 			Name:      name,
-			VramBytes: intelMemoryBytes(d.MemoryPhysicalSizeByte),
+			VramBytes: vram,
 			statsKey:  key,
 		})
 	}
@@ -274,9 +285,21 @@ func detectIntelViaSysfs() []GPUInfo {
 		if name == "" {
 			name = "Intel GPU"
 		}
+		vram := readSysfsVRAMTotal(card)
+		if vram == 0 {
+			// Stock i915 builds don't expose mem_info_vram_total; fall back
+			// to the DRM_IOCTL_I915_QUERY memory-regions query the way
+			// intel_gpu_top does. Reports real Arc VRAM (6/8/16 GiB) even
+			// when Resizable BAR is off and sysfs shows nothing.
+			if node := intelRenderNode(card); node != "" {
+				if total, _, ok := intelVRAMFromDRM(node); ok {
+					vram = total
+				}
+			}
+		}
 		gpus = append(gpus, GPUInfo{
 			Name:      name,
-			VramBytes: readSysfsVRAMTotal(card),
+			VramBytes: vram,
 			statsKey:  key,
 		})
 	}

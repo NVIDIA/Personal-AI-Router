@@ -43,13 +43,17 @@ import (
 // sysfs fallback reads from. deviceID is the xpu-smi enumeration index,
 // used to correlate a dump row back to this adapter — some xpu-smi
 // builds report device_id as the only stable identifier in the dump
-// output, others include the BDF; we accept either.
+// output, others include the BDF; we accept either. renderNode is the
+// /dev/dri/renderD* path the DRM_IOCTL_I915_QUERY memory-regions fallback
+// opens; empty on adapters where no render node was found (very unusual
+// but possible under some virtualization).
 type intelStatsSource struct {
-	statsKey  string
-	bdf       string
-	deviceID  int
-	sysfsCard string
-	hasDevID  bool
+	statsKey   string
+	bdf        string
+	deviceID   int
+	sysfsCard  string
+	renderNode string
+	hasDevID   bool
 }
 
 // intelXpuSmiUnavailable latches on the first xpu-smi failure so we
@@ -78,6 +82,9 @@ func discoverIntelStatsSources() []intelStatsSource {
 		if x, ok := byXpuSmi[s.bdf]; ok {
 			s.deviceID = x.deviceID
 			s.hasDevID = x.hasDevID
+			if s.renderNode == "" {
+				s.renderNode = x.renderNode
+			}
 		}
 		seen[s.statsKey] = struct{}{}
 		out = append(out, s)
@@ -124,9 +131,10 @@ func collectIntelSysfsCards() []intelStatsSource {
 			continue
 		}
 		out = append(out, intelStatsSource{
-			statsKey:  intelStatsKeyPrefix + bdf,
-			bdf:       bdf,
-			sysfsCard: card,
+			statsKey:   intelStatsKeyPrefix + bdf,
+			bdf:        bdf,
+			sysfsCard:  card,
+			renderNode: intelRenderNode(card),
 		})
 	}
 	return out
@@ -164,10 +172,11 @@ func collectIntelXpuSmiDevices() map[string]intelStatsSource {
 		}
 		bdf := strings.TrimPrefix(key, intelStatsKeyPrefix)
 		res[bdf] = intelStatsSource{
-			statsKey: key,
-			bdf:      bdf,
-			deviceID: d.DeviceID,
-			hasDevID: true,
+			statsKey:   key,
+			bdf:        bdf,
+			deviceID:   d.DeviceID,
+			renderNode: intelRenderNodeForBDF(bdf),
+			hasDevID:   true,
 		}
 	}
 	return res
@@ -179,10 +188,14 @@ func collectIntelXpuSmiDevices() map[string]intelStatsSource {
 // collector uses that to decide whether to advance GPUSampledAt.
 //
 // The xpu-smi path runs first (one batched invocation for every
-// adapter), then the sysfs fallback fills any adapter whose VRAM-used
-// slot is still zero. Neither path is mandatory: on a host with no
-// xpu-smi and iGPUs only, the map is left untouched and the Intel
-// adapters still appear in the inventory without dynamic stats.
+// adapter), then two fallbacks fill any adapter whose VRAM-used slot
+// is still zero: the DRM_IOCTL_I915_QUERY memory-regions ioctl (works
+// on every stock i915 kernel — same source intel_gpu_top uses), and
+// finally the DRM mem_info_vram_used sysfs attribute (only present on
+// newer i915 / xe builds). Neither utilization nor memory-used is
+// mandatory: on a host with iGPUs only and no xpu-smi, the map is
+// left untouched and the Intel adapters still appear in the inventory
+// without dynamic stats.
 func sampleIntelStats(sources []intelStatsSource, out map[string]gpuStat) int {
 	if len(sources) == 0 {
 		return 0
@@ -199,6 +212,11 @@ func sampleIntelStats(sources []intelStatsSource, out map[string]gpuStat) int {
 			}
 			if x.hasMem {
 				stat.VRAMUsed = x.mem
+			}
+		}
+		if stat.VRAMUsed == 0 && src.renderNode != "" {
+			if _, used, ok := intelVRAMFromDRM(src.renderNode); ok {
+				stat.VRAMUsed = used
 			}
 		}
 		if stat.VRAMUsed == 0 && src.sysfsCard != "" {
