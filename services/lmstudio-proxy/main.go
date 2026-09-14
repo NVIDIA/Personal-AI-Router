@@ -23,9 +23,12 @@ func main() {
 	ignorePersistedPort := flag.Bool("ignore-persisted-port", false, "use --port even when a persisted port exists")
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
+	responseHeaderTimeout := flag.String("response-header-timeout", "", "upstream response header timeout (Go duration, e.g. 5m); default: $NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT or 120s")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
+
+	proxyResponseTimeout = resolveResponseHeaderTimeout(*responseHeaderTimeout)
 
 	if *showVersion {
 		fmt.Println(Version)
