@@ -395,7 +395,23 @@ const config: Configuration = {
     mac: {
         executableName: APP_EXECUTABLE_NAME,
         extendInfo: {
-            CFBundleDisplayName: APP_DISPLAY_NAME
+            CFBundleDisplayName: APP_DISPLAY_NAME,
+            // macOS 15+ gates every local-network operation -- unicast to the
+            // subnet, and all multicast including mDNS -- behind an explicit
+            // per-app grant. Without a usage string macOS has nothing to put in
+            // the prompt, so it never asks and never lists the app in System
+            // Settings > Privacy & Security > Local Network; the sends just fail
+            // with EHOSTUNREACH. That is fatal here: node discovery IS mDNS.
+            NSLocalNetworkUsageDescription: `${APP_DISPLAY_NAME} finds other ${APP_DISPLAY_NAME} nodes on your local network so they can share models and run inference together.`,
+            // The Bonjour types the node scanner registers and browses. Required
+            // for the DNS-SD APIs; declared for the raw mDNS path too so the
+            // grant covers every service this app actually speaks.
+            NSBonjourServices: [
+                '_nvpair-node._tcp',
+                '_nvpair-node-info._tcp',
+                '_nvpair-ollama._tcp',
+                '_nvpair-workload-manager._tcp'
+            ]
         },
         icon: './resources/icons/logo.icns',
         // SMAppService (the privileged firewall helper) requires macOS 13+.
