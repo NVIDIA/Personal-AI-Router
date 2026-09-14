@@ -92,6 +92,14 @@ type Manager struct {
 	activeMu    sync.Mutex
 	activeLocal map[workloadKey]workloadEvent
 
+	// broadcastCh serializes outbound inter-node frames in the order the
+	// read loop produced them. broadcastFrame only enqueues (never blocks on
+	// network I/O), and a single worker drains the queue in order — so a
+	// remove can never overtake the lifecycle upsert it follows. Without
+	// this, each frame fanned out in its own goroutine and a late upsert
+	// could resurrect a workload on peers that had already removed it.
+	broadcastCh chan []byte
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -124,6 +132,7 @@ func NewManager(codec *Codec, port int, selfUUID, clusterDir string) *Manager {
 		peerSource:  relaySource,
 		relaySource: relaySource,
 		activeLocal: make(map[workloadKey]workloadEvent),
+		broadcastCh: make(chan []byte, broadcastQueueDepth),
 	}
 	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove)
 	return m
@@ -157,6 +166,10 @@ func (m *Manager) Run(ctx context.Context) error {
 
 	go m.discoveryLoop(ctx)
 	go m.resyncLoop(ctx)
+	// The single ordered broadcast consumer: frames go out in the order the
+	// read loop produced them, so a remove can never overtake the lifecycle
+	// event it follows.
+	go m.broadcastLoop(ctx)
 	// Follow this node into and out of a cluster. Every gate already reads live
 	// membership, so the watch exists to notice a change with no traffic flowing
 	// and to re-assert our workloads immediately: peers that could not receive
@@ -351,19 +364,54 @@ func (m *Manager) handleLocalRemove(msg *Message) {
 	m.broadcastFrame(msg.Method, msg.Params)
 }
 
-// broadcastFrame re-marshals a single notification and fans it out to every peer
-// asynchronously, so a slow peer never blocks the read loop. Delivery is
-// immediate and per-event (no batching/conflation): the origin's own view
-// already updated synchronously in the broker, and peers must see each
-// transition promptly and individually — a batching window would add latency and
-// drop intermediate states, skewing each node's independent scheduling view.
+// broadcastQueueDepth bounds how many outbound frames can wait for the
+// ordered broadcast worker. Frames are small JSON notifications; 1024 is far
+// beyond steady-state volume and only binds memory during a peer outage, when
+// overflow frames are dropped (with a warning) rather than wedging the read
+// loop — the heartbeat and peer backfill re-sync state, so a dropped frame
+// degrades to delayed convergence.
+const broadcastQueueDepth = 1024
+
+// broadcastFrame re-marshals a single notification and enqueues it for the
+// ordered broadcast worker. Delivery is still asynchronous — a slow peer never
+// blocks the read loop — but frames now go out in the order they were produced
+// (no batching/conflation): the origin's own view already updated
+// synchronously in the broker, and peers must see each transition promptly and
+// individually — a batching window would add latency and drop intermediate
+// states, skewing each node's independent scheduling view.
 func (m *Manager) broadcastFrame(method string, params json.RawMessage) {
 	frame, err := json.Marshal(&Message{JSONRPC: "2.0", Method: method, Params: params})
 	if err != nil {
 		slog.Error("failed to marshal broadcast frame", "method", method, "err", err)
 		return
 	}
-	go m.broadcaster.Broadcast(m.ctx, frame)
+	if m.broadcastCh == nil {
+		// Only reachable by hand-built Managers (tests); NewManager always
+		// installs the queue.
+		slog.Warn("broadcast queue not initialized, dropping frame", "method", method)
+		return
+	}
+	select {
+	case m.broadcastCh <- frame:
+	default:
+		slog.Warn("broadcast queue full, dropping frame", "method", method)
+	}
+}
+
+// broadcastLoop is the single ordered consumer of broadcastCh. One worker (not
+// a goroutine per frame) is what guarantees a remove never overtakes the
+// lifecycle event it follows. Broadcast aborts in-flight attempts on ctx
+// cancellation, so at shutdown the loop just exits; frames still queued are
+// dropped with the process.
+func (m *Manager) broadcastLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case frame := <-m.broadcastCh:
+			m.broadcaster.Broadcast(ctx, frame)
+		}
+	}
 }
 
 // trackActive records the latest event for a local-origin workload. A
