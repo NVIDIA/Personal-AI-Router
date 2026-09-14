@@ -116,6 +116,19 @@ PAIR's port, expand **Engine settings > Ports** on the node's card in
 PAIR's port is usually easier and leaves the other application alone. Refer to
 [Changing a Port](getting-started.mdx#changing-a-port).
 
+## Inference Requests Fail with 502 After 120 Seconds
+
+`502 {"error":"upstream error: net/http: timeout awaiting response headers"}`
+means the engine did not send response headers within the proxy's upstream
+response-header timeout (default 120 s). Engines send no headers until
+generation starts, so this trips on requests queued behind other work
+(Ollama serves one request at a time by default) or on slow model loads —
+while the same request sent directly to the engine succeeds. Raise the
+timeout with the `--response-header-timeout` flag (a Go duration, e.g. `5m`)
+or the `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT` environment variable on
+`ollama-proxy` / `lmstudio-proxy`. Refer to
+[Proxy response-header timeout](proxy-response-header-timeout.mdx).
+
 ## Requests Work but PAIR Shows No Jobs
 
 If inference succeeds and yet **Jobs** stays empty, and the machine you sent the
