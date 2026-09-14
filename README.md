@@ -49,6 +49,14 @@ before assuming a node can serve a model. A node only becomes a candidate for a
 request once it is actually running a compatible engine, and PAIR prefers the
 nodes it already knows hold the model.
 
+**GPU inventory reporting** covers NVIDIA, Intel (Arc dGPU and iGPU), AMD, and
+Apple Silicon adapters. On Windows every vendor reports through the same DXGI/PDH
+pipeline. On Linux, NVIDIA data comes from `nvidia-smi`, Intel data comes from
+`xpu-smi` when installed (falling back to a `/sys/class/drm` sysfs walk so Arc
+adapters are still identified without extra tooling), and other vendors fall
+back to names only. See [services/nvpair-node-info/README.md](services/nvpair-node-info/README.md#platform-notes)
+for the full source-of-truth table.
+
 ## Quick start
 
 Download a released build and use the desktop application. That is the path we

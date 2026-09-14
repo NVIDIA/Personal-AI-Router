@@ -22,33 +22,63 @@ import (
 // collector from blocking indefinitely.
 const nvidiaSmiTimeout = 3 * time.Second
 
-// detectGPUs enumerates GPUs on Linux. It prefers nvidia-smi, which yields the
-// marketing name, total VRAM, and a stable per-GPU UUID we reuse as the join
-// key (statsKey) against the dynamic stats collector's snapshot. When
-// nvidia-smi is absent — no NVIDIA driver, or an AMD/Intel-only host — it falls
-// back to ghw, which reports adapter names but no VRAM and no join key, so
-// those hosts list their GPUs without dynamic VRAM/utilization (matching the
-// pre-existing non-Windows behavior).
+// detectGPUs enumerates GPUs on Linux. Each vendor-specific detector runs
+// independently so a mixed host (e.g. NVIDIA + Intel Arc) reports every
+// adapter, not just the first one whose driver stack is installed.
 //
-// On unified-memory architectures (UMA, e.g. Grace-Blackwell / DGX Spark)
-// nvidia-smi reports [N/A] for memory.total because the GPU shares system
-// DRAM; in that case VramBytes is filled from detectMemoryTotal() instead.
+// Preferences:
+//
+//   - NVIDIA: nvidia-smi yields the marketing name, total VRAM, and a stable
+//     per-GPU UUID reused as the join key (statsKey) against the dynamic stats
+//     collector's snapshot. On unified-memory architectures (UMA, e.g.
+//     Grace-Blackwell / DGX Spark) nvidia-smi reports [N/A] for memory.total
+//     because the GPU shares system DRAM; VramBytes is filled from
+//     detectMemoryTotal() instead.
+//
+//   - Intel: xpu-smi (Intel oneAPI) yields the marketing name, total VRAM
+//     (dGPU only), and a per-adapter PCI BDF used as the join key. When
+//     xpu-smi is not installed the sysfs walk under /sys/class/drm/card*
+//     still identifies every Intel adapter by vendor ID and pulls VRAM
+//     from mem_info_vram_total when the driver exposes it.
+//
+// When neither vendor-specific detector produces anything (no NVIDIA driver,
+// no Intel adapter, or a pure AMD host) we fall back to ghw. ghw reports
+// adapter names but no VRAM and no join key, so those hosts list their GPUs
+// without dynamic VRAM/utilization — matching the pre-existing non-Windows
+// behavior for unsupported vendors.
 func detectGPUs() []GPUInfo {
-	if out, err := nvidiaSmiCSV("uuid,name,memory.total"); err == nil {
-		if gpus, uma := parseNvidiaStatic(out); len(gpus) > 0 {
-			if uma {
-				if total := detectMemoryTotal(); total > 0 {
-					for i := range gpus {
-						if gpus[i].usesSystemMemoryUsage {
-							gpus[i].VramBytes = total
-						}
-					}
+	var gpus []GPUInfo
+	gpus = append(gpus, detectNvidiaLinux()...)
+	gpus = append(gpus, detectIntelGPUs()...)
+	if len(gpus) == 0 {
+		return detectGPUsGHW()
+	}
+	return gpus
+}
+
+// detectNvidiaLinux is the NVIDIA half of detectGPUs, extracted so the
+// vendor-specific detectors compose without early-returning past each other.
+// Returns nil when nvidia-smi is absent, times out, or produces an empty
+// static row set.
+func detectNvidiaLinux() []GPUInfo {
+	out, err := nvidiaSmiCSV("uuid,name,memory.total")
+	if err != nil {
+		return nil
+	}
+	gpus, uma := parseNvidiaStatic(out)
+	if len(gpus) == 0 {
+		return nil
+	}
+	if uma {
+		if total := detectMemoryTotal(); total > 0 {
+			for i := range gpus {
+				if gpus[i].usesSystemMemoryUsage {
+					gpus[i].VramBytes = total
 				}
 			}
-			return gpus
 		}
 	}
-	return detectGPUsGHW()
+	return gpus
 }
 
 // detectGPUsGHW is the ghw-based fallback, identical in spirit to the
