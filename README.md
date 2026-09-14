@@ -239,6 +239,9 @@ Each entry assumes the ones before it.
 8. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
+9. **[Pairing over IPv6 link-local](docs/pairing-ipv6-link-local.mdx)** — why
+   pairing failed after the PIN step on link-local networks, and how scope
+   zones are preserved and encoded.
 
 Component references, for when you already know what you are looking for:
 
