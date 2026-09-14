@@ -22,12 +22,14 @@ import {
 } from '@/ui/utils/cluster-invite-error'
 import type { Invite } from '@/shared/types/cluster'
 import { useClusterInvitationsStore } from '@/ui/stores/cluster-invitations.store'
+import { inviteLabel } from '@/ui/utils/invite-label'
 
 export function InviteApprovalModal() {
     const activeInviteId = useClusterInvitationsStore(state => state.activeInviteId)
     const pendingInvites = useClusterInvitationsStore(state => state.pendingInvites)
     const respondToInvite = useClusterInvitationsStore(state => state.respondToInvite)
     const clearActiveInvite = useClusterInvitationsStore(state => state.clearActiveInvite)
+    const setActiveInvite = useClusterInvitationsStore(state => state.setActiveInvite)
 
     const activeInvite = useMemo(
         () =>
@@ -35,6 +37,17 @@ export function InviteApprovalModal() {
                 ? (pendingInvites.find(invite => invite.inviteId === activeInviteId) ?? null)
                 : null,
         [activeInviteId, pendingInvites]
+    )
+
+    /**
+     * Invitations waiting behind the one on screen. The store no longer switches
+     * the modal to a new arrival on its own, so these are surfaced here and
+     * switched to only when the user asks — swapping the invitation underneath a
+     * half-entered PIN is what made a correct PIN read as wrong.
+     */
+    const otherPending = useMemo(
+        () => pendingInvites.filter(invite => invite.inviteId !== activeInviteId),
+        [pendingInvites, activeInviteId]
     )
 
     const [open, setOpen] = useState(false)
@@ -170,11 +183,37 @@ export function InviteApprovalModal() {
                                 {shown.fromNodeName || shown.fromNodeId}
                             </Text>
                         </Flex>
+                        <Flex align="center" gap="2">
+                            <Text kind="body/semibold/sm" className="min-w-15">
+                                Invite
+                            </Text>
+                            <Text kind="body/regular/sm" style={{ fontFamily: 'monospace' }}>
+                                {inviteLabel(shown.inviteId)}
+                            </Text>
+                        </Flex>
+                        {!terminal && otherPending.length > 0 && (
+                            <Flex align="center" justify="between" gap="2">
+                                <Text kind="body/regular/sm" className="text-subtle-color">
+                                    {otherPending.length === 1
+                                        ? 'Another invitation arrived and is waiting.'
+                                        : `${otherPending.length} more invitations arrived and are waiting.`}
+                                </Text>
+                                <Button
+                                    kind="secondary"
+                                    size="small"
+                                    disabled={processing}
+                                    onClick={() => setActiveInvite(otherPending[0].inviteId)}
+                                >
+                                    Switch to {inviteLabel(otherPending[0].inviteId)}
+                                </Button>
+                            </Flex>
+                        )}
                         {!terminal && (
                             <Stack gap="1">
                                 <Text kind="body/regular/sm" className="text-subtle-color">
                                     Enter the 6-digit PIN shown on{' '}
-                                    {shown.fromNodeName || 'the inviting node'}.
+                                    {shown.fromNodeName || 'the inviting node'} for invite{' '}
+                                    {inviteLabel(shown.inviteId)}. Each invitation has its own PIN.
                                 </Text>
                                 <TextInput
                                     ref={inputRef}

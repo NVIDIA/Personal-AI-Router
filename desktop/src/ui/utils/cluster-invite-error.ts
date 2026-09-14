@@ -13,8 +13,18 @@ const DEFAULT_INVITE_ERROR = `Could not invite that node. Check the IP address, 
 const INVITE_SESSION_ENDED_MESSAGE =
     'This invitation is no longer valid — ask the inviting node to send a new one.'
 
-/** Wrong-PIN copy for the joiner (the node that entered the PIN). */
-export const INCORRECT_PIN_RECEIVER_MESSAGE = `Incorrect PIN. ${INVITE_SESSION_ENDED_MESSAGE}`
+/**
+ * Wrong-PIN copy for the joiner (the node that entered the PIN).
+ *
+ * Names the invite label as well as the PIN: the backend cannot tell a mistyped
+ * PIN from a correct PIN belonging to a DIFFERENT invitation — both reach it as
+ * the same EAP-NOOB Noob mismatch — and the second is the likelier of the two
+ * whenever the inviter has retried, because a retry mints a new PIN.
+ */
+export const INCORRECT_PIN_RECEIVER_MESSAGE =
+    'That PIN did not match this invitation. Check that the invite label on both ' +
+    'machines is the same — each invitation has its own PIN. ' +
+    INVITE_SESSION_ENDED_MESSAGE
 
 /** Wrong-PIN copy mirrored on the inviter (the node that issued the PIN). */
 export const INCORRECT_PIN_SENDER_MESSAGE =

@@ -4,6 +4,7 @@
 import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import { InlineErrorBanner } from './InlineErrorBanner'
 import { INCORRECT_PIN_SENDER_MESSAGE } from '@/ui/utils/cluster-invite-error'
+import { inviteLabel } from '@/ui/utils/invite-label'
 import type { Invite } from '@/shared/types/cluster'
 
 interface InvitePairingPanelProps {
@@ -54,6 +55,13 @@ export function InvitePairingPanel({
                 </Text>
                 <Text kind="title/md" style={{ fontFamily: 'monospace', letterSpacing: '0.3em' }}>
                     {invite.pin ?? '------'}
+                </Text>
+                {/* Same label the joiner's modal shows, so the person carrying the
+                    PIN can see both screens mean the same invitation. Cancelling
+                    and inviting again changes both the PIN and this label. */}
+                <Text kind="body/regular/sm" className="text-subtle-color">
+                    Invite{' '}
+                    <span style={{ fontFamily: 'monospace' }}>{inviteLabel(invite.inviteId)}</span>
                 </Text>
                 <Flex align="center" gap="2">
                     <span className="spinner-element" role="status" aria-label="" />

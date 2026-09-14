@@ -58,11 +58,25 @@ export const useClusterInvitationsStore = create<ClusterInvitationsStore>((set, 
 
         if (!window.pairApi) return
         unsubs.push(
-            // A fresh arrival: surface it in the modal. Main also emits the full
-            // list via `cluster:pending-invites-changed`, so this only picks which
-            // invite the modal shows.
+            // A fresh arrival surfaces in the modal ONLY when nothing is already
+            // selected. Main also emits the full list via
+            // `cluster:pending-invites-changed`, so this only picks which invite
+            // the modal shows.
+            //
+            // It must never repoint an open modal. Each invitation has its own
+            // PIN, and an inviter that cancels and retries mints a new one, so
+            // silently rebinding mid-flow means the PIN the user is reading off
+            // the other screen no longer belongs to the session that will consume
+            // it. That surfaces as an EAP-NOOB Noob mismatch reported as
+            // "Incorrect PIN" — indistinguishable, to the user, from a typo.
+            //
+            // Nothing is stranded by declining to switch: every pending invite is
+            // listed in cluster settings (`PendingInviteCard`), which calls
+            // `setActiveInvite` to open one deliberately.
             window.pairApi.cluster.onInviteReceived(invite => {
-                if (invite.state === 'pending') set({ activeInviteId: invite.inviteId })
+                if (invite.state !== 'pending') return
+                if (get().activeInviteId) return
+                set({ activeInviteId: invite.inviteId })
             }),
             window.pairApi.cluster.onPendingInvitesChanged(invites => {
                 set(state => ({
