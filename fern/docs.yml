@@ -31,6 +31,9 @@ navigation:
       - page: Managing Engines
         path: ../docs/engine-lifecycle.mdx
         slug: engine-lifecycle
+      - page: MLX on Apple Silicon
+        path: ../docs/mlx.mdx
+        slug: mlx
       - page: Terminal Interface
         path: ../docs/terminal-interface.mdx
         slug: terminal-interface

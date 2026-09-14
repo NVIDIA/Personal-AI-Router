@@ -1,0 +1,411 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 Denis Akimov
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# MLX on Apple Silicon
+
+This fork adds Apple's [MLX](https://github.com/ml-explore/mlx-lm) as a third
+inference engine beside Ollama and LM Studio. It runs only on `darwin/arm64`;
+on every other platform the engine simply does not appear, and nothing else
+about PAIR changes.
+
+## Quick start
+
+Apple Silicon, macOS. Needs Go 1.25+, Node 25.5+, `jq` and `python3` — `make tools`
+reports what is missing. Every step is a `make` target; run them from the
+repository root.
+
+```bash
+# 1. Build PAIR and install the MLX engine.
+#    Fetches uv, builds a virtualenv, installs mlx-lm into it (~390 MB, ~1 min).
+make mlx
+
+# 2. Download a model. The default is small and text-only; override with MODEL=.
+make mlx-pull
+make mlx-pull MODEL=mlx-community/Qwen3-4B-4bit
+
+# 3. Start the router. Holds the terminal; it prints the port to use.
+make mlx-serve
+
+# 4. In another terminal, send a request through it.
+make mlx-ask
+make mlx-ask MODEL=mlx-community/Qwen3-4B-4bit
+```
+
+Step 4 is also the load: the first request for a model is what makes it resident,
+which is why it takes ~11 s cold and ~4 s afterwards. That gap is the routing
+policy's whole reason for existing — see below.
+
+Useful after that:
+
+```bash
+make mlx-models        # downloaded models, with * on the one resident in memory
+make mlx-status        # installed / running / healthy / port
+make mlx-port          # the port mlx-proxy actually bound
+make mlx-ab            # A/B the routing policy against the control arm
+make mlx-reload-cost   # measure what one model swap costs, in seconds
+make mlx-delete MODEL=…  # remove a model from the shared Hugging Face cache
+make mlx-uninstall     # remove the engine and its virtualenv
+```
+
+`make mlx-serve` is the headless equivalent of the desktop app. `make run`
+starts the app instead, where MLX appears beside Ollama and LM Studio and the
+same steps are buttons.
+
+Any endpoint that speaks OpenAI works against the printed port:
+
+```bash
+curl http://127.0.0.1:$(make -s mlx-port)/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"mlx-community/Llama-3.2-1B-Instruct-4bit",
+       "messages":[{"role":"user","content":"hello"}]}'
+```
+
+## Running a different mlx-lm
+
+The engine installs `mlx-lm==0.31.3` from PyPI, pinned. uv verifies the published
+hashes, nothing has to ship inside the app, and the pin means an upstream release
+cannot change inference behaviour underneath you.
+
+Upstream's OpenAI-compatible server has known gaps you may hit: tool calls in
+conversation history can be mangled before the chat template sees them
+([#1065](https://github.com/ml-explore/mlx-lm/issues/1065)), the Qwen3-Coder tool
+parser crashes on some argument shapes
+([#1236](https://github.com/ml-explore/mlx-lm/issues/1236),
+[#1604](https://github.com/ml-explore/mlx-lm/issues/1604)) and silently drops
+float-formatted integers ([#1627](https://github.com/ml-explore/mlx-lm/issues/1627)),
+and streaming tool calls are not incrementally OpenAI-shaped. Ordinary chat
+completions are unaffected.
+
+If you carry a fork that fixes these, point the engine at it with a **user
+manifest** rather than editing the bundled one. Drop a partial `mlx.json` in the
+app's engine directory:
+
+```
+~/Library/Application Support/Nvidia Corporation/Personal AI Router/engines/mlx.json
+```
+
+```json
+{
+  "engine": "mlx",
+  "platforms": {
+    "darwin/arm64": {
+      "install": {
+        "run": [
+          "sh",
+          "-c",
+          "set -e; tar -xzf \"{download}\" -C \"{install_dir}\" --strip-components=1; \"{install_dir}/uv\" venv --no-config --clear --python 3.13 \"{install_dir}/venv\"; \"{install_dir}/uv\" pip install --no-config --refresh-package mlx-lm --python \"{install_dir}/venv/bin/python\" /path/to/your/mlx-lm; \"{install_dir}/venv/bin/python\" -c 'import mlx.core, mlx_lm'"
+        ]
+      }
+    }
+  }
+}
+```
+
+It is **deep-merged** over the bundled manifest, so this overrides only the
+install step and everything else -- runtime flags, health probes, actions --
+keeps inheriting. A malformed user manifest is logged and skipped rather than
+breaking startup. Reinstall the engine to apply it.
+
+The same hook takes a git ref instead of a path, if your fork is published:
+
+```
+"mlx-lm @ git+https://github.com/<you>/mlx-lm@<tag-or-sha>"
+```
+
+Prefer a commit SHA over a branch: a branch moves, and a silent change to the
+inference server is the hardest kind of regression to attribute.
+
+## Adopting a server you run yourself
+
+`engine:start` **adopts** an mlx_lm.server already answering on the configured
+port instead of spawning one. So a hand-tuned server — its own virtualenv, its
+own flags, its own model, started however you like — keeps running exactly as
+you launched it, and PAIR only discovers, advertises and routes to it. PAIR
+will not stop it either: `engine:stop` refuses an externally-managed process
+and tells you to stop it in its own application.
+
+Point the engine at that port once (persisted as a manifest override, so it
+survives restarts):
+
+```bash
+make mlx-set-port ENGINE_PORT=8089
+```
+
+Then start your server the way you already do, and start the router:
+
+```bash
+# terminal 1 — your server, your flags, unchanged
+mlx_lm.server --model ~/models/<your-model> --port 8089
+
+# terminal 2 — the router adopts it
+make mlx-serve
+
+# terminal 3 — MODEL is the path you passed to --model above
+make mlx-ask MODEL=~/models/<your-model>
+```
+
+`make mlx-models` will show the adopted model marked resident. Note the model
+**id is the path you passed to `--model`**, not a Hugging Face repo id: that is
+what `/health` reports and therefore what routing keys on. Put `8081` back with
+`make mlx-set-port ENGINE_PORT=8081` to return to a PAIR-managed engine.
+
+A thinking model needs room to answer. `mlx-ask` defaults to `MAX_TOKENS=512`
+because at 60 a Qwen3.8 with thinking enabled spends the whole budget reasoning
+and returns `finish_reason=length` with empty content — which reads exactly like
+a broken route and is not one.
+
+## Why a separate engine
+
+LM Studio already ships an MLX runtime on Apple Silicon and PAIR already
+supports LM Studio, so this is a fair question to ask before reading further.
+
+Native `mlx_lm` wins when you need the model layer itself: `mlx_lm.lora`
+adapters, `mlx_lm.convert` and the quantisation tools (`awq`, `dwq`, `gptq`,
+`dynamic_quant`), the `mlx-community` catalogue the day it lands rather than
+when a runtime is updated, a server you can patch, and `mx.distributed` —
+sharding one model across several Macs, which no other engine here can do.
+
+It strictly loses on model management. LM Studio has a real CLI with load,
+unload, and progress reporting. `mlx_lm.server` has none of that, and the gaps
+below are the direct consequence.
+
+## What the engine can and cannot do
+
+| | |
+|---|---|
+| **Install** | PAIR builds it: fetches the pinned `uv` binary, creates a virtualenv with a managed CPython, installs `mlx-lm` into it. ~390 MB, about a minute. |
+| **Models resident at once** | **One.** This is the fact the rest of the design answers to. |
+| **Model catalogue** | `GET /v1/models`, which scans the whole Hugging Face cache. |
+| **Which model is loaded** | `GET /health` → `{"status":"ok","model":"<repo>"}`, or `null`. |
+| **Load** | No endpoint. PAIR sends a one-token completion and discards the token. |
+| **Unload** | **No mechanism at all.** The Eject control is hidden for MLX rather than shown doing nothing. |
+| **Pull** | `hf download {model}`. Terminal result only — no streamed progress, the same as LM Studio's `lms get`. |
+| **Delete** | `hf cache rm -y {model}`. Visible immediately: mlx-lm rescans the cache on every `/v1/models`, so unlike LM Studio no restart is needed. Note this deletes from the Hugging Face cache **shared with every other tool on the machine**. |
+
+## The one-model problem, and how routing answers it
+
+PAIR routes a request to a node that advertises the requested model. Every other
+engine can hold several; MLX holds one, and serving a different one costs a full
+unload and reload of multi-gigabyte weights.
+
+`mlx-proxy` therefore ranks owners in two tiers — **resident first, on-disk as
+fallback**. The fallback is not a hedge: routing to resident owners alone
+deadlocks a cold cluster, because with nothing loaded anywhere every node is
+ineligible and the first request fails on a healthy system. With the fallback,
+the first request pays one load and every request after it lands on the node
+that paid. The cluster converges with no lease, no warm-up job, and no
+coordinator.
+
+The rule is measured, not asserted — `NVPAIR_MLX_ROUTING=any` restores the
+inherited load-only ranking as a control arm. On an M5 Max, 600 requests over 3
+nodes each holding one of 3 models: **100.0% resident hits with the policy,
+31.8% without** (the ~1/3 random selection predicts), against a **7.2 s median
+reload** between two *small* models. See
+[`services/mlx-proxy/README.md`](../services/mlx-proxy/README.md#residency-preferring-routing).
+
+### Why `/health` is safe to route on
+
+It reports a single scalar, which sounds too thin to drive routing — it cannot
+distinguish idle from loading from serving. It does not need to.
+`ModelProvider._load` clears `model_key` before it loads and sets it only after
+the weights are in, so a node part-way through a load reports `null` and is
+correctly ineligible. It never advertises a model it cannot yet serve.
+
+## Ports
+
+| | |
+|---|---|
+| `mlx-proxy` | **8080** — `mlx_lm.server`'s documented port, so a client already pointed at a local MLX server is routed with no reconfiguration. |
+| `mlx_lm.server` | **8081** — set explicitly by the manifest, which is why MLX needs none of the port-ownership machinery LM Studio does. |
+
+`:8080` is also the most contended port on a developer machine. When it is
+taken, the proxy reports `bind-failed`, the broker picks the next free port from
+**8090**, and the next spawn takes it. This is the common case, not an edge
+case — it fired on the first run of the development machine, where Docker
+Desktop held `:8080`.
+
+## Distributed MLX
+
+`mx.distributed` can shard one model across several Macs, which PAIR explicitly
+does not do for any other engine. The routing model here was designed so that
+adding it is **additive rather than a rewrite**, and the reason is one line of
+`mlx_lm/server.py`:
+
+```python
+if group.rank() == 0:
+    _run_http_server(host, port, response_generator)
+else:
+    response_generator.join()
+```
+
+**Only rank 0 serves HTTP.** Worker ranks open no listener at all. Everything
+follows from that:
+
+- A shard group presents exactly **one** endpoint, so to PAIR a group already
+  looks like a single node. No new concept is needed in discovery or routing.
+- Worker ranks fail PAIR's `/health` readiness probe because there is nothing
+  listening, so the advertiser never registers `mx` for them. They are invisible
+  to routing **for free** — no rank flag, no group-membership plumbing.
+- `loaded_models` on rank 0 reports the *group's* resident model, so
+  residency-preferring routing is already correct for a group. The abstraction
+  generalises unchanged.
+
+Two things would still have to be built, and neither disturbs the above:
+
+1. **Launching.** PAIR spawns `mlx_lm.server` directly; a distributed run goes
+   through `mlx.launch` with a hostfile. That is a second manifest (or a
+   manifest override) selecting a different `runtime.bin` and `args` — the
+   manifest schema already expresses it.
+2. **Capacity accounting.** This is the real gap. The job scheduler ranks nodes
+   least-loaded-first using per-node GPU telemetry. A group of four Macs would
+   report as one node with one node's telemetry, so the scheduler would
+   under-estimate its capacity and under-use it. Fixing that means letting a
+   node declare the group it fronts — additive to the scheduler, and orthogonal
+   to routing.
+
+`mlx_lm.share` is the companion piece: it distributes weights across the group's
+machines, which is what makes a hostfile-launched group practical.
+
+## Network egress
+
+Audited 2026-09-07 by static analysis plus a live capture of every socket owned
+by a PAIR process. Findings for the fork as a whole, not just the MLX parts.
+
+**No telemetry.** No analytics SDK, no `crashReporter`, no metrics endpoint, in
+either tree. The renderer additionally *cannot* reach the internet: the CSP is
+`default-src 'none'` with `connect-src` limited to `'self'` plus loopback.
+`initializeUpdater()` returns early unless `app.isPackaged`, and the public
+build sets `publish: null`, so a source build performs no update check at all.
+
+**Unprompted egress: none, after one fix.** Upstream warms the LM Studio
+catalogue at window-ready with
+`GET https://huggingface.co/api/models?author=lmstudio-community` — headers are
+`User-Agent: PAIR/1.0` and `Accept`, no identifier of any kind, cached 6 h — and
+it fired whether or not LM Studio was installed. That is now gated on the engine
+actually being installed on this node, so an Ollama- or MLX-only machine makes
+**no unprompted outbound request at all**. Warming is only a latency
+optimisation: `getEngineHubModels` awaits `ensureLoaded()` when the modal opens,
+so a gated-off machine that later installs LM Studio pays one fetch on first
+open rather than losing the catalogue. Ollama's catalogue is a bundled JSON file
+and never made a request. Verified live: a launch with LM Studio absent produced
+zero non-loopback sockets.
+
+**MLX egress is user-initiated only**, and hardened against the incidental kind:
+
+| Action | Contacts | Notes |
+|---|---|---|
+| `mlx-install` | `github.com` (uv), `pypi.org` (deps) | uv is **sha256-pinned**; `--no-config` stops a user `uv.toml` injecting an index or credentials |
+| `mlx-pull` | `huggingface.co` + its CDN | telemetry, implicit token and update check all disabled |
+| `mlx-delete` | *nothing* | it would otherwise GET `pypi.org` — see below |
+| serving | *nothing* | unless a request names a model not in the cache, which downloads it |
+
+The `hf` CLI GETs `https://pypi.org/pypi/<lib>/json` on startup to advertise
+upgrades, so `hf cache rm` — deleting local files — reached the network for a
+reason the operation does not have. `huggingface_hub` also enables its own
+telemetry by default and sends a stored token on requests that do not need it.
+All three are suppressed via `runtime.env` **and** on the action argv, because
+`runCmdAction` does not pass manifest env to a CLI action:
+
+```json
+"env": {
+  "HF_HUB_DISABLE_TELEMETRY": "1",
+  "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+  "HF_HUB_DISABLE_UPDATE_CHECK": "1"
+}
+```
+
+**LAN exposure — fixed.** `/v1/node-info` on `:14318` was answerable by any
+device on the network and returns GPU/CPU model, total and used memory, live
+utilisation, and a stable `hostUuid` — a durable fingerprint plus an activity
+signal. It now answers **loopback and addresses the broker currently sees a PAIR
+peer on**, and refuses the rest with a 403.
+
+The peer set is pushed from the broker on every discovery change
+(`nodeinfo:set-trusted-readers`), because node-info knows who is asking and only
+the broker knows who the real peers are. It is keyed on discovery rather than on
+cluster pins for a specific reason: the desktop app polls a *peer's* node-info
+directly and holds no cluster identity, so pin-based gating would blank the UI's
+node cards — the regression `spawnNodeInfo` warns about. It fails **open** until
+the first push, so node-info run standalone, or under a supervisor that does not
+push, behaves exactly as before.
+
+Be clear about what this is: an **exposure reduction, not an authentication
+boundary**. Source addresses are forgeable on a LAN, and anything advertising
+`_nvpair-node._tcp` joins the set by design. What it removes is the passive
+case — reading a machine's hardware and load without announcing yourself as a
+node, which every peer's UI would show. The stable UUID itself is *already*
+public on the LAN in the mDNS TXT record, so gating node-info does not hide
+identity; it hides hardware and activity.
+The model list on `:14322` is *not* exposed — it refuses plaintext from
+anything but loopback and otherwise requires cluster mTLS from a pinned peer,
+which matters here because an MLX model id can be a filesystem path containing
+your username. The mDNS TXT record carries only schema version, host UUID,
+cluster UUID and addresses — no model names.
+
+**Both fixes were adversarially reviewed after the fact, and the review found a
+real hole.** `allows()` originally returned `true` when the source address
+failed to parse — and `net.ParseIP` rejects a *zoned* IPv6 literal
+(`fe80::1%en0`), which is exactly the form a link-local LAN caller arrives as.
+Any device reaching the host over IPv6 link-local walked straight past the gate.
+It now uses `net/netip` (`Unmap()` folds `::ffff:1.2.3.4`, `WithZone("")` drops
+the interface scope, which names the *receiver's* NIC and cannot identify a
+peer) and **denies** on a parse failure. Also closed in that round: a
+`readers != nil` test in the handler that turned any missing initialisation into
+a full bypass; addresses the broker pushes that fail to parse are now warned
+about rather than silently dropped (a dropped address means a real peer is
+refused while the broker believes policy landed); an unreadable pin record now
+refuses instead of reading as "no pins" (a trust reset an attacker can cause by
+truncating the file); a pin that cannot be persisted now fails the install
+rather than executing under a control that did not engage; and the record is
+taken under a cross-process lock, because this fork really does run two
+engine-managers at once.
+
+**Unpinned installers — fixed.** All 6 Ollama fetches were unpinned against
+versionless `ollama.com/download/...` URLs. They now point at **immutable
+GitHub release URLs with the vendor-published SHA-256**
+(`releases/download/v0.33.3/...`), which is the model Homebrew and winget use: a
+new vendor release becomes a reviewed manifest update instead of arbitrary
+replacement bytes. Verified before pinning — the digest was confirmed by hashing
+the artefact, and the versionless endpoint served identical bytes, so this is a
+no-op for users today and pure gain.
+
+LM Studio cannot be pinned that way: its installer is a versionless
+`https://lmstudio.ai/install.sh` with no published checksum, executed via `bash`.
+For that case the engine-manager now does **trust on first use, failing closed**
+— the first download's digest is recorded in `installer-pins.json`, and a later
+change refuses the install and names both digests. TOFU cannot make the first
+download trustworthy; what it does is turn every later change from invisible
+into a decision. A vendor shipping a new installer trips it too, which is not a
+false positive for an artefact about to execute as you: deleting the record file
+is the confirmation, so there is no flag to click through by accident.
+
+| Manifest | fetch URLs | pinned | fallback |
+|---|---|---|---|
+| ollama.json | 6 | **6** | — |
+| mlx.json | 1 | **1** | — |
+| lmstudio.json | 3 | 0 | TOFU, fail-closed |
+
+**What this audit does not cover:** the packaged `.dmg` (only the source build
+was examined), Chromium's own background subsystems over a longer run than the
+capture window, and short-lived connections that could open and close between
+`lsof` samples.
+
+## Known limitations
+
+- **Manual nodes carry no residency.** A node added by address is probed by
+  `nvpair-manual-nodes`, which reports a flat model list and no loaded set, so a
+  manual MLX node always lands in the on-disk tier. Discovery-found nodes are
+  unaffected. Closing this means teaching the manual probe to read `/health`.
+- **No pull progress.** A `cmd`-driven pull reports only its terminal result;
+  the UI shows a pull in flight and then a result, with nothing between.
+- **No unload.** There is nothing to call. A model leaves memory when another
+  replaces it or the engine stops.
+- **The install pins a source checkout.** The manifest installs `mlx-lm` from a
+  local path, so what you get is whatever that tree held at install time. The
+  version and source path are recorded in `installed.json` in the engine's
+  install directory so a build is at least identifiable after the fact.
+- **`mlx_lm` serves text models only.** Vision models (`Qwen3-VL`, …) are in the
+  same cache and are listed by `/v1/models`, but loading one fails. That is an
+  mlx-lm boundary (`mlx-vlm` is the separate project), not a PAIR one.

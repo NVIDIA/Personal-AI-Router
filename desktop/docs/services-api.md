@@ -18,6 +18,8 @@
 ### Requests the backend handles but the bridge never calls (unused capability)
 - ⚠️ lmstudio-proxy → node/selected
 - ⚠️ lmstudio-proxy → node/set-local-backend
+- ⚠️ mlx-proxy → node/selected
+- ⚠️ mlx-proxy → node/set-local-backend
 - ⚠️ nvpair-engine-manager → engine:describe
 - ⚠️ nvpair-engine-manager → engine:errors
 - ⚠️ nvpair-engine-manager → engine:logs
@@ -46,6 +48,35 @@
 - none ✅
 
 ## lmstudio-proxy
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `error` | notification (we consume) | ✅ yes |
+| `errors:clear` | notification (we consume) | ✅ yes |
+| `errors:report` | notification (we consume) | ✅ yes |
+| `node/discovered` | notification (we consume) | ✅ yes |
+| `node/removed` | notification (we consume) | ✅ yes |
+| `node/selection-changed` | notification (we consume) | ➖ ignored |
+| `node/updated` | notification (we consume) | ✅ yes |
+| `proxy/request` | notification (we consume) | ✅ yes |
+| `proxy/request-started` | notification (we consume) | ➖ ignored |
+| `ready` | notification (we consume) | ✅ yes |
+| `node/add-manual` | request (we call) | ✅ yes |
+| `node/remove-manual` | request (we call) | ✅ yes |
+| `node/select` | request (we call) | ✅ yes |
+| `node/selected` | request (we call) | ⚠️ not called |
+| `node/set-local-backend` | request (we call) | ⚠️ not called |
+| `node/set-priority` | request (we call) | ✅ yes |
+| `nodes/list` | request (we call) | ✅ yes |
+
+**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
+- `method (var)  (proxy.go)`
+
+## mlx-pool
+
+_No JSON-RPC methods detected (HTTP-only binary, or source not present)._
+
+## mlx-proxy
 
 | Method | Direction | In bridge? |
 |---|---|---|
@@ -107,6 +138,7 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
+| `engine:copy-model-from` | request (we call) | ✅ yes |
 | `engine:describe` | request (we call) | ⚠️ not called |
 | `engine:errors` | request (we call) | ⚠️ not called |
 | `engine:get-installed` | request (we call) | ✅ yes |
@@ -114,6 +146,7 @@
 | `engine:logs` | request (we call) | ⚠️ not called |
 | `engine:models` | request (we call) | ✅ yes |
 | `engine:prepare-shutdown` | request (we call) | ✅ yes |
+| `engine:remote-copy-model` | request (we call) | ✅ yes |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
 | `engine:remote-install` | request (we call) | ✅ yes |
@@ -264,6 +297,7 @@
 - `method (var)  (clustermanager.go)`
 - `method (var)  (errors.go)`
 - `lmstudio-proxy:*  (lmstudioproxy.go)`
+- `mlx-proxy:*  (mlxproxy.go)`
 - `method (var)  (proxy.go)`
 - `method (var)  (rpcworker.go, 2 sites)`
 
