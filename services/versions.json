@@ -1,11 +1,11 @@
 {
   "$comment": "Single source of truth for all version numbers. See VERSIONING.md for bump rules.",
-  "product": "0.91.7",
-  "installer": "0.91.7",
+  "product": "0.92.0",
+  "installer": "0.92.0",
   "components": {
     "ollama-proxy": "0.26.2",
     "lmstudio-proxy": "0.16.2",
-    "nvpair-node-info": "0.13.3",
+    "nvpair-node-info": "0.14.0",
     "nvpair-node-scanner": "0.20.3",
     "nvpair-manual-nodes": "0.11.1",
     "nvpair-workload-manager": "0.13.3",
