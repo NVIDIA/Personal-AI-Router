@@ -51,7 +51,20 @@ runs:
 
         # Must be >= the highest `go` directive across services/*/go.mod, which
         # GOTOOLCHAIN=local would otherwise refuse to satisfy.
+        #
+        # cache-dependency-path is required, not an optimization. setup-go
+        # caches by default and looks for the dependency file at the repository
+        # root, where there is none — every Go module lives under services/.
+        # Left unset it reports "Dependencies file is not found" on every run.
+        # Naming the path also pins the cache key: older versions hash go.sum,
+        # newer ones hash go.mod.
+        #
+        # scripts/ matches nothing today; it is listed so a Go dependency added
+        # to the support tooling joins the key instead of silently missing it.
         - if: inputs.go == 'true'
           uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
           with:
               go-version: '1.26.7'
+              cache-dependency-path: |
+                  services/**/go.sum
+                  scripts/**/go.sum
