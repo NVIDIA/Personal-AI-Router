@@ -75,6 +75,14 @@ type statsCollector struct {
 	// re-spawn (and re-warn about) a missing binary every tick.
 	nvidiaUnavailable atomic.Bool
 
+	// intelSources is the set of Intel GPUs the collector samples every
+	// tick. Cached at startup to keep per-tick work bounded — the sysfs
+	// walk and xpu-smi discovery run once, and the tick loop only pays
+	// for the batched sampling call plus one sysfs read per adapter.
+	// Empty on hosts with no Intel GPU; the sampler skips the pass
+	// entirely when this is empty, so a pure NVIDIA host pays nothing.
+	intelSources []intelStatsSource
+
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
@@ -94,6 +102,14 @@ func startStatsCollector() *statsCollector {
 	// Prime the CPU baseline so the first tick produces a real delta rather
 	// than a spurious reading (with no previous sample, util reports 0).
 	c.prevCPU = readCPUTimes()
+	// Cache the Intel adapter set once so per-tick sampling doesn't repeat
+	// the sysfs walk and the xpu-smi discovery call. A host that hot-plugs
+	// an Intel GPU after startup won't pick it up without a restart —
+	// mirroring the static-once discovery every other detector uses.
+	c.intelSources = discoverIntelStatsSources()
+	if n := len(c.intelSources); n > 0 {
+		slog.Info("Intel GPU stats sources discovered", "count", n)
+	}
 	go c.run()
 	return c
 }
@@ -150,27 +166,39 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 	return snap
 }
 
-// decodeGPU queries nvidia-smi and folds the per-GPU results into out, keyed
-// by UUID. On the first failure it latches nvidiaUnavailable so subsequent
-// ticks short-circuit silently. Unified-memory usage remains available through
-// the independent /proc/meminfo sample assembled by buildResponse.
+// decodeGPU folds per-GPU dynamic stats from every supported vendor into out,
+// each entry keyed by its statsKey (nvidia-smi UUID for NVIDIA, PCI-BDF for
+// Intel — the two spaces are disjoint by construction). Returns true when at
+// least one adapter produced a fresh utilization sample this tick, which the
+// caller uses to advance GPUSampledAt. Vendor detectors that latch as
+// unavailable (missing binary, wedged driver) short-circuit silently and let
+// the other detectors keep sampling.
 func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
+	nvSamples := c.decodeNvidiaGPU(out)
+	intelSamples := sampleIntelStats(c.intelSources, out)
+	return nvSamples+intelSamples > 0
+}
+
+// decodeNvidiaGPU is the nvidia-smi half of decodeGPU. Kept separate so the
+// vendor latches don't leak into the Intel path — a host without nvidia-smi
+// installed still needs the Intel sample to run.
+func (c *statsCollector) decodeNvidiaGPU(out map[string]gpuStat) int {
 	if c.nvidiaUnavailable.Load() {
-		return false
+		return 0
 	}
 	csv, err := nvidiaSmiCSV("uuid,utilization.gpu,memory.used")
 	if err != nil {
 		if c.nvidiaUnavailable.CompareAndSwap(false, true) {
-			slog.Warn("nvidia-smi unavailable; GPU utilization / dedicated VRAM-used will not be reported",
+			slog.Warn("nvidia-smi unavailable; NVIDIA GPU utilization / dedicated VRAM-used will not be reported",
 				"err", err)
 		}
-		return false
+		return 0
 	}
 	parsed, utilizationSamples := parseNvidiaDynamic(csv)
 	for k, v := range parsed {
 		out[k] = v
 	}
-	return utilizationSamples > 0
+	return utilizationSamples
 }
 
 // Snapshot returns the latest published statsSnapshot. Safe for concurrent
