@@ -7,7 +7,7 @@
 > capability status lives in `docs/services-parity.md`.
 
 - **Source tree**: `services/` in this monorepo
-- **Versions**: see `services/versions.json` (product, installer, and per-component)
+- **Versions**: see `services/versions.json` (services suite and per-component)
 - **Legend**: ✅ referenced by the bridge · ❌ MISSING (no consumer/caller) · ➖ ignored (see `docs/service-contract-exceptions.json`)
 
 ## Drift summary

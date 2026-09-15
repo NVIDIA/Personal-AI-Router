@@ -71,7 +71,7 @@ interface ManifestFile {
 interface BuildManifest {
     source: 'services-build'
     sourceFingerprint: string
-    product: string
+    services: string
     platform: SupportedPlatform
     arch: ModularPackageArch
     components: Record<string, string>
@@ -145,7 +145,7 @@ function stringRecord(value: JsonValue | undefined): Record<string, string> {
 }
 
 interface ParsedVersions {
-    product: string
+    services: string
     components: Record<string, string>
 }
 
@@ -173,8 +173,8 @@ function readVersions(repo: string): ParsedVersions {
     const versionsPath = path.join(repo, 'versions.json')
     const parsed: JsonValue = JSON.parse(readFileSync(versionsPath, 'utf8'))
     if (!isJsonObject(parsed)) throw new Error(`${versionsPath} is not a JSON object`)
-    const product = typeof parsed['product'] === 'string' ? parsed['product'] : ''
-    return { product, components: stringRecord(parsed['components']) }
+    const services = typeof parsed['services'] === 'string' ? parsed['services'] : ''
+    return { services, components: stringRecord(parsed['components']) }
 }
 
 function ensureGoToolchain(): void {
@@ -267,7 +267,7 @@ function parseManifest(text: string): BuildManifest | null {
     return {
         source: 'services-build',
         sourceFingerprint,
-        product: typeof parsed['product'] === 'string' ? parsed['product'] : '',
+        services: typeof parsed['services'] === 'string' ? parsed['services'] : '',
         platform,
         arch,
         components: stringRecord(parsed['components']),
@@ -423,7 +423,7 @@ function main(): void {
     const manifest: BuildManifest = {
         source: 'services-build',
         sourceFingerprint,
-        product: versions.product,
+        services: versions.services,
         platform: options.platform,
         arch: options.arch,
         components: versions.components,

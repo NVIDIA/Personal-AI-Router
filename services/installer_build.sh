@@ -23,8 +23,7 @@
 #
 # Version precedence (same as installer_build.bat):
 #   1. Explicit CLI arg:   installer_build.sh 1.2.3
-#   2. versions.json "installer" field
-#   3. versions.json "product" field (fallback)
+#   2. versions.json "services" field
 #
 # The tarball uses a nested layout — every entry lives under
 # NVIDIA-Personal-AI-Router-<version>/ — so `tar xf` produces a single clean
@@ -89,9 +88,9 @@ resolve_version() {
         return
     fi
     # `//` returns the right-hand side when the left is null or false,
-    # giving us the installer-then-product fallback in one filter.
+    # The services suite version is the installer's version.
     local v
-    v=$(jq -r '.installer // .product' "$VERSIONS_FILE")
+    v=$(jq -r '.services' "$VERSIONS_FILE")
     if [[ "$v" != "null" && -n "$v" ]]; then
         echo "$v"
     fi

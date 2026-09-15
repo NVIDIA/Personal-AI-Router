@@ -37,7 +37,7 @@ REM Parse versions.json with jq. We use --arg to pass each component key as
 REM a string variable, which sidesteps cmd's hostility toward embedded
 REM double quotes inside the jq filter (component keys contain hyphens, so
 REM bare .components.nvpair-ui-broker would parse as subtraction).
-for /f "delims=" %%V in ('jq -r ".product" "%VERSIONS_FILE%"')                                                  do set "V_PRODUCT=%%V"
+for /f "delims=" %%V in ('jq -r ".services" "%VERSIONS_FILE%"')                                                 do set "V_SERVICES=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "ollama-proxy"         ".components[$k]" "%VERSIONS_FILE%"')            do set "V_PROXY=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "lmstudio-proxy"       ".components[$k]" "%VERSIONS_FILE%"')            do set "V_LMPROXY=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-node-info"        ".components[$k]" "%VERSIONS_FILE%"')            do set "V_NINFO=%%V"
@@ -52,13 +52,13 @@ for /f "delims=" %%V in ('jq -r --arg k "nvpair-cluster-manager"  ".components[$
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-job-scheduler"    ".components[$k]" "%VERSIONS_FILE%"')            do set "V_SCHED=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-tui"              ".components[$k]" "%VERSIONS_FILE%"')            do set "V_TUI=%%V"
 
-if "%V_PRODUCT%"=="" (
+if "%V_SERVICES%"=="" (
     echo  ERROR: failed to parse versions.json
     endlocal
     exit /b 1
 )
 
-echo  product           = %V_PRODUCT%
+echo  services          = %V_SERVICES%
 echo  ollama-proxy      = %V_PROXY%
 echo  lmstudio-proxy    = %V_LMPROXY%
 echo  nvpair-node-info     = %V_NINFO%
@@ -171,7 +171,7 @@ copy /y "%ROOT%nvpair-tui\nvpair-tui.exe" "%BIN_OUT%\nvpair-tui.exe" >nul || got
 
 echo.
 echo ========================================
-echo  Build complete (product v%V_PRODUCT%)
+echo  Build complete (services v%V_SERVICES%)
 echo ========================================
 echo.
 echo  Proxy:            %BIN_OUT%\ollama-proxy.exe
@@ -189,9 +189,9 @@ echo  Job Scheduler:    %BIN_OUT%\nvpair-job-scheduler.exe
 echo  TUI:              %BIN_OUT%\nvpair-tui.exe
 echo.
 
-REM Surface the product version to any caller (e.g. installer_build.bat) so
+REM Surface the services version to any caller (e.g. installer_build.bat) so
 REM they don't have to re-parse versions.json.
-endlocal & set "NVPAIR_PRODUCT_VERSION=%V_PRODUCT%"
+endlocal & set "NVPAIR_SERVICES_VERSION=%V_SERVICES%"
 exit /b 0
 
 :fail

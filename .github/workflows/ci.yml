@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Runs on every pull request, including from forks.
+#
+# This workflow holds no secrets and requests no OIDC token. That is
+# deliberate: it executes code from the pull request — npm postinstall hooks,
+# `go test`, the tsx build scripts — so there must be no credential for that
+# code to reach. Keep it that way, and keep it on GitHub-hosted runners, which
+# are destroyed after each job.
+#
+# Signed release builds happen elsewhere, from a tag, and never from a pull
+# request.
+name: CI
+
+# Pull requests target `develop`; periodic `develop` -> `main` merges are the
+# release cut. Both branches are gated identically.
+on:
+    pull_request:
+        branches: [main, develop]
+    push:
+        branches: [main, develop]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Toolchain versions are declared once, in .github/actions/setup.
+
+jobs:
+    # Release-intent validation lives in release-intent-check.yml, not here: it
+    # also needs the `edited` pull request type, and re-running this whole gate
+    # on every description edit would rebuild six installers for a typo fix.
+
+    # Dependency-free and therefore the cheapest gate: no npm install, no cache.
+    # Deliberately unfiltered by path — a missing header can arrive anywhere.
+    headers:
+        name: SPDX headers
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+            - uses: ./.github/actions/setup
+              with:
+                  npm-cache: 'false'
+            - run: node scripts/spdx-headers.mjs
+
+    desktop:
+        name: Desktop checks
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+            - uses: ./.github/actions/setup
+            - run: npm --prefix desktop ci --prefer-offline
+
+            # Same order as the local gate documented in CONTRIBUTING.md, so a
+            # local run and CI fail on the same thing first.
+            - run: npm --prefix desktop run verify:build-scripts
+            - run: npm --prefix desktop run service-contracts:check
+            - run: npm --prefix desktop run typecheck
+            - run: npm --prefix desktop run lint
+            - run: npm --prefix desktop run dead-code:check
+            - run: npm --prefix desktop run test:unit
+
+    services:
+        name: Services build and tests
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+            - uses: ./.github/actions/setup
+              with:
+                  go: 'true'
+            # Engine-manager orphan-reclaim tests need lsof and ss.
+            - run: sudo apt-get update -qq && sudo apt-get install -y -qq lsof iproute2
+            - run: npm --prefix desktop ci --prefer-offline
+
+            - name: Build modular binaries
+              run: npm --prefix desktop run build:modular-binaries -- --force
+
+            # Skip shared/ and eap-noob/ (libraries) and tests/ (run separately
+            # below with a longer timeout — it also matches services/*/go.mod).
+            - name: Go component tests
+              run: |
+                  failed=0
+                  for d in services/*/go.mod; do
+                    dir=$(dirname "$d")
+                    name=$(basename "$dir")
+                    case "$name" in shared|eap-noob|tests) continue ;; esac
+                    echo "==> go test $name"
+                    (cd "$dir" && go test ./... -count=1 -timeout=10m) || failed=1
+                  done
+                  exit $failed
+
+            - name: Go cross-process tests
+              run: cd services/tests && go test ./... -count=1 -timeout=20m
+
+            # Support tooling outside services/ has its own module and is not
+            # matched by the glob above.
+            - name: Go tooling tests
+              run: |
+                  failed=0
+                  for d in scripts/*/go.mod; do
+                    dir=$(dirname "$d")
+                    echo "==> go test $dir"
+                    (cd "$dir" && go test ./... -count=1 -timeout=5m) || failed=1
+                  done
+                  exit $failed
+
+    # The services tree has two independent build paths over the same Go code.
+    # The `services` job above drives `scripts/build-modular-binaries.ts`, which
+    # cross-compiles for the desktop app. This drives `services/build.sh`, which
+    # builds natively, parses versions.json with jq, stamps each binary with
+    # `-ldflags -X main.Version`, and stages `build/bin`. They read versions and
+    # pass flags differently, so one can break while the other stays green.
+    #
+    # Runs on each supported platform because the Windows path is a separate
+    # script (`build.bat`) rather than a branch of the same one.
+    build-script:
+        name: Build script (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
+        steps:
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+            - uses: ./.github/actions/setup
+              with:
+                  node: 'false'
+                  go: 'true'
+
+            # Both scripts fail fast with their own message when go or jq is
+            # missing, so there is no separate tool-check step here.
+            - name: Build services (bash)
+              if: runner.os != 'Windows'
+              working-directory: services
+              run: ./build.sh
+
+            - name: Build services (Windows)
+              if: runner.os == 'Windows'
+              working-directory: services
+              shell: cmd
+              run: build.bat
+
+            # Compares the staged set against versions.json rather than a count.
+            # A floor like `-ge 13` passes quietly the moment the real number
+            # grows, so it stops asserting anything; and a hardcoded `-eq 13`
+            # only catches the count, not a rename. Comparing names means
+            # adding, removing, or renaming a component fails here until the
+            # build script and the manifest agree again.
+            #
+            # The binaries are not executed to check them: several are servers
+            # that would ignore an unrecognized flag and start listening.
+            - name: Check staged binaries match versions.json
+              working-directory: services
+              shell: bash
+              run: |
+                  # Both sides run through the same normalizer, so they cannot
+                  # disagree on collation or line endings. Order matters: CR has
+                  # to go before the .exe suffix, because under Git Bash a CRLF
+                  # line leaves .exe mid-string and `s/\.exe$//` never matches.
+                  # LC_ALL=C makes the sort byte-wise, which is also what comm
+                  # below assumes.
+                  norm() { tr -d '\r' | sed 's/\.exe$//' | LC_ALL=C sort; }
+                  expected=$(jq -r '.components | keys[]' versions.json | norm)
+                  staged=$(ls -1 build/bin | norm)
+
+                  if [ "$expected" = "$staged" ]; then
+                      printf 'all %s declared components staged\n' \
+                          "$(printf '%s\n' "$expected" | wc -l | tr -d ' ')"
+                      exit 0
+                  fi
+
+                  echo "::error::build/bin does not match versions.json components"
+                  echo "--- declared but not staged (build script missing a component?)"
+                  comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$staged")
+                  echo "--- staged but not declared (versions.json missing a component?)"
+                  comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$staged")
+                  # When both lists above look identical the difference is a
+                  # character you cannot see. `sed -n l` renders CR as \r and
+                  # marks end of line with $.
+                  echo "--- raw build/bin"
+                  ls -l build/bin
+                  echo "--- expected, escaped"
+                  printf '%s\n' "$expected" | sed -n l
+                  echo "--- staged, escaped"
+                  printf '%s\n' "$staged" | sed -n l
+                  exit 1

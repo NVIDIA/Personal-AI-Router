@@ -54,7 +54,7 @@ echo
 # Mirror build.bat's --arg trick: component keys contain hyphens, which jq's
 # bare-identifier syntax would parse as subtraction. Passing the key as a
 # string variable sidesteps the ambiguity.
-V_PRODUCT=$(jq -r '.product'                                   "$VERSIONS_FILE")
+V_SERVICES=$(jq -r '.services'                                 "$VERSIONS_FILE")
 V_PROXY=$(  jq -r --arg k 'ollama-proxy'     '.components[$k]' "$VERSIONS_FILE")
 V_LMPROXY=$(jq -r --arg k 'lmstudio-proxy'   '.components[$k]' "$VERSIONS_FILE")
 V_NINFO=$(  jq -r --arg k 'nvpair-node-info'    '.components[$k]' "$VERSIONS_FILE")
@@ -69,12 +69,12 @@ V_CLUMGR=$( jq -r --arg k 'nvpair-cluster-manager' '.components[$k]' "$VERSIONS_
 V_SCHED=$(  jq -r --arg k 'nvpair-job-scheduler' '.components[$k]' "$VERSIONS_FILE")
 V_TUI=$(    jq -r --arg k 'nvpair-tui'          '.components[$k]' "$VERSIONS_FILE")
 
-if [[ -z "$V_PRODUCT" || "$V_PRODUCT" == "null" ]]; then
+if [[ -z "$V_SERVICES" || "$V_SERVICES" == "null" ]]; then
     echo "ERROR: failed to parse versions.json" >&2
     exit 1
 fi
 
-printf '  product           = %s\n' "$V_PRODUCT"
+printf '  services          = %s\n' "$V_SERVICES"
 printf '  ollama-proxy      = %s\n' "$V_PROXY"
 printf '  lmstudio-proxy    = %s\n' "$V_LMPROXY"
 printf '  nvpair-node-info     = %s\n' "$V_NINFO"
@@ -146,7 +146,7 @@ cp "$ROOT/nvpair-tui/nvpair-tui"                   "$BIN_OUT/nvpair-tui"
 
 echo
 echo "========================================"
-echo " Build complete (product v$V_PRODUCT)"
+echo " Build complete (services v$V_SERVICES)"
 echo "========================================"
 echo
 printf '  Proxy:        %s\n' "$BIN_OUT/ollama-proxy"
