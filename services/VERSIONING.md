@@ -11,19 +11,30 @@ numbers. Build scripts read it and stamp every binary at build time via Go's
 
 ```
 services/versions.json
-├── product            # umbrella / product release
-├── installer          # always equals product
+├── services           # the services suite as a whole
 └── components.*       # per-binary versions (independent SemVer)
 ```
 
-Product release notes are maintained outside this tree. Do not add or edit
-`services/changelog.md`.
+Do not add or edit `services/changelog.md`.
 
-`desktop/package.json` `version` is **out of scope** for automated service
-bumps. Bump it manually when cutting an Electron / update-feed release.
+## Three numbers, three jobs
 
-`product` / `installer` follow the product release series (for example
-`0.82.0`), not a separate services-only major line.
+| Number | Lives in | Stamps | Bumped |
+| ------ | -------- | ------ | ------ |
+| release | `desktop/package.json` `version` | The app users install, the update feed, the GitHub release tag | Automatically: one PATCH forward whenever a release-intent block declares a release |
+| `services` | `services/versions.json` | The standalone services installer and Go `main.Version` | Declared in the release-intent block |
+| `components.*` | `services/versions.json` | Each binary's own `--version` | Declared in the release-intent block |
+
+Only the last two are declared, because only they carry SemVer meaning a human
+has to judge. The release version is a counter: it answers "which build is
+this?", not "how compatible is it?".
+
+A MINOR or MAJOR release version is a deliberate manual edit at cut time. The
+automation only ever moves it one PATCH forward, so it cannot promote a release
+on its own.
+
+The release version and `services` are **not** held equal, and no attempt is
+made to align them. They version different artifacts.
 
 ## Bumping rules (SemVer meaning)
 
@@ -41,24 +52,29 @@ We follow [SemVer](https://semver.org/) (`MAJOR.MINOR.PATCH`).
 Ask: would a user reading `--version` learn something useful? If not, leave it
 `none`.
 
-### Product version (`product`)
+### Services suite version (`services`)
 
-| Change | Product bump |
-| ------ | ------------ |
-| No product-facing release | none |
-| Only PATCH-level notes / component bumps | PATCH |
-| At least one MINOR component bump, or user-visible product change | MINOR |
+| Change | `services` bump |
+| ------ | --------------- |
+| No release | none |
+| Only PATCH-level component bumps | PATCH |
+| At least one MINOR component bump, or user-visible change | MINOR |
 | At least one MAJOR component bump, or breaking UX/data change | MAJOR |
 
-`installer` always equals `product` after a release apply.
+`services` must be at least as severe as the highest component bump; CI rejects
+a block where it is not.
 
 ## Declaring a version change
 
-Update `versions.json` in the same pull request that changes compiled output,
-using the tables above to pick the severity. Say in the pull-request description
-which components you bumped and why, and describe any user-facing change in plain
-terms so it can be carried into the release notes. A reviewer should be able to
-see the version decision without inferring it from the diff.
+Declare bumps in the `pair-release-intent:v1` block in your pull request
+description, using the tables above to pick the severity. **Do not edit
+`services/versions.json` or `CHANGELOG.md` by hand** — they are written by
+automation, and CI rejects a pull request that modifies them.
+
+Describe any user-facing change in the block's changelog title and body in plain
+terms; that text becomes the changelog entry verbatim, cited back to your pull
+request number. A reviewer should be able to see the version decision without
+inferring it from the diff.
 
 ## Verifying
 
