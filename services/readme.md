@@ -232,7 +232,7 @@ A skip is not a pass. If you are relying on a test, check it actually ran.
 
 ## Versioning
 
-`services/versions.json` is the single source of truth for every component version and the umbrella `product` version. The build scripts read it and stamp each binary via `-ldflags "-X main.Version=..."`. Bump the components your change affects in the same pull request, and describe any user-facing change in the pull-request description so it reaches the release notes. [`VERSIONING.md`](VERSIONING.md) has the bump rules.
+`services/versions.json` is the single source of truth for every component version and the `services` suite version. The build scripts read it and stamp each binary via `-ldflags "-X main.Version=..."`. Declare the bumps your change needs in the `pair-release-intent:v1` block in your pull-request description — automation writes `versions.json`, so do not edit it by hand — and describe any user-facing change there so it reaches the changelog. [`VERSIONING.md`](VERSIONING.md) has the bump rules.
 
 You can verify a built binary's stamped version at any time:
 

@@ -87,7 +87,7 @@ function getModularBinaryPath(baseName: string): string {
 }
 
 /**
- * Read the build provenance (`sourceFingerprint` + `product`) and per-component
+ * Read the build provenance (`sourceFingerprint` + `services`) and per-component
  * versions that `scripts/build-modular-binaries.ts` stamps into
  * `cli-bin/manifest.json`.
  * `components` is keyed by binary base name (e.g. `ollama-proxy`). Returns empty
@@ -95,15 +95,15 @@ function getModularBinaryPath(baseName: string): string {
  */
 export function readCliBinManifest(): {
     commit: string
-    product: string
+    services: string
     components: Record<string, string>
 } {
     try {
         const manifestPath = path.join(getCliBinDir(), 'manifest.json')
-        if (!fs.existsSync(manifestPath)) return { commit: '', product: '', components: {} }
+        if (!fs.existsSync(manifestPath)) return { commit: '', services: '', components: {} }
         const parsed: JsonValue = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
         const obj = objectValue(parsed)
-        if (!obj) return { commit: '', product: '', components: {} }
+        if (!obj) return { commit: '', services: '', components: {} }
         const components: Record<string, string> = {}
         const componentsObj = objectValue(obj['components'])
         if (componentsObj) {
@@ -114,22 +114,22 @@ export function readCliBinManifest(): {
         }
         return {
             commit: stringValue(obj['sourceFingerprint']) || stringValue(obj['commit']),
-            product: stringValue(obj['product']),
+            services: stringValue(obj['services']),
             components
         }
     } catch {
-        return { commit: '', product: '', components: {} }
+        return { commit: '', services: '', components: {} }
     }
 }
 
 /**
- * Read the build provenance (`commit` + `product`) that
+ * Read the build provenance (`commit` + `services`) that
  * `scripts/build-modular-binaries.ts` stamps into `cli-bin/manifest.json`. Used
  * for diagnostics only; returns empty strings when the manifest is absent.
  */
-function readCliBinManifestInfo(): { commit: string; product: string } {
-    const { commit, product } = readCliBinManifest()
-    return { commit, product }
+function readCliBinManifestInfo(): { commit: string; services: string } {
+    const { commit, services } = readCliBinManifest()
+    return { commit, services }
 }
 
 function objectValue(value: JsonValue | undefined): JsonObject | null {
@@ -484,7 +484,7 @@ class ModularSupervisor {
                 mode: app.isPackaged ? 'packaged' : 'dev',
                 binDir,
                 modularCommit: manifestInfo.commit,
-                modularProduct: manifestInfo.product,
+                modularServices: manifestInfo.services,
                 resourcesPath: process.resourcesPath,
                 appPath: app.getAppPath()
             }

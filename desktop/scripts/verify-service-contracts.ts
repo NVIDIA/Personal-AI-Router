@@ -329,7 +329,7 @@ function renderApiDoc(reports: BinaryReport[], drift: Drift): string {
     L.push('> capability status lives in `docs/services-parity.md`.')
     L.push('')
     L.push(`- **Source tree**: \`services/\` in this monorepo`)
-    L.push(`- **Versions**: see \`services/versions.json\` (product, installer, and per-component)`)
+    L.push(`- **Versions**: see \`services/versions.json\` (services suite and per-component)`)
     L.push(
         '- **Legend**: ✅ referenced by the bridge · ❌ MISSING (no consumer/caller) · ➖ ignored (see `docs/service-contract-exceptions.json`)'
     )

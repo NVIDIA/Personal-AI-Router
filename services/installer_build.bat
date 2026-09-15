@@ -66,8 +66,7 @@ if not exist "%ROOT%dist" mkdir "%ROOT%dist"
 
 REM Resolve installer version. Precedence:
 REM   1. Explicit CLI arg:  installer_build.bat 1.2.3
-REM   2. versions.json "installer" field
-REM   3. versions.json "product" field (fallback)
+REM   2. versions.json "services" field
 REM
 REM build.bat (called above) already verified jq is on PATH, so we don't
 REM re-check here. Using a :get_version subroutine keeps the for /f out of
@@ -105,8 +104,6 @@ exit /b 0
 
 :get_version
 if not exist "%VERSIONS_FILE%" exit /b 0
-REM jq's `//` operator returns the right-hand side when the left is null or
-REM false, giving us the installer-then-product fallback in one filter.
-for /f "delims=" %%V in ('jq -r ".installer // .product" "%VERSIONS_FILE%"') do set "VERSION=%%V"
+for /f "delims=" %%V in ('jq -r ".services" "%VERSIONS_FILE%"') do set "VERSION=%%V"
 if /i "%VERSION%"=="null" set "VERSION="
 exit /b 0
