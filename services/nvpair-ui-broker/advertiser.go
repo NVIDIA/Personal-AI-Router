@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"nvpair-shared/httpcon"
 	"nvpair-shared/noderec"
 )
 
@@ -270,7 +271,7 @@ func checkOllamaHealth(client *http.Client, port int) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	httpcon.DrainAndClose(resp.Body)
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -284,6 +285,6 @@ func checkLMStudioHealth(client *http.Client, port int) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	httpcon.DrainAndClose(resp.Body)
 	return resp.StatusCode == http.StatusOK
 }
