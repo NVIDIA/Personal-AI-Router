@@ -6,24 +6,20 @@ package main
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"nvpair-shared/httpcon/testclient"
 )
 
 func TestProbeHTTPReusesConnections(t *testing.T) {
-	for _, chunked := range []bool{false, true} {
-		framing := "content-length"
-		if chunked {
-			framing = "chunked"
-		}
-		t.Run(framing, func(t *testing.T) {
+	test := func(name string, chunked bool) {
+		t.Run(name, func(t *testing.T) {
 			var requests atomic.Int32
-			client, connections := healthProbePipeClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			client, connections := testclient.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get(engineIdentityProbeHeader) != "1" {
 					t.Error("missing engine identity header")
 				}
@@ -45,11 +41,14 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 					t.Fatalf("poll %d: healthy = %v, want %v", i, got, want)
 				}
 			}
-			if got := connections.Load(); got != 1 {
+			if got := connections.Count(); got != 1 {
 				t.Fatalf("accepted %d HTTP/1 connections for %d polls, want 1", got, rounds)
 			}
 		})
 	}
+
+	test("content-length", false)
+	test("chunked", true)
 }
 
 func TestProbeHTTPBoundsBodyDrain(t *testing.T) {
@@ -108,51 +107,3 @@ func (b *healthProbeBody) Read(p []byte) (int, error) {
 }
 
 func (b *healthProbeBody) Close() error { b.closed = true; return nil }
-
-// Exercise the real HTTP/1 transport over net.Pipe so this regression can run
-// even on a machine whose TCP source ports have already been exhausted.
-func healthProbePipeClient(t *testing.T, handler http.Handler) (*http.Client, *atomic.Int32) {
-	t.Helper()
-	listener := &healthProbeListener{conns: make(chan net.Conn), done: make(chan struct{})}
-	server := &http.Server{Handler: handler}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Close() })
-	connections := &atomic.Int32{}
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		clientConn, serverConn := net.Pipe()
-		select {
-		case listener.conns <- serverConn:
-			connections.Add(1)
-			return clientConn, nil
-		case <-ctx.Done():
-			_ = clientConn.Close()
-			_ = serverConn.Close()
-			return nil, ctx.Err()
-		}
-	}}
-	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
-	t.Cleanup(client.CloseIdleConnections)
-	return client, connections
-}
-
-type healthProbeListener struct {
-	conns chan net.Conn
-	done  chan struct{}
-	once  sync.Once
-}
-
-func (l *healthProbeListener) Accept() (net.Conn, error) {
-	select {
-	case conn := <-l.conns:
-		return conn, nil
-	case <-l.done:
-		return nil, net.ErrClosed
-	}
-}
-
-func (l *healthProbeListener) Close() error {
-	l.once.Do(func() { close(l.done) })
-	return nil
-}
-
-func (l *healthProbeListener) Addr() net.Addr { return &net.TCPAddr{Port: 1} }

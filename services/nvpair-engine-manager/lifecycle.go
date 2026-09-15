@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,12 +18,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"nvpair-shared/httpcon"
 )
 
 const (
 	unavailableConfirmations  = 3
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
-	maxHealthProbeBodyBytes   = 1 << 20
 )
 
 type listenerProbeResult uint8
@@ -818,11 +818,8 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		if err != nil {
 			return false
 		}
-		// A body closed before EOF discards its HTTP/1 connection on every
-		// health poll. Drain normal responses for reuse, bounded by both size
-		// and the existing probe deadline for oversized or stalled bodies.
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHealthProbeBodyBytes))
-		resp.Body.Close()
+
+		httpcon.DrainAndClose(resp.Body)
 		want := p.Status
 		if want == 0 {
 			want = 200
