@@ -38,10 +38,7 @@ concurrency:
     group: build-${{ github.ref }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-    NODE_VERSION: '25'
-    GO_VERSION: '1.26.7'
-    GOTOOLCHAIN: local
+# Toolchain versions are declared once, in .github/actions/setup.
 
 jobs:
     build:
@@ -84,15 +81,9 @@ jobs:
                   free -h 2>/dev/null || sysctl -n hw.memsize 2>/dev/null || echo "mem: unknown"
                   df -h . | tail -1
 
-            - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+            - uses: ./.github/actions/setup
               with:
-                  node-version: ${{ env.NODE_VERSION }}
-                  cache: npm
-                  cache-dependency-path: desktop/package-lock.json
-
-            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-              with:
-                  go-version: ${{ env.GO_VERSION }}
+                  go: 'true'
 
             # electron-builder needs fakeroot and rpm to stage Linux packages;
             # ubuntu-latest ships neither.

@@ -28,13 +28,7 @@ concurrency:
     group: ci-${{ github.ref }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-    # desktop/package.json engines requires >=25.5.0.
-    NODE_VERSION: '25'
-    # Pinned >= the max `go` directive across services/*/go.mod. GOTOOLCHAIN=local
-    # forbids a surprise toolchain auto-download.
-    GO_VERSION: '1.26.7'
-    GOTOOLCHAIN: local
+# Toolchain versions are declared once, in .github/actions/setup.
 
 jobs:
     # Release-intent validation lives in release-intent-check.yml, not here: it
@@ -48,9 +42,9 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-            - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+            - uses: ./.github/actions/setup
               with:
-                  node-version: ${{ env.NODE_VERSION }}
+                  npm-cache: 'false'
             - run: node scripts/spdx-headers.mjs
 
     desktop:
@@ -58,11 +52,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-            - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-              with:
-                  node-version: ${{ env.NODE_VERSION }}
-                  cache: npm
-                  cache-dependency-path: desktop/package-lock.json
+            - uses: ./.github/actions/setup
             - run: npm --prefix desktop ci --prefer-offline
 
             # Same order as the local gate documented in CONTRIBUTING.md, so a
@@ -79,14 +69,9 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-            - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+            - uses: ./.github/actions/setup
               with:
-                  node-version: ${{ env.NODE_VERSION }}
-                  cache: npm
-                  cache-dependency-path: desktop/package-lock.json
-            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-              with:
-                  go-version: ${{ env.GO_VERSION }}
+                  go: 'true'
             # Engine-manager orphan-reclaim tests need lsof and ss.
             - run: sudo apt-get update -qq && sudo apt-get install -y -qq lsof iproute2
             - run: npm --prefix desktop ci --prefer-offline
@@ -142,9 +127,10 @@ jobs:
                 os: [ubuntu-latest, macos-latest, windows-latest]
         steps:
             - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+            - uses: ./.github/actions/setup
               with:
-                  go-version: ${{ env.GO_VERSION }}
+                  node: 'false'
+                  go: 'true'
 
             # Both scripts fail fast with their own message when go or jq is
             # missing, so there is no separate tool-check step here.
