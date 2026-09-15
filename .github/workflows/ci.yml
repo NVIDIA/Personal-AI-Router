@@ -158,14 +158,34 @@ jobs:
               working-directory: services
               shell: bash
               run: |
-                  expected=$(jq -r '.components | keys[]' versions.json | sort)
-                  staged=$(ls build/bin | sed 's/\.exe$//' | sort)
-                  if [ "$expected" != "$staged" ]; then
-                    echo "::error::build/bin does not match versions.json components"
-                    echo "declared but not staged (build script missing a component?):"
-                    comm -23 <(echo "$expected") <(echo "$staged")
-                    echo "staged but not declared (versions.json missing a component?):"
-                    comm -13 <(echo "$expected") <(echo "$staged")
-                    exit 1
+                  # Both sides run through the same normalizer, so they cannot
+                  # disagree on collation or line endings. Order matters: CR has
+                  # to go before the .exe suffix, because under Git Bash a CRLF
+                  # line leaves .exe mid-string and `s/\.exe$//` never matches.
+                  # LC_ALL=C makes the sort byte-wise, which is also what comm
+                  # below assumes.
+                  norm() { tr -d '\r' | sed 's/\.exe$//' | LC_ALL=C sort; }
+                  expected=$(jq -r '.components | keys[]' versions.json | norm)
+                  staged=$(ls -1 build/bin | norm)
+
+                  if [ "$expected" = "$staged" ]; then
+                      printf 'all %s declared components staged\n' \
+                          "$(printf '%s\n' "$expected" | wc -l | tr -d ' ')"
+                      exit 0
                   fi
-                  echo "all $(echo "$expected" | wc -l | tr -d ' ') declared components staged"
+
+                  echo "::error::build/bin does not match versions.json components"
+                  echo "--- declared but not staged (build script missing a component?)"
+                  comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$staged")
+                  echo "--- staged but not declared (versions.json missing a component?)"
+                  comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$staged")
+                  # When both lists above look identical the difference is a
+                  # character you cannot see. `sed -n l` renders CR as \r and
+                  # marks end of line with $.
+                  echo "--- raw build/bin"
+                  ls -l build/bin
+                  echo "--- expected, escaped"
+                  printf '%s\n' "$expected" | sed -n l
+                  echo "--- staged, escaped"
+                  printf '%s\n' "$staged" | sed -n l
+                  exit 1
