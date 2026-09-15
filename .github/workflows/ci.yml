@@ -145,14 +145,27 @@ jobs:
               shell: cmd
               run: build.bat
 
-            # Catches a script that exits 0 having staged nothing. The binaries
-            # are not executed: several are servers that would ignore an
-            # unrecognized flag and start listening.
-            - name: Check staged binaries
+            # Compares the staged set against versions.json rather than a count.
+            # A floor like `-ge 13` passes quietly the moment the real number
+            # grows, so it stops asserting anything; and a hardcoded `-eq 13`
+            # only catches the count, not a rename. Comparing names means
+            # adding, removing, or renaming a component fails here until the
+            # build script and the manifest agree again.
+            #
+            # The binaries are not executed to check them: several are servers
+            # that would ignore an unrecognized flag and start listening.
+            - name: Check staged binaries match versions.json
               working-directory: services
               shell: bash
               run: |
-                  ls -l build/bin
-                  count=$(ls build/bin | wc -l)
-                  echo "staged $count binaries"
-                  test "$count" -ge 13
+                  expected=$(jq -r '.components | keys[]' versions.json | sort)
+                  staged=$(ls build/bin | sed 's/\.exe$//' | sort)
+                  if [ "$expected" != "$staged" ]; then
+                    echo "::error::build/bin does not match versions.json components"
+                    echo "declared but not staged (build script missing a component?):"
+                    comm -23 <(echo "$expected") <(echo "$staged")
+                    echo "staged but not declared (versions.json missing a component?):"
+                    comm -13 <(echo "$expected") <(echo "$staged")
+                    exit 1
+                  fi
+                  echo "all $(echo "$expected" | wc -l | tr -d ' ') declared components staged"
