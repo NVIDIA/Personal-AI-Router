@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package discovery provides a single mDNS service browser that six services
-// (nvpair-node-scanner, nvpair-errors, ollama-proxy, lmstudio-proxy,
-// nvpair-workload-manager, nvpair-cluster-manager) each carried a near-identical copy
-// of (the mDNS dedup).
+// Package discovery provides the mDNS service browser the nvpair-node-scanner
+// daemon runs for its single _nvpair-node record. It was lifted from the
+// near-identical copies six services (nvpair-node-scanner, nvpair-errors,
+// ollama-proxy, lmstudio-proxy, nvpair-workload-manager, nvpair-cluster-manager)
+// each carried; after the broker's discovery relay consolidated the other five,
+// the scanner's daemon is the only live consumer. The other services import this
+// package for its shapes (Node, Event) and identity helpers (UUIDFromTXT,
+// SameStringSet), feeding the browser with the relay's discovery:nodes snapshots
+// instead of browsing mDNS themselves.
 //
 // The core is a scan-and-diff state machine: each scan transmits the PTR query
 // from a long-lived per-interface send-socket pool (one unicast-bound socket per
@@ -19,24 +24,18 @@
 //
 // The per-service variations are expressed as functional options rather than
 // forks:
-//   - WithInterval / WithScanTimeout — cluster-manager browses at 30s.
-//   - WithMissThreshold — consecutive misses before eviction (default
-//     missThresholdDefault).
-//   - WithNoEviction — accumulate-only, never evict (cluster-manager).
+//   - WithInterval / WithScanTimeout / WithMissThreshold — tune the scan cadence,
+//     the per-scan response window, and the consecutive-miss eviction threshold.
 //   - WithLivenessProbe — TCP-probe a threshold-missed node before evicting it;
-//     if it still answers, keep it (the proxies' anti-flap guard).
-//   - WithSelfFilter — drop our own advertisement from results (workload-manager).
+//     if it still answers, keep it (the scanner daemon's anti-flap guard).
 //   - WithKeyFunc — key the node map by something other than the instance name
-//     (cluster-manager keys by uuid= so two hosts sharing an instance name but
+//     (the scanner keys by uuid= so two hosts sharing an instance name but
 //     distinct UUIDs don't collide).
 //
-// Two consumption shapes are supported over the same core:
-//   - Run(ctx, events) — push: a background loop that emits Discovered/Updated/
-//     Removed events (scanner, errors, proxies). events may be nil for a
-//     consumer that only wants the map maintained and queries it via Nodes()
-//     (cluster-manager).
-//   - Poll(ctx) — pull: one scan+reconcile that returns the current snapshot
-//     (workload-manager's on-demand PeerSource).
+// The one consumption shape is:
+//   - Run(ctx, events) — a background loop that emits Discovered/Updated/Removed
+//     events. events may be nil for a consumer that only wants the map maintained
+//     and queries it via Nodes().
 package discovery
 
 import (
@@ -157,9 +156,7 @@ type options struct {
 	interval      time.Duration
 	scanTimeout   time.Duration
 	missThreshold int
-	noEvict       bool
 	liveness      func(Node) bool
-	selfInstance  string
 	keyFunc       func(Node) string
 	warnCollision bool
 }
@@ -177,27 +174,17 @@ func WithScanTimeout(d time.Duration) Option { return func(o *options) { o.scanT
 // before it is eligible for eviction (default missThresholdDefault).
 func WithMissThreshold(n int) Option { return func(o *options) { o.missThreshold = n } }
 
-// WithNoEviction makes the browser accumulate-only: a node is never removed once
-// seen. For a consumer that wants a departed peer to keep resolving (e.g. an
-// invite flow) rather than being evicted at the miss threshold.
-func WithNoEviction() Option { return func(o *options) { o.noEvict = true } }
-
 // WithLivenessProbe supplies a reachability check run against a threshold-missed
 // node before it is evicted; returning true keeps the node (its miss counter is
-// reset). This is the proxies' TCP-probe-before-evict guard: an mDNS miss is not
-// proof a node is gone. Probes run outside the browser lock and up to
+// reset). This is the node-scanner daemon's TCP-probe-before-evict guard: an mDNS
+// miss is not proof a node is gone. Probes run outside the browser lock and up to
 // probeConcurrency at a time, so fn must be safe for concurrent use.
 func WithLivenessProbe(fn func(Node) bool) Option { return func(o *options) { o.liveness = fn } }
 
-// WithSelfFilter excludes entries whose instance name matches selfInstance —
-// our own advertisement looping back (workload-manager).
-func WithSelfFilter(selfInstance string) Option {
-	return func(o *options) { o.selfInstance = selfInstance }
-}
-
 // WithKeyFunc keys the node map by fn(node) instead of the instance name. Return
-// "" to fall back to the instance name for that node. cluster-manager keys by
-// uuid= so two hosts sharing an instance name but distinct UUIDs don't collide.
+// "" to fall back to the instance name for that node. The node-scanner daemon
+// keys by uuid= so two hosts sharing an instance name but distinct UUIDs don't
+// collide.
 func WithKeyFunc(fn func(Node) string) Option { return func(o *options) { o.keyFunc = fn } }
 
 // Browser maintains a reconciled set of discovered nodes for one service type.
@@ -389,8 +376,8 @@ func (b *Browser) Run(ctx context.Context, events chan<- Event) {
 // run and starts the goroutines that feed it (the read loop that decodes arriving
 // records, and the interface monitor that keeps the multicast memberships current).
 // It is called once from Run — the only production consumer — and is idempotent.
-// A browser driven purely through Poll never needs it, and a test that overrides
-// browseFunc leaves recv nil, so no real socket is opened there.
+// A test that overrides browseFunc and never calls Run leaves recv nil, so no
+// real socket is opened there.
 //
 // The socket is created outside the lock (a bind + group joins is a few system
 // calls), then stored under it; a concurrent caller that got there first wins and
@@ -403,7 +390,7 @@ func (b *Browser) startReceive(ctx context.Context) {
 		return
 	}
 	ifaces, _ := enumerateIfaces()
-	recv, err := NewReceiver(b.service, b.domain, ifaces)
+	recv, err := NewReceiver(ctx, b.service, b.domain, ifaces)
 	if err != nil {
 		slog.Warn("mDNS browser could not open its receive socket; discovery will be empty",
 			"service", b.service, "err", err)
@@ -424,15 +411,6 @@ func (b *Browser) startReceive(ctx context.Context) {
 		<-ctx.Done()
 		recv.Stop()
 	}()
-}
-
-// Poll performs one scan+reconcile and returns the current snapshot. It's the
-// pull-model entry point (workload-manager's PeerSource), an alternative to Run.
-func (b *Browser) Poll(ctx context.Context) []Node {
-	if ctx.Err() == nil {
-		b.reconcile(b.browseFunc(ctx))
-	}
-	return b.Nodes()
 }
 
 // scanEmit runs one browse+reconcile and, when events is non-nil, forwards the
@@ -478,11 +456,6 @@ func (b *Browser) reconcile(seen map[string]Node) []Event {
 		}
 		b.nodes[k] = node
 		delete(b.misses, k)
-	}
-
-	if b.opt.noEvict {
-		b.mu.Unlock()
-		return pending
 	}
 
 	// Losing several independent nodes in one scan is treated as a failure of this
@@ -623,9 +596,6 @@ func (b *Browser) browse(ctx context.Context) map[string]Node {
 	<-scanCtx.Done()
 
 	for _, n := range recv.drain() {
-		if b.opt.selfInstance != "" && n.ID == b.opt.selfInstance {
-			continue // our own advertisement
-		}
 		seen[b.key(n)] = n
 	}
 

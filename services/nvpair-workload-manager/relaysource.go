@@ -21,11 +21,10 @@ import (
 // relayPeerSource maintains the peer set pushed down by the broker relay, keyed
 // by the directory hostUuid. It drops our own _nvpair-node record from the peer
 // set — the relay directory includes the local node (the client node list wants
-// it), but a broadcast target set must not, mirroring the mDNS browser's
-// WithSelfFilter. selfUUID is this node's stable per-host UUID; the self-filter
-// keys on it, so a peer that merely shares our hostname is NOT dropped.
-// A relay DirectoryNode always carries a hostUuid (the scanner
-// guarantees it), so there is no hostname fallback.
+// it), but a broadcast target set must not. selfUUID is this node's stable
+// per-host UUID; the self-filter keys on it, so a peer that merely shares our
+// hostname is NOT dropped. A relay DirectoryNode always carries a hostUuid (the
+// scanner guarantees it), so there is no hostname fallback.
 type relayPeerSource struct {
 	selfUUID string
 

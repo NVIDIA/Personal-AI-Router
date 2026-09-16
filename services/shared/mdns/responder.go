@@ -50,11 +50,9 @@ import (
 
 const (
 	mdnsPort = 5353
-	// recordTTL matches what zeroconf advertises for non-A records (3200s)
-	// for service-level records, but RFC 6762 §10 says A records SHOULD use
-	// a TTL of 120s to account for IP address changes. We use the shorter
-	// value uniformly — the cost of a slightly more chatty re-announce is
-	// minimal and it keeps caches fresh.
+	// RFC 6762 §10 says A records SHOULD use a TTL of 120s to account for IP
+	// address changes. We use the shorter value uniformly — the cost of a
+	// slightly more chatty re-announce is minimal and it keeps caches fresh.
 	recordTTL = 120
 	// reannounceEvery is how often we send unsolicited announcements after
 	// the initial pair. RFC 6762 doesn't strictly require periodic
@@ -248,9 +246,12 @@ func ifaceAddrsEqual(a, b map[int][]net.IP) bool {
 // re-announces the service, and on context cancellation sends a "goodbye"
 // (TTL=0) before returning.
 //
-// The receive socket binds the real mDNS group 224.0.0.251:5353 with
-// SO_REUSEADDR (see setReuseAddr) so multiple responders — and the browser's
-// zeroconf socket — coexist on 5353 on the same host.
+// The receive socket is bound through the setReuseAddr hook (SO_REUSEADDR on
+// every platform, plus SO_REUSEPORT on macOS) so multiple responders — and the
+// discovery browser's receive socket in shared/discovery — coexist on 5353 on
+// the same host. The net package sets the same options itself for a multicast
+// listen address; the hook makes the dependency explicit rather than
+// incidental.
 func (r *Responder) Run(ctx context.Context) error {
 	lc := net.ListenConfig{Control: setReuseAddr}
 	pktConn, err := lc.ListenPacket(ctx, "udp4", mdnsGroupV4.String()+":"+fmt.Sprint(mdnsPort))

@@ -11,6 +11,7 @@
 package tests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,9 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grandcat/zeroconf"
-
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/mdns"
 )
 
 // swapModels is a /v1/models stub whose body can be swapped at runtime, standing
@@ -73,11 +73,13 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 	// Advertise em=<port> + ip=127.0.0.1 once and never touch the record again,
 	// so the only thing that changes during the test is the /v1/models body.
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
-	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
+	resp, err := mdns.NewResponder(instance, nodeRecordService, testDomain, emPort, txt)
 	if err != nil {
 		t.Fatalf("register %s: %v", instance, err)
 	}
-	t.Cleanup(zsrv.Shutdown)
+	respCtx, cancelResp := context.WithCancel(context.Background())
+	t.Cleanup(cancelResp)
+	go resp.Run(respCtx)
 	t.Logf("advertising %s @ %s (em=%d), models initially empty", instance, nodeRecordService, emPort)
 
 	stdin, msgs, cleanup := startBroker(t)

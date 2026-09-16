@@ -69,8 +69,8 @@ that directory too if you want a fully clean slate.
 
 - 64-bit Linux on `x86_64`. ARM builds are not produced yet.
 - mDNS on UDP 5353. The workers run their own — a custom per-interface responder
-  (`nvpair-shared/mdns`) plus a `grandcat/zeroconf` browser (`nvpair-shared/discovery`),
-  bound with `SO_REUSEADDR` — and coexist fine with a system responder like
+  (`nvpair-shared/mdns`) plus a browser (`nvpair-shared/discovery`), bound with 
+  `SO_REUSEADDR` — and coexist fine with a system responder like
   `avahi-daemon`; no configuration needed.
 
 ## Troubleshooting

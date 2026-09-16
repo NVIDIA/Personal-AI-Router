@@ -4,6 +4,7 @@
 package tests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -17,9 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grandcat/zeroconf"
-
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/mdns"
 	"nvpair-shared/noderec"
 )
 
@@ -34,7 +34,7 @@ import (
 // this exercises the whole chain in one process tree: mDNS browse -> miss
 // threshold -> liveness probe -> node-info identity mismatch -> node-removed.
 //
-// The peer is simulated rather than a second PAIR install: a zeroconf
+// The peer is simulated rather than a second PAIR install: an mDNS
 // responder publishes the record, and a local HTTP server plays its node-info.
 // Flipping that server's reported hostUuid is exactly the signal a wipe
 // produces, and is what the probe must notice.
@@ -81,16 +81,13 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 		"ip=127.0.0.1",
 		fmt.Sprintf("%s=%d", noderec.ServiceNodeInfo, niPort),
 	}
-	responder, err := zeroconf.Register(peerInstance, noderec.ServiceType, testDomain, noderec.SRVPort, txt, nil)
+	responder, err := mdns.NewResponder(peerInstance, noderec.ServiceType, testDomain, noderec.SRVPort, txt)
 	if err != nil {
 		t.Fatalf("register peer: %v", err)
 	}
-	responderDown := false
-	defer func() {
-		if !responderDown {
-			responder.Shutdown()
-		}
-	}()
+	responderCtx, cancelResponder := context.WithCancel(context.Background())
+	t.Cleanup(cancelResponder)
+	go responder.Run(responderCtx)
 
 	events := startScannerForGhostTest(t)
 
@@ -102,8 +99,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 
 	// The wipe: the record stops being advertised under the old identity, and
 	// the machine now answers as someone else at the same address and port.
-	responder.Shutdown()
-	responderDown = true
+	cancelResponder()
 	reported.Store(wipedUUID)
 
 	// Eviction waits on the browser's full miss threshold (12 scans at 5s, a full

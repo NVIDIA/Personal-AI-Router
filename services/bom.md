@@ -15,7 +15,7 @@ The workers are pure Go services with no GUI/native-webview dependencies, so the
 
 `nvpair-engine-manager` links no third-party library that the other binaries don't already (only `go-winio` for its Windows named-pipe IPC, plus `golang.org/x/sys`, which it uses directly on Windows to resolve the PID owning a listening port when reclaiming an orphaned managed engine).
 
-As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` are linked into the mDNS services **through the first-party `nvpair-shared/mdns` (responder) and `nvpair-shared/discovery` (browser) packages** rather than imported directly by each binary; the Used-By lists below reflect the binaries they end up linked into. Advertising uses only `miekg/dns` + `x/net` (a custom responder); browsing additionally uses `zeroconf`.
+As of the mDNS dedup, `miekg/dns` and `golang.org/x/net` are linked into the mDNS services **through the first-party `nvpair-shared/mdns` (responder) and `nvpair-shared/discovery` (browser) packages** rather than imported directly by each binary; the Used-By lists below reflect the binaries they end up linked into.
 
 ## Direct Dependencies
 
@@ -25,7 +25,6 @@ As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` a
 | `github.com/charmbracelet/bubbles` | v1.0.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbles/blob/master/LICENSE) |
 | `github.com/charmbracelet/bubbletea` | v1.3.10 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbletea/blob/master/LICENSE) |
 | `github.com/charmbracelet/lipgloss` | v1.1.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/lipgloss/blob/master/LICENSE) |
-| `github.com/grandcat/zeroconf` | v1.0.0 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | MIT | [LICENSE](https://github.com/grandcat/zeroconf/blob/master/LICENSE) |
 | `github.com/jaypipes/ghw` | v0.24.0 | nvpair-node-info | Apache-2.0 | [COPYING](https://github.com/jaypipes/ghw/blob/main/COPYING) |
 | `github.com/miekg/dns` | v1.1.55 / v1.1.72 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | BSD-3-Clause | [LICENSE](https://github.com/miekg/dns/blob/master/LICENSE) |
 | `github.com/shirou/gopsutil/v4` | v4.26.7 | nvpair-node-info (macOS) | BSD-3-Clause | [LICENSE](https://github.com/shirou/gopsutil/blob/master/LICENSE) |
@@ -39,7 +38,6 @@ As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` a
 |---------|-----------|--------------|---------|-------------|
 | `github.com/atotto/clipboard` | v0.1.4 | bubbletea (textinput) | BSD-3-Clause | [LICENSE](https://github.com/atotto/clipboard/blob/master/LICENSE) |
 | `github.com/aymanbagabas/go-osc52/v2` | v2.0.1 | termenv | MIT | [LICENSE](https://github.com/aymanbagabas/go-osc52/blob/main/LICENSE) |
-| `github.com/cenkalti/backoff` | v2.2.1+incompatible | zeroconf | MIT | [LICENSE](https://github.com/cenkalti/backoff/blob/v2/LICENSE) |
 | `github.com/charmbracelet/colorprofile` | v0.4.1 | bubbletea | MIT | [LICENSE](https://github.com/charmbracelet/colorprofile/blob/main/LICENSE) |
 | `github.com/charmbracelet/x/ansi` | v0.11.6 | lipgloss, bubbletea | MIT | [LICENSE](https://github.com/charmbracelet/x/blob/main/LICENSE) |
 | `github.com/charmbracelet/x/cellbuf` | v0.0.15 | bubbletea | MIT | [LICENSE](https://github.com/charmbracelet/x/blob/main/LICENSE) |
@@ -62,9 +60,9 @@ As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` a
 | `github.com/tklauser/go-sysconf` | v0.3.16 | gopsutil (macOS) | BSD-3-Clause | [LICENSE](https://github.com/tklauser/go-sysconf/blob/master/LICENSE) |
 | `github.com/xo/terminfo` | v0.0.0-20220910002029 | colorprofile | MIT | [LICENSE](https://github.com/xo/terminfo/blob/master/LICENSE) |
 | `github.com/yusufpapurcu/wmi` | v1.2.4 | ghw | MIT | [LICENSE](https://github.com/yusufpapurcu/wmi/blob/master/LICENSE) |
-| `golang.org/x/mod` | v0.12.0 / v0.17.0 / v0.31.0 | zeroconf (via miekg/dns) | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/mod/+/master:LICENSE) |
-| `golang.org/x/sync` | v0.10.0 / v0.19.0 | zeroconf (via miekg/dns) | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/sync/+/master:LICENSE) |
-| `golang.org/x/sys` | v0.47.0 | go-winio, zeroconf, ghw, charmbracelet/x/term | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/sys/+/master:LICENSE) |
+| `golang.org/x/mod` | v0.12.0 / v0.17.0 / v0.31.0 | miekg/dns | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/mod/+/master:LICENSE) |
+| `golang.org/x/sync` | v0.10.0 / v0.19.0 | miekg/dns | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/sync/+/master:LICENSE) |
+| `golang.org/x/sys` | v0.47.0 | go-winio, ghw, charmbracelet/x/term | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/sys/+/master:LICENSE) |
 | `golang.org/x/text` | v0.3.8 | charmbracelet/x/ansi | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/text/+/master:LICENSE) |
-| `golang.org/x/tools` | v0.11.0 / v0.21.1-0.20240508 / v0.40.0 | zeroconf (via miekg/dns) | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/tools/+/master:LICENSE) |
+| `golang.org/x/tools` | v0.11.0 / v0.21.1-0.20240508 / v0.40.0 | miekg/dns | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/tools/+/master:LICENSE) |
 | `gopkg.in/yaml.v3` | v3.0.1 | ghw | MIT + Apache-2.0 | [LICENSE](https://github.com/go-yaml/yaml/blob/v3/LICENSE) |

@@ -5,6 +5,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -39,9 +40,12 @@ var mdnsGroupV4 = net.IPv4(224, 0, 0, 251)
 // re-joined only when the interface set changes, removes the churn while
 // receiving exactly the packets the per-scan socket did.
 //
-// It binds the wildcard (224.0.0.0:5353) rather than the group address so it
-// shares 5353 with the system mDNS responder and the PAIR responder without a
-// bind race; joining the group on each interface is what actually receives.
+// Sharing 5353 is explicit: the socket is bound through the setReuseAddr hook
+// (SO_REUSEADDR on every platform, plus SO_REUSEPORT on macOS), so it coexists
+// with the PAIR responder and the system mDNS responder on the same host. The
+// net package sets the same options itself for a multicast listen address, but
+// the hook makes that dependency visible here rather than incidental; joining
+// the group on each interface is what actually receives.
 //
 // It is deliberately IPv4-only. The PAIR responder (shared/mdns) is IPv4-only,
 // so every node it advertises is reachable over IPv4; the grandcat/zeroconf
@@ -61,22 +65,26 @@ type receiver struct {
 }
 
 // mdnsWildcardV4 is the address the receive socket binds to: the multicast
-// wildcard 224.0.0.0 (not 0.0.0.0). Binding the multicast network rather than the
-// unicast wildcard is what lets it coexist with the system mDNS responder and the
-// PAIR responder on 5353 without SO_REUSEPORT — exactly the bind the grandcat/
-// zeroconf resolver it replaces used, which is why the per-scan socket received
-// the responses it did.
+// wildcard 224.0.0.0 (not 0.0.0.0) — exactly the bind the grandcat/zeroconf
+// resolver it replaced used, which is why the per-scan socket received the
+// responses it did. The net package normalizes a multicast listen address to
+// the unicast wildcard (0.0.0.0) before binding, so the address records intent
+// while the socket coexists on 5353 with the PAIR responder and the system
+// mDNS responder the same way it does without this constant.
 var mdnsWildcardV4 = net.IPv4(224, 0, 0, 0)
 
-// NewReceiver binds the long-lived receive socket and joins the mDNS group on
-// every interface in ifaces. It returns an error only if the socket cannot be
-// bound; interfaces that fail to join are skipped (a wedged adapter must not
-// darken the rest).
-func NewReceiver(service, domain string, ifaces map[int][]net.IP) (*receiver, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: mdnsWildcardV4, Port: mdnsPort})
+// NewReceiver binds the long-lived receive socket — through the setReuseAddr
+// hook, per the type's sharing note — and joins the mDNS group on every
+// interface in ifaces. It returns an error only if the socket cannot be bound;
+// interfaces that fail to join are skipped (a wedged adapter must not darken
+// the rest).
+func NewReceiver(ctx context.Context, service, domain string, ifaces map[int][]net.IP) (*receiver, error) {
+	lc := net.ListenConfig{Control: setReuseAddr}
+	pktConn, err := lc.ListenPacket(ctx, "udp4", mdnsWildcardV4.String()+":"+fmt.Sprint(mdnsPort))
 	if err != nil {
 		return nil, err
 	}
+	conn := pktConn.(*net.UDPConn)
 	r := &receiver{
 		service: service,
 		domain:  domain,

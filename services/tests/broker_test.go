@@ -7,7 +7,7 @@
 // The broker spawns nvpair-node-scanner, whose promoted daemon browses
 // _nvpair-node._tcp and folds each node into the broker's discovery store even
 // when the /v1/node-info enrichment fetch fails. So we drive real discovery by
-// registering a bare _nvpair-node record via zeroconf (ni=<port> in TXT, no HTTP
+// registering a bare _nvpair-node record via mDNS (ni=<port> in TXT, no HTTP
 // node-info server required) and assert on the broker's stdout JSON-RPC frames:
 //
 //   - while unsubscribed: the node is reachable via discovery:get-nodes
@@ -23,6 +23,7 @@
 package tests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,8 +33,7 @@ import (
 	"time"
 
 	"nvpair-shared/jsonrpc"
-
-	"github.com/grandcat/zeroconf"
+	"nvpair-shared/mdns"
 )
 
 // availableNode mirrors the broker's external camelCase wire shape (see
@@ -98,20 +98,22 @@ func sendReq(t *testing.T, w io.Writer, id int, method string) {
 	}
 }
 
-func registerNodeInfo(t *testing.T, instance string, port int) *zeroconf.Server {
+func registerNodeInfo(t *testing.T, instance string, port int) *mdns.Responder {
 	t.Helper()
 	// One consolidated _nvpair-node record carrying ni=<port> (the node-info
 	// service). A distinct uuid keeps each stub from colliding with this node's
 	// own record or the others. The daemon browses this, folds it into its
 	// directory, and pushes it to the broker store.
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", fmt.Sprintf("ni=%d", port)}
-	srv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
+	resp, err := mdns.NewResponder(instance, nodeRecordService, testDomain, port, txt)
 	if err != nil {
 		t.Fatalf("register %s: %v", instance, err)
 	}
-	t.Cleanup(srv.Shutdown)
+	respCtx, cancelResp := context.WithCancel(context.Background())
+	t.Cleanup(cancelResp)
+	go resp.Run(respCtx)
 	t.Logf("advertising %s @ %s (ni=%d)", instance, nodeRecordService, port)
-	return srv
+	return resp
 }
 
 func containsNode(nodes []availableNode, id string) bool {
