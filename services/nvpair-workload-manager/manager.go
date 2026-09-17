@@ -92,14 +92,20 @@ type Manager struct {
 	activeMu    sync.Mutex
 	activeLocal map[workloadKey]workloadEvent
 
+	// ingress is the optional loopback listener for third-party local
+	// producers (localingress.go); nil when not configured.
+	ingress *localIngress
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 // NewManager builds the manager. selfUUID is our stable per-host UUID, used to
 // exclude our own advertisement from the broadcast peer set (by UUID, so a
-// same-named peer isn't wrongly dropped).
-func NewManager(codec *Codec, port int, selfUUID, clusterDir string) *Manager {
+// same-named peer isn't wrongly dropped). localIngress is the loopback bind
+// address for the third-party workload ingress, "" for none; a non-loopback
+// address is an error, because that listener is plaintext by design.
+func NewManager(codec *Codec, port int, selfUUID, clusterDir, localIngress string) (*Manager, error) {
 	peers := newPeerSet(port)
 	dedup := newDedupIndex(defaultDedupCapacity)
 	// Inter-node traffic is cluster mTLS scoped to pinned peers, unconditionally:
@@ -126,7 +132,14 @@ func NewManager(codec *Codec, port int, selfUUID, clusterDir string) *Manager {
 		activeLocal: make(map[workloadKey]workloadEvent),
 	}
 	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove)
-	return m
+	if localIngress != "" {
+		li, err := newLocalIngress(localIngress, selfUUID, m.ingestLocal)
+		if err != nil {
+			return nil, err
+		}
+		m.ingress = li
+	}
+	return m, nil
 }
 
 func (m *Manager) Run(ctx context.Context) error {
@@ -154,6 +167,19 @@ func (m *Manager) Run(ctx context.Context) error {
 			serverErrCh <- err
 		}
 	}()
+
+	// The loopback ingress binds synchronously so a port already in use is a
+	// startup failure the broker's supervisor sees, not a silent no-listener.
+	if m.ingress != nil {
+		if err := m.ingress.Listen(); err != nil {
+			return err
+		}
+		go func() {
+			if err := m.ingress.Serve(ctx); err != nil {
+				serverErrCh <- err
+			}
+		}()
+	}
 
 	go m.discoveryLoop(ctx)
 	go m.resyncLoop(ctx)
@@ -321,34 +347,75 @@ func (m *Manager) applyDiscovery(msg *Message) {
 	m.relaySource.set(res.Nodes)
 }
 
-// handleLocalLifecycle validates a Broker-originated lifecycle notification
-// and broadcasts it to peers. Malformed payloads are dropped-and-logged and
-// never broadcast (spec §7).
-func (m *Manager) handleLocalLifecycle(msg *Message) {
-	wl, err := parseLifecycle(msg.Params)
-	if err != nil {
-		slog.Warn("dropping malformed local lifecycle", "method", msg.Method, "err", err)
-		return
+// applyLocal validates a local-origin frame and, when valid, records it in the
+// re-sync set and broadcasts it to peers. It is the one path both the stdio
+// interface (Broker-originated frames) and the loopback ingress take, so a
+// frame accepted on either behaves identically on the wire. Malformed payloads
+// are returned as errors and never broadcast (spec §7).
+func (m *Manager) applyLocal(method string, params json.RawMessage) (wl *Workload, removeID, removeNode string, err error) {
+	switch {
+	case isLifecycleMethod(method):
+		wl, err = parseLifecycle(params)
+		if err != nil {
+			return nil, "", "", err
+		}
+		key := workloadKey{origin: wl.OriginatedFrom, engine: wl.Engine, runID: wl.RunID, id: wl.ID}
+		m.trackActive(key, method, params, wl.State)
+		slog.Debug("broadcasting local lifecycle", "method", method, "id", wl.ID, "state", wl.State, "peers", m.peers.count())
+		m.broadcastFrame(method, params)
+		return wl, "", "", nil
+	case method == MethodRemove:
+		removeID, removeNode, err = parseRemove(params)
+		if err != nil {
+			return nil, "", "", err
+		}
+		// Broadcast the original params unchanged so any nodeId the producer
+		// supplied is preserved for peers' dedup. The removal wire carries only
+		// (workloadId, originatedFrom) — no engine/runId — so drop every
+		// composite key matching that pair.
+		m.untrackActive(removeNode, removeID)
+		slog.Debug("broadcasting local removal", "workloadId", removeID, "node", removeNode, "peers", m.peers.count())
+		m.broadcastFrame(method, params)
+		return nil, removeID, removeNode, nil
 	}
-	key := workloadKey{origin: wl.OriginatedFrom, engine: wl.Engine, runID: wl.RunID, id: wl.ID}
-	m.trackActive(key, msg.Method, msg.Params, wl.State)
-	slog.Debug("broadcasting local lifecycle", "method", msg.Method, "id", wl.ID, "state", wl.State, "peers", m.peers.count())
-	m.broadcastFrame(msg.Method, msg.Params)
+	return nil, "", "", fmt.Errorf("unknown method: %s", method)
+}
+
+// handleLocalLifecycle applies a Broker-originated lifecycle notification.
+// The broker has already applied it to its own store before forwarding, so
+// nothing is emitted back up.
+func (m *Manager) handleLocalLifecycle(msg *Message) {
+	if _, _, _, err := m.applyLocal(msg.Method, msg.Params); err != nil {
+		slog.Warn("dropping malformed local lifecycle", "method", msg.Method, "err", err)
+	}
 }
 
 func (m *Manager) handleLocalRemove(msg *Message) {
-	workloadID, nodeID, err := parseRemove(msg.Params)
-	if err != nil {
+	if _, _, _, err := m.applyLocal(msg.Method, msg.Params); err != nil {
 		slog.Warn("dropping malformed local removal", "err", err)
-		return
 	}
-	// Broadcast the original params unchanged so any nodeId the broker supplied
-	// is preserved for peers' dedup. The removal wire carries only
-	// (workloadId, originatedFrom) — no engine/runId — so drop every composite
-	// key matching that pair.
-	m.untrackActive(nodeID, workloadID)
-	slog.Debug("broadcasting local removal", "workloadId", workloadID, "node", nodeID, "peers", m.peers.count())
-	m.broadcastFrame(msg.Method, msg.Params)
+}
+
+// ingestLocal is the loopback ingress's entry: a frame from a local producer
+// that is NOT the broker. It is applied exactly like a Broker-originated frame
+// (re-sync set + peer broadcast) and then emitted UP to the broker as the
+// translated workloads:upsert / workloads:remove — the broker only applies
+// what this process sends it, and that upward path is what updates the local
+// store, the Jobs list, the persisted history and the scheduler's counts.
+func (m *Manager) ingestLocal(method string, params json.RawMessage) error {
+	wl, removeID, removeNode, err := m.applyLocal(method, params)
+	if err != nil {
+		return err
+	}
+	if wl != nil {
+		err = m.emitUpsert(wl)
+	} else {
+		err = m.emitRemove(removeID, removeNode)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", errBrokerWrite, err)
+	}
+	return nil
 }
 
 // broadcastFrame re-marshals a single notification and fans it out to every peer

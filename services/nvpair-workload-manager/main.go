@@ -29,6 +29,7 @@ func main() {
 	port := flag.Int("port", defaultPort, "inter-node HTTP port to listen on; the broker registers it as this node's wl service with the discovery daemon")
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster config dir (the .../cluster dir holding node.crt/node.key + trusted/*.json); when set, inter-node traffic uses pinned mTLS scoped to paired cluster members")
+	localIngress := flag.String("local-ingress", "", "loopback host:port of a plaintext workload ingress local third-party producers may POST /v1/workloads/events to; default off, else read from <appdir>/"+localIngressConfigFile+" ({\"listen\": \"127.0.0.1:14324\"}); a non-loopback address is refused")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -83,7 +84,14 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
-	mgr := NewManager(codec, *port, selfUUID, *clusterDir)
+	ingressAddr := resolveLocalIngressAddr(*localIngress, *clusterDir)
+	if ingressAddr != "" {
+		log.Printf("local workload ingress enabled on %s", ingressAddr)
+	}
+	mgr, err := NewManager(codec, *port, selfUUID, *clusterDir, ingressAddr)
+	if err != nil {
+		log.Fatalf("workload-manager: %v", err)
+	}
 
 	if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("workload-manager error: %v", err)
