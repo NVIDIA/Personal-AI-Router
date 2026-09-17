@@ -59,6 +59,36 @@ Workload state is therefore only ever exchanged between paired members. See the
 repository [`SECURITY.md`](../../SECURITY.md) for the surrounding trust
 boundaries.
 
+## Local ingress (optional, loopback only)
+
+A third-party producer on the same machine — an external scheduler, a local
+inference harness that routes around the proxies — can report its workloads so
+they appear in every member's Jobs list and count in the scheduler's pending
+work for the node that runs them. The ingress is **off by default** and
+**never leaves loopback**:
+
+- Enable it with `--local-ingress 127.0.0.1:14324`, or, when the broker
+  launches this worker without the flag, with `<appdir>/workload-ingress.json`
+  containing `{"listen": "127.0.0.1:14324"}` (file-registered, like an engine
+  manifest under `<appdir>/engines/`). A non-loopback address is refused at
+  startup; a port already in use fails startup loudly.
+- `POST /v1/workloads/events` takes the same JSON-RPC 2.0 frames as the
+  inter-node port: `workload:submitted` / `workload:started` /
+  `workload:completed` / `workload:errored` with `params.workloadInfo`, and
+  `workloads:remove` with `params.workloadId`. `originatedFrom` is stamped with
+  this node's UUID when the producer leaves it empty. Producer mistakes are
+  `400`; a broker that cannot be written is `500`.
+- An accepted frame is treated as **local origin**: tracked for re-sync,
+  broadcast to pinned peers, and emitted to the broker as `workloads:upsert` /
+  `workloads:remove` — the same translation a peer-origin event receives, so
+  the local store, the Jobs list, the persisted history and the scheduler all
+  update.
+
+The trust boundary is the one the proxies' plaintext loopback personality
+already documents: a process that can reach this machine's loopback may report
+work, just as it may already submit it. Prompts, messages and response bodies
+are not part of the frame and must never be added.
+
 ## Lifecycle events
 
 Inbound lifecycle notifications, on either channel:
