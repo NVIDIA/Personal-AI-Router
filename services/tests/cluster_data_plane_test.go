@@ -15,6 +15,7 @@
 package tests
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -29,9 +30,8 @@ import (
 
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/mdns"
 	"nvpair-shared/netpick"
-
-	"github.com/grandcat/zeroconf"
 )
 
 const (
@@ -111,7 +111,7 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Listen on all interfaces: zeroconf advertises the host's real interface
+	// Listen on all interfaces: mDNS advertises the host's real interface
 	// IP(s), so the manager dials the peer there, not at 127.0.0.1.
 	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -124,11 +124,13 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID
 
 	txt := []string{"v=1", "uuid=" + hostUUID, fmt.Sprintf("wl=%d", port),
 		clustertrust.ClusterUUIDTXTKey + "=" + c.peerUUID}
-	adv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
+	resp, err := mdns.NewResponder(instance, nodeRecordService, testDomain, port, txt)
 	if err != nil {
 		t.Fatalf("register stub peer: %v", err)
 	}
-	t.Cleanup(adv.Shutdown)
+	respCtx, cancelResp := context.WithCancel(context.Background())
+	t.Cleanup(cancelResp)
+	go resp.Run(respCtx)
 	t.Logf("stub cluster peer advertising %s (wl=%d, cluster-uuid=%s)", nodeRecordService, port, c.peerUUID)
 	return received
 }

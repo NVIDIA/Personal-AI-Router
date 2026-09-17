@@ -9,10 +9,65 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grandcat/zeroconf"
+	"nvpair-shared/discovery"
+	"nvpair-shared/mdns"
 )
 
 const testDomain = "local."
+
+// These tests exercise the first-party mDNS stack end to end inside the test
+// process: a shared/mdns.Responder advertises on 5353 and a shared/discovery.
+// Browser listens on the same local multicast group, so the two deliver to each
+// other over loopback without a second host.
+
+// startInProcessResponder advertises a single service instance in-process and
+// starts the responder's run loop. It registers a cleanup that cancels the run
+// (a TTL=0 goodbye plus stopping the periodic announcements) and returns the
+// cancel so a test can withdraw the instance mid-flight.
+func startInProcessResponder(t *testing.T, instance, service, domain string, port int, txt []string) context.CancelFunc {
+	t.Helper()
+	resp, err := mdns.NewResponder(instance, service, domain, port, txt)
+	if err != nil {
+		t.Fatalf("mdns responder %s: %v", instance, err)
+	}
+	respCtx, cancelResp := context.WithCancel(context.Background())
+	t.Cleanup(cancelResp)
+	go resp.Run(respCtx)
+	return cancelResp
+}
+
+// startInProcessBrowser runs a discovery.Browser in-process (a shared receive
+// socket on 5353 plus periodic query scans) and returns its event stream. The
+// browser is bound to the same local multicast group the responder uses.
+func startInProcessBrowser(t *testing.T, service, domain string, opts ...discovery.Option) <-chan discovery.Event {
+	t.Helper()
+	browser := discovery.New(service, domain, opts...)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	events := make(chan discovery.Event, 64)
+	go browser.Run(ctx, events)
+	return events
+}
+
+// waitNodeEvent blocks until an event of the given type for the given instance
+// arrives on events, or until timeout elapses (which fails the test).
+func waitNodeEvent(t *testing.T, events <-chan discovery.Event, wantType, instance string, timeout time.Duration) discovery.Node {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("browser event stream closed before a %q for %q", wantType, instance)
+			}
+			if ev.Type == wantType && ev.Node.ID == instance {
+				return ev.Node
+			}
+		case <-deadline:
+			t.Fatalf("timed out (%s) waiting for %q %q", timeout, wantType, instance)
+		}
+	}
+}
 
 func TestInProcessDiscovery(t *testing.T) {
 	const (
@@ -21,103 +76,59 @@ func TestInProcessDiscovery(t *testing.T) {
 		port     = 55555
 	)
 
-	server, err := zeroconf.Register(instance, service, testDomain, port, []string{"env=test"}, nil)
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	defer server.Shutdown()
-	time.Sleep(500 * time.Millisecond)
+	startInProcessResponder(t, instance, service, testDomain, port, []string{"env=test"})
+	events := startInProcessBrowser(t, service, testDomain,
+		discovery.WithInterval(200*time.Millisecond),
+		discovery.WithScanTimeout(100*time.Millisecond))
 
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
+	got := waitNodeEvent(t, events, discovery.Discovered, instance, 10*time.Second)
 
-	entries := make(chan *zeroconf.ServiceEntry)
-	found := make(chan *zeroconf.ServiceEntry, 1)
-	go func() {
-		for e := range entries {
-			if e.Instance == instance {
-				select {
-				case found <- e:
-				default:
-				}
-			}
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := resolver.Browse(ctx, service, testDomain, entries); err != nil {
-		t.Fatalf("browse: %v", err)
+	if got.Port != port {
+		t.Errorf("port = %d, want %d", got.Port, port)
 	}
-
-	select {
-	case entry := <-found:
-		if entry.Port != port {
-			t.Errorf("port = %d, want %d", entry.Port, port)
-		}
-		if len(entry.Text) == 0 || entry.Text[0] != "env=test" {
-			t.Errorf("txt = %v, want [env=test]", entry.Text)
-		}
-		if !hasAddress(entry) {
-			t.Error("no addresses resolved")
-		}
-		t.Logf("OK: %s @ %s:%d addrs=%v txt=%v",
-			entry.Instance, entry.HostName, entry.Port, entry.AddrIPv4, entry.Text)
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for discovery")
+	if len(got.TXT) == 0 || got.TXT[0] != "env=test" {
+		t.Errorf("txt = %v, want [env=test]", got.TXT)
 	}
+	if !hasAddress(got) {
+		t.Error("no addresses resolved")
+	}
+	t.Logf("OK: %s @ %s:%d addrs=%v txt=%v", got.ID, got.Host, got.Port, got.Addresses, got.TXT)
 }
 
 func TestInProcessMultipleInstances(t *testing.T) {
 	const service = "_test-multi._tcp"
 	instances := []string{"node-alpha", "node-beta", "node-gamma"}
 
-	var servers []*zeroconf.Server
 	for i, inst := range instances {
-		s, err := zeroconf.Register(inst, service, testDomain, 50000+i, nil, nil)
-		if err != nil {
-			t.Fatalf("register %s: %v", inst, err)
-		}
-		servers = append(servers, s)
-		defer s.Shutdown()
+		startInProcessResponder(t, inst, service, testDomain, 50000+i, nil)
 	}
-	time.Sleep(500 * time.Millisecond)
+	events := startInProcessBrowser(t, service, testDomain,
+		discovery.WithInterval(200*time.Millisecond),
+		discovery.WithScanTimeout(100*time.Millisecond))
 
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
-
-	entries := make(chan *zeroconf.ServiceEntry)
-	foundSet := make(map[string]bool)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for e := range entries {
+	found := make(map[string]bool)
+	deadline := time.After(10 * time.Second)
+	for len(found) < len(instances) {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("browser event stream closed; found %d/%d instances", len(found), len(instances))
+			}
 			for _, inst := range instances {
-				if e.Instance == inst {
-					foundSet[inst] = true
+				if ev.Type == discovery.Discovered && ev.Node.ID == inst {
+					found[inst] = true
 				}
 			}
+		case <-deadline:
+			t.Fatalf("timed out; discovered %d/%d instances", len(found), len(instances))
 		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := resolver.Browse(ctx, service, testDomain, entries); err != nil {
-		t.Fatalf("browse: %v", err)
 	}
-	<-ctx.Done()
-	<-done
-
 	for _, inst := range instances {
-		if !foundSet[inst] {
+		if !found[inst] {
 			t.Errorf("instance %q not discovered", inst)
 		}
 	}
-	t.Logf("OK: discovered %d/%d instances", len(foundSet), len(instances))
+	t.Logf("OK: discovered %d/%d instances", len(found), len(instances))
 }
 
 func TestInProcessRemoval(t *testing.T) {
@@ -127,75 +138,36 @@ func TestInProcessRemoval(t *testing.T) {
 		port     = 55556
 	)
 
-	server, err := zeroconf.Register(instance, service, testDomain, port, nil, nil)
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
+	cancelResp := startInProcessResponder(t, instance, service, testDomain, port, nil)
+	events := startInProcessBrowser(t, service, testDomain,
+		discovery.WithInterval(200*time.Millisecond),
+		discovery.WithScanTimeout(100*time.Millisecond),
+		discovery.WithMissThreshold(2))
 
-	// Phase 1: verify discoverable
-	entry := browseForInstance(t, service, instance, 5*time.Second)
-	if entry == nil {
-		t.Fatal("service not found before removal")
-	}
+	// Phase 1: the instance must be discoverable while it is advertised.
+	waitNodeEvent(t, events, discovery.Discovered, instance, 10*time.Second)
 	t.Log("phase 1: service discovered")
 
-	// Shut down the service
-	server.Shutdown()
-	time.Sleep(time.Second)
-
-	// Phase 2: verify no longer discoverable
-	entry = browseForInstance(t, service, instance, 5*time.Second)
-	if entry != nil {
-		t.Error("service still discoverable after shutdown")
-	} else {
-		t.Log("phase 2: service correctly absent after removal")
-	}
+	// Phase 2: withdraw it. The responder sends a TTL=0 goodbye (dropped by the
+	// receiver) and stops announcing and answering queries, so the node then ages
+	// out via the miss threshold and the browser emits a removal.
+	cancelResp()
+	waitNodeEvent(t, events, discovery.Removed, instance, 15*time.Second)
+	t.Log("phase 2: service correctly evicted after withdrawal")
 }
 
-// --- helpers ---
-
-func browseForInstance(t *testing.T, service, instance string, timeout time.Duration) *zeroconf.ServiceEntry {
-	t.Helper()
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
-
-	entries := make(chan *zeroconf.ServiceEntry)
-	found := make(chan *zeroconf.ServiceEntry, 1)
-	go func() {
-		for e := range entries {
-			if e.Instance == instance {
-				select {
-				case found <- e:
-				default:
-				}
-			}
+// hasAddress reports whether the node resolved at least one usable address: an
+// IPv4 that is not 0.0.0.0, or an IPv6 that is not a link-local address.
+func hasAddress(n discovery.Node) bool {
+	for _, s := range n.Addresses {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			continue
 		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if err := resolver.Browse(ctx, service, testDomain, entries); err != nil {
-		t.Fatalf("browse: %v", err)
-	}
-
-	select {
-	case e := <-found:
-		return e
-	case <-ctx.Done():
-		return nil
-	}
-}
-
-func hasAddress(e *zeroconf.ServiceEntry) bool {
-	for _, ip := range e.AddrIPv4 {
-		if ip != nil && !ip.IsUnspecified() {
+		if ip4 := ip.To4(); ip4 != nil && !ip4.IsUnspecified() {
 			return true
 		}
-	}
-	for _, ip := range e.AddrIPv6 {
-		if ip != nil && !net.IP(ip).IsLinkLocalUnicast() {
+		if !ip.IsLinkLocalUnicast() {
 			return true
 		}
 	}

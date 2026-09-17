@@ -41,6 +41,7 @@ import (
 	"sync"
 	"time"
 
+	"nvpair-shared/mcast"
 	"nvpair-shared/netmon"
 
 	"github.com/miekg/dns"
@@ -49,11 +50,9 @@ import (
 
 const (
 	mdnsPort = 5353
-	// recordTTL matches what zeroconf advertises for non-A records (3200s)
-	// for service-level records, but RFC 6762 §10 says A records SHOULD use
-	// a TTL of 120s to account for IP address changes. We use the shorter
-	// value uniformly — the cost of a slightly more chatty re-announce is
-	// minimal and it keeps caches fresh.
+	// RFC 6762 §10 says A records SHOULD use a TTL of 120s to account for IP
+	// address changes. We use the shorter value uniformly — the cost of a
+	// slightly more chatty re-announce is minimal and it keeps caches fresh.
 	recordTTL = 120
 	// reannounceEvery is how often we send unsolicited announcements after
 	// the initial pair. RFC 6762 doesn't strictly require periodic
@@ -97,6 +96,13 @@ type Responder struct {
 	addrMu sync.RWMutex
 	// ifaceAddrs maps interface index to its IPv4 unicast addresses.
 	ifaceAddrs map[int][]net.IP
+
+	// sender is the long-lived per-interface send-socket pool (one socket per
+	// interface, reused for every transmission instead of one per send), kept in
+	// sync with ifaceAddrs: built in NewResponder and refreshed alongside it in
+	// watchAddrs. It owns its own lock, so it is safe to use from the announce,
+	// query-reply, and UpdateTXT paths concurrently.
+	sender *mcast.Sender
 }
 
 // NewResponder builds a Responder for the given service instance. domain
@@ -145,6 +151,7 @@ func NewResponder(instance, service, domain string, port int, txt []string) (*Re
 	if len(r.ifaceAddrs) == 0 {
 		return nil, errors.New("no multicast-capable IPv4 interfaces with non-loopback addresses")
 	}
+	r.sender = mcast.New(r.ifaceAddrs)
 	return r, nil
 }
 
@@ -199,6 +206,9 @@ func (r *Responder) watchAddrs(ctx context.Context) {
 		}
 		r.addrMu.Unlock()
 		if changed {
+			// Reuse sockets whose source address did not move; rebind only what
+			// changed, so the firewall keeps its stable flows.
+			r.sender.Refresh(next)
 			slog.Debug("mdns: interface addresses changed, re-announcing")
 			r.sendAnnouncement()
 		}
@@ -236,9 +246,12 @@ func ifaceAddrsEqual(a, b map[int][]net.IP) bool {
 // re-announces the service, and on context cancellation sends a "goodbye"
 // (TTL=0) before returning.
 //
-// The receive socket binds the real mDNS group 224.0.0.251:5353 with
-// SO_REUSEADDR (see setReuseAddr) so multiple responders — and the browser's
-// zeroconf socket — coexist on 5353 on the same host.
+// The receive socket is bound through the setReuseAddr hook (SO_REUSEADDR on
+// every platform, plus SO_REUSEPORT on macOS) so multiple responders — and the
+// discovery browser's receive socket in shared/discovery — coexist on 5353 on
+// the same host. The net package sets the same options itself for a multicast
+// listen address; the hook makes the dependency explicit rather than
+// incidental.
 func (r *Responder) Run(ctx context.Context) error {
 	lc := net.ListenConfig{Control: setReuseAddr}
 	pktConn, err := lc.ListenPacket(ctx, "udp4", mdnsGroupV4.String()+":"+fmt.Sprint(mdnsPort))
@@ -247,6 +260,7 @@ func (r *Responder) Run(ctx context.Context) error {
 	}
 	udpConn := pktConn.(*net.UDPConn)
 	defer udpConn.Close()
+	defer r.sender.Close()
 
 	pc := ipv4.NewPacketConn(udpConn)
 	// SetControlMessage is "not implemented" on Windows in golang.org/x/net.
@@ -570,34 +584,21 @@ func (r *Responder) sendUnicast(buf []byte, ifIndex int, to net.Addr) {
 	}
 }
 
-// sendOnInterface is the core of the Windows send workaround: it transmits buf
-// from a fresh unicast-bound socket on the given interface (setting the
-// multicast interface + TTL for group targets), never from the multicast-bound
-// receive socket that Windows refuses to send from.
+// sendOnInterface is the core of the Windows send workaround and the macOS
+// firewall-flow fix: it transmits buf from the interface's long-lived pooled send
+// socket (mcast.Sender) — a unicast-bound socket with the multicast interface and
+// TTL set — never from the multicast-bound receive socket that Windows refuses to
+// send from. The socket is opened once per interface and reused for every
+// transmission, so an OS packet filter that inspects each new flow (the macOS
+// Application Firewall) sees a small set of stable flows instead of a fresh one
+// per packet. An interface whose socket is not in the pool (a bind that failed at
+// refresh time) is reported as a failed send rather than re-opening a socket here.
 func (r *Responder) sendOnInterface(buf []byte, ifIndex int, target *net.UDPAddr) error {
-	addrs, ok := r.ifaces()[ifIndex]
-	if !ok || len(addrs) == 0 {
-		return errors.New("no addresses on interface")
-	}
-	src := addrs[0]
-	ifi, err := net.InterfaceByIndex(ifIndex)
-	if err != nil {
-		return err
-	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: src, Port: 0})
-	if err != nil {
-		slog.Debug("mdns: bind failed", "iface", ifi.Name, "ip", src.String(), "err", err)
-		return err
-	}
-	defer conn.Close()
 	if target.IP.IsMulticast() {
-		pc := ipv4.NewPacketConn(conn)
-		_ = pc.SetMulticastInterface(ifi)
-		_ = pc.SetMulticastTTL(255)
+		if !r.sender.SendMulticast(buf, target, []int{ifIndex})[ifIndex] {
+			return errors.New("mdns: no send socket on interface")
+		}
+		return nil
 	}
-	if _, err := conn.WriteToUDP(buf, target); err != nil {
-		slog.Debug("mdns: write failed", "iface", ifi.Name, "ip", src.String(), "target", target.String(), "err", err)
-		return err
-	}
-	return nil
+	return r.sender.SendUnicast(buf, target, ifIndex)
 }

@@ -591,9 +591,11 @@ Windows ships none. That responder must coexist with whatever else is on the
 port, including Bonjour, Avahi, and PAIR's own sibling processes. It therefore
 sets `SO_REUSEADDR` on the socket to share UDP 5353.
 
-It deliberately does **not** set `SO_REUSEPORT`. On Linux that load-balances
+On Linux it deliberately does **not** set `SO_REUSEPORT`: there that load-balances
 incoming unicast datagrams across every socket sharing the port, which would let
-one process swallow mDNS replies meant for another.
+one process swallow mDNS replies meant for another. On macOS it sets **both**
+`SO_REUSEADDR` and `SO_REUSEPORT`, because the system `mDNSResponder` already
+holds the port and a bare `SO_REUSEADDR` bind races with it.
 
 ### Node Enrichment
 

@@ -214,6 +214,7 @@ func isolateOllamaHostTestConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LOCALAPPDATA", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
 }
 
 func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {

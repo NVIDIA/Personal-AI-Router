@@ -4,10 +4,13 @@
 package tests
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"nvpair-shared/discovery"
 )
 
 // TestBrokerAdvertisesNodeRecord exercises the register->advertise path
@@ -38,29 +41,39 @@ func TestBrokerAdvertisesNodeRecord(t *testing.T) {
 
 	// The scanner first announces the base node record, then re-announces after
 	// node-info registers ni=. Startup ordering can therefore expose a valid
-	// base record for a moment; wait for the enriched update instead of treating
-	// the first packet as final.
-	var entryText []string
+	// base record for a moment; poll the browser's current view until the
+	// enriched update (with ni=14318) has folded in, rather than treating the
+	// first packet as final.
+	browser := discovery.New(nodeRecordService, testDomain,
+		discovery.WithInterval(time.Second),
+		discovery.WithScanTimeout(500*time.Millisecond))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go browser.Run(ctx, nil)
+
 	deadline := time.Now().Add(20 * time.Second)
+	var entry *discovery.Node
 	for time.Now().Before(deadline) {
-		entry := browseForInstance(t, "_nvpair-node._tcp", instance, 2*time.Second)
-		if entry != nil {
-			entryText = entry.Text
-			if strings.Contains(strings.Join(entry.Text, ";"), "ni=14318") {
-				break
+		nodes := browser.Nodes()
+		for i := range nodes {
+			if nodes[i].ID == instance {
+				nn := nodes[i]
+				entry = &nn
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		if entry != nil && strings.Contains(strings.Join(entry.TXT, ";"), "ni=14318") {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	entry := entryText
 	if entry == nil {
 		t.Fatal("did not discover this node's _nvpair-node record within timeout")
 	}
-	txt := strings.Join(entry, ";")
+	txt := strings.Join(entry.TXT, ";")
 	if !strings.Contains(txt, "ni=14318") {
-		t.Errorf("_nvpair-node TXT missing ni=14318 (register->advertise path): %v", entry)
+		t.Errorf("_nvpair-node TXT missing ni=14318 (register->advertise path): %v", entry.TXT)
 	}
 	if !strings.Contains(txt, "v=1") {
-		t.Errorf("_nvpair-node TXT missing schema v=1: %v", entry)
+		t.Errorf("_nvpair-node TXT missing schema v=1: %v", entry.TXT)
 	}
 }

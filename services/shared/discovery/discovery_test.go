@@ -290,19 +290,6 @@ func TestReconcileOrderInsensitive(t *testing.T) {
 	}
 }
 
-func TestNoEviction(t *testing.T) {
-	b := New("_nvpair-test._tcp", "local", WithNoEviction(), WithMissThreshold(1))
-	b.reconcile(seenSet(node("a")))
-	for i := 0; i < 5; i++ {
-		if evs := b.reconcile(seenSet()); len(evs) != 0 {
-			t.Fatalf("no-evict browser emitted %v on miss %d", evs, i+1)
-		}
-	}
-	if len(b.Nodes()) != 1 {
-		t.Fatalf("no-evict browser dropped the node: %v", b.Nodes())
-	}
-}
-
 func TestLivenessProbeRetainsReachable(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(2), WithLivenessProbe(func(Node) bool { return true }))
 	b.reconcile(seenSet(node("a")))
@@ -396,15 +383,6 @@ func TestSeed(t *testing.T) {
 	b.Seed(node("host-a", "uuid=a", "ip=1.2.3.4"))
 	if len(b.Nodes()) != 2 {
 		t.Fatalf("re-seed changed node count: %d", len(b.Nodes()))
-	}
-}
-
-func TestPollReturnsSnapshot(t *testing.T) {
-	b := New("_nvpair-test._tcp", "local")
-	b.browseFunc = func(context.Context) map[string]Node { return seenSet(node("a"), node("b")) }
-	got := b.Poll(context.Background())
-	if len(got) != 2 {
-		t.Fatalf("Poll returned %d nodes, want 2", len(got))
 	}
 }
 

@@ -15,7 +15,7 @@
 //     workload again from the restarted process.
 //
 // Both drive the real binaries TestMain builds. Test B needs mDNS (it
-// advertises a stub peer over zeroconf), so it runs outside the network
+// advertises a stub peer over mDNS), so it runs outside the network
 // sandbox.
 package tests
 

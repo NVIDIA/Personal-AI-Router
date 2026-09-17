@@ -21,6 +21,7 @@
 package tests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,8 +37,7 @@ import (
 	"time"
 
 	"nvpair-shared/jsonrpc"
-
-	"github.com/grandcat/zeroconf"
+	"nvpair-shared/mdns"
 )
 
 const workloadMgrService = "_nvpair-workload-manager._tcp"
@@ -288,17 +288,13 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	// probe has nothing to dial and evicts it cleanly. A distinct uuid keeps
 	// it from colliding with this host's own record.
 	peerTXT := []string{"v=1", "uuid=" + peerUUID, "ip=127.0.0.1"}
-	peerAdv, err := zeroconf.Register(peerNode, nodeRecordService, testDomain, 14999, peerTXT, nil)
+	peerResp, err := mdns.NewResponder(peerNode, nodeRecordService, testDomain, 14999, peerTXT)
 	if err != nil {
 		t.Fatalf("register peer node: %v", err)
 	}
-	stopAdv := func() {
-		if peerAdv != nil {
-			peerAdv.Shutdown()
-			peerAdv = nil
-		}
-	}
+	peerRespCtx, stopAdv := context.WithCancel(context.Background())
 	t.Cleanup(stopAdv)
+	go peerResp.Run(peerRespCtx)
 	t.Logf("advertising peer %q as %s", peerNode, nodeRecordService)
 
 	// The peer must be in the broker's directory before its removal can

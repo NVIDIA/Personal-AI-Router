@@ -11,6 +11,7 @@
 package tests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grandcat/zeroconf"
+	"nvpair-shared/mdns"
 )
 
 func TestModelsHTTPEnrichment(t *testing.T) {
@@ -59,11 +60,13 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 	// fetches the model list from the stub over loopback (ip= wins over the mDNS
 	// address in the daemon's enrichment target selection).
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
-	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
+	resp, err := mdns.NewResponder(instance, nodeRecordService, testDomain, emPort, txt)
 	if err != nil {
 		t.Fatalf("register %s: %v", instance, err)
 	}
-	t.Cleanup(zsrv.Shutdown)
+	respCtx, cancelResp := context.WithCancel(context.Background())
+	t.Cleanup(cancelResp)
+	go resp.Run(respCtx)
 	t.Logf("advertising %s @ %s (em=%d)", instance, nodeRecordService, emPort)
 
 	stdin, msgs, cleanup := startBroker(t)
