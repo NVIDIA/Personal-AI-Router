@@ -125,11 +125,10 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set(engineIdentityProbeHeader, "1")
-	client := e.client
-	if engine == "ollama" && action == "run_model" && e.ollamaLoadClient != nil {
-		client = e.ollamaLoadClient
-	}
-	resp, err := client.Do(req)
+	// The response-header budget comes from the action's manifest-declared
+	// timeout_s (default 30s), not from the engine's name — any engine can
+	// declare a slow action.
+	resp, err := e.actionClient(act.TimeoutS).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("action %q: %w", action, err)
 	}

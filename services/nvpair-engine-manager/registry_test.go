@@ -79,6 +79,18 @@ func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsActionTimeoutS(t *testing.T) {
+	m := validManifest()
+	m.Actions["run_model"] = Action{
+		Description: "slow one-shot generation",
+		HTTP:        &ActionHTTP{Method: "POST", Path: "/api/generate"},
+		TimeoutS:    600,
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("http action with timeout_s rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsBadEngineName(t *testing.T) {
 	for _, bad := range []string{"../evil", "a/b", `a\b`, "..", ".", "a b", ""} {
 		m := validManifest()
@@ -139,6 +151,12 @@ func TestValidateRejects(t *testing.T) {
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
+		{"timeout_s on a cmd action", func(m *Manifest) {
+			m.Actions = map[string]Action{"x": {Cmd: []string{"lms", "get", "{model}"}, TimeoutS: 60}}
+		}, "timeout_s requires an http action"},
+		{"negative timeout_s", func(m *Manifest) {
+			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Method: "GET", Path: "/p"}, TimeoutS: -1}}
+		}, "timeout_s must be >= 0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -396,6 +414,28 @@ func TestBundledOllamaReadinessBudget(t *testing.T) {
 			t.Errorf("%s: remote readiness response-header timeout %s must exceed readiness timeout %s",
 				key, remoteReadyResponseHeaderTimeout, readiness)
 		}
+	}
+}
+
+// TestBundledOllamaRunModelTimeout pins the response-header budget declared by
+// the bundled Ollama run_model action. A cold model load can take minutes
+// before the first byte, and dropping the declaration would silently regress
+// to the 30s default (issue #25).
+func TestBundledOllamaRunModelTimeout(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := reg.Get("ollama")
+	if !ok {
+		t.Fatal("ollama manifest not loaded")
+	}
+	act, ok := m.Actions["run_model"]
+	if !ok || act.HTTP == nil {
+		t.Fatal("ollama run_model action missing or not an http action")
+	}
+	if got, want := act.TimeoutS, 600; got != want {
+		t.Errorf("ollama run_model timeout_s = %d, want %d", got, want)
 	}
 }
 

@@ -183,6 +183,13 @@ type Action struct {
 	// only a restart makes the deletion visible to clients. A stopped engine is
 	// left stopped; a restart failure fails the action.
 	RestartAfter bool `json:"restart_after,omitempty"`
+	// TimeoutS, when > 0 on an HTTP action, bounds how long the runner waits
+	// for that action's response headers (seconds); 0 means the 30s default.
+	// It is a property of the action in the manifest, not of the engine's
+	// name, so any engine can declare a slow action (Ollama's cold run_model
+	// declares 600). The whole call stays bounded by the executor's action
+	// timeout regardless.
+	TimeoutS int `json:"timeout_s,omitempty"`
 }
 
 // ActionResult is the list-extraction spec on an Action (see Action.Result).
@@ -638,6 +645,12 @@ func (a *Action) validate(name string) error {
 	}
 	if kinds != 1 {
 		return fmt.Errorf("action %q: exactly one of http, cmd, or remove_path is required", name)
+	}
+	if a.TimeoutS < 0 {
+		return fmt.Errorf("action %q: timeout_s must be >= 0", name)
+	}
+	if a.TimeoutS > 0 && !hasHTTP {
+		return fmt.Errorf("action %q: timeout_s requires an http action (it bounds the response-header wait)", name)
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {

@@ -68,17 +68,19 @@ func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 	return transport.ResponseHeaderTimeout
 }
 
-func TestEngineHTTPClientsBoundResponseHeaders(t *testing.T) {
+func TestEngineHTTPClientBoundsResponseHeaders(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	if got := responseHeaderTimeout(t, ex.client); got != engineResponseHeaderTimeout {
-		t.Fatalf("ordinary response-header timeout = %s, want %s", got, engineResponseHeaderTimeout)
-	}
-	if got := responseHeaderTimeout(t, ex.ollamaLoadClient); got != ollamaLoadResponseHeaderTimeout {
-		t.Fatalf("Ollama load response-header timeout = %s, want %s", got, ollamaLoadResponseHeaderTimeout)
+		t.Fatalf("shared response-header timeout = %s, want %s", got, engineResponseHeaderTimeout)
 	}
 }
 
-func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
+// TestActionTimeoutSFollowsManifestNotEngineName pins the issue #25 fix: the
+// response-header budget is a property of the action's manifest entry, not of
+// the engine's name. A declared timeout_s must be honored for any engine, and
+// an undeclared action — even on an engine named ollama — gets the ordinary
+// default.
+func TestActionTimeoutSFollowsManifestNotEngineName(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -88,49 +90,107 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
 
-	m := testEngineManifest(fakeEngineBin)
-	m.Engine = "ollama"
-	platform := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
-	platform.Runtime.Port = port
-	m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = platform
-	m.Actions = map[string]Action{
-		"run_model":    {HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}},
-		"delete_model": {HTTP: &ActionHTTP{Method: "DELETE", Path: "/api/delete"}},
-	}
-	ex := newTestExecutor(t, m)
-	ex.client = newEngineHTTPClient(20 * time.Millisecond)
-	ex.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
-	st, err := ex.state("ollama")
-	if err != nil {
-		t.Fatal(err)
-	}
-	st.running = true
-
-	if _, err := ex.Action(context.Background(), "ollama", "run_model", json.RawMessage(`{"model":"tiny"}`)); err != nil {
-		t.Fatalf("Ollama load was cut off by the ordinary response-header budget: %v", err)
-	}
-	if _, err := ex.Action(context.Background(), "ollama", "delete_model", json.RawMessage(`{"name":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("ordinary action error = %v, want bounded response-header timeout", err)
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	mkManifest := func(engine string, slow bool) *Manifest {
+		m := testEngineManifest(fakeEngineBin)
+		m.Engine = engine
+		p := m.Platforms[key]
+		p.Runtime.Port = port
+		m.Platforms[key] = p
+		runModel := Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}}
+		if slow {
+			runModel.TimeoutS = 5 // 5s > the server's 100ms delay
+		}
+		m.Actions = map[string]Action{
+			"run_model":    runModel,
+			"delete_model": {HTTP: &ActionHTTP{Method: "DELETE", Path: "/api/delete"}},
+		}
+		return m
 	}
 
-	other := testEngineManifest(fakeEngineBin)
-	other.Engine = "other"
-	otherPlatform := other.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
-	otherPlatform.Runtime.Port = port
-	other.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = otherPlatform
-	other.Actions = map[string]Action{
-		"run_model": {HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}},
+	t.Run("declared timeout_s is honored for any engine name", func(t *testing.T) {
+		ex := newTestExecutor(t, mkManifest("slow", true))
+		ex.client = newEngineHTTPClient(20 * time.Millisecond) // < the server's 100ms delay
+		st, err := ex.state("slow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.running = true
+
+		if _, err := ex.Action(context.Background(), "slow", "run_model", json.RawMessage(`{"model":"tiny"}`)); err != nil {
+			t.Fatalf("action with declared timeout_s was cut off by the ordinary response-header budget: %v", err)
+		}
+		if _, err := ex.Action(context.Background(), "slow", "delete_model", json.RawMessage(`{"name":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
+			t.Fatalf("ordinary action error = %v, want bounded response-header timeout", err)
+		}
+	})
+
+	t.Run("no declared timeout_s means the ordinary budget even for ollama", func(t *testing.T) {
+		ex := newTestExecutor(t, mkManifest("ollama", false))
+		ex.client = newEngineHTTPClient(20 * time.Millisecond)
+		st, err := ex.state("ollama")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.running = true
+
+		if _, err := ex.Action(context.Background(), "ollama", "run_model", json.RawMessage(`{"model":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
+			t.Fatalf("undeclared ollama run_model error = %v, want ordinary response-header timeout (no name-based special case)", err)
+		}
+	})
+}
+
+// TestBundledLMStudioChatDeclaresResponseHeaderBudget pins issue #25 end to
+// end: the engine in the bug report (LM Studio's chat action) must opt into a
+// response-header budget beyond the 30s default, or the manifest field is dead
+// code for the exact action that timed out. A cold model load or long prefill
+// can delay the first byte by minutes; the executor's action timeout still
+// bounds the total call.
+func TestBundledLMStudioChatDeclaresResponseHeaderBudget(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatalf("LoadFS bundled: %v", err)
 	}
-	otherEx := newTestExecutor(t, other)
-	otherEx.client = newEngineHTTPClient(20 * time.Millisecond)
-	otherEx.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
-	otherState, err := otherEx.state("other")
-	if err != nil {
-		t.Fatal(err)
+	m, ok := reg.Get("lmstudio")
+	if !ok {
+		t.Fatal("bundled lmstudio manifest missing")
 	}
-	otherState.running = true
-	if _, err := otherEx.Action(context.Background(), "other", "run_model", json.RawMessage(`{"model":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("non-Ollama run_model error = %v, want ordinary response-header timeout", err)
+	chat, ok := m.Actions["chat"]
+	if !ok {
+		t.Fatal("bundled lmstudio chat action missing")
+	}
+	if chat.HTTP == nil {
+		t.Fatal("lmstudio chat must remain an http action for timeout_s to apply")
+	}
+	defaultS := int(engineResponseHeaderTimeout / time.Second)
+	if chat.TimeoutS <= defaultS {
+		t.Fatalf("lmstudio chat timeout_s = %d, want > %d (issue #25: the reported action would still get the ordinary response-header budget)", chat.TimeoutS, defaultS)
+	}
+}
+
+// TestActionClientCachesPerDeclaredTimeout checks the client-selection helper:
+// unset and default values reuse the shared client; distinct declared values
+// each get one cached client with the right response-header bound.
+func TestActionClientCachesPerDeclaredTimeout(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+
+	if got := ex.actionClient(0); got != ex.client {
+		t.Fatal("unset timeout_s must use the shared client")
+	}
+	if got := ex.actionClient(30); got != ex.client {
+		t.Fatal("timeout_s equal to the default must reuse the shared client")
+	}
+
+	c1 := ex.actionClient(600)
+	c2 := ex.actionClient(600)
+	if c1 == nil || c1 != c2 {
+		t.Fatalf("expected one cached client per declared timeout, got %v and %v", c1, c2)
+	}
+	if got := responseHeaderTimeout(t, c1); got != 10*time.Minute {
+		t.Fatalf("cached response-header timeout = %s, want %s", got, 10*time.Minute)
+	}
+	if got := ex.actionClient(120); got == c1 || got == ex.client {
+		t.Fatal("a distinct declared timeout must not share another client")
 	}
 }
 

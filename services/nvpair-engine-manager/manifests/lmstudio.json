@@ -77,7 +77,8 @@
       "cmd": ["{cli}", "ls"]
     },
     "chat": {
-      "description": "OpenAI-compatible chat completion (params: {\"model\": \"<name>\", \"messages\": [...]}).",
+      "description": "OpenAI-compatible chat completion (params: {\"model\": \"<name>\", \"messages\": [...]}). A model that is not yet resident is loaded on demand, and long prefills can delay the first byte by minutes, so this action declares a long response-header budget.",
+      "timeout_s": 600,
       "http": { "method": "POST", "path": "/v1/chat/completions", "body_schema": { "model": "string", "messages": "array" } }
     },
     "unload_model": {

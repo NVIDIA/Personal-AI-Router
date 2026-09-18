@@ -20,8 +20,11 @@ import (
 var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
 
 const (
-	engineResponseHeaderTimeout     = 30 * time.Second
-	ollamaLoadResponseHeaderTimeout = 10 * time.Minute
+	// engineResponseHeaderTimeout bounds how long a loopback action, download,
+	// or probe waits for response headers before treating the peer as hung.
+	// It is also the default for an HTTP action that does not declare its own
+	// timeout_s in the manifest.
+	engineResponseHeaderTimeout = 30 * time.Second
 )
 
 // EngineStatus is the snapshot returned by engine:status and
@@ -69,11 +72,15 @@ type engineState struct {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
-	reg              *Registry
-	reporter         *Reporter
-	emit             func(method string, params any)
-	client           *http.Client
-	ollamaLoadClient *http.Client
+	reg      *Registry
+	reporter *Reporter
+	emit     func(method string, params any)
+	client   *http.Client
+	// actionClients caches one HTTP client per distinct non-default
+	// response-header timeout declared by an action's timeout_s, so a manifest
+	// value is honored without allocating a client per call.
+	actionClientsMu sync.Mutex
+	actionClients   map[time.Duration]*http.Client
 	// progress fans install/pull progress to transient subscribers (the ec
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
@@ -115,7 +122,7 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 		reporter:           reporter,
 		emit:               emit,
 		client:             newEngineHTTPClient(engineResponseHeaderTimeout),
-		ollamaLoadClient:   newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
+		actionClients:      make(map[time.Duration]*http.Client),
 		progress:           newProgressHub(),
 		baseDir:            baseDir,
 		desired:            newDesiredStateStore(baseDir),
@@ -143,15 +150,13 @@ func (e *Executor) reservedPortError(port int) error {
 }
 
 // newEngineHTTPClient builds a client used for downloads, loopback actions,
-// and probes. The ordinary shared client keeps a 30s response-header bound;
-// Ollama's cold-load action gets a separate 10m client. Both set NO total
-// http.Client.Timeout: a multi-GB engine download can legitimately run
-// for many minutes and every call site already bounds total time with a
-// context deadline (download 30m, action actionTimeout, probe 3s). What
-// it adds over the zero-value client is (a) a bounded response-header
-// wait so a peer that accepts the connection but never replies can't park
-// a goroutine even inside a long context, and (b) a redirect policy that
-// refuses an https->plaintext downgrade so a checksum-pinned download URL
+// and probes. It sets NO total http.Client.Timeout: a multi-GB engine download
+// can legitimately run for many minutes and every call site already bounds
+// total time with a context deadline (download 30m, action actionTimeout,
+// probe 3s). What it adds over the zero-value client is (a) a bounded
+// response-header wait so a peer that accepts the connection but never replies
+// can't park a goroutine even inside a long context, and (b) a redirect policy
+// that refuses an https->plaintext downgrade so a checksum-pinned download URL
 // can't be silently bounced onto http before its bytes are verified.
 func newEngineHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -162,6 +167,28 @@ func newEngineHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 		Transport:     tr,
 		CheckRedirect: noDowngradeRedirect,
 	}
+}
+
+// actionClient returns the HTTP client for an action's declared response-
+// header timeout: the shared 30s client when the action declares none (or the
+// default), otherwise a cached client built for the declared value. The
+// timeout is a property of the action in the manifest, not of the engine's
+// name, so any engine can declare a slow action (e.g. Ollama's cold run_model
+// declares 600). The total call stays bounded by the executor's action
+// timeout regardless.
+func (e *Executor) actionClient(timeoutS int) *http.Client {
+	d := time.Duration(timeoutS) * time.Second
+	if d <= 0 || d == engineResponseHeaderTimeout {
+		return e.client
+	}
+	e.actionClientsMu.Lock()
+	defer e.actionClientsMu.Unlock()
+	if c, ok := e.actionClients[d]; ok {
+		return c
+	}
+	c := newEngineHTTPClient(d)
+	e.actionClients[d] = c
+	return c
 }
 
 // noDowngradeRedirect caps the redirect chain and forbids a redirect that

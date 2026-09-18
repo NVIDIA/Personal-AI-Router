@@ -98,7 +98,8 @@
       "http": { "method": "POST", "path": "/api/pull", "body_schema": { "name": "string" } }
     },
     "run_model": {
-      "description": "Run a one-shot generation (params: {\"model\": \"<model>\", \"prompt\": \"<text>\", \"stream\": false}).",
+      "description": "Run a one-shot generation (params: {\"model\": \"<model>\", \"prompt\": \"<text>\", \"stream\": false}). A cold model load can take minutes before the first byte, so this action declares a long response-header budget.",
+      "timeout_s": 600,
       "http": { "method": "POST", "path": "/api/generate", "body_schema": { "model": "string", "prompt": "string", "stream": "bool" } }
     },
     "unload_model": {
