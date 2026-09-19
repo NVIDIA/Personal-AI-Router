@@ -23,11 +23,52 @@ import (
 
 // proxyBin is the real lmstudio-proxy binary, built once in TestMain so the
 // e2e test exercises the shipped artifact (not just in-process handlers).
-var proxyBin string
+var (
+	proxyBin      string
+	e2eConfigBase string
+)
+
+func isolateE2EConfigBase() (string, func()) {
+	base, err := os.MkdirTemp("", "nvpair-lmproxy-config-*")
+	if err != nil {
+		panic(err)
+	}
+	keys := []string{"XDG_CONFIG_HOME", "HOME", "APPDATA", "LOCALAPPDATA"}
+	type savedEnv struct {
+		value string
+		set   bool
+	}
+	previous := make(map[string]savedEnv, len(keys))
+	for _, key := range keys {
+		value, set := os.LookupEnv(key)
+		previous[key] = savedEnv{value: value, set: set}
+	}
+	cleanup := func() {
+		for _, key := range keys {
+			prior := previous[key]
+			if prior.set {
+				_ = os.Setenv(key, prior.value)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		}
+		_ = os.RemoveAll(base)
+	}
+	for _, key := range keys {
+		if err := os.Setenv(key, base); err != nil {
+			cleanup()
+			panic(err)
+		}
+	}
+	return base, cleanup
+}
 
 func TestMain(m *testing.M) {
+	var cleanupConfig func()
+	e2eConfigBase, cleanupConfig = isolateE2EConfigBase()
 	tmp, err := os.MkdirTemp("", "nvpair-lmproxy-e2e-*")
 	if err != nil {
+		cleanupConfig()
 		panic(err)
 	}
 	suffix := ""
@@ -36,9 +77,12 @@ func TestMain(m *testing.M) {
 	}
 	proxyBin = filepath.Join(tmp, "lmstudio-proxy"+suffix)
 	if out, err := exec.Command("go", "build", "-o", proxyBin, ".").CombinedOutput(); err != nil {
+		cleanupConfig()
+		_ = os.RemoveAll(tmp)
 		panic("build lmstudio-proxy: " + err.Error() + "\n" + string(out))
 	}
 	code := m.Run()
+	cleanupConfig()
 	_ = os.RemoveAll(tmp)
 	os.Exit(code)
 }
@@ -214,4 +258,15 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 
 	e2eSend(t, stdin, 9, "shutdown", nil)
 	e2eWaitResult(t, frames, "9", 5*time.Second)
+}
+
+func TestE2EConfigBaseIsPrivate(t *testing.T) {
+	path, err := proxyPortPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(e2eConfigBase, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		t.Fatalf("proxy port path %q is outside test config base %q", path, e2eConfigBase)
+	}
 }
