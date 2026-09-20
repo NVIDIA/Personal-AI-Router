@@ -53,6 +53,27 @@ export interface ServiceVersions {
 }
 
 /**
+ * Desktop startup preferences, persisted in `ui-config.json` and mirrored into
+ * the OS login item.
+ */
+export interface StartupSettings {
+    /** Register the app as an OS login item so it starts when the user signs in. */
+    launchAtLogin: boolean
+    /**
+     * Whether the login item is registered with the hidden-start argument. Only
+     * a login-item launch is affected; starting the app by hand always opens the
+     * Overview window.
+     */
+    startHidden: boolean
+}
+
+/** {@link StartupSettings} plus whether this OS has a login item Electron can write. */
+export interface StartupState extends StartupSettings {
+    /** False on Linux, where autostart is not Electron's to manage. */
+    supported: boolean
+}
+
+/**
  * Synchronous preload bootstrap payload.
  *
  * Reserved for preload bootstrap data. The modular Electron bridge currently
@@ -89,6 +110,15 @@ export interface IpcChannelMap {
     'service:restart': { request: void; response: void }
     'service:get-log-level': { request: void; response: ModularLogLevel }
     'service:set-log-level': { request: { level: ModularLogLevel }; response: void }
+    /** Launch-at-login preferences plus whether this OS supports a login item. */
+    'service:get-startup': { request: void; response: StartupState }
+    /**
+     * Persist the given startup preferences and rewrite the OS login item from
+     * the merged result. Omitted keys keep their stored value; the response is
+     * the state that was actually written, so the UI reconciles against it
+     * rather than against what it asked for.
+     */
+    'service:set-startup': { request: Partial<StartupSettings>; response: StartupState }
     'service:open-log-file': { request: void; response: void }
     'service:open-log-dir': { request: void; response: void }
     'service:get-versions': { request: void; response: ServiceVersions }

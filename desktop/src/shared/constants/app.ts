@@ -9,3 +9,9 @@ export const APP_ID = 'com.nvidia.nvpair'
 export const APP_ORG = 'Nvidia Corporation'
 export const APP_PREVIOUS_ORG = 'NVIDIA Corporation'
 export const APP_EXIT_ARGUMENT = '--exit-application'
+/**
+ * Passed by the OS login item so a launch at sign-in can be told apart from a
+ * launch by hand. With it the app starts to the tray with no window; without it
+ * the Overview opens as usual.
+ */
+export const APP_HIDDEN_ARGUMENT = '--hidden'
