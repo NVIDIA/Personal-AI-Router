@@ -23,16 +23,19 @@ on:
 permissions:
     contents: read
 
-# Serializes applies so two merges cannot race to move the ref. The script also
-# retries a non-fast-forward, so this is belt and braces.
-concurrency:
-    group: release-intent-${{ github.ref }}
-    cancel-in-progress: false
+# Concurrent applies are handled by the script, not here: it commits with
+# `force: false` and re-reads the ref when the branch moved underneath it.
+# Do not add a `concurrency:` group — GitHub keeps only one pending run and
+# cancels any earlier one, so a burst of merges silently loses bumps.
 
 jobs:
     apply:
         name: Apply
         runs-on: ubuntu-latest
+        # The bot's own push triggers this workflow: an app installation token,
+        # unlike GITHUB_TOKEN, does start workflow runs. The script exits early
+        # on its own commits; this skips them without booting a runner first.
+        if: ${{ !startsWith(github.event.head_commit.message, '[release-intent]') }}
         steps:
             - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 

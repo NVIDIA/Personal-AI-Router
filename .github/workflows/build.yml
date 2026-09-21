@@ -18,6 +18,10 @@ on:
         branches: [main, develop]
         paths:
             - '.github/workflows/**'
+            # The composite action pins the Node and Go versions. Without this
+            # a toolchain bump would run ci.yml and skip the installer matrix,
+            # which is the cross-workflow drift the action exists to prevent.
+            - '.github/actions/**'
             - 'scripts/**'
             - 'services/**'
             - 'desktop/package.json'

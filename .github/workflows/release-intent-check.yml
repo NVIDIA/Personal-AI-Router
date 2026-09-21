@@ -15,9 +15,17 @@
 # pull requests from forks like every other check.
 name: Release intent check
 
+# `develop` only, deliberately. release-intent-apply.yml runs on pushes to
+# `develop`, so gating pull requests into `main` would demand an intent block
+# and then discard it: a release cut is one push covering many pull requests,
+# and the Applies-PR trailer assumes one merge produces one apply.
+#
+# Leaving `main` out also keeps the cut itself mergeable. A develop -> main pull
+# request carries the bot's own edits to services/versions.json and
+# CHANGELOG.md, which are exactly the paths check_forbidden_paths rejects.
 on:
     pull_request:
-        branches: [main, develop]
+        branches: [develop]
         types: [opened, synchronize, reopened, edited]
 
 permissions:
