@@ -57,7 +57,7 @@ sequenceDiagram
 The proxy never holds more than cap+1 bytes per in-flight request body, so a
 malicious or buggy client can no longer exhaust proxy memory.
 
-## 2. The local backend must be loopback
+## 2. The local engine address must be loopback
 
 ### The problem
 
@@ -71,7 +71,7 @@ approved.
 
 ### The fix
 
-The unified ingress enforces the invariant where the backend is stored:
+The unified ingress enforces the invariant where the engine address is stored:
 `setLocalBackend()` in `ingress.go` refuses a non-loopback host outright and
 returns an error, so a bad value never reaches the dial path at all.
 
@@ -85,7 +85,7 @@ flowchart TD
     A[broker: set-local-backend] --> B{host empty?}
     B -->|yes| C[store, default 127.0.0.1 at dial time]
     B -->|no| D{ParseIP → IsLoopback?}
-    D -->|yes| E[store backend]
+    D -->|yes| E[store engine address]
     D -->|no| F[refuse: return error<br/>nothing stored]
 ```
 
@@ -130,7 +130,7 @@ longer downgrade to an unauthenticated connection in the meantime.
 ## Validation
 
 - `proxy_hardening_test.go` covers all three fixes: over-cap and at-cap
-  bodies, the 413 response shape, loopback/non-loopback backend hosts, and
+  bodies, the 413 response shape, loopback/non-loopback engine hosts, and
   the fail-closed dial error. Run with `go test -race ./...` from the
   component directory.
 - No JSON-RPC method or payload changed, so no contract regeneration was
