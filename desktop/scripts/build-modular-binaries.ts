@@ -310,6 +310,9 @@ function manifestIsCurrent(
     if (!manifest) return false
     if (manifest.sourceFingerprint !== sourceFingerprint || !sourceFingerprint) return false
     if (manifest.platform !== options.platform || manifest.arch !== options.arch) return false
+    // Without this a services-only bump leaves the manifest current, so the
+    // stale version is what the UI reports in dev.
+    if (manifest.services !== versions.services) return false
     if (JSON.stringify(manifest.components) !== JSON.stringify(versions.components)) return false
 
     const expected = new Set(expectedFileNames(options.platform))
