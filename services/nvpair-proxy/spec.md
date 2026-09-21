@@ -184,7 +184,7 @@ never broadens to an excluded node.
 | --- | --- | --- |
 | `maxDispatchAttempts` | 5 | how many dispatches may fail |
 | `jobDeadline` | 10 minutes from request creation | how long new attempts may keep being started, including while waiting for an owner to exist |
-| `firstBodyTimeout` | `proxyResponseTimeout` (120s) | one attempt's wait for first content, measured from the arrival of headers |
+| `firstBodyTimeout` | `proxyResponseTimeout` (default 120s, `--response-header-timeout`) | one attempt's wait for first content, measured from the arrival of headers |
 
 The retry budget applies only to inference requests. Routes not classified in
 the engine's route table are still forwarded verbatim, and some perform
@@ -201,9 +201,11 @@ not burn its budget while the node comes back.
 
 **Elapsed time per attempt is the sum of three budgets, not one.** They run in
 sequence: the dial (`proxyDialTimeout`, 10s), then headers
-(`proxyResponseTimeout`, 120s, enforced by the transport), then first content
-(`firstBodyTimeout`, 120s, which starts only once headers arrive). One attempt
-can therefore occupy around 240s — the two 120s caps back to back, since a slow
+(`proxyResponseTimeout`, default 120s via `--response-header-timeout`,
+enforced by the transport), then first content
+(`firstBodyTimeout`, which tracks the same configured value and starts only
+once headers arrive). One attempt can therefore occupy around 240s at the
+defaults — the two caps back to back, since a slow
 dial is a LAN rarity — and nothing caps their sum.
 
 Both bounds are checked before every dispatch and **never truncate an attempt
