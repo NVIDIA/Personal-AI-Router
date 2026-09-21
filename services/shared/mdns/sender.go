@@ -13,7 +13,11 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-const mdnsPort = 5353
+const (
+	mdnsPort              = 5353
+	preferredMulticastTTL = 255
+	fallbackMulticastTTL  = 1
+)
 
 type packetWriter interface {
 	WriteTo([]byte, net.Addr) (int, error)
@@ -28,8 +32,9 @@ type multicastOptions interface {
 // and the RFC 6762 source port. A fresh source-bound socket preserves reliable
 // per-interface egress on Windows while the reuse controls let it coexist with
 // the long-lived mDNS receive sockets on every supported platform. Multicast
-// interface and TTL options are advisory: failures are logged before the packet
-// is written using the bound source and the socket's remaining defaults.
+// interface selection is advisory, and TTL setup falls back explicitly from
+// RFC 6762's preferred 255 to link-local 1. Failures are logged but never
+// suppress the packet write.
 func SendFromInterface(buf []byte, ifi *net.Interface, src net.IP, target *net.UDPAddr) error {
 	source := src.To4()
 	if source == nil {
@@ -72,13 +77,21 @@ func writePacket(
 				"target", target.String(),
 				"err", err)
 		}
-		if err := options.SetMulticastTTL(255); err != nil {
-			slog.Debug("mdns: set multicast TTL failed; sending with socket default",
+		if err := options.SetMulticastTTL(preferredMulticastTTL); err != nil {
+			slog.Debug("mdns: set multicast TTL failed; retrying with TTL 1",
 				"iface", ifi.Name,
 				"ip", source.String(),
 				"target", target.String(),
-				"ttl", 255,
+				"ttl", preferredMulticastTTL,
 				"err", err)
+			if fallbackErr := options.SetMulticastTTL(fallbackMulticastTTL); fallbackErr != nil {
+				slog.Debug("mdns: set multicast fallback TTL failed; sending with socket default",
+					"iface", ifi.Name,
+					"ip", source.String(),
+					"target", target.String(),
+					"ttl", fallbackMulticastTTL,
+					"err", fallbackErr)
+			}
 		}
 	}
 

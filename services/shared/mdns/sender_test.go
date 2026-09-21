@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,10 +33,11 @@ func (w *recordingPacketWriter) WriteTo(payload []byte, target net.Addr) (int, e
 }
 
 type recordingMulticastOptions struct {
-	interfaces   []*net.Interface
-	ttls         []int
-	interfaceErr error
-	ttlErr       error
+	interfaces     []*net.Interface
+	ttls           []int
+	interfaceErr   error
+	ttlErr         error
+	fallbackTTLErr error
 }
 
 func (o *recordingMulticastOptions) SetMulticastInterface(ifi *net.Interface) error {
@@ -45,6 +47,9 @@ func (o *recordingMulticastOptions) SetMulticastInterface(ifi *net.Interface) er
 
 func (o *recordingMulticastOptions) SetMulticastTTL(ttl int) error {
 	o.ttls = append(o.ttls, ttl)
+	if ttl == fallbackMulticastTTL {
+		return o.fallbackTTLErr
+	}
 	return o.ttlErr
 }
 
@@ -71,7 +76,7 @@ func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
 	if len(options.interfaces) != 1 || options.interfaces[0] != ifi {
 		t.Fatalf("multicast interfaces = %v, want [%v]", options.interfaces, ifi)
 	}
-	if len(options.ttls) != 1 || options.ttls[0] != 255 {
+	if len(options.ttls) != 1 || options.ttls[0] != preferredMulticastTTL {
 		t.Fatalf("multicast TTLs = %v, want [255]", options.ttls)
 	}
 	if writer.writes != 1 {
@@ -119,26 +124,38 @@ func TestWritePacketReturnsWriteFailure(t *testing.T) {
 
 func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 	cases := []struct {
-		name         string
-		interfaceErr error
-		ttlErr       error
-		wantMessages []string
+		name           string
+		interfaceErr   error
+		ttlErr         error
+		fallbackTTLErr error
+		wantTTLs       []int
+		wantMessages   []string
 	}{
 		{
 			name:         "interface",
 			interfaceErr: errors.New("interface unavailable"),
+			wantTTLs:     []int{255},
 			wantMessages: []string{"set multicast interface failed"},
 		},
 		{
-			name:         "TTL",
+			name:         "TTL fallback",
 			ttlErr:       errors.New("TTL unavailable"),
+			wantTTLs:     []int{255, 1},
 			wantMessages: []string{"set multicast TTL failed"},
 		},
 		{
 			name:         "both",
 			interfaceErr: errors.New("interface unavailable"),
 			ttlErr:       errors.New("TTL unavailable"),
+			wantTTLs:     []int{255, 1},
 			wantMessages: []string{"set multicast interface failed", "set multicast TTL failed"},
+		},
+		{
+			name:           "TTL fallback failure",
+			ttlErr:         errors.New("TTL unavailable"),
+			fallbackTTLErr: errors.New("fallback TTL unavailable"),
+			wantTTLs:       []int{255, 1},
+			wantMessages:   []string{"set multicast TTL failed", "set multicast fallback TTL failed"},
 		},
 	}
 
@@ -150,8 +167,9 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 			target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort}
 			writer := &recordingPacketWriter{}
 			options := &recordingMulticastOptions{
-				interfaceErr: tc.interfaceErr,
-				ttlErr:       tc.ttlErr,
+				interfaceErr:   tc.interfaceErr,
+				ttlErr:         tc.ttlErr,
+				fallbackTTLErr: tc.fallbackTTLErr,
 			}
 
 			if err := writePacket([]byte("multicast payload"), ifi, source, target, writer, options); err != nil {
@@ -160,8 +178,8 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 			if len(options.interfaces) != 1 {
 				t.Fatalf("interface attempts = %d, want 1", len(options.interfaces))
 			}
-			if len(options.ttls) != 1 || options.ttls[0] != 255 {
-				t.Fatalf("multicast TTLs = %v, want [255]", options.ttls)
+			if !slices.Equal(options.ttls, tc.wantTTLs) {
+				t.Fatalf("multicast TTLs = %v, want %v", options.ttls, tc.wantTTLs)
 			}
 			if writer.writes != 1 {
 				t.Fatalf("writes = %d, want 1", writer.writes)
