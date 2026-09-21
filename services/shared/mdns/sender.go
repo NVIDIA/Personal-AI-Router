@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 
 	"golang.org/x/net/ipv4"
@@ -26,7 +27,9 @@ type multicastOptions interface {
 // SendFromInterface transmits one IPv4 mDNS packet from the selected address
 // and the RFC 6762 source port. A fresh source-bound socket preserves reliable
 // per-interface egress on Windows while the reuse controls let it coexist with
-// the long-lived mDNS receive sockets on every supported platform.
+// the long-lived mDNS receive sockets on every supported platform. Multicast
+// interface and TTL options are advisory: failures are logged before the packet
+// is written using the bound source and the socket's remaining defaults.
 func SendFromInterface(buf []byte, ifi *net.Interface, src net.IP, target *net.UDPAddr) error {
 	source := src.To4()
 	if source == nil {
@@ -47,12 +50,13 @@ func SendFromInterface(buf []byte, ifi *net.Interface, src net.IP, target *net.U
 	}
 	defer conn.Close()
 
-	return writePacket(buf, ifi, target, conn, ipv4.NewPacketConn(conn))
+	return writePacket(buf, ifi, source, target, conn, ipv4.NewPacketConn(conn))
 }
 
 func writePacket(
 	buf []byte,
 	ifi *net.Interface,
+	source net.IP,
 	target *net.UDPAddr,
 	conn packetWriter,
 	options multicastOptions,
@@ -62,10 +66,19 @@ func writePacket(
 			return errors.New("mDNS multicast target requires an interface")
 		}
 		if err := options.SetMulticastInterface(ifi); err != nil {
-			return fmt.Errorf("set mDNS multicast interface: %w", err)
+			slog.Debug("mdns: set multicast interface failed; sending with socket route",
+				"iface", ifi.Name,
+				"ip", source.String(),
+				"target", target.String(),
+				"err", err)
 		}
 		if err := options.SetMulticastTTL(255); err != nil {
-			return fmt.Errorf("set mDNS multicast TTL: %w", err)
+			slog.Debug("mdns: set multicast TTL failed; sending with socket default",
+				"iface", ifi.Name,
+				"ip", source.String(),
+				"target", target.String(),
+				"ttl", 255,
+				"err", err)
 		}
 	}
 

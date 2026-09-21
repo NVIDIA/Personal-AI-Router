@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,14 +48,24 @@ func (o *recordingMulticastOptions) SetMulticastTTL(ttl int) error {
 	return o.ttlErr
 }
 
+func captureDebugLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	logs := &bytes.Buffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return logs
+}
+
 func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
 	ifi := &net.Interface{Index: 7, Name: "eth0"}
+	source := net.IPv4(192, 0, 2, 10)
 	target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort}
 	payload := []byte("multicast payload")
 	writer := &recordingPacketWriter{}
 	options := &recordingMulticastOptions{}
 
-	if err := writePacket(payload, ifi, target, writer, options); err != nil {
+	if err := writePacket(payload, ifi, source, target, writer, options); err != nil {
 		t.Fatalf("writePacket: %v", err)
 	}
 	if len(options.interfaces) != 1 || options.interfaces[0] != ifi {
@@ -74,11 +86,12 @@ func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
 }
 
 func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
+	source := net.IPv4(127, 0, 0, 1)
 	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
 	writer := &recordingPacketWriter{}
 	options := &recordingMulticastOptions{}
 
-	if err := writePacket([]byte("unicast payload"), nil, target, writer, options); err != nil {
+	if err := writePacket([]byte("unicast payload"), nil, source, target, writer, options); err != nil {
 		t.Fatalf("writePacket: %v", err)
 	}
 	if len(options.interfaces) != 0 || len(options.ttls) != 0 {
@@ -92,14 +105,80 @@ func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
 func TestWritePacketReturnsWriteFailure(t *testing.T) {
 	wantErr := errors.New("send refused")
 	writer := &recordingPacketWriter{err: wantErr}
+	source := net.IPv4(127, 0, 0, 1)
 	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
 
-	err := writePacket([]byte("unicast payload"), nil, target, writer, &recordingMulticastOptions{})
+	err := writePacket([]byte("unicast payload"), nil, source, target, writer, &recordingMulticastOptions{})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, wantErr)
 	}
 	if writer.writes != 1 {
 		t.Fatalf("writes = %d, want 1", writer.writes)
+	}
+}
+
+func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
+	cases := []struct {
+		name         string
+		interfaceErr error
+		ttlErr       error
+		wantMessages []string
+	}{
+		{
+			name:         "interface",
+			interfaceErr: errors.New("interface unavailable"),
+			wantMessages: []string{"set multicast interface failed"},
+		},
+		{
+			name:         "TTL",
+			ttlErr:       errors.New("TTL unavailable"),
+			wantMessages: []string{"set multicast TTL failed"},
+		},
+		{
+			name:         "both",
+			interfaceErr: errors.New("interface unavailable"),
+			ttlErr:       errors.New("TTL unavailable"),
+			wantMessages: []string{"set multicast interface failed", "set multicast TTL failed"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureDebugLogs(t)
+			ifi := &net.Interface{Index: 7, Name: "eth0"}
+			source := net.IPv4(192, 0, 2, 10)
+			target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort}
+			writer := &recordingPacketWriter{}
+			options := &recordingMulticastOptions{
+				interfaceErr: tc.interfaceErr,
+				ttlErr:       tc.ttlErr,
+			}
+
+			if err := writePacket([]byte("multicast payload"), ifi, source, target, writer, options); err != nil {
+				t.Fatalf("writePacket: %v", err)
+			}
+			if len(options.interfaces) != 1 {
+				t.Fatalf("interface attempts = %d, want 1", len(options.interfaces))
+			}
+			if len(options.ttls) != 1 || options.ttls[0] != 255 {
+				t.Fatalf("multicast TTLs = %v, want [255]", options.ttls)
+			}
+			if writer.writes != 1 {
+				t.Fatalf("writes = %d, want 1", writer.writes)
+			}
+
+			gotLogs := logs.String()
+			for _, message := range tc.wantMessages {
+				if !strings.Contains(gotLogs, message) {
+					t.Errorf("logs missing %q:\n%s", message, gotLogs)
+				}
+			}
+			for _, field := range []string{"iface=eth0", "ip=192.0.2.10", "target=224.0.0.251:5353"} {
+				if !strings.Contains(gotLogs, field) {
+					t.Errorf("logs missing %q:\n%s", field, gotLogs)
+				}
+			}
+		})
 	}
 }
 
