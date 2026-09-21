@@ -3,7 +3,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Invite } from '@/shared/types/cluster'
-import type { getEngineHubModels } from '@/electron/model-hub'
+import type { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import type { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
 import type { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 
@@ -29,7 +29,7 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => []
 }))
-vi.mock('@/electron/model-hub', () => ({
+vi.mock('@/electron/service-bridge/model-catalog', () => ({
     getEngineHubModels: vi.fn<typeof getEngineHubModels>()
 }))
 

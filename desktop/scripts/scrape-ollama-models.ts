@@ -22,7 +22,27 @@
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import axios, { isAxiosError } from 'axios'
-import type { OllamaTagsModel } from '@/electron/model-hub/ollama-library'
+
+/**
+ * Ollama-tags–shaped model entry: the wire shape this script writes and that
+ * `nvpair-engine-manager` reads back. It is declared here because this script is
+ * now the only TypeScript that knows the shape — the consumer is Go.
+ */
+interface OllamaTagsModel {
+    name: string
+    model: string
+    modified_at: string
+    size: number
+    digest: string
+    details: {
+        parent_model: string
+        format: string
+        family: string
+        families: string[] | null
+        parameter_size: string
+        quantization_level: string
+    }
+}
 
 const OLLAMA_LIBRARY_URL = 'https://ollama.com/library'
 const OLLAMA_DETAIL_URL = (base: string): string =>
@@ -42,13 +62,22 @@ const REQUEST_HEADERS: Record<string, string> = {
     Accept: 'text/html,application/xhtml+xml'
 }
 
-/** Destination for the committed list, resolved from the repo root. */
+/**
+ * Destination for the committed list, resolved from the repo root.
+ *
+ * The list lives with `nvpair-engine-manager`, which compiles it in and serves
+ * it over `engine:catalog`, so the desktop app and the terminal interface get
+ * the same models from one implementation. This script stays here because it is
+ * a TypeScript scraper and a development-only tool; only its output crosses into
+ * the services tree.
+ */
 const OUTPUT_PATH = path.resolve(
     __dirname,
     '..',
-    'src',
-    'electron',
-    'model-hub',
+    '..',
+    'services',
+    'nvpair-engine-manager',
+    'catalog',
     'ollama-models.json'
 )
 
