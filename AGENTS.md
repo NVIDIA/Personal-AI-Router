@@ -123,9 +123,11 @@ On Windows, run the underlying npm and `go test` commands directly.
   service, the broker relay, every consumer, the desktop bridge under
   `desktop/src/electron/service-bridge/`, the tests, and the documentation in the
   same change. Then run `npm run service-contracts:check` from `desktop/`.
-- **Bump the version of any service binary whose compiled output you change** in
-  `services/versions.json`, and describe any user-facing change in the pull
-  request so it reaches the release notes.
+- **Declare a bump for any service binary whose compiled output you change** in
+  the `pair-release-intent:v1` block in your pull request description, and
+  describe any user-facing change there so it reaches the changelog. Do not edit
+  `services/versions.json` or `CHANGELOG.md` by hand — automation writes them,
+  and CI rejects a pull request that modifies them.
   [Versioning](services/VERSIONING.md) gives the rules.
 - **Sign off every commit** with `git commit -s`. The Developer Certificate of
   Origin trailer has to match the commit author, so a missing or mismatched

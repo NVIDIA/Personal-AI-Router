@@ -11,6 +11,8 @@
 <!-- Set the title and body to n/a when no bump is a release. -->
 <!-- The release version users see is NOT declared here: it patch-bumps by
      itself whenever any bump above is a release. -->
+<!-- Keep the changelog body to prose and bullets. A line starting with "### "
+     ends the section and silently truncates the rest. -->
 
 <!-- pair-release-intent:v1 -->
 ### Changelog title

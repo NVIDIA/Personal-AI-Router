@@ -61,6 +61,30 @@ pieces and a window where the changelog names a version `package.json` does not
 yet carry. Moving the ref once avoids that, and a rejected fast-forward is the
 concurrency check — the script retries that and only that, up to three times.
 
+## Known limits
+
+**One apply per push.** `apply_pr.py` resolves the pull request for the push's
+head commit only. A push carrying two merges — a direct push of a range, or a
+merge-queue batch — applies the head commit's intent and **silently skips the
+others**. Nothing fails. `develop` must therefore take one merge per push: no
+merge queue batching, and no pushing a range of merge commits directly. Lifting
+this means iterating the push's commits rather than reading only the head.
+
+**No concurrency group on the apply workflow, on purpose.** GitHub keeps a
+single pending run per group and cancels any earlier one, so under a burst of
+merges a group would drop bumps rather than serialize them. Ordering is handled
+in the script instead, by committing with `force: false` and re-reading the ref
+when the branch moved. Do not add one.
+
+**`### ` inside a changelog body truncates it.** `_parse_section` ends a section
+at the next line beginning with `### `, so a body containing a literal `### `
+line is silently cut at that point. Keep changelog bodies to prose and bullets.
+
+**The gate assumes branch protection.** `develop` should require the
+`Release intent check` status check. An admin merge that bypasses it with an
+invalid block fails at apply with exit 1, loudly, but the versions simply do not
+bump until someone fixes the body and re-runs.
+
 ## Idempotency
 
 Each bot commit carries an `Applies-PR: #N` trailer, and every attempt scans the
@@ -80,6 +104,7 @@ and expiring in an hour.
 - Configure `RELEASE_INTENT_APP_ID` as a repository variable and
   `RELEASE_INTENT_APP_PRIVATE_KEY` as a secret.
 
+**The app and both settings must exist before the first push to `develop`.**
 If the credential is missing, `apply_pr.py` exits 2 and says so rather than
 silently skipping the bump. Backfill by re-running the job once it is configured,
 or apply from a saved body locally.

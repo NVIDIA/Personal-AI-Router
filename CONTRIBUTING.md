@@ -245,11 +245,20 @@ screenshots and examples.
 
 ## Versions
 
-When your change alters a service binary's compiled output, bump that component
-in `services/versions.json` in the same pull request.
+When your change alters a service binary's compiled output, declare that bump in
+the `pair-release-intent:v1` block in your pull request description. The pull
+request template contains the block; fill in the severity for each component and
+write the changelog title and body there.
+
+**Do not edit `services/versions.json` or `CHANGELOG.md` by hand.** Automation
+writes both after your pull request merges, and CI rejects a pull request that
+modifies them. If you are adding or removing a component — something the bot
+cannot infer — include `<!-- pair-release-intent-allow-owned-files -->` in the
+description to override that check.
+
 [Versioning](services/VERSIONING.md) gives the rules for choosing a patch, minor,
-or major bump, and covers the `desktop/package.json` version, which follows its
-own release cycle.
+or major bump, and explains the three version numbers and which of them you are
+expected to declare.
 
 Say in the pull-request description which components you bumped and why, so a
 reviewer can check the decision rather than infer it from the diff.
@@ -264,7 +273,9 @@ clear description is what makes a change show up there correctly.
 Anyone may submit a pull request. Follow this checklist:
 
 1. Fork the repository.
-2. Create a focused branch from `main` in your fork.
+2. Create a focused branch from `develop` in your fork, and open the pull
+   request against `develop`. That is the integration branch; `main` receives
+   `develop` periodically as a release cut.
 3. Explain the problem and observable desired outcome.
 4. State what is intentionally in and out of scope.
 5. Add or update tests and documentation.

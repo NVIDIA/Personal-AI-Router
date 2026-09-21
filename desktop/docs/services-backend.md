@@ -310,8 +310,10 @@ The build is cache-aware. CI passes `--force`. Packaging validates that
 
 2. Review component version changes, emitted notifications, handled requests,
    and new binary components, then regenerate `docs/services-api.md` with
-   `service-contracts:write`. Bump the affected components in
-   `services/versions.json` as `services/VERSIONING.md` describes. Do not
+   `service-contracts:write`. Declare bumps for the affected components in the
+   pull request's `pair-release-intent:v1` block as `services/VERSIONING.md`
+   describes; `services/versions.json` is written by automation and CI rejects
+   a hand edit. Do not
    hardcode product or component versions in this document or
    `docs/services-parity.md` — `service-contracts:check` fails if they appear.
 3. Read the changed backend `README.md` / `spec.md` and the Go implementation.
