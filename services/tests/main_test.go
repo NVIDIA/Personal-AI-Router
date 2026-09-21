@@ -19,18 +19,17 @@ import (
 )
 
 var (
-	proxyBin         string
-	lmstudioProxyBin string
-	errorsBin        string
-	nodeInfoBin      string
-	scannerBin       string
-	nodeSettingsBin  string
-	brokerBin        string
-	workloadMgrBin   string
-	engineMgrBin     string
-	manualNodesBin   string
-	clusterMgrBin    string
-	schedulerBin     string
+	proxyBin        string
+	errorsBin       string
+	nodeInfoBin     string
+	scannerBin      string
+	nodeSettingsBin string
+	brokerBin       string
+	workloadMgrBin  string
+	engineMgrBin    string
+	manualNodesBin  string
+	clusterMgrBin   string
+	schedulerBin    string
 )
 
 func TestMain(m *testing.M) {
@@ -44,8 +43,7 @@ func TestMain(m *testing.M) {
 		ext = ".exe"
 	}
 
-	proxyBin = filepath.Join(tmpDir, "ollama-proxy"+ext)
-	lmstudioProxyBin = filepath.Join(tmpDir, "lmstudio-proxy"+ext)
+	proxyBin = filepath.Join(tmpDir, "nvpair-proxy"+ext)
 	errorsBin = filepath.Join(tmpDir, "nvpair-errors"+ext)
 	nodeInfoBin = filepath.Join(tmpDir, "nvpair-node-info"+ext)
 	scannerBin = filepath.Join(tmpDir, "nvpair-node-scanner"+ext)
@@ -57,18 +55,12 @@ func TestMain(m *testing.M) {
 	clusterMgrBin = filepath.Join(tmpDir, "nvpair-cluster-manager"+ext)
 	schedulerBin = filepath.Join(tmpDir, "nvpair-job-scheduler"+ext)
 
-	log.Println("building ollama-proxy...")
-	if err := goBuild(filepath.Join("..", "ollama-proxy"), proxyBin); err != nil {
+	// One process fronts every engine, with a facade enabled per engine, so
+	// both the Ollama and LM Studio bridge tests run against this build.
+	log.Println("building nvpair-proxy...")
+	if err := goBuild(filepath.Join("..", "nvpair-proxy"), proxyBin); err != nil {
 		os.RemoveAll(tmpDir)
-		log.Fatalf("build ollama-proxy: %v", err)
-	}
-
-	// The broker supervises lmstudio-proxy too, so the LM Studio bridge test
-	// needs its binary (pointed at via --lmstudio-proxy-path).
-	log.Println("building lmstudio-proxy...")
-	if err := goBuild(filepath.Join("..", "lmstudio-proxy"), lmstudioProxyBin); err != nil {
-		os.RemoveAll(tmpDir)
-		log.Fatalf("build lmstudio-proxy: %v", err)
+		log.Fatalf("build nvpair-proxy: %v", err)
 	}
 
 	log.Println("building nvpair-errors...")

@@ -1,0 +1,57 @@
+---
+description: Current renderer, Electron, broker, and node communication boundaries
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Communication Layers
+
+## Renderer
+
+- Renderer service calls use `window.pairApi`.
+- Electron-native operations use `window.windowApi`.
+- Renderer code under `src/ui/` must not import from `src/electron/`.
+- Shared request, response, and push types belong under `src/shared/types/`.
+
+## Electron main
+
+- Preload forwards logical service calls through the `service-bridge:*` IPC
+  envelope.
+- `handleServiceBridgeInvoke` is the service dispatch for renderer clients.
+- `ModularSupervisor` communicates with `nvpair-ui-broker` through newline
+  JSON-RPC over stdio.
+- Electron starts only the broker. The broker owns every worker process.
+- Modular notifications update `ModularBridgeState`, which emits typed renderer
+  push events.
+
+## Terminal client
+
+- The `nvpair` command on PATH launches the bundled Go `nvpair-tui`, which
+  spawns and owns its own broker.
+- Electron generates that launcher on packaged builds
+  (`src/electron/nvpair-command.ts`).
+- There is no Electron console client, control socket, or local control server.
+  Do not reintroduce one.
+
+## Backend network traffic
+
+- Node discovery, pairing, trust, workload propagation, error synchronization,
+  and routed inference are backend-owned.
+- PAIR must not implement a parallel node-to-node protocol.
+- Clustered backend peer channels use the trust and transport selected by the
+  backend services; PAIR relays control-plane requests through the broker.
+- Public inference clients connect to local Ollama- or OpenAI-compatible proxy
+  endpoints.
+
+## Documentation
+
+When changing IPC channels, logical service channels, push events, process
+ownership, security flows, or runtime ports, update:
+
+- `docs/architecture.md`;
+- `docs/frontend-api.md`;
+- `docs/services-backend.md`;
+- the relevant `.cursor/rules` files.

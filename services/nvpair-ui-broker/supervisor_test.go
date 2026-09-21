@@ -29,6 +29,78 @@ func (h *fakeHandle) Stop() { h.stopOnce.Do(func() { close(h.stoppedC) }) }
 // crash closes the handle's done channel, simulating an unexpected exit.
 func (h *fakeHandle) crash() { close(h.done) }
 
+// A fresh worker process has none of the state the broker pushed into its
+// predecessor, so onSpawned has to fire for the first spawn and every respawn.
+// Missing the respawn is the interesting failure: the worker comes back and
+// silently serves without the ranking the broker believes it has.
+func TestOnSpawnedFiresForFirstSpawnAndEveryRespawn(t *testing.T) {
+	handles := make(chan *fakeHandle, 4)
+	spawned := make(chan struct{}, 4)
+
+	sup := newSupervisor("replay-probe", defaultRestartPolicy(), func() (supervisedHandle, error) {
+		h := newFakeHandle()
+		handles <- h
+		return h, nil
+	})
+	sup.onSpawned = func() { spawned <- struct{}{} }
+	sup.policy.baseDelay = time.Millisecond
+	sup.policy.maxDelay = time.Millisecond
+
+	if err := sup.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(sup.Stop)
+
+	first := <-handles
+	waitSupervisorSignal(t, spawned, "onSpawned did not fire for the first spawn")
+
+	first.crash()
+	<-handles
+	waitSupervisorSignal(t, spawned, "onSpawned did not fire for the respawn")
+}
+
+// onSpawned must not run on the monitor goroutine: that goroutine is the only
+// thing that reaches h.Stop() when stopCh closes, so a callback blocking there
+// makes Stop wait it out inside the shared teardown budget.
+func TestOnSpawnedDoesNotBlockStop(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	entered := make(chan struct{})
+
+	sup := newSupervisor("blocking-replay", noRestartPolicy(), func() (supervisedHandle, error) {
+		return newFakeHandle(), nil
+	})
+	var once sync.Once
+	sup.onSpawned = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	if err := sup.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitSupervisorSignal(t, entered, "onSpawned never ran")
+
+	stopped := make(chan struct{})
+	go func() {
+		sup.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked behind a long-running onSpawned callback")
+	}
+}
+
+func waitSupervisorSignal(t *testing.T, ch <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal(failure)
+	}
+}
+
 func TestRestartPolicyBackoff(t *testing.T) {
 	p := restartPolicy{baseDelay: time.Second, maxDelay: 16 * time.Second}
 	cases := []struct {
@@ -195,11 +267,16 @@ func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
 	}
 }
 
-// TestSupervisorRestartRespawnsWithoutCrash proves the graceful restart used to
-// re-point a worker at changed cluster certs on join: the running worker is
-// torn down and a fresh one is spawned, but it is NOT counted as a crash (no
-// onCrash, so no spurious "subprocess-crashed" error and no budget spent).
-func TestSupervisorRestartRespawnsWithoutCrash(t *testing.T) {
+// A healthy worker is never torn down and respawned on its own.
+//
+// This replaces a test of the graceful-restart mechanism, which had no
+// production caller and is now deleted: its purpose — re-pointing a worker at
+// cluster certs it only read at startup — went away when the proxy gained a
+// live trust watch, and the last caller went with the LM Studio port restarts
+// that became facade-scoped. What remains worth asserting is the invariant
+// that replaced it: nothing short of an actual exit replaces a running worker,
+// so a facade-level failure cannot cost every engine its listener.
+func TestSupervisorLeavesAHealthyWorkerAlone(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -217,24 +294,23 @@ func TestSupervisorRestartRespawnsWithoutCrash(t *testing.T) {
 
 	h0 := mustSpawn(t, spawned)
 
-	// Request a graceful restart (the broker does this to re-point a worker at
-	// external state it only reads at startup, e.g. an LM Studio proxy port change).
-	sup.Restart()
-
-	// The running worker is torn down...
 	select {
 	case <-h0.stoppedC:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Restart did not stop the running worker")
-	}
-	// ...and a fresh one is spawned in its place.
-	_ = mustSpawn(t, spawned)
-
-	// A requested restart must not look like a crash.
-	select {
+		t.Fatal("a healthy worker was stopped without exiting")
+	case h := <-spawned:
+		t.Fatalf("a second worker was spawned alongside a healthy one: %v", h)
 	case a := <-crashes:
-		t.Fatalf("Restart surfaced a crash (attempt %d); it must be graceful", a)
-	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("a healthy worker surfaced a crash (attempt %d)", a)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// A real exit still recovers, so the above is not simply a dead supervisor.
+	h0.crash()
+	_ = mustSpawn(t, spawned)
+	select {
+	case <-crashes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an actual exit did not surface a crash")
 	}
 }
 

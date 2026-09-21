@@ -20,6 +20,31 @@ afterEach(() => {
 })
 
 describe('LM Studio install state', () => {
+    it.each(['lmstudio', 'lm-studio'])('clears failed operations for %s', engineId => {
+        const state = getModularBridgeState()
+        const statuses: EngineProcessStatus[] = []
+        unsubscribe = subscribePush(event => {
+            if (
+                event.channel === 'engines:state-changed' &&
+                event.payload.engineType === 'lm-studio' &&
+                event.payload.status
+            ) {
+                statuses.push(event.payload.status.processStatus)
+            }
+        })
+        state.setSelfId('local-node')
+        state.applyEngineManagerStatus({
+            engine: 'lmstudio',
+            installed: false,
+            running: false,
+            port: 1234
+        })
+        state.beginLocalEngineOp('lm-studio', 'installing')
+        expect(statuses.at(-1)).toBe('installing')
+        state.failLocalEngineOp(engineId, 'install')
+        expect(statuses.at(-1)).toBe('not-installed')
+    })
+
     it('does not revert a quiet install to Download after 90 seconds', () => {
         vi.useFakeTimers()
         const state = getModularBridgeState()

@@ -687,6 +687,11 @@ The important boundaries are:
    permissions. JSON-RPC has no independent per-message token.
 3. **Loopback HTTP.** Local clients can submit sensitive inference content.
    Listener addresses, browser access, CORS, and host account security matter.
+   The proxies add no permissive CORS default: they pass the upstream engine's
+   headers and its refusals through, so a web page reaches a model through PAIR
+   only where the engine would have allowed it directly, and a cluster-wide
+   request needs every engine that answered to allow the origin. Refer to
+   [Engine settings](engine-settings.mdx) for allowing an origin.
 4. **LAN discovery and metadata.** The network can reveal service presence and
    selected host information. Some enrichment endpoints use plain HTTP.
 5. **Pairing bootstrap.** A six-digit PIN bootstraps certificate trust. It is a

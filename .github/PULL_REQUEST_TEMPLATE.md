@@ -23,7 +23,6 @@ n/a
 
 ### Bumps
 - services: none
-- lmstudio-proxy: none
 - nvpair-cluster-manager: none
 - nvpair-engine-manager: none
 - nvpair-errors: none
@@ -32,10 +31,10 @@ n/a
 - nvpair-node-info: none
 - nvpair-node-scanner: none
 - nvpair-node-settings: none
+- nvpair-proxy: none
 - nvpair-tui: none
 - nvpair-ui-broker: none
 - nvpair-workload-manager: none
-- ollama-proxy: none
 <!-- /pair-release-intent:v1 -->
 
 ## Scope

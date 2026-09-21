@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	settings "nvpair-shared/enginesettings"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,6 +71,8 @@ type engineState struct {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	settingsHub      settings.Hub
+	settingsParent   func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg              *Registry
 	reporter         *Reporter
 	emit             func(method string, params any)

@@ -203,6 +203,22 @@ all consumers, tests, and relevant API documentation together.
 
 ## Tests and Evidence
 
+When writing or reviewing tests:
+
+- Give each test one behavior to prove. Split unrelated scenarios into separate
+  tests, and name cases after the scenario or expected outcome.
+- Share setup with small helpers while keeping inputs and expectations explicit.
+  Use local helper closures or tables when they make related cases easier to
+  follow; avoid nested loops and mode switches that hide what a case proves.
+- Keep mutable state fresh for each case. Mark Go setup and assertion helpers
+  with `t.Helper()` and report failures through the current subtest's `*testing.T`.
+- Check setup, file I/O, parsing, and operation errors before asserting results.
+  Fail at the operation that failed, with enough context to diagnose it.
+- Decode structured output and compare its fields. Reserve substring assertions
+  for unstructured text whose wording is part of the behavior being tested.
+- Use named protocol constants, such as `http.StatusBadGateway`, instead of magic
+  values. Follow the existing Go or Vitest patterns and format fixtures readably.
+
 Use the narrowest stable test that proves the intended outcome. Add regression
 coverage at the earliest boundary that could have caught a defect.
 

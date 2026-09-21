@@ -113,13 +113,16 @@ type Fetch struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
-	Mode  string            `json:"mode,omitempty"`
-	Bin   string            `json:"bin,omitempty"`
-	Args  []string          `json:"args,omitempty"`
-	Env   map[string]string `json:"env,omitempty"`
-	Port  int               `json:"port"`            // 0 => auto-assign a free loopback port
-	Bind  string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
-	Start [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
+	EditableLaunch *EditableLaunch   `json:"editable_launch,omitempty"`
+	LaunchArgs     *[]string         `json:"launch_args,omitempty"` // literal arguments after managed fields
+	LaunchEnv      *[]string         `json:"launch_env,omitempty"`  // complete literal explicit environment
+	Mode           string            `json:"mode,omitempty"`
+	Bin            string            `json:"bin,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Port           int               `json:"port"`            // 0 => auto-assign a free loopback port
+	Bind           string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
+	Start          [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
 	// CLI is the engine's control-CLI path for this platform, referenced
 	// elsewhere as {cli}. It lets the manifest's global actions resolve
 	// to the correct per-OS binary (e.g. lms.exe vs lms).
@@ -129,11 +132,36 @@ type Runtime struct {
 	Health *Probe    `json:"health,omitempty"`
 }
 
+type EditableLaunch struct {
+	FixedArgs  []string        `json:"fixed_args"`
+	Controls   []LaunchControl `json:"controls"`
+	StartIndex int             `json:"start_index,omitempty"`
+}
+
+// LaunchControl binds CLI/environment syntax to PAIR policy fields. Value is a
+// format such as "{server.port}" or "{server.host}:{server.port}". Implicit is
+// the value supplied by flag presence; environment sources always take a value.
+type LaunchControl struct {
+	Flags    []string `json:"flags,omitempty"`
+	Env      []string `json:"env,omitempty"`
+	Value    string   `json:"value"`
+	Implicit *string  `json:"implicit,omitempty"`
+}
+
 func (r *Runtime) modeOrDefault() string {
 	if r.Mode == "" {
 		return "process"
 	}
 	return r.Mode
+}
+
+// hasCustomLaunch reports whether the user supplied any literal argument or
+// environment assignment. A saved override writes both keys, so the untouched
+// one persists as an empty — not absent — slice. Emptiness, not nil, is what
+// separates a default launch from a customized one.
+func (r *Runtime) hasCustomLaunch() bool {
+	return (r.LaunchArgs != nil && len(*r.LaunchArgs) > 0) ||
+		(r.LaunchEnv != nil && len(*r.LaunchEnv) > 0)
 }
 
 // Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
@@ -568,6 +596,33 @@ func (m *Manifest) Validate() error {
 }
 
 func (p *Platform) validate(key string) error {
+	if policy := p.Runtime.EditableLaunch; policy != nil {
+		if policy.StartIndex < 0 || (p.Runtime.modeOrDefault() == "command" && policy.StartIndex >= len(p.Runtime.Start)) {
+			return fmt.Errorf("platform %q: invalid editable launch definition", key)
+		}
+		if _, err := formatLaunchText(policy.FixedArgs); err != nil {
+			return fmt.Errorf("platform %q: invalid fixed launch arguments", key)
+		}
+		if err := policy.validateControls(); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
+		}
+	}
+	if args := p.Runtime.LaunchArgs; args != nil {
+		if p.Runtime.EditableLaunch == nil {
+			return fmt.Errorf("platform %q: launch_args requires editable_launch", key)
+		}
+		if _, err := formatLaunchText(append([]string{"arguments"}, (*args)...)); err != nil {
+			return fmt.Errorf("platform %q: invalid literal launch arguments", key)
+		}
+	}
+	if env := p.Runtime.LaunchEnv; env != nil {
+		if p.Runtime.EditableLaunch == nil {
+			return fmt.Errorf("platform %q: launch_env requires editable_launch", key)
+		}
+		if _, err := literalEnvironment(*env); err != nil {
+			return fmt.Errorf("platform %q: invalid literal launch environment", key)
+		}
+	}
 	switch p.Runtime.modeOrDefault() {
 	case "process":
 		if strings.TrimSpace(p.Runtime.Bin) == "" {

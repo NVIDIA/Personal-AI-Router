@@ -71,7 +71,7 @@ nvpair-tui (this process)
 └── ui/                Bubble Tea root model + one file per tab
         │ stdio (newline-delimited JSON-RPC 2.0)
         ▼
-   nvpair-ui-broker ──► nvpair-node-scanner, ollama-proxy, nvpair-errors, ... (workers)
+   nvpair-ui-broker ──► nvpair-node-scanner, nvpair-proxy, nvpair-errors, ... (workers)
 ```
 
 The supervisor sends `shutdown` and closes the broker's stdin on exit; the

@@ -4,9 +4,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net"
-	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -131,7 +131,7 @@ func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 		Nodes: []string{"old"},
 		Ranks: []schedulerwire.NodeRank{{ID: "old", Pending: 1}},
 	}
-	oldGeneration := b.cachePrioritySnapshot("ollama", oldInput)
+	oldGeneration, _ := b.cachePrioritySnapshot(oldInput)
 	oldInput.Nodes[0] = "mutated-after-cache"
 	oldInput.Ranks[0].Pending = 99
 
@@ -147,7 +147,7 @@ func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 	releaseOld := make(chan struct{})
 	oldDone := make(chan struct{})
 	go func() {
-		b.deliverPrioritySnapshot("ollama", oldGeneration, func(priority schedulerwire.Priority) {
+		b.deliverPrioritySnapshot(oldGeneration, func(priority schedulerwire.Priority) {
 			record(priority)
 			close(oldEntered)
 			<-releaseOld
@@ -156,23 +156,23 @@ func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 	}()
 	waitSchedulerTestChannel(t, oldEntered, "old delivery did not start")
 
-	middleGeneration := b.cachePrioritySnapshot("ollama", schedulerwire.Priority{
+	middleGeneration, _ := b.cachePrioritySnapshot(schedulerwire.Priority{
 		Nodes: []string{"middle"},
 		Ranks: []schedulerwire.NodeRank{{ID: "middle", Pending: 2}},
 	})
 	middleDone := make(chan struct{})
 	go func() {
-		b.deliverPrioritySnapshot("ollama", middleGeneration, record)
+		b.deliverPrioritySnapshot(middleGeneration, record)
 		close(middleDone)
 	}()
 	newPriority := schedulerwire.Priority{
 		Nodes: []string{"new"},
 		Ranks: []schedulerwire.NodeRank{{ID: "new", Pending: 3}},
 	}
-	newGeneration := b.cachePrioritySnapshot("ollama", newPriority)
+	newGeneration, _ := b.cachePrioritySnapshot(newPriority)
 	newDone := make(chan struct{})
 	go func() {
-		b.deliverPrioritySnapshot("ollama", newGeneration, record)
+		b.deliverPrioritySnapshot(newGeneration, record)
 		close(newDone)
 	}()
 
@@ -190,11 +190,72 @@ func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 		Nodes: []string{"old"},
 		Ranks: []schedulerwire.NodeRank{{ID: "old", Pending: 1}},
 	}
-	if !reflect.DeepEqual(applied[0], wantOld) {
+	// Ranking rather than DeepEqual: a cached snapshot also carries the
+	// generation the broker stamped on it, which is not part of what the
+	// scheduler produced.
+	if !applied[0].SameRanking(wantOld) {
 		t.Fatalf("first applied snapshot = %#v, want cached copy %#v", applied[0], wantOld)
 	}
-	if !reflect.DeepEqual(applied[1], newPriority) {
+	if applied[0].Generation != oldGeneration {
+		t.Fatalf("first applied generation = %d, want %d", applied[0].Generation, oldGeneration)
+	}
+	if !applied[1].SameRanking(newPriority) {
 		t.Fatalf("last applied snapshot = %#v, want newest %#v", applied[1], newPriority)
+	}
+	if applied[1].Generation != newGeneration {
+		t.Fatalf("last applied generation = %d, want %d", applied[1].Generation, newGeneration)
+	}
+}
+
+// The scheduler computes one node-wide ranking and emits it once per engine, so
+// the broker sees the same content twice per recompute. The duplicate has to be
+// dropped before it mints a generation: a second delivery of one recompute
+// clears the proxy's optimistic reservations a second time, discarding the
+// dispatches the first delivery's pending counts do not yet include.
+func TestDuplicatePerEngineEmissionDoesNotMintAGeneration(t *testing.T) {
+	b := &Broker{}
+	ranking := schedulerwire.Priority{
+		Nodes: []string{"b", "a"},
+		Ranks: []schedulerwire.NodeRank{{ID: "b", Pending: 1}, {ID: "a", Pending: 4}},
+	}
+
+	first, fresh := b.cachePrioritySnapshot(ranking)
+	if !fresh {
+		t.Fatal("first emission of a ranking was treated as a duplicate")
+	}
+
+	second, fresh := b.cachePrioritySnapshot(ranking)
+	if fresh {
+		t.Fatal("the sibling engine's identical emission minted a second generation")
+	}
+	if second != first {
+		t.Fatalf("duplicate emission moved the generation from %d to %d", first, second)
+	}
+
+	// A genuinely changed ranking still advances, so the dedupe is not just
+	// swallowing everything after the first.
+	changed, fresh := b.cachePrioritySnapshot(schedulerwire.Priority{
+		Nodes: []string{"a", "b"},
+		Ranks: []schedulerwire.NodeRank{{ID: "a", Pending: 0}, {ID: "b", Pending: 5}},
+	})
+	if !fresh || changed <= first {
+		t.Fatalf("changed ranking = generation %d fresh %v, want a newer generation", changed, fresh)
+	}
+}
+
+// An empty ranking is a legitimate state — it means the scheduler has no
+// influence — and must be distinguishable from having no ranking at all, or a
+// repush would either send nothing or send an uncached zero value.
+func TestEmptyRankingIsCachedNotTreatedAsAbsent(t *testing.T) {
+	b := &Broker{}
+	if _, fresh := b.cachePrioritySnapshot(schedulerwire.Priority{}); !fresh {
+		t.Fatal("first empty ranking was treated as a duplicate")
+	}
+	b.schedMu.Lock()
+	have := b.havePriority
+	b.schedMu.Unlock()
+	if !have {
+		t.Fatal("an empty ranking did not mark a ranking as cached, so repush would skip it")
 	}
 }
 
@@ -215,12 +276,12 @@ func TestRepushPriorityDeliversCompleteSnapshotToReplacementProxy(t *testing.T) 
 			{ID: "a", Pending: 4, Rank: 1},
 		},
 	}
-	b.cachePrioritySnapshot("ollama", want)
+	b.cachePrioritySnapshot(want)
 	b.setProxy(proxy) // replacement proxy starts with no scheduler state
 
 	replayed := make(chan struct{})
 	go func() {
-		b.repushPriority("ollama")
+		b.repushPriority(context.Background())
 		close(replayed)
 	}()
 
@@ -236,8 +297,14 @@ func TestRepushPriorityDeliversCompleteSnapshotToReplacementProxy(t *testing.T) 
 	if err := json.Unmarshal(request.Params, &got); err != nil {
 		t.Fatalf("decode replacement priority: %v", err)
 	}
-	if !reflect.DeepEqual(got, want) {
+	if !got.SameRanking(want) {
 		t.Fatalf("replacement priority = %#v, want %#v", got, want)
+	}
+	// The replay reuses the cached generation rather than minting one, so the
+	// child can recognize a redelivery it has already applied. A repush that
+	// arrived unversioned would clear reservations on every proxy ready.
+	if got.Generation == 0 {
+		t.Fatal("replayed snapshot carried no generation; the child cannot detect a redelivery")
 	}
 	if err := codec.Respond(request.ID, map[string]int{"count": len(got.Nodes)}); err != nil {
 		t.Fatalf("respond to replacement priority: %v", err)

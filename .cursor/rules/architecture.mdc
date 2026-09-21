@@ -1,0 +1,115 @@
+---
+description: Core PAIR boundaries for naming, communication, backend ownership, and reactive state
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# PAIR Architecture Rules
+
+## Naming
+
+- User-facing copy and all new code use **engine**, never **backend**.
+- Existing wire types such as `BackendInfo` may retain their contract name.
+- `EngineType` is a closed union. Narrow external strings with
+  `isEngineType()`.
+- PAIR has no plugin or custom-engine concept.
+
+## Runtime ownership
+
+The sibling `services/` tree is the backend source of truth.
+
+- Electron starts only `nvpair-ui-broker`.
+- The broker supervises all runtime workers.
+- PAIR must not reimplement backend services in TypeScript.
+- Never run a worker from both Electron and the broker.
+- Never add a broker-absent fallback.
+
+The binary inventory and launch ownership live in
+`src/shared/constants/modular-binaries.ts`.
+
+## Communication layers
+
+- Renderer service data uses `window.pairApi`.
+- Electron-native operations use `window.windowApi`.
+- Preload transports service calls through `service-bridge:*` IPC.
+- Electron main talks to the broker over stdio JSON-RPC.
+- The `nvpair` terminal command launches the bundled Go `nvpair-tui`, which owns
+  its own broker. PAIR has no Electron-backed console client.
+- Renderer code (`src/ui/`) must not import from `src/electron/`.
+
+The only direct service-data HTTP polling in Electron is `/v1/node-info`.
+Inference HTTP endpoints are for local client-compatible traffic.
+
+## Reactive state
+
+- The service is authoritative.
+- Commands do not return replacement state.
+- Renderer stores fetch snapshots and then consume push events.
+- Components do not create local loading state for engine/model operations.
+- `src/ui/stores/pending-actions.store.ts` is the single optimistic exception.
+- Pending actions always yield to engine state, progress, or error pushes.
+
+## Backend integration
+
+- Backend methods and notifications are implementation details behind
+  `WsInvokeChannelMap` and `WsPushChannelMap`.
+- Handle every PAIR-relevant backend notification.
+- Verify meaningful payload fields, not only method names.
+- Keep backend-coupled defaults in
+  `src/shared/constants/modular-runtime.ts`.
+- Prefer live backend-reported values over constants.
+
+## Engines and routing
+
+`nvpair-engine-manager` owns lifecycle and model operations.
+
+- Engine server ports and proxy ports are persisted by their backend owners.
+- Desired engine state is restored by the backend.
+- Call `engine:prepare-shutdown` before broker teardown.
+- Hide operations the backend cannot perform.
+
+Routing is owned by the proxies, broker, and `nvpair-job-scheduler`. The backend
+combines pending work, compact scanner/manual GPU telemetry, and the proxy
+process's burst reservations, which every engine facade shares. PAIR must not
+pin routes, derive policy from renderer metrics, or
+implement a TypeScript scheduling policy.
+
+For model-bearing inference, each proxy admits only nodes whose per-engine
+inventory advertises the requested model. Manual selection, scheduler priority,
+reservations, and retryable failover operate inside that owner set. Empty or
+non-matching inventory is excluded, and no owner produces a local `502`.
+
+## Security
+
+`nvpair-cluster-manager` owns identity, pairing, trust, and membership. PAIR
+implements **no** security or cryptography.
+
+- PAIR relays cluster commands and renders cluster events.
+- PAIR does not implement cluster cryptography, transport security, or key
+  management.
+- Pairing uses a six-digit convenience PIN, not a strong authenticator.
+- Do not add UI or TypeScript code based on cluster secrets, auth proofs,
+  certificates, or a TypeScript-managed CA.
+
+## IPC
+
+- `IpcChannelMap` is for Electron-native operations and the service bridge
+  envelope.
+- Every `ipcMain.handle` uses `safeHandle()`.
+- Handlers return the typed `IpcResult<T>` envelope and never throw across IPC.
+
+## Documentation
+
+When channels, push events, security flows, runtime processes, or ports change,
+update:
+
+- `docs/architecture.md`;
+- `docs/frontend-api.md`;
+- `docs/services-backend.md`;
+- `docs/services-parity.md`;
+- `system-architecture.mdc`.
+
+Document only the current architecture. Git history records prior designs.

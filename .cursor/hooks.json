@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "hooks": {
+        "sessionStart": [
+            {
+                "command": "node .cursor/hooks/session-start.js"
+            }
+        ],
+        "preToolUse": [
+            {
+                "command": "node .cursor/hooks/enforce-commit-signoff.js",
+                "matcher": "Shell"
+            }
+        ]
+    }
+}

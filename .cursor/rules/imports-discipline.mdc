@@ -1,0 +1,26 @@
+---
+description: Static imports only, no dynamic imports, no convenience re-exports
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Imports
+
+- Always use static `import` statements. **NEVER** use dynamic `await import()`.
+  All dependencies must be resolved at module load time. Dynamic imports cause
+  Vite chunk warnings and make dependency graphs harder to trace.
+- Exception: `?raw` imports are used for bundling markdown as strings
+  (e.g. `import GUIDE from './guide.md?raw'`). These are handled by Vite at
+  build time.
+- **No convenience re-exports of types (or values).** Do not add
+  `export type { Foo } from './other'` at the end of an unrelated module so
+  callers can import `Foo` from the wrong file. Import from the **defining
+  module** (e.g. `import type { Foo } from './types'`). Convenience re-exports
+  are easy to leave stale when types move and they obscure the real source of
+  truth.
+
+See also **`absolute-imports.mdc`** for the `@/*` alias rules (cross-directory
+imports must use `@/...`; same-directory imports use `./`).

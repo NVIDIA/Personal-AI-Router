@@ -219,7 +219,7 @@ func TestActivityIsNotForwardedToClients(t *testing.T) {
 	b := &Broker{codec: NewCodec(clientSide)}
 	b.setScanner(sp)
 	b.proxyMu.Lock()
-	b.proxySubscribed = true
+	b.setEngineProxySubscribed(ollamaProxyProfile, true)
 	b.proxyMu.Unlock()
 
 	toClient := make(chan *Message, 1)

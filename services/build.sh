@@ -4,7 +4,7 @@
 
 # build.sh — NVIDIA Personal AI Router build script for Linux and macOS.
 #
-# Mirrors build.bat. Reads versions.json with jq, builds the thirteen worker
+# Mirrors build.bat. Reads versions.json with jq, builds the twelve worker
 # binaries with -X main.Version=... ldflags, then copies them into the
 # repo-root staging bundle at:
 #
@@ -55,8 +55,7 @@ echo
 # bare-identifier syntax would parse as subtraction. Passing the key as a
 # string variable sidesteps the ambiguity.
 V_SERVICES=$(jq -r '.services'                                 "$VERSIONS_FILE")
-V_PROXY=$(  jq -r --arg k 'ollama-proxy'     '.components[$k]' "$VERSIONS_FILE")
-V_LMPROXY=$(jq -r --arg k 'lmstudio-proxy'   '.components[$k]' "$VERSIONS_FILE")
+V_PROXY=$(  jq -r --arg k 'nvpair-proxy'     '.components[$k]' "$VERSIONS_FILE")
 V_NINFO=$(  jq -r --arg k 'nvpair-node-info'    '.components[$k]' "$VERSIONS_FILE")
 V_NSCAN=$(  jq -r --arg k 'nvpair-node-scanner' '.components[$k]' "$VERSIONS_FILE")
 V_MNODES=$( jq -r --arg k 'nvpair-manual-nodes' '.components[$k]' "$VERSIONS_FILE")
@@ -75,8 +74,7 @@ if [[ -z "$V_SERVICES" || "$V_SERVICES" == "null" ]]; then
 fi
 
 printf '  services          = %s\n' "$V_SERVICES"
-printf '  ollama-proxy      = %s\n' "$V_PROXY"
-printf '  lmstudio-proxy    = %s\n' "$V_LMPROXY"
+printf '  nvpair-proxy      = %s\n' "$V_PROXY"
 printf '  nvpair-node-info     = %s\n' "$V_NINFO"
 printf '  nvpair-node-scanner  = %s\n' "$V_NSCAN"
 printf '  nvpair-manual-nodes  = %s\n' "$V_MNODES"
@@ -97,23 +95,22 @@ echo
 
 build_subbinary() {
     local idx="$1" name="$2" version="$3"
-    echo "[$idx/13] Building $name (v$version)..."
+    echo "[$idx/12] Building $name (v$version)..."
     (cd "$ROOT/$name" && go build -ldflags "-X main.Version=$version" -o "$name" .)
     echo "      OK"
 }
-build_subbinary 1 ollama-proxy      "$V_PROXY"
-build_subbinary 2 lmstudio-proxy    "$V_LMPROXY"
-build_subbinary 3 nvpair-node-info     "$V_NINFO"
-build_subbinary 4 nvpair-node-scanner  "$V_NSCAN"
-build_subbinary 5 nvpair-manual-nodes  "$V_MNODES"
-build_subbinary 6 nvpair-workload-manager "$V_WLMGR"
-build_subbinary 7 nvpair-errors        "$V_ERRORS"
-build_subbinary 8 nvpair-engine-manager "$V_ENGMGR"
-build_subbinary 9 nvpair-node-settings "$V_NSETTINGS"
-build_subbinary 10 nvpair-ui-broker    "$V_BROKER"
-build_subbinary 11 nvpair-cluster-manager "$V_CLUMGR"
-build_subbinary 12 nvpair-job-scheduler   "$V_SCHED"
-build_subbinary 13 nvpair-tui            "$V_TUI"
+build_subbinary 1 nvpair-proxy       "$V_PROXY"
+build_subbinary 2 nvpair-node-info     "$V_NINFO"
+build_subbinary 3 nvpair-node-scanner  "$V_NSCAN"
+build_subbinary 4 nvpair-manual-nodes  "$V_MNODES"
+build_subbinary 5 nvpair-workload-manager "$V_WLMGR"
+build_subbinary 6 nvpair-errors        "$V_ERRORS"
+build_subbinary 7 nvpair-engine-manager "$V_ENGMGR"
+build_subbinary 8 nvpair-node-settings "$V_NSETTINGS"
+build_subbinary 9 nvpair-ui-broker     "$V_BROKER"
+build_subbinary 10 nvpair-cluster-manager "$V_CLUMGR"
+build_subbinary 11 nvpair-job-scheduler   "$V_SCHED"
+build_subbinary 12 nvpair-tui            "$V_TUI"
 
 BIN_OUT="$ROOT/build/bin"
 
@@ -130,8 +127,7 @@ echo
 # components.
 rm -rf "$BIN_OUT"
 mkdir -p "$BIN_OUT"
-cp "$ROOT/ollama-proxy/ollama-proxy"         "$BIN_OUT/ollama-proxy"
-cp "$ROOT/lmstudio-proxy/lmstudio-proxy"     "$BIN_OUT/lmstudio-proxy"
+cp "$ROOT/nvpair-proxy/nvpair-proxy"               "$BIN_OUT/nvpair-proxy"
 cp "$ROOT/nvpair-node-info/nvpair-node-info"       "$BIN_OUT/nvpair-node-info"
 cp "$ROOT/nvpair-node-scanner/nvpair-node-scanner" "$BIN_OUT/nvpair-node-scanner"
 cp "$ROOT/nvpair-manual-nodes/nvpair-manual-nodes" "$BIN_OUT/nvpair-manual-nodes"
@@ -149,8 +145,7 @@ echo "========================================"
 echo " Build complete (services v$V_SERVICES)"
 echo "========================================"
 echo
-printf '  Proxy:        %s\n' "$BIN_OUT/ollama-proxy"
-printf '  LM Studio Proxy: %s\n' "$BIN_OUT/lmstudio-proxy"
+printf '  Proxy:        %s\n' "$BIN_OUT/nvpair-proxy"
 printf '  Node Info:    %s\n' "$BIN_OUT/nvpair-node-info"
 printf '  Node Scanner: %s\n' "$BIN_OUT/nvpair-node-scanner"
 printf '  Manual Nodes: %s\n' "$BIN_OUT/nvpair-manual-nodes"

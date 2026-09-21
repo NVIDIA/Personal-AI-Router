@@ -147,7 +147,7 @@ export function BackendHeader({
 
             {isUnavailable && (
                 <DismissibleTooltip slotContent="This node hasn't reported this engine's status.">
-                    <Flex align="center" className="ml-2" style={{ minHeight: 32 }}>
+                    <Flex align="center" className="ml-2 h-7">
                         <Text kind="body/regular/sm" className="text-subtle-color">
                             Unavailable
                         </Text>
@@ -181,18 +181,23 @@ export function BackendHeader({
                             <Flex
                                 align="center"
                                 gap="1"
-                                className="ml-2 min-w-0 max-w-[min(100%,28rem)]"
-                                style={{ minHeight: 32 }}
+                                className="ml-2 h-7 min-w-0 max-w-[min(100%,28rem)]"
                             >
                                 <span className="min-w-0">
                                     <Text
                                         kind="body/regular/sm"
-                                        className="truncate block mt-1 capitalize"
+                                        className="truncate block capitalize"
                                     >
                                         {fullStatus}
                                     </Text>
                                 </span>
-                                <span className="spinner-element" role="status" aria-label="" />
+                                <Flex align="center" justify="center" className="h-7 w-7 shrink-0">
+                                    <span
+                                        className="spinner-element-medium"
+                                        role="status"
+                                        aria-label={fullStatus}
+                                    />
+                                </Flex>
                             </Flex>
                         </DismissibleTooltip>
                     )
@@ -207,14 +212,16 @@ export function BackendHeader({
                     const isStartDisabled = !prereqsMet && backend.processStatus !== 'running'
 
                     const toggle = (
-                        <Switch
-                            size="small"
-                            checked={backend.processStatus === 'running'}
-                            onCheckedChange={onToggle}
-                            onClick={e => e.stopPropagation()}
-                            disabled={disabled || isStartDisabled}
-                            aria-label={`${backend.processStatus === 'running' ? 'Stop' : 'Start'} ${backend.displayName}`}
-                        />
+                        <Flex align="center" justify="center" className="h-7 w-7 shrink-0">
+                            <Switch
+                                size="small"
+                                checked={backend.processStatus === 'running'}
+                                onCheckedChange={onToggle}
+                                onClick={e => e.stopPropagation()}
+                                disabled={disabled || isStartDisabled}
+                                aria-label={`${backend.processStatus === 'running' ? 'Stop' : 'Start'} ${backend.displayName}`}
+                            />
+                        </Flex>
                     )
 
                     if (isStartDisabled) {

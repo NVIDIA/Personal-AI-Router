@@ -134,6 +134,8 @@ $Targets = @(
 $PairProcs = @(
     'PAIR',
     'nvpair-ui-broker',
+    'nvpair-proxy',
+    # Pre-unification names, so this still cleans up after an older install.
     'ollama-proxy',
     'lmstudio-proxy',
     'nvpair-node-info',

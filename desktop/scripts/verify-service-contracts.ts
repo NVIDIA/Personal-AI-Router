@@ -91,7 +91,11 @@ interface BinarySurface {
     dynamic: DynamicSite[]
 }
 
-const METHOD_RE = /^(?:[a-z][a-zA-Z0-9]*(?:[:/][a-zA-Z0-9.-]+)+|ready|error)$/
+// The leading segment allows hyphens because every engine relay namespace is
+// its proxy's component id — "ollama-proxy:get-status", "lmstudio-proxy:ready".
+// Without the hyphen this silently matched nothing under either namespace and
+// the drift gate passed by seeing no methods at all.
+const METHOD_RE = /^(?:[a-z][a-zA-Z0-9-]*(?:[:/][a-zA-Z0-9.-]+)+|ready|error)$/
 
 function isMethodish(s: string): boolean {
     return METHOD_RE.test(s)

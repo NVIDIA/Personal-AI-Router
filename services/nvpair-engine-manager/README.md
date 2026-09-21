@@ -93,13 +93,26 @@ to the per-user `engines/` dir that deep-merges onto the bundled manifest, so
 `runtime.port` becomes the single source of truth and the port is restored on
 the next start with no separate store), and applies it — bouncing the engine
 onto the new port if it was running. Setting the port back to the bundled
-default removes the override file. Because the chosen port lives in the
+default removes only the shared and host-platform port overrides; the file is
+removed only when no other overrides remain. Arguments, environment, install
+settings and other platform overrides are preserved. A host-platform port is
+updated when necessary so it cannot shadow the saved value on restart.
+Malformed override files fail the save instead of being replaced.
+Because the chosen port lives in the
 effective manifest, restore is automatic: a normal `engine:start` (no explicit
 port) and the adopt-on-fixed-port path both come up on the retained port.
 Moving a **running, adopted** engine is **refused** with an error (nothing is
 persisted) — NVPAIR can't relocate a process it didn't start; see Adoption below.
 
 ## Lifecycle
+
+Combined launch/server/proxy edits use the broker's
+[engine settings protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md). The worker
+checks basic argument syntax and adapter-declared networking/CORS controls
+using [`pair-arguments-v1`](LAUNCH_TEXT.md), persists host-platform `launch_args` and `launch_env`
+with the port, and holds its operation lock through stop/rebind/start. The
+paired engine-control surface relays settings to its local broker and streams
+full authoritative snapshots to pinned peers.
 
 ```
 NotInstalled --engine:install--> (HTTPS download + verify-if-pinned + user-mode run) --> Stopped

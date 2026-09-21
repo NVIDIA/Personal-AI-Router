@@ -269,6 +269,22 @@ func TestRank_TerminalStatesExcluded(t *testing.T) {
 	assertStrs(t, order, []string{"b", "a"}) // b=0 wins; a would tie only if completed counted
 }
 
+// TestRank_CancelledExcluded pins that isPending is an allow-list, which is
+// what keeps a new terminal state from silently counting as load. "cancelled"
+// is not queued and not running, so it must contribute nothing — a job the
+// requester walked away from is not occupying its node.
+func TestRank_CancelledExcluded(t *testing.T) {
+	m := mgrWith(nopRW{}, []string{"a", "b"},
+		wl("1", "ollama", "running", "x", "a"),   // a = 1
+		wl("2", "ollama", "cancelled", "x", "b"), // must not count toward b
+	)
+	order, ranks := m.rank()
+	assertStrs(t, order, []string{"b", "a"})
+	if got := pendingOf(ranks, "b"); got != 0 {
+		t.Fatalf("pending for b = %d, want 0 (cancelled must not count as pending)", got)
+	}
+}
+
 // TestRank_NodeWideMixedEngineSynthetic verifies the requested synthetic
 // ranking: A has three mixed-engine pending jobs, B has one, and C has none.
 // Both engine outputs must therefore receive C,B,A.

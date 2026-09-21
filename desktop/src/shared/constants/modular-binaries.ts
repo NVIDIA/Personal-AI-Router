@@ -4,8 +4,7 @@
 import type { SupportedPlatform } from '@/shared/types/platform'
 
 export type ModularProcessName =
-    | 'proxy'
-    | 'lmstudio-proxy'
+    | 'nvpair-proxy'
     | 'broker'
     | 'node-info'
     | 'scanner'
@@ -56,24 +55,22 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
     // Electron only passes their resolved paths to the broker (see
     // `brokerStartupArgs` in modular-supervisor.ts) and never spawns them.
     {
-        processName: 'proxy',
-        baseName: 'ollama-proxy',
+        // One reverse-proxy process fronts every engine: the broker starts it
+        // once and enables a facade per engine over `facade/enable`, so this
+        // single entry is the whole proxy tier. Each facade binds its HTTP
+        // listener on all interfaces, so it needs firewall access to be
+        // reachable.
+        //
+        // Named for the binary, which is also the process: there is one, and
+        // naming it after an engine would claim a per-engine process that does
+        // not exist.
+        // The per-engine identities are the relay sources (`ollama-proxy` /
+        // `lmstudio-proxy`), which live in modular-state.ts.
+        processName: 'nvpair-proxy',
+        baseName: 'nvpair-proxy',
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: true
-    },
-    {
-        // LM Studio reverse proxy — the LM Studio counterpart of `ollama-proxy`,
-        // supervised the same way and relayed under the `lmstudio-proxy:`
-        // namespace (broker 0.18.0, `--lmstudio-proxy-path`). Like `ollama-proxy`
-        // it binds its HTTP listener on all interfaces, so it needs firewall
-        // access to be reachable.
-        processName: 'lmstudio-proxy',
-        baseName: 'lmstudio-proxy',
-        args: [],
-        launchOwner: 'broker',
-        needsFirewallAccess: true,
-        optional: true
     },
     {
         processName: 'scanner',

@@ -372,7 +372,7 @@ func (m *Manager) broadcastFrame(method string, params json.RawMessage) {
 // times, then it ages out. This is the set a newly-discovered peer is backfilled
 // with and the heartbeat re-syncs.
 func (m *Manager) trackActive(key workloadKey, method string, params json.RawMessage, state WorkloadState) {
-	terminal := state == StateCompleted || state == StateFailed
+	terminal := state == StateCompleted || state == StateFailed || state == StateCancelled
 	m.activeMu.Lock()
 	defer m.activeMu.Unlock()
 	// Monotonic: a single inference goes running→terminal and never back, so a

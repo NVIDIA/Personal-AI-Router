@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/engines"
 	"nvpair-shared/errors"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
@@ -131,7 +133,7 @@ type SubscriptionResult struct {
 	Subscribed bool `json:"subscribed"`
 }
 
-// ProxyStatusResult is the response to "proxy:get-status". Ready is false
+// ProxyStatusResult is the response to "ollama-proxy:get-status". Ready is false
 // (and Port 0) until the supervised ollama-proxy has emitted its "ready"
 // notification — or always, if no proxy is being supervised. Clients poll
 // this to learn where the local proxy is listening, since the proxy is
@@ -145,31 +147,46 @@ type ProxyStatusResult struct {
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
-	codec             *Codec
-	cancel            context.CancelFunc
-	startedAt         time.Time
-	nodeID            string
-	scannerPath       string
-	nodeInfoPath      string
-	proxyPath         string
-	lmstudioProxyPath string
-	workloadMgrPath   string
-	errorsPath        string
-	engineMgrPath     string
-	manualNodesPath   string
-	settingsPath      string
-	clusterMgrPath    string
-	schedulerPath     string
-	clusterDir        string
+	// settingsApplyMu serializes engine settings applies end to end, including
+	// the engine stop and restart. engineConfigMu guards only the journal and
+	// is released while an engine restarts, so this is what keeps two applies —
+	// which may compete for the same port — from interleaving. Always take it
+	// before engineConfigMu, never the reverse.
+	settingsApplyMu      sync.Mutex
+	engineConfigMu       sync.Mutex
+	engineSettingsLoaded bool
+	engineSettingsError  error
+	engineSettingsEpoch  string
+	engineSettings       map[string]*engineSettingsRecord
+	settingsRelayMu      sync.Mutex
+	settingsCancels      map[string]context.CancelFunc
+	activeSettings       map[string]activeSettingsOperation
+	codec                *Codec
+	cancel               context.CancelFunc
+	startedAt            time.Time
+	nodeID               string
+	scannerPath          string
+	nodeInfoPath         string
+	proxyPath            string
+	proxyEngines         []string
+	workloadMgrPath      string
+	errorsPath           string
+	engineMgrPath        string
+	manualNodesPath      string
+	settingsPath         string
+	clusterMgrPath       string
+	schedulerPath        string
+	clusterDir           string
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
 	// then releases its gate after the proxy owns :1234 and has its backend.
-	managedOllamaFacade    atomic.Bool
-	managedOllamaBackend   atomic.Int32
-	ollamaMoveInFlight     atomic.Bool
-	ollamaBackendPort      atomic.Int32
-	ollamaProxyStartupPort atomic.Int32
+	//
+	// managedFacade, backendPort and startupPort now live per engine on
+	// engineProxyRuntime. What remains here is Ollama's deferred-move state,
+	// which only an adopted engine has.
+	managedOllamaBackend atomic.Int32
+	ollamaMoveInFlight   atomic.Bool
 	// ollamaHostAlias is one synchronized snapshot because engine-manager and
 	// proxy supervisors can respawn while startup is still committing (or
 	// rolling back) the inherited, local-http OLLAMA_HOST alias.
@@ -181,9 +198,6 @@ type Broker struct {
 	ollamaHostAliasError             *errors.ServiceError
 	ollamaPortReady                  chan struct{}
 	ollamaPortReadyOnce              sync.Once
-	managedLMStudioFacade            atomic.Bool
-	lmstudioBackendPort              atomic.Int32
-	lmstudioProxyStartupPort         atomic.Int32
 	lmstudioProxyGeneration          atomic.Uint64
 	lmstudioProxyPublishedGeneration atomic.Uint64
 	lmstudioPortReady                chan struct{}
@@ -208,33 +222,38 @@ type Broker struct {
 	// goroutine) while request handlers and the log-level fan-out read
 	// them (on the read-loop / reader goroutines). Every access therefore
 	// goes through the get*/set* helpers under this lock.
-	workersMu     sync.Mutex
-	scanner       *scannerProcess
-	nodeInfo      *nodeInfoProcess
-	proxy         *proxyProcess
-	lmstudioProxy *proxyProcess
-	workloadMgr   *workloadManagerProcess
-	errorsProc    *errorsProcess
-	engineMgr     *rpcWorker
-	manualNodes   *rpcWorker
-	settings      *rpcWorker
-	clusterMgr    *clusterManagerProcess
-	scheduler     *rpcWorker
+	workersMu sync.Mutex
+	// serveCtx is the broker's own lifetime, recorded so work started on a
+	// spawn goroutine can be abandoned when the broker is shutting down.
+	// Guarded by workersMu because a respawn reads it off the monitor
+	// goroutine. See proxyBringUpContext.
+	serveCtx    context.Context
+	scanner     *scannerProcess
+	nodeInfo    *nodeInfoProcess
+	workloadMgr *workloadManagerProcess
+	errorsProc  *errorsProcess
+	engineMgr   *rpcWorker
+	manualNodes *rpcWorker
+	settings    *rpcWorker
+	clusterMgr  *clusterManagerProcess
+	scheduler   *rpcWorker
 
 	// Per-worker supervisors own the (re)spawn + crash-detect + restart
 	// lifecycle of each worker. nil when the worker's binary wasn't resolved
 	// (or its first spawn failed).
-	scannerSup       *supervisor
-	nodeInfoSup      *supervisor
-	proxySup         *supervisor
-	lmstudioProxySup *supervisor
-	workloadMgrSup   *supervisor
-	errorsSup        *supervisor
-	engineMgrSup     *supervisor
-	manualNodesSup   *supervisor
-	settingsSup      *supervisor
-	clusterMgrSup    *supervisor
-	schedulerSup     *supervisor
+	//
+	// proxySup covers every engine: one nvpair-proxy process hosts a facade per
+	// enabled engine, so there is no per-engine proxy supervisor.
+	scannerSup     *supervisor
+	nodeInfoSup    *supervisor
+	proxySup       *supervisor
+	workloadMgrSup *supervisor
+	errorsSup      *supervisor
+	engineMgrSup   *supervisor
+	manualNodesSup *supervisor
+	settingsSup    *supervisor
+	clusterMgrSup  *supervisor
+	schedulerSup   *supervisor
 
 	// subMu guards subscribed. The discovery:nodes-changed stream is
 	// opt-in: emitNodesChanged (called on the scanner-event goroutine)
@@ -244,14 +263,16 @@ type Broker struct {
 	subMu      sync.Mutex
 	subscribed bool
 
-	// proxyMu guards proxySubscribed and lmstudioProxySubscribed. The
-	// proxy:<event> / lmstudio-proxy:<event> streams are opt-in like
-	// discovery's: the forward*Notification hooks (on each proxy's reader
-	// goroutine) read the flags while the *:subscribe / *:unsubscribe
-	// handlers (on the read-loop goroutine) flip them.
-	proxyMu                 sync.Mutex
-	proxySubscribed         bool
-	lmstudioProxySubscribed bool
+	// proxyMu guards every engineProxyRuntime.subscribed. The
+	// <namespace>:<event> streams are opt-in like discovery's: the forward
+	// hooks (on each proxy's reader goroutine) read the flag while the
+	// subscribe / unsubscribe handlers (on the read-loop goroutine) flip it.
+	proxyMu sync.Mutex
+
+	// engineProxies holds per-engine proxy state, one entry per engine in the
+	// descriptor table. Built on first use; see engineProxy.
+	engineProxiesOnce sync.Once
+	engineProxies     map[string]*engineProxyRuntime
 
 	// workloadsMu guards workloadsSubscribed. The workloads:* stream is
 	// opt-in too: emitWorkloadEvent (called on the proxy reader goroutine
@@ -306,13 +327,21 @@ type Broker struct {
 	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
 
-	// schedMu guards each engine's cached priority and generation. Per-engine
-	// delivery locks serialize asynchronous node/set-priority calls; a stale
-	// generation is skipped before it can overwrite a newer proxy order.
+	// schedMu guards the cached ranking and its generation.
+	//
+	// One cache, not one per engine: the scheduler computes a single node-wide
+	// ranking and emits it once per engine, so per-engine copies would hold
+	// identical content and prevent the duplicate from being recognized as one.
+	// havePriority distinguishes "no ranking yet" from a cached empty one, which
+	// is a legitimate state meaning the scheduler has no influence.
+	//
+	// priorityApplyMu serializes asynchronous node/set-priority deliveries; a
+	// stale generation is skipped before it can overwrite a newer proxy order.
 	schedMu            sync.Mutex
-	lastPriority       map[string]schedulerwire.Priority
-	priorityGeneration map[string]uint64
-	priorityApplyMu    map[string]*sync.Mutex
+	lastPriority       schedulerwire.Priority
+	havePriority       bool
+	priorityGeneration uint64
+	priorityApplyMu    sync.Mutex
 
 	// schedulerFeedMu serializes scheduler initialization with live discovery
 	// and workload fanout. A restarted scheduler receives its active workload
@@ -326,17 +355,19 @@ type Broker struct {
 // required; every other field is optional (an empty string means the
 // broker won't spawn that worker because its binary couldn't be resolved).
 type workerPaths struct {
-	scanner       string
-	nodeInfo      string
-	proxy         string
-	lmstudioProxy string
-	workloadMgr   string
-	errors        string
-	engineMgr     string
-	manualNodes   string
-	settings      string
-	clusterMgr    string
-	scheduler     string
+	scanner  string
+	nodeInfo string
+	// proxy is the single nvpair-proxy binary, started once per entry in
+	// proxyEngines and then asked for that engine's facade via facade/enable.
+	proxy        string
+	proxyEngines []string
+	workloadMgr  string
+	errors       string
+	engineMgr    string
+	manualNodes  string
+	settings     string
+	clusterMgr   string
+	scheduler    string
 	// clusterDir is the cluster-manager config dir (node.crt/node.key +
 	// trusted/). Threaded to every worker that does cluster-scoped inter-node
 	// mTLS so they serve/dial pinned peers once this node joins a cluster.
@@ -368,7 +399,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		scannerPath:        paths.scanner,
 		nodeInfoPath:       paths.nodeInfo,
 		proxyPath:          paths.proxy,
-		lmstudioProxyPath:  paths.lmstudioProxy,
+		proxyEngines:       paths.proxyEngines,
 		workloadMgrPath:    paths.workloadMgr,
 		errorsPath:         paths.errors,
 		engineMgrPath:      paths.engineMgr,
@@ -441,15 +472,11 @@ func (b *Broker) getNodeInfo() *nodeInfoProcess {
 }
 
 func (b *Broker) setProxy(p *proxyProcess) {
-	b.workersMu.Lock()
-	b.proxy = p
-	b.workersMu.Unlock()
+	b.setEngineProxyHandle(ollamaProxyProfile, p)
 }
 
 func (b *Broker) getProxy() *proxyProcess {
-	b.workersMu.Lock()
-	defer b.workersMu.Unlock()
-	return b.proxy
+	return b.engineProxyHandle(ollamaProxyProfile)
 }
 
 func (b *Broker) setWorkloadMgr(m *workloadManagerProcess) {
@@ -492,6 +519,9 @@ func (b *Broker) restoreEnabledEngines(w *rpcWorker) {
 	if w == nil {
 		return
 	}
+	// An unreadable journal must not discard the component stores' enabled
+	// intent. Recovery logs the failure; restore still uses the saved runtime.
+	b.recoverEngineSettings()
 	if err := w.Notify(restoreEnabledEnginesMethod, nil); err != nil {
 		slog.Warn("failed to request enabled-engine restoration", "err", err)
 	}
@@ -634,41 +664,326 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	return np, nil
 }
 
-func (b *Broker) spawnProxy() (supervisedHandle, error) {
-	var args []string
-	if port := int(b.ollamaProxyStartupPort.Load()); port != 0 {
-		args = []string{"--port", fmt.Sprintf("%d", port), "--ignore-persisted-port"}
-	}
-	generation, alias := b.beginOllamaProxyGeneration()
-	if alias.Address != "" {
-		args = append(args, "--alias-address", alias.Address)
-	}
-	if alias.AlternateAddress != "" {
-		args = append(args, "--alias-address", alias.AlternateAddress)
-	}
+// proxyArgs builds the child's argv. Only process-scoped flags remain: which
+// engines it fronts, on which ports, and with which alias addresses all travel
+// in facade/enable, because the broker plans a different port per engine and a
+// single-valued flag cannot carry two plans.
+func (b *Broker) proxyArgs() []string {
 	// Thread the cluster dir so the proxy can bring up its pin-gated LAN mTLS
 	// ingress (and dial peers over mTLS) once this node is clustered; empty/
 	// absent certs leave it loopback-plaintext only.
-	args = append(args, b.clusterDirArgs()...)
-	pp, err := startProxy("proxy", b.proxyPath, applog.LevelString(), b.relayDir,
+	return b.clusterDirArgs()
+}
+
+// ollamaFacadeSpec is the enable request for Ollama's facade under one alias
+// snapshot. Taken as a parameter rather than read here so the caller keeps the
+// generation bump — beginOllamaProxyGeneration has a side effect — and so the
+// spec is assertable on its own.
+func (b *Broker) ollamaFacadeSpec(alias ollamaHostAlias) enableFacadeRequest {
+	spec := enableFacadeRequest{Engine: ollamaProxyProfile.Name}
+	if port := int(b.ollamaState().startupPort.Load()); port != 0 {
+		spec.Port = port
+		spec.IgnorePersistedPort = true
+	}
+	if alias.Address != "" {
+		spec.AliasAddresses = append(spec.AliasAddresses, alias.Address)
+	}
+	if alias.AlternateAddress != "" {
+		spec.AliasAddresses = append(spec.AliasAddresses, alias.AlternateAddress)
+	}
+	return spec
+}
+
+// setServeCtx records the broker's own lifetime so work started on a spawn
+// goroutine can be abandoned when the broker is shutting down.
+func (b *Broker) setServeCtx(ctx context.Context) {
+	b.workersMu.Lock()
+	defer b.workersMu.Unlock()
+	b.serveCtx = ctx
+}
+
+func (b *Broker) getServeCtx() context.Context {
+	b.workersMu.Lock()
+	defer b.workersMu.Unlock()
+	return b.serveCtx
+}
+
+// proxyBringUpContext bounds facade bring-up and abandons it the moment either
+// the broker or the proxy supervisor starts shutting down.
+//
+// This exists because spawn stopped being instantaneous. It used to fork a
+// process and return; it now issues facade/enable RPCs — up to two per engine,
+// each bounded by proxyCallTimeout — and supervisor.Stop blocks on the spawn
+// returning with no timeout of its own. A crash-looping proxy whose fresh child
+// never answers could therefore spend the whole teardownBudget inside the
+// proxy's join, and graceFor would clip every worker behind it, including
+// engine-manager's stop grace. stopwait.go records that cutting that grace
+// short is what orphaned engines.
+//
+// Both signals are needed, not either one. Stopping() covers a respawn, but the
+// *first* spawn runs synchronously inside Start on the Serve goroutine — Serve
+// cannot reach shutdownInferenceStack to call Stop until that spawn returns, so
+// Stopping() can never close during it. The Serve context is what interrupts
+// that case.
+//
+// The caller must cancel, as with any context: shutdown is one way out, a
+// completed bring-up is the other.
+func (b *Broker) proxyBringUpContext() (context.Context, context.CancelFunc) {
+	parent := b.getServeCtx()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+
+	sup := b.proxySup
+	if sup == nil {
+		return ctx, cancel
+	}
+	go func() {
+		select {
+		case <-sup.Stopping():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
+// enableEngineFacade brings up one engine's facade with that engine's port plan
+// and fallback policy. The alias snapshot is only meaningful to an engine with
+// an inherited host variable, so the others ignore it.
+func (b *Broker) enableEngineFacade(
+	ctx context.Context, pp *proxyProcess, profile engineProxyProfile, alias ollamaHostAlias,
+) error {
+	switch profile.Name {
+	case ollamaProxyProfile.Name:
+		return b.enableProxyFacadeWithFallback(ctx, pp, b.ollamaFacadeSpec(alias), b.ollamaFallbackPort)
+	case lmstudioProxyProfile.Name:
+		return b.enableProxyFacadeWithFallback(ctx, pp, b.lmstudioFacadeSpec(), b.lmstudioFallbackPort)
+	default:
+		return fmt.Errorf("no facade spec for engine %q", profile.Name)
+	}
+}
+
+// blockAndFinishEngineProxy gives up one engine's managed claim, reports it, and
+// releases its startup gate — the treatment for an engine whose facade will not
+// come up in a process that is otherwise staying.
+//
+// The block and the finish are both needed. Blocking gives up the compatibility
+// port and plans a fallback but deliberately leaves the OLLAMA_HOST alias
+// reserved, because most of its callers still have a live facade serving that
+// alias. Finishing is what returns the alias, which is only correct once this
+// engine is known not to be coming up.
+func (b *Broker) blockAndFinishEngineProxy(profile engineProxyProfile) {
+	switch profile.Name {
+	case ollamaProxyProfile.Name:
+		if b.ollamaState().managedFacade.Load() {
+			b.blockManagedOllamaFacade("the Ollama proxy facade could not be brought up")
+		}
+		b.finishOllamaProxyTerminal()
+	case lmstudioProxyProfile.Name:
+		if b.lmstudioState().managedFacade.Load() {
+			_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy facade could not be brought up", nil)
+		}
+		b.finishLMStudioProxyTerminal()
+	default:
+		slog.Warn("no terminal handling for engine", "engine", profile.Name)
+	}
+}
+
+// facadeCameUpAnyway reports whether a facade that failed to answer its enable
+// nevertheless announced itself ready.
+//
+// Only for **transport-level ambiguity** — a timeout or a lost response, where
+// the child does the bind, two notification writes and the serve inside that
+// call and may genuinely be serving. Disowning it then would strand a listener
+// on a port the broker reports as unavailable, with no facade/disable to
+// withdraw it, so the facade's own ready notification gets the deciding vote.
+//
+// Deliberately not applied to an explicit rejection. A rejection means the
+// child decided against the facade and withdrew it, and a recorded ready from
+// earlier in the same attempt is then stale: honouring it would publish a dead
+// port and handle, and the broker would never retry because it believes the
+// facade is up. errFacadeBindFailed is the clearest case — the child deleted
+// the facade before answering — but the rule holds for any answered error.
+func facadeCameUpAnyway(pp *proxyProcess, engine string, enableErr error) bool {
+	if !isTransportAmbiguous(enableErr) {
+		return false
+	}
+	ready, port := pp.Status(engine)
+	if !ready || port <= 0 {
+		return false
+	}
+	slog.Warn("facade enable did not answer, but the facade reported ready; keeping it",
+		"engine", engine, "port", port, "err", enableErr)
+	return true
+}
+
+// isTransportAmbiguous reports whether an enable failure leaves the child's
+// actual state unknown, as opposed to the child having answered.
+//
+// errRPCAnswered wraps every case where a response arrived, so the absence of
+// it is what identifies a timeout, a closed pipe, or a cancelled call.
+func isTransportAmbiguous(err error) bool {
+	return err != nil && !stderrors.Is(err, errRPCAnswered)
+}
+
+// ollamaFallbackPort is the port to retry an Ollama facade on after a lost bind
+// race.
+//
+// The child's bind-failed notification precedes the enable response on the same
+// stream, and forwardProxyNotification handles it inline — so by the time the
+// response is dispatched, that path has usually already chosen a fallback and
+// reported the ownership block to the UI. Prefer its choice: it also decides
+// whether the managed facade is off, which a port picked here would not.
+//
+// Recomputed only when that did not happen, because the notification is
+// best-effort on the child side.
+func (b *Broker) ollamaFallbackPort(failed int) int {
+	if planned := int(b.ollamaState().startupPort.Load()); planned != 0 && planned != failed {
+		return planned
+	}
+	return b.setOllamaProxyFallback(failed)
+}
+
+// spawnProxy starts the one nvpair-proxy process and brings up a facade in it
+// for every enabled engine.
+//
+// One process for all of them is what makes the scheduler's picture whole: the
+// estimated-work reservations a proxy takes between scheduler snapshots live in
+// the process, so two processes each kept half the story and could send
+// simultaneous bursts to the same node believing it idle.
+//
+// A facade that fails to come up is logged and skipped, not fatal. The spawn
+// only fails if no engine came up at all, because a process with no listener
+// serves nobody and should be retried by the supervisor rather than left
+// running.
+func (b *Broker) spawnProxy() (supervisedHandle, error) {
+	// Both generations are captured before the spawn and advance together: they
+	// are per-incarnation stale-notification filters, and with one process the
+	// facades are re-created as a set. Each engine keeps its own counter so its
+	// existing port choreography is untouched.
+	ollamaGeneration, alias := b.beginOllamaProxyGeneration()
+	// Bumped without lmstudioReadyMu. Reconciliation holds that mutex across
+	// its set-port and engine:status round trips, so taking it here would make
+	// a replacement spawn wait out the dead process's RPC timeouts before it
+	// could even start. The generation itself is atomic, and
+	// lmstudioProxyGenerationIsCurrent is what drops the stale run.
+	lmstudioGeneration := b.lmstudioProxyGeneration.Add(1)
+
+	pp, err := startProxy(engines.ProxyComponent, b.proxyPath, applog.LevelString(), b.relayDir,
 		func(method string, params json.RawMessage) {
-			b.forwardProxyNotificationForGeneration(generation, method, params)
-		}, args...)
+			b.forwardProxyProcessNotification(ollamaGeneration, lmstudioGeneration, method, params)
+		}, b.proxyArgs()...)
 	if err != nil {
 		return nil, err
 	}
-	b.setProxy(pp)
-	// The child can emit ready before startProxy returns and before setProxy
-	// publishes the handle. Recover that narrow race after publication; the
-	// pending backend port is consumed atomically, so a concurrent notification
-	// can safely perform the same reconciliation.
-	if b.managedOllamaFacade.Load() {
-		if ready, port := pp.Status(); ready && port > 0 {
+	// Published for every engine before any facade is enabled, so a facade's
+	// own ready notification finds the handle it belongs to.
+	for _, profile := range engineProxyProfiles {
+		if b.proxyEnabled(profile) {
+			b.setEngineProxyHandle(profile, pp)
+		}
+	}
+	b.lmstudioProxyPublishedGeneration.Store(lmstudioGeneration)
+	slog.Info("proxy started", "path", b.proxyPath, "pid", pp.cmd.Process.Pid)
+
+	// The child is serving its JSON-RPC channel but has no listeners yet, so
+	// ask for each facade before reporting the worker up. Synchronous, on the
+	// spawn goroutine, so a caller that treats spawn success as "the engines
+	// are being brought up" stays correct.
+	bringUp, cancelBringUp := b.proxyBringUpContext()
+	defer cancelBringUp()
+
+	enabled := 0
+	var failed []engineProxyProfile
+	for _, profile := range engineProxyProfiles {
+		if !b.proxyEnabled(profile) {
+			continue
+		}
+		err := b.enableEngineFacade(bringUp, pp, profile, alias)
+		switch {
+		case err == nil:
+			enabled++
+		case facadeCameUpAnyway(pp, profile.Name, err):
+			enabled++
+		default:
+			slog.Warn("facade enable failed; continuing without a local proxy for it",
+				"engine", profile.Name, "err", err)
+			failed = append(failed, profile)
+		}
+	}
+	if enabled == 0 {
+		// The whole spawn failed, so the supervisor will retry it. Leave every
+		// engine's managed claim and its OLLAMA_HOST alias reservation exactly
+		// as they are: the retry needs them, and releasing the alias here would
+		// let engine-manager take that port in between, so a retry that would
+		// otherwise have succeeded comes up without the inherited endpoint.
+		//
+		// A first-spawn failure and an exhausted restart budget are the paths
+		// that give up for good, and the supervisor owns both.
+		pp.Stop()
+		for _, profile := range engineProxyProfiles {
+			b.setEngineProxyHandle(profile, nil)
+		}
+		// The startup gates open anyway, because they are a separate concern
+		// from the claim: the alias reservation has to survive a retry, the
+		// gates must not wait for one. waitForManagedPortOwnership is unbounded
+		// apart from the Serve context and the gates also hold client
+		// requests, so keeping them shut across a 1→16s backoff budget defers
+		// desired-state restore and makes every engine:status wait out its call
+		// timeout and answer "retry" — the exact symptom finishOllamaProxyTerminal
+		// exists to prevent. A later successful spawn re-derives the real state.
+		b.markOllamaPortReady()
+		b.markLMStudioPortReady()
+		return nil, fmt.Errorf("no engine facade could be brought up in %s", b.proxyPath)
+	}
+
+	// At least one facade is serving, so this process incarnation is staying
+	// and will not be retried. Only now is a failed engine terminal for it.
+	for _, profile := range failed {
+		b.setEngineProxyHandle(profile, nil)
+		b.blockAndFinishEngineProxy(profile)
+	}
+
+	// A facade can announce ready before its handle was published, so replay
+	// the reconciliation now. Both gates are sync.Once-guarded, which makes
+	// this safe when the notification goroutine already handled it.
+	if b.ollamaState().managedFacade.Load() {
+		if ready, port := pp.Status(ollamaProxyProfile.Name); ready && port > 0 {
 			go b.reconcileProxyPortOnReady(port)
 		}
 	}
-	slog.Info("proxy started", "path", b.proxyPath, "pid", pp.cmd.Process.Pid)
+	if ready, port := pp.Status(lmstudioProxyProfile.Name); ready && port > 0 {
+		go b.reconcileLMStudioProxyPortOnReadyForGeneration(lmstudioGeneration, port)
+	}
 	return pp, nil
+}
+
+// forwardProxyProcessNotification routes one proxy process's notifications to
+// the engine each belongs to.
+//
+// A facade-scoped notification is addressed, so it goes to that engine's
+// handler with that engine's generation. A process-scoped one is unaddressed
+// and must be handled exactly once, not once per engine — routing a workload
+// record through both handlers would record every job twice.
+func (b *Broker) forwardProxyProcessNotification(
+	ollamaGeneration, lmstudioGeneration uint64, method string, params json.RawMessage,
+) {
+	engine, bare := engines.SplitAddressedMethod(method)
+	switch engine {
+	case ollamaProxyProfile.Name:
+		b.forwardProxyNotificationForGeneration(ollamaGeneration, method, params)
+	case lmstudioProxyProfile.Name:
+		b.forwardLMStudioProxyNotificationForGeneration(lmstudioGeneration, method, params)
+	case "":
+		if !b.routeProcessScopedProxyNotification(bare, params) {
+			slog.Debug("ignoring unaddressed proxy notification", "method", bare)
+		}
+	default:
+		slog.Warn("proxy addressed a notification to an unknown engine",
+			"engine", engine, "method", bare)
+	}
 }
 
 func (b *Broker) spawnWorkloadManager() (supervisedHandle, error) {
@@ -713,7 +1028,12 @@ func stateReplayMethod(state string) string {
 		return "workload:started"
 	case "completed":
 		return "workload:completed"
-	case "failed":
+	// "cancelled" rides workload:errored, the same frame the proxy emits it on:
+	// the manager does not validate method against state, and consumers read
+	// the state out of the payload. Every state the store can hold has to
+	// appear here, because an omitted one is silently left out of the replay
+	// and drops off the manager's re-sync set across a supervised restart.
+	case "failed", "cancelled":
 		return "workload:errored"
 	default:
 		return ""
@@ -1144,11 +1464,36 @@ func (b *Broker) pushClusterIdentityToNodeInfo() {
 // pipeline; the rest of each worker's notification stream is logged and
 // dropped until its control-plane relay is wired in.
 func (b *Broker) forwardEngineNotification(method string, params json.RawMessage) {
+	if method == "engine:settings-request" {
+		b.handleSettingsRelay(params)
+		return
+	}
+	if method == "engine:settings-cancel" {
+		var p struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(params, &p) == nil {
+			b.settingsRelayMu.Lock()
+			cancel := b.settingsCancels[p.ID]
+			b.settingsRelayMu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+		}
+		return
+	}
 	if b.dispatchErrorsNotif("engine-manager", method, params) {
 		return
 	}
 	if method == "engine:ready" {
 		b.reconcileLMStudioProxyAfterEngineManagerReady()
+		go func() {
+			b.engineConfigMu.Lock()
+			defer b.engineConfigMu.Unlock()
+			if b.engineSettingsLoaded && b.engineSettingsError == nil && len(b.engineSettings) > 0 {
+				b.publishSettingsLocked()
+			}
+		}()
 	}
 	if method == noderec.MethodSubscribe {
 		// engine-manager subscribes upward for its ec peer set (nodes exposing
@@ -1406,11 +1751,16 @@ func (b *Broker) forwardSchedulerNotification(method string, params json.RawMess
 			slog.Warn("bad schedule:priority payload", "err", err)
 			return
 		}
-		generation := b.cachePrioritySnapshot(p.Engine, p.Snapshot())
+		generation, fresh := b.cachePrioritySnapshot(p.Snapshot())
+		if !fresh {
+			// The scheduler's duplicate emission of one recompute. Dropped here,
+			// before it mints a generation, so nothing downstream sees it at all.
+			return
+		}
 		// Dispatch off the reader goroutine: the node/set-priority round-trip
 		// blocks on the proxy's response, so calling it inline would stall the
 		// scheduler's notification stream.
-		go b.applyPriorityToProxy(p.Engine, generation)
+		go b.applyPriority(generation)
 		return
 	}
 	slog.Debug("ignoring scheduler notification", "method", method)
@@ -1440,99 +1790,174 @@ func (b *Broker) forwardNodeInfoNotification(method string, params json.RawMessa
 	go sp.pushObservedAddresses(p.Addresses)
 }
 
-// cachePrioritySnapshot records the newest pending-aware snapshot and returns
-// its monotonically increasing per-engine generation.
-func (b *Broker) cachePrioritySnapshot(engine string, priority schedulerwire.Priority) uint64 {
+// cachePrioritySnapshot records a new ranking and returns its generation, or
+// reports fresh=false when the ranking is byte-identical to the cached one.
+//
+// The cache is process-wide, not per engine, and that is what makes the dedupe
+// work: one scheduler recompute emits the same ranking once per engine
+// (schedule.go computes one order and loops the engine list), so the second
+// frame is a duplicate that differs only in a routing key the proxy never sees.
+// Comparing per engine would never match those two against each other.
+//
+// Dropping the duplicate here, before it mints a generation, is deliberate.
+// The alternative — comparing content at delivery — silently breaks
+// repushPriority, whose whole job is to re-send an unchanged ranking to a proxy
+// that lost its state, and which is therefore always byte-identical to the last
+// delivery.
+func (b *Broker) cachePrioritySnapshot(priority schedulerwire.Priority) (generation uint64, fresh bool) {
 	b.schedMu.Lock()
 	defer b.schedMu.Unlock()
 
-	if b.lastPriority == nil {
-		b.lastPriority = make(map[string]schedulerwire.Priority)
+	if b.havePriority && b.lastPriority.SameRanking(priority) {
+		return b.priorityGeneration, false
 	}
-	if b.priorityGeneration == nil {
-		b.priorityGeneration = make(map[string]uint64)
-	}
-	b.lastPriority[engine] = priority.Clone()
-	b.priorityGeneration[engine]++
-	return b.priorityGeneration[engine]
+	b.lastPriority = priority.Clone()
+	b.havePriority = true
+	b.priorityGeneration++
+	b.lastPriority.Generation = b.priorityGeneration
+	return b.priorityGeneration, true
 }
 
-// proxyForEngine returns the supervised proxy that serves an engine, or nil.
-func (b *Broker) proxyForEngine(engine string) *proxyProcess {
-	switch engine {
-	case "ollama":
-		return b.getProxy()
-	case "lmstudio":
-		return b.getLMStudioProxy()
-	default:
-		return nil
-	}
-}
-
-// applyPriorityToProxy sends one cached generation to the engine's proxy. An
-// absent proxy is a logged no-op; a stale generation is silently skipped.
-func (b *Broker) applyPriorityToProxy(engine string, generation uint64) {
-	b.deliverPrioritySnapshot(engine, generation, func(priority schedulerwire.Priority) {
-		p := b.proxyForEngine(engine)
-		if p == nil {
-			slog.Debug("no proxy for engine; priority snapshot cached for later", "engine", engine)
-			return
-		}
-		params, err := json.Marshal(priority)
-		if err != nil {
-			slog.Warn("marshal node/set-priority failed", "engine", engine, "err", err)
-			return
-		}
-		if _, rpcErr, err := p.Call(context.Background(), "node/set-priority", params); err != nil {
-			slog.Warn("node/set-priority call failed", "engine", engine, "err", err)
-		} else if rpcErr != nil {
-			slog.Warn("node/set-priority rejected", "engine", engine, "code", rpcErr.Code, "msg", rpcErr.Message)
-		}
+// applyPriority delivers one cached generation to every live proxy. A stale
+// generation is silently skipped; an engine with no proxy is a logged no-op and
+// picks the snapshot up from the replay on its next spawn.
+//
+// It fans out rather than targeting one engine because the ranking is node-wide
+// and the cache is now process-wide: with the duplicate emission dropped at
+// ingestion, the surviving frame is whichever engine the scheduler emitted
+// first, so delivering only to that engine's proxy would starve the other.
+func (b *Broker) applyPriority(generation uint64) {
+	b.deliverPrioritySnapshot(generation, func(priority schedulerwire.Priority) {
+		b.sendPriority(context.Background(), priority)
 	})
 }
 
-// deliverPrioritySnapshot serializes one engine's deliveries and invokes
-// deliver only if generation is still current. It is split from the proxy call
-// so ordering can be verified without a subprocess.
-func (b *Broker) deliverPrioritySnapshot(engine string, generation uint64, deliver func(schedulerwire.Priority)) {
-	applyMu := b.priorityApplyMutex(engine)
-	applyMu.Lock()
-	defer applyMu.Unlock()
+// sendPriority delivers one ranking to every live proxy. Shared by the
+// scheduler's gated fan-out and the ungated spawn replay, so both agree on how
+// a delivery is made and only differ on when one is allowed.
+func (b *Broker) sendPriority(ctx context.Context, priority schedulerwire.Priority) {
+	params, err := json.Marshal(priority)
+	if err != nil {
+		slog.Warn("marshal node/set-priority failed", "err", err)
+		return
+	}
+	for _, target := range b.livePriorityTargets() {
+		if _, rpcErr, err := target.proxy.Call(ctx, "node/set-priority", params); err != nil {
+			slog.Warn("node/set-priority call failed", "engine", target.engine, "err", err)
+		} else if rpcErr != nil {
+			slog.Warn("node/set-priority rejected", "engine", target.engine,
+				"code", rpcErr.Code, "msg", rpcErr.Message)
+		}
+	}
+}
+
+// priorityTarget is one proxy to deliver a ranking to, with the engine name
+// kept for log context.
+type priorityTarget struct {
+	engine string
+	proxy  *proxyProcess
+}
+
+// livePriorityTargets returns the distinct live proxies to deliver a ranking to.
+//
+// Distinct by handle, not by engine: once one process hosts every facade, two
+// engine entries resolve to the same *proxyProcess, and calling it once per
+// engine would deliver the same generation twice. The child treats the repeat as
+// an acknowledged no-op, but sending it is still pointless work on the request
+// path's critical peer.
+func (b *Broker) livePriorityTargets() []priorityTarget {
+	var out []priorityTarget
+	seen := make(map[*proxyProcess]bool)
+	for _, profile := range engineProxyProfiles {
+		p := b.engineProxyHandle(profile)
+		if p == nil {
+			slog.Debug("no proxy for engine; ranking arrives on its next spawn", "engine", profile.Name)
+			continue
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, priorityTarget{engine: profile.Name, proxy: p})
+	}
+	return out
+}
+
+// deliverPrioritySnapshot serializes deliveries and invokes deliver only if
+// generation is still current. It is split from the proxy call so ordering can
+// be verified without a subprocess.
+func (b *Broker) deliverPrioritySnapshot(generation uint64, deliver func(schedulerwire.Priority)) {
+	b.priorityApplyMu.Lock()
+	defer b.priorityApplyMu.Unlock()
 
 	b.schedMu.Lock()
-	if b.priorityGeneration[engine] != generation {
+	if b.priorityGeneration != generation {
 		b.schedMu.Unlock()
 		return
 	}
-	priority := b.lastPriority[engine].Clone()
+	priority := b.lastPriority.Clone()
 	b.schedMu.Unlock()
 
 	deliver(priority)
 }
 
-func (b *Broker) priorityApplyMutex(engine string) *sync.Mutex {
-	b.schedMu.Lock()
-	defer b.schedMu.Unlock()
-	if b.priorityApplyMu == nil {
-		b.priorityApplyMu = make(map[string]*sync.Mutex)
-	}
-	if b.priorityApplyMu[engine] == nil {
-		b.priorityApplyMu[engine] = &sync.Mutex{}
-	}
-	return b.priorityApplyMu[engine]
+// replayProxyStateAfterSpawn restores the broker-pushed state a fresh proxy
+// process does not have. It is wired to every proxy supervisor's onSpawned,
+// which is the only event that loses that state — a set-port rebind keeps the
+// child's in-process state, so it needs no replay.
+//
+// The spawn hook rather than the proxy's own "ready" notification, for a
+// specific reason: spawn publishes the handle before returning, so a replay
+// from here is guaranteed to find it. A replay triggered by "ready" races that
+// publication, because the child can emit ready before the broker has stored
+// the handle — and a replay that misses the handle is dropped by the generation
+// check and never retried, leaving the new child with no ranking at all.
+func (b *Broker) replayProxyStateAfterSpawn() {
+	// Abandoned once teardown starts, which the onSpawned field comment
+	// requires of any callback that talks to the worker: this one calls the
+	// proxy, and a teardown is about to close that worker's stdin. It runs on
+	// its own goroutine so it cannot stall Stop, but there is no reason to
+	// spend a call timeout re-seeding a child that is going away.
+	ctx, cancel := b.proxyBringUpContext()
+	defer cancel()
+	b.repushPriority(ctx)
 }
 
-// repushPriority re-sends the cached priority snapshot for an engine after its
-// proxy (re)spawns. A no-op when nothing has been cached yet.
-func (b *Broker) repushPriority(engine string) {
+// repushPriority re-sends the cached ranking after a proxy (re)spawns, because
+// a fresh child starts with no scheduler state. A no-op when nothing has been
+// cached yet.
+//
+// It reuses the current generation rather than minting one, so the child's
+// idempotency check makes a repush to a proxy that never lost its state
+// harmless — which is what lets several spawn paths call this without
+// coordinating.
+func (b *Broker) repushPriority(ctx context.Context) {
+	// Serialized against the scheduler's own deliveries, but deliberately not
+	// gated on a generation.
+	//
+	// The gate stops an older generation from overwriting a newer delivery,
+	// which is right for the scheduler's fan-out and wrong here. A replay races
+	// a snapshot that arrived while no handle was published: that snapshot found
+	// no targets, and gating the replay on the generation it read then discards
+	// it as stale, so neither is delivered. The proxy is left with an empty
+	// ranking, reserveCandidate returns early, and no reservations are taken at
+	// all — the behaviour the shared map exists to provide — until the next
+	// genuine ranking change.
+	//
+	// Unconditional is cheap: the child applies at most one snapshot per
+	// generation, so a repush to a proxy that never lost its state costs one
+	// ignored call.
+	b.priorityApplyMu.Lock()
+	defer b.priorityApplyMu.Unlock()
+
 	b.schedMu.Lock()
-	_, ok := b.lastPriority[engine]
-	generation := b.priorityGeneration[engine]
+	have := b.havePriority
+	priority := b.lastPriority.Clone()
 	b.schedMu.Unlock()
-	if !ok {
+	if !have {
 		return
 	}
-	b.applyPriorityToProxy(engine, generation)
+	b.sendPriority(ctx, priority)
 }
 
 // onErrorsUpdate relays an errors:update snapshot from nvpair-errors straight
@@ -1617,6 +2042,7 @@ func (b *Broker) runWorkloadHistoryFlusher(ctx context.Context) func() {
 func (b *Broker) Serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
+	b.setServeCtx(ctx)
 	defer cancel()
 
 	// Enable durable workload history: load the prior session's terminal
@@ -1646,6 +2072,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// Bound how long a lost terminal event can keep a remote workload displaying
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
+	go b.refreshEngineSettings(ctx)
 
 	// The scanner is the broker's core worker. Its supervisor's first
 	// spawn is synchronous so a hard startup failure stays fatal — the
@@ -1695,8 +2122,8 @@ func (b *Broker) Serve(ctx context.Context) error {
 	if b.engineMgrSup != nil {
 		defer b.engineMgrSup.Stop()
 	}
-	b.prepareManagedOllamaFacade()
-	b.prepareManagedLMStudioFacade()
+	b.migrateLegacyEngineSettings()
+	b.prepareEnabledFacades()
 
 	// node-info is an auxiliary worker: spawning it lets the broker's own
 	// host advertise its hardware inventory on the network, but it is NOT
@@ -1717,62 +2144,56 @@ func (b *Broker) Serve(ctx context.Context) error {
 		slog.Info("node-info path not resolved; running without local node advertisement")
 	}
 
-	// ollama-proxy is another auxiliary worker: it runs a local Ollama
-	// reverse proxy and exposes a control plane the broker relays to
-	// clients. Like node-info, a spawn failure or never-resolved binary
-	// is non-fatal. It does NOT gate app:ready: the proxy announces its
-	// listen port asynchronously via a "ready" notification (after its
-	// HTTP bind), so clients learn the port by polling proxy:get-status
+	// nvpair-proxy is another auxiliary worker: one process that runs a local
+	// reverse proxy per enabled engine and exposes a control plane the broker
+	// relays to clients. Like node-info, a spawn failure or never-resolved
+	// binary is non-fatal. It does NOT gate app:ready: each facade announces
+	// its listen port asynchronously via a "ready" notification (after its HTTP
+	// bind), so clients learn the port by polling <engine>-proxy:get-status
 	// rather than by the presence of app:ready.
-	if b.proxyPath != "" {
-		b.proxySup = newSupervisor("proxy", defaultRestartPolicy(), b.spawnProxy)
-		b.proxySup.onCrash, b.proxySup.onRecovered = b.supervisedWorkerCallbacks("proxy", func() { b.setProxy(nil) })
-		if err := b.proxySup.Start(); err != nil {
-			slog.Warn("proxy failed to start; continuing without local Ollama proxy", "path", b.proxyPath, "err", err)
-			b.proxySup = nil
-			b.disableOllamaHostAliasReservation()
-			if b.managedOllamaFacade.Load() {
-				b.blockManagedOllamaFacade("the Ollama proxy could not be started")
-			} else {
-				b.markOllamaPortReady()
-			}
-		} else {
-			defer b.proxySup.Stop()
+	//
+	// One supervisor for every engine. That is what puts the estimated-work
+	// reservations of all facades in one place, which is the point of the
+	// unified proxy; the cost is shared fate, so a crash takes every engine's
+	// facade down and the supervisor brings them all back together.
+	anyProxyEnabled := false
+	for _, profile := range engineProxyProfiles {
+		if b.proxyEnabled(profile) {
+			anyProxyEnabled = true
+			continue
 		}
-	} else {
-		slog.Info("proxy path not resolved; running without local Ollama proxy")
-		b.disableOllamaHostAliasReservation()
-		if b.managedOllamaFacade.Load() {
-			b.blockManagedOllamaFacade("the Ollama proxy is unavailable")
-		} else {
-			b.markOllamaPortReady()
+		reason, report := proxyDisabledReason(b.proxyPath)
+		slog.Info("engine proxy not enabled; running without one",
+			"engine", profile.Name, "reason", reason)
+		// Preparation was skipped for a disabled engine, so managedFacade is
+		// necessarily false and there is no facade to block. Surface the
+		// unavailability directly instead, when it is worth surfacing.
+		if report {
+			b.reportProxyUnavailable(profile, reason)
 		}
+		b.finishEngineProxyStartup(profile)
 	}
-
-	// lmstudio-proxy is the LM Studio counterpart of ollama-proxy and is
-	// supervised identically (non-fatal, port learned via its "ready"
-	// notification, control plane relayed under lmstudio-proxy:). Having the
-	// broker own it is what lets it bridge a reachable manual LM Studio node
-	// into routing, the same way it does for Ollama.
-	if b.lmstudioProxyPath != "" {
-		b.lmstudioProxySup = newSupervisor("lmstudio-proxy", defaultRestartPolicy(), b.spawnLMStudioProxy)
-		b.configureLMStudioProxySupervisorCallbacks(b.lmstudioProxySup)
-		if err := b.lmstudioProxySup.Start(); err != nil {
-			slog.Warn("lmstudio-proxy failed to start; continuing without local LM Studio proxy", "path", b.lmstudioProxyPath, "err", err)
-			b.lmstudioProxySup = nil
-			if b.managedLMStudioFacade.Load() {
-				_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy could not be started", nil)
+	if anyProxyEnabled {
+		b.proxySup = newSupervisor(engines.ProxyComponent, defaultRestartPolicy(), b.spawnProxy)
+		b.configureProxySupervisorCallbacks(b.proxySup)
+		if err := b.proxySup.Start(); err != nil {
+			slog.Warn("proxy failed to start; continuing without local engine proxies",
+				"path", b.proxyPath, "err", err)
+			b.proxySup = nil
+			// No facade will come up, so both engines take the terminal path:
+			// report the blocked claim where one was made, then finish, which
+			// is what returns the OLLAMA_HOST alias reservation.
+			if b.ollamaState().managedFacade.Load() {
+				b.blockManagedOllamaFacade("the proxy could not be started")
+			}
+			b.finishOllamaProxyTerminal()
+			if b.lmstudioState().managedFacade.Load() {
+				_, _ = b.blockManagedLMStudioFacade("the proxy could not be started", nil)
 			}
 			b.finishLMStudioProxyTerminal()
 		} else {
-			defer b.lmstudioProxySup.Stop()
+			defer b.proxySup.Stop()
 		}
-	} else {
-		slog.Info("lmstudio-proxy path not resolved; running without local LM Studio proxy")
-		if b.managedLMStudioFacade.Load() {
-			_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy is unavailable", nil)
-		}
-		b.finishLMStudioProxyTerminal()
 	}
 
 	// Restore engines and begin both advertising loops only after both proxy
@@ -1854,15 +2275,15 @@ func (b *Broker) shutdownInferenceStack() {
 	beginTeardown()
 
 	// Stop ingress first so no new inference can arrive while engine-manager is
-	// draining engines. supervisor.Stop uses each proxy's stdin-close/join path;
-	// it never adds a parent-side kill timeout.
-	if b.lmstudioProxySup != nil {
-		b.lmstudioProxySup.Stop()
-		b.setLMStudioProxy(nil)
-	}
+	// draining engines. supervisor.Stop uses the proxy's stdin-close/join path;
+	// it never adds a parent-side kill timeout. One process holds every
+	// engine's facade, so this closes all of them at once — the child drains
+	// each facade before releasing the shared transport pool.
 	if b.proxySup != nil {
 		b.proxySup.Stop()
-		b.setProxy(nil)
+		for _, profile := range engineProxyProfiles {
+			b.setEngineProxyHandle(profile, nil)
+		}
 	}
 	b.prepareEngineManagerShutdown()
 }
@@ -1959,6 +2380,12 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 	if generation != b.currentOllamaProxyGeneration() {
 		return
 	}
+	// Strip the facade address before anything dispatches on the method: every
+	// comparison below, and the errors relay in particular, matches bare names.
+	method, addressed := facadeMethodFor(ollamaProxyProfile, method)
+	if !addressed {
+		return
+	}
 	// The alias warning is also the proxy's authoritative "bind did not win"
 	// receipt. Release the candidate reservation before forwarding the sticky
 	// warning so an existing Ollama owner can be adopted normally.
@@ -1970,32 +2397,36 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 			}
 		}
 	}
-	if b.dispatchErrorsNotif("proxy", method, params) {
+	if b.dispatchErrorsNotif(ollamaProxyProfile.ComponentName(), method, params) {
 		return
 	}
-	// A process can win :11434 after startup preflight but before the proxy
-	// binds. Flip the supervisor's next spawn to an explicit safe fallback;
-	// the backend move is still pending, so no engine state needs rollback.
-	if method == "error" && b.managedOllamaFacade.Load() {
+	// A process can win the port after startup preflight but before the facade
+	// binds. Choose a safe fallback here, without calling back into this reader
+	// goroutine; the backend move is still pending, so no engine state needs
+	// rollback.
+	//
+	// This notification precedes the failing enable's response on the same
+	// stream, so the port chosen here is what ollamaFallbackPort finds when the
+	// enable retries. Deciding it here rather than there is deliberate: only
+	// this path knows whether the managed facade has to be given up, and it
+	// owns telling the user.
+	if method == "error" {
 		var ep struct {
 			Code string `json:"code"`
 			Port int    `json:"port"`
 		}
-		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && ep.Port == managedOllamaFacadePort {
-			b.blockManagedOllamaFacade("another process acquired the compatibility port during startup")
+		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && !b.ollamaState().explicitSettings.Load() {
+			switch {
+			case b.ollamaState().managedFacade.Load() && ep.Port == managedOllamaFacadePort:
+				b.blockManagedOllamaFacade("another process acquired the compatibility port during startup")
+			default:
+				// Without this the retry asks for the same port and the enable
+				// fails identically, leaving the facade down for the life of
+				// the process.
+				fallback := b.setOllamaProxyFallback(ep.Port)
+				slog.Warn("Ollama proxy bind failed; retrying on fallback", "port", ep.Port, "fallback", fallback)
+			}
 		}
-	}
-	// Workload lifecycle / removal events are not proxy control-plane
-	// events: instead of being re-emitted to proxy:subscribe clients they
-	// are stamped with the local node id and forwarded to the
-	// workload-manager for cluster broadcast.
-	if proxyWorkloadMethods[method] {
-		b.routeProxyWorkload(method, params)
-		return
-	}
-	if method == noderec.NotifyNodeActivity {
-		b.routeNodeActivity(params)
-		return
 	}
 	// When the proxy announces a (re)bound port — notably its restored port
 	// on startup — steer it clear of any running engine's port. Dispatched
@@ -2006,19 +2437,8 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 		if err := json.Unmarshal(params, &rp); err == nil && rp.Port > 0 {
 			go b.reconcileProxyPortOnReady(rp.Port)
 		}
-		// A restarted proxy comes up with no priority list; re-push the cached
-		// one so scheduler-driven ordering survives a proxy respawn.
-		go b.repushPriority("ollama")
 	}
-	b.proxyMu.Lock()
-	subscribed := b.proxySubscribed
-	b.proxyMu.Unlock()
-	if !subscribed {
-		return
-	}
-	if err := b.codec.Notify("proxy:"+method, params); err != nil {
-		slog.Warn("forward proxy notification failed", "method", method, "err", err)
-	}
+	b.forwardEngineProxyNotification(ollamaProxyProfile, method, params)
 }
 
 // routeNodeActivity relays a proxy's liveness report about a peer down to the
@@ -2231,14 +2651,13 @@ func (b *Broker) forwardLogLevel(level string) {
 			slog.Warn("failed to forward log/set-level to node-info", "err", err)
 		}
 	}
-	if p := b.getProxy(); p != nil {
-		if err := p.SetLogLevel(level); err != nil {
+	// One iteration over distinct handles, not one per engine: every engine's
+	// facade lives in the same process now, so both engine slots resolve to the
+	// same handle and a per-engine loop would send this process-scoped
+	// notification twice.
+	for _, target := range b.livePriorityTargets() {
+		if err := target.proxy.SetLogLevel(level); err != nil {
 			slog.Warn("failed to forward log/set-level to proxy", "err", err)
-		}
-	}
-	if p := b.getLMStudioProxy(); p != nil {
-		if err := p.SetLogLevel(level); err != nil {
-			slog.Warn("failed to forward log/set-level to lmstudio-proxy", "err", err)
 		}
 	}
 	if wm := b.getWorkloadMgr(); wm != nil {
@@ -2724,6 +3143,8 @@ func (b *Broker) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case "engine:get-settings", "engine:preview-settings", "engine:apply-settings":
+		go b.handleEngineSettings(msg)
 	case "ping":
 		if err := b.codec.Respond(msg.ID, PingResult{
 			Pong:     true,
@@ -2768,14 +3189,14 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to discovery:unsubscribe: %v", err)
 		}
 
-	case "proxy:get-status":
+	case "ollama-proxy:get-status":
 		// Answered locally from the proxy handle's captured state — no
 		// round-trip to the proxy. When no proxy is supervised the
 		// zero value ({ready:false, port:0}) is a valid "not available"
 		// answer, so the method never errors.
 		var result ProxyStatusResult
 		if p := b.getProxy(); p != nil {
-			ready, port := p.Status()
+			ready, port := p.Status(ollamaProxyProfile.Name)
 			result.Ready = ready
 			result.Port = port
 		}
@@ -2783,10 +3204,9 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to proxy:get-status: %v", err)
 		}
 
-	case "proxy:subscribe":
+	case "ollama-proxy:subscribe":
 		b.proxyMu.Lock()
-		wasSubscribed := b.proxySubscribed
-		b.proxySubscribed = true
+		wasSubscribed := b.setEngineProxySubscribed(ollamaProxyProfile, true)
 		b.proxyMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
 			log.Printf("failed to respond to proxy:subscribe: %v", err)
@@ -2797,37 +3217,35 @@ func (b *Broker) handleMessage(msg *Message) {
 		// the ack. A redundant re-subscribe doesn't re-emit.
 		if !wasSubscribed {
 			if p := b.getProxy(); p != nil {
-				if rp := p.ReadyParams(); rp != nil {
-					if err := b.codec.Notify("proxy:ready", rp); err != nil {
+				if rp := p.ReadyParams(ollamaProxyProfile.Name); rp != nil {
+					if err := b.codec.Notify("ollama-proxy:ready", rp); err != nil {
 						slog.Warn("emit baseline proxy:ready failed", "err", err)
 					}
 				}
 			}
 		}
 
-	case "proxy:unsubscribe":
+	case "ollama-proxy:unsubscribe":
 		b.proxyMu.Lock()
-		b.proxySubscribed = false
+		b.setEngineProxySubscribed(ollamaProxyProfile, false)
 		b.proxyMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
 			log.Printf("failed to respond to proxy:unsubscribe: %v", err)
 		}
 
-	case "proxy:set-port":
-		// Intercepted rather than relayed verbatim: the broker resolves a
-		// port conflict against the running engines (engines win, the proxy
-		// is bumped) before handing the proxy the port to bind.
-		b.handleProxySetPort(msg)
-
+	case "engine:set-port":
+		go b.handleSettingsPortRPC(msg, "")
+	case "ollama-proxy:set-port":
+		go b.handleSettingsPortRPC(msg, "ollama")
 	case "lmstudio-proxy:set-port":
-		b.handleLMStudioProxySetPort(msg)
+		go b.handleSettingsPortRPC(msg, "lmstudio")
 
 	case "lmstudio-proxy:get-status":
 		// Answered locally from the lmstudio-proxy handle's captured state,
 		// mirroring proxy:get-status. Zero value when none is supervised.
 		var result ProxyStatusResult
 		if p := b.getLMStudioProxy(); p != nil {
-			ready, port := p.Status()
+			ready, port := p.Status(lmstudioProxyProfile.Name)
 			result.Ready = ready
 			result.Port = port
 		}
@@ -2837,15 +3255,14 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "lmstudio-proxy:subscribe":
 		b.proxyMu.Lock()
-		wasSubscribed := b.lmstudioProxySubscribed
-		b.lmstudioProxySubscribed = true
+		wasSubscribed := b.setEngineProxySubscribed(lmstudioProxyProfile, true)
 		b.proxyMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
 			log.Printf("failed to respond to lmstudio-proxy:subscribe: %v", err)
 		}
 		if !wasSubscribed {
 			if p := b.getLMStudioProxy(); p != nil {
-				if rp := p.ReadyParams(); rp != nil {
+				if rp := p.ReadyParams(lmstudioProxyProfile.Name); rp != nil {
 					if err := b.codec.Notify("lmstudio-proxy:ready", rp); err != nil {
 						slog.Warn("emit baseline lmstudio-proxy:ready failed", "err", err)
 					}
@@ -2855,7 +3272,7 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "lmstudio-proxy:unsubscribe":
 		b.proxyMu.Lock()
-		b.lmstudioProxySubscribed = false
+		b.setEngineProxySubscribed(lmstudioProxyProfile, false)
 		b.proxyMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
 			log.Printf("failed to respond to lmstudio-proxy:unsubscribe: %v", err)
@@ -2902,6 +3319,16 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to reject private engine method %s: %v", msg.Method, err)
 		}
 
+	// Reached only because the default branch relays every other engine:*
+	// method straight to the engine manager. Configuring a launch that way
+	// would skip the journal entry, the port reservation, and the proxy
+	// rebind that engine:apply-settings owns, leaving the broker's recorded
+	// settings describing an engine it no longer matches.
+	case "engine:configure-launch":
+		if err := b.codec.RespondError(msg.ID, -32601, "use engine:apply-settings for launch configuration"); err != nil {
+			log.Printf("failed to reject direct %s: %v", msg.Method, err)
+		}
+
 	case "engine:subscribe":
 		b.engineMu.Lock()
 		b.engineSubscribed = true
@@ -2935,20 +3362,16 @@ func (b *Broker) handleMessage(msg *Message) {
 		b.cancel()
 
 	default:
-		// Any remaining method under the proxy: namespace is relayed
-		// verbatim to ollama-proxy (the reserved broker-local ones —
-		// proxy:get-status, and the subscription methods — are handled by
+		// Any remaining method under an engine's <component>: prefix is
+		// relayed verbatim to that engine's proxy (the reserved broker-local
+		// ones — get-status and the subscription methods — are handled by
 		// their own cases above). This makes the broker a thin pass-through
-		// for the proxy's whole control plane without enumerating methods.
-		// lmstudio-proxy:* is checked before proxy:* — though the prefixes
-		// don't actually overlap (lmstudio-proxy: vs proxy:), keeping it
-		// first makes the LM Studio namespace explicit.
-		if strings.HasPrefix(msg.Method, "lmstudio-proxy:") {
-			b.relayToLMStudioProxy(msg)
-			return
-		}
-		if strings.HasPrefix(msg.Method, "proxy:") {
-			b.relayToProxy(msg)
+		// for each proxy's whole control plane without enumerating methods.
+		//
+		// The prefixes are the engines' ComponentName values, so this loop
+		// gains a new engine for free rather than needing another branch.
+		if profile, ok := engineProxyProfileForMethod(msg.Method); ok {
+			b.relayToEngineProxy(profile, msg)
 			return
 		}
 		if strings.HasPrefix(msg.Method, "engine:") {
@@ -2971,46 +3394,6 @@ func (b *Broker) handleMessage(msg *Message) {
 	}
 }
 
-// relayToProxy forwards a proxy:<method> request to ollama-proxy as
-// <method> (prefix stripped) and maps the proxy's response straight back
-// to the client. proxy:shutdown is refused — the broker owns the proxy's
-// lifecycle, so a client must not be able to kill it out from under us. If
-// no proxy is supervised (or it's gone), the client gets a clear error
-// rather than a silent hang.
-func (b *Broker) relayToProxy(msg *Message) {
-	proxyMethod := strings.TrimPrefix(msg.Method, "proxy:")
-	if proxyMethod == "shutdown" {
-		if err := b.codec.RespondError(msg.ID, -32601, "proxy:shutdown is not allowed; the broker owns the proxy lifecycle"); err != nil {
-			log.Printf("failed to respond to proxy:shutdown: %v", err)
-		}
-		return
-	}
-
-	p := b.getProxy()
-	if p == nil {
-		if err := b.codec.RespondError(msg.ID, -32000, "ollama-proxy not available"); err != nil {
-			log.Printf("failed to respond to %s: %v", msg.Method, err)
-		}
-		return
-	}
-
-	result, rpcErr, err := p.Call(context.Background(), proxyMethod, msg.Params)
-	switch {
-	case err != nil:
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("proxy call failed: %v", err)); err != nil {
-			log.Printf("failed to respond to %s: %v", msg.Method, err)
-		}
-	case rpcErr != nil:
-		if err := b.codec.RespondError(msg.ID, rpcErr.Code, rpcErr.Message); err != nil {
-			log.Printf("failed to relay proxy error for %s: %v", msg.Method, err)
-		}
-	default:
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to relay proxy result for %s: %v", msg.Method, err)
-		}
-	}
-}
-
 // relayToEngine forwards an engine:<method> request to nvpair-engine-manager
 // and relays its eventual response to the client. engine-manager's methods
 // are already engine:-prefixed, so the method is forwarded verbatim (no
@@ -3020,6 +3403,10 @@ func (b *Broker) relayToProxy(msg *Message) {
 // response asynchronously rather than fabricating a timeout — meanwhile
 // other client requests keep being served on the read-loop goroutine.
 func (b *Broker) relayToEngine(msg *Message) {
+	go b.relayToEngineNow(msg)
+}
+
+func (b *Broker) relayToEngineNow(msg *Message) {
 	if needsOllamaPortGate(msg.Method, msg.Params) && b.ollamaFacadeIsPendingBackend() {
 		go func() {
 			select {
@@ -3050,18 +3437,23 @@ func (b *Broker) relayToEngine(msg *Message) {
 	}
 
 	requestedEngine, requestedPort, isEnginePortAssignment := enginePortAssignmentRequest(msg.Method, msg.Params)
+	if isEnginePortAssignment || msg.Method == "engine:stop" || msg.Method == "engine:start" || msg.Method == "engine:restart" {
+		b.engineConfigMu.Lock()
+		defer b.engineConfigMu.Unlock()
+		defer b.reconcileLegacySettingsLocked()
+	}
 	isOllamaPortAssignment := isEnginePortAssignment && requestedEngine == "ollama"
 	if isEnginePortAssignment && b.rejectOllamaHostAliasPort(msg, requestedPort, requestedEngine) {
 		return
 	}
-	if isOllamaPortAssignment && requestedPort == managedOllamaFacadePort && b.managedOllamaFacade.Load() {
+	if isOllamaPortAssignment && requestedPort == managedOllamaFacadePort && b.ollamaState().managedFacade.Load() {
 		if err := b.codec.RespondError(msg.ID, -32000, "port 11434 is reserved by the managed Ollama proxy; choose another backend port or disable managed port ownership and restart NVPAIR"); err != nil {
 			log.Printf("failed to reject conflicting Ollama port assignment: %v", err)
 		}
 		return
 	}
 	requestedLMStudioPort, isLMStudioSetPort := lmstudioSetPortRequest(msg.Method, msg.Params)
-	if isLMStudioSetPort && requestedLMStudioPort == managedLMStudioFacadePort && b.managedLMStudioFacade.Load() {
+	if isLMStudioSetPort && requestedLMStudioPort == managedLMStudioFacadePort && b.lmstudioState().managedFacade.Load() {
 		if err := b.codec.RespondError(msg.ID, -32000, "port 1234 is reserved by the managed LM Studio proxy; choose another backend port or disable managed port ownership and restart NVPAIR"); err != nil {
 			log.Printf("failed to reject conflicting LM Studio engine:set-port: %v", err)
 		}
@@ -3079,36 +3471,30 @@ func (b *Broker) relayToEngine(msg *Message) {
 	// read loop allocates a fresh Message per request so these are stable.
 	id := msg.ID
 	method := msg.Method
-	relayErr := em.RelayRequest(method, msg.Params, func(result json.RawMessage, rpcErr *RPCError, err error) {
-		switch {
-		case err != nil:
-			if e := b.codec.RespondError(id, -32000, fmt.Sprintf("engine call failed: %v", err)); e != nil {
-				log.Printf("failed to relay engine error for %s: %v", method, e)
+	result, rpcErr, err := em.CallNoTimeout(context.Background(), method, msg.Params)
+	switch {
+	case err != nil:
+		if e := b.codec.RespondError(id, -32000, fmt.Sprintf("engine call failed: %v", err)); e != nil {
+			log.Printf("failed to relay engine error for %s: %v", method, e)
+		}
+	case rpcErr != nil:
+		if e := b.codec.RespondError(id, rpcErr.Code, rpcErr.Message); e != nil {
+			log.Printf("failed to relay engine error for %s: %v", method, e)
+		}
+	default:
+		if isOllamaPortAssignment {
+			var status struct {
+				Port int `json:"port"`
 			}
-		case rpcErr != nil:
-			if e := b.codec.RespondError(id, rpcErr.Code, rpcErr.Message); e != nil {
-				log.Printf("failed to relay engine error for %s: %v", method, e)
-			}
-		default:
-			if isOllamaPortAssignment {
-				var status struct {
-					Port int `json:"port"`
-				}
-				if json.Unmarshal(result, &status) == nil && status.Port > 0 {
-					b.ollamaBackendPort.Store(int32(status.Port))
-				}
-			}
-			if isLMStudioSetPort {
-				b.lmstudioBackendPort.Store(int32(requestedLMStudioPort))
-			}
-			if e := b.codec.Respond(id, result); e != nil {
-				log.Printf("failed to relay engine result for %s: %v", method, e)
+			if json.Unmarshal(result, &status) == nil && status.Port > 0 {
+				b.ollamaState().backendPort.Store(int32(status.Port))
 			}
 		}
-	})
-	if relayErr != nil {
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("engine call failed: %v", relayErr)); err != nil {
-			log.Printf("failed to respond to %s: %v", msg.Method, err)
+		if isLMStudioSetPort {
+			b.lmstudioState().backendPort.Store(int32(requestedLMStudioPort))
+		}
+		if e := b.codec.Respond(id, result); e != nil {
+			log.Printf("failed to relay engine result for %s: %v", method, e)
 		}
 	}
 }

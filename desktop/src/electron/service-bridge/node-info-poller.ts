@@ -286,12 +286,7 @@ async function probeHost(
 }
 
 /** Remember the address that answered, and merge the telemetry it reported. */
-function accept(
-    nodeId: string,
-    host: string,
-    port: number,
-    parsed: JsonValue
-): void {
+function accept(nodeId: string, host: string, port: number, parsed: JsonValue): void {
     pollChoices.set(nodeId, { host, walkedAt: 0 })
     noteAnswering(nodeId, nodeInfoUrl(host, port))
     getModularBridgeState().mergeNodeInfoResponse(nodeId, parsed)

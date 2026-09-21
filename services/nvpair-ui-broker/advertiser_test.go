@@ -51,9 +51,8 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 	defer proxyClient.Close()
 	defer proxyServer.Close()
 	proxy := &proxyProcess{
-		peer:  NewPeer(NewCodec(proxyClient)),
-		ready: true,
-		port:  defaultLMStudioPort,
+		peer:        NewPeer(NewCodec(proxyClient)),
+		facadeState: readyFacade(lmstudioProxyProfile.Name, defaultLMStudioPort),
 	}
 	go proxy.peer.Serve(nil, nil)
 
@@ -97,13 +96,13 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 // proxy on :1234 for the backend and disables managed mode.
 func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 	b := &Broker{regCache: relay.NewRegistrationCache()}
-	b.lmstudioBackendPort.Store(managedLMStudioBackendStart)
+	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
 
 	// No engine-manager and no proxy: the fallback path that used to poison
 	// the cache with defaultLMStudioPort.
 	b.reconcileAdvertiseLMStudio(nil)
 
-	if got := int(b.lmstudioBackendPort.Load()); got != managedLMStudioBackendStart {
+	if got := int(b.lmstudioState().backendPort.Load()); got != managedLMStudioBackendStart {
 		t.Fatalf("backend cache = %d, want %d (fallback must not overwrite the confirmed backend)", got, managedLMStudioBackendStart)
 	}
 }
@@ -119,12 +118,12 @@ func TestProxyListenPortNoProxy(t *testing.T) {
 
 func TestOllamaFacadeIsPendingBackend(t *testing.T) {
 	b := &Broker{}
-	b.managedOllamaFacade.Store(true)
-	b.ollamaBackendPort.Store(managedOllamaFacadePort)
+	b.ollamaState().managedFacade.Store(true)
+	b.ollamaState().backendPort.Store(managedOllamaFacadePort)
 	if !b.ollamaFacadeIsPendingBackend() {
 		t.Fatal("managed facade must block liveness probes while the backend still points at 11434")
 	}
-	b.ollamaBackendPort.Store(11435)
+	b.ollamaState().backendPort.Store(11435)
 	if b.ollamaFacadeIsPendingBackend() {
 		t.Fatal("liveness probes should resume after the backend moves off 11434")
 	}
@@ -139,9 +138,11 @@ func TestOllamaFacadeIsPendingBackend(t *testing.T) {
 	}
 	b.ollamaMoveInFlight.Store(false)
 
-	b.managedOllamaFacade.Store(false)
-	b.ollamaBackendPort.Store(managedOllamaFacadePort)
-	b.setProxy(&proxyProcess{ready: true, port: managedOllamaFacadePort})
+	b.ollamaState().managedFacade.Store(false)
+	b.ollamaState().backendPort.Store(managedOllamaFacadePort)
+	b.setProxy(&proxyProcess{
+		facadeState: readyFacade(ollamaProxyProfile.Name, managedOllamaFacadePort),
+	})
 	if !b.ollamaFacadeIsPendingBackend() {
 		t.Fatal("recovery must keep probes blocked until the proxy vacates 11434")
 	}

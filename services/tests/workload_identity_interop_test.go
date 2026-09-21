@@ -66,8 +66,8 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	lmstudioPort := portOfURL(t, lmstudio.URL)
 
 	stdin, msgs, _, cleanup := startBrokerWith(t,
+		// Both engines fronted, which is the default.
 		"--proxy-path", proxyBin,
-		"--lmstudio-proxy-path", lmstudioProxyBin,
 		"--workload-manager-path", workloadMgrBin,
 	)
 	t.Cleanup(cleanup)
@@ -89,9 +89,9 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	// Pin each fake engine into its proxy so inference routes deterministically.
 	// These are stdio control notifications, not HTTP hits on the proxy port,
 	// so the first HTTP request each proxy serves is the inference below → id "1".
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["crossengine-model"]}}`, ollamaPort))
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"ollama-proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["crossengine-model"]}}`, ollamaPort))
 	waitForResponse(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"proxy:node/select","params":{"id":"fake-ollama"}}`)
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"ollama-proxy:node/select","params":{"id":"fake-ollama"}}`)
 	waitForResponse(t, msgs, 5*time.Second)
 	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":52,"method":"lmstudio-proxy:node/add-manual","params":{"id":"fake-lmstudio","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["crossengine-model"]}}`, lmstudioPort))
 	waitForResponse(t, msgs, 5*time.Second)
@@ -152,7 +152,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 
 // TestWorkloadManagerRehydratesActiveWorkloadOnRestart drives the rehydration
 // path end-to-end. A proxied inference is held open by a blocking fake engine,
-// so its workload stays "running" (workload:started is emitted up front). The
+// so its workload reaches "running" once the engine emits its first byte. The
 // supervised workload-manager is then killed; the broker's supervisor respawns
 // it and replays the still-active local workload. A discovered stub peer must
 // hear the running workload AGAIN from the restarted manager — which only
@@ -162,20 +162,32 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 		t.Skip("ollama-proxy default port 11435 already in use; skipping")
 	}
 
-	// Fake Ollama that accepts the request then blocks, keeping the proxied
-	// inference in-flight so the workload never reaches a terminal state. The
+	// Fake Ollama that starts a streaming response, flushes one chunk so the
+	// proxy commits and the workload becomes "running", then blocks — keeping
+	// the proxied inference in-flight so it never reaches a terminal state. The
 	// handler also unblocks if the request is cancelled, so a client-side abort
 	// can't wedge it.
+	//
+	// The chunk is required: the proxy commits on the first byte of response
+	// body, not on the headers, because headers only prove an engine accepted
+	// the request. An engine that blocks before producing content leaves the
+	// workload "queued", which is the truth but not what this test is about.
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	stopEngine := func() { releaseOnce.Do(func() { close(release) }) }
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":""},"done":false}`+"\n")
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
 		select {
 		case <-release:
 		case <-r.Context().Done():
 		}
-		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"done":true}`+"\n")
 	}))
 	// Defer order matters: stopEngine() must run BEFORE ollama.Close(), because
 	// Close() blocks until the deliberately-held request finishes, which only
@@ -192,7 +204,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	received := fx.startStubClusterPeer(t, "rehydrate-wm-peer", "rehydrate-peer-uuid")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 		"--workload-manager-path", workloadMgrBin,
 	)
 	t.Cleanup(cleanup)
@@ -223,9 +235,9 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 
 	// Pin the fake ollama, then fire one inference in the background — the
 	// backend blocks, so the workload stays running until teardown.
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["rehydrate-model"]}}`, ollamaPort))
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"ollama-proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["rehydrate-model"]}}`, ollamaPort))
 	waitForResponse(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"proxy:node/select","params":{"id":"fake-ollama"}}`)
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"ollama-proxy:node/select","params":{"id":"fake-ollama"}}`)
 	waitForResponse(t, msgs, 5*time.Second)
 	go func() {
 		c := &http.Client{Timeout: 120 * time.Second}
@@ -293,7 +305,7 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	received := fx.startStubClusterPeer(t, "rehydrate-term-peer", "rehydrate-term-peer-uuid")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 		"--workload-manager-path", workloadMgrBin,
 	)
 	t.Cleanup(cleanup)
@@ -316,9 +328,9 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	proxyPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	pid1 := awaitInt(t, wmPids, 10*time.Second, "initial workload-manager start")
 
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["rehydrate-term-model"]}}`, ollamaPort))
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"ollama-proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["rehydrate-term-model"]}}`, ollamaPort))
 	waitForResponse(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"proxy:node/select","params":{"id":"fake-ollama"}}`)
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"ollama-proxy:node/select","params":{"id":"fake-ollama"}}`)
 	waitForResponse(t, msgs, 5*time.Second)
 
 	// Fire one inference; it completes promptly → terminal workload.
@@ -359,39 +371,6 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 // --- helpers ---
 
 var wmStartedPidRe = regexp.MustCompile(`workload-manager started.*\bpid=(\d+)`)
-
-// waitLMStudioProxyReady polls lmstudio-proxy:get-status until the LM Studio
-// proxy reports ready and returns its bound port (mirrors waitProxyReady).
-func waitLMStudioProxyReady(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration) int {
-	t.Helper()
-	id := 9500
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"lmstudio-proxy:get-status"}`, id))
-	deadline := time.After(timeout)
-	tick := time.NewTicker(500 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		select {
-		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed waiting for lmstudio-proxy:get-status")
-			}
-			if msg.ID != nil && msg.Method == "" {
-				var st struct {
-					Ready bool `json:"ready"`
-					Port  int  `json:"port"`
-				}
-				if json.Unmarshal(msg.Result, &st) == nil && st.Ready {
-					return st.Port
-				}
-			}
-		case <-tick.C:
-			id++
-			writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"lmstudio-proxy:get-status"}`, id))
-		case <-deadline:
-			t.Fatalf("timed out (%s) waiting for lmstudio-proxy to become ready", timeout)
-		}
-	}
-}
 
 // waitStubPeerWorkload blocks until the stub peer records a workload:* frame
 // for the given model in the given state.

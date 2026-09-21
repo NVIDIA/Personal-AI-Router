@@ -1,8 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { EngineTypes, ModelExpiries } from '@/shared/constants/engines'
-import { EngineModels, EngineStatusData, EngineType, ModelExpiry } from '@/shared/types/engines'
+import { EngineManagerNames, EngineTypes, ModelExpiries } from '@/shared/constants/engines'
+import {
+    EngineManagerName,
+    EngineModels,
+    EngineStatusData,
+    EngineType,
+    ModelExpiry
+} from '@/shared/types/engines'
 
 const ENGINE_TYPE_SET: ReadonlySet<string> = new Set(EngineTypes)
 /**
@@ -13,6 +19,22 @@ const ENGINE_TYPE_SET: ReadonlySet<string> = new Set(EngineTypes)
  */
 export function isEngineType(v: string | undefined): v is EngineType {
     return typeof v === 'string' && ENGINE_TYPE_SET.has(v)
+}
+
+/** Spell an `EngineType` the way `nvpair-engine-manager` does on the wire. */
+export function engineManagerName(engine: EngineType): EngineManagerName {
+    return EngineManagerNames[engine]
+}
+
+const ENGINE_TYPE_BY_MANAGER_NAME: ReadonlyMap<string, EngineType> = new Map(
+    EngineTypes.map(engine => [EngineManagerNames[engine], engine])
+)
+/**
+ * Narrow an engine id arriving from `nvpair-engine-manager` into an
+ * `EngineType`, or null for an engine this build does not ship.
+ */
+export function engineTypeFromManagerName(name: string): EngineType | null {
+    return ENGINE_TYPE_BY_MANAGER_NAME.get(name) ?? null
 }
 
 const MODEL_EXPIRY_SET: ReadonlySet<string> = new Set(ModelExpiries)

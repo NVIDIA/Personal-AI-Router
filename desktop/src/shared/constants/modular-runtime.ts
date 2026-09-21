@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// The proxy port is never assumed: the broker owns ollama-proxy and reports its
-// bound listener via `proxy:ready` / `proxy:get-status`. Until it does, the
-// proxy port is unknown (surfaced as null) — we do not fabricate a default,
-// since a wrong port misleads the user and can route requests to the wrong
-// place.
+// The proxy port is never assumed: the broker owns the engine proxies and
+// reports each bound listener via that engine's `<engine>-proxy:ready` /
+// `<engine>-proxy:get-status` pair. Until it does, the proxy port is unknown
+// (surfaced as null) — we do not fabricate a default, since a wrong port
+// misleads the user and can route requests to the wrong place.
 
 // nvpair-cluster-manager pairing (EAP-NOOB) HTTP port. `cluster:invite-node` and
 // the PIN handshake are driven against this port. Hardcoded pending backend
@@ -62,9 +62,13 @@ export const MODULAR_NODE_INFO_SELF_HOST = '127.0.0.1'
 export const MODULAR_STARTUP_READY_TIMEOUT_MS = 15_000
 
 // Awaited engine lifecycle calls can include the bundled Ollama manifest's
-// 10-minute readiness probe (for example a running engine:set-port rebind).
-// Keep the desktop JSON-RPC envelope bounded but outside that backend budget.
-export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 11 * 60_000
+// 10-minute readiness probe and the broker's combined settings operation. The
+// shared enginesettings/timeouts.go defines the ladder above that probe:
+// 10.5 minutes for configure, 11 minutes for the owner-side
+// operation, 12 for a client call, 13 for a call relayed on a peer's behalf.
+// This envelope is the outermost rung and has to outlast all of them, or a
+// desktop timeout would report failure for an operation still running.
+export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 14 * 60_000
 
 // Upper bound for a local model load/unload/delete action. A delete on an
 // engine whose manifest declares `restart_after` (LM Studio) does not reply

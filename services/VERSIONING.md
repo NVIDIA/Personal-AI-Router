@@ -81,11 +81,11 @@ inferring it from the diff.
 Every binary supports `--version`:
 
 ```powershell
-.\build\bin\ollama-proxy.exe --version
+.\build\bin\nvpair-proxy.exe --version
 ```
 
 ```bash
-./build/bin/ollama-proxy --version
+./build/bin/nvpair-proxy --version
 ```
 
 A binary built outside `build.bat` / `build.sh` reports `dev` by design.

@@ -1,4 +1,5 @@
 {
+  "$schema": "../manifest.schema.json",
   "engine": "lmstudio",
   "display_name": "LM Studio",
   "manifest_version": 1,
@@ -12,6 +13,14 @@
     "run": ["sh", "-c", "pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf \"$HOME/.lmstudio\"; sleep 1; [ -d \"$HOME/.lmstudio\" ] && exit 1; exit 0"]
   },
   "runtime": {
+    "editable_launch": {
+      "fixed_args": ["server", "start"],
+      "controls": [
+        { "flags": ["--port", "-p"], "value": "{server.port}" },
+        { "flags": ["--bind"], "env": ["LMS_SERVER_HOST"], "value": "{server.host}" },
+        { "flags": ["--cors"], "value": "{cors.enabled}", "implicit": "true" }
+      ]
+    },
     "mode": "command",
     "port": 1235,
     "bind": "127.0.0.1",

@@ -12,18 +12,22 @@ import (
 // See versions.json at the repo root for the source of truth.
 var Version = "dev"
 
-// WorkloadState is the lifecycle state carried in a Workload. The
-// "initializing" value exists in the enum but has no lifecycle method and is
-// never transmitted (see spec §4); it is accepted on the wire for forward
-// compatibility but is not produced by this service.
+// WorkloadState is the lifecycle state carried in a Workload. State is not
+// validated against the method that carried it (see lifecycleMethods), so
+// "cancelled" travels on workload:errored without needing a method of its own.
 type WorkloadState string
 
 const (
-	StateInitializing WorkloadState = "initializing"
-	StateQueued       WorkloadState = "queued"
-	StateRunning      WorkloadState = "running"
-	StateCompleted    WorkloadState = "completed"
-	StateFailed       WorkloadState = "failed"
+	StateQueued    WorkloadState = "queued"
+	StateRunning   WorkloadState = "running"
+	StateCompleted WorkloadState = "completed"
+	StateFailed    WorkloadState = "failed"
+	// StateCancelled is a job the requester stopped waiting for: a client that
+	// disconnected, a dead client whose write deadline tripped, or an in-flight
+	// request cancelled by our own shutdown. It is terminal, and distinct from
+	// StateFailed so the failed bucket only holds outcomes a user might act on
+	// rather than every time somebody pressed stop.
+	StateCancelled WorkloadState = "cancelled"
 )
 
 // Lifecycle method names on both the local and inter-node interfaces.
@@ -74,6 +78,10 @@ type Workload struct {
 	CompletedAt    *int64        `json:"completedAt"`
 	Error          *string       `json:"error"`
 	RequesterID    *string       `json:"requesterId"`
+	// Seq numbers a workload's events in emission order, assigned by the
+	// producer. It exists so dedup can tell a new event from a redelivery even
+	// when the two carry the same state and placement — see keyLifecycle.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // lifecycleParams / removeParams are the params envelopes for the two kinds

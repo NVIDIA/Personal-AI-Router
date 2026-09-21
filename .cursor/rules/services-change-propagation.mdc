@@ -1,0 +1,56 @@
+---
+description: Required architecture-boundary and cross-service checks for every DHC change
+alwaysApply: true
+---
+
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# DHC change propagation
+
+## Monorepo layout
+
+- Go services live under `services/`; the Electron desktop app lives under
+  `desktop/`.
+- Wails and external-only `dhc-ui` checkouts are retired for day-to-day work.
+  Trace contract changes through `services/` producers into `desktop/` consumers
+  in this repository.
+
+## Before changing code
+
+1. Trace the relevant runtime path: producer -> shared wire type -> broker/relay
+   -> every consumer -> UI/TUI. Then inspect the applicable tests, docs, build,
+   packaging, and installer surfaces.
+2. Search exact identifiers from the repository root, for example
+   `rg -n -F 'engine:status' .`. If `rg` is unavailable, use
+   `git grep -n -F 'engine:status' -- .` for tracked files. Repeat for the
+   payload field, HTTP route, discovery key, setting, port, and component name.
+   Inspect matches in the producer, `shared/`, `nvpair-ui-broker/`, subscribing
+   workers, `nvpair-tui/`, `tests/`, `desktop/src/`, build/installer scripts,
+   and CI as applicable. Do not assume the first match is the only consumer.
+3. State which components are affected. If a layer is intentionally unchanged,
+   record the evidence that its existing contract still works.
+
+## Required propagation checks
+
+- Contract or payload changes: update every producer and consumer, shared types,
+  protocol docs, and cross-process tests. Update `desktop/` bridge handlers,
+  shared channel types, and run `npm --prefix desktop run service-contracts:check`.
+- Proxy behavior: `nvpair-proxy` serves every engine, so a change there applies
+  to all of them at once. Check the per-engine descriptors in
+  `services/nvpair-proxy/engines.go` and the broker's `engineProxyProfile`
+  before assuming a change is engine-neutral.
+- Discovery or identity changes: inspect `shared/noderec`, node scanner, broker
+  relay, manual nodes, scheduler/proxies, and UI-facing snapshots.
+- New, renamed, or removed binaries/services: update broker supervision, all
+  build and installer scripts, CI, applicable firewall rules for network
+  listeners or mDNS, `versions.json`, `bom.md`, docs, and cross-process test
+  setup.
+- Settings or lifecycle changes: inspect node settings, engine manager, broker
+  startup/shutdown ordering, remote control, persistence, and UI/TUI callers.
+
+Do not call a change complete until focused tests and the affected cross-process
+path pass, and the MR explicitly lists audited components and excluded adjacent
+work.

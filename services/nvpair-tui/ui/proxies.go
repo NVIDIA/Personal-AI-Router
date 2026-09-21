@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"nvpair-shared/engines"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -17,19 +18,30 @@ import (
 )
 
 // proxyNode mirrors a discovered upstream as reported by the proxy's
-// nodes/list (ollama-proxy/discovery.go Node).
+// nodes/list (nvpair-proxy/discovery.go Node).
 type proxyNode struct {
 	ID   string `json:"id"`
 	Host string `json:"host"`
 	Port int    `json:"port"`
 }
 
-// proxyEngine is one of the two reverse proxies the broker fronts. Both
-// speak the same routing/failover contract; only the JSON-RPC prefix and
-// label differ.
+// buildProxyEngines makes one tab per engine, in the shared table's order, so
+// an engine added there appears here rather than being silently absent from
+// this view.
+func buildProxyEngines() []*proxyEngine {
+	all := engines.All()
+	out := make([]*proxyEngine, 0, len(all))
+	for _, e := range all {
+		out = append(out, &proxyEngine{label: e.DisplayName, prefix: e.ComponentName(), table: newTable(nil)})
+	}
+	return out
+}
+
+// proxyEngine is one reverse proxy the broker fronts. They all speak the same
+// routing/failover contract; only the JSON-RPC prefix and label differ.
 type proxyEngine struct {
 	label    string // "Ollama" / "LM Studio"
-	prefix   string // "proxy" / "lmstudio-proxy"
+	prefix   string // "ollama-proxy" / "lmstudio-proxy"
 	ready    bool
 	port     int
 	selected string
@@ -89,10 +101,7 @@ func newProxiesView(client *rpc.Client) *proxiesView {
 	v := &proxiesView{
 		client:    client,
 		portInput: ti,
-		engines: []*proxyEngine{
-			{label: "Ollama", prefix: "proxy", table: newTable(nil)},
-			{label: "LM Studio", prefix: "lmstudio-proxy", table: newTable(nil)},
-		},
+		engines:   buildProxyEngines(),
 	}
 	return v
 }
@@ -211,13 +220,17 @@ func (v *proxiesView) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (v *proxiesView) handleNotification(msg *rpc.Message) tea.Cmd {
+	// Match against the prefixes the tabs were built from rather than a fixed
+	// switch, so this follows the engine table instead of hardcoding both the
+	// names and their positions.
 	idx := -1
-	switch {
-	case strings.HasPrefix(msg.Method, "lmstudio-proxy:"):
-		idx = 1
-	case strings.HasPrefix(msg.Method, "proxy:"):
-		idx = 0
-	default:
+	for i, e := range v.engines {
+		if strings.HasPrefix(msg.Method, e.prefix+":") {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
 		return nil
 	}
 	if strings.HasSuffix(msg.Method, ":ready") {

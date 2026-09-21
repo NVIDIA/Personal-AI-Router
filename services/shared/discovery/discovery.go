@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package discovery provides a single mDNS service browser that six services
-// (nvpair-node-scanner, nvpair-errors, ollama-proxy, lmstudio-proxy,
-// nvpair-workload-manager, nvpair-cluster-manager) each carried a near-identical copy
-// of (the mDNS dedup).
+// Package discovery provides a single mDNS service browser that five services
+// (nvpair-node-scanner, nvpair-errors, nvpair-proxy, nvpair-workload-manager,
+// nvpair-cluster-manager) each carried a near-identical copy of (the mDNS
+// dedup).
 //
 // The core is a scan-and-diff state machine: each scan browses a service type
 // over grandcat/zeroconf, re-sends the PTR query from a per-interface unicast

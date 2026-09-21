@@ -114,31 +114,32 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                         gap="2"
                         className="shrink-0 no-drag-elements pair-engines-inline"
                     >
-                        {isTransitioning ? (
-                            <span
-                                className="spinner-element-medium ml-2"
-                                role="status"
-                                aria-label=""
-                            />
-                        ) : (
-                            <Switch
-                                size="small"
-                                checked={b.status === 'running'}
-                                onCheckedChange={() => handleToggle(b.type)}
-                                disabled={isRemote && isDisconnected}
-                                title={
-                                    isRemote && isDisconnected
-                                        ? 'Node is disconnected'
-                                        : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
-                                }
-                                className="-mr-1"
-                                aria-label={
-                                    isRemote && isDisconnected
-                                        ? 'Node is disconnected'
-                                        : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
-                                }
-                            />
-                        )}
+                        <Flex align="center" justify="center" className="h-4 w-7 shrink-0 -mr-1">
+                            {isTransitioning ? (
+                                <span
+                                    className="spinner-element-medium"
+                                    role="status"
+                                    aria-label=""
+                                />
+                            ) : (
+                                <Switch
+                                    size="small"
+                                    checked={b.status === 'running'}
+                                    onCheckedChange={() => handleToggle(b.type)}
+                                    disabled={isRemote && isDisconnected}
+                                    title={
+                                        isRemote && isDisconnected
+                                            ? 'Node is disconnected'
+                                            : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
+                                    }
+                                    aria-label={
+                                        isRemote && isDisconnected
+                                            ? 'Node is disconnected'
+                                            : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
+                                    }
+                                />
+                            )}
+                        </Flex>
                         <Text
                             kind="body/regular/sm"
                             className="cursor-pointer"

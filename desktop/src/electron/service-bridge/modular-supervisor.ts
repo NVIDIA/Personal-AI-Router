@@ -22,12 +22,14 @@ import {
     parseServiceErrors,
     parseWorkloadsInitial,
     PROXY_ENGINES,
+    PROXY_NODE_SOURCES,
     type ProxyEngine
 } from './modular-state'
 import { emitBridgePush } from './broadcaster'
+import { parseEngineSettings } from './engine-settings'
 import { resolvePullCatchError } from './pull-error-handling'
 import { serviceLogLevel } from './service-log-level'
-import { engineManagerEngineName } from './empty-handlers'
+import { engineManagerName, engineTypeFromManagerName } from '@/shared/utils/engines'
 import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
@@ -290,21 +292,15 @@ function emptyLocalEngineBridge(): LocalEngineBridge {
     return { running: false, port: 0, bridgedId: '', bridgedPort: 0, selfWarned: false }
 }
 
-/** Translate our `EngineType` into the engine-manager's engine id. */
-function engineManagerId(engine: ProxyEngine): string {
-    return engine === 'lm-studio' ? 'lmstudio' : engine
-}
-
 /** Translate an engine-manager engine id into a proxy engine, or null. */
 function proxyEngineFromManagerId(id: string): ProxyEngine | null {
-    if (id === 'ollama') return 'ollama'
-    if (id === 'lmstudio') return 'lm-studio'
-    return null
+    const engine = engineTypeFromManagerName(id)
+    return engine && isProxyEngine(engine) ? engine : null
 }
 
 /** The broker relay namespace fronting an engine's reverse proxy. */
 function proxyRelayPrefix(engine: ProxyEngine): string {
-    return engine === 'ollama' ? 'proxy' : 'lmstudio-proxy'
+    return engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'
 }
 
 /**
@@ -319,7 +315,7 @@ function proxyRelayPrefix(engine: ProxyEngine): string {
  *   `nvpair-cluster-manager`, `nvpair-node-settings`, `nvpair-manual-nodes`,
  *   `nvpair-engine-manager`, `nvpair-errors`, `nvpair-job-scheduler`). Electron passes their resolved paths to
  *   the broker (see `brokerStartupArgs`) and reaches each through a broker relay:
- *   `proxy:` / `lmstudio-proxy:` for the two engine proxies, `engine:` for the
+ *   `ollama-proxy:` / `lmstudio-proxy:` for the two engine proxies, `engine:` for the
  *   engine-manager, `errors:` for the error pipeline, `node/*` for manual nodes,
  *   `settings/*` and `cluster:` for the rest. Local inference jobs arrive on the
  *   broker's `workloads:subscribe` stream.
@@ -825,8 +821,9 @@ class ModularSupervisor {
         }
         passPath('--scanner-path', 'scanner')
         passPath('--node-info-path', 'node-info')
-        passPath('--proxy-path', 'proxy')
-        passPath('--lmstudio-proxy-path', 'lmstudio-proxy')
+        // One process fronts every engine; the broker starts it once and enables
+        // a facade per entry in its own --proxy-engines default.
+        passPath('--proxy-path', 'nvpair-proxy')
         passPath('--workload-manager-path', 'workload-manager')
         passPath('--cluster-manager-path', 'cluster-manager')
         passPath('--settings-path', 'node-settings')
@@ -876,7 +873,7 @@ class ModularSupervisor {
             }
         }
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
-        await subscribe('proxy:subscribe', 'subscribe to broker ollama-proxy relay')
+        await subscribe('ollama-proxy:subscribe', 'subscribe to broker ollama-proxy relay')
         await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
@@ -1079,7 +1076,7 @@ class ModularSupervisor {
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1100,7 +1097,7 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
                     method: 'node/discovered',
                     params: node
                 })
@@ -1154,7 +1151,7 @@ class ModularSupervisor {
             if (status.nodeId !== selfId) continue
             if (status.processStatus !== 'stopped' && status.processStatus !== 'running') continue
 
-            const engine = engineManagerEngineName(status.engineType)
+            const engine = engineManagerName(status.engineType)
             // A stopped engine will emit `engine:state-changed` on start, which
             // clears this optimistic op; a running engine's start is a backend
             // no-op (no state event), so we skip the op to avoid a stuck spinner —
@@ -1267,7 +1264,7 @@ class ModularSupervisor {
         }
 
         const proxyEngine: ProxyEngine | null =
-            event.source === 'proxy'
+            event.source === 'ollama-proxy'
                 ? 'ollama'
                 : event.source === 'lmstudio-proxy'
                   ? 'lm-studio'
@@ -1316,21 +1313,23 @@ class ModularSupervisor {
         this.readinessWaiters.clear()
     }
 
-    /** Rewrite broker `proxy:`/`lmstudio-proxy:` relay frames into proxy-source events. */
+    /**
+     * Rewrite a broker `<engine>-proxy:` relay frame into a proxy-source event.
+     *
+     * The prefix and the resulting source are the same string — the engine's
+     * component id — so this stays a loop over the known proxy sources rather
+     * than a branch per engine.
+     */
     private normalizeBrokerProxy(notification: JsonRpcNotification): JsonRpcNotification {
         if (notification.source !== 'broker') return notification
-        if (notification.method.startsWith('lmstudio-proxy:')) {
-            return {
-                source: 'lmstudio-proxy',
-                method: notification.method.slice('lmstudio-proxy:'.length),
-                params: notification.params
-            }
-        }
-        if (notification.method.startsWith('proxy:')) {
-            return {
-                source: 'proxy',
-                method: notification.method.slice('proxy:'.length),
-                params: notification.params
+        for (const source of PROXY_NODE_SOURCES) {
+            const prefix = `${source}:`
+            if (notification.method.startsWith(prefix)) {
+                return {
+                    source,
+                    method: notification.method.slice(prefix.length),
+                    params: notification.params
+                }
             }
         }
         return notification
@@ -1606,6 +1605,25 @@ class ModularSupervisor {
     }
 
     private handleEngineManagerNotification(notification: JsonRpcNotification): void {
+        if (notification.method === 'engine:settings-changed') {
+            try {
+                emitBridgePush('engines:settings-changed', parseEngineSettings(notification.params))
+            } catch {
+                /* Unsupported peer version. */
+            }
+            return
+        }
+        if (notification.method === 'engine:settings-disconnected') {
+            const params = notification.params
+            if (
+                params &&
+                typeof params === 'object' &&
+                !Array.isArray(params) &&
+                typeof params.nodeId === 'string'
+            )
+                emitBridgePush('engines:settings-disconnected', { nodeId: params.nodeId })
+            return
+        }
         if (notification.method === 'engine:ready') {
             void this.hydrateEngineManager()
             return
@@ -2031,7 +2049,7 @@ class ModularSupervisor {
         }
         const generation = this.beginModelRefresh(engine)
         this.callProcess('broker', 'engine:action', {
-            engine: engineManagerId(engine),
+            engine: engineManagerName(engine),
             action: 'list_models'
         })
             .then(result => {

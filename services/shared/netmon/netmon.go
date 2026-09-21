@@ -6,7 +6,7 @@
 // addresses) changes.
 //
 // It exists because several nvpair subprocesses snapshot the interface list once
-// at startup and never refresh it: ollama-proxy's "is this address local?"
+// at startup and never refresh it: nvpair-proxy's "is this address local?"
 // table and every mDNS responder's per-interface address map. On a multi-homed
 // host, or after a sleep/wake that reassigns an IP, those snapshots go stale
 // and the process keeps using (or advertising) an address that no longer

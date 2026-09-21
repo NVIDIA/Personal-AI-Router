@@ -8,13 +8,14 @@ import type { PartialOptions } from 'overlayscrollbars'
 import { Flipper, Flipped } from 'react-flip-toolkit'
 import {
     useActiveWorkloads,
+    useCancelledWorkloads,
     useCompletedWorkloads,
     useFailedWorkloads
 } from '@/ui/stores/workloads.store'
 import WorkloadItemCard from './WorkloadItemCard'
 import JobsFilter from '@/ui/components/JobsFilter'
 import { CONNECTIONS_WIDTH, MAX_HISTORY_ITEMS } from '@/ui/constants/app'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadState } from '@/shared/types/workloads'
 import { workloadKey } from '@/shared/utils/workloads'
 import type { JobsFilterType } from '@/ui/types/types'
 
@@ -30,18 +31,32 @@ interface WorkloadListViewProps {
     setFilter: (type: JobsFilterType, checked: boolean) => void
 }
 
+// Which filter bucket a finished job belongs to. Exhaustive over WorkloadState
+// so adding a state is a compile error here rather than a job that silently
+// stops appearing: the history list used to index the filter record by the raw
+// state string, and any state without a matching bucket read as unchecked.
+const HISTORY_BUCKET: Record<WorkloadState, JobsFilterType | null> = {
+    queued: null,
+    running: null,
+    completed: 'completed',
+    failed: 'failed',
+    cancelled: 'cancelled'
+}
+
 function WorkloadListView({ filter, setFilter }: WorkloadListViewProps) {
     const activeWorkloads = useActiveWorkloads()
     const completedWorkloads = useCompletedWorkloads()
     const failedWorkloads = useFailedWorkloads()
+    const cancelledWorkloads = useCancelledWorkloads()
 
     const jobValues = useMemo(
         () => ({
             active: { checked: filter.active, count: activeWorkloads.length },
             completed: { checked: filter.completed, count: completedWorkloads.length },
-            failed: { checked: filter.failed, count: failedWorkloads.length }
+            failed: { checked: filter.failed, count: failedWorkloads.length },
+            cancelled: { checked: filter.cancelled, count: cancelledWorkloads.length }
         }),
-        [filter, activeWorkloads, completedWorkloads, failedWorkloads]
+        [filter, activeWorkloads, completedWorkloads, failedWorkloads, cancelledWorkloads]
     )
 
     const currentWorkloads = useMemo(() => {
@@ -51,13 +66,16 @@ function WorkloadListView({ filter, setFilter }: WorkloadListViewProps) {
             result = activeWorkloads
         }
 
-        const rest = [...completedWorkloads, ...failedWorkloads]
-            .filter(w => filter[w.state as JobsFilterType])
+        const rest = [...completedWorkloads, ...failedWorkloads, ...cancelledWorkloads]
+            .filter(w => {
+                const bucket = HISTORY_BUCKET[w.state]
+                return bucket !== null && filter[bucket]
+            })
             .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
             .slice(0, MAX_HISTORY_ITEMS)
 
         return result.concat(rest)
-    }, [filter, completedWorkloads, failedWorkloads, activeWorkloads])
+    }, [filter, completedWorkloads, failedWorkloads, cancelledWorkloads, activeWorkloads])
 
     const flipKey = useMemo(() => {
         const filterKey = Object.entries(filter)

@@ -17,6 +17,9 @@
   ; src/shared/constants/modular-binaries.ts.
   nsExec::ExecToLog 'taskkill /F /T /IM "${APP_EXECUTABLE_FILENAME}"'
   nsExec::ExecToLog 'taskkill /F /T /IM "nvpair-tui.exe"'
+  nsExec::ExecToLog 'taskkill /F /T /IM "nvpair-proxy.exe"'
+  ; Pre-unification names. An orphan still holding 11434 or 1234 is exactly
+  ; what the managed-facade planner has to block on, so kill it here too.
   nsExec::ExecToLog 'taskkill /F /T /IM "ollama-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /T /IM "lmstudio-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /T /IM "nvpair-node-info.exe"'
@@ -120,16 +123,18 @@
 ; expose the node on untrusted public networks.
 !macro pairAddFirewallRules
   DetailPrint "Adding Personal AI Router firewall rules..."
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Ollama Proxy" dir=in action=allow program="$INSTDIR\resources\cli-bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router LM Studio Proxy" dir=in action=allow program="$INSTDIR\resources\cli-bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Engine Proxy" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-proxy.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Node Info" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Node Scanner" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Workload Manager" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-workload-manager.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Errors" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-errors.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Cluster Manager" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-cluster-manager.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Engine Manager" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-engine-manager.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS LM Studio Proxy (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  ; No mDNS rule for nvpair-proxy: it opens no UDP socket. Its routing targets
+  ; arrive over the broker's discovery relay, and zeroconf/miekg are indirect
+  ; dependencies it never browses with. The pre-unification ollama-proxy did
+  ; browse, which is where this rule came from; the delete below stays so an
+  ; upgrade clears the inherited entry.
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS Node Info (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS Node Scanner (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS Workload Manager (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\nvpair-workload-manager.exe" enable=yes profile=any remoteip=localsubnet'
@@ -141,6 +146,10 @@
 
 !macro pairRemoveFirewallRules
   DetailPrint "Removing Personal AI Router firewall rules..."
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Engine Proxy"'
+  ; The per-engine rules a pre-unification install created. Deleting a rule
+  ; that does not exist is a harmless no-op, and without these an upgrade
+  ; leaves rules pointing at binaries this version no longer ships.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Ollama Proxy"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router LM Studio Proxy"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Node Info"'
@@ -150,6 +159,7 @@
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Cluster Manager"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Engine Manager"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS (UDP 5353)"'
+  ; Pre-unification; see above.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS LM Studio Proxy (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS Node Info (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS Node Scanner (UDP 5353)"'

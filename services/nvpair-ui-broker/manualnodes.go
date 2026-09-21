@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"nvpair-shared/engines"
 	"nvpair-shared/noderec"
 )
 
@@ -198,14 +199,18 @@ func (b *Broker) removeManualNodeFromProxies(id string) {
 	b.callProxyManual(b.getLMStudioProxy(), "lmstudio", "node/remove-manual", map[string]string{"id": id}, id)
 }
 
-// callProxyManual issues a best-effort node/add-manual|remove-manual to a
-// proxy. The bridge is advisory plumbing the broker owns, not part of the
-// manual-node request's own response, so a failure is logged and swallowed
+// callProxyManual issues a best-effort node/add-manual|remove-manual to one
+// engine's facade. The bridge is advisory plumbing the broker owns, not part of
+// the manual-node request's own response, so a failure is logged and swallowed
 // rather than surfaced to the client. A nil proxy (not supervised) is a no-op.
 // Runs synchronously on the manual-nodes reader goroutine; a proxy answers
 // these control-plane calls locally in well under proxyCallTimeout, and
 // manual-node events are infrequent (one per 10s probe), so the brief inline
 // call keeps add/remove strictly ordered without a queue.
+//
+// Every method routed here is facade-scoped — a manual node belongs to one
+// engine's routing set — so the engine is addressed on the wire rather than
+// left implicit in which process was picked.
 func (b *Broker) callProxyManual(p *proxyProcess, engine, method string, params any, id string) {
 	if p == nil {
 		return
@@ -215,7 +220,7 @@ func (b *Broker) callProxyManual(p *proxyProcess, engine, method string, params 
 		slog.Warn("manual->proxy bridge: marshal failed", "engine", engine, "method", method, "id", id, "err", err)
 		return
 	}
-	if _, rpcErr, err := p.Call(context.Background(), method, raw); err != nil {
+	if _, rpcErr, err := p.Call(context.Background(), engines.AddressMethod(engine, method), raw); err != nil {
 		slog.Warn("manual->proxy bridge failed", "engine", engine, "method", method, "id", id, "err", err)
 	} else if rpcErr != nil {
 		slog.Warn("manual->proxy bridge rejected", "engine", engine, "method", method, "id", id, "code", rpcErr.Code, "msg", rpcErr.Message)

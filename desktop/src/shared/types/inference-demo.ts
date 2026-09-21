@@ -38,13 +38,13 @@ export const DEMO_MAX_SUBMIT_SECONDS = 60
 export const DEMO_REQUEST_TIMEOUT_SECONDS = 120
 
 /**
- * Engines the demo can drive, paired with the proxy each one sits behind.
+ * Engines the demo can drive, paired with the proxy facade each one sits behind.
  *
- * Ports are deliberately absent. The broker owns `ollama-proxy` and
- * `lmstudio-proxy` and reports their bound listeners; PAIR never fabricates a
- * port (see the note at the top of `@/shared/constants/modular-runtime`). The
- * demo resolves each port at start via `getProxyPort()` and skips any engine
- * whose proxy has not reported.
+ * Ports are deliberately absent. The broker owns one `nvpair-proxy` process
+ * hosting a facade per engine, and reports each facade's bound listener; PAIR
+ * never fabricates a port (see the note at the top of
+ * `@/shared/constants/modular-runtime`). The demo resolves each port at start
+ * via `getProxyPort()` and skips any engine whose facade has not reported.
  *
  * Targeting a proxy rather than the engine itself is what makes the demo a
  * demo: requests enter PAIR's router and are placed by it. Hitting an engine's

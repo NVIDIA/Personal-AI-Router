@@ -48,8 +48,9 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	ineligible := newRoutingUpstream(t, http.StatusOK)
 
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
+		// No --proxy-engines: this test wants both engines fronted, which is
+		// the default.
 		"--proxy-path", proxyBin,
-		"--lmstudio-proxy-path", lmstudioProxyBin,
 	)
 	t.Cleanup(cleanup)
 	go func() {
@@ -68,7 +69,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 		port      int
 	}
 	cases := []proxyCase{
-		{name: "ollama", rpcPrefix: "proxy", path: "/api/chat", port: ollamaPort},
+		{name: "ollama", rpcPrefix: "ollama-proxy", path: "/api/chat", port: ollamaPort},
 		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", path: "/v1/chat/completions", port: lmstudioPort},
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -110,7 +111,8 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 				requestID++
 			}
 			callBrokerRPC(t, stdin, msgs, requestID, tc.rpcPrefix+":node/set-priority", map[string]any{
-				"nodes": []string{missingID, unknownID, owner404ID, ownerOKID},
+				"generation": 1,
+				"nodes":      []string{missingID, unknownID, owner404ID, ownerOKID},
 			})
 
 			before := snapshot()

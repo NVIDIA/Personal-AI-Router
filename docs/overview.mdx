@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 */}
 
-# NVIDIA Personal AI Router overview
+# NVIDIA Personal AI Router Overview
 
 NVIDIA Personal AI Router (PAIR) turns several machines on your local network
 into one place to send inference requests. You point an application at a local
@@ -15,11 +15,14 @@ the inference engine those applications already speak to, so existing tools work
 unchanged while gaining the ability to use another machine's GPU.
 
 You install PAIR on each machine you want to contribute compute and pair those
-machines together. On every one of them PAIR runs two things: an **application**
-you interact with — a desktop window, or a terminal interface for machines with
-no desktop — and a set of **background services** that do the real work. The
-services find the other machines on your network, keep track of which engine and
-which models each one has, and decide where a request should go.
+machines together. On every one of them, PAIR runs two things:
+
+- An **application** you interact with: a desktop window or a terminal
+  interface for machines with no desktop
+- A set of **background services** that do the real work
+
+The services find the other machines on your network, keep track of which engine
+and which models each one has, and decide where a request should go.
 
 This document establishes the vocabulary the rest of the documentation uses. To
 install PAIR and send a first request, go to
@@ -53,7 +56,7 @@ These terms have specific meanings in PAIR:
   and exposes the JSON-RPC API that both the desktop application and the terminal
   interface use.
 
-## What Happens When You Run PAIR
+## What Happens when You Run PAIR
 
 Running PAIR follows five steps:
 
@@ -75,8 +78,8 @@ you form a cluster, only the last step repeats.
 
 An application sends an ordinary Ollama-compatible or OpenAI-compatible HTTP
 request to a local proxy. The proxy selects one eligible node and forwards the
-whole request. That node's engine performs the inference and the response streams
-back through the proxy.
+whole request. That node's engine performs the inference, and the response
+streams back through the proxy.
 
 ```mermaid
 flowchart LR
@@ -85,18 +88,28 @@ flowchart LR
     Node --> Engine["Inference engine"]
 ```
 
-Both legs between machines are encrypted — the request out and the reply in — so
-the whole round trip stays protected rather than just the outbound half. Your
+Between machines, PAIR encrypts both the request out and the reply in, so the
+whole round trip stays protected rather than the outbound half alone. Your
 application sees an ordinary reply and never learns which machine served it,
 though you can see that yourself.
 
-A node is eligible when it is reachable, is running an engine that can serve the
-request, and that engine's current inventory advertises the requested model.
-Unknown and non-matching inventories are excluded; if no owner is available, the
-proxy returns a local `502`. Among eligible owners, the proxy honors manual
-selection first, then the scheduler's priority order, then a deterministic
-default. The scheduler ranks nodes by total pending work across both engines, and
-each proxy also counts requests it has just dispatched, so a burst of concurrent
+A node is eligible when all three of these hold:
+
+- It is reachable.
+- It is running an engine that can serve the request.
+- That engine's current inventory advertises the requested model.
+
+The proxy excludes unknown and non-matching inventories. If no owner is
+available, it returns a local `502`.
+
+Among eligible owners, the proxy applies this precedence:
+
+1. Manual selection.
+2. The scheduler's priority order.
+3. A deterministic default.
+
+The scheduler ranks nodes by total pending work across both engines, and each
+proxy also counts requests it has recently dispatched, so a burst of concurrent
 requests spreads out instead of waiting for workload reports to catch up.
 
 Because routing is a decision rather than a guarantee, use the **Jobs** view to
@@ -119,14 +132,16 @@ For the trust boundaries in detail, refer to
 
 ## What PAIR Provides
 
+PAIR provides these capabilities:
+
 - A local endpoint for compatible AI applications and development tools.
 - LAN discovery plus manually configured nodes.
 - Ollama-compatible and LM Studio/OpenAI-compatible routing proxies.
 - Pairing and cluster membership managed by the background services.
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between machines: a request sent to another node travels over
-  mutual TLS restricted to the nodes you have paired, and a machine that is not a
-  cluster member is refused. Local applications reach the proxy over loopback.
+  mutual TLS restricted to the nodes you have paired, and the cluster refuses a
+  machine that is not a member. Local applications reach the proxy over loopback.
 - A desktop application, plus a terminal interface for headless machines, driving
   the same services.
 - Visibility into nodes, engines, models, workloads, and service errors.
@@ -163,10 +178,11 @@ It stages the generated binaries in `desktop/cli-bin/`.
 
 ### `services/`
 
-The Go tree contains 13 build outputs:
+The Go tree contains 12 build outputs:
 
 - `nvpair-ui-broker`: service entry point, worker supervisor, and JSON-RPC API
-- `ollama-proxy` and `lmstudio-proxy`: compatible inference proxies
+- `nvpair-proxy`: the compatible inference proxy — one process hosting a facade
+  for each enabled engine
 - `nvpair-node-scanner` and `nvpair-node-info`: discovery and host telemetry
 - `nvpair-manual-nodes`: user-specified nodes
 - `nvpair-engine-manager`: local engine and model lifecycle

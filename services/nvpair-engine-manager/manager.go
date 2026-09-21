@@ -61,11 +61,12 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
-	codec *Codec
-	exec  *Executor
-	peers *peerDirectory
-	addrs *reach.Chooser
-	mesh  *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
+	settingsRelay settingsRelay
+	codec         *Codec
+	exec          *Executor
+	peers         *peerDirectory
+	addrs         *reach.Chooser
+	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
@@ -78,7 +79,7 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 	// cancel defaults to a no-op so the "shutdown" handler is safe even if
 	// handleMessage is reached before Run() installs the real CancelFunc
 	// (e.g. a unit test calling it directly); Run overwrites it.
-	return &Manager{
+	m := &Manager{
 		codec: codec,
 		exec:  exec,
 		peers: newPeerDirectory(),
@@ -92,6 +93,9 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		}),
 		cancel: func() {},
 	}
+	m.settingsRelay.send = codec.Notify
+	exec.settingsParent = m.settingsRelay.call
+	return m
 }
 
 func (m *Manager) Run(ctx context.Context) error {
@@ -115,6 +119,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	// on change (load/unload, JIT auto-load, TTL eviction). Bound to ctx: stops
 	// when the read loop exits below.
 	go m.exec.watchLoaded(ctx)
+	go m.watchPeerSettings(ctx)
 
 	err := m.readLoop(ctx)
 	// Cancel first so any in-flight start aborts at its readiness wait,
@@ -150,6 +155,9 @@ func (m *Manager) readLoop(ctx context.Context) error {
 }
 
 func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
+	if m.handleSettingsMessage(ctx, msg) {
+		return
+	}
 	if msg.Method == applog.SetLevelMethod {
 		resolved, err := applog.HandleSetLevelParams(msg.Params)
 		if msg.IsRequest() {

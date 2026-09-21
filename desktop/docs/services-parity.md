@@ -32,15 +32,15 @@ history.
 | Workloads                  | Complete after subscription     | Local and peer workload events feed one Electron catalog                                                                                        |
 | Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                           |
 | Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none |
-| Settings                   | Partial                         | Cluster identity settings are used; inert settings are not surfaced                                                                             |
+| Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                            |
 | Model catalog search       | Electron-owned                  | Curated Ollama and LM Studio catalogs are fetched in Electron main                                                                              |
 
 ## Supervision
 
 `nvpair-ui-broker` is the sole Electron child. It owns:
 
-- `ollama-proxy`;
-- `lmstudio-proxy`;
+- `nvpair-proxy`, one process hosting a facade per enabled engine, under one
+  supervisor;
 - `nvpair-node-scanner`;
 - `nvpair-node-info`;
 - `nvpair-manual-nodes`;
@@ -99,10 +99,16 @@ they survive worker restarts.
 
 ## Routing and inference
 
-Both text-engine proxies are broker-owned and cluster-aware:
+Both text-engine facades are broker-owned and cluster-aware. They live in one
+`nvpair-proxy` process, each enabled after spawn on its own port, and each
+serves its engine's dialect:
 
-- `ollama-proxy` serves the Ollama-compatible surface;
-- `lmstudio-proxy` serves the LM Studio/OpenAI-compatible surface.
+- the Ollama facade serves the Ollama-compatible surface;
+- the LM Studio facade serves the LM Studio/OpenAI-compatible surface.
+
+Sharing a process is what lets them share the burst reservations the scheduler
+depends on: two facades bursting at once compete for the same node's GPU, so a
+dispatch through either has to be visible to the other.
 
 Routing precedence is manual selection, scheduler priority, then deterministic
 proxy ordering. Personal AI Router leaves proxies in automatic mode.
@@ -182,8 +188,16 @@ terminal backend notifications. It never treats optimistic state as
 authoritative.
 
 Remote cluster support includes status, install, start, stop, model pull, and
-remote model load, unload (eject), and delete via the `ec` surface. Uninstall,
-update, and port changes remain local-only.
+remote model load, unload (eject), and delete via the `ec` surface. Uninstall
+and update remain local-only.
+
+Server port, proxy port, and engine arguments are one authoritative record owned
+by the node running the engine, read and written through the broker's
+`engines:{get,preview,apply}-settings` channels. A request naming another node
+is relayed to that peer, so a clustered device is edited like the local one. The
+one exception is managed CORS origin settings: the owning node rejects a change to
+browser access policy relayed from a peer. Other environment assignments pass
+through literally, with no maintained catalog of engine options or variables.
 
 ## Models
 
@@ -406,6 +420,13 @@ PIN, so UI copy must not present the PIN as a strong authenticator.
 
 Personal AI Router uses node settings for persisted cluster identity and friendly name
 synchronization.
+
+Per-engine settings are separate and owned by `nvpair-engine-manager`: the
+server port, the proxy port, and the engine arguments, persisted as a manifest
+override that survives a restart. The broker owns the combined operation —
+journal, validation, stop, proxy rebind, restart, and crash recovery — so both
+the full editor and the port-only `engine:set-port` RPC used by the TUI go
+through the same path.
 
 Backend settings with no active behavior are intentionally not exposed in the
 UI. A setting should be surfaced only when a backend component consumes it and

@@ -52,7 +52,8 @@ function makeFakeWindow() {
                     stateCb = cb
                     return noopUnsub
                 },
-                onProgress: () => noopUnsub
+                onProgress: () => noopUnsub,
+                onSettingsChanged: () => noopUnsub
             },
             errors: {
                 onUpdate: (cb: (errors: ServiceError[]) => void) => {

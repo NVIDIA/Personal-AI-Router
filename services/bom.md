@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Bill of Materials — Third-Party Go Libraries
 
-Scope: dependencies linked into the thirteen shipped binaries (`ollama-proxy`, `lmstudio-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-cluster-manager`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-job-scheduler`, `nvpair-tui`). The local modules `nvpair-shared` and `eapnoob` (the EAP-NOOB implementation under `eap-noob/`, linked by `nvpair-cluster-manager`) are first-party and excluded. The `tests/`, `mdns-test/`, and `broker-test-driver/` modules are development-only and excluded.
+Scope: dependencies linked into the twelve shipped binaries (`nvpair-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-cluster-manager`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-job-scheduler`, `nvpair-tui`). The local modules `nvpair-shared` and `eapnoob` (the EAP-NOOB implementation under `eap-noob/`, linked by `nvpair-cluster-manager`) are first-party and excluded. The `tests/`, `mdns-test/`, and `broker-test-driver/` modules are development-only and excluded.
 
 `nvpair-tui` is the only component that links the Bubble Tea terminal-UI stack (`charmbracelet/bubbletea` + `lipgloss` + `bubbles`); its transitive `charmbracelet/*`, `muesli/*`, `mattn/*`, `clipperhouse/*`, `atotto/clipboard`, `aymanbagabas/go-osc52`, `lucasb-eyer/go-colorful`, `erikgeiser/coninput`, and `xo/terminfo` dependencies are unique to it.
 
@@ -21,15 +21,15 @@ As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` a
 
 | Library | Version | Used By | License | License URL |
 |---------|---------|---------|---------|-------------|
-| `github.com/Microsoft/go-winio` | v0.6.2 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-manual-nodes, nvpair-node-settings, nvpair-cluster-manager, nvpair-ui-broker, nvpair-workload-manager, nvpair-errors, nvpair-engine-manager, nvpair-job-scheduler | MIT | [LICENSE](https://github.com/microsoft/go-winio/blob/main/LICENSE) |
+| `github.com/Microsoft/go-winio` | v0.6.2 | nvpair-proxy, nvpair-node-scanner, nvpair-manual-nodes, nvpair-node-settings, nvpair-cluster-manager, nvpair-ui-broker, nvpair-workload-manager, nvpair-errors, nvpair-engine-manager, nvpair-job-scheduler | MIT | [LICENSE](https://github.com/microsoft/go-winio/blob/main/LICENSE) |
 | `github.com/charmbracelet/bubbles` | v1.0.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbles/blob/master/LICENSE) |
 | `github.com/charmbracelet/bubbletea` | v1.3.10 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbletea/blob/master/LICENSE) |
 | `github.com/charmbracelet/lipgloss` | v1.1.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/lipgloss/blob/master/LICENSE) |
-| `github.com/grandcat/zeroconf` | v1.0.0 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | MIT | [LICENSE](https://github.com/grandcat/zeroconf/blob/master/LICENSE) |
+| `github.com/grandcat/zeroconf` | v1.0.0 | nvpair-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | MIT | [LICENSE](https://github.com/grandcat/zeroconf/blob/master/LICENSE) |
 | `github.com/jaypipes/ghw` | v0.24.0 | nvpair-node-info | Apache-2.0 | [COPYING](https://github.com/jaypipes/ghw/blob/main/COPYING) |
-| `github.com/miekg/dns` | v1.1.55 / v1.1.72 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | BSD-3-Clause | [LICENSE](https://github.com/miekg/dns/blob/master/LICENSE) |
+| `github.com/miekg/dns` | v1.1.55 / v1.1.72 | nvpair-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | BSD-3-Clause | [LICENSE](https://github.com/miekg/dns/blob/master/LICENSE) |
 | `github.com/shirou/gopsutil/v4` | v4.26.7 | nvpair-node-info (macOS) | BSD-3-Clause | [LICENSE](https://github.com/shirou/gopsutil/blob/master/LICENSE) |
-| `golang.org/x/net` | v0.58.0 | ollama-proxy, lmstudio-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/net/+/master:LICENSE) |
+| `golang.org/x/net` | v0.58.0 | nvpair-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/net/+/master:LICENSE) |
 | `golang.org/x/sys` | v0.47.0 | nvpair-node-info, nvpair-cluster-manager, nvpair-engine-manager | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/sys/+/master:LICENSE) |
 | `howett.net/plist` | v1.0.2-0.20250314 | nvpair-node-info | BSD-2-Clause | [LICENSE](https://github.com/DHowett/go-plist/blob/main/LICENSE) |
 

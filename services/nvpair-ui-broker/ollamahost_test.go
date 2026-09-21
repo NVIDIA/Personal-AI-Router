@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -114,7 +115,17 @@ func TestReservedOllamaHostAliasPort(t *testing.T) {
 			if tc.lmstudioBackend > 0 {
 				enginePorts[tc.lmstudioBackend] = "lmstudio"
 			}
-			reason := reservedOllamaHostAliasPort(tc.port, enginePorts, tc.lmstudioProxy)
+			// The sibling-proxy set is built from the engine table in
+			// production; here it is spelled out so a case can vary the
+			// persisted port independently.
+			siblings := map[int]string{
+				managedLMStudioFacadePort:   fmt.Sprintf("the LM Studio compatibility proxy uses port %d", managedLMStudioFacadePort),
+				managedLMStudioBackendStart: fmt.Sprintf("the managed LM Studio backend uses port %d", managedLMStudioBackendStart),
+			}
+			if tc.lmstudioProxy > 0 {
+				siblings[tc.lmstudioProxy] = fmt.Sprintf("the LM Studio proxy is configured on port %d", tc.lmstudioProxy)
+			}
+			reason := reservedOllamaHostAliasPort(tc.port, enginePorts, siblings)
 			if tc.wantReasonSubstr == "" && reason != "" {
 				t.Fatalf("reason = %q, want none", reason)
 			}
@@ -125,23 +136,98 @@ func TestReservedOllamaHostAliasPort(t *testing.T) {
 	}
 }
 
-func TestConfiguredLMStudioProxyPort(t *testing.T) {
+// The alias reads each sibling proxy's persisted port from its own file, so a
+// third engine is covered by adding a table entry rather than another reader.
+func TestConfiguredEngineProxyPort(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
-	if got := configuredLMStudioProxyPort(); got != managedLMStudioFacadePort {
-		t.Fatalf("missing persisted port = %d, want default %d", got, managedLMStudioFacadePort)
+
+	for _, p := range engineProxyProfiles {
+		if got := configuredEngineProxyPort(p); got != p.FacadePort {
+			t.Fatalf("%s: missing persisted port = %d, want its facade %d", p.Name, got, p.FacadePort)
+		}
 	}
-	path, err := appdir.Path(lmstudioProxyPortFile)
+
+	// Persisting one engine's port must not move another's.
+	stored := lmstudioProxyProfile.FacadePort + 6
+	path, err := appdir.Path(lmstudioProxyProfile.PortFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"port":1240}`), 0o600); err != nil {
+	if err := os.WriteFile(path, fmt.Appendf(nil, `{"port":%d}`, stored), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := configuredLMStudioProxyPort(); got != 1240 {
-		t.Fatalf("persisted port = %d, want 1240", got)
+	if got := configuredEngineProxyPort(lmstudioProxyProfile); got != stored {
+		t.Fatalf("persisted port = %d, want %d", got, stored)
+	}
+	if got := configuredEngineProxyPort(ollamaProxyProfile); got != ollamaProxyProfile.FacadePort {
+		t.Fatalf("ollama port = %d, want its own facade %d; it read LM Studio's file",
+			got, ollamaProxyProfile.FacadePort)
+	}
+
+	// And the reserved set the alias checks picks that persisted port up.
+	b := &Broker{}
+	if reason := b.siblingEngineProxyPorts(ollamaProxyProfile)[stored]; reason == "" {
+		t.Fatalf("persisted sibling port %d is not reserved against the alias", stored)
+	}
+}
+
+// A proxy that bind-fails picks a fallback port, and that search must not land
+// on a port a *different* engine is configured to use. Nothing enforced this
+// before: the fallback excluded the alias and its own backend, so a stopped
+// sibling configured just above the search base was taken, and that engine then
+// silently failed to start on the next desired-state restore.
+//
+// Both directions are checked because the two engines have separate fallback
+// functions and fixing one is not evidence about the other.
+func TestProxyFallbackSkipsASiblingEnginesConfiguredPort(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		self     engineProxyProfile
+		sibling  engineProxyProfile
+		fallback func(*Broker, ...int) int
+	}{
+		{
+			name:     "ollama fallback avoids LM Studio",
+			self:     ollamaProxyProfile,
+			sibling:  lmstudioProxyProfile,
+			fallback: (*Broker).setOllamaProxyFallback,
+		},
+		{
+			name:     "lmstudio fallback avoids Ollama",
+			self:     lmstudioProxyProfile,
+			sibling:  ollamaProxyProfile,
+			fallback: (*Broker).setLMStudioProxyFallback,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateOllamaHostTestConfig(t)
+
+			// Put the sibling's persisted port inside the search range so a
+			// fallback that ignores siblings would hand it out.
+			stored := tc.self.EnginePortBase + 1
+			path, err := appdir.Path(tc.sibling.PortFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, fmt.Appendf(nil, `{"port":%d}`, stored), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			b := &Broker{}
+			got := tc.fallback(b, tc.self.EnginePortBase)
+			if got == stored {
+				t.Fatalf("fallback chose %d, the port %s is configured on", got, tc.sibling.DisplayName)
+			}
+			if got == tc.sibling.FacadePort || got == tc.sibling.EnginePortBase {
+				t.Fatalf("fallback chose %d, one of %s's default ports", got, tc.sibling.DisplayName)
+			}
+		})
 	}
 }
 
@@ -163,57 +249,6 @@ func TestPrepareOllamaHostAliasHonorsOptOutAndBackendOwnership(t *testing.T) {
 			}
 		})
 	}
-}
-
-func brokerWithEngineStatus(t *testing.T, engine string, port int) *Broker {
-	return brokerWithEngineInventory(t, map[string]int{engine: port})
-}
-
-func brokerWithEngineInventory(t *testing.T, ports map[string]int) *Broker {
-	t.Helper()
-	client, server := net.Pipe()
-	worker := &rpcWorker{peer: NewPeer(NewCodec(client))}
-	go worker.peer.Serve(nil, nil)
-	b := &Broker{}
-	b.setEngineMgr(worker)
-	go func() {
-		codec := NewCodec(server)
-		request, err := codec.Read()
-		if err != nil {
-			return
-		}
-		switch request.Method {
-		case "engine:status":
-			var params struct {
-				Engine string `json:"engine"`
-			}
-			if json.Unmarshal(request.Params, &params) != nil {
-				_ = codec.RespondError(request.ID, -32602, "invalid engine status request")
-				return
-			}
-			_ = codec.Respond(request.ID, map[string]any{"port": ports[params.Engine]})
-		case "engine:get-installed":
-			engines := make([]map[string]any, 0, len(ports))
-			for engine, port := range ports {
-				engines = append(engines, map[string]any{"engine": engine, "port": port})
-			}
-			_ = codec.Respond(request.ID, map[string]any{"engines": engines})
-		default:
-			_ = codec.RespondError(request.ID, -32602, "unexpected engine status request")
-		}
-	}()
-	t.Cleanup(func() {
-		_ = client.Close()
-		_ = server.Close()
-	})
-	return b
-}
-
-func isolateOllamaHostTestConfig(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("LOCALAPPDATA", dir)
-	t.Setenv("XDG_CONFIG_HOME", dir)
 }
 
 func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {

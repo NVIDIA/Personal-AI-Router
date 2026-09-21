@@ -7,7 +7,7 @@
 //   - Scheduler process tests drive workload, telemetry, staleness, and restart
 //     baselines over stdin and inspect complete schedule:priority snapshots.
 //   - TestProxySetPriorityViaBroker exercises the proxy's node/set-priority
-//     through the broker's proxy:<method> relay end-to-end.
+//     through the broker's ollama-proxy:<method> relay end-to-end.
 //   - TestProxyConcurrentBurstDistribution holds real upstream requests open and
 //     verifies the proxy balances before scheduler feedback can arrive.
 //   - TestBrokerSpawnsScheduler confirms the broker comes up healthy with the
@@ -352,7 +352,7 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 		}))
 	}
 
-	stdin, msgs, stderr, cleanup := startBrokerWith(t, "--proxy-path", proxyBin)
+	stdin, msgs, stderr, cleanup := startBrokerWith(t, "--proxy-path", proxyBin, "--proxy-engines", "ollama")
 	t.Cleanup(cleanup)
 	t.Cleanup(func() {
 		unblock()
@@ -370,7 +370,7 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 
 	requestID := 100
 	for i, server := range servers {
-		callBrokerRPC(t, stdin, msgs, requestID, "proxy:node/add-manual", map[string]any{
+		callBrokerRPC(t, stdin, msgs, requestID, "ollama-proxy:node/add-manual", map[string]any{
 			"id":        ids[i],
 			"host":      "127.0.0.1",
 			"port":      portOfURL(t, server.URL),
@@ -407,8 +407,8 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 			Rank:        rank,
 		})
 	}
-	callBrokerRPC(t, stdin, msgs, requestID, "proxy:node/set-priority",
-		schedulerwire.Priority{Nodes: order, Ranks: ranks})
+	callBrokerRPC(t, stdin, msgs, requestID, "ollama-proxy:node/set-priority",
+		schedulerwire.Priority{Generation: 1, Nodes: order, Ranks: ranks})
 
 	// Workload and request notifications can exceed the reader's buffer while
 	// the upstreams are blocked. Drain them after setup so proxy writes never
@@ -523,18 +523,20 @@ func assertBurstTotalsSkew(
 }
 
 // TestProxySetPriorityViaBroker: the proxy's node/set-priority is reachable
-// through the broker's proxy:<method> relay and returns {count}.
+// through the broker's ollama-proxy:<method> relay and returns {count}.
 func TestProxySetPriorityViaBroker(t *testing.T) {
 	stdin, msgs, cleanup := startBrokerProc(t,
 		"--scanner-path", scannerBin,
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 	)
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 	waitProxyReady(t, stdin, msgs, 15*time.Second)
 
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":70,"method":"proxy:node/set-priority","params":{"nodes":["alpha","beta","gamma"]}}`)
+	// A generation is required: an unversioned snapshot would clear the
+	// reservations without advancing the epoch, so the proxy rejects one.
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":70,"method":"ollama-proxy:node/set-priority","params":{"generation":1,"nodes":["alpha","beta","gamma"]}}`)
 	resp := waitForResponse(t, msgs, 5*time.Second)
 	var r struct {
 		Count int `json:"count"`
@@ -571,7 +573,7 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 	realPort := portOfURL(t, realEngine.URL)
 
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
-		"--lmstudio-proxy-path", lmstudioProxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "lmstudio",
 	)
 	t.Cleanup(cleanup)
 	go func() {
@@ -592,7 +594,7 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 
 	// Priority puts a peer that never advertised LM Studio first. The proxy must
 	// skip it and route to the discovered real-lm node.
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":91,"method":"lmstudio-proxy:node/set-priority","params":{"nodes":["no-lm-peer","real-lm"]}}`)
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":91,"method":"lmstudio-proxy:node/set-priority","params":{"generation":1,"nodes":["no-lm-peer","real-lm"]}}`)
 	if resp := waitForResponse(t, msgs, 5*time.Second); resp.Error != nil {
 		t.Fatalf("lmstudio-proxy:node/set-priority rejected: %d %s", resp.Error.Code, resp.Error.Message)
 	}

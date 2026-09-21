@@ -33,7 +33,7 @@ describe('broker address re-rank', () => {
             }
         })
         state.handleNotification({
-            source: 'proxy',
+            source: 'ollama-proxy',
             method: 'node/discovered',
             params: {
                 id: 'uuid-rerank',

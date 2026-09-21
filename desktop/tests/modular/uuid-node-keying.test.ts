@@ -36,7 +36,7 @@ describe('UUID node keying', () => {
             }
         })
         state.handleNotification({
-            source: 'proxy',
+            source: 'ollama-proxy',
             method: 'node/discovered',
             params: {
                 id: 'uuid-merge-1',

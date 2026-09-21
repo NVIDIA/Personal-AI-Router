@@ -13,16 +13,18 @@ import (
 	"nvpair-shared/noderec"
 )
 
-const (
-	// defaultOllamaPort / defaultLMStudioPort are the engines' stock ports,
-	// used ONLY as a fallback when engine-manager can't report the real one.
-	// Never hardcode the advertise/health port: the product-default proxy takes
-	// Ollama's :11434, so a fixed :11434 would advertise the proxy
-	// as Ollama and make the proxy (and peers) self-forward into a loop. The
-	// real port is resolved per poll via localEnginePort.
-	defaultOllamaPort   = 11434
-	defaultLMStudioPort = 1234
+// An engine's stock port is its FacadePort in the engine table, used ONLY as a
+// fallback when engine-manager cannot report the real one. Never hardcode the
+// advertise or health port: the product-default proxy takes Ollama's 11434, so
+// a fixed 11434 would advertise the proxy as Ollama and make the proxy — and
+// peers — self-forward into a loop. The real port is resolved per poll via
+// localEnginePort.
+var (
+	defaultOllamaPort   = ollamaProxyProfile.FacadePort
+	defaultLMStudioPort = lmstudioProxyProfile.FacadePort
+)
 
+const (
 	// engineManagerHTTPPort is the fixed LAN port the broker tells
 	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
 	// it registers as the em service so peers' daemons can fetch this node's
@@ -84,6 +86,8 @@ func (b *Broker) runAutoAdvertise(ctx context.Context) {
 // /v1/models endpoint (registered separately), which peers fetch during
 // enrichment.
 func (b *Broker) reconcileAdvertise(client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
 	// During the managed bind -> backend-move transition, engine:status would
 	// probe :11434 and could mistake the proxy (or a remote response forwarded
 	// through it) for an externally started Ollama. Do not query liveness until
@@ -99,7 +103,7 @@ func (b *Broker) reconcileAdvertise(client *http.Client) {
 	// ports differ. Equal ports mean we can't tell the engine from the proxy
 	// (or there is no separate engine), and setting the local backend to the
 	// proxy's own port would make the ingress forward to itself.
-	up := probe && proxyPort != 0 && enginePort != proxyPort && checkOllamaHealth(client, enginePort)
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkEngineHealth(ollamaProxyProfile, client, enginePort)
 	if up {
 		b.registerService(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: proxyPort})
 		b.setProxyLocalBackend(b.getProxy(), "ollama", enginePort, true)
@@ -113,13 +117,13 @@ func (b *Broker) ollamaFacadeIsPendingBackend() bool {
 	if b.managedOllamaBackend.Load() != 0 || b.ollamaMoveInFlight.Load() {
 		return true
 	}
-	if b.ollamaBackendPort.Load() != managedOllamaFacadePort {
+	if int(b.ollamaState().backendPort.Load()) != managedOllamaFacadePort {
 		return false
 	}
 	// Recovery flips managed mode off before it live-rebinds the proxy away
 	// from :11434. Keep probes gated through that interval (and indefinitely if
 	// the rebind fails) so the proxy can never be adopted as Ollama.
-	return b.managedOllamaFacade.Load() || b.proxyListenPort() == managedOllamaFacadePort
+	return b.ollamaState().managedFacade.Load() || b.proxyListenPort() == managedOllamaFacadePort
 }
 
 // runAutoAdvertiseLMStudio is the LM Studio sibling of runAutoAdvertise: it
@@ -150,13 +154,15 @@ func (b *Broker) runAutoAdvertiseLMStudio(ctx context.Context) {
 // promoted proxy port (never the engine) and hands the engine's loopback port to
 // the LM Studio proxy via node/set-local-backend.
 func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
 	enginePort, probe := b.localEnginePort("lmstudio", defaultLMStudioPort)
 	proxyPort := b.lmstudioProxyListenPort()
 	if proxyPort != 0 && enginePort == proxyPort {
 		// engine-manager may be temporarily unavailable after managed setup.
 		// Prefer the last confirmed backend, but never hand the proxy its own
 		// listener as a local destination.
-		if cached := int(b.lmstudioBackendPort.Load()); cached > 0 && cached != proxyPort {
+		if cached := int(b.lmstudioState().backendPort.Load()); cached > 0 && cached != proxyPort {
 			enginePort = cached
 		} else {
 			enginePort = 0
@@ -171,7 +177,7 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	// cache while the proxy and engine restart together (as on the first invite),
 	// which later makes the compatibility proxy on the facade port look like the
 	// backend and wrongly disables managed mode.
-	up := probe && proxyPort != 0 && enginePort != proxyPort && checkLMStudioHealth(client, enginePort)
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkEngineHealth(lmstudioProxyProfile, client, enginePort)
 	if up {
 		b.registerService(noderec.RegisterParams{Service: noderec.ServiceLMStudio, Port: proxyPort})
 		b.setProxyLocalBackend(b.getLMStudioProxy(), "lmstudio", enginePort, true)
@@ -237,50 +243,34 @@ func runningEnginePort(result json.RawMessage) (int, bool) {
 	return st.Port, true
 }
 
-// proxyListenPort returns the ollama-proxy's current listen port, or 0 if no
-// proxy is supervised or it hasn't reported ready yet. Used to refuse
-// advertising Ollama at the proxy's own port and creating a self-forward loop.
+// engineProxyListenPort returns an engine proxy's current listen port, or 0 if
+// it is not supervised or has not reported ready. Used to refuse advertising an
+// engine at its own proxy's port, which would be a self-forward loop, and to
+// keep the compatibility fallback from mistaking a proxy that moved onto the
+// facade port for the engine itself.
+func (b *Broker) engineProxyListenPort(profile engineProxyProfile) int {
+	if p := b.engineProxyHandle(profile); p != nil {
+		if ready, port := p.Status(profile.Name); ready {
+			return port
+		}
+	}
+	return 0
+}
+
 func (b *Broker) proxyListenPort() int {
-	if p := b.getProxy(); p != nil {
-		if ready, port := p.Status(); ready {
-			return port
-		}
-	}
-	return 0
+	return b.engineProxyListenPort(ollamaProxyProfile)
 }
 
-// lmstudioProxyListenPort is the LM Studio sibling of proxyListenPort. It
-// prevents the compatibility fallback from mistaking a proxy moved onto :1234
-// for the actual engine.
 func (b *Broker) lmstudioProxyListenPort() int {
-	if p := b.getLMStudioProxy(); p != nil {
-		if ready, port := p.Status(); ready {
-			return port
-		}
-	}
-	return 0
+	return b.engineProxyListenPort(lmstudioProxyProfile)
 }
 
-// checkOllamaHealth reports whether a local ollama server is answering on the
-// given port. A plain GET of the root that returns 200 is ollama's liveness
-// convention. The port is resolved per poll (see
-// localEnginePort), not hardcoded, so the proxy is never mistaken for Ollama.
-func checkOllamaHealth(client *http.Client, port int) bool {
-	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/", port))
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-// checkLMStudioHealth reports whether a local LM Studio server is answering on
-// the given port. LM Studio serves the OpenAI-compatible API, so a 200 from
-// /v1/models is its liveness signal (the Ollama equivalent of GET /). The port
-// is resolved per poll (see localEnginePort), not hardcoded, so the proxy is
-// never mistaken for LM Studio.
-func checkLMStudioHealth(client *http.Client, port int) bool {
-	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
+// checkEngineHealth reports whether a local engine is answering on the given
+// port, by probing the path its own liveness convention uses. The port is
+// resolved per poll (see localEnginePort) rather than hardcoded, so the proxy
+// is never mistaken for the engine it fronts.
+func checkEngineHealth(profile engineProxyProfile, client *http.Client, port int) bool {
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d%s", port, profile.HealthProbePath))
 	if err != nil {
 		return false
 	}

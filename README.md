@@ -221,22 +221,25 @@ Each entry assumes the ones before it.
    most users need.
 3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
    update, and uninstall engines; what PAIR restores after you quit or relaunch.
-4. **[Terminal interface](docs/terminal-interface.mdx)** — the same tasks from a
+4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and
+   its launch command, on this machine or a paired one, and give a browser access
+   to your models.
+5. **[Terminal interface](docs/terminal-interface.mdx)** — the same tasks from a
    terminal, for a machine with no desktop environment. Skip it if every machine
    you run has a desktop.
-5. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
+6. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
    you need it, so you know where the diagnostics live. Alongside it,
    **[Known issues](docs/known-issues.mdx)** lists the significant limitations we
    are already aware of, and
    **[Collecting and sanitizing logs](docs/log-collection.mdx)** covers preparing
    a log you can share.
-6. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
+7. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
    routed, and where the trust boundaries are. Read this before changing
    anything, or if you want to know why PAIR behaves the way it does.
-7. **[Building and running](docs/building.mdx)** — prerequisites, building from
+8. **[Building and running](docs/building.mdx)** — prerequisites, building from
    source, running the services without the desktop application, and writing
    your own client against the JSON-RPC API.
-8. **[Developer guide](docs/developing.mdx)** — read this before contributing:
+9. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
 
@@ -284,7 +287,7 @@ feedback and contributions will help shape priorities.
 
 - [ ] Requester-only clients that send work without hosting an inference engine.
 - [ ] Launch PAIR automatically on system startup.
-- [ ] Configure engine launch options and environment variables from PAIR.
+- [x] Configure engine launch options and environment variables from PAIR.
 - [ ] Stability and reliability improvements informed by real-world use.
 
 Have a feature request or a workflow you want PAIR to support? Open an

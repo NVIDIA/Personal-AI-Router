@@ -12,38 +12,24 @@ import (
 	"nvpair-shared/errors"
 )
 
+// Restates descriptor values; see the equivalent block in proxyport.go.
 const (
 	managedLMStudioFacadePort      = 1234
 	managedLMStudioBackendStart    = 1235
 	lmstudioPortOwnershipBlockedID = "lmstudio-proxy:port-ownership-blocked"
 )
 
-// planManagedLMStudioPorts keeps the ownership policy deterministic. LM Studio
-// is the one engine that engine-manager may move while running: its identified
-// command-mode runtime has an official stop command. Process-mode and unknown
+// lmstudioProxyProfile is the descriptor entry this file's callers plan
+// against. See ollamaProxyProfile.
+var lmstudioProxyProfile = mustEngineProxyProfile("lmstudio")
+
+// planManagedLMStudioPorts plans LM Studio's managed ports. LM Studio is a
+// managed engine — engine-manager may stop and reposition its identified
+// command-mode runtime while it is running — so the shared policy moves the
+// backend first and judges the facade afterwards. Process-mode and unknown
 // owners are still refused by engine:set-port.
 func planManagedLMStudioPorts(enabled bool, st ollamaPortStatus, available func(int) bool) managedPortPlan {
-	if !enabled {
-		return managedPortPlan{}
-	}
-	if st.Port > 0 && st.Port != managedLMStudioFacadePort {
-		if !available(managedLMStudioFacadePort) {
-			return managedPortPlan{Blocked: "the compatibility port is already in use"}
-		}
-		if !st.Running && !available(st.Port) {
-			backend := nextAvailablePort(managedLMStudioBackendStart, available)
-			if backend == 0 {
-				return managedPortPlan{Blocked: "no free backend port is available"}
-			}
-			return managedPortPlan{Enabled: true, BackendPort: backend}
-		}
-		return managedPortPlan{Enabled: true}
-	}
-	backend := nextAvailablePort(managedLMStudioBackendStart, available)
-	if backend == 0 {
-		return managedPortPlan{Blocked: "no free backend port is available"}
-	}
-	return managedPortPlan{Enabled: true, BackendPort: backend}
+	return planManagedEnginePorts(lmstudioProxyProfile, enabled, st, available)
 }
 
 func (b *Broker) markLMStudioPortReady() {
@@ -86,11 +72,16 @@ func (b *Broker) lmstudioPortOwnershipPending() bool {
 	}
 }
 
+// needsLMStudioPortGate mirrors needsOllamaPortGate: these are the client
+// requests that can probe and adopt the configured port, so they must wait
+// while :1234 is changing hands. engine:install is gated for the same reason
+// as the rest — an install that starts the engine assigns it a port, and doing
+// that mid-transition can land on the port the proxy is about to take.
 func needsLMStudioPortGate(method string, params json.RawMessage) bool {
 	if method == "engine:get-installed" {
 		return true
 	}
-	if method != "engine:status" && method != "engine:start" && method != "engine:restart" {
+	if method != "engine:status" && method != "engine:install" && method != "engine:start" && method != "engine:restart" {
 		return false
 	}
 	var request struct {
@@ -128,7 +119,10 @@ func (b *Broker) setLMStudioProxyFallback(excludedPorts ...int) int {
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		excludedPorts = append(excludedPorts, aliasPort)
 	}
-	if backend := int(b.lmstudioBackendPort.Load()); backend > 0 {
+	for port := range b.siblingEngineProxyPorts(lmstudioProxyProfile) {
+		excludedPorts = append(excludedPorts, port)
+	}
+	if backend := int(b.lmstudioState().backendPort.Load()); backend > 0 {
 		excludedPorts = append(excludedPorts, backend)
 	} else {
 		// With no authoritative backend yet, neither LM Studio's compatibility
@@ -137,7 +131,7 @@ func (b *Broker) setLMStudioProxyFallback(excludedPorts ...int) int {
 		excludedPorts = append(excludedPorts, managedLMStudioFacadePort, managedLMStudioBackendStart)
 	}
 	fallback := nextAvailablePortExcluding(managedLMStudioBackendStart, excludedPorts, tcpPortAvailable)
-	b.lmstudioProxyStartupPort.Store(int32(fallback))
+	b.lmstudioState().startupPort.Store(int32(fallback))
 	return fallback
 }
 
@@ -146,7 +140,7 @@ func (b *Broker) rebindLMStudioProxy(p *proxyProcess, port int) bool {
 		return false
 	}
 	body, _ := json.Marshal(map[string]int{"port": port})
-	result, rpcErr, err := p.Call(context.Background(), "set-port", body)
+	result, rpcErr, err := p.Call(context.Background(), lmstudioProxyProfile.addressed("set-port"), body)
 	if err != nil || rpcErr != nil {
 		slog.Warn("failed to rebind LM Studio proxy", "port", port, "err", err, "rpcErr", rpcErr)
 		return false
@@ -159,7 +153,7 @@ func (b *Broker) rebindLMStudioProxy(p *proxyProcess, port int) bool {
 // rebinds a live proxy. It does not open the ownership gate: only a confirmed
 // bound proxy generation or an exhausted supervisor may do that.
 func (b *Broker) blockManagedLMStudioFacade(reason string, p *proxyProcess, excludedPorts ...int) (int, bool) {
-	b.managedLMStudioFacade.Store(false)
+	b.lmstudioState().managedFacade.Store(false)
 	fallback := b.setLMStudioProxyFallback(excludedPorts...)
 	b.reportLMStudioPortOwnershipBlocked(reason)
 	return fallback, b.rebindLMStudioProxy(p, fallback)
@@ -182,13 +176,13 @@ func (b *Broker) cacheLMStudioPortStatus() (ollamaPortStatus, bool) {
 	if st.Port <= 0 {
 		return st, false
 	}
-	b.lmstudioBackendPort.Store(int32(st.Port))
+	b.lmstudioState().backendPort.Store(int32(st.Port))
 	return st, true
 }
 
 func (b *Broker) configureUnmanagedLMStudioFacade() {
-	b.managedLMStudioFacade.Store(false)
-	b.lmstudioProxyStartupPort.Store(0)
+	b.lmstudioState().managedFacade.Store(false)
+	b.lmstudioState().startupPort.Store(0)
 	b.forwardErrorsClear(lmstudioPortOwnershipBlockedID)
 }
 
@@ -202,6 +196,9 @@ func (b *Broker) prepareManagedLMStudioFacade() {
 }
 
 func (b *Broker) prepareManagedLMStudioFacadeWithPortCheck(portAvailable func(int) bool) {
+	if b.prepareExplicitEngineSettings("lmstudio") {
+		return
+	}
 	// Ollama's facade is prepared first, so an inherited OLLAMA_HOST alias is
 	// already reserved here and must stay out of LM Studio's backend search.
 	portAvailable = b.availableOffOllamaHostAlias(portAvailable)
@@ -257,7 +254,7 @@ func (b *Broker) prepareManagedLMStudioFacadeWithPortCheck(portAvailable func(in
 		return
 	}
 	if st.Port > 0 {
-		b.lmstudioBackendPort.Store(int32(st.Port))
+		b.lmstudioState().backendPort.Store(int32(st.Port))
 	}
 	if !policy.Value {
 		b.configureUnmanagedLMStudioFacade()
@@ -277,10 +274,10 @@ func (b *Broker) prepareManagedLMStudioFacadeWithPortCheck(portAvailable func(in
 			_, _ = b.blockManagedLMStudioFacade("the LM Studio backend could not be moved", nil, st.Port, plan.BackendPort)
 			return
 		}
-		b.lmstudioBackendPort.Store(int32(plan.BackendPort))
+		b.lmstudioState().backendPort.Store(int32(plan.BackendPort))
 		var moved ollamaPortStatus
 		if json.Unmarshal(result, &moved) == nil && moved.Port > 0 {
-			b.lmstudioBackendPort.Store(int32(moved.Port))
+			b.lmstudioState().backendPort.Store(int32(moved.Port))
 		}
 	}
 	if !portAvailable(managedLMStudioFacadePort) {
@@ -288,8 +285,8 @@ func (b *Broker) prepareManagedLMStudioFacadeWithPortCheck(portAvailable func(in
 		return
 	}
 
-	b.managedLMStudioFacade.Store(plan.Enabled)
-	b.lmstudioProxyStartupPort.Store(managedLMStudioFacadePort)
+	b.lmstudioState().managedFacade.Store(plan.Enabled)
+	b.lmstudioState().startupPort.Store(int32(managedLMStudioFacadePort))
 	b.forwardErrorsClear(lmstudioPortOwnershipBlockedID)
 }
 
@@ -299,30 +296,37 @@ func (b *Broker) lmstudioProxyGenerationIsCurrent(generation uint64, p *proxyPro
 		b.getLMStudioProxy() == p
 }
 
-// invalidateLMStudioProxyForRestartLocked invalidates the current logical
-// generation and broker-visible handle. Caller holds lmstudioReadyMu.
-func (b *Broker) invalidateLMStudioProxyForRestartLocked(generation uint64) bool {
+// rebindLMStudioFacadeOrFinish moves LM Studio's facade to another port when
+// the port just asked for could not be bound, and gives up on that engine alone
+// if the second attempt fails too.
+//
+// This replaces a process restart. What the restart actually bought was a fresh
+// port plan — it re-ran startup planning and so picked a different fallback —
+// and the process death was incidental. It is also unusable once one process
+// hosts every facade: restarting to fix LM Studio's port would drop Ollama's
+// listener and the inference in flight on it.
+//
+// Simply skipping the restart is not enough either. That would leave the facade
+// parked on a port it cannot serve with its ownership gate never opening, so
+// every engine:status for LM Studio would wait out the call timeout and answer
+// "retry" for the life of the process. Hence: try elsewhere, then finish.
+//
+// Caller holds lmstudioReadyMu. Reports whether the facade is now serving a
+// port the caller may keep reconciling against.
+func (b *Broker) rebindLMStudioFacadeOrFinish(p *proxyProcess, generation uint64, avoid ...int) (int, bool) {
 	if b.lmstudioProxyGeneration.Load() != generation {
-		return false
+		return 0, false
 	}
-	b.lmstudioProxyGeneration.Add(1)
-	b.lmstudioProxyPublishedGeneration.Store(0)
-	b.setLMStudioProxy(nil)
-	return true
-}
-
-func (b *Broker) restartLMStudioProxyOrFinish(generation uint64) {
-	// Caller holds lmstudioReadyMu. Invalidate before the restart request
-	// becomes observable so a ready notification already queued by the failed
-	// process cannot complete the gate.
-	if !b.invalidateLMStudioProxyForRestartLocked(generation) {
-		return
+	fallback := b.setLMStudioProxyFallback(avoid...)
+	if fallback != 0 && b.rebindLMStudioProxy(p, fallback) {
+		return fallback, true
 	}
-	if b.lmstudioProxySup != nil {
-		b.lmstudioProxySup.Restart()
-		return
-	}
+	// Nothing left to try for this engine. Release its gate so callers stop
+	// waiting on it; every other facade keeps serving.
+	slog.Warn("LM Studio facade could not be rebound; releasing its ownership gate",
+		"attempted", fallback, "avoided", avoid)
 	b.finishLMStudioProxyTerminal()
+	return 0, false
 }
 
 func (b *Broker) reconcileLMStudioProxyAfterEngineManagerReady() {
@@ -333,7 +337,7 @@ func (b *Broker) reconcileLMStudioProxyAfterEngineManagerReady() {
 	if p == nil {
 		return
 	}
-	ready, port := p.Status()
+	ready, port := p.Status(lmstudioProxyProfile.Name)
 	generation := b.lmstudioProxyPublishedGeneration.Load()
 	if !ready || port <= 0 || generation != b.lmstudioProxyGeneration.Load() {
 		return
@@ -348,6 +352,21 @@ func (b *Broker) reconcileLMStudioProxyPortOnReady(boundPort int) {
 }
 
 func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint64, boundPort int) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+	if b.loadEngineSettingsLocked() != nil {
+		if b.lmstudioProxyGeneration.Load() == generation {
+			b.markLMStudioPortReady()
+		}
+		return
+	}
+	if b.lmstudioProxyGeneration.Load() != generation {
+		return
+	}
+	if _, explicit := b.explicitEngineSettingsLocked("lmstudio"); explicit {
+		b.markLMStudioPortReady()
+		return
+	}
 	if b.lmstudioProxyGeneration.Load() != generation {
 		return
 	}
@@ -362,20 +381,23 @@ func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint6
 	if p == nil || !b.lmstudioProxyGenerationIsCurrent(generation, p) {
 		return
 	}
-	if b.managedLMStudioFacade.Load() && boundPort != managedLMStudioFacadePort {
+	if b.lmstudioState().managedFacade.Load() && boundPort != managedLMStudioFacadePort {
 		if b.rebindLMStudioProxy(p, managedLMStudioFacadePort) {
 			boundPort = managedLMStudioFacadePort
 		} else {
 			fallback, rebound := b.blockManagedLMStudioFacade("the proxy could not bind the compatibility port", p, boundPort)
 			if !rebound {
-				b.restartLMStudioProxyOrFinish(generation)
-				return
+				next, ok := b.rebindLMStudioFacadeOrFinish(p, generation, boundPort, fallback)
+				if !ok {
+					return
+				}
+				fallback = next
 			}
 			boundPort = fallback
 		}
 	}
 
-	backend := int(b.lmstudioBackendPort.Load())
+	backend := int(b.lmstudioState().backendPort.Load())
 	if backend == 0 {
 		// Fail closed on the bundled backend default before asking
 		// engine-manager for status. Its identity probe is also rejected by the
@@ -383,8 +405,11 @@ func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint6
 		if boundPort == managedLMStudioBackendStart {
 			fallback := b.setLMStudioProxyFallback(boundPort)
 			if !b.rebindLMStudioProxy(p, fallback) {
-				b.restartLMStudioProxyOrFinish(generation)
-				return
+				next, ok := b.rebindLMStudioFacadeOrFinish(p, generation, boundPort, fallback)
+				if !ok {
+					return
+				}
+				fallback = next
 			}
 			boundPort = fallback
 		}
@@ -396,15 +421,18 @@ func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint6
 		}
 		var fallback int
 		var rebound bool
-		if b.managedLMStudioFacade.Load() {
+		if b.lmstudioState().managedFacade.Load() {
 			fallback, rebound = b.blockManagedLMStudioFacade("the proxy bound the configured LM Studio backend port", p, boundPort)
 		} else {
 			fallback = b.setLMStudioProxyFallback(boundPort)
 			rebound = b.rebindLMStudioProxy(p, fallback)
 		}
 		if !rebound {
-			b.restartLMStudioProxyOrFinish(generation)
-			return false
+			next, ok := b.rebindLMStudioFacadeOrFinish(p, generation, boundPort, fallback, backend)
+			if !ok {
+				return false
+			}
+			fallback = next
 		}
 		boundPort = fallback
 		return true
@@ -420,7 +448,7 @@ func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint6
 	if !b.lmstudioProxyGenerationIsCurrent(generation, p) {
 		return
 	}
-	cached := int(b.lmstudioBackendPort.Load())
+	cached := int(b.lmstudioState().backendPort.Load())
 	if cached <= 0 {
 		// A bound proxy plus an unknown configured backend is not a terminal
 		// ownership result. Keep restoration gated until engine-manager (or a
@@ -441,5 +469,4 @@ func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint6
 		return
 	}
 	b.markLMStudioPortReady()
-	b.repushPriority("lmstudio")
 }

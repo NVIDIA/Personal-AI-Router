@@ -124,9 +124,8 @@ go test ./...
 
 - [`../nvpair-ui-broker/README.md`](../nvpair-ui-broker/README.md) — the
   supervisor that feeds this component and relays its output
-- [`../ollama-proxy/README.md`](../ollama-proxy/README.md) and
-  [`../lmstudio-proxy/README.md`](../lmstudio-proxy/README.md) — how the
-  ordering is consumed at request time
+- [`../nvpair-proxy/README.md`](../nvpair-proxy/README.md) — how the ordering
+  is consumed at request time
 - [`../nvpair-workload-manager/README.md`](../nvpair-workload-manager/README.md)
   — where workload state originates
 - [`../VERSIONING.md`](../VERSIONING.md) — SemVer bump rules

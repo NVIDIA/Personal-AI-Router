@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PAIR engine manifest launch contract",
+  "description": "Validates editable_launch in shared and platform runtime blocks. Other engine manifest fields are validated by engine-manager.",
+  "type": "object",
+  "properties": {
+    "runtime": {
+      "$ref": "#/definitions/runtime"
+    },
+    "platforms": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "runtime": {
+            "$ref": "#/definitions/runtime"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "editable_launch": {
+          "$ref": "#/definitions/editableLaunch"
+        }
+      }
+    },
+    "editableLaunch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controls"
+      ],
+      "properties": {
+        "fixed_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "start_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "controls": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/control"
+          }
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "flags"
+          ]
+        },
+        {
+          "required": [
+            "env"
+          ]
+        }
+      ],
+      "properties": {
+        "flags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:-[a-zA-Z]|--[a-zA-Z0-9_-]+)$"
+          }
+        },
+        "env": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          }
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^(?:[^{}]*\\{(?:server\\.(?:host|port)|cors\\.(?:enabled|origins))\\})+[^{}]*$",
+          "description": "Binds policy fields using literal separators; fields must be unique, separated and share ownership. Engine-manager validates these cross-field constraints."
+        },
+        "implicit": {
+          "type": "string",
+          "description": "Value supplied by flag presence. Environment sources still take explicit values. Must parse as the declared value and may not bind managed server fields."
+        }
+      },
+      "dependencies": {
+        "implicit": [
+          "flags"
+        ]
+      }
+    }
+  }
+}

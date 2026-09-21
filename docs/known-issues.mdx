@@ -26,18 +26,24 @@ memory total on that architecture, so PAIR substitutes system memory instead.
 The other two cases are the gap.
 
 **The impact is display, not routing.** These numbers appear on a node's card
-and in the GPU chart. Routing does not consider VRAM at all, because the
-scheduler counts workloads. A wrong figure does not send work to the wrong place.
+and in the GPU chart. Routing does not consider VRAM at all — the scheduler
+weighs queued work and GPU utilization, never memory — so a wrong figure does
+not send work to the wrong place.
 It misleads *you* when you decide which node should hold a large model, so on
 those systems judge capacity from the machine's own tools rather than from PAIR.
 
-## Scheduling Only Counts Jobs
+## Scheduling Sees Load, Not Capacity
 
 The single scheduling policy ranks nodes by how much work is already queued on
-them. It does not consider GPU model, available memory, current utilization,
-measured latency, whether a model is already loaded, or how expensive a request
-looks. On a cluster of similar machines this behaves reasonably. On a mixed one,
-expect work to land on a slower node about as often as a faster one.
+them together with coarse GPU load, which it derives from smoothed utilization.
+It does not consider GPU model, available memory, measured latency, whether a
+model is already loaded in memory, or how expensive a request looks. Telemetry
+that is missing or more than ten seconds old counts as middling load rather than
+idle.
+
+On a cluster of similar machines this behaves reasonably. On a mixed one, the
+same utilization percentage means the same thing on a small GPU and a large one,
+so work can still land on the slower machine.
 
 The full list of gaps is in
 [Scheduler Limitations](architecture.mdx#scheduler-limitations).

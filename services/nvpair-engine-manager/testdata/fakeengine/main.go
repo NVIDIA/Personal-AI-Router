@@ -71,10 +71,43 @@ func bstr(m map[string]any, k string) string {
 }
 
 func main() {
+	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
+		values := map[string]string{}
+		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST"} {
+			values[key] = os.Getenv(key)
+		}
+		data, _ := json.Marshal(values)
+		if os.WriteFile(path, data, 0600) != nil {
+			os.Exit(2)
+		}
+	}
+	for _, arg := range os.Args[1:] {
+		if arg == "--fail-launch" {
+			fmt.Fprintln(os.Stderr, "invalid launch", os.Args[1:])
+			os.Exit(2)
+		}
+	}
+	if path := os.Getenv("FAKE_START_LOG"); path != "" {
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			os.Exit(2)
+		}
+		_ = json.NewEncoder(file).Encode(os.Args[1:])
+		_ = file.Close()
+	}
 	// Subcommands used by command-mode + cmd-action tests. They run and
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "captureargs": // record exact argv for launch-text round-trip tests
+			if len(os.Args) < 3 {
+				os.Exit(2)
+			}
+			data, err := json.Marshal(os.Args[3:])
+			if err != nil || os.WriteFile(os.Args[2], data, 0o600) != nil {
+				os.Exit(1)
+			}
+			return
 		case "touch": // write a marker file so a test can assert the command ran
 			if len(os.Args) > 2 {
 				_ = os.WriteFile(os.Args[2], []byte("ok"), 0o644)

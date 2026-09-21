@@ -8,11 +8,7 @@ import { JobsFilterType } from '@/ui/types/types'
 
 interface JobsFilterProps {
     setFilter: (type: JobsFilterType, checked: boolean) => void
-    values: {
-        active: { checked: boolean; count: number }
-        completed: { checked: boolean; count: number }
-        failed: { checked: boolean; count: number }
-    }
+    values: Record<JobsFilterType, { checked: boolean; count: number }>
 }
 
 function JobFilterItem({ id, count }: { id: JobsFilterType; count: number }) {
@@ -28,28 +24,19 @@ function JobFilterItem({ id, count }: { id: JobsFilterType; count: number }) {
     )
 }
 
+// Dropdown order, listed once so a new bucket needs one entry rather than a
+// parallel edit in three places.
+const FILTER_ORDER: JobsFilterType[] = ['active', 'completed', 'failed', 'cancelled']
+
 export default function JobsFilter({ setFilter, values }: JobsFilterProps) {
     const dropdownItems: DropdownEntry[] = useMemo(
-        () => [
-            {
+        () =>
+            FILTER_ORDER.map(id => ({
                 kind: 'checkbox',
-                checked: values.active.checked,
-                onCheckedChange: checked => setFilter('active', checked === true),
-                children: <JobFilterItem id="active" count={values.active.count} />
-            },
-            {
-                kind: 'checkbox',
-                checked: values.completed.checked,
-                onCheckedChange: checked => setFilter('completed', checked === true),
-                children: <JobFilterItem id="completed" count={values.completed.count} />
-            },
-            {
-                kind: 'checkbox',
-                checked: values.failed.checked,
-                onCheckedChange: checked => setFilter('failed', checked === true),
-                children: <JobFilterItem id="failed" count={values.failed.count} />
-            }
-        ],
+                checked: values[id].checked,
+                onCheckedChange: checked => setFilter(id, checked === true),
+                children: <JobFilterItem id={id} count={values[id].count} />
+            })),
         [setFilter, values]
     )
 

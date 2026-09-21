@@ -40,7 +40,7 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 		[]string{fmt.Sprintf("OLLAMA_HOST=localhost:%d", aliasPort)},
 		"--settings-path", nodeSettingsBin,
 		"--engine-manager-path", engineMgrBin,
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 	)
 	t.Cleanup(cleanup)
 
@@ -51,9 +51,9 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	waitForResponse(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"proxy:node/add-manual","params":{"id":"alias-upstream","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["alias-e2e-model"]}}`, upstreamPort))
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"ollama-proxy:node/add-manual","params":{"id":"alias-upstream","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["alias-e2e-model"]}}`, upstreamPort))
 	waitForResponse(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":3,"method":"proxy:node/select","params":{"id":"alias-upstream"}}`)
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":3,"method":"ollama-proxy:node/select","params":{"id":"alias-upstream"}}`)
 	waitForResponse(t, msgs, 5*time.Second)
 
 	client := &http.Client{Timeout: 5 * time.Second}
