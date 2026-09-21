@@ -14,6 +14,15 @@ import (
 
 const mdnsPort = 5353
 
+type packetWriter interface {
+	WriteTo([]byte, net.Addr) (int, error)
+}
+
+type multicastOptions interface {
+	SetMulticastInterface(*net.Interface) error
+	SetMulticastTTL(int) error
+}
+
 // SendFromInterface transmits one IPv4 mDNS packet from the selected address
 // and the RFC 6762 source port. A fresh source-bound socket preserves reliable
 // per-interface egress on Windows while the reuse controls let it coexist with
@@ -38,15 +47,24 @@ func SendFromInterface(buf []byte, ifi *net.Interface, src net.IP, target *net.U
 	}
 	defer conn.Close()
 
+	return writePacket(buf, ifi, target, conn, ipv4.NewPacketConn(conn))
+}
+
+func writePacket(
+	buf []byte,
+	ifi *net.Interface,
+	target *net.UDPAddr,
+	conn packetWriter,
+	options multicastOptions,
+) error {
 	if target.IP.IsMulticast() {
 		if ifi == nil {
 			return errors.New("mDNS multicast target requires an interface")
 		}
-		pc := ipv4.NewPacketConn(conn)
-		if err := pc.SetMulticastInterface(ifi); err != nil {
+		if err := options.SetMulticastInterface(ifi); err != nil {
 			return fmt.Errorf("set mDNS multicast interface: %w", err)
 		}
-		if err := pc.SetMulticastTTL(255); err != nil {
+		if err := options.SetMulticastTTL(255); err != nil {
 			return fmt.Errorf("set mDNS multicast TTL: %w", err)
 		}
 	}

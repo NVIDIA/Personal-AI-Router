@@ -6,10 +6,102 @@ package mdns
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
 )
+
+type recordingPacketWriter struct {
+	writes  int
+	payload []byte
+	target  net.Addr
+	err     error
+}
+
+func (w *recordingPacketWriter) WriteTo(payload []byte, target net.Addr) (int, error) {
+	w.writes++
+	w.payload = append([]byte(nil), payload...)
+	w.target = target
+	if w.err != nil {
+		return 0, w.err
+	}
+	return len(payload), nil
+}
+
+type recordingMulticastOptions struct {
+	interfaces   []*net.Interface
+	ttls         []int
+	interfaceErr error
+	ttlErr       error
+}
+
+func (o *recordingMulticastOptions) SetMulticastInterface(ifi *net.Interface) error {
+	o.interfaces = append(o.interfaces, ifi)
+	return o.interfaceErr
+}
+
+func (o *recordingMulticastOptions) SetMulticastTTL(ttl int) error {
+	o.ttls = append(o.ttls, ttl)
+	return o.ttlErr
+}
+
+func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
+	ifi := &net.Interface{Index: 7, Name: "eth0"}
+	target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort}
+	payload := []byte("multicast payload")
+	writer := &recordingPacketWriter{}
+	options := &recordingMulticastOptions{}
+
+	if err := writePacket(payload, ifi, target, writer, options); err != nil {
+		t.Fatalf("writePacket: %v", err)
+	}
+	if len(options.interfaces) != 1 || options.interfaces[0] != ifi {
+		t.Fatalf("multicast interfaces = %v, want [%v]", options.interfaces, ifi)
+	}
+	if len(options.ttls) != 1 || options.ttls[0] != 255 {
+		t.Fatalf("multicast TTLs = %v, want [255]", options.ttls)
+	}
+	if writer.writes != 1 {
+		t.Fatalf("writes = %d, want 1", writer.writes)
+	}
+	if !bytes.Equal(writer.payload, payload) {
+		t.Errorf("payload = %q, want %q", writer.payload, payload)
+	}
+	if writer.target != target {
+		t.Errorf("target = %v, want %v", writer.target, target)
+	}
+}
+
+func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
+	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
+	writer := &recordingPacketWriter{}
+	options := &recordingMulticastOptions{}
+
+	if err := writePacket([]byte("unicast payload"), nil, target, writer, options); err != nil {
+		t.Fatalf("writePacket: %v", err)
+	}
+	if len(options.interfaces) != 0 || len(options.ttls) != 0 {
+		t.Fatalf("multicast options used for unicast: interfaces=%v TTLs=%v", options.interfaces, options.ttls)
+	}
+	if writer.writes != 1 {
+		t.Fatalf("writes = %d, want 1", writer.writes)
+	}
+}
+
+func TestWritePacketReturnsWriteFailure(t *testing.T) {
+	wantErr := errors.New("send refused")
+	writer := &recordingPacketWriter{err: wantErr}
+	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
+
+	err := writePacket([]byte("unicast payload"), nil, target, writer, &recordingMulticastOptions{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, wantErr)
+	}
+	if writer.writes != 1 {
+		t.Fatalf("writes = %d, want 1", writer.writes)
+	}
+}
 
 func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 	ifi, source := loopbackIPv4(t)
