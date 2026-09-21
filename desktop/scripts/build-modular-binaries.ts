@@ -47,6 +47,10 @@ import {
     modularShippedBinaryBaseNames
 } from '@/shared/constants/modular-binaries'
 import type { ModularPackageArch } from '@/shared/constants/modular-binaries'
+import {
+    INFERENCE_DISPATCHER_BASE_NAME,
+    inferenceDispatcherFileName
+} from '@/shared/constants/inference-dispatcher'
 import type { SupportedPlatform } from '@/shared/types/platform'
 import { currentPlatform } from '@/shared/utils/platform'
 
@@ -188,6 +192,13 @@ function ensureGoToolchain(): void {
     console.log(`[modular-build] ${res.stdout.trim()}`)
 }
 
+/**
+ * Non-Go file types that get compiled into a binary via `go:embed`. Kept as an
+ * explicit list rather than "everything that is not a .go file" so a README or a
+ * stray editor file cannot invalidate every developer's build cache.
+ */
+const EMBEDDED_ASSET_EXTENSIONS = ['.json', '.tmpl', '.html', '.css', '.svg']
+
 function listFingerprintFiles(repo: string): string[] {
     const out: string[] = []
     const versionsPath = path.join(repo, 'versions.json')
@@ -211,18 +222,43 @@ function listFingerprintFiles(repo: string): string[] {
                 out.push(full)
             } else if (entry === 'go.mod' || entry === 'go.sum') {
                 out.push(full)
+            } else if (full === versionsPath) {
+                // Already added above; the walk would hash it a second time.
+                continue
+            } else if (EMBEDDED_ASSET_EXTENSIONS.some(ext => entry.endsWith(ext))) {
+                // Assets compiled in with go:embed are as much a part of the
+                // binary as the source that reads them. The engine manager
+                // embeds its Ollama catalogue, so regenerating that file changes
+                // what ships — but with only .go files fingerprinted the build
+                // saw no change and reused the previous binary, leaving a stale
+                // catalogue in the app with nothing to indicate it.
+                out.push(full)
             }
         }
     }
     walk(repo)
+    // The Inference Demo's client is built into cli-bin too, so a change to it
+    // has to invalidate the same fingerprint. Its module is outside the services
+    // tree, so the walk above cannot reach it — and without this the build would
+    // report cli-bin current and ship the previous dispatcher.
+    const dispatcher = dispatcherSourceDir(repo)
+    if (existsSync(dispatcher)) walk(dispatcher)
     return out.sort()
 }
 
-/** Content hash of services Go sources + module files — not monorepo git HEAD. */
+/**
+ * Content hash of the Go sources and module files that produce cli-bin — not
+ * monorepo git HEAD.
+ *
+ * Paths are made relative to the monorepo root rather than the services tree,
+ * because the dispatcher's sources sit outside it and `repo`-relative slicing
+ * would turn them into `../scripts/...` — still stable, but only by accident.
+ */
 function servicesSourceFingerprint(repo: string): string {
+    const root = path.resolve(repo, '..')
     const hash = createHash('sha256')
     for (const file of listFingerprintFiles(repo)) {
-        hash.update(file.slice(repo.length + 1))
+        hash.update(path.relative(root, file))
         hash.update('\0')
         hash.update(readFileSync(file))
         hash.update('\0')
@@ -277,9 +313,15 @@ function parseManifest(text: string): BuildManifest | null {
 }
 
 function expectedFileNames(platform: SupportedPlatform): string[] {
-    return modularShippedBinaryBaseNames().map(baseName =>
-        modularBinaryFileName(baseName, platform)
-    )
+    return [
+        ...modularShippedBinaryBaseNames().map(baseName =>
+            modularBinaryFileName(baseName, platform)
+        ),
+        // Not a services component, but it ships here — see the note on
+        // INFERENCE_DISPATCHER_BASE_NAME. Listed so cli-bin stays an exact set:
+        // an unexpected file is still rejected, there is just one more expected.
+        inferenceDispatcherFileName(platform)
+    ]
 }
 
 function cliBinHasOnlyExpectedFiles(platform: SupportedPlatform): boolean {
@@ -389,6 +431,56 @@ function buildBinary(
     return { fileName, size: hash.size, sha256: hash.sha256 }
 }
 
+/**
+ * Build the Inference Demo's HTTP client into `cli-bin/`.
+ *
+ * Its module is outside the services tree — at the monorepo root, because it is
+ * not a service — so it cannot go through `buildBinary`, which resolves a
+ * component directory inside the repo. It carries the services version rather
+ * than a component version for the same reason: it has no entry in
+ * `versions.json` and is not meant to acquire one.
+ */
+function buildDispatcher(repo: string, options: BuildOptions, version: string): ManifestFile {
+    assertSafeVersion(INFERENCE_DISPATCHER_BASE_NAME, version)
+    const sourceDir = dispatcherSourceDir(repo)
+    if (!existsSync(sourceDir)) {
+        throw new Error(
+            `Missing Inference Demo client source: ${sourceDir}\n` +
+                'It lives at scripts/inference-dispatcher in the monorepo root.'
+        )
+    }
+    const fileName = inferenceDispatcherFileName(options.platform)
+    const outFile = path.join(CLI_BIN_DIR, fileName)
+    const res = spawnSync(
+        'go',
+        ['build', '-trimpath', '-ldflags', `-s -w -X main.Version=${version}`, '-o', outFile, '.'],
+        {
+            cwd: sourceDir,
+            env: {
+                ...process.env,
+                CGO_ENABLED: '0',
+                GOOS: goos(options.platform),
+                GOARCH: goarch(options.arch)
+            },
+            stdio: 'inherit'
+        }
+    )
+    if (res.status !== 0) {
+        throw new Error(
+            `go build failed for ${INFERENCE_DISPATCHER_BASE_NAME} (exit ${res.status ?? 'signal'})`
+        )
+    }
+    if (options.platform !== 'win32') chmodSync(outFile, 0o755)
+    const hash = sha256(outFile)
+    console.log(`[modular-build] built ${fileName} (v${version})`)
+    return { fileName, size: hash.size, sha256: hash.sha256 }
+}
+
+/** The dispatcher's Go module, a sibling of the services tree. */
+function dispatcherSourceDir(repo: string): string {
+    return path.resolve(repo, '..', 'scripts', INFERENCE_DISPATCHER_BASE_NAME)
+}
+
 function main(): void {
     const options = readOptions()
     const repo = servicesDir()
@@ -408,9 +500,11 @@ function main(): void {
 
     clearCliBin()
     mkdirSync(CLI_BIN_DIR, { recursive: true })
-    const shipped = modularShippedBinaryBaseNames()
+    // +1 for the Inference Demo's dispatcher, which is built here but is not a
+    // services component and so is not in the inventory this counts.
+    const count = modularShippedBinaryBaseNames().length + 1
     console.log(
-        `[modular-build] building ${shipped.length} binaries for ${options.platform}/${options.arch} (fingerprint ${sourceFingerprint.slice(0, 12)})`
+        `[modular-build] building ${count} binaries for ${options.platform}/${options.arch} (fingerprint ${sourceFingerprint.slice(0, 12)})`
     )
 
     const files: ManifestFile[] = []
@@ -422,6 +516,7 @@ function main(): void {
         const version = versions.components[binary.baseName] ?? '0.0.0'
         files.push(buildBinary(repo, options, binary.baseName, version))
     }
+    files.push(buildDispatcher(repo, options, versions.services))
 
     const manifest: BuildManifest = {
         source: 'services-build',
