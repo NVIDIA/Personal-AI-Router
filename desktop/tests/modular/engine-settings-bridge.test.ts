@@ -28,7 +28,7 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => []
 }))
-vi.mock('@/electron/model-hub', () => ({ getEngineHubModels: vi.fn() }))
+vi.mock('@/electron/service-bridge/model-catalog', () => ({ getEngineHubModels: vi.fn() }))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
