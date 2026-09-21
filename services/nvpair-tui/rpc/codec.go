@@ -18,12 +18,17 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"nvpair-shared/jsonrpc"
 )
 
-// maxFrame bounds a single JSON-RPC line. The broker uses a 1 MiB read
-// buffer; we match it so a large discovery/errors snapshot from the
-// broker is never truncated mid-frame.
-const maxFrame = 1024 * 1024
+// maxFrame bounds a single JSON-RPC line. It is the shared worker-path cap, so
+// this reader agrees with the broker's reader and every worker's writer: a reply
+// only arrives if all the hops on its path allow the same size, and a frame over
+// the limit is a terminal read error rather than a skipped message.
+//
+// The largest real frame is engine:catalog's Ollama list, around 1.9 MiB.
+const maxFrame = jsonrpc.WorkerFrameBytes
 
 // Message is a single JSON-RPC 2.0 frame. A frame is a request when it
 // has both an id and a method, a notification when it has a method but no
