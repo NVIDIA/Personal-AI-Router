@@ -727,7 +727,9 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 		wantNotIn []string
 	}{
 		{
-			name: "the endpoint port was taken",
+			// The proxy's port is read live from the proxy process, not
+			// observed in passing, so a difference here is real.
+			name: "the endpoint could not take the port",
 			snapshot: enginesettings.Snapshot{
 				Engine:              "lmstudio",
 				Settings:            enginesettings.Config{ProxyPort: 1235, ServerPort: 1236},
@@ -740,16 +742,35 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 			wantNotIn: []string{"saved"},
 		},
 		{
-			name: "the engine port was taken",
+			// The backend refused it, and says why. Its words, not a guess
+			// assembled from the ports.
+			name: "the backend refused the change",
+			snapshot: enginesettings.Snapshot{
+				Engine:   "ollama",
+				Phase:    settingsPhaseFailed,
+				Error:    "port 11500 is reserved by another service",
+				Settings: enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
+			},
+			wantKind:  toastError,
+			wantHas:   []string{"reserved by another service"},
+			wantNotIn: []string{"saved"},
+		},
+		{
+			// The engine's effective port is observed when the apply replies,
+			// and an engine that restarts onto the new port finishes after
+			// that -- LM Studio's server re-launches detached. Reading failure
+			// into the lag reported a move that had happened as one that had
+			// not, naming a port nothing was listening on.
+			name: "the engine port reading lags a successful move",
 			snapshot: enginesettings.Snapshot{
 				Engine:              "ollama",
 				Settings:            enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
 				EffectiveProxyPort:  11434,
 				EffectiveServerPort: 11435,
 			},
-			wantKind:  toastError,
-			wantHas:   []string{"11435", "11500"},
-			wantNotIn: []string{"saved"},
+			wantKind:  toastOK,
+			wantHas:   []string{"saved"},
+			wantNotIn: []string{"11435"},
 		},
 		{
 			name: "honoured",
