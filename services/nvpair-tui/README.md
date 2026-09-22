@@ -136,11 +136,26 @@ installed `bin/` layout). Override with `--broker-path`:
 nvpair-tui                                   # broker is a sibling binary
 nvpair-tui --broker-path /opt/nvpair/bin/nvpair-ui-broker
 nvpair-tui --log-level debug                 # own logging (to stderr)
+nvpair-tui --appearance light                # if the colours come out wrong
 nvpair-tui --version
 ```
 
 Logging goes to stderr (the broker's logs are shown inside the **Logs**
 tab, not on the terminal), so it never corrupts the full-screen UI.
+
+### Colours
+
+Every colour is a `lipgloss.AdaptiveColor` with a light and a dark variant,
+chosen from the terminal's background. Text drawn *on* one of those colours has
+to adapt with it: a fixed foreground over an adaptive background is legible in
+one terminal and not the other, which is how the selected table row came to be
+black on dark blue for anyone using a light theme. `TestTextOnAnAdaptiveBackgroundAdaptsToo`
+pins the pairing.
+
+Detection asks the terminal for its background and waits for an answer. A
+terminal that does not reply — common over SSH, inside tmux, and in CI — leaves
+lipgloss assuming dark. `--appearance light|dark` states it instead;
+`auto`, the default, leaves detection alone.
 
 ## Architecture
 
