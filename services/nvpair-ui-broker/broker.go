@@ -258,7 +258,7 @@ type Broker struct {
 	// subMu guards subscribed. The discovery:nodes-changed stream is
 	// opt-in: emitNodesChanged (called on the scanner-event goroutine)
 	// reads this flag while the discovery:subscribe / discovery:unsubscribe
-	// handlers (called on the read-loop goroutine) flip it, so the two
+	// handlers (called on the dispatch-pool goroutine) flip it, so the two
 	// goroutines need a lock between them.
 	subMu      sync.Mutex
 	subscribed bool
@@ -266,7 +266,7 @@ type Broker struct {
 	// proxyMu guards every engineProxyRuntime.subscribed. The
 	// <namespace>:<event> streams are opt-in like discovery's: the forward
 	// hooks (on each proxy's reader goroutine) read the flag while the
-	// subscribe / unsubscribe handlers (on the read-loop goroutine) flip it.
+	// subscribe / unsubscribe handlers (on the dispatch-pool goroutine) flip it.
 	proxyMu sync.Mutex
 
 	// engineProxies holds per-engine proxy state, one entry per engine in the
@@ -278,7 +278,7 @@ type Broker struct {
 	// opt-in too: emitWorkloadEvent (called on the proxy reader goroutine
 	// for local echoes and on the workload-manager reader goroutine for
 	// peer-origin relays) reads the flag while the workloads:subscribe /
-	// workloads:unsubscribe handlers (on the read-loop goroutine) flip it.
+	// workloads:unsubscribe handlers (on the dispatch-pool goroutine) flip it.
 	workloadsMu         sync.Mutex
 	workloadsSubscribed bool
 
@@ -300,7 +300,7 @@ type Broker struct {
 	// engineMu guards engineSubscribed. The engine:<event> stream is
 	// opt-in like proxy's: forwardEngineNotification (engine-manager reader
 	// goroutine) reads the flag while the engine:subscribe /
-	// engine:unsubscribe handlers (read-loop goroutine) flip it.
+	// engine:unsubscribe handlers (dispatch-pool goroutine) flip it.
 	engineMu         sync.Mutex
 	engineSubscribed bool
 
@@ -2039,6 +2039,18 @@ func (b *Broker) runWorkloadHistoryFlusher(ctx context.Context) func() {
 	}
 }
 
+// errTerminalRead reports that the client stdin read loop ended on a
+// non-recoverable scanner/transport error (e.g. an over-long frame that
+// bufio.Scanner cannot resync past), distinct from a clean EOF.
+var errTerminalRead = stderrors.New("terminal read error")
+
+// messageDispatchConcurrency is the size of the broker's inbound dispatch
+// pool: enough worker goroutines that one slow synchronous worker relay
+// (bounded by rpcWorkerCallTimeout) cannot head-of-line block the rest of
+// the control plane, few enough that handlers stay effectively serialized
+// under normal traffic.
+const messageDispatchConcurrency = 4
+
 func (b *Broker) Serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
@@ -2585,6 +2597,15 @@ func setNodeIDIfEmpty(m map[string]json.RawMessage, key, nodeID string) bool {
 	return true
 }
 
+// recoverableDecode reports whether a codec Read error is a recoverable
+// per-frame decode failure (bad JSON / wrong version): the scanner advances
+// past the bad frame, so both the producer and the consumer keep pumping
+// instead of tearing the connection down.
+func recoverableDecode(err error) bool {
+	var de *DecodeError
+	return stderrors.As(err, &de)
+}
+
 func (b *Broker) readLoop(ctx context.Context) error {
 	// codec.Read() blocks on stdin, so we run it on its own goroutine and
 	// select against ctx.Done(). Otherwise a SIGINT/SIGTERM (which cancels
@@ -2604,12 +2625,45 @@ func (b *Broker) readLoop(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			}
-			// EOF is terminal (stream closed); other errors are per-line
-			// (e.g. a bad JSON frame) and the next Read advances past them.
-			if err == io.EOF {
-				return
+			// A decoded message (err nil) and a recoverable decode error
+			// (bad frame; the next Read advances past it) both keep the pump
+			// running. EOF is terminal (stream closed), and any other error
+			// is a terminal scanner/transport error: stop feeding the
+			// channel so the consumer exits instead of spinning.
+			if err == nil {
+				continue
 			}
+			if recoverableDecode(err) {
+				continue
+			}
+			return
 		}
+	}()
+
+	// Bounded dispatch pool: handleMessage runs synchronous worker relays
+	// (proxy/cluster/settings/manual-nodes, each bounded by
+	// rpcWorkerCallTimeout) so dispatching on the read loop would let one
+	// slow worker stall every other client request for up to 5s. A small
+	// worker pool decouples them. Cross-request ordering is preserved for
+	// the channels that need it by dedicated mutexes inside the handlers
+	// (workloadEmitMu serializes workload apply→fan→emit; subscription
+	// bookkeeping is per-state mutexed), and JSON-RPC has no cross-request
+	// response-ordering guarantee — each response carries its own id. The
+	// codec's write mutex keeps concurrent responses from interleaving.
+	dispatch := make(chan *Message)
+	var dispatchWG sync.WaitGroup
+	for range messageDispatchConcurrency {
+		dispatchWG.Add(1)
+		go func() {
+			defer dispatchWG.Done()
+			for msg := range dispatch {
+				b.handleMessage(msg)
+			}
+		}()
+	}
+	defer func() {
+		close(dispatch)
+		dispatchWG.Wait()
 	}()
 
 	for {
@@ -2621,10 +2675,18 @@ func (b *Broker) readLoop(ctx context.Context) error {
 				if r.err == io.EOF || ctx.Err() != nil {
 					return nil
 				}
-				slog.Warn("JSON-RPC read error", "err", r.err)
-				continue
+				if recoverableDecode(r.err) {
+					slog.Warn("JSON-RPC decode error (skipping frame)", "err", r.err)
+					continue
+				}
+				slog.Warn("JSON-RPC read error (terminal)", "err", r.err)
+				return errTerminalRead
 			}
-			b.handleMessage(r.msg)
+			select {
+			case dispatch <- r.msg:
+			case <-ctx.Done():
+				return nil
+			}
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -3401,7 +3463,7 @@ func (b *Broker) handleMessage(msg *Message) {
 // timeout: engine lifecycle ops (install, model pull, ...) run for minutes
 // and report progress via push events, so the broker waits for the real
 // response asynchronously rather than fabricating a timeout — meanwhile
-// other client requests keep being served on the read-loop goroutine.
+// other client requests keep being served on the dispatch-pool goroutine.
 func (b *Broker) relayToEngine(msg *Message) {
 	go b.relayToEngineNow(msg)
 }

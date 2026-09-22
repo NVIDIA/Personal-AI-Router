@@ -16,10 +16,11 @@ import (
 )
 
 type (
-	Message  = jsonrpc.Message
-	RPCError = jsonrpc.RPCError
-	Codec    = jsonrpc.Codec
-	Peer     = jsonrpc.Peer
+	Message     = jsonrpc.Message
+	RPCError    = jsonrpc.RPCError
+	DecodeError = jsonrpc.DecodeError
+	Codec       = jsonrpc.Codec
+	Peer        = jsonrpc.Peer
 )
 
 var (

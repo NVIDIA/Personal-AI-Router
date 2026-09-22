@@ -5,7 +5,9 @@ package relay
 
 import (
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"nvpair-shared/noderec"
 )
@@ -53,18 +55,55 @@ func TestRegistrationCache(t *testing.T) {
 // full filtered snapshot; snaps holds them in order so a test can assert on the
 // latest set and on how many pushes arrived.
 type recordingSub struct {
+	mu    sync.Mutex
 	snaps [][]noderec.DirectoryNode
 }
 
 func (r *recordingSub) send(nodes []noderec.DirectoryNode) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.snaps = append(r.snaps, append([]noderec.DirectoryNode(nil), nodes...))
 }
 
-func (r *recordingSub) last() []noderec.DirectoryNode {
-	if len(r.snaps) == 0 {
-		return nil
+// count returns the number of deliveries received so far.
+func (r *recordingSub) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.snaps)
+}
+
+// last returns the latest snapshot, waiting up to 2s for at least want
+// deliveries (deliveries are asynchronous: the pump goroutine sends them).
+func (r *recordingSub) last(want int) []noderec.DirectoryNode {
+	deadline := time.Now().Add(2 * time.Second)
+	for r.count() < want {
+		if time.Now().After(deadline) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if len(r.snaps) == 0 {
+				return nil
+			}
+			return r.snaps[len(r.snaps)-1]
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.snaps[len(r.snaps)-1]
+}
+
+// lastWhere waits up to 2s for the latest snapshot to satisfy pred, then
+// returns it. Use when coalescing makes the delivery count nondeterministic but
+// the settled content is what the test cares about.
+func (r *recordingSub) lastWhere(pred func([]noderec.DirectoryNode) bool) []noderec.DirectoryNode {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := r.last(1)
+		if pred(got) || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 func ids(nodes []noderec.DirectoryNode) []string {
@@ -96,7 +135,7 @@ func TestDirectorySubscribeInitialSnapshot(t *testing.T) {
 	}
 	d.Subscribe(sub)
 	d.Deliver(sub)
-	if got := ids(rec.last()); !reflect.DeepEqual(got, []string{"a"}) {
+	if got := ids(rec.last(1)); !reflect.DeepEqual(got, []string{"a"}) {
 		t.Fatalf("initial delivery = %v, want [a]", got)
 	}
 }
@@ -112,7 +151,7 @@ func TestDeliverCapturesAtSendTime(t *testing.T) {
 	d.Subscribe(sub)
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
 	d.Deliver(sub)
-	if got := ids(rec.last()); !reflect.DeepEqual(got, []string{"a"}) {
+	if got := ids(rec.last(1)); !reflect.DeepEqual(got, []string{"a"}) {
 		t.Fatalf("delivery after a post-subscribe change = %v, want [a]", got)
 	}
 }
@@ -128,11 +167,16 @@ func TestDirectoryFanoutRespectsFilter(t *testing.T) {
 	d.Apply(noderec.NotifyNodeDiscovered, erNode("b"))
 
 	// Every change re-pushes each subscriber its full filtered snapshot, so the
-	// latest snapshot is the authoritative filtered set.
-	if got := ids(olSub.last()); !reflect.DeepEqual(got, []string{"a"}) {
+	// latest snapshot is the authoritative filtered set. Coalescing can collapse
+	// the two pushes into one, so settle on content, not a delivery count.
+	if got := ids(olSub.lastWhere(func(n []noderec.DirectoryNode) bool {
+		return reflect.DeepEqual(ids(n), []string{"a"})
+	})); !reflect.DeepEqual(got, []string{"a"}) {
 		t.Errorf("ol subscriber last snapshot = %v, want [a]", got)
 	}
-	if got := ids(allSub.last()); !reflect.DeepEqual(got, []string{"a", "b"}) {
+	if got := ids(allSub.lastWhere(func(n []noderec.DirectoryNode) bool {
+		return reflect.DeepEqual(ids(n), []string{"a", "b"})
+	})); !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Errorf("all subscriber last snapshot = %v, want [a b]", got)
 	}
 }
@@ -148,16 +192,17 @@ func TestDirectoryRemoveAndUnsubscribe(t *testing.T) {
 		t.Error("node should be gone after removed")
 	}
 	// The removal re-pushes an empty snapshot (the node is simply absent).
-	if got := sub.last(); len(got) != 0 {
+	if got := sub.lastWhere(func(n []noderec.DirectoryNode) bool { return len(n) == 0 }); len(got) != 0 {
 		t.Errorf("subscriber last snapshot = %v, want empty after removal", ids(got))
 	}
 
 	// After unsubscribe, no more pushes.
-	before := len(sub.snaps)
+	before := sub.count()
 	d.Unsubscribe(id)
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("c"))
-	if len(sub.snaps) != before {
-		t.Errorf("unsubscribed sub still received %d pushes", len(sub.snaps)-before)
+	time.Sleep(50 * time.Millisecond)
+	if sub.count() != before {
+		t.Errorf("unsubscribed sub still received %d pushes", sub.count()-before)
 	}
 }
 
@@ -174,5 +219,47 @@ func TestDirectorySnapshotFilterAndSort(t *testing.T) {
 	ol := d.Snapshot(noderec.ServiceOllama)
 	if len(ol) != 2 {
 		t.Fatalf("snapshot(ol) = %d, want 2", len(ol))
+	}
+}
+
+// TestDeliverCoalescesTriggers guards the pump contract: Deliver is non-blocking
+// and multiple pending triggers coalesce into ONE send of the latest state — a
+// subscriber with a slow Send must never accumulate a backlog of stale snapshots.
+func TestDeliverCoalescesTriggers(t *testing.T) {
+	d := NewDirectory()
+	rec := &recordingSub{}
+	sub := &Subscriber{Filter: noderec.SubscribeParams{}, Send: rec.send}
+	id := d.Subscribe(sub)
+
+	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
+	d.Apply(noderec.NotifyNodeDiscovered, olNode("b"))
+	// Three triggers while none has been consumed yet: they must coalesce.
+	d.Deliver(sub)
+	d.Deliver(sub)
+	d.Deliver(sub)
+
+	got := rec.last(1)
+	if !reflect.DeepEqual(ids(got), []string{"a", "b"}) {
+		t.Fatalf("coalesced delivery = %v, want [a b] (latest state)", got)
+	}
+
+	// The next Apply re-pushes current state even though its trigger coalesced
+	// with the earlier ones — the pump always re-captures at wake time.
+	d.Apply(noderec.NotifyNodeDiscovered, erNode("c"))
+	if got := ids(rec.lastWhere(func(n []noderec.DirectoryNode) bool {
+		return reflect.DeepEqual(ids(n), []string{"a", "b", "c"})
+	})); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("delivery after coalesced apply = %v, want [a b c]", got)
+	}
+
+	// After Unsubscribe the pump exits: Deliver must not panic and no further
+	// sends may arrive. Counts are not exact (coalescing is timing-dependent),
+	// so assert the count is stable, not equal to a specific number.
+	d.Unsubscribe(id)
+	before := rec.count()
+	d.Deliver(sub)
+	time.Sleep(50 * time.Millisecond)
+	if n := rec.count(); n != before {
+		t.Errorf("post-unsubscribe deliveries grew from %d to %d, want no further sends", before, n)
 	}
 }
