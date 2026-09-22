@@ -450,6 +450,52 @@ func TestSettingsApplyUsesTheNormalizedDraft(t *testing.T) {
 	_ = d
 }
 
+// TestSettingsCommitCarriesARequestIdentifier is the regression guard for a
+// save that failed after the check had passed.
+//
+// The identifier is the backend's idempotency key: it records a receipt against
+// it, returns the original outcome when one is replayed, and refuses a replay
+// carrying different settings. A commit without one is rejected outright — and
+// because only the commit needs it, the preview succeeded first, so the
+// interface reported the settings as valid and then refused to save them.
+func TestSettingsCommitCarriesARequestIdentifier(t *testing.T) {
+	previewOf := func(port int) enginePreviewMsg {
+		return enginePreviewMsg{
+			request: enginesettings.Request{Engine: "ollama", ExpectedRevision: 7},
+			preview: enginesettings.Preview{
+				Settings: enginesettings.Config{ServerPort: port, ProxyPort: 11434},
+			},
+		}
+	}
+
+	_, first, _ := judgeSettingsPreview(previewOf(11500))
+	if first.RequestID == "" {
+		t.Fatal("the commit carries no request identifier; the backend will refuse it")
+	}
+	if len(first.RequestID) > 128 {
+		t.Errorf("identifier is %d characters; the broker allows 128", len(first.RequestID))
+	}
+
+	// Asserted on the wire form, not the Go field. `requestId` is omitempty, so
+	// an unset one does not travel as an empty string — it disappears from the
+	// object altogether, which is precisely how this shipped: the struct had
+	// the field, the JSON did not, and the broker refused the call.
+	wire, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"requestId"`) {
+		t.Errorf("the request sent to the broker has no requestId: %s", wire)
+	}
+
+	// A different change must not reuse it: the backend refuses an identifier
+	// replayed with settings that do not match its receipt.
+	_, second, _ := judgeSettingsPreview(previewOf(11501))
+	if second.RequestID == first.RequestID {
+		t.Error("two different changes share one identifier; the second would be refused")
+	}
+}
+
 // TestSettingsRestartIsConfirmed checks a change that restarts the engine asks
 // first, and that the confirmation applies the same request it armed.
 func TestSettingsRestartIsConfirmed(t *testing.T) {
@@ -489,6 +535,11 @@ func TestSettingsRestartIsConfirmed(t *testing.T) {
 	armed := d.settingsConfirm
 	if armed == nil || armed.Settings.ServerPort != normalized.ServerPort {
 		t.Fatalf("armed the wrong request: %+v", armed)
+	}
+	// The identifier is minted when the change is judged, not when it is sent,
+	// so confirming is a replay of the arming rather than a second write.
+	if armed.RequestID == "" {
+		t.Error("the armed request has no identifier, so confirming it would be refused")
 	}
 	if cmd := d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}); cmd == nil {
 		t.Error("y did not apply the armed change")

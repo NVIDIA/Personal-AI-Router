@@ -4,6 +4,9 @@
 package ui
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+
 	"nvpair-shared/enginesettings"
 	"nvpair-tui/rpc"
 
@@ -31,6 +34,29 @@ import (
 //
 // The broker routes all three to a peer when the request names one, so this is
 // the same path for this machine and for a node across the cluster.
+
+// newSettingsRequestID mints the identifier a commit is required to carry.
+//
+// It is an idempotency key, not a trace id. The backend records a receipt
+// against it, so replaying the same id with the same settings returns the
+// original outcome instead of applying twice — and replaying it with different
+// settings is refused outright. That makes it wrong to reuse one across edits
+// and wrong to send none at all, which is what an apply without it was: the
+// backend rejected it with "a request identifier is required" after the
+// preview had already passed.
+//
+// Random rather than a counter, because the backend keys receipts per engine
+// across every client and a restarted terminal would begin counting again.
+// Sixteen bytes of hex is 32 characters, well inside the 128 the broker allows.
+func newSettingsRequestID() string {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		// crypto/rand does not fail in practice, and an empty id would be
+		// rejected by the broker rather than silently losing idempotency.
+		return ""
+	}
+	return hex.EncodeToString(id[:])
+}
 
 // settingsResolution tells the backend which side wins when the server-port
 // field and the port inside the command text disagree.
