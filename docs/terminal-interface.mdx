@@ -73,11 +73,16 @@ Service logs appear on the **Logs** tab instead.
 
 ### If the Colours Are Hard to Read
 
-PAIR picks its colours from your terminal's background, which it detects by
-asking the terminal and waiting for a reply. Some terminals do not answer —
-this is common over SSH and inside `tmux` — and PAIR then assumes a dark
-background. On a light theme the result is washed-out text and highlights you
-cannot read through.
+PAIR picks its colours from your terminal's background. It detects that by
+asking the terminal and reading the reply, which works in most terminals,
+including over SSH — the question and the answer travel the connection like
+anything else.
+
+Two cases cannot be detected. Inside `tmux` or `screen` the question is not
+asked at all, because one session can be attached to several terminals at once
+and there is no single background to report. A terminal that does not implement
+the query simply never answers. Both fall back to assuming a dark background,
+which on a light theme gives washed-out text.
 
 Tell it instead:
 
@@ -86,6 +91,10 @@ Tell it instead:
 ```
 
 `dark` forces the other way, and `auto` is the default.
+
+A terminal that never answers also makes PAIR wait for the reply before it
+starts, which is a pause of a few seconds on the way in. That wait comes from
+the terminal library and applies whether or not you pass `--appearance`.
 
 Press `q` to quit. Quitting shuts the services down cleanly rather than leaving
 them running.

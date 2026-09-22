@@ -43,14 +43,18 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Before anything renders. Colours are chosen per draw, so a later call
-	// would repaint mid-session rather than start correct.
+	// Started before the program, not merely before the first draw. On auto
+	// this asks the terminal for its background and reads the answer, which
+	// only works while stdin is still ours — once Bubble Tea is running, its
+	// reader takes the reply and the query learns nothing. Joined below, after
+	// the broker is up, so a terminal that never answers costs its timeout
+	// alongside startup rather than in front of it.
 	chosen, ok := ui.ParseAppearance(*appearance)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown --appearance %q: use auto, light, or dark\n", *appearance)
 		os.Exit(2)
 	}
-	ui.SetAppearance(chosen)
+	appearanceSettled := ui.StartAppearance(chosen)
 
 	applog.Init("nvpair-tui", resolveLevel())
 
@@ -78,6 +82,15 @@ func main() {
 		slog.Error("failed to start broker", "err", err)
 		os.Exit(1)
 	}
+
+	// The last moment the answer can be had: Bubble Tea takes stdin next, and
+	// the first frame is already choosing colours with it.
+	appearanceSettled()
+	// Recorded because a wrong answer is visible but unexplained: the operator
+	// sees colours that do not suit their terminal and has nothing telling
+	// them what PAIR concluded, or that --appearance would override it.
+	slog.Debug("terminal appearance", "requested", string(chosen),
+		"using", string(ui.DetectedAppearance()))
 
 	// The broker's stderr (its logs plus every worker's, prefixed) is fed
 	// into the UI's Logs view rather than the terminal, so it never
