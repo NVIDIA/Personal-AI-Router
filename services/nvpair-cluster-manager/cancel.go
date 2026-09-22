@@ -73,6 +73,25 @@ func (m *Manager) handleCancelInvite(msg *Message) {
 	}
 	// Deleting the Server session invalidates the PIN; a later Completion POST
 	// then hits handlePairingCompletion's unknown-invite / not-pending branches.
+	// The signal MAC is derived first: it needs the session's ephemeral Key
+	// Exchange secret, which dies with the session. (sess.mu is already held.)
+	signalKey, keyErr := sess.ephemeralKey()
+	if keyErr != nil {
+		// No Key Exchange secret (initial exchange never completed) — the joiner
+		// has no session to clear either, so skipping the notify is safe. The
+		// terminal write and session delete stay under sess.mu, matching the
+		// success path below and keeping this serialized against Completion.
+		m.finishInvite(p.InviteID, inviteStateCanceled)
+		m.deleteSession(p.InviteID)
+		sess.mu.Unlock()
+		m.maybeLeaveInviteCreatedClusterLocked()
+		m.inviteMu.Unlock()
+		log.Printf("invite %s: canceled by inviter (no joiner signal key; skipping notify: %v)", p.InviteID, keyErr)
+		m.codec.RespondErrorData(msg.ID, codeInvalidState, "invite is not pending",
+			map[string]any{"inviteId": p.InviteID, "state": inviteStateCanceled})
+		return
+	}
+	signalTag := pairingSignalMAC(signalKey, p.InviteID, "cancel")
 	m.finishInvite(p.InviteID, inviteStateCanceled)
 	m.deleteSession(p.InviteID)
 	joinerAddr := sess.joinerAddr
@@ -82,7 +101,7 @@ func (m *Manager) handleCancelInvite(msg *Message) {
 
 	// Best-effort: tell the joiner so its pending prompt clears. If the joiner is
 	// unreachable, the teardown above still prevents the join.
-	go m.notifyJoinerCanceled(joinerAddr, p.InviteID)
+	go m.notifyJoinerCanceled(joinerAddr, p.InviteID, signalTag)
 
 	log.Printf("invite %s: canceled by inviter", p.InviteID)
 	m.respondInvite(msg, p.InviteID)
@@ -90,13 +109,14 @@ func (m *Manager) handleCancelInvite(msg *Message) {
 
 // notifyJoinerCanceled POSTs a best-effort "cancel" pairing envelope to the
 // joiner so it can drop its pending-inbound invite and dismiss the PIN prompt.
-// Failures are logged and ignored — the inviter-side teardown is authoritative.
-func (m *Manager) notifyJoinerCanceled(joinerAddr, inviteID string) {
+// signalTag authenticates the signal (see pairingSignalMAC). Failures are
+// logged and ignored — the inviter-side teardown is authoritative.
+func (m *Manager) notifyJoinerCanceled(joinerAddr, inviteID, signalTag string) {
 	if joinerAddr == "" {
 		return
 	}
 	client := &http.Client{Timeout: pairingHTTPTimeout}
-	if _, err := postPairingBlob(client, joinerAddr, inviteID, "cancel", nil); err != nil {
+	if _, err := postPairingBlobTagged(client, joinerAddr, inviteID, "cancel", nil, signalTag); err != nil {
 		log.Printf("invite %s: notify joiner cancel: %v", inviteID, err)
 	}
 }

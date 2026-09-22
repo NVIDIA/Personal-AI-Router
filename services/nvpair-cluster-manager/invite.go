@@ -257,17 +257,29 @@ var errPairingAbandoned = errors.New("pairing abandoned: invite is no longer pen
 // its liveness.
 func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uint64) (*pairingSession, string, error) {
 	myAddr := net.JoinHostPort(outboundIP(target), strconv.Itoa(m.port))
-	info, err := m.localPairingInfo(myAddr).toMap()
+	// The PIN stretching salt must exist before the Initial Exchange so it can
+	// ride in ServerInfo, which the EAP-NOOB transcript MACs (integrity-
+	// protected path to the joiner).
+	salt, err := newPinSalt()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate pin salt: %w", err)
+	}
+	info, err := m.localPairingInfoWithPinSalt(myAddr, salt)
 	if err != nil {
 		return nil, "", fmt.Errorf("build pairing info: %w", err)
 	}
-	server := newPairingServer(info)
+	infoMap, err := info.toMap()
+	if err != nil {
+		return nil, "", fmt.Errorf("build pairing info: %w", err)
+	}
+	server := newPairingServer(infoMap)
 	// Scope the session to the cluster we are inviting into (cid0, captured by
 	// handleInviteNode) so a Completion that lands after we leave/are removed is
 	// discarded by commitPairing's epoch recheck.
 	sess := &pairingSession{
 		inviteID: inviteID, role: roleInviter, createdAt: time.Now().UnixMilli(),
 		server: server, addr: myAddr, clusterID: cid0, joinerAddr: target,
+		pinSalt: salt,
 	}
 	// Register under the teardown boundary: if the cluster was torn down (or
 	// rejoined, bumping the session generation) since the invite began, abandon
@@ -309,7 +321,7 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 	if server.State() != eapnoob.StateWaiting {
 		return sess, "", fmt.Errorf("initial exchange ended in state %s, want Waiting", server.State())
 	}
-	pin, noob, err := generatePIN()
+	pin, noob, err := mintPIN(sess.pinSalt)
 	if err != nil {
 		return sess, "", fmt.Errorf("generate pin: %w", err)
 	}
@@ -360,18 +372,20 @@ func postPairingBlob(client *http.Client, target, inviteID, phase string, blob [
 	return base64.StdEncoding.DecodeString(out.Msg)
 }
 
-// postPairingSignal POSTs a best-effort terminal pairing signal (phase
+// postPairingSignalScheme POSTs a best-effort terminal pairing signal (phase
 // "decline" or "fail") to the inviter so it can tear down its pending outbound
-// invite. Unlike postPairingBlob it carries no EAP blob (the pairing is already
-// terminal) but does carry the Reason so the inviter can surface a specific
-// cause (e.g. "incorrect-pin"). Returns an error only on transport / non-200 so
-// the caller can retry.
-func postPairingSignal(client *http.Client, target, inviteID, phase, reason string) error {
-	return postPairingSignalScheme(client, "http", target, inviteID, phase, reason)
+// invite. It carries no EAP blob (the pairing is already terminal) and no
+// reason; it sends no authentication tag — a hardened inviter rejects it and
+// falls back to its TTL (see postPairingSignalTagged).
+func postPairingSignalScheme(client *http.Client, scheme, target, inviteID, phase, reason string) error {
+	return postPairingSignalTagged(client, scheme, target, inviteID, phase, reason, "")
 }
 
-func postPairingSignalScheme(client *http.Client, scheme, target, inviteID, phase, reason string) error {
-	env := pairingEnvelope{InviteID: inviteID, Phase: phase, Reason: reason}
+// postPairingSignalTagged is postPairingSignalScheme with an optional
+// authentication tag for the signal (see pairingSignalMAC). An empty tag is
+// sent unauthenticated and will be rejected by hardened inviters.
+func postPairingSignalTagged(client *http.Client, scheme, target, inviteID, phase, reason, signalTag string) error {
+	env := pairingEnvelope{InviteID: inviteID, Phase: phase, Reason: reason, SignalTag: signalTag}
 	body, err := json.Marshal(env)
 	if err != nil {
 		return err
@@ -386,6 +400,46 @@ func postPairingSignalScheme(client *http.Client, scheme, target, inviteID, phas
 		return fmt.Errorf("pairing %s: status %d", phase, resp.StatusCode)
 	}
 	return nil
+}
+
+// postPairingBlobTagged is postPairingBlob with an optional authentication tag
+// for transport-level signals that carry no EAP payload (e.g. "cancel").
+func postPairingBlobTagged(client *http.Client, target, inviteID, phase string, blob []byte, signalTag string) ([]byte, error) {
+	env := pairingEnvelope{InviteID: inviteID, Phase: phase, SignalTag: signalTag}
+	if len(blob) > 0 {
+		env.Msg = base64.StdEncoding.EncodeToString(blob)
+	}
+	body, err := json.Marshal(env)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Post("http://"+target+pairingPath, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if resp.StatusCode == http.StatusConflict {
+		// A 409 may be an explicit pairing refusal (rejected envelope with a
+		// reason) rather than a protocol error. Decode it so the inviter can
+		// report state:"rejected"; a plain-text 409 (session/phase mismatch)
+		// won't set Rejected and falls through to the generic error below.
+		var out pairingEnvelope
+		if json.Unmarshal(rb, &out) == nil && out.Rejected {
+			return nil, &pairingRejectedError{reason: out.Reason}
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("pairing %s: status %d: %s", phase, resp.StatusCode, string(rb))
+	}
+	var out pairingEnvelope
+	if err := json.Unmarshal(rb, &out); err != nil {
+		return nil, fmt.Errorf("decode pairing response: %w", err)
+	}
+	if out.Msg == "" {
+		return nil, nil
+	}
+	return base64.StdEncoding.DecodeString(out.Msg)
 }
 
 // reachableEndpointFirst moves the first endpoint whose pairing port accepts a

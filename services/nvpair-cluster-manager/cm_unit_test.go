@@ -161,15 +161,38 @@ func TestPINNoobRoundTrip(t *testing.T) {
 			t.Fatalf("noob decodes to %s, want %s", got, want.String())
 		}
 	}
+}
 
-	gp, noob, err := generatePIN()
+func TestSaltedPINNoob(t *testing.T) {
+	salt, err := newPinSalt()
 	if err != nil {
-		t.Fatalf("generatePIN: %v", err)
+		t.Fatalf("newPinSalt: %v", err)
 	}
-	if !pinPattern.MatchString(gp) {
-		t.Fatalf("generated PIN %q is not six digits", gp)
+	if len(salt) != 16 {
+		t.Fatalf("salt length %d, want 16", len(salt))
 	}
-	if string(noob) != string(noobFromPIN(gp)) {
-		t.Fatal("generatePIN's noob does not match noobFromPIN of its PIN")
+
+	pin, noob, err := mintPIN(salt)
+	if err != nil {
+		t.Fatalf("mintPIN: %v", err)
+	}
+	if !pinPattern.MatchString(pin) {
+		t.Fatalf("generated PIN %q is not six digits", pin)
+	}
+
+	// Joiner reconstruction must match the inviter's Noob, and the same PIN
+	// under different salts must produce unrelated Noobs.
+	joinerNoob := deriveNoobFromPINAndSalt(pin, salt)
+	if string(joinerNoob) != string(noob) {
+		t.Fatal("joiner-derived noob does not match inviter noob")
+	}
+	otherNoob := pinNoob(pin, append([]byte("x"), salt...))
+	if string(otherNoob) == string(noob) {
+		t.Fatal("different salt produced identical noob")
+	}
+
+	// Legacy escape hatch: empty salt must equal the unsalted derivation.
+	if string(pinNoob(pin, nil)) != string(noobFromPIN(pin)) {
+		t.Fatal("empty salt must fall back to legacy noob derivation")
 	}
 }
