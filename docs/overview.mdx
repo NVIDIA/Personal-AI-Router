@@ -76,14 +76,14 @@ you form a cluster, only the last step repeats.
 
 ## Request Model
 
-An application sends an ordinary Ollama-compatible or OpenAI-compatible HTTP
-request to a local proxy. The proxy selects one eligible node and forwards the
-whole request. That node's engine performs the inference, and the response
-streams back through the proxy.
+An application sends an ordinary Ollama-compatible or OpenAI-compatible
+request, or an Anthropic Messages API request, to a local proxy. The proxy
+selects one eligible node and forwards the whole request. That node's engine
+performs the inference, and the response streams back through the proxy.
 
 ```mermaid
 flowchart LR
-    Client["Your AI app or agent"] -->|"Ollama- or OpenAI-compatible request"| Endpoint["PAIR endpoint<br/>on your machine"]
+    Client["Your AI app or agent"] -->|"Ollama, OpenAI, or Anthropic Messages request"| Endpoint["PAIR endpoint<br/>on your machine"]
     Endpoint <-->|"encrypted both ways"| Node["A paired node<br/>with the model"]
     Node --> Engine["Inference engine"]
 ```
@@ -136,7 +136,8 @@ PAIR provides these capabilities:
 
 - A local endpoint for compatible AI applications and development tools.
 - LAN discovery plus manually configured nodes.
-- Ollama-compatible and LM Studio/OpenAI-compatible routing proxies.
+- Routing proxies for Ollama-compatible, OpenAI-compatible, and Anthropic
+  Messages API requests.
 - Pairing and cluster membership managed by the background services.
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between machines: a request sent to another node travels over

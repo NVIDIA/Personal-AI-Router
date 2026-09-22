@@ -113,7 +113,9 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 				requestID++
 			}
 			callBrokerRPC(t, stdin, msgs, requestID, tc.rpcPrefix+":node/set-priority", map[string]any{
-				"generation": 1,
+				// Both facades share one proxy process, so every snapshot must
+				// advance the process-wide generation.
+				"generation": caseIndex + 1,
 				"nodes":      []string{missingID, unknownID, owner404ID, ownerOKID},
 			})
 

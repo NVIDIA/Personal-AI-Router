@@ -30,8 +30,8 @@ import (
 // POST to /v1/models is not a model list, and a GET to /api/chat is not
 // inference. Folding them into one constant keeps the two from disagreeing.
 //
-// The dialect distinction is meaningful only for model-list roles. All eight
-// of Ollama's inference paths are handled identically — no envelope, identity
+// The dialect distinction is meaningful only for model-list roles. All of
+// Ollama's inference paths are handled identically — no envelope, identity
 // field or response shape is selected — so there is deliberately no
 // per-dialect inference role.
 type routeRole int
@@ -116,12 +116,15 @@ type engineProfile struct {
 	SupportsHostAlias bool
 }
 
-// openAIInferenceRoutes is the inference surface every OpenAI-compatible
-// engine exposes. Ollama serves these alongside its native routes.
+// openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
 	{Path: "/v1/completions", Role: roleInferencePOST},
 	{Path: "/v1/embeddings", Role: roleInferencePOST},
+}
+
+// anthropicInferenceRoutes is the Anthropic-compatible inference surface.
+var anthropicInferenceRoutes = []route{
 	{Path: "/v1/messages", Role: roleInferencePOST},
 }
 
@@ -130,19 +133,27 @@ var profiles = buildProfiles()
 func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
+	ollamaRoutes := []route{
+		{Path: "/api/generate", Role: roleInferencePOST},
+		{Path: "/api/chat", Role: roleInferencePOST},
+		{Path: "/api/embeddings", Role: roleInferencePOST},
+		{Path: "/api/embed", Role: roleInferencePOST},
+		{Path: "/api/tags", Role: roleModelListNativeGET},
+		{Path: "/v1/models", Role: roleModelListOpenAIGET},
+	}
+	ollamaRoutes = append(ollamaRoutes, openAIInferenceRoutes...)
+	ollamaRoutes = append(ollamaRoutes, anthropicInferenceRoutes...)
+	lmstudioRoutes := []route{
+		{Path: "/v1/models", Role: roleModelListOpenAIGET},
+	}
+	lmstudioRoutes = append(lmstudioRoutes, openAIInferenceRoutes...)
+	lmstudioRoutes = append(lmstudioRoutes, anthropicInferenceRoutes...)
 
 	return []engineProfile{
 		{
-			Engine:         ollama,
-			StandalonePort: 11435,
-			Routes: append([]route{
-				{Path: "/api/generate", Role: roleInferencePOST},
-				{Path: "/api/chat", Role: roleInferencePOST},
-				{Path: "/api/embeddings", Role: roleInferencePOST},
-				{Path: "/api/embed", Role: roleInferencePOST},
-				{Path: "/api/tags", Role: roleModelListNativeGET},
-				{Path: "/v1/models", Role: roleModelListOpenAIGET},
-			}, openAIInferenceRoutes...),
+			Engine:                ollama,
+			StandalonePort:        11435,
+			Routes:                ollamaRoutes,
 			ModelNaming:           impliedLatestTag,
 			ReservedPersistedPort: 0,
 			SupportsHostAlias:     true,
@@ -150,10 +161,8 @@ func buildProfiles() []engineProfile {
 		{
 			Engine:         lmstudio,
 			StandalonePort: 1234,
-			Routes: append([]route{
-				{Path: "/v1/models", Role: roleModelListOpenAIGET},
-			}, openAIInferenceRoutes...),
-			ModelNaming: exactID,
+			Routes:         lmstudioRoutes,
+			ModelNaming:    exactID,
 			// 1235 is where engine-manager runs a managed LM Studio, so a
 			// proxy that restored it would sit on the engine's own port. The
 			// stored value predates the current default of 1234.
