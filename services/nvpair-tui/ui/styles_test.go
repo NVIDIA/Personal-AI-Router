@@ -79,6 +79,28 @@ func TestAppearanceOverrideIsExplicit(t *testing.T) {
 	}
 }
 
+// TestStartAppearanceSettlesBeforeTheFirstFrame checks the background is
+// decided by the time the waiter returns.
+//
+// The whole point of resolving it off the startup path is that the answer is
+// ready before anything renders. A waiter that returned early would put the
+// query back where it was — resolved during the first frame, when Bubble Tea
+// owns stdin and the terminal's reply goes to its reader instead.
+func TestStartAppearanceSettlesBeforeTheFirstFrame(t *testing.T) {
+	before := lipgloss.HasDarkBackground()
+	t.Cleanup(func() { lipgloss.SetHasDarkBackground(before) })
+
+	wait := StartAppearance(AppearanceLight)
+	wait()
+	if lipgloss.HasDarkBackground() {
+		t.Error("the waiter returned before the appearance was settled")
+	}
+
+	// Waiting twice is not an error: the caller joins it on one path, and a
+	// second join must not block forever on a closed channel.
+	wait()
+}
+
 // TestSetAppearanceLeavesDetectionAloneOnAuto checks auto does not assert a
 // background of its own.
 func TestSetAppearanceLeavesDetectionAloneOnAuto(t *testing.T) {

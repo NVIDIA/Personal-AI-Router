@@ -74,24 +74,67 @@ const (
 	AppearanceDark  Appearance = "dark"
 )
 
-// SetAppearance overrides the detected terminal background.
+// SetAppearance fixes the terminal background, by detecting it now or by being
+// told.
 //
-// Detection works by asking the terminal for its background colour and waiting
-// for the reply. A terminal that does not answer — which is common enough over
-// SSH, inside tmux, and in CI — leaves lipgloss assuming a dark background, and
-// every adaptive colour then picks the variant for the wrong one. On a light
-// terminal that is not a cosmetic difference: the pale-blue accent chosen for a
-// dark background is close to invisible on white.
+// Detection asks the terminal for its background colour and reads the reply
+// from stdin. lipgloss does that once, lazily, the first time an adaptive
+// colour is resolved — and that first resolution happens while rendering,
+// which is after Bubble Tea has put the terminal in raw mode and started its
+// own reader on stdin. The terminal answers, Bubble Tea's reader takes the
+// reply, and the query times out having learned nothing.
 //
-// Nothing here guesses. Auto leaves the detection alone, and the other two say
-// what the terminal is.
+// So detection is forced here instead, before the program starts, while stdin
+// is still ours to read. The result is cached behind lipgloss's sync.Once, so
+// every later render uses what was measured rather than re-asking at a moment
+// when asking cannot work.
+//
+// Light and dark skip the question. They are for the terminal that does not
+// answer at all — over SSH, inside tmux, in CI — where lipgloss would fall back
+// to assuming dark and get a light terminal wrong.
 func SetAppearance(a Appearance) {
 	switch a {
 	case AppearanceLight:
 		lipgloss.SetHasDarkBackground(false)
 	case AppearanceDark:
 		lipgloss.SetHasDarkBackground(true)
+	default:
+		// The return value is deliberately unused: the point is to run the
+		// query now and let the sync.Once keep the answer.
+		_ = lipgloss.HasDarkBackground()
 	}
+}
+
+// StartAppearance settles the terminal background off the startup path,
+// returning a function that waits for it.
+//
+// The query costs nothing on a terminal that answers, and five seconds on one
+// that does not: termenv's timeout is a constant, so it cannot be shortened.
+// Rather than spend that before anything else happens, it runs while the
+// broker starts — work the program has to do regardless — and is joined just
+// before the first render, which is the first moment the answer is needed.
+//
+// Terminals that cannot answer are recognised without waiting at all. termenv
+// refuses the query outright under screen, tmux, and TERM=dumb, because those
+// can be attached to several terminals at once and there is no single
+// background to report. Those sessions fall back to assuming dark, which is
+// what --appearance is for.
+func StartAppearance(a Appearance) (wait func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		SetAppearance(a)
+	}()
+	return func() { <-done }
+}
+
+// DetectedAppearance reports the background in force, for a log line that
+// explains a colour scheme the operator did not expect.
+func DetectedAppearance() Appearance {
+	if lipgloss.HasDarkBackground() {
+		return AppearanceDark
+	}
+	return AppearanceLight
 }
 
 // ParseAppearance narrows a flag value, reporting whether it is one of the

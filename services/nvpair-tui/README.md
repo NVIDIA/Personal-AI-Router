@@ -152,10 +152,21 @@ one terminal and not the other, which is how the selected table row came to be
 black on dark blue for anyone using a light theme. `TestTextOnAnAdaptiveBackgroundAdaptsToo`
 pins the pairing.
 
-Detection asks the terminal for its background and waits for an answer. A
-terminal that does not reply — common over SSH, inside tmux, and in CI — leaves
-lipgloss assuming dark. `--appearance light|dark` states it instead;
-`auto`, the default, leaves detection alone.
+Detection asks the terminal for its background and reads the reply from stdin.
+lipgloss does that lazily, the first time an adaptive colour resolves, which is
+during the first render — after Bubble Tea has taken the terminal and started
+its own reader, so the answer goes to that reader and the query learns nothing.
+It is therefore forced at startup instead, while stdin is still ours, and the
+result cached behind lipgloss's `sync.Once`.
+
+That query costs nothing on a terminal that answers and five seconds on one
+that does not, since termenv's timeout is a constant. It runs alongside broker
+startup for that reason, and is joined immediately before the first render. It
+cannot be abandoned early: the query owns the terminal until it returns.
+
+termenv declines to ask at all under `screen`, `tmux`, or `TERM=dumb`, which can
+be attached to several terminals at once. Those fall back to assuming dark, and
+`--appearance light|dark` is the answer.
 
 ## Architecture
 
