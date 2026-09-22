@@ -112,12 +112,18 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"engine" is required`, http.StatusBadRequest)
 		return
 	}
-	if req.Model == "" && len(req.Params) == 0 {
-		http.Error(w, `"model" or "params" is required`, http.StatusBadRequest)
-		return
-	}
 	if model := modelFromParams(req.Params); model != "" {
 		req.Model = model
+	}
+	// Resolve the model before validating, because the model is what scopes
+	// everything below. Params that name none used to pass this check and
+	// leave it empty, which made claimPull a no-op and emptied streamOp's
+	// modelFilter — and an empty filter disables filtering, so the initiator
+	// received every other model's pull progress on this engine stamped with
+	// its own opID.
+	if req.Model == "" {
+		http.Error(w, `"model", or "params" naming one, is required`, http.StatusBadRequest)
+		return
 	}
 	// The initiator's cancel arrives as its own request, so claim the pull
 	// before starting it: a cancel that beats the download to the executor is
@@ -126,11 +132,7 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 	s.streamOp(w, r, req.OpID, req.Engine, "pull", req.Model, func(ctx context.Context) (streamFrame, error) {
 		res, err := s.exec.PullModelStream(ctx, req.Engine, req.Model, req.Params)
 		if err != nil {
-			model := req.Model
-			if model == "" {
-				model = modelFromParams(req.Params)
-			}
-			msg := s.exec.reportPullFailed(req.Engine, model, err)
+			msg := s.exec.reportPullFailed(req.Engine, req.Model, err)
 			return streamFrame{}, fmt.Errorf("%s", msg)
 		}
 		return streamFrame{Type: "result", OpID: req.OpID, Engine: req.Engine, Op: "pull", Result: res}, nil

@@ -32,14 +32,28 @@ func TestPullProgressFromLine(t *testing.T) {
 	}
 }
 
+// The model is what scopes a pull: it keys the claim a cancel is matched
+// against, and it is streamOp's progress filter. A request that does not name
+// one has to be refused rather than run unscoped — an empty filter disables
+// filtering, so the initiator would receive every other model's pull progress
+// on that engine stamped with its own opID.
 func TestHandlePullRejectsMissingTarget(t *testing.T) {
-	s := &controlServer{exec: &Executor{progress: newProgressHub()}}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(`{"opId":"x","engine":"ollama"}`))
-	s.handlePull(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 when neither model nor params set, got %d", rec.Code)
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			s := &controlServer{exec: &Executor{progress: newProgressHub()}}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(body))
+			s.handlePull(rec, req)
+			if rec.Code != 400 {
+				t.Fatalf("code = %d, want 400 for a pull that names no model", rec.Code)
+			}
+		})
 	}
+	test("neither model nor params", `{"opId":"x","engine":"ollama"}`)
+	// Params carrying no recognisable model name used to satisfy the check
+	// purely by being non-empty.
+	test("params naming no model", `{"opId":"x","engine":"ollama","params":{"insecure":true}}`)
+	test("params with an empty model", `{"opId":"x","engine":"ollama","params":{"name":""}}`)
 }
 
 func TestModelFromParams(t *testing.T) {
