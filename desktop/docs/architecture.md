@@ -229,8 +229,8 @@ so both entry points validate, restart, and persist identically.
 
 The Ollama, LM Studio, and llama.cpp proxies are cluster-aware. For
 model-bearing inference, each proxy first keeps only nodes whose per-engine
-discovery inventory advertises the requested model. llama.cpp uses the **loaded**
-set, not the on-disk catalog. Empty and non-matching inventories are excluded; an
+discovery inventory advertises the requested model. Empty and non-matching
+inventories are excluded; an
 empty owner set returns a local `502`. Routing precedence within the eligible set
 is:
 

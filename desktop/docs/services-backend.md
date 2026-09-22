@@ -156,7 +156,7 @@ no managed update: the bridge refuses `update` for it rather than substituting
 an uninstall and reinstall. The desktop uses reported install support and
 ownership; external runtimes remain read-only. Downloaded cache entries remain
 distinct from runtime residency. The app endpoint is `http://127.0.0.1:8080/v1`;
-routing requires the model **loaded** on the serving node. Remote cluster
+a downloaded model loads on the first request that names it. Remote cluster
 operations use the engine manager's remote control surface where supported.
 
 ### Engine settings
