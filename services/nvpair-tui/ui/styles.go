@@ -3,7 +3,10 @@
 
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Styles are intentionally restrained: adaptive colors that degrade
 // gracefully on a bare SSH terminal, no background fills that depend on
@@ -30,4 +33,28 @@ var (
 
 	statusOKStyle  = lipgloss.NewStyle().Foreground(colorOK)
 	statusErrStyle = lipgloss.NewStyle().Foreground(colorErr)
+
+	// helpKeyStyle and helpDescStyle separate the key you press from what it
+	// does. Undifferentiated, the footer reads as one run of words — "enter
+	// details p pair n pair by address" — and the reader has to know the
+	// convention to parse it. Bold marks the keys; the descriptions take the
+	// same muted tone as the rest of the chrome.
+	//
+	// Bold rather than a color because this has to survive a bare SSH terminal:
+	// lipgloss downsamples color, but bold is an SGR attribute that terminals
+	// honour even at two colors, and it stays legible on any background.
+	helpKeyStyle  = lipgloss.NewStyle().Bold(true)
+	helpDescStyle = lipgloss.NewStyle().Foreground(colorMuted)
 )
+
+// styleHelp applies the key/description split to a help model.
+//
+// Done once, on the shell's single help model, so every view's footer and the
+// full-help overlay share it. bubbles keeps separate styles for the short and
+// full renderings and defaults both to the same faint tone.
+func styleHelp(m *help.Model) {
+	m.Styles.ShortKey = helpKeyStyle
+	m.Styles.FullKey = helpKeyStyle
+	m.Styles.ShortDesc = helpDescStyle
+	m.Styles.FullDesc = helpDescStyle
+}
