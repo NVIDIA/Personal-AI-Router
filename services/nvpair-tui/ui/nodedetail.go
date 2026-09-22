@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-shared/enginesettings"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -34,6 +35,9 @@ const (
 	detailInputModelName
 	detailInputEnginePort
 	detailInputProxyPort
+	// detailInputLaunchArgs edits the arguments and environment an engine is
+	// started with, in the notation LAUNCH_TEXT.md describes.
+	detailInputLaunchArgs
 )
 
 // nodeDetail is the drill-down for one machine: its engines and the models each
@@ -83,6 +87,24 @@ type nodeDetail struct {
 	// finishes or a peer republishes its inventory.
 	pending *pendingDestructive
 
+	// settings is the last settings snapshot seen per engine, keyed by engine
+	// name. Fetched when the operator asks to edit rather than for every engine
+	// on open, and refreshed by engine:settings-changed.
+	//
+	// Every write carries the revision from here, which is what makes a
+	// concurrent edit fail loudly instead of overwriting silently.
+	settings map[string]enginesettings.Snapshot
+	// settingsWanted is the edit the operator asked for while its snapshot was
+	// still being fetched, so the right field opens once it arrives.
+	settingsWanted *pendingSettingsEdit
+	// settingsConfirm is an applied change waiting on "y" because the backend
+	// said it would restart the engine.
+	settingsConfirm *enginesettings.Request
+	// settingsAwaited is the engine whose saved state this screen is waiting to
+	// see, so the outcome is reported for a change made here and not for one
+	// another client made.
+	settingsAwaited string
+
 	telemetry   nodeTelemetry
 	telemetryOK bool
 	// telemetryGen identifies this screen's polling chain. Bubble Tea cannot
@@ -101,6 +123,16 @@ type nodeDetail struct {
 	status toast
 
 	width, height int
+}
+
+// pendingSettingsEdit is an edit waiting for the snapshot it needs.
+//
+// Opening a field requires the current value and the revision to write against,
+// and both arrive with the snapshot. Rather than block the interface on the
+// round trip, the request is remembered and the field opens when it lands.
+type pendingSettingsEdit struct {
+	engine string
+	mode   detailInputMode
 }
 
 // detailModelRow is one row of the model list: a model and the engine serving it.
@@ -132,8 +164,12 @@ var (
 	// In the engines pane only, so these do not collide with the models pane's
 	// p (browse) or e (eject). Each is mnemonic where it applies: e for the
 	// engine's own port, p for the proxy fronting it.
-	detailPortKey       = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "engine port"))
-	detailProxyKey      = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "proxy port"))
+	detailPortKey  = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "engine port"))
+	detailProxyKey = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "proxy port"))
+	// a for arguments, the word the backend's own notation uses. Free in this
+	// screen: the letter is taken on the Nodes list and the Jobs tab, but those
+	// are other views, and this one is full-screen.
+	detailArgsKey       = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "arguments"))
 	detailPullKey       = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "browse models"))
 	detailPullByNameKey = key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "download by name"))
 	detailLoadKey       = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "load"))
@@ -433,29 +469,50 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 
+	case engineSettingsMsg:
+		if msg.err != nil {
+			d.settingsWanted = nil
+			d.status.error("read engine settings failed: %s", msg.err)
+			return nil, true
+		}
+		if d.settings == nil {
+			d.settings = map[string]enginesettings.Snapshot{}
+		}
+		d.settings[msg.snapshot.Engine] = msg.snapshot
+		d.reportSettingsOutcome(msg.snapshot)
+		// A snapshot arrives either because a field was asked for or because
+		// the backend pushed a change. Only the first opens an editor, and only
+		// for the engine that was asked about — a push for another engine while
+		// the operator waits must not hijack the field.
+		if w := d.settingsWanted; w != nil && w.engine == msg.snapshot.Engine {
+			d.settingsWanted = nil
+			// The "reading settings..." note is sticky, so it has to be
+			// replaced rather than left to expire behind the open field.
+			d.status.info("editing %s", d.engineLabel(msg.snapshot.Engine))
+			return d.openSettingsField(msg.snapshot, w.mode), true
+		}
+		return nil, true
+
+	case enginePreviewMsg:
+		return d.applySettingsPreview(msg), true
+
+	case engineSettingsAppliedMsg:
+		if msg.err != nil {
+			d.settingsAwaited = ""
+			d.status.error("%s settings: %s", d.engineLabel(msg.engine), msg.err)
+			return nil, true
+		}
+		// Deliberately silent on success. This reply says the write was
+		// accepted, not what the engine ended up with, and the difference is
+		// the whole point: the snapshot that follows carries the effective
+		// ports, and reportSettingsOutcome speaks then. Announcing "saved"
+		// here would be the claim that outran the facts.
+		return nil, true
+
 	case proxyStatusMsg:
 		if d.proxy != nil {
 			d.proxy.apply(msg)
 			d.refreshEngines()
-		}
-		return nil, true
-
-	case proxyPortMsg:
-		switch {
-		case msg.err != nil:
-			d.status.error("%s proxy port change failed: %s", msg.label, msg.err)
-		case msg.actual == 0:
-			// No port in the reply. Say only what is known rather than inventing
-			// a confirmation; the ready push will correct the table either way.
-			d.status.info("%s proxy port change accepted", msg.label)
-		case msg.actual != msg.requested:
-			// The refusal, named. A running engine outranks the proxy for a
-			// port, so this is the normal answer to asking for one an engine
-			// holds — and it used to render as "updated".
-			d.status.error("%s proxy stayed on :%d - :%d is taken, most likely by a running engine",
-				msg.label, msg.actual, msg.requested)
-		default:
-			d.status.ok("%s proxy now on :%d", msg.label, msg.actual)
 		}
 		return nil, true
 
@@ -541,6 +598,28 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		d.refreshEngines()
 		// A new engine row changes the split between the two tables.
 		d.sizeEngineTable()
+
+	case "engine:settings-changed":
+		// The saved state, from whoever changed it — this screen, the desktop
+		// app, or another operator. Kept current so the next edit writes
+		// against a revision the backend will still accept, and so a field
+		// opened afterwards shows what is actually saved.
+		var snap enginesettings.Snapshot
+		_ = decodeParams(msg.Params, &snap)
+		if snap.Engine == "" || snap.NodeID != d.nodeArg() {
+			return nil
+		}
+		if d.settings == nil {
+			d.settings = map[string]enginesettings.Snapshot{}
+		}
+		d.settings[snap.Engine] = snap
+		d.reportSettingsOutcome(snap)
+
+	case "engine:settings-disconnected":
+		// The settings worker behind a peer went away, so every revision held
+		// for it is now unverifiable. Dropping the cache makes the next edit
+		// re-fetch rather than write against a number nobody will honour.
+		clear(d.settings)
 
 	case "engine:models-changed":
 		// The manager polls each running engine's resident set and pushes this
@@ -695,6 +774,14 @@ func (d *nodeDetail) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return d.resolvePending(msg), true
 	}
 
+	// Same rule for a settings change the backend says will restart the engine.
+	// It is not destructive in the way deleting a model is, but it interrupts
+	// whatever the engine is serving, and an operator who meant to move the
+	// cursor should not discover that by watching requests fail.
+	if d.settingsConfirm != nil {
+		return d.resolveSettingsConfirm(msg), true
+	}
+
 	if key.Matches(msg, detailBackKey) {
 		return nil, false
 	}
@@ -735,45 +822,125 @@ func (d *nodeDetail) handleEngineKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return d.uninstallEngine(engine)
 	case key.Matches(msg, detailPortKey):
-		if engine == nil {
-			d.status.error("no engine selected")
-			return nil
-		}
-		if d.remote() {
-			d.status.error("an engine's port can only be changed on the machine running it")
-			return nil
-		}
-		d.mode = detailInputEnginePort
-		d.input.Placeholder = "port"
-		d.input.CharLimit = 5
-		d.input.SetValue(strconv.Itoa(engine.Port))
-		d.input.Focus()
-		return textinput.Blink
+		return d.editSetting(engine, detailInputEnginePort)
 	case key.Matches(msg, detailProxyKey):
-		if engine == nil {
-			d.status.error("no engine selected")
-			return nil
-		}
-		if d.proxy == nil {
-			d.status.error("a node's proxy ports can only be changed on that machine")
-			return nil
-		}
-		idx := d.proxy.indexForEngine(engine.Engine)
-		if idx < 0 {
-			d.status.error("no proxy fronts %s", engine.label())
-			return nil
-		}
-		port, _ := d.proxy.portForEngine(engine.Engine)
-		d.mode = detailInputProxyPort
-		d.input.Placeholder = "port"
-		d.input.CharLimit = 5
-		d.input.SetValue(strconv.Itoa(port))
-		d.input.Focus()
-		return textinput.Blink
+		return d.editSetting(engine, detailInputProxyPort)
+	case key.Matches(msg, detailArgsKey):
+		return d.editSetting(engine, detailInputLaunchArgs)
 	}
 	var cmd tea.Cmd
 	d.engineTable, cmd = d.engineTable.Update(msg)
 	return cmd
+}
+
+// editSetting opens one of the three settings fields for an engine.
+//
+// All three are one backend operation — the server port, the client-facing
+// proxy port, and the launch arguments are written together against a revision
+// — so they share a path rather than each having its own RPC. Ports used to go
+// through engine:set-port and the proxy's set-port, which meant two writers to
+// the state with no common revision: the last one to finish won, and neither
+// could tell it had lost.
+//
+// Whether an engine can be configured at all is the backend's answer, not a
+// guess from here. It reports Editable with a reason, which covers cases this
+// screen cannot see — an engine PAIR adopted rather than started, a settings
+// worker that is not reachable on a peer — and it covers them without this
+// screen having to keep a second list of when to refuse.
+func (d *nodeDetail) editSetting(engine *engineStatus, mode detailInputMode) tea.Cmd {
+	if engine == nil {
+		d.status.error("no engine selected")
+		return nil
+	}
+	snap, ok := d.settings[engine.Engine]
+	if !ok {
+		// Ask, then open the field when the answer lands. The alternative is
+		// opening it against a guessed value and a revision we do not have,
+		// which is how an edit silently overwrites someone else's.
+		d.settingsWanted = &pendingSettingsEdit{engine: engine.Engine, mode: mode}
+		d.status.busy("reading %s settings...", engine.label())
+		return getEngineSettingsCmd(d.client, d.nodeArg(), engine.Engine)
+	}
+	return d.openSettingsField(snap, mode)
+}
+
+// openSettingsField focuses the field for mode, prefilled from the snapshot.
+func (d *nodeDetail) openSettingsField(snap enginesettings.Snapshot, mode detailInputMode) tea.Cmd {
+	if reason := settingsUnavailableReason(snap); reason != "" {
+		d.status.error("%s", reason)
+		return nil
+	}
+	d.mode = mode
+	switch mode {
+	case detailInputEnginePort:
+		d.input.Placeholder = "port"
+		d.input.CharLimit = 5
+		d.input.SetValue(strconv.Itoa(snap.Settings.ServerPort))
+	case detailInputProxyPort:
+		d.input.Placeholder = "port"
+		d.input.CharLimit = 5
+		d.input.SetValue(strconv.Itoa(snap.Settings.ProxyPort))
+	case detailInputLaunchArgs:
+		// No character limit that this screen invents: the backend bounds the
+		// text at 16 KiB and says so in its own words if that is exceeded.
+		d.input.Placeholder = "NAME=value --flag ..."
+		d.input.CharLimit = 0
+		d.input.SetValue(snap.Settings.LaunchText)
+	default:
+		d.mode = detailInputNone
+		return nil
+	}
+	d.input.Focus()
+	d.input.CursorEnd()
+	return textinput.Blink
+}
+
+// settingsRequest builds a write for one field against the snapshot's revision.
+//
+// The resolution names which side wins when the numeric server port and the
+// port written inside the command text disagree. They are two views of one
+// number, and the answer is simply whichever the operator just edited: a
+// changed port field rewrites the command, and changed command text updates the
+// field. Sending no resolution makes the backend report a conflict instead,
+// which is right for an API and useless to someone who has just typed a value.
+func (d *nodeDetail) settingsRequest(
+	snap enginesettings.Snapshot,
+	mode detailInputMode,
+	value string,
+) (enginesettings.Request, bool) {
+	cfg := snap.Settings
+	resolution := resolutionLaunch
+	switch mode {
+	case detailInputEnginePort:
+		port, ok := parsePort(value)
+		if !ok {
+			d.status.error("invalid port: enter a number between 1 and 65535")
+			return enginesettings.Request{}, false
+		}
+		cfg.ServerPort = port
+		resolution = resolutionServer
+	case detailInputProxyPort:
+		port, ok := parsePort(value)
+		if !ok {
+			d.status.error("invalid port: enter a number between 1 and 65535")
+			return enginesettings.Request{}, false
+		}
+		cfg.ProxyPort = port
+	case detailInputLaunchArgs:
+		// Not trimmed, not rewritten. The notation has its own rules about
+		// quoting and whitespace and the backend normalizes to them; tidying
+		// the text here would only disagree with it.
+		cfg.LaunchText = value
+	default:
+		return enginesettings.Request{}, false
+	}
+	return enginesettings.Request{
+		NodeID:           d.nodeArg(),
+		Engine:           snap.Engine,
+		ExpectedRevision: snap.Revision,
+		Settings:         cfg,
+		Resolution:       resolution,
+	}, true
 }
 
 func (d *nodeDetail) handleModelKey(msg tea.KeyMsg) tea.Cmd {
@@ -824,41 +991,129 @@ func (d *nodeDetail) submitInput() tea.Cmd {
 		d.status.busy("download %s: %s...", d.engineLabel(engine), val)
 		return modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], val)
 
-	case detailInputEnginePort:
-		engine := d.selectedEngine()
-		if engine == nil {
-			return nil
-		}
-		port, ok := parsePort(val)
-		if !ok {
-			d.status.error("invalid port: enter a number between 1 and 65535")
-			return nil
-		}
-		d.status.busy("setting the %s engine port to %d...", engine.label(), port)
-		return call(d.client, "engine:set-port",
-			map[string]any{"engine": engine.Engine, "port": port},
-			func(_ *rpc.Message, err error) tea.Msg {
-				return engineOpMsg{what: "set engine port", engine: engine.Engine, err: err}
-			})
-
-	case detailInputProxyPort:
-		engine := d.selectedEngine()
-		if engine == nil || d.proxy == nil {
-			return nil
-		}
-		idx := d.proxy.indexForEngine(engine.Engine)
-		if idx < 0 {
-			return nil
-		}
-		port, ok := parsePort(val)
-		if !ok {
-			d.status.error("invalid port: enter a number between 1 and 65535")
-			return nil
-		}
-		d.status.busy("setting the %s proxy port to %d...", engine.label(), port)
-		return d.proxy.setPortCmd(d.client, idx, port)
+	case detailInputEnginePort, detailInputProxyPort, detailInputLaunchArgs:
+		return d.submitSettings(mode, d.input.Value(), val)
 	}
 	return nil
+}
+
+// submitSettings validates a settings edit before committing it.
+//
+// Nothing is saved by this: it sends the draft to engine:preview-settings,
+// which normalizes the text, reports per-field errors, and says whether
+// applying would restart the engine. The commit happens in the reply handler,
+// against the settings the preview returned rather than the text that was
+// typed, so what lands is exactly what was validated.
+//
+// raw is the field's text as typed and trimmed is the same with surrounding
+// whitespace removed. The ports want the trimmed form; the launch text does
+// not, because whitespace is significant to a tokenizer and normalizing it is
+// the backend's job.
+func (d *nodeDetail) submitSettings(mode detailInputMode, raw, trimmed string) tea.Cmd {
+	engine := d.selectedEngine()
+	if engine == nil {
+		return nil
+	}
+	snap, ok := d.settings[engine.Engine]
+	if !ok {
+		d.status.error("settings for %s are no longer loaded; press the key again", engine.label())
+		return nil
+	}
+	value := trimmed
+	if mode == detailInputLaunchArgs {
+		value = raw
+	}
+	req, ok := d.settingsRequest(snap, mode, value)
+	if !ok {
+		return nil
+	}
+	d.status.busy("checking %s settings...", engine.label())
+	return previewEngineSettingsCmd(d.client, req)
+}
+
+// settingsVerdict is what a preview reply decided about a draft.
+type settingsVerdict int
+
+const (
+	// settingsRefuse: nothing will be written, and problem says why.
+	settingsRefuse settingsVerdict = iota
+	// settingsConfirmFirst: writable, but it restarts the engine.
+	settingsConfirmFirst
+	// settingsWrite: writable as it stands.
+	settingsWrite
+)
+
+// judgeSettingsPreview decides what to do with a preview reply.
+//
+// Separated from the screen so the decision can be tested without a broker:
+// what gets written after a preview is the part worth pinning down, and it is
+// three branches of "no" around one "yes".
+//
+// The returned request carries the *normalized* settings rather than the draft
+// that was sent, and no resolution. Both matter. Applying the raw draft would
+// save text the preview never approved, and re-sending a resolution against
+// settled text invites the backend to rewrite what the operator just confirmed.
+func judgeSettingsPreview(msg enginePreviewMsg) (settingsVerdict, enginesettings.Request, string) {
+	if msg.err != nil {
+		return settingsRefuse, enginesettings.Request{}, msg.err.Error()
+	}
+	// A conflict is the one outcome a resolution was supposed to prevent, so
+	// reaching here means the two ports disagree in a way the backend will not
+	// settle on its own. Name both numbers: the operator is the only one who
+	// knows which was intended.
+	if c := msg.preview.Conflict; c != nil {
+		return settingsRefuse, enginesettings.Request{}, fmt.Sprintf(
+			"the port field says %d and the arguments say %d - make them agree",
+			c.ServerPort, c.LaunchPort)
+	}
+	if len(msg.preview.Errors) != 0 {
+		return settingsRefuse, enginesettings.Request{}, joinSettingsErrors(msg.preview.Errors)
+	}
+	req := msg.request
+	req.Settings = msg.preview.Settings
+	req.Resolution = ""
+	if msg.preview.Restart {
+		return settingsConfirmFirst, req, ""
+	}
+	return settingsWrite, req, ""
+}
+
+// applySettingsPreview commits a validated draft, or explains why it cannot.
+func (d *nodeDetail) applySettingsPreview(msg enginePreviewMsg) tea.Cmd {
+	label := d.engineLabel(msg.request.Engine)
+	verdict, req, problem := judgeSettingsPreview(msg)
+	switch verdict {
+	case settingsRefuse:
+		d.status.error("%s: %s", label, problem)
+		return nil
+	case settingsConfirmFirst:
+		// Restarting drops whatever the engine is serving, so it is asked
+		// rather than assumed — the same arm-and-confirm the destructive keys
+		// use, for the same reason.
+		d.settingsConfirm = &req
+		d.status.arm("applying this restarts %s - press y to confirm", label)
+		return nil
+	}
+	d.settingsAwaited = req.Engine
+	d.status.busy("applying %s settings...", label)
+	return applyEngineSettingsCmd(d.client, req)
+}
+
+// joinSettingsErrors renders the backend's per-field errors as one line.
+//
+// Sorted by field so the same failure reads the same way twice; a map's order
+// would otherwise reshuffle the message between attempts.
+func joinSettingsErrors(errs map[string]string) string {
+	fields := make([]string, 0, len(errs))
+	for field := range errs {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	parts := make([]string, 0, len(fields))
+	for _, field := range fields {
+		parts = append(parts, errs[field])
+	}
+	return strings.Join(parts, "; ")
 }
 
 // parsePort validates a typed TCP port.
@@ -956,6 +1211,53 @@ func (d *nodeDetail) arm(prompt string, run func() tea.Cmd) tea.Cmd {
 
 // resolvePending answers an armed action. Anything but the confirmation key
 // cancels, so a stray keystroke never destroys anything.
+// reportSettingsOutcome says what an engine actually got, once, after a change
+// this screen asked for.
+//
+// A port is a request, not a promise: a running engine already holding one
+// outranks the proxy, so the backend binds elsewhere and reports the difference
+// as the effective port. Reporting the requested value as though it had been
+// honoured is the specific lie this exists to prevent — the old proxy path
+// rendered exactly that as "updated".
+//
+// Only after this screen's own write, and only once. These snapshots also
+// arrive unprompted whenever anyone else changes settings, and a note firing on
+// each would be noise about something the operator did not do.
+func (d *nodeDetail) reportSettingsOutcome(snap enginesettings.Snapshot) {
+	if d.settingsAwaited != snap.Engine {
+		return
+	}
+	d.settingsAwaited = ""
+	label := d.engineLabel(snap.Engine)
+	// A zero effective port means not bound yet rather than moved: a stopped
+	// engine has no port in force, and claiming it "stayed on :0" would be
+	// worse than saying nothing about where it landed.
+	switch {
+	case snap.EffectiveProxyPort != 0 && snap.EffectiveProxyPort != snap.Settings.ProxyPort:
+		d.status.error("%s endpoint stayed on :%d - :%d is taken, most likely by a running engine",
+			label, snap.EffectiveProxyPort, snap.Settings.ProxyPort)
+	case snap.EffectiveServerPort != 0 && snap.EffectiveServerPort != snap.Settings.ServerPort:
+		d.status.error("%s engine stayed on :%d - :%d is taken",
+			label, snap.EffectiveServerPort, snap.Settings.ServerPort)
+	default:
+		d.status.ok("%s settings saved", label)
+	}
+}
+
+// resolveSettingsConfirm answers the restart prompt raised by a settings
+// change, applying it on "y" and discarding it on anything else.
+func (d *nodeDetail) resolveSettingsConfirm(msg tea.KeyMsg) tea.Cmd {
+	req := d.settingsConfirm
+	d.settingsConfirm = nil
+	if key.Matches(msg, detailConfirmKey) {
+		d.settingsAwaited = req.Engine
+		d.status.busy("applying %s settings...", d.engineLabel(req.Engine))
+		return applyEngineSettingsCmd(d.client, *req)
+	}
+	d.status.info("cancelled")
+	return nil
+}
+
 func (d *nodeDetail) resolvePending(msg tea.KeyMsg) tea.Cmd {
 	act := d.pending
 	d.pending = nil
@@ -1373,6 +1675,8 @@ func (d *nodeDetail) inputLabel() string {
 		return "engine port: "
 	case detailInputProxyPort:
 		return "proxy port: "
+	case detailInputLaunchArgs:
+		return "arguments: "
 	default:
 		return "download model: "
 	}
@@ -1386,20 +1690,26 @@ func (d *nodeDetail) Help() []key.Binding {
 		return d.catalog.Help()
 	}
 	if d.mode != detailInputNone {
-		if d.mode == detailInputModelName {
+		switch d.mode {
+		case detailInputModelName:
 			return inputHelp("download")
+		case detailInputLaunchArgs:
+			return inputHelp("check and save")
 		}
 		return inputHelp("set port")
 	}
-	if d.pending != nil {
+	if d.pending != nil || d.settingsConfirm != nil {
 		return []key.Binding{detailConfirmKey}
 	}
 	bindings := []key.Binding{detailBackKey, detailPaneKey}
 	if d.pane == detailEngines {
 		bindings = append(bindings, detailInstallKey, detailStartKey, detailStopKey)
+		// The settings keys are offered on a peer too: the engine manager
+		// relays them, and whether a particular engine will accept the write
+		// is the snapshot's answer, given when the key is pressed.
+		bindings = append(bindings, detailPortKey, detailProxyKey, detailArgsKey)
 		if !d.remote() {
-			bindings = append(bindings,
-				detailRestartKey, detailUninstKey, detailPortKey, detailProxyKey)
+			bindings = append(bindings, detailRestartKey, detailUninstKey)
 		}
 		return bindings
 	}

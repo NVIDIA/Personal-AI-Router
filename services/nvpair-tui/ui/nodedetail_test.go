@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-tui/rpc"
 
@@ -231,51 +232,329 @@ func TestProxyIndexForEngine(t *testing.T) {
 	}
 }
 
-// TestProxyPortKeyRejectedOnRemote checks the key explains itself rather than
-// silently doing nothing on a peer.
-func TestProxyPortKeyRejectedOnRemote(t *testing.T) {
+// seedSettings puts a settings snapshot in the cache, as a fetch or a push
+// would, so a test can press an edit key without a broker behind it.
+func seedSettings(d *nodeDetail, snap enginesettings.Snapshot) {
+	if d.settings == nil {
+		d.settings = map[string]enginesettings.Snapshot{}
+	}
+	d.settings[snap.Engine] = snap
+}
+
+// ollamaSettings is an editable snapshot for the engine the detail tests use.
+func ollamaSettings() enginesettings.Snapshot {
+	return enginesettings.Snapshot{
+		Engine:   "ollama",
+		Revision: 7,
+		Editable: true,
+		Settings: enginesettings.Config{
+			ServerPort: 11434,
+			ProxyPort:  11435,
+			LaunchText: "OLLAMA_KEEP_ALIVE=5m",
+		},
+	}
+}
+
+// TestSettingsKeysAskTheBackendBeforeOpening checks an edit key fetches the
+// snapshot rather than opening a field against values this screen guessed.
+//
+// The revision is the point. A field opened without one has nothing to write
+// against, and the backend's whole defence against two clients overwriting each
+// other is that every write carries the revision it was based on.
+func TestSettingsKeysAskTheBackendBeforeOpening(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Port: 11434}}
+	d.refreshEngines()
+
+	cmd := d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if d.mode != detailInputNone {
+		t.Errorf("opened a field before the snapshot arrived (mode %v)", d.mode)
+	}
+	if cmd == nil {
+		t.Fatal("no settings request was issued")
+	}
+	if d.settingsWanted == nil || d.settingsWanted.mode != detailInputEnginePort {
+		t.Fatalf("the requested edit was not remembered: %+v", d.settingsWanted)
+	}
+}
+
+// TestSettingsEditorsAreDistinct checks the three fields are told apart, so a
+// typed value cannot be applied to the wrong one.
+func TestSettingsEditorsAreDistinct(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Port: 11434}}
+	d.refreshEngines()
+	seedSettings(d, ollamaSettings())
+
+	cases := []struct {
+		key   string
+		mode  detailInputMode
+		value string
+		label string
+	}{
+		{"e", detailInputEnginePort, "11434", "engine"},
+		{"p", detailInputProxyPort, "11435", "proxy"},
+		{"a", detailInputLaunchArgs, "OLLAMA_KEEP_ALIVE=5m", "arguments"},
+	}
+	for _, tc := range cases {
+		d.mode = detailInputNone
+		d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
+		if d.mode != tc.mode {
+			t.Fatalf("%q opened mode %v, want %v", tc.key, d.mode, tc.mode)
+		}
+		if got := d.input.Value(); got != tc.value {
+			t.Errorf("%q seeded with %q, want %q", tc.key, got, tc.value)
+		}
+		if !strings.Contains(d.inputLabel(), tc.label) {
+			t.Errorf("label %q does not say which field", d.inputLabel())
+		}
+	}
+}
+
+// TestSettingsRefusalComesFromTheBackend checks an engine the backend will not
+// let us configure is refused in the backend's own words.
+//
+// This screen used to decide for itself, refusing every port change on a peer
+// because the old RPC had no remote form. The settings path does, so the
+// judgement belongs to the side that knows why — an adopted engine, an
+// unreachable settings worker — rather than to a rule here that would drift.
+func TestSettingsRefusalComesFromTheBackend(t *testing.T) {
 	d := remoteDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Port: 11434}}
 	d.refreshEngines()
 
-	d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	snap := ollamaSettings()
+	snap.Editable = false
+	snap.Adopted = true
+	snap.Reason = "this engine was started outside PAIR"
+	seedSettings(d, snap)
+
+	d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	if d.mode != detailInputNone {
-		t.Error("opened a proxy port editor for a remote node")
+		t.Error("opened an editor for an engine the backend said is not editable")
 	}
-	if d.status.render() == "" {
-		t.Error("no explanation for refusing the remote proxy port change")
+	if got := d.status.render(); !strings.Contains(got, "started outside PAIR") {
+		t.Errorf("status %q does not carry the backend's reason", got)
 	}
 }
 
-// TestPortEditorsAreDistinct checks the two port editors are told apart, so a
-// typed value cannot be applied to the wrong one.
-func TestPortEditorsAreDistinct(t *testing.T) {
+// TestSettingsWriteCarriesTheRevisionAndResolution checks the two things a
+// settings write cannot be wrong about.
+//
+// The revision is what makes a concurrent edit fail instead of silently
+// winning. The resolution decides which side gives way when the numeric port
+// field and the port inside the command text disagree: editing the field
+// should rewrite the command, and editing the command should move the field.
+// Send the wrong one and the backend quietly rewrites what the operator typed.
+func TestSettingsWriteCarriesTheRevisionAndResolution(t *testing.T) {
 	d := localDetail()
-	d.proxy.apply(proxyStatusMsg{idx: 0, ready: true, port: 11435})
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Port: 11434}}
 	d.refreshEngines()
+	snap := ollamaSettings()
+	seedSettings(d, snap)
 
-	d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if d.mode != detailInputEnginePort {
-		t.Fatalf("e opened mode %v, want the engine port editor", d.mode)
+	cases := []struct {
+		name       string
+		mode       detailInputMode
+		value      string
+		resolution string
+		check      func(enginesettings.Config) error
+	}{
+		{
+			name:       "the port field wins over the command",
+			mode:       detailInputEnginePort,
+			value:      "11500",
+			resolution: resolutionServer,
+		},
+		{
+			name:       "the command wins over the port field",
+			mode:       detailInputLaunchArgs,
+			value:      "OLLAMA_HOST=127.0.0.1:11500",
+			resolution: resolutionLaunch,
+		},
 	}
-	if got := d.input.Value(); got != "11434" {
-		t.Errorf("engine port editor seeded with %q, want the engine's own port", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, ok := d.settingsRequest(snap, tc.mode, tc.value)
+			if !ok {
+				t.Fatal("the request was rejected")
+			}
+			if req.ExpectedRevision != snap.Revision {
+				t.Errorf("revision %d, want the snapshot's %d",
+					req.ExpectedRevision, snap.Revision)
+			}
+			if req.Resolution != tc.resolution {
+				t.Errorf("resolution %q, want %q", req.Resolution, tc.resolution)
+			}
+		})
 	}
-	if !strings.Contains(d.inputLabel(), "engine") {
-		t.Errorf("label %q does not say which port", d.inputLabel())
+}
+
+// TestLaunchTextIsSentAsTyped checks the arguments field is not tidied here.
+//
+// Whitespace is significant to a tokenizer, and the backend normalizes to rules
+// this screen does not carry. Trimming on the way out would disagree with it
+// and, worse, would disagree invisibly.
+func TestLaunchTextIsSentAsTyped(t *testing.T) {
+	d := localDetail()
+	snap := ollamaSettings()
+	const typed = `  OLLAMA_ORIGINS="https://example.com"  `
+
+	req, ok := d.settingsRequest(snap, detailInputLaunchArgs, typed)
+	if !ok {
+		t.Fatal("the request was rejected")
+	}
+	if req.Settings.LaunchText != typed {
+		t.Errorf("sent %q, want the text exactly as typed", req.Settings.LaunchText)
+	}
+}
+
+// TestSettingsApplyUsesTheNormalizedDraft checks the commit sends what the
+// backend validated, not what was typed.
+//
+// The preview returns normalized settings — quoting settled, ports reconciled
+// — and applying the raw draft instead would save text that was never checked,
+// with the preview's approval standing behind it.
+func TestSettingsApplyUsesTheNormalizedDraft(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
+	d.refreshEngines()
+
+	typed := enginesettings.Config{ServerPort: 11434, ProxyPort: 11435, LaunchText: "--flag   x"}
+	normalized := enginesettings.Config{ServerPort: 11434, ProxyPort: 11435, LaunchText: "--flag x"}
+
+	verdict, sent, problem := judgeSettingsPreview(enginePreviewMsg{
+		request: enginesettings.Request{
+			Engine:           "ollama",
+			ExpectedRevision: 7,
+			Settings:         typed,
+			Resolution:       resolutionLaunch,
+		},
+		preview: enginesettings.Preview{Settings: normalized},
+	})
+
+	if verdict != settingsWrite {
+		t.Fatalf("a clean preview did not write (verdict %v, problem %q)", verdict, problem)
+	}
+	if sent.Settings.LaunchText != normalized.LaunchText {
+		t.Errorf("applied %q, want the normalized %q",
+			sent.Settings.LaunchText, normalized.LaunchText)
+	}
+	if sent.Resolution != "" {
+		t.Errorf("resolution %q survived into the commit; the draft is already settled",
+			sent.Resolution)
+	}
+	if sent.ExpectedRevision != 7 {
+		t.Errorf("revision %d, want the one the draft was based on", sent.ExpectedRevision)
+	}
+	_ = d
+}
+
+// TestSettingsRestartIsConfirmed checks a change that restarts the engine asks
+// first, and that the confirmation applies the same request it armed.
+func TestSettingsRestartIsConfirmed(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
+	d.refreshEngines()
+
+	normalized := enginesettings.Config{ServerPort: 11500, ProxyPort: 11435}
+	restarting := enginePreviewMsg{
+		request: enginesettings.Request{Engine: "ollama", ExpectedRevision: 7},
+		preview: enginesettings.Preview{Settings: normalized, Restart: true},
 	}
 
-	d.mode = detailInputNone
-	d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if d.mode != detailInputProxyPort {
-		t.Fatalf("p opened mode %v, want the proxy port editor", d.mode)
+	if verdict, _, _ := judgeSettingsPreview(restarting); verdict != settingsConfirmFirst {
+		t.Fatalf("a restarting change was not held for confirmation (verdict %v)", verdict)
 	}
-	if got := d.input.Value(); got != "11435" {
-		t.Errorf("proxy port editor seeded with %q, want the proxy's port", got)
+
+	if cmd := d.applySettingsPreview(restarting); cmd != nil {
+		t.Fatal("a restarting change was sent without asking")
 	}
-	if !strings.Contains(d.inputLabel(), "proxy") {
-		t.Errorf("label %q does not say which port", d.inputLabel())
+	if d.settingsConfirm == nil {
+		t.Fatal("no confirmation was armed")
+	}
+	if got := d.status.render(); !strings.Contains(got, "restart") {
+		t.Errorf("prompt %q does not say the engine will restart", got)
+	}
+
+	// Anything other than y walks away, and the armed request goes with it.
+	if cmd := d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}); cmd != nil {
+		t.Error("a non-confirming key still applied the change")
+	}
+	if d.settingsConfirm != nil {
+		t.Error("the armed request outlived the cancellation")
+	}
+
+	d.applySettingsPreview(restarting)
+	armed := d.settingsConfirm
+	if armed == nil || armed.Settings.ServerPort != normalized.ServerPort {
+		t.Fatalf("armed the wrong request: %+v", armed)
+	}
+	if cmd := d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}); cmd == nil {
+		t.Error("y did not apply the armed change")
+	}
+}
+
+// TestSettingsPreviewFailuresAreExplained checks a rejected draft says why and
+// saves nothing.
+func TestSettingsPreviewFailuresAreExplained(t *testing.T) {
+	cases := []struct {
+		name    string
+		preview enginesettings.Preview
+		err     error
+		want    string
+	}{
+		{
+			name:    "a field the backend rejected",
+			preview: enginesettings.Preview{Errors: map[string]string{"launchText": "unbalanced quote"}},
+			want:    "unbalanced quote",
+		},
+		{
+			name:    "the two ports disagree",
+			preview: enginesettings.Preview{Conflict: &enginesettings.Conflict{ServerPort: 11434, LaunchPort: 11500}},
+			want:    "11500",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := localDetail()
+			d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
+			d.refreshEngines()
+
+			cmd := d.applySettingsPreview(enginePreviewMsg{
+				request: enginesettings.Request{Engine: "ollama"},
+				preview: tc.preview,
+				err:     tc.err,
+			})
+			if cmd != nil {
+				t.Error("a rejected draft was sent anyway")
+			}
+			if d.settingsConfirm != nil {
+				t.Error("a rejected draft was armed for confirmation")
+			}
+			if got := d.status.render(); !strings.Contains(got, tc.want) {
+				t.Errorf("status %q does not mention %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSettingsErrorsReadTheSameEveryTime checks the per-field errors are
+// ordered, since a map would reshuffle the same failure between attempts.
+func TestSettingsErrorsReadTheSameEveryTime(t *testing.T) {
+	errs := map[string]string{
+		"serverPort": "port in use",
+		"launchText": "unbalanced quote",
+		"proxyPort":  "port in use",
+	}
+	first := joinSettingsErrors(errs)
+	for i := 0; i < 20; i++ {
+		if got := joinSettingsErrors(errs); got != first {
+			t.Fatalf("attempt %d rendered %q, want the stable %q", i, got, first)
+		}
+	}
+	if !strings.Contains(first, "unbalanced quote") {
+		t.Errorf("rendered %q, want every field's message", first)
 	}
 }
 
@@ -311,55 +590,75 @@ func TestNoBindingRequiresShift(t *testing.T) {
 	}
 }
 
-// TestProxyPortOutcomeReportsTheBoundPort is the regression guard for a change
+// TestSettingsOutcomeReportsTheBoundPort is the regression guard for a change
 // that was refused and reported as done.
 //
-// A running engine outranks the proxy for a port, so the broker resolves the
-// conflict and the proxy binds elsewhere; the reply carries the port actually
-// bound. Reporting success on the absence of an RPC error meant asking for a
-// port an engine held produced "proxy port updated" while the table went on
-// showing the old one.
-func TestProxyPortOutcomeReportsTheBoundPort(t *testing.T) {
+// A running engine outranks the proxy for a port, so the backend binds
+// elsewhere and reports the difference as the effective port. Treating the
+// absence of an error as success meant asking for a port an engine held
+// produced "updated" while the table went on showing the old one.
+func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 	cases := []struct {
 		name      string
-		msg       proxyPortMsg
+		snapshot  enginesettings.Snapshot
 		wantKind  toastKind
 		wantHas   []string
 		wantNotIn []string
 	}{
 		{
-			name:     "refused because the port is taken",
-			msg:      proxyPortMsg{label: "LM Studio", requested: 1235, actual: 1234},
+			name: "the endpoint port was taken",
+			snapshot: enginesettings.Snapshot{
+				Engine:              "lmstudio",
+				Settings:            enginesettings.Config{ProxyPort: 1235, ServerPort: 1236},
+				EffectiveProxyPort:  1234,
+				EffectiveServerPort: 1236,
+			},
 			wantKind: toastError,
 			// Both numbers: which port it is on, and which one it could not have.
-			wantHas:   []string{"LM Studio", "1234", "1235"},
-			wantNotIn: []string{"updated"},
+			wantHas:   []string{"1234", "1235"},
+			wantNotIn: []string{"saved"},
 		},
 		{
-			name:     "honoured",
-			msg:      proxyPortMsg{label: "Ollama", requested: 11500, actual: 11500},
+			name: "the engine port was taken",
+			snapshot: enginesettings.Snapshot{
+				Engine:              "ollama",
+				Settings:            enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
+				EffectiveProxyPort:  11434,
+				EffectiveServerPort: 11435,
+			},
+			wantKind:  toastError,
+			wantHas:   []string{"11435", "11500"},
+			wantNotIn: []string{"saved"},
+		},
+		{
+			name: "honoured",
+			snapshot: enginesettings.Snapshot{
+				Engine:              "ollama",
+				Settings:            enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
+				EffectiveProxyPort:  11434,
+				EffectiveServerPort: 11500,
+			},
 			wantKind: toastOK,
-			wantHas:  []string{"Ollama", "11500"},
+			wantHas:  []string{"saved"},
 		},
 		{
-			name:     "rpc failed",
-			msg:      proxyPortMsg{label: "Ollama", requested: 80, err: errStub{}},
-			wantKind: toastError,
-			wantHas:  []string{"Ollama", "failed"},
-		},
-		{
-			name: "reply carried no port",
-			msg:  proxyPortMsg{label: "Ollama", requested: 11500},
-			// Not an assertion of success: nothing confirmed the bind.
-			wantKind:  toastInfo,
-			wantNotIn: []string{"11500"},
+			name: "nothing bound yet",
+			snapshot: enginesettings.Snapshot{
+				Engine:   "ollama",
+				Settings: enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
+			},
+			// A stopped engine has no port in force. Saying it "stayed on :0"
+			// would be worse than not saying where it landed.
+			wantKind:  toastOK,
+			wantNotIn: []string{":0"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := localDetail()
-			d.update(tc.msg)
+			d.settingsAwaited = tc.snapshot.Engine
+			d.reportSettingsOutcome(tc.snapshot)
 
 			if d.status.kind != tc.wantKind {
 				t.Errorf("toast kind = %v, want %v", d.status.kind, tc.wantKind)
@@ -376,6 +675,38 @@ func TestProxyPortOutcomeReportsTheBoundPort(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSettingsOutcomeIsSilentForSomeoneElsesChange checks the report is scoped
+// to a change this screen made.
+//
+// These snapshots also arrive whenever the desktop app or another operator
+// saves something, and a note on each would be noise about work the person at
+// this terminal did not do.
+func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
+	d := localDetail()
+	snap := enginesettings.Snapshot{
+		Engine:             "ollama",
+		Settings:           enginesettings.Config{ProxyPort: 11434},
+		EffectiveProxyPort: 11999,
+	}
+
+	d.reportSettingsOutcome(snap)
+	if got := d.status.render(); got != "" {
+		t.Errorf("reported %q for a change this screen did not make", got)
+	}
+
+	// And it speaks exactly once for a change it did make.
+	d.settingsAwaited = "ollama"
+	d.reportSettingsOutcome(snap)
+	if d.status.render() == "" {
+		t.Fatal("said nothing about this screen's own change")
+	}
+	d.status = toast{}
+	d.reportSettingsOutcome(snap)
+	if got := d.status.render(); got != "" {
+		t.Errorf("repeated the outcome as %q on a later snapshot", got)
 	}
 }
 
