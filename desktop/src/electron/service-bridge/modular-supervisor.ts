@@ -335,6 +335,7 @@ function proxyEngineFromRelaySource(source: string): ProxyEngine | null {
  */
 class ModularSupervisor {
     private processes = new Map<ModularProcessName, JsonRpcSubprocess>()
+    private engineEventRevisions = new Map<EngineType, number>()
     private readinessWaiters = new Map<number, ReadinessWaiter>()
     private nextReadinessWaiterId = 0
     private readinessReported = false
@@ -1126,10 +1127,14 @@ class ModularSupervisor {
     private async hydrateEngineManager(): Promise<void> {
         if (!this.processes.has('broker')) return
         try {
+            // A push received while this snapshot is in flight wins for its engine.
+            const atStart = new Map(this.engineEventRevisions)
             const result = await this.callProcess('broker', 'engine:get-installed')
             const obj = objectValue(result)
             if (!obj || !Array.isArray(obj.engines)) return
             for (const engine of obj.engines) {
+                const type = engineTypeFromManagerName(stringValue(objectValue(engine)?.engine))
+                if (!type || this.engineEventRevisions.get(type) !== atStart.get(type)) continue
                 getModularBridgeState().applyEngineManagerStatus(engine)
                 this.refreshManagedEngineModels(engine)
             }
@@ -1637,6 +1642,12 @@ class ModularSupervisor {
             return
         }
         if (notification.method === 'engine:state-changed') {
+            const type = engineTypeFromManagerName(
+                stringValue(objectValue(notification.params)?.engine)
+            )
+            if (type) {
+                this.engineEventRevisions.set(type, (this.engineEventRevisions.get(type) ?? 0) + 1)
+            }
             getModularBridgeState().applyEngineManagerStatus(notification.params)
             this.refreshManagedEngineModels(notification.params)
             this.updateLocalNodeBridgeFromEngineState(notification.params)
