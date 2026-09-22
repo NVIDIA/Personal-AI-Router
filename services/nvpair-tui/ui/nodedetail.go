@@ -499,8 +499,13 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 	case engineSettingsAppliedMsg:
 		if msg.err != nil {
 			d.settingsAwaited = ""
-			d.status.error("%s settings: %s", d.engineLabel(msg.engine), msg.err)
-			return nil, true
+			// The snapshot this write was based on is no longer one the
+			// backend will accept, whoever moved it on. Drop it and re-read,
+			// or every later attempt fails identically against the same stale
+			// revision and the only way out is to leave the screen.
+			delete(d.settings, msg.engine)
+			d.status.error("%s settings: %s", d.engineLabel(msg.engine), settingsFailure(msg.err))
+			return getEngineSettingsCmd(d.client, d.nodeArg(), msg.engine), true
 		}
 		// Deliberately silent on success. This reply says the write was
 		// accepted, not what the engine ended up with, and the difference is
@@ -606,7 +611,13 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		// opened afterwards shows what is actually saved.
 		var snap enginesettings.Snapshot
 		_ = decodeParams(msg.Params, &snap)
-		if snap.Engine == "" || snap.NodeID != d.nodeArg() {
+		// Matched on the row's key, which is the node's UUID, not on nodeArg:
+		// that is empty for this machine because the local RPCs take no node,
+		// while the broker stamps every snapshot with the real UUID. Comparing
+		// against it dropped every local push, so the cached revision stopped
+		// advancing and the next save was rejected as stale — by which point
+		// only leaving the screen could clear it.
+		if snap.Engine == "" || snap.NodeID != d.node.key {
 			return nil
 		}
 		if d.settings == nil {
@@ -1103,6 +1114,20 @@ func (d *nodeDetail) applySettingsPreview(msg enginePreviewMsg) tea.Cmd {
 	d.settingsAwaited = req.Engine
 	d.status.busy("applying %s settings...", label)
 	return applyEngineSettingsCmd(d.client, req)
+}
+
+// settingsFailure puts a failed save in terms of what the operator should do.
+//
+// The backend's own wording for a revision mismatch — "settings changed on
+// this device; reload before applying" — describes a step this screen has
+// already taken by the time it is shown, so on its own it reads as an
+// instruction with nothing to act on.
+func settingsFailure(err error) string {
+	text := err.Error()
+	if strings.Contains(text, "reload before applying") {
+		return "changed somewhere else while you were editing - reloaded, try again"
+	}
+	return text
 }
 
 // joinSettingsErrors renders the backend's per-field errors as one line.

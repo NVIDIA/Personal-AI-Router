@@ -5,6 +5,7 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -448,6 +449,75 @@ func TestSettingsApplyUsesTheNormalizedDraft(t *testing.T) {
 		t.Errorf("revision %d, want the one the draft was based on", sent.ExpectedRevision)
 	}
 	_ = d
+}
+
+// settingsPush builds an engine:settings-changed notification.
+func settingsPush(snap enginesettings.Snapshot) NotificationMsg {
+	params, _ := json.Marshal(snap)
+	return NotificationMsg{Msg: &rpc.Message{Method: "engine:settings-changed", Params: params}}
+}
+
+// TestLocalSettingsPushIsNotDiscarded is the regression guard for a second
+// save that could never succeed.
+//
+// The broker stamps every snapshot with this node's UUID. Matching that
+// against the node argument the local RPCs take — which is empty, precisely
+// because they are local — discarded every push for this machine. The cached
+// revision then stayed at whatever the first read returned, so the save after
+// a successful one was rejected as stale, and stayed rejected until the screen
+// was closed and reopened.
+func TestLocalSettingsPushIsNotDiscarded(t *testing.T) {
+	const uuid = "33983c39-c0a6-41d2-9488-455b5e61e25f"
+	d := newNodeDetail(nil, nodeRow{key: uuid, name: "this-host", self: true, presence: presenceOnline})
+	d.SetSize(100, 30)
+	seedSettings(d, ollamaSettings()) // revision 7
+
+	moved := ollamaSettings()
+	moved.NodeID = uuid
+	moved.Revision = 8
+	d.handleNotification(settingsPush(moved).Msg)
+
+	if got := d.settings["ollama"].Revision; got != 8 {
+		t.Fatalf("cached revision is %d after a push for this machine, want 8", got)
+	}
+
+	// And a push for a different machine is still ignored.
+	other := ollamaSettings()
+	other.NodeID = "some-other-node"
+	other.Revision = 99
+	d.handleNotification(settingsPush(other).Msg)
+	if got := d.settings["ollama"].Revision; got != 8 {
+		t.Errorf("a peer's snapshot overwrote this machine's: revision %d", got)
+	}
+}
+
+// TestFailedSaveReloadsTheSnapshot checks a rejected write leaves the screen
+// able to try again.
+//
+// A revision the backend will not accept is not recoverable by repeating the
+// same write: without dropping it, every later attempt fails identically and
+// the only way out is to leave the screen.
+func TestFailedSaveReloadsTheSnapshot(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
+	d.refreshEngines()
+	seedSettings(d, ollamaSettings())
+	d.settingsAwaited = "ollama"
+
+	cmd, _ := d.update(engineSettingsAppliedMsg{
+		engine: "ollama",
+		err:    errors.New("settings changed on this device; reload before applying"),
+	})
+
+	if _, still := d.settings["ollama"]; still {
+		t.Error("the rejected snapshot is still cached, so the next attempt repeats the failure")
+	}
+	if cmd == nil {
+		t.Error("nothing re-read the settings, so the next edit has nothing to write against")
+	}
+	if got := d.status.render(); !strings.Contains(got, "try again") {
+		t.Errorf("status %q does not tell the operator what to do: %q", got, "try again")
+	}
 }
 
 // TestSettingsCommitCarriesARequestIdentifier is the regression guard for a
