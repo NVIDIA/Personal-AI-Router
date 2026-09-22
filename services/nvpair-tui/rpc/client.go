@@ -6,6 +6,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -67,6 +68,13 @@ func (c *Client) Run(ctx context.Context) error {
 		if err != nil {
 			if err == io.EOF {
 				return nil
+			}
+			// A broken transport is terminal: the scanner is finished, so
+			// continuing here spins at full speed forever, never closes the
+			// notifications channel, and leaves the UI reporting a healthy
+			// service it can no longer reach.
+			if errors.Is(err, ErrStreamBroken) {
+				return err
 			}
 			// A single malformed line should not kill the session; the
 			// broker may emit a frame we don't model. Skip and continue.

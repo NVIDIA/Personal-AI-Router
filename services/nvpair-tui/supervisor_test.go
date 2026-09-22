@@ -23,12 +23,21 @@ func TestMain(m *testing.M) {
 		runFakeBroker()
 		return
 	}
+	if os.Getenv("NVPAIR_TUI_SILENT_BROKER") == "1" {
+		runSilentBroker()
+		return
+	}
 	os.Exit(m.Run())
 }
 
-// runFakeBroker emits an app:ready handshake, then echoes a result for a
-// shutdown request (and exits on it or on stdin EOF), mimicking the real
-// broker's stdio contract closely enough to exercise the supervisor.
+// runFakeBroker emits an app:ready handshake, then answers the two requests
+// teardown makes — engine:prepare-shutdown and shutdown — exiting on the latter
+// or on stdin EOF, mimicking the real broker's stdio contract closely enough to
+// exercise the supervisor.
+//
+// Answering prepare-shutdown matters: a broker that stays silent is what a hung
+// engine stop looks like, and the supervisor must not wait on it forever. That
+// case is covered separately by TestShutdownProceedsWhenEnginePrepareHangs.
 func runFakeBroker() {
 	fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`)
 	sc := bufio.NewScanner(os.Stdin)
@@ -40,10 +49,22 @@ func runFakeBroker() {
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			continue
 		}
-		if m.Method == "shutdown" {
+		switch m.Method {
+		case "engine:prepare-shutdown":
+			fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":null}`+"\n", m.ID)
+		case "shutdown":
 			fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":null}`+"\n", m.ID)
 			os.Exit(0)
 		}
+	}
+}
+
+// runSilentBroker handshakes and then answers nothing, standing in for a broker
+// whose engine stop never returns.
+func runSilentBroker() {
+	fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`)
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
 	}
 }
 
@@ -63,6 +84,52 @@ func TestResolveBrokerPathOverride(t *testing.T) {
 
 	if _, err := resolveBrokerPath(filepath.Join(dir, "missing")); err == nil {
 		t.Fatal("expected error for missing override")
+	}
+}
+
+// TestShutdownProceedsWhenEnginePrepareHangs pins the quit budget.
+//
+// Teardown asks the engine manager to stop engines before tearing the broker
+// down, and that call waits on third-party processes. If a hung engine stop
+// could stall it, pressing q would leave a terminal that has stopped redrawing
+// and an operator reaching for ctrl+c — which kills the tree the clean shutdown
+// existed to avoid. The wait is bounded, and teardown continues regardless.
+func TestShutdownProceedsWhenEnginePrepareHangs(t *testing.T) {
+	t.Setenv("NVPAIR_TUI_SILENT_BROKER", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sup, err := Spawn(ctx, os.Args[0])
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	go func() {
+		sc := bufio.NewScanner(sup.Stderr)
+		for sc.Scan() {
+		}
+	}()
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		sup.Shutdown()
+		close(done)
+	}()
+
+	// Long enough for the bounded engine wait plus the broker's own grace, and
+	// well short of hanging.
+	budget := enginePrepareTimeout + shutdownGrace + 5*time.Second
+	select {
+	case <-done:
+	case <-time.After(budget):
+		t.Fatalf("shutdown still running after %s against an unresponsive broker", budget)
+	}
+
+	// It must actually have waited for the engine stop rather than skipping it.
+	if elapsed := time.Since(start); elapsed < enginePrepareTimeout {
+		t.Errorf("shutdown returned in %s, before the %s engine-stop wait elapsed; "+
+			"engines are not being given a chance to stop", elapsed, enginePrepareTimeout)
 	}
 }
 
