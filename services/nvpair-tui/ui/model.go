@@ -187,7 +187,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A failure is dropped, not reported. Someone on a network that cannot
 		// reach the feed does not need telling every six hours, and this is the
 		// least important thing on the screen.
-		if msg.err == nil && newerVersion(ProductVersion, msg.latest) {
+		if msg.err == nil && newerVersion(ReleaseVersion, msg.latest) {
 			// A newer release than the one already announced un-dismisses the
 			// banner: the operator acknowledged the previous version, not this
 			// one, and a long-running session would otherwise never mention it.
@@ -374,8 +374,8 @@ func (m Model) banner() string {
 	// The shortest option fits minTerminalWidth, so one of these always fits.
 	for _, text := range []string{
 		fmt.Sprintf(" PAIR %s is available (you have %s) - %s",
-			m.updateLatest, ProductVersion, updateReleasesPage),
-		fmt.Sprintf(" PAIR %s is available (you have %s)", m.updateLatest, ProductVersion),
+			m.updateLatest, ReleaseVersion, updateReleasesPage),
+		fmt.Sprintf(" PAIR %s is available (you have %s)", m.updateLatest, ReleaseVersion),
 		fmt.Sprintf(" PAIR %s is available", m.updateLatest),
 		" Update available",
 	} {

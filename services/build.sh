@@ -68,11 +68,28 @@ V_CLUMGR=$( jq -r --arg k 'nvpair-cluster-manager' '.components[$k]' "$VERSIONS_
 V_SCHED=$(  jq -r --arg k 'nvpair-job-scheduler' '.components[$k]' "$VERSIONS_FILE")
 V_TUI=$(    jq -r --arg k 'nvpair-tui'          '.components[$k]' "$VERSIONS_FILE")
 
+# The release version, which lives in desktop/package.json rather than here.
+#
+# nvpair-tui's update notice compares this against the published release tag, so
+# it is the only one of PAIR's three numbers that can answer "is there a newer
+# PAIR than mine". The services suite version is currently the larger number, so
+# stamping that instead would not merely be wrong, it would be silently wrong:
+# every check would conclude this build is ahead of the feed and say nothing.
+PACKAGE_JSON="$ROOT/../desktop/package.json"
+V_RELEASE=$(jq -r '.version' "$PACKAGE_JSON" 2>/dev/null)
+
 if [[ -z "$V_SERVICES" || "$V_SERVICES" == "null" ]]; then
     echo "ERROR: failed to parse versions.json" >&2
     exit 1
 fi
 
+if [[ -z "$V_RELEASE" || "$V_RELEASE" == "null" ]]; then
+    echo "ERROR: failed to read .version from $PACKAGE_JSON" >&2
+    echo "       nvpair-tui's update notice is stamped from the release version." >&2
+    exit 1
+fi
+
+printf '  release           = %s\n' "$V_RELEASE"
 printf '  services          = %s\n' "$V_SERVICES"
 printf '  nvpair-proxy      = %s\n' "$V_PROXY"
 printf '  nvpair-node-info     = %s\n' "$V_NINFO"
@@ -110,7 +127,15 @@ build_subbinary 8 nvpair-node-settings "$V_NSETTINGS"
 build_subbinary 9 nvpair-ui-broker     "$V_BROKER"
 build_subbinary 10 nvpair-cluster-manager "$V_CLUMGR"
 build_subbinary 11 nvpair-job-scheduler   "$V_SCHED"
-build_subbinary 12 nvpair-tui            "$V_TUI"
+# nvpair-tui also carries the release version: that is what the update notice
+# compares against the published tag, and its own component version means
+# nothing to that comparison. A -X on a symbol path that does not exist fails
+# silently, so verify the stamp rather than assuming it.
+echo "[12/13] Building nvpair-tui (v$V_TUI)..."
+(cd "$ROOT/nvpair-tui" && go build \
+    -ldflags "-X main.Version=$V_TUI -X nvpair-tui/ui.ReleaseVersion=$V_RELEASE" \
+    -o nvpair-tui .)
+echo "      OK"
 
 # inference-dispatcher is built here but is not a worker: it speaks no JSON-RPC,
 # nothing supervises it, and it is deliberately absent from versions.json. It is

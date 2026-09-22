@@ -34,19 +34,22 @@ import (
 // binary too. What has no updater is a services-tarball install on a headless
 // box, which is exactly where this notice is worth having.
 
-// ProductVersion is the release this binary was built from, stamped by the build
-// scripts with -X nvpair-tui/ui.ProductVersion=...
+// ReleaseVersion is the release this binary was built from, stamped by the
+// build scripts with -X nvpair-tui/ui.ReleaseVersion=...
 //
-// The product version, not this component's own. They are different numbers —
-// versions.json carries nvpair-tui at 0.7.2 inside product 0.91.7 — and the
-// release feed publishes the product one, which is also what names the tarball
-// (installer_build.sh resolves `.installer // .product`). Comparing the
-// component version against a release tag would be meaningless.
+// PAIR carries three numbers and only one of them is comparable against a
+// release tag. This component's own version (versions.json components.nvpair-tui)
+// and the services suite version (versions.json services) both describe parts of
+// the build; the *release* version in desktop/package.json is what users install
+// and what the published tags are named for. Comparing either of the other two
+// against a tag is meaningless — and worse than meaningless while the suite
+// version is numerically ahead of the release, because every check would
+// conclude this build is newer and say nothing forever.
 //
 // Stamped into this package rather than main so it does not have to be threaded
 // through Run, New, and the model to reach the one line that shows it. "dev"
 // means an unstamped build, and no check is made against that.
-var ProductVersion = "dev"
+var ReleaseVersion = "dev"
 
 // updateFeedURL is the public releases feed. The same place the README and
 // services/readme.md already send people to download PAIR, so nothing new is
@@ -104,7 +107,7 @@ func updateCheckEnabled() bool {
 	if strings.TrimSpace(os.Getenv(disableUpdateCheckEnv)) != "" {
 		return false
 	}
-	_, stamped := versionParts(ProductVersion)
+	_, stamped := versionParts(ReleaseVersion)
 	return stamped
 }
 

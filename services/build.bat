@@ -51,12 +51,29 @@ for /f "delims=" %%V in ('jq -r --arg k "nvpair-cluster-manager"  ".components[$
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-job-scheduler"    ".components[$k]" "%VERSIONS_FILE%"')            do set "V_SCHED=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-tui"              ".components[$k]" "%VERSIONS_FILE%"')            do set "V_TUI=%%V"
 
+REM The release version, which lives in desktop/package.json rather than here.
+REM nvpair-tui's update notice compares this against the published release tag,
+REM so it is the only one of PAIR's three numbers that can answer "is there a
+REM newer PAIR than mine". The services suite version is currently the larger
+REM number, so stamping that instead would be silently wrong: every check would
+REM conclude this build is ahead of the feed and say nothing.
+set "PACKAGE_JSON=%ROOT%..\desktop\package.json"
+for /f "delims=" %%V in ('jq -r ".version" "%PACKAGE_JSON%"') do set "V_RELEASE=%%V"
+
 if "%V_SERVICES%"=="" (
     echo  ERROR: failed to parse versions.json
     endlocal
     exit /b 1
 )
 
+if "%V_RELEASE%"=="" (
+    echo  ERROR: failed to read .version from %PACKAGE_JSON%
+    echo         nvpair-tui's update notice is stamped from the release version.
+    endlocal
+    exit /b 1
+)
+
+echo  release           = %V_RELEASE%
 echo  services          = %V_SERVICES%
 echo  nvpair-proxy      = %V_PROXY%
 echo  nvpair-node-info     = %V_NINFO%
@@ -132,9 +149,13 @@ cd /d "%ROOT%nvpair-job-scheduler"
 go build -ldflags "-X main.Version=%V_SCHED%" -o nvpair-job-scheduler.exe . || goto :fail
 echo       OK
 
+REM nvpair-tui also carries the release version: that is what the update notice
+REM compares against the published tag, and its own component version means
+REM nothing to that comparison. A -X on a symbol path that does not exist fails
+REM silently, so verify the stamp rather than assuming it.
 echo [12/13] Building nvpair-tui (v%V_TUI%)...
 cd /d "%ROOT%nvpair-tui"
-go build -ldflags "-X main.Version=%V_TUI%" -o nvpair-tui.exe . || goto :fail
+go build -ldflags "-X main.Version=%V_TUI% -X nvpair-tui/ui.ReleaseVersion=%V_RELEASE%" -o nvpair-tui.exe . || goto :fail
 echo       OK
 
 REM inference-dispatcher is built here but is not a worker: it speaks no
