@@ -19,8 +19,9 @@ import (
 // llamacpp-proxy:set-port is served by the shared settings operation; see
 // TestSettingsPortRPCServesEveryEngineProxy for its ownership refusals.
 
-func TestLlamaWorkloadCancelRejectsForeignOriginAndOtherEngine(t *testing.T) {
+func TestWorkloadCancelIsNotABrokerAPI(t *testing.T) {
 	for _, body := range []string{
+		`{"id":"1","runId":"a","engine":"llamacpp","originatedFrom":"self"}`,
 		`{"id":"1","runId":"a","engine":"llamacpp","originatedFrom":"peer"}`,
 		`{"id":"1","runId":"a","engine":"ollama","originatedFrom":"self"}`,
 		`{"id":"1","engine":"llamacpp","originatedFrom":"self"}`,
@@ -28,10 +29,10 @@ func TestLlamaWorkloadCancelRejectsForeignOriginAndOtherEngine(t *testing.T) {
 		var output bytes.Buffer
 		b := &Broker{nodeID: "self", codec: NewCodec(readWriter{Reader: bytes.NewReader(nil), Writer: &output})}
 		id := json.RawMessage(`1`)
-		b.cancelLlamaWorkload(&Message{ID: &id, Method: "workloads:cancel", Params: json.RawMessage(body)})
+		b.handleMessage(&Message{ID: &id, Method: "workloads:cancel", Params: json.RawMessage(body)})
 		var response Message
-		if json.Unmarshal(output.Bytes(), &response) != nil || response.Error == nil {
-			t.Fatalf("unsafe cancellation accepted: %s", output.String())
+		if json.Unmarshal(output.Bytes(), &response) != nil || response.Error == nil || response.Error.Code != -32601 {
+			t.Fatalf("removed cancellation API did not return method not found: %s", output.String())
 		}
 	}
 }

@@ -3348,9 +3348,6 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to llamacpp-proxy:unsubscribe: %v", err)
 		}
 
-	case "workloads:cancel":
-		b.cancelLlamaWorkload(msg)
-
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
 		b.workloadsSubscribed = true

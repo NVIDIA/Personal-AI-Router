@@ -126,27 +126,3 @@ func (b *Broker) forwardLlamaCppProxyNotificationForGeneration(generation uint64
 	}
 	b.forwardEngineProxyNotification(llamacppProxyProfile, method, params)
 }
-
-// cancelLlamaWorkload forwards a headless cancel to the exact request that
-// produced it. Only llama.cpp requests that originated on this node are
-// accepted: the run id identifies one proxy lifetime, so a stale run or a
-// foreign origin cannot cancel an unrelated request that reused an id.
-func (b *Broker) cancelLlamaWorkload(msg *Message) {
-	var params struct {
-		ID     string `json:"id"`
-		RunID  string `json:"runId"`
-		Engine string `json:"engine"`
-		Origin string `json:"originatedFrom"`
-	}
-	if json.Unmarshal(msg.Params, &params) != nil || params.ID == "" || params.RunID == "" {
-		_ = b.codec.RespondError(msg.ID, -32602, "exact workload id and runId are required")
-		return
-	}
-	if params.Engine != llamacppProxyProfile.Name || params.Origin == "" || params.Origin != b.nodeID {
-		_ = b.codec.RespondError(msg.ID, -32000, "only llama.cpp requests originating on this node can be cancelled here")
-		return
-	}
-	forward := *msg
-	forward.Method = llamacppProxyProfile.ComponentName() + ":workload/cancel"
-	b.relayToEngineProxy(llamacppProxyProfile, &forward)
-}

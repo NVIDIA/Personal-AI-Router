@@ -39,13 +39,6 @@ lifecycle, and relay rules.
 
 Two responsibilities live in the broker itself rather than in a worker:
 
-The headless `workloads:cancel` method takes `{id, runId, engine,
-originatedFrom}`. Only `engine: "llamacpp"` and this broker's exact local origin
-UUID are accepted. It returns `{accepted}` after cancelling that active proxy
-request context; the ordinary workload event reports its terminal outcome.
-Foreign-origin requests and other engines are unsupported. A stale proxy run or
-finished request returns `accepted: false`. Desktop and TUI use this same API.
-
 `llamacpp-proxy:set-port` is intercepted exactly as `ollama-proxy:set-port` and
 `lmstudio-proxy:set-port` are: it runs through the authoritative engine-settings
 operation (see [`ENGINE_SETTINGS.md`](ENGINE_SETTINGS.md)), which refuses a port
