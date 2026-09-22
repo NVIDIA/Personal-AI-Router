@@ -328,7 +328,11 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		argv := append([]string{launch.Bin}, launch.Args...)
 		run := e.runCommand
 		if rt.LaunchArgs != nil || rt.LaunchEnv != nil || len(launch.Env) > 0 {
-			run = func(ctx context.Context, argv []string) error {
+			// The variadic environment is runCommand's, for install commands
+			// that declare overrides. A launch carries its own in launch.Env,
+			// so the sole call below passes none and this ignores the parameter
+			// rather than pretending to merge two sources.
+			run = func(ctx context.Context, argv []string, _ ...string) error {
 				return runPrivateLaunchCommand(ctx, argv, launch.Env, launchDiagnosticArgs(rt))
 			}
 			// A vendor command may spawn its daemon and then exit unsuccessfully.

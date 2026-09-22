@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"maps"
 	settings "nvpair-shared/enginesettings"
 	"os"
 	"os/exec"
@@ -34,7 +35,7 @@ func TestE2EOverStdio(t *testing.T) {
 	}
 
 	cmd := exec.Command(managerBin)
-	cmd.Env = overrideEnv(map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
+	cmd.Env = sandboxedEnv(t, map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +245,7 @@ type e2eManager struct {
 func startE2EManager(t *testing.T, cfg, home string) *e2eManager {
 	t.Helper()
 	cmd := exec.Command(managerBin)
-	cmd.Env = overrideEnv(map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
+	cmd.Env = sandboxedEnv(t, map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -306,6 +307,22 @@ func writeE2EManifest(t *testing.T, dir string, manifest *Manifest) {
 	if err := os.WriteFile(filepath.Join(dir, "fake.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// sandboxedEnv isolates a spawned manager from the developer's own account.
+//
+// Installing an engine publishes its CLI directory on the user's PATH, which
+// means writing the profiles under HOME and choosing them from SHELL. Without
+// this, an opt-in live run would append a block to the real ~/.zshrc pointing at
+// a directory the test deletes on the way out — and any t.Fatalf before the
+// uninstall step would leave it there for good. Explicit values win, so a caller
+// that already points HOME at a temporary directory keeps its own.
+func sandboxedEnv(t *testing.T, over map[string]string) []string {
+	t.Helper()
+	sandbox := t.TempDir()
+	env := map[string]string{"HOME": sandbox, "USERPROFILE": sandbox, "SHELL": "/bin/sh"}
+	maps.Copy(env, over)
+	return overrideEnv(env)
 }
 
 // overrideEnv returns the current environment with the given keys

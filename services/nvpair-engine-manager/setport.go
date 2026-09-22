@@ -218,28 +218,36 @@ func setOverrideObject(parent map[string]any, key string, object map[string]any)
 }
 
 // writeJSONAtomic marshals v and writes it to path via a tmp file + rename so
-// a crash mid-write can't leave a truncated manifest behind.
+// a crash mid-write can't leave a truncated manifest behind. The temporary file
+// is flushed before the rename and the directory after it: rename makes the
+// swap atomic for a concurrent reader, but on its own guarantees nothing about
+// the bytes reaching stable storage, so a power loss could publish an empty file.
 func writeJSONAtomic(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".override-*.tmp")
+	// Named by file, not by caller: this also persists PATH ownership records,
+	// and a failed receipt write reported as "write override" sends the reader
+	// looking at port overrides.
+	name := filepath.Base(path)
+	file, err := os.CreateTemp(filepath.Dir(path), "."+name+"-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create override: %w", err)
+		return fmt.Errorf("write %s: %w", name, err)
 	}
 	tmp := file.Name()
 	defer os.Remove(tmp)
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("write override: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close override: %w", err)
+	// Closes the file on every path. 0600 is asserted by
+	// TestSettingsOverrideRestrictsExistingPermissions and is stated rather
+	// than inherited from CreateTemp, because the rename has to *restrict* a
+	// pre-existing group- or world-readable file, not merely avoid widening it.
+	// Every caller writes a per-user file: a launch environment that can hold
+	// credentials, a desired-state record, or a PATH ownership receipt.
+	if err := writeAndSync(file, data, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename override: %w", err)
+		return fmt.Errorf("rename %s: %w", name, err)
 	}
-	return nil
+	return syncDir(filepath.Dir(path))
 }

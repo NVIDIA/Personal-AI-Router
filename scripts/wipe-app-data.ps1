@@ -122,6 +122,16 @@ $Tmp = $env:TEMP
 if (-not $Tmp) { $Tmp = $env:TMP }
 $ControlDir = Join-Path $Tmp "nvpair-$Scope"
 
+# The engine PATH entry in HKCU\Environment is deliberately NOT listed. Wiping
+# the data root deletes engine-manager's ownership records along with the
+# engines they describe, so nothing here could identify the entry to remove; the
+# real uninstaller drains them first instead (desktop/scripts/build/installer.nsh).
+# Recovery on the next install is partial, so prefer the real uninstaller. An
+# engine PAIR installed into its own directory is recognized by the executable's
+# location and reclaims the entry it finds already present. One whose vendor
+# owns its location has no such evidence once the record is gone, so its entry
+# is left orphaned until the user removes it.
+#
 # Append-only target list. Never remove entries — only append.
 $Targets = @(
     @{ Path = $CurrentRoot; Reason = 'Current shared Electron + backend app data root' },

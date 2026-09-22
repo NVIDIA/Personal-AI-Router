@@ -82,6 +82,32 @@ type Install struct {
 	// an explicit, rarely-used exception the runner surfaces loudly
 	// rather than silently escalating.
 	Mode string `json:"mode,omitempty"`
+	// Env holds literal environment overrides for the installer subprocess
+	// only — not the manager's environment and not the engine's runtime. It
+	// keeps a vendor quirk (LM Studio's installer edits PATH unless
+	// LMS_NO_MODIFY_PATH is set) in the manifest, so the runner stays
+	// engine-agnostic and a third-party engine can declare the same thing
+	// without a code change.
+	Env map[string]string `json:"env,omitempty"`
+}
+
+// environ renders Env as the KEY=VALUE overrides runCommand layers onto the
+// inherited environment. Deterministically ordered so a failing install command
+// reproduces identically.
+func (i *Install) environ() []string {
+	if len(i.Env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(i.Env))
+	for k := range i.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+i.Env[k])
+	}
+	return out
 }
 
 // Uninstall removes a user-mode install by running the engine's own

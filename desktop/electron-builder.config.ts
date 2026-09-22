@@ -10,6 +10,7 @@
 // signing and notarization live outside this repository, so anything built here
 // is unsigned. Released builds come from NVIDIA's own signed pipeline.
 import { readFileSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Configuration } from 'electron-builder'
 import electronPkg from 'electron/package.json'
 import pkg from './package.json'
@@ -390,7 +391,15 @@ const config: Configuration = {
     },
     deb: {
         afterInstall: 'scripts/build/linux/after-install.sh',
-        afterRemove: 'scripts/build/linux/after-remove.sh'
+        afterRemove: 'scripts/build/linux/after-remove.sh',
+        // prerm has no dedicated option, so it goes through the raw fpm passthrough.
+        // It has to be prerm rather than postrm because dpkg deletes the package's
+        // files before postrm runs, and the PATH cleanup runs a binary from /opt —
+        // see before-remove.sh. Unlike afterInstall/afterRemove, fpm arguments are
+        // forwarded verbatim: no ${macro} expansion, and the path is resolved
+        // against fpm's working directory rather than this file, so pass an
+        // absolute one.
+        fpm: [`--before-remove=${join(__dirname, 'scripts/build/linux/before-remove.sh')}`]
     },
     mac: {
         executableName: APP_EXECUTABLE_NAME,

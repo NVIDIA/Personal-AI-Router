@@ -5,6 +5,7 @@
   "manifest_version": 1,
   "detect": ["~/.lmstudio/bin/lms"],
   "install": {
+    "env": { "LMS_NO_MODIFY_PATH": "1" },
     "fetch": { "url": "https://lmstudio.ai/install.sh" },
     "run": ["bash", "{download}"],
     "mode": "user"

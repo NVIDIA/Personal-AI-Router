@@ -351,50 +351,58 @@ current URL.
 ### Using an Engine's Own Command Line
 
 An engine PAIR installed for you is a normal installation, and you can drive it
-with its own command-line interface (CLI). Two things make that less obvious:
+with its own command-line interface (CLI).
 
-- The binaries are not on your `PATH` yet.
-- The engine is not on the port its CLI expects by default.
+When PAIR installs an engine, it adds that engine's command directory to your
+user `PATH`, so `ollama` or `lms` works by name. **Open a new terminal
+afterwards** — a shell that was already running keeps the `PATH` it started with.
+Uninstalling the engine removes the entry again. If PAIR could not update your
+`PATH`, it tells you so and the engine still works; use the full path below.
+
+One thing still catches people out: the engine is not on the port its CLI expects
+by default. Refer to [Set the port explicitly](#set-the-port-explicitly) below.
 
 **Ollama** is installed inside PAIR's own data directory:
 
-| Platform | Path |
-| --- | --- |
-| Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\ollama\ollama.exe` |
-| Linux | `~/.config/Nvidia Corporation/Personal AI Router/engine-bin/ollama/bin/ollama` |
+```powershell
+$env:OLLAMA_HOST = "127.0.0.1:11435"
+ollama list
+```
 
-On Linux it needs its bundled libraries on the library path:
+On Linux, Ollama also needs its bundled libraries on the library path:
 
 ```bash
 ENGINE="$HOME/.config/Nvidia Corporation/Personal AI Router/engine-bin/ollama"
-LD_LIBRARY_PATH="$ENGINE/lib/ollama" OLLAMA_HOST=127.0.0.1:11435 "$ENGINE/bin/ollama" list
-```
-
-```powershell
-$ollama = "$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\engine-bin\ollama\ollama.exe"
-$env:OLLAMA_HOST = "127.0.0.1:11435"
-& $ollama list
+LD_LIBRARY_PATH="$ENGINE/lib/ollama" OLLAMA_HOST=127.0.0.1:11435 ollama list
 ```
 
 **LM Studio** installs to its own standard location instead, because PAIR runs its
-official installer: `~/.lmstudio/bin/lms`, or
-`%USERPROFILE%\.lmstudio\bin\lms.exe` on Windows.
+official installer:
 
 ```bash
-~/.lmstudio/bin/lms status
+lms status
 ```
 
-**Set the port explicitly.** Set `OLLAMA_HOST` to the engine's own port.
-Otherwise, the CLI connects to `11434`, which is PAIR's proxy, and `ollama list`
-returns the cluster's view instead of the local machine's. Use the **Server**
-value under **Engine settings > Ports** to address the local engine directly.
-It defaults to `11435` for Ollama and `1235` for LM Studio.
+If you need the full path — because `PATH` setup failed, or you are scripting
+against a specific installation — these are the locations:
+
+| Engine | Platform | Path |
+| --- | --- | --- |
+| Ollama | Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\ollama\ollama.exe` |
+| Ollama | Linux | `~/.config/Nvidia Corporation/Personal AI Router/engine-bin/ollama/bin/ollama` |
+| LM Studio | Windows | `%USERPROFILE%\.lmstudio\bin\lms.exe` |
+| LM Studio | Linux, macOS | `~/.lmstudio/bin/lms` |
+
+#### Set the Port Explicitly
+
+Set `OLLAMA_HOST` to the engine's own port. Otherwise, the CLI connects to
+`11434`, which is PAIR's proxy, and `ollama list` returns the cluster's view
+instead of the local machine's. Use the **Server** value under
+**Engine settings > Ports** to address the local engine directly. It defaults to
+`11435` for Ollama and `1235` for LM Studio.
 
 Use the proxy port to check what your cluster can serve. Use the engine port to
 check what is installed on the local machine.
-
-PAIR does not put these binaries on `PATH` yet. Until then, use the full path or
-add an alias yourself.
 
 ## Use PAIR with Existing Applications
 
