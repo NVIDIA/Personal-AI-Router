@@ -1053,6 +1053,11 @@ const (
 // that was sent, and no resolution. Both matter. Applying the raw draft would
 // save text the preview never approved, and re-sending a resolution against
 // settled text invites the backend to rewrite what the operator just confirmed.
+//
+// It also gains the request identifier the commit is required to carry. Minted
+// here, once, rather than at send time: a change held for a restart
+// confirmation keeps the id it was judged with, so confirming twice is a
+// replay the backend recognizes instead of a second write.
 func judgeSettingsPreview(msg enginePreviewMsg) (settingsVerdict, enginesettings.Request, string) {
 	if msg.err != nil {
 		return settingsRefuse, enginesettings.Request{}, msg.err.Error()
@@ -1072,6 +1077,7 @@ func judgeSettingsPreview(msg enginePreviewMsg) (settingsVerdict, enginesettings
 	req := msg.request
 	req.Settings = msg.preview.Settings
 	req.Resolution = ""
+	req.RequestID = newSettingsRequestID()
 	if msg.preview.Restart {
 		return settingsConfirmFirst, req, ""
 	}
