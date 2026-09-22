@@ -25,7 +25,7 @@ func TestLongEngineCallKeepsObservedLoadTruth(t *testing.T) {
 	if v.pendingLoadModel == "" || !strings.Contains(v.status, "outcome unknown") || strings.Contains(v.status, "failed") {
 		t.Fatalf("client timeout invented backend failure: %s", v.status)
 	}
-	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "engine:models-changed", Params: json.RawMessage(`{"loadedByEngine":{"llamacpp":["owner/model:Q4"]}}`)}})
+	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "engine:models-changed", Params: json.RawMessage(`{"engine":"llamacpp","models":{"models":["owner/model:Q4"],"modelsByEngine":{"llamacpp":["owner/model:Q4"]},"loadedByEngine":{"llamacpp":["owner/model:Q4"]}}}`)}})
 	v.Update(timedOut)
 	if v.pendingLoadModel != "" || v.status != "Model loaded: owner/model:Q4" {
 		t.Fatalf("late client timeout erased observed success: %s", v.status)
@@ -80,7 +80,7 @@ func TestLlamaLoadAcceptanceWaitsForObservation(t *testing.T) {
 	if v.pendingLoadModel == "" || !strings.Contains(v.status, "waiting") {
 		t.Fatal("RPC acceptance completed the load")
 	}
-	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "engine:models-changed", Params: json.RawMessage(`{"loadedByEngine":{"llamacpp":["owner/model:Q4"]}}`)}})
+	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "engine:models-changed", Params: json.RawMessage(`{"engine":"llamacpp","models":{"models":["owner/model:Q4"],"modelsByEngine":{"llamacpp":["owner/model:Q4"]},"loadedByEngine":{"llamacpp":["owner/model:Q4"]}}}`)}})
 	if v.pendingLoadModel != "" || !strings.Contains(v.status, "Model loaded") {
 		t.Fatal("loaded observation did not settle action")
 	}

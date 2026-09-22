@@ -98,6 +98,14 @@ Manual nodes use the broker's `node/add`, `node/remove`, and `nodes/list`
 surface. Electron persists user entries and replays them after broker startup so
 they survive worker restarts.
 
+### Workload display
+
+The desktop displays workload snapshots and live updates, retaining origin,
+engine, proxy run and request identity. Execution labels and connection lines
+use the reported destination, not the request origin. Workload cancellation is
+not exposed by the desktop API or UI. Engine lifecycle and model-download
+cancellation are separate controls and remain supported.
+
 ### Multi-node UI acceptance
 
 Engine integration must preserve each participating desktop's view of the

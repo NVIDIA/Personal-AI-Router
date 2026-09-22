@@ -21,9 +21,9 @@ export interface Workload {
     state: WorkloadState
     /**
      * Owner/origin node of the workload — the node whose proxy received the
-     * request. This is the identity half of the backend's `(originatedFrom, id)`
-     * global catalog key (workload ids are a per-node proxy counter, so they
-     * collide across nodes; `originatedFrom` disambiguates).
+     * request. Together with engine, runId and id, this identifies one request
+     * in the global catalog; proxy counters can repeat across nodes, engines
+     * and proxy runs.
      */
     originatedFrom: string | null
     /**

@@ -787,24 +787,7 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),
 
-    'workloads:get-initial': () => handleWorkloadsGetInitial(),
-    'workloads:cancel': async payload => {
-        const supervisor = getModularSupervisor()
-        if (!payload) return { accepted: false }
-        try {
-            const result = objectValue(
-                await supervisor.callProcess('broker', 'workloads:cancel', payload)
-            )
-            return { accepted: booleanValue(result?.accepted) }
-        } catch (err) {
-            supervisor.reportError(
-                `Cancel request failed: ${getErrorString(err)}`,
-                'error',
-                'llamacpp-cancel'
-            )
-            return { accepted: false }
-        }
-    }
+    'workloads:get-initial': () => handleWorkloadsGetInitial()
 }
 
 export function handleServiceBridgeInvoke<C extends WsInvokeChannel>(

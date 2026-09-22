@@ -9,8 +9,8 @@ import type { Workload } from '@/shared/types/workloads'
  * The backend's catalog is keyed by `(originatedFrom, engine, runId, id)`, but
  * clients retain all four fields so equal counters from different engines or
  * proxy runs never overwrite one another. A legacy removal without engine/run
- * identity removes the matching origin/id prefix, as the broker does. New
- * targeted removals and cancellation retain exact identity.
+ * identity removes the matching origin/id prefix, as the broker does. Targeted
+ * removals retain exact identity.
  */
 export function workloadKey(
     originatedFrom: string | null,

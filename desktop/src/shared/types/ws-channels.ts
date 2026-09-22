@@ -110,10 +110,6 @@ export interface WsInvokeChannelMap {
 
     // Workloads
     'workloads:get-initial': { request: void; response: Record<string, Workload> }
-    'workloads:cancel': {
-        request: { id: string; runId: string; engine: EngineType; originatedFrom: string }
-        response: { accepted: boolean }
-    }
 }
 
 export type WsInvokeChannel = keyof WsInvokeChannelMap

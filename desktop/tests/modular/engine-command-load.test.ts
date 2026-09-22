@@ -37,23 +37,6 @@ describe('local model load command', () => {
         mocks.supervisor.callProcess.mockResolvedValue({ accepted: true })
     })
 
-    it('forwards the exact workload identity and reports only cancellation acceptance', async () => {
-        const request = {
-            id: '1',
-            engine: 'llamacpp',
-            runId: 'current',
-            originatedFrom: 'local-node'
-        } as const
-        expect(await handleServiceBridgeInvoke('workloads:cancel', request)).toEqual({
-            accepted: true
-        })
-        expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-            'broker',
-            'workloads:cancel',
-            request
-        )
-    })
-
     it('refuses a local llama update without uninstalling, installing, or acting', async () => {
         await handleServiceBridgeInvoke('engine:command', {
             command: 'update',

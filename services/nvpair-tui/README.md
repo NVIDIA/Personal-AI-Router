@@ -31,7 +31,7 @@ Tabs:
 | **Errors** | The service-error datastore (`errors:get-initial` + live `errors:update`); `c` clears the selected entry. |
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
 | **Proxies** | Ollama, LM Studio and llama.cpp reverse proxies: status, upstream selection and listen port. |
-| **Workloads** | Baseline plus live workloads keyed by origin/engine/run/id. `c` requests cancellation of one local-origin llama request; other origins/engines are refused. |
+| **Workloads** | Live cluster workload table for Ollama, LM Studio and llama.cpp, keyed by origin/engine/run/id. No workload cancellation key or selected-row detail pane. |
 | **Engines** | Install (`i`), start (`s`), stop (`x`), restart (`r`), uninstall (`u`); model inventory (`m`), pull (`p`), load (`L`), unload (`e`), delete (`d`), cancel pull (`c`), local GGUF import (`I`). No engine update key: managed llama has no update action, and the TUI never substitutes uninstall plus reinstall for one. |
 | **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, remove a member (`r`), leave (`L`). |
 | **Manual** | User-added nodes: add by address (`a`), remove (`r`). |
@@ -44,8 +44,12 @@ The model view uses arrow keys to scroll and `Esc` to return. Model actions
 prefill the selected exact model ID and require Enter. llama downloads accept
 `owner/repository:QUANT`; imports take a local GGUF path. Install support and
 external ownership come from Engine Manager. Downloaded models are not loaded
-until the runtime reports them resident. Cancellation acceptance is not a vendor
-stop acknowledgement; the workload stream supplies the terminal outcome.
+until the runtime reports them resident.
+
+The workload table consumes live `workloads:upsert` and `workloads:remove`
+events after subscribing. It does not fetch a startup snapshot: requests already
+in flight appear on their next event. Arrow keys scroll the table; `c` remains
+the cancel-pull command in the Engines tab, not a workload action.
 
 - `tab` / `shift+tab` (or `→` / `←`, `l` / `h`) — switch tabs
 - `?` — toggle full help

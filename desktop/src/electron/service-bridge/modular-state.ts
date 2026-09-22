@@ -47,7 +47,11 @@ type BrokerNodeSource = ProxyNodeSource | 'broker'
  * recorded here. That is `ComponentName` in `services/shared/engines`, always
  * `<engine>-proxy`.
  */
-export const PROXY_NODE_SOURCES: readonly ProxyNodeSource[] = ['ollama-proxy', 'lmstudio-proxy']
+export const PROXY_NODE_SOURCES: readonly ProxyNodeSource[] = [
+    'ollama-proxy',
+    'lmstudio-proxy',
+    'llamacpp-proxy'
+]
 
 /**
  * Engines surfaced by the broker's proxy plane. Other engine-manager engines

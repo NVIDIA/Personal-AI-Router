@@ -207,10 +207,12 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		switch msg.Msg.Method {
 		case "engine:models-changed":
 			var snapshot struct {
-				Loaded map[string][]string `json:"loadedByEngine"`
+				Models struct {
+					Loaded map[string][]string `json:"loadedByEngine"`
+				} `json:"models"`
 			}
 			if decodeParams(msg.Msg.Params, &snapshot) == nil {
-				for _, name := range snapshot.Loaded[v.pendingLoadEngine] {
+				for _, name := range snapshot.Models.Loaded[v.pendingLoadEngine] {
 					if name == v.pendingLoadModel && name != "" {
 						v.status = "Model loaded: " + name
 						v.pendingLoadEngine, v.pendingLoadModel = "", ""
@@ -368,6 +370,7 @@ func (v *enginesView) loadModelsCmd() tea.Cmd {
 			Models []struct {
 				Name  string `json:"name"`
 				Model string `json:"model"`
+				Key   string `json:"key"`
 			} `json:"models"`
 		}
 		if err := decodeParams(msg.Result, &inventory); err != nil {
@@ -383,6 +386,9 @@ func (v *enginesView) loadModelsCmd() tea.Cmd {
 			name := model.Name
 			if name == "" {
 				name = model.Model
+			}
+			if name == "" {
+				name = model.Key
 			}
 			if name != "" {
 				result.names = append(result.names, name)
