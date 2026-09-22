@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // PeerConfig configures the EAP peer role.
@@ -406,7 +407,7 @@ func (p *Peer) fail(code int, info string) (Outcome, error) {
 func bestVersion(serverVers, peerVers []int) (int, bool) {
 	best, ok := 0, false
 	for _, v := range serverVers {
-		if containsInt(peerVers, v) && v >= best {
+		if slices.Contains(peerVers, v) && v >= best {
 			best, ok = v, true
 		}
 	}
@@ -415,7 +416,7 @@ func bestVersion(serverVers, peerVers []int) (int, bool) {
 
 func firstSupported(serverCS, peerCS []int) (int, bool) {
 	for _, c := range serverCS {
-		if containsInt(peerCS, c) && isSupportedCryptosuite(c) {
+		if slices.Contains(peerCS, c) && isSupportedCryptosuite(c) {
 			return c, true
 		}
 	}

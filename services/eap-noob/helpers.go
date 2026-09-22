@@ -12,15 +12,6 @@ import (
 
 func intp(i int) *int { return &i }
 
-func containsInt(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
-
 // newPeerId generates a fresh, unguessable 16-byte identifier base64url-encoded
 // to a 22-character string (RFC 9140, Section 3.3.1).
 func newPeerId() (string, error) {
