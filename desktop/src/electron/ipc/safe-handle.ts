@@ -16,7 +16,12 @@ function isKnownSender(event: IpcMainInvokeEvent): boolean {
 
     const url = event.sender.getURL()
     if (url.startsWith('file://')) return true
-    if (url.startsWith(process.env.ELECTRON_RENDERER_URL ?? '')) return true
+    const raw = process.env.ELECTRON_RENDERER_URL
+    // A trailing slash would make devUrl + '/' double up and reject the dev
+    // server's own query-string loads (window.ts appends '?window=tray').
+    const devUrl = raw?.replace(/\/$/, '')
+    if (devUrl !== undefined && devUrl !== '' && (url === devUrl || url.startsWith(devUrl + '/')))
+        return true
     return false
 }
 
