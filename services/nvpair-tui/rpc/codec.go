@@ -71,6 +71,14 @@ type Codec struct {
 	wmu     sync.Mutex
 }
 
+// DecodeError marks a recoverable per-frame failure (bad JSON or wrong
+// version): the stream is still positioned at the next line, so callers
+// may skip the frame and continue reading. Mirrors nvpair-shared/jsonrpc.
+type DecodeError struct{ Err error }
+
+func (e *DecodeError) Error() string { return e.Err.Error() }
+func (e *DecodeError) Unwrap() error { return e.Err }
+
 // NewCodec wraps a reader/writer pair (the broker's stdout/stdin) in a
 // framing codec.
 func NewCodec(r io.Reader, w io.Writer) *Codec {
@@ -79,7 +87,9 @@ func NewCodec(r io.Reader, w io.Writer) *Codec {
 	return &Codec{scanner: scanner, writer: w}
 }
 
-// Read returns the next frame, or io.EOF when the stream closes.
+// Read returns the next frame, or io.EOF when the stream closes. A
+// malformed frame (bad JSON or wrong version) is returned as a recoverable
+// *DecodeError; a terminal scanner/transport error is a plain error.
 func (c *Codec) Read() (*Message, error) {
 	if !c.scanner.Scan() {
 		if err := c.scanner.Err(); err != nil {
@@ -89,10 +99,10 @@ func (c *Codec) Read() (*Message, error) {
 	}
 	var msg Message
 	if err := json.Unmarshal(c.scanner.Bytes(), &msg); err != nil {
-		return nil, fmt.Errorf("invalid JSON-RPC message: %w", err)
+		return nil, &DecodeError{fmt.Errorf("invalid JSON-RPC message: %w", err)}
 	}
 	if msg.JSONRPC != "2.0" {
-		return nil, fmt.Errorf("unsupported JSON-RPC version: %q", msg.JSONRPC)
+		return nil, &DecodeError{fmt.Errorf("unsupported JSON-RPC version: %q", msg.JSONRPC)}
 	}
 	return &msg, nil
 }

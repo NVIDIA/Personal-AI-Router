@@ -2553,8 +2553,15 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 			if err == io.EOF || ctx.Err() != nil {
 				return nil
 			}
-			log.Printf("JSON-RPC read error: %v", err)
-			continue
+			var de *DecodeError
+			if stderrors.As(err, &de) {
+				log.Printf("JSON-RPC decode error (skipping frame): %v", err)
+				continue
+			}
+			// Terminal transport/scanner error (e.g. an over-long frame —
+			// bufio.Scanner cannot resync) — stop instead of spinning.
+			log.Printf("JSON-RPC read error (terminal): %v", err)
+			return err
 		}
 		p.handleMessage(msg)
 	}

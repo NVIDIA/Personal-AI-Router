@@ -110,7 +110,13 @@ func (s *Store) Checkpoint() error {
 	s.mu.Unlock()
 
 	rotate(path, rotations)
-	return writeSnapshotFile(path, infos)
+	if err := writeSnapshotFile(path, infos); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // Run drives the coalescing flusher until ctx is cancelled: a dirty flush every

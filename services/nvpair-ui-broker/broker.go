@@ -2585,6 +2585,20 @@ func setNodeIDIfEmpty(m map[string]json.RawMessage, key, nodeID string) bool {
 	return true
 }
 
+// errTerminalRead reports that the client stdin read loop ended on a
+// non-recoverable scanner/transport error (e.g. an over-long frame that
+// bufio.Scanner cannot resync past), distinct from a clean EOF.
+var errTerminalRead = stderrors.New("terminal read error")
+
+// recoverableDecode reports whether a codec Read error is a recoverable
+// per-frame decode failure (bad JSON / wrong version): the scanner advances
+// past the bad frame, so both the producer and the consumer keep pumping
+// instead of tearing the connection down.
+func recoverableDecode(err error) bool {
+	var de *DecodeError
+	return stderrors.As(err, &de)
+}
+
 func (b *Broker) readLoop(ctx context.Context) error {
 	// codec.Read() blocks on stdin, so we run it on its own goroutine and
 	// select against ctx.Done(). Otherwise a SIGINT/SIGTERM (which cancels
@@ -2604,11 +2618,18 @@ func (b *Broker) readLoop(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			}
-			// EOF is terminal (stream closed); other errors are per-line
-			// (e.g. a bad JSON frame) and the next Read advances past them.
-			if err == io.EOF {
-				return
+			// A decoded message (err nil) and a recoverable decode error
+			// (bad frame; the next Read advances past it) both keep the pump
+			// running. EOF is terminal (stream closed), and any other error
+			// is a terminal scanner/transport error: stop feeding the
+			// channel so the consumer exits instead of spinning.
+			if err == nil {
+				continue
 			}
+			if recoverableDecode(err) {
+				continue
+			}
+			return
 		}
 	}()
 
@@ -2621,8 +2642,12 @@ func (b *Broker) readLoop(ctx context.Context) error {
 				if r.err == io.EOF || ctx.Err() != nil {
 					return nil
 				}
-				slog.Warn("JSON-RPC read error", "err", r.err)
-				continue
+				if recoverableDecode(r.err) {
+					slog.Warn("JSON-RPC decode error (skipping frame)", "err", r.err)
+					continue
+				}
+				slog.Warn("JSON-RPC read error (terminal)", "err", r.err)
+				return errTerminalRead
 			}
 			b.handleMessage(r.msg)
 			if ctx.Err() != nil {
