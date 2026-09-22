@@ -16,6 +16,51 @@ import {
 } from '@/electron/service-bridge/modular-supervisor'
 
 describe('LM Studio model reconciliation', () => {
+    it('loads the native llama downloaded inventory into actionable local model rows', async () => {
+        const state = getModularBridgeState()
+        const supervisor = getModularSupervisor()
+        const nodeId = 'llama-native-inventory-self'
+        const facts = {
+            engine: 'llamacpp',
+            installed: true,
+            running: true,
+            port: 8082,
+            managed: true,
+            install_supported: true
+        }
+        state.setSelfId(nodeId)
+        state.applyEngineManagerStatus(facts)
+        const hasProcess = vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
+        const call = vi
+            .spyOn(supervisor, 'callProcess')
+            .mockResolvedValue({ data: [{ id: 'owner/cached:Q4', status: { value: 'unloaded' } }] })
+        try {
+            supervisor.refreshManagedEngineModels(facts)
+            await vi.waitFor(() =>
+                expect(
+                    state
+                        .getEngineInitialState()
+                        .models.find(m => m.nodeId === nodeId && m.engineType === 'llamacpp')
+                        ?.models[0]
+                ).toMatchObject({ name: 'owner/cached:Q4', downloaded: true, status: 'idle' })
+            )
+            expect(call).toHaveBeenCalledWith('broker', 'engine:action', {
+                engine: 'llamacpp',
+                action: 'list_downloaded'
+            })
+            expect(parseListModelNames({ data: [] })).toEqual([])
+            expect(() => parseListModelNames({ data: [{}] })).toThrow('no usable model names')
+        } finally {
+            supervisor.refreshManagedEngineModels({
+                engine: 'llamacpp',
+                installed: false,
+                running: false,
+                managed: false
+            })
+            call.mockRestore()
+            hasProcess.mockRestore()
+        }
+    })
     it('parses the native inventory and distinguishes explicit empty from unknown', () => {
         expect(
             parseListModelNames({

@@ -49,6 +49,9 @@ export interface EngineStatusData {
      * reported version data or engines that are not installed.
      */
     installedVersion?: string
+    installSupported?: boolean
+    installReason?: string
+    managed?: boolean
 }
 
 export type ModelItemStatus = (typeof ModelItemStatuses)[number]

@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useMemo, memo } from 'react'
-import { Card, Flex, Stack, Text } from '@nvidia/foundations-react-core'
+import { Button, Card, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
 import { getWorkloadColorBar } from '@/ui/utils/colors'
 import EngineIcon from '@/ui/components/EngineIcon'
+import { useConnectionStore } from '@/ui/stores/connection.store'
 
 const formatDate = (timestamp: number) => {
     const date = new Date(timestamp)
@@ -41,6 +42,7 @@ const formatDate = (timestamp: number) => {
 }
 
 function WorkloadItemCard({ workload }: { workload: Workload }) {
+    const selfId = useConnectionStore(state => state.selfId)
     // Subscribe to only this workload's execution node name. Selecting the whole
     // nodes array re-rendered every job card on any node/metrics update.
     const ranOnNodeText = useNodesStore(state => {
@@ -123,10 +125,32 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
             style={{ direction: 'ltr' }}
             data-workload-id={workload.id}
             data-workload-origin={workload.originatedFrom ?? ''}
+            data-workload-engine={workload.engine}
+            data-workload-run={workload.runId ?? ''}
             attributes={{ CardContent: { className: 'workload-card-content' } }}
         >
             <div className="workload-badge hidden" style={{ backgroundColor: barColor }}></div>
             <Stack gap="0" className="min-w-0">
+                {workload.engine === 'llamacpp' &&
+                    workload.state === 'running' &&
+                    workload.originatedFrom === selfId &&
+                    workload.runId && (
+                        <Button
+                            kind="tertiary"
+                            size="small"
+                            onClick={() => {
+                                if (workload.runId && workload.originatedFrom)
+                                    void window.pairApi.workloads.cancel({
+                                        id: workload.id,
+                                        runId: workload.runId,
+                                        engine: workload.engine,
+                                        originatedFrom: workload.originatedFrom
+                                    })
+                            }}
+                        >
+                            Cancel request
+                        </Button>
+                    )}
                 <Flex align="center" gap="2" className="min-w-0">
                     <EngineIcon type={workload.engine} size={16} />
                     <Text kind="body/bold/sm" className="min-w-0 truncate">

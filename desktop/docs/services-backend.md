@@ -89,8 +89,8 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
-asynchronous capability signal. Personal AI Router waits up to the canonical
+service connection, while Ollama, LM Studio, and llama.cpp proxy readiness
+remains an asynchronous capability signal. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
 Settings > Service with retry and log access. If a stalled broker reports ready
@@ -116,7 +116,7 @@ reserved for inference clients.
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `ollama-proxy:ready` / `lmstudio-proxy:ready`        | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `ollama-proxy:ready` / `lmstudio-proxy:ready` / `llamacpp-proxy:ready` | Record engine proxy port                                                                              | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:settings-changed`                            | Validate and republish the owning node's settings snapshot                                                                      | `engines:settings-changed`                                |
@@ -128,7 +128,7 @@ reserved for inference clients.
 | `nodes:changed`                                      | Replace membership snapshot                                                                                                     | `nodes:changed`                                           |
 | `workloads:upsert` / `workloads:remove`              | Update workload catalog                                                                                                         | workload pushes                                           |
 
-`nvpair-job-scheduler` combines queued and running work across both engines with
+`nvpair-job-scheduler` combines queued and running work across all engines with
 a smoothed 0–3 pressure from the busiest GPU. Invalid, missing, or
 older-than-10-second telemetry receives neutral pressure. It emits
 `schedule:priority` with order, pending count, and pressure; the broker applies
@@ -150,8 +150,14 @@ waiting for authoritative state. Pending state clears on matching engine state,
 progress, or error pushes.
 
 Local engine operations include install, start, stop, uninstall, update, port
-changes, and model actions. Remote cluster operations use the engine manager's
-remote control surface where supported.
+changes, and model actions. Engine Manager owns the official llama app install,
+router process, managed cache, downloads, load/unload and delete. llama.cpp has
+no managed update: the bridge refuses `update` for it rather than substituting
+an uninstall and reinstall. The desktop uses reported install support and
+ownership; external runtimes remain read-only. Downloaded cache entries remain
+distinct from runtime residency. The app endpoint is `http://127.0.0.1:8080/v1`;
+routing requires the model **loaded** on the serving node. Remote cluster
+operations use the engine manager's remote control surface where supported.
 
 ### Engine settings
 

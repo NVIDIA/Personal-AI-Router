@@ -49,6 +49,15 @@ fi
 
 APP_SUPPORT="$target_home/Library/Application Support"
 
+if [ "$PURGE_DATA" = "1" ]; then
+  for root in "$APP_SUPPORT/Nvidia Corporation/Personal AI Router" "$APP_SUPPORT/NVIDIA Corporation/PAIR"; do
+    if [ -e "$root/engine-bin/llamacpp/models" ] || [ -L "$root/engine-bin/llamacpp/models" ]; then
+      echo "Llama models remain under app data. Open the updated app to migrate them before purging: $root" >&2
+      exit 1
+    fi
+  done
+fi
+
 echo "Stopping Personal AI Router processes..."
 # Keep this list in sync with MODULAR_RUNTIME_BINARIES and
 # MODULAR_BUNDLED_BINARIES in src/shared/constants/modular-binaries.ts, plus the

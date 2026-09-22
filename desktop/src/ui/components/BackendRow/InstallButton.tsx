@@ -23,7 +23,10 @@ export function InstallButton({
     disabled: boolean
     onInstall: () => void
 }) {
-    const autoInstall = canAutoInstallBackendForOs(backend.type, targetOs)
+    const autoInstall =
+        backend.type === 'llamacpp'
+            ? backend.installSupported === true
+            : canAutoInstallBackendForOs(backend.type, targetOs)
     const isNotInstalled = backend.processStatus === 'not-installed'
     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
     const prereqsMet = missingPrereqs.length === 0
@@ -35,6 +38,14 @@ export function InstallButton({
     }, [])
 
     const onInstallAllClick = useDismissibleTooltipTrigger(onInstall)
+
+    if (backend.type === 'llamacpp' && backend.installSupported !== true && isNotInstalled) {
+        return (
+            <Text kind="body/regular/sm">
+                {backend.installReason || 'Install support not reported by this node.'}
+            </Text>
+        )
+    }
 
     return (
         <>

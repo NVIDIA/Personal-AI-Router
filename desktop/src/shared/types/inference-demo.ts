@@ -54,10 +54,11 @@ export const DEMO_REQUEST_TIMEOUT_SECONDS = 120
 export const DEMO_ENGINE_PROBES: readonly {
     backend: DispatcherBackend
     /** Engine key used by the broker's proxy port registry. */
-    proxyEngine: 'ollama' | 'lm-studio'
+    proxyEngine: 'ollama' | 'lm-studio' | 'llamacpp'
 }[] = [
     { backend: 'ollama', proxyEngine: 'ollama' },
-    { backend: 'lmstudio', proxyEngine: 'lm-studio' }
+    { backend: 'lmstudio', proxyEngine: 'lm-studio' },
+    { backend: 'llamacpp', proxyEngine: 'llamacpp' }
 ]
 
 /**

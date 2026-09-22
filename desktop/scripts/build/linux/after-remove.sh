@@ -69,8 +69,13 @@ case "${1:-}" in
       # AI Router" (backend base = $XDG_CONFIG_HOME or ~/.config). The living,
       # append-only inventory is scripts/wipe-app-data.sh — do not silently diverge.
       # Every delete is best-effort so a locked or missing path never aborts removal.
-      rm -rf "$user_home/.config/Nvidia Corporation/Personal AI Router" 2>/dev/null || true
-      rm -rf "$user_home/.config/NVIDIA Corporation/PAIR" 2>/dev/null || true
+      for data_root in "$user_home/.config/Nvidia Corporation/Personal AI Router" "$user_home/.config/NVIDIA Corporation/PAIR"; do
+        if [ -e "$data_root/engine-bin/llamacpp/models" ] || [ -L "$data_root/engine-bin/llamacpp/models" ]; then
+          echo "Preserving unmigrated llama models in $data_root; reinstall and open PAIR before purging app data." >&2
+        else
+          rm -rf "$data_root" 2>/dev/null || true
+        fi
+      done
       # Remove the current and previous parents only when empty so other NVIDIA
       # applications survive.
       rmdir "$user_home/.config/Nvidia Corporation" 2>/dev/null || true

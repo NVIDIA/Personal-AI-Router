@@ -41,7 +41,7 @@ import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadRemoval } from '@/shared/types/workloads'
 import type {
     AvailableNode,
     ClusterIdentityPayload,
@@ -110,6 +110,10 @@ export interface WsInvokeChannelMap {
 
     // Workloads
     'workloads:get-initial': { request: void; response: Record<string, Workload> }
+    'workloads:cancel': {
+        request: { id: string; runId: string; engine: EngineType; originatedFrom: string }
+        response: { accepted: boolean }
+    }
 }
 
 export type WsInvokeChannel = keyof WsInvokeChannelMap
@@ -141,7 +145,7 @@ export interface WsPushChannelMap {
     // workload ids are a per-node proxy counter (the catalog is keyed by the
     // (originatedFrom, id) pair).
     'workloads:upsert': Workload
-    'workloads:remove': { workloadId: string; originatedFrom: string | null }
+    'workloads:remove': WorkloadRemoval
 
     // Errors
     'errors:update': ServiceError[]

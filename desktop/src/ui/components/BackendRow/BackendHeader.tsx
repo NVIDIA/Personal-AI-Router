@@ -11,6 +11,7 @@ import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/Dismissib
 import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { statusLabel } from '@/ui/utils/status'
+import { roundedProgressPercent } from '@/shared/utils/engine-progress'
 
 /** Install/uninstall lines include asset names + percentages — allow more room than generic status. */
 const INSTALL_STATUS_MAX_LEN = 52
@@ -91,7 +92,17 @@ export function BackendHeader({
             className={`${isUnavailable ? 'cursor-default' : 'cursor-pointer'} p-4 -m-4`}
         >
             <Flex align="center" gap="2" className=" grow">
-                <Flex align="center" gap="1">
+                <button
+                    type="button"
+                    className="inline-flex items-center gap-1 focus-visible:outline focus-visible:outline-2"
+                    aria-expanded={expanded}
+                    aria-label={backend.displayName + ' settings'}
+                    disabled={isUnavailable}
+                    onClick={e => {
+                        e.stopPropagation()
+                        handleHeaderClick()
+                    }}
+                >
                     {!isUnavailable && (
                         <ExpandMore
                             style={{ fontSize: 14 }}
@@ -99,7 +110,7 @@ export function BackendHeader({
                         />
                     )}
                     <Text kind="body/semibold/md">{backend.displayName}</Text>
-                </Flex>
+                </button>
 
                 <Flex align="center">
                     {isLocalNode &&
@@ -114,7 +125,7 @@ export function BackendHeader({
                                     e.stopPropagation()
                                     handleCopy()
                                 }}
-                                title={`Copy ${backend.displayName} API http://127.0.0.1:${backend.proxyPort}`}
+                                title={`Copy ${backend.displayName} API ${proxyUrl}`}
                                 style={{ padding: '2px 6px', minWidth: 'auto' }}
                                 aria-label={`Copy ${backend.displayName} API URL`}
                             >
@@ -160,7 +171,7 @@ export function BackendHeader({
                     const baseStatus =
                         backend.installProgress?.status ?? statusLabel[backend.processStatus]
                     const pct = backend.installProgress?.percent
-                    const pctRounded = pct != null && Number.isFinite(pct) ? Math.round(pct) : null
+                    const pctRounded = roundedProgressPercent(pct)
                     const pctSuffix = pctRounded != null ? ` · ${pctRounded}%` : ''
                     const baseWithoutDuplicatePercent =
                         pctRounded != null

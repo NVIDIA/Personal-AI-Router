@@ -6,8 +6,16 @@ import { EngineType } from '@/shared/types/engines'
 
 export type WorkloadState = (typeof WorkloadStates)[number]
 
+export interface WorkloadRemoval {
+    workloadId: string
+    originatedFrom: string | null
+    engine?: EngineType
+    runId?: string
+}
+
 export interface Workload {
     id: string
+    runId?: string
     model: string
     engine: EngineType
     state: WorkloadState

@@ -9,6 +9,13 @@
 
 import { EngineOperationType, EngineProgress, EngineType } from '@/shared/types/engines'
 
+/** Unknown vendor progress (including -1) must not become a numeric percentage. */
+export function roundedProgressPercent(percent: number | undefined): number | null {
+    return percent !== undefined && Number.isFinite(percent) && percent >= 0 && percent <= 100
+        ? Math.round(percent)
+        : null
+}
+
 /** Build the map key for an EngineProgress entry. */
 export function engineProgressKey(p: {
     nodeId: string

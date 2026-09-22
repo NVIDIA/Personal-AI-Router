@@ -12,7 +12,8 @@ import type {
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadRemoval } from '@/shared/types/workloads'
+import type { EngineType } from '@/shared/types/engines'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 
 // ---------------------------------------------------------------------------
@@ -80,14 +81,18 @@ export interface IDiscoveryApi {
 }
 
 export interface IWorkloadsApi {
+    cancel(request: {
+        id: string
+        runId: string
+        engine: EngineType
+        originatedFrom: string
+    }): Promise<{ accepted: boolean }>
     /** Fetch all active workloads (inference jobs). */
     getInitial(): Promise<Record<string, Workload>>
     /** A workload was created or updated. */
     onUpsert(callback: (workload: Workload) => void): () => void
     /** A workload was completed and removed. */
-    onRemove(
-        callback: (removal: { workloadId: string; originatedFrom: string | null }) => void
-    ): () => void
+    onRemove(callback: (removal: WorkloadRemoval) => void): () => void
 }
 
 export interface IErrorsApi {
@@ -171,6 +176,7 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
         engines: createEngineApi(transport),
         workloads: {
             getInitial: () => transport.invoke('workloads:get-initial'),
+            cancel: request => transport.invoke('workloads:cancel', request),
             onUpsert: cb => transport.subscribePush('workloads:upsert', cb),
             onRemove: cb => transport.subscribePush('workloads:remove', cb)
         },

@@ -95,6 +95,9 @@ export interface BackendInfo {
     proxyPort: number | null
     /** Installed engine binary version reported by the owning node */
     installedVersion?: string
+    installSupported?: boolean
+    installReason?: string
+    managed?: boolean
     /** Models on this backend with per-model status */
     models: ModelItem[]
     /** System-level dependencies required before install/run (local node only) */
