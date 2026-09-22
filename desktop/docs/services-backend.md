@@ -253,9 +253,12 @@ result through the discovery snapshot and must not add a second, shorter
 reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
 good metrics and never marks a node offline.
 
-The renderer model hub is not a backend search service. Electron main obtains
-curated Ollama and LM Studio catalogs, then sends pull-ready model IDs through
-the engine manager.
+The model catalogue is backend-owned. `nvpair-engine-manager` serves the curated
+Ollama and LM Studio lists over `engine:catalog`, filtered for the platform a
+model will install on; Electron relays the call and maps rows for the renderer,
+which then sends pull-ready model IDs back through the engine manager. The
+Ollama reply is a single multi-megabyte frame, so every hop on its path shares
+`jsonrpc.WorkerFrameBytes`.
 
 ## Pairing and security
 

@@ -298,8 +298,10 @@ safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 `sizeVram`/`expiresAt` — the backend delivers the simpler `loadedByEngine`
 name-set, not structured details.
 
-The model hub is intentionally outside the backend: Electron main fetches
-curated catalogs and sends selected pull-ready IDs to the engine manager.
+The model catalogue is owned by the backend: `engine:catalog` on
+`nvpair-engine-manager` serves the curated Ollama and LM Studio lists, and both
+the desktop app and the terminal interface browse it. Electron only relays the
+call and maps rows for the renderer.
 
 ## Errors
 
@@ -443,7 +445,7 @@ provide an equivalent client-facing contract:
 | Persist and replay manual node entries                      | `manual-nodes-store.ts`, `modular-supervisor.ts` |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
-| Serve the model hub (Ollama committed list, LM Studio live) | `src/electron/model-hub/`                        |
+| Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |
 | Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
 | Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
 | Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |

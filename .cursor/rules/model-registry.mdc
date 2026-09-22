@@ -1,5 +1,5 @@
 ---
-description: Electron-main engine model hub (Ollama committed list + LM Studio catalog)
+description: Backend-owned engine model catalogue (Ollama committed list + LM Studio catalog)
 alwaysApply: true
 ---
 <!--
@@ -7,24 +7,23 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Model Registry — engine model hub
+# Model Registry — engine model catalogue
 
-- The backend has **no model-search RPC**, so the "Add Model" browse is
-  served by a standalone Electron-main module, **`src/electron/model-hub/`**
-  (main process, because the renderer cannot call `huggingface.co` under
-  CSP+CORS). There is **no generic Hugging Face browse and no shared GGUF
-  registry** — each enabled engine has exactly one curated source declared via
-  `EngineCaps.engineHub`.
-- **Ollama** (`ollama-library.ts`): a **locked, committed list**, not a live
-  scrape. `src/electron/model-hub/ollama-models.json` (wire shape
-  `{ scrapedAt, source, count, models: OllamaTagsModel[] }`) is bundled into
-  the main process (`resolveJsonModule` + electron-vite inlining), so
-  `loadOllamaModels()` returns instantly with **no network access at runtime**.
-  Devs regenerate it with `npm run scrape:ollama-models`
-  (`scripts/scrape-ollama-models.ts`) when Ollama's catalog changes, then review
-  the diff and commit. The scraper is the **only** place Ollama scraping lives:
-  two phases — (A) parse the `https://ollama.com/library` index (anchored on
-  each card's `<a class="group w-full">` link, capability chips are
+- The "Add Model" browse is served by **`nvpair-engine-manager`** over the
+  **`engine:catalog`** JSON-RPC method (`services/nvpair-engine-manager/catalog.go`).
+  It lives in the backend because both front ends need it: the desktop app's
+  Add Model modal and the terminal interface's model browser. There is **no
+  generic Hugging Face browse and no shared GGUF registry** — each enabled
+  engine has exactly one curated source.
+- **Ollama**: a **locked, committed list**, not a live scrape.
+  `services/nvpair-engine-manager/catalog/ollama-models.json` (wire shape
+  `{ scrapedAt, source, count, models: [...] }`) is compiled in with `go:embed`,
+  so the catalogue is served with **no network access at runtime**. Devs
+  regenerate it with `npm run scrape:ollama-models`
+  (`desktop/scripts/scrape-ollama-models.ts`) when Ollama's catalog changes,
+  then review the diff and commit. The scraper is the **only** place Ollama
+  scraping lives: two phases — (A) parse the `https://ollama.com/library` index
+  (anchored on each card's `<a class="group w-full">` link, capability chips are
   `text-indigo-600`, size chips `text-blue-600`, updated timestamp in the stats
   span `title`), then (B) fetch each `https://ollama.com/library/<base>/tags`
   page (concurrency 4, anchored on the self-contained mobile card
@@ -33,25 +32,38 @@ SPDX-License-Identifier: Apache-2.0
   variants are filtered. Names are used as-is for `ollama pull`. **When Ollama
   changes their markup, update the parser in the script and re-run it** — the
   running app is unaffected.
-- **LM Studio** (`lmstudio-catalog.ts`, `lmStudioCatalogCache`): still a **live
-  fetch**. GETs
+- **LM Studio**: still a **live fetch**. GETs
   `https://huggingface.co/api/models?author=lmstudio-community&sort=downloads&direction=-1&limit=500`
   and normalizes each repo to a pull-ready id (e.g.
   `lmstudio-community/Qwen3-8B-GGUF`, accepted by `lms get`). This is the
-  **only** remaining network call in the model hub, and it is main-process only
-  (6-hour TTL + in-flight guard so PAIR never fetches continuously).
-- Both sources normalize to the shared `EngineHubModel`
-  (`src/shared/types/engine-api.ts`).
-- `index.ts` exposes `getEngineHubModels(engineType)` (Ollama returns the
-  committed list synchronously; LM Studio awaits a cold cache's initial load;
-  returns `{ models }`) and `warmEngineHubs()` (warms **only** LM Studio —
-  Ollama needs none). The `engine:search-hub` handler in `empty-handlers.ts`
-  calls the former; the `overview:ready` handler in `window.ipc.ts` calls the
-  latter. Warm on renderer-ready, **not** on service connect: a catalog fetch
-  started before the window has painted competes with the renderer's own load,
-  and a hanging one leaves an unpainted window behind.
-- The renderer (`src/ui/components/ModelHub/`) fetches an engine's full
-  catalog once (cached per-engine), filters by the search box **locally** on
-  each keystroke, and sorts client-side by Updated / Name / Size. Pulling goes
-  through the backend (`engine:pull-model` → `pull_model`); the hub only
-  produces the pull-ready id.
+  **only** network call in the catalogue: 6-hour TTL, a coalescing guard so
+  concurrent callers share one request, and a failure backoff so a dead upstream
+  is not re-dialled on every call.
+- Both sources normalize to `CatalogModel`, which the desktop maps to the shared
+  `EngineHubModel` (`desktop/src/shared/types/engine-api.ts`).
+- **The catalogue is filtered for the platform the models will install on**, not
+  the one serving it. MLX quantizations only install on Apple Silicon, so
+  `engine:catalog` takes an optional `platform` (defaulting to the server's
+  `GOOS`), marks Apple-only rows with `appleOnly`, and echoes the platform it
+  filtered for. A client driving a peer should say which peer; a client that
+  cannot determine it must tell the operator which platform the list applies to
+  rather than presenting it as universal.
+- **Frame size matters here.** The Ollama reply is a single ~1.9 MiB JSON-RPC
+  line. Every hop on its path shares `jsonrpc.WorkerFrameBytes`, because an
+  over-long line is a terminal read error that silently closes the peer while
+  the child keeps running. A test in `catalog_test.go` fails if the marshalled
+  catalogue outgrows the frame; **filter or paginate rather than raising the cap
+  again**.
+- The desktop relays through
+  `desktop/src/electron/service-bridge/model-catalog.ts`, which exposes
+  `getEngineHubModels(engineType)` and `warmEngineHubs()` (warms **only**
+  LM Studio — Ollama needs none). The `engine:search-hub` handler in
+  `empty-handlers.ts` calls the former; the `overview:ready` handler in
+  `window.ipc.ts` calls the latter. Warm on renderer-ready, **not** on service
+  connect: a catalog fetch started before the window has painted competes with
+  the renderer's own load, and a hanging one leaves an unpainted window behind.
+- Both front ends fetch an engine's full catalog once (cached per-engine) and
+  filter **locally** as the user types. The desktop renderer
+  (`src/ui/components/ModelHub/`) sorts client-side by Updated / Name / Size.
+  Pulling goes through the engine manager (`engine:pull-model` → `pull_model`);
+  the catalogue only produces the pull-ready id.
