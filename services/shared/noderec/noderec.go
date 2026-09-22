@@ -578,17 +578,6 @@ func (n DirectoryNode) EngineModels(engine string) []string {
 	return n.Models
 }
 
-// EngineLoadedModels returns models currently resident in memory for one
-// engine. It never falls back to Models or ModelsByEngine: a missing
-// LoadedByEngine report means nothing is loaded, so a router cannot treat
-// catalog ids as eligible.
-func (n DirectoryNode) EngineLoadedModels(engine string) []string {
-	if n.LoadedByEngine == nil {
-		return nil
-	}
-	return n.LoadedByEngine[engine]
-}
-
 // SubscribeParams filters a subscription to nodes advertising any of the listed
 // services; an empty list subscribes to all nodes.
 type SubscribeParams struct {

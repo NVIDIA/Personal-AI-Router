@@ -58,12 +58,9 @@ on Windows, `~/Library/Application Support` on macOS, or `$XDG_CONFIG_HOME`
 data. Engine Manager migrates an older in-app cache before using it; if migration
 cannot safely finish, reset refuses and uninstall preserves the old data root.
 Open the updated app and resolve the migration error before retrying data removal.
-Download completion does not mean a model is loaded: load it explicitly before
-sending inference through PAIR.
-
-The desktop workload card and TUI can cancel a local-origin llama request.
-Cancellation stops its forwarding context and the workload reports its final
-state; the response accepting cancellation is not a vendor stop receipt.
+A downloaded model loads on the first request that names it, so that first
+response waits for the load; the router keeps up to four models resident and
+evicts idle ones.
 PAIR routes each complete request to one eligible node and does not distribute
 a model across several machines. Native platform and packaged UI validation of
 this integration must be recorded separately from passing source tests.

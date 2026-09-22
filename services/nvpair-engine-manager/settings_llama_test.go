@@ -29,12 +29,12 @@ func TestLlamaLaunchSettingsResolveModelDirAndAreEditable(t *testing.T) {
 	if state.ServerPort != 8081 {
 		t.Fatalf("server port = %d, want the managed default 8081", state.ServerPort)
 	}
-	// Fixed startup arguments (serve, --no-models-autoload) stay out of the
+	// Fixed startup arguments (serve, --models-autoload) stay out of the
 	// editable text; the managed loopback bind and port are what the user sees.
 	if state.LaunchText != "--host 127.0.0.1 --port 8081" {
 		t.Fatalf("launch text = %q", state.LaunchText)
 	}
-	if strings.Contains(state.LaunchText, "no-models-autoload") || strings.Contains(state.LaunchText, "LLAMA_CACHE") {
+	if strings.Contains(state.LaunchText, "models-autoload") || strings.Contains(state.LaunchText, "LLAMA_CACHE") {
 		t.Fatalf("fixed arguments or owned cache environment leaked into editable text: %q", state.LaunchText)
 	}
 }

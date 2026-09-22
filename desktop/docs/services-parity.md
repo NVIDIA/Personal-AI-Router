@@ -24,7 +24,7 @@ history.
 | Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
-| llama.cpp routing          | Source integration; native validation pending | `nvpair-proxy` facade on llama.cpp's own `8080`, relayed as `llamacpp-proxy:`; eligibility is loaded models only |
+| llama.cpp routing          | Source integration; native validation pending | `nvpair-proxy` facade on llama.cpp's own `8080`, relayed as `llamacpp-proxy:` |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
@@ -132,9 +132,7 @@ serves its engine's dialect:
 
 - the Ollama facade serves the Ollama-compatible surface;
 - the LM Studio facade serves the LM Studio/OpenAI-compatible surface;
-- the llama.cpp facade serves its OpenAI-compatible surface on `8080`, and is
-  the one facade whose routing eligibility is loaded models rather than the
-  on-disk catalog.
+- the llama.cpp facade serves its OpenAI-compatible surface on `8080`.
 
 Sharing a process is what lets them share the burst reservations the scheduler
 depends on: facades bursting at once compete for the same node's GPU, so a

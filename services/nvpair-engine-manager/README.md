@@ -464,14 +464,16 @@ The first headless mutation detects the installed runtime and reconciles listene
 ownership itself; it does not require a preceding status request or UI poll.
 
 The foreground `llama serve` process binds loopback, uses the same `LLAMA_CACHE`
-and `HF_HUB_CACHE` as downloads, and runs with `--no-models-autoload`. Cached,
+and `HF_HUB_CACHE` as downloads, and runs with `--models-autoload`: a cached
+model loads on the first request that names it, and the router keeps up to four
+models resident (vendor `--models-max` default), evicting idle ones. Cached,
 unloaded, loading, and loaded are separate states. Readiness checks the llama.cpp
 server identity and router model-list shape. An externally started instance can
 be inspected but cannot be mutated; `managed` is false for an adopted listener.
 On Windows, both subprocess paths use the standard extended-length cache path
 form to support long Hugging Face filenames without changing OS settings.
 
-Launch settings follow the shared editable-launch contract: the fixed startup arguments are `serve --no-models-autoload`, the reviewed networking controls are `--port` ({server.port}) and `--host` ({server.host}, loopback only), no CORS switch is declared, and the owned model cache environment (`LLAMA_CACHE`, `HF_HUB_CACHE`) is injected on every launch rather than edited; the settings preview rejects assignments to those two names.
+Launch settings follow the shared editable-launch contract: the fixed startup arguments are `serve --models-autoload`, the reviewed networking controls are `--port` ({server.port}) and `--host` ({server.host}, loopback only), no CORS switch is declared, and the owned model cache environment (`LLAMA_CACHE`, `HF_HUB_CACHE`) is injected on every launch rather than edited; the settings preview rejects assignments to those two names.
 
 These actions use the existing `engine:action` request with `engine: "llamacpp"`:
 
@@ -501,9 +503,7 @@ Load/unload responses wait for observed vendor state instead of treating the
 vendor's asynchronous acceptance response as completed work; failed loads surface
 their exit status and waiting honors cancellation.
 Downloads/imports/deletes refresh the router catalogue; deletion unloads an
-observed loaded model first and removes only matching cache artifacts. Missing
-residency observations publish unknown instead of retaining a current-looking
-loaded set.
+observed loaded model first and removes only matching cache artifacts.
 
 Paired control adds `engine:remote-cancel-pull {node, engine, model}` through
 the existing pinned-mTLS boundary at `POST /v1/models/cancel-pull`. Mixed-version

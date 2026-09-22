@@ -37,7 +37,7 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 				switch engine {
 				case "llamacpp":
 					launch, err = resolveProcessLaunch(platform.Runtime, "/test path/llama", vars)
-					want = []string{"/test path/llama", "serve", "--no-models-autoload", "--host", "127.0.0.1", "--port", "12345"}
+					want = []string{"/test path/llama", "serve", "--models-autoload", "--host", "127.0.0.1", "--port", "12345"}
 				case "ollama":
 					launch, err = resolveProcessLaunch(platform.Runtime, "/test path/ollama", vars)
 					want = []string{"OLLAMA_HOST=127.0.0.1:12345", "/test path/ollama", "serve"}

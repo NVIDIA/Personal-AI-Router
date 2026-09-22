@@ -22,7 +22,7 @@
     "cli": "{install_dir}/runtime/llama",
     "args": [
       "serve",
-      "--no-models-autoload",
+      "--models-autoload",
       "--host",
       "{host}",
       "--port",
@@ -31,7 +31,7 @@
     "editable_launch": {
       "fixed_args": [
         "serve",
-        "--no-models-autoload"
+        "--models-autoload"
       ],
       "controls": [
         {

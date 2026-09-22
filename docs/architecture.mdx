@@ -418,11 +418,6 @@ the same node.
 are the same unit of pending work, so "fewest jobs" is not "least busy." A node
 running one enormous request looks more idle than a node running two trivial ones.
 
-**Load eligibility depends on the engine.** llama.cpp routing requires the model
-to be reported loaded; downloaded-only or unknown residency is ineligible.
-Ollama and LM Studio can cold-load an advertised model, so their routing does
-not prefer a warm copy over a cold copy.
-
 **Only work PAIR routed contributes to pending counts.** Inference sent straight
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.

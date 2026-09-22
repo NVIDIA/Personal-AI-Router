@@ -207,8 +207,8 @@ press `enter`. Progress appears on the status line.
 
 For llama, enter `owner/repository:QUANT` for a Hugging Face download, or use
 `I` with a local GGUF path. Model actions prefill the selected model's exact ID;
-press `enter` to submit. Start llama and explicitly load a downloaded model
-before sending inference. Downloaded weights alone do not make it routable.
+press `enter` to submit. Start llama; a downloaded model loads on the first
+request that names it.
 External llama runtimes remain under their owner's lifecycle control.
 
 A node can serve a request only when it is online, a compatible engine is

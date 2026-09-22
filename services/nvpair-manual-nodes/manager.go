@@ -116,10 +116,8 @@ type ManualNodeStatus struct {
 	LMStudioPort   int      `json:"lmstudio_port"`
 	LMStudioModels []string `json:"lmstudio_models,omitempty"`
 	// llama.cpp is probed on its default OpenAI-API port (8080) the same way
-	// LM Studio is on 1234. llamacpp_models is the loaded subset only
-	// (status.value == "loaded"); a 200 from GET /v1/models still counts as
-	// up when that set is empty so a supervising broker can bridge the node
-	// into llamacpp-proxy.
+	// LM Studio is on 1234, so a supervising broker can bridge the node into
+	// llamacpp-proxy.
 	LlamaCppUp     bool        `json:"llamacpp_up"`
 	LlamaCppPort   int         `json:"llamacpp_port"`
 	LlamaCppModels []string    `json:"llamacpp_models,omitempty"`
@@ -471,10 +469,8 @@ func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
 const llamaCppPort = 8080
 
 // probeLlamaCpp checks llama-server's OpenAI-compatible API on addr:port. A
-// single GET /v1/models doubles as the liveness check and the model list.
-// Only ids whose status.value is "loaded" are returned — a missing status is
-// treated as not loaded — so the broker bridges a routing-eligible set into
-// llamacpp-proxy. A 200 still reports the node up when that set is empty.
+// single GET /v1/models doubles as the liveness check and the model list. A
+// 200 still reports the node up when that list is empty.
 func (m *Manager) probeLlamaCpp(addr string, port int) (bool, []string) {
 	url := "http://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
 	start := time.Now()
@@ -493,10 +489,7 @@ func (m *Manager) probeLlamaCpp(addr string, port int) (bool, []string) {
 	}
 	var result struct {
 		Data []struct {
-			ID     string `json:"id"`
-			Status struct {
-				Value string `json:"value"`
-			} `json:"status"`
+			ID string `json:"id"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -507,7 +500,7 @@ func (m *Manager) probeLlamaCpp(addr string, port int) (bool, []string) {
 	}
 	models := make([]string, 0, len(result.Data))
 	for _, d := range result.Data {
-		if d.ID != "" && d.Status.Value == "loaded" {
+		if d.ID != "" {
 			models = append(models, d.ID)
 		}
 	}

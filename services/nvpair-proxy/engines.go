@@ -114,31 +114,7 @@ type engineProfile struct {
 	// claim one names that variable. Gating on this makes the scoping
 	// enforced rather than left to the broker's restraint in passing the flag.
 	SupportsHostAlias bool
-
-	// ModelEligibility is which advertised inventory makes a node an owner.
-	// Stated by every engine rather than left to the zero value: which
-	// inventory to trust is the kind of decision a new engine should have to
-	// make, not inherit from whichever constant happens to be first.
-	ModelEligibility modelEligibility
 }
-
-// modelEligibility is which of a node's advertised inventories makes it a
-// routable owner of a requested model.
-type modelEligibility int
-
-const (
-	// catalogModels accepts any model the node reports as installed. Ollama
-	// and LM Studio both load a requested model on demand, so a catalog entry
-	// is a promise the node can serve it.
-	catalogModels modelEligibility = iota
-
-	// loadedModels accepts only models the node reports resident in memory,
-	// and never falls back to the catalog. PAIR runs llama.cpp with
-	// --no-models-autoload, so a downloaded model it has not been told to load
-	// will not be served; routing to it on the strength of the catalog
-	// produces a request its owner cannot answer.
-	loadedModels
-)
 
 // openAIInferenceRoutes is the inference surface every OpenAI-compatible
 // engine exposes. Ollama serves these alongside its native routes.
@@ -168,7 +144,6 @@ func buildProfiles() []engineProfile {
 				{Path: "/v1/models", Role: roleModelListOpenAIGET},
 			}, openAIInferenceRoutes...),
 			ModelNaming:           impliedLatestTag,
-			ModelEligibility:      catalogModels,
 			ReservedPersistedPort: 0,
 			SupportsHostAlias:     true,
 		},
@@ -178,8 +153,7 @@ func buildProfiles() []engineProfile {
 			Routes: append([]route{
 				{Path: "/v1/models", Role: roleModelListOpenAIGET},
 			}, openAIInferenceRoutes...),
-			ModelNaming:      exactID,
-			ModelEligibility: catalogModels,
+			ModelNaming: exactID,
 			// 1235 is where engine-manager runs a managed LM Studio, so a
 			// proxy that restored it would sit on the engine's own port. The
 			// stored value predates the current default of 1234.
@@ -195,7 +169,6 @@ func buildProfiles() []engineProfile {
 			// 8081 is where engine-manager relocates a managed llama.cpp, so a
 			// proxy that restored it would sit on the engine's own port.
 			ReservedPersistedPort: llamacpp.EnginePortBase,
-			ModelEligibility:      loadedModels,
 		},
 	}
 }

@@ -52,7 +52,7 @@ Emitted when a manually added node has been probed and its initial status determ
     "lmstudio_models":["qwen2.5-7b-instruct"],
     "llamacpp_up":true,
     "llamacpp_port":8080,
-    "llamacpp_models":["loaded-one"],
+    "llamacpp_models":["ggml-org/Qwen3-0.6B-GGUF:Q4_0"],
     "node_info_up":true,
     "node_info_port":14318,
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
@@ -63,7 +63,7 @@ Emitted when a manually added node has been probed and its initial status determ
 }
 ```
 
-Each node is probed for the three inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`), LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list), and llama.cpp on its default `:8080` (`GET /v1/models`, same liveness-plus-list shape). `lmstudio_up` / `lmstudio_port` / `lmstudio_models` and `llamacpp_up` / `llamacpp_port` / `llamacpp_models` mirror the `ollama_*` fields and let a supervising broker bridge the node into that engine's facade on the `nvpair-proxy` process the same way it bridges Ollama into its own. `llamacpp_models` is the loaded subset only (`status.value == "loaded"`; a missing status is not loaded); a 200 from `/v1/models` still sets `llamacpp_up` when that set is empty. A node can run any combination of engines, or none.
+Each node is probed for the three inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`), LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list), and llama.cpp on its default `:8080` (`GET /v1/models`, same liveness-plus-list shape). `lmstudio_up` / `lmstudio_port` / `lmstudio_models` and `llamacpp_up` / `llamacpp_port` / `llamacpp_models` mirror the `ollama_*` fields and let a supervising broker bridge the node into that engine's facade on the `nvpair-proxy` process the same way it bridges Ollama into its own. A 200 from `/v1/models` still sets `llamacpp_up` when the list is empty. A node can run any combination of engines, or none.
 
 ### `node/updated`
 
@@ -139,7 +139,7 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 
 - **Ollama** on port 11434: health check (`GET /`) and model list (`GET /api/tags`)
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
-- **llama.cpp** on port 8080: `GET /v1/models`, which doubles as the liveness check and the loaded-model list (`status.value == "loaded"`)
+- **llama.cpp** on port 8080: `GET /v1/models`, which doubles as the liveness check and the model list
 - **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
 
 A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.

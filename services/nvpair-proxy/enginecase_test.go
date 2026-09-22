@@ -113,20 +113,11 @@ func llamacppCase(t *testing.T) engineCase {
 }
 
 // advertiseEngine records model on a discovery record as belonging to engine
-// p, in whichever per-engine inventory p's eligibility actually reads: the
-// installed catalog for the on-demand engines, the loaded set for llama.cpp.
+// p, in the per-engine catalog every facade's eligibility reads.
 //
 // Bodies use this instead of assigning Models or ModelsByEngine directly so a
-// shared fixture means "this node can serve model" for every engine, rather
-// than silently meaning it only for the ones that consult the catalog.
+// shared fixture means "this node can serve model" for every engine.
 func advertiseEngine(n *noderec.DirectoryNode, p engineProfile, model string) {
-	if p.ModelEligibility == loadedModels {
-		if n.LoadedByEngine == nil {
-			n.LoadedByEngine = map[string][]string{}
-		}
-		n.LoadedByEngine[p.Name] = append(n.LoadedByEngine[p.Name], model)
-		return
-	}
 	if n.ModelsByEngine == nil {
 		n.ModelsByEngine = map[string][]string{}
 	}

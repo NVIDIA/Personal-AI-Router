@@ -302,9 +302,9 @@ cannot yet be reported are centralized in
 - Ollama-compatible clients use the proxy port reported by the broker.
 - llama.cpp clients use the OpenAI-compatible proxy at `http://127.0.0.1:8080/v1`
   by default. Engine Manager installs the official `llama` app, serves its
-  managed router on the separately reported engine port (default `8082`), and
-  owns model download, load/unload and removal. The proxy routes only to models
-  observed as loaded. Existing external listeners remain externally owned;
+  managed router on the separately reported engine port (default `8081`), and
+  owns model download, load/unload and removal. The proxy routes to the models
+  the engine advertises; a cold model loads on its first request. Existing external listeners remain externally owned;
   their presence does not authorize PAIR to mutate them.
 - Cluster pairing currently uses port `14321`.
 - Node telemetry is read from `/v1/node-info` at each discovered node's

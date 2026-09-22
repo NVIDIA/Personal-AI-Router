@@ -344,23 +344,6 @@ func TestLlamaAdoptedListenerRejectsMutationBeforeHTTP(t *testing.T) {
 	}
 }
 
-func TestLlamaLostResidencyPublishesUnknown(t *testing.T) {
-	e := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	changed, next, result := e.sweepLoaded(context.Background(), map[string][]string{"llamacpp": {"owner/model:Q4_K_M"}, "other": {"unchanged"}})
-	if len(changed) != 1 || changed[0] != "llamacpp" {
-		t.Fatalf("missing observation was not published: %v", changed)
-	}
-	if _, ok := next["llamacpp"]; ok {
-		t.Fatal("retained stale llama residency")
-	}
-	if _, ok := result.LoadedByEngine["llamacpp"]; ok {
-		t.Fatal("unknown observation represented as an empty successful set")
-	}
-	if len(next["other"]) != 1 {
-		t.Fatal("changed unrelated engine policy")
-	}
-}
-
 func TestLlamaLoadWaitsForObservedState(t *testing.T) {
 	polls := 0
 	e := &Executor{actionTimeout: time.Second, client: &http.Client{Transport: llamaFixtureTransport(func(*http.Request) (*http.Response, error) {

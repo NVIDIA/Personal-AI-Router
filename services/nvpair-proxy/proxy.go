@@ -2559,24 +2559,11 @@ func subscribedToNode(p engineProfile, n noderec.DirectoryNode) (Node, bool) {
 		ClusterUUID: n.ClusterUUID,
 		// Filter on this node's models for this engine only, never the
 		// cross-engine union, so a model a dual-engine node serves solely via
-		// another engine is not accepted as an owner here.
-		Models: append([]string(nil), p.eligibleModels(n)...),
+		// another engine is not accepted as an owner here (falls back to the
+		// union for a peer that sends no attribution; see
+		// DirectoryNode.EngineModels).
+		Models: append([]string(nil), n.EngineModels(p.Name)...),
 	}, true
-}
-
-// eligibleModels is the node's inventory that makes it an owner for this
-// engine.
-//
-// The two on-demand engines read the catalog, falling back to the union for a
-// peer that sends no per-engine attribution (see DirectoryNode.EngineModels).
-// llama.cpp reads the loaded set with no fallback at all: a missing report
-// means nothing is loaded, and treating catalog ids as eligible there would
-// route to an owner that will not serve them.
-func (p engineProfile) eligibleModels(n noderec.DirectoryNode) []string {
-	if p.ModelEligibility == loadedModels {
-		return n.EngineLoadedModels(p.Name)
-	}
-	return n.EngineModels(p.Name)
 }
 
 // readLoop serves the control plane until the transport ends or ctx is done.

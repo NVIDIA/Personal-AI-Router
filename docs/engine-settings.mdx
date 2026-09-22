@@ -87,9 +87,9 @@ them are ambiguous and rejected. CORS switches do not take `=true` or `=false`:
 add or remove the switch locally. Origin lists are normalized before validation;
 conflicting repeated lists are rejected. Other vendor options remain opaque.
 
-For managed llama.cpp, `serve --no-models-autoload` stays fixed so routing keeps
-treating only loaded models as eligible, and PAIR owns the model cache location:
-`LLAMA_CACHE` and `HF_HUB_CACHE` assignments are rejected in launch settings.
+For managed llama.cpp, `serve --models-autoload` stays fixed, and PAIR owns the
+model cache location: `LLAMA_CACHE` and `HF_HUB_CACHE` assignments are rejected
+in launch settings.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation
