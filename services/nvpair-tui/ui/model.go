@@ -308,6 +308,18 @@ func (m *Model) selectTab(idx int) {
 	if len(m.views) == 0 {
 		return
 	}
+	// The tab being left goes back to its own top-level screen. A drill-down
+	// is where the operator was, not where they asked to return to: leaving
+	// Nodes inside one machine's detail and coming back put them on that
+	// machine again, with the list they wanted one keypress further away and
+	// no indication of why.
+	//
+	// Safe to do unconditionally because a view holding a text field or an
+	// armed confirmation captures the keyboard, so the tab cannot be changed
+	// out from under it in the first place.
+	if r, ok := m.activeView().(resetter); ok {
+		r.reset()
+	}
 	m.active = ((idx % len(m.views)) + len(m.views)) % len(m.views)
 	m.resizeViews()
 }

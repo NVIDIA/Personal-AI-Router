@@ -39,3 +39,17 @@ type View interface {
 type inputCapturer interface {
 	CapturingInput() bool
 }
+
+// resetter is an optional interface a View implements when it has a screen
+// beneath the one it may currently be showing, and that top-level screen is
+// what the operator should find on returning to the tab.
+//
+// Only the tab being left is reset, and only on a deliberate tab change. A
+// view that merely holds a selection or a filter should not implement this:
+// those are where the operator left off, which is worth keeping. It is for a
+// view that replaces itself with something else entirely, where coming back to
+// the tab and finding that other thing is a surprise rather than a
+// convenience.
+type resetter interface {
+	reset()
+}

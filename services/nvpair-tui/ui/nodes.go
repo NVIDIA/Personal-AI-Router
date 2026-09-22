@@ -659,6 +659,20 @@ func (v *nodesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
+// reset closes an open detail screen so the tab shows the node list again.
+//
+// Called when the operator leaves this tab, not when they press esc — esc has
+// its own path through Update. The list underneath has been kept current the
+// whole time the detail was up, so there is nothing to reload.
+func (v *nodesView) reset() {
+	if v.detail == nil {
+		return
+	}
+	v.detail = nil
+	// The list was sized for the space the detail screen was using.
+	v.SetSize(v.width, v.height)
+}
+
 // openDetail drills into the selected node. The detail screen is built from the
 // merged row, so a remote node's models are on screen immediately from the
 // discovery snapshot while its engine list is being fetched.
