@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -26,8 +27,9 @@ import (
 // We deliberately do NOT use the WMI Win32_VideoController.AdapterRAM field:
 // it is a UINT32 capped at 4 GiB and is wrong for every modern dGPU.
 //
-// VRAM is a hardware property and never changes at runtime, so this runs once
-// at startup (matching the existing one-shot detect+marshal pattern in main.go).
+// VRAM is a hardware property and never changes at runtime, but WHICH adapters
+// enumerate is not settled at boot, so detection runs at startup and is then
+// re-run on a timer by the stats collector (stats_windows.go).
 
 // IID_IDXGIFactory1 = {770aae78-f26f-4dba-a829-253c83d1b387}
 // https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nn-dxgi-idxgifactory1
@@ -197,9 +199,11 @@ func loadPhysicalAdapterLUIDs() (map[uint64]struct{}, error) {
 	return out, nil
 }
 
-// keepPhysicalAdapter applies the DirectX-registry LUID gate. When
-// physical is nil or empty the gate is skipped (name denylist still
-// runs); otherwise only LUIDs present in the registry are kept.
+// keepPhysicalAdapter applies the DirectX-registry LUID gate to a single
+// adapter. When physical is nil or empty the gate is skipped (the name
+// denylist still runs); otherwise only LUIDs present in the registry are
+// kept. Callers go through selectPhysicalAdapters, which additionally
+// refuses a gate that would empty the whole inventory.
 func keepPhysicalAdapter(luid uint64, physical map[uint64]struct{}) bool {
 	if len(physical) == 0 {
 		return true
@@ -208,30 +212,114 @@ func keepPhysicalAdapter(luid uint64, physical map[uint64]struct{}) bool {
 	return ok
 }
 
-func detectGPUs() []GPUInfo {
+// adapterCandidate is one DXGI adapter that has already passed the
+// DXGI_ADAPTER_FLAG_SOFTWARE and virtual-display-name checks, i.e. everything
+// that depends only on the adapter itself. Its LUID is carried in both forms
+// a consumer may need: the packed QWORD the DirectX registry gate is keyed
+// by, and the DWORD halves D3DKMT takes when a per-adapter query (a PCI
+// address lookup for a vendor tool) resolves it.
+type adapterCandidate struct {
+	gpu      GPUInfo
+	luid     uint64
+	luidLow  uint32
+	luidHigh int32
+}
+
+// One-shot warning latches. Adapter detection now re-runs on a timer
+// (stats_windows.go), and each of these conditions persists until something
+// outside this process changes, so a plain slog.Warn in the path would repeat
+// the same line for the life of the service.
+var (
+	dxgiFactoryWarned        atomic.Bool
+	luidGateUnreadableWarned atomic.Bool
+	luidGateEmptyWarned      atomic.Bool
+	staleLUIDGateWarned      atomic.Bool
+)
+
+// selectPhysicalAdapters applies the DirectX-registry LUID gate to a whole
+// enumeration, and declines to apply it when it would leave nothing behind.
+//
+// The gate exists to drop RDP phantom clones: under a remote session the same
+// card enumerates twice and only the real adapter's LUID is written under
+// HKLM\SOFTWARE\Microsoft\DirectX. That case still keeps at least one
+// candidate, so it filters exactly as it always did.
+//
+// The failure it guards against is a stale registry. LUIDs are reassigned on
+// every boot, but those registry values are rewritten by the graphics stack
+// roughly a minute after boot — so a service that enumerates inside that
+// window is matching this boot's LUIDs against the previous boot's, no
+// adapter matches, and the gate drops the entire inventory. A machine that
+// just enumerated real adapters never has zero GPUs, so an empty result is
+// proof the registry is stale rather than proof the adapters are phantoms:
+// keep them all and let a later refresh apply the gate normally once the keys
+// catch up.
+func selectPhysicalAdapters(candidates []adapterCandidate, physical map[uint64]struct{}) []adapterCandidate {
+	if len(candidates) == 0 || len(physical) == 0 {
+		return candidates
+	}
+	kept := make([]adapterCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		if keepPhysicalAdapter(c.luid, physical) {
+			kept = append(kept, c)
+			continue
+		}
+		slog.Debug("skipping DXGI adapter absent from DirectX registry",
+			"name", c.gpu.Name, "luid", fmt.Sprintf("0x%016x", c.luid))
+	}
+	if len(kept) == 0 {
+		if staleLUIDGateWarned.CompareAndSwap(false, true) {
+			slog.Warn("DirectX registry lists none of this boot's adapter LUIDs; treating it as stale and keeping every adapter",
+				"candidates", len(candidates),
+				"registry_luids", len(physical))
+		}
+		return candidates
+	}
+	return kept
+}
+
+// physicalAdapterGate loads the registry LUID set for selectPhysicalAdapters,
+// downgrading every failure to "no gate" (nil, which keeps all adapters).
+func physicalAdapterGate() map[uint64]struct{} {
+	physical, err := loadPhysicalAdapterLUIDs()
+	if err != nil {
+		if luidGateUnreadableWarned.CompareAndSwap(false, true) {
+			slog.Warn("DirectX registry LUID gate unavailable; RDP phantom clones may appear",
+				"err", err)
+		}
+		return nil
+	}
+	if len(physical) == 0 {
+		if luidGateEmptyWarned.CompareAndSwap(false, true) {
+			slog.Warn("DirectX registry listed no AdapterLuid values; skipping LUID gate")
+		}
+		return nil
+	}
+	return physical
+}
+
+// enumerateAdapterCandidates walks DXGI once and returns every adapter that is
+// neither a software renderer nor a Microsoft remoting/virtual display. The
+// registry gate is left to the caller so every consumer of this list
+// (detectGPUs today; any per-adapter join later) shares one enumeration and
+// cannot drift apart on what counts as an adapter.
+func enumerateAdapterCandidates() []adapterCandidate {
 	var factory unsafe.Pointer
 	hr, _, _ := procCreateDXGIFactory1.Call(
 		uintptr(unsafe.Pointer(&iidIDXGIFactory1)),
 		uintptr(unsafe.Pointer(&factory)),
 	)
 	if hr != 0 || factory == nil {
-		slog.Warn("CreateDXGIFactory1 failed; no GPUs will be reported",
-			"hr", fmt.Sprintf("0x%08x", uint32(hr)))
+		msg := "CreateDXGIFactory1 failed; no GPUs will be reported"
+		if dxgiFactoryWarned.CompareAndSwap(false, true) {
+			slog.Warn(msg, "hr", fmt.Sprintf("0x%08x", uint32(hr)))
+		} else {
+			slog.Debug(msg, "hr", fmt.Sprintf("0x%08x", uint32(hr)))
+		}
 		return nil
 	}
 	defer comRelease(factory)
 
-	physical, err := loadPhysicalAdapterLUIDs()
-	if err != nil {
-		slog.Warn("DirectX registry LUID gate unavailable; RDP phantom clones may appear",
-			"err", err)
-		physical = nil
-	} else if len(physical) == 0 {
-		slog.Warn("DirectX registry listed no AdapterLuid values; skipping LUID gate")
-		physical = nil
-	}
-
-	var gpus []GPUInfo
+	var candidates []adapterCandidate
 	for i := uint32(0); ; i++ {
 		adapter, hr := enumAdapters1(factory, i)
 		if uint32(hr) == dxgiErrorNotFound {
@@ -260,18 +348,34 @@ func detectGPUs() []GPUInfo {
 			slog.Debug("skipping virtual/remote display adapter", "name", name)
 			continue
 		}
-		luid := luidUint64(desc.AdapterLuidLow, desc.AdapterLuidHigh)
-		if !keepPhysicalAdapter(luid, physical) {
-			slog.Debug("skipping DXGI adapter absent from DirectX registry",
-				"name", name, "luid", fmt.Sprintf("0x%016x", luid))
-			continue
-		}
 
-		gpus = append(gpus, GPUInfo{
-			Name:      name,
-			VramBytes: uint64(desc.DedicatedVideoMemory),
-			statsKey:  luidKey(desc.AdapterLuidLow, desc.AdapterLuidHigh),
+		candidates = append(candidates, adapterCandidate{
+			gpu: GPUInfo{
+				Name:      name,
+				VramBytes: uint64(desc.DedicatedVideoMemory),
+				statsKey:  luidKey(desc.AdapterLuidLow, desc.AdapterLuidHigh),
+			},
+			luid:     luidUint64(desc.AdapterLuidLow, desc.AdapterLuidHigh),
+			luidLow:  desc.AdapterLuidLow,
+			luidHigh: desc.AdapterLuidHigh,
 		})
+	}
+	return candidates
+}
+
+// detectGPUs enumerates the host's display adapters and returns the ones that
+// should be reported as node GPUs. Safe to call repeatedly: the Windows stats
+// collector re-runs it on a timer so an enumeration that came up empty at boot
+// recovers without a restart (stats_windows.go).
+func detectGPUs() []GPUInfo {
+	candidates := enumerateAdapterCandidates()
+	if len(candidates) == 0 {
+		return nil
+	}
+	selected := selectPhysicalAdapters(candidates, physicalAdapterGate())
+	gpus := make([]GPUInfo, 0, len(selected))
+	for _, c := range selected {
+		gpus = append(gpus, c.gpu)
 	}
 	return gpus
 }

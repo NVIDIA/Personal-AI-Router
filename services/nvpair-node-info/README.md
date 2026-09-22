@@ -96,6 +96,12 @@ The service no longer advertises itself over mDNS. Its parent (the broker) regis
 - **macOS**: CPU and system-memory usage come from Mach through gopsutil's purego bindings. GPU identity, mapped memory, and utilization come from the built-in, unprivileged `/usr/sbin/ioreg` command's `IOAccelerator` `PerformanceStatistics`; no sudo or private framework binding is required. Apple Silicon is supported directly. Intel/AMD fields are best-effort when their drivers expose the same dedicated-memory counters. The performance keys are undocumented and may change across macOS releases; a missing or changed key leaves only that metric out and does not stop CPU or memory collection.
 - **Other platforms**: GPU names come from `ghw`; VRAM and dynamic stats are not reported.
 
+### Windows inventory: stale DirectX registry at boot
+
+DXGI enumeration is filtered against the `AdapterLuid` values under `HKLM\SOFTWARE\Microsoft\DirectX`, which is how an RDP phantom clone of a card (same name, a second LUID) is kept out of the inventory. Windows reassigns adapter LUIDs on every boot but only rewrites those registry keys about a minute into the session, so a service that enumerates before that is matching this boot's LUIDs against the previous boot's: nothing matches, and the gate would drop every real adapter. That is not a state a machine with GPUs can be in, so an empty result is treated as proof the registry is stale — every adapter is kept and one warning is logged with the counts. When the gate keeps at least one adapter it still filters exactly as before.
+
+Detection also runs again after startup, on its own goroutine, never on the 1 s stats tick. While the inventory is empty it retries **every 10 s** until adapters appear; once at least one is known it re-detects **every 60 s** and republishes only when the set of adapters changed (a card hot-plugged after startup, or a clone a remote session brought in). Recovered adapters carry the same LUID key the PDH counters use, so their VRAM and utilization fill in on the next tick. A node that came up with an empty GPU list therefore repairs itself instead of needing a restart.
+
 ## Shutdown
 
 The service shuts down on:
