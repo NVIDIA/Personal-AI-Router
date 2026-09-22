@@ -255,23 +255,34 @@ security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.
 
-The model hub is Electron-main functionality in `src/electron/model-hub/`:
+The model catalogue is owned by `nvpair-engine-manager` and served over
+`engine:catalog`. Electron relays it through
+`src/electron/service-bridge/model-catalog.ts`; the terminal interface calls the
+same method, so both front ends browse one implementation.
 
 - Ollama models come from a locked, committed list
-  (`src/electron/model-hub/ollama-models.json`) bundled into the main process —
-  there is no runtime Ollama scraping. Devs regenerate the list with
+  (`services/nvpair-engine-manager/catalog/ollama-models.json`) compiled in with
+  `go:embed` — there is no runtime Ollama scraping. Devs regenerate the list with
   `npm run scrape:ollama-models` (`scripts/scrape-ollama-models.ts`) and commit
   it when Ollama's catalog changes;
 - LM Studio models come from the curated `lmstudio-community` catalog, still
-  fetched live from Hugging Face and cached for six hours. The cache is warmed
+  fetched live from Hugging Face and cached for six hours, with concurrent
+  callers coalesced onto one request and a failure backoff. The cache is warmed
   when the Overview renderer reports ready, not when the service connects, so a
   slow or hanging catalog fetch cannot compete with the window's first paint;
-- llama.cpp's six-hour in-memory cache queries the 50 most-downloaded GGUF
-  repositories from each approved publisher (`ggml-org`, `bartowski`, and
-  `unsloth`). Explicit Enter/Search requests query up to 50 public Hugging Face
-  matches across publishers. Both paths keep only public, generative
-  repositories with a primary `Q4_K_M` artifact and emit exact
-  `owner/repository:Q4_K_M` pull IDs;
+- llama.cpp models come from the 50 most-downloaded GGUF repositories of each
+  approved publisher (`ggml-org`, `bartowski`, and `unsloth`), fetched and cached
+  the same way. It is the one searchable source: a `query` searches up to 50
+  public Hugging Face matches across publishers, each query cached on its own.
+  Both keep only public, generative repositories with a primary `Q4_K_M` file
+  and emit exact `owner/repository:Q4_K_M` pull IDs;
+- the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
+  rows, keeps them only for Apple Silicon, and echoes the target it filtered
+  for, so a client driving a peer is not offered models that peer cannot
+  install. The desktop names no target: the hub installs only to this machine,
+  which is also the one answering;
+- the Ollama reply is a single multi-megabyte frame, so every hop on its path
+  shares `jsonrpc.WorkerFrameBytes`. See `docs/services-backend.md`;
 - model pulls still run through `nvpair-engine-manager`.
 
 ## Inference Demo
@@ -280,14 +291,22 @@ The Inference Demo sends a fixed sixty-second burst of synthetic inference
 traffic through the local proxies so job activity is visible on Overview. It is
 the one place Electron launches a non-broker executable.
 
+Both front ends offer it. The terminal interface runs the same schedule from its
+Jobs tab (`services/nvpair-tui/ui/demoschedule.go`), against the same
+dispatcher, so a headless machine can demonstrate routing too. The two schedules
+are deliberately identical; neither drives the other, because demo state is
+node-local.
+
 - The schedule is built and owned by Electron main
   (`src/electron/inference-demo.ts` and
   `src/electron/inference-demo-schedule.ts`).
 - Each scheduled request spawns the bundled `inference-dispatcher` client, a
   standalone Go HTTP client that knows nothing about the broker, JSON-RPC, or
-  discovery. Its source is `scripts/inference-dispatcher` at the monorepo root
-  and it ships in `resources/tools`, outside the services `cli-bin` inventory.
-  See [Inference dispatcher](../../docs/inference-dispatcher.mdx).
+  discovery. Its source is `scripts/inference-dispatcher` at the monorepo root.
+  It ships inside `cli-bin` — it is still not a services component and has no
+  entry in `versions.json`, but sharing the directory is what lets `nvpair-tui`
+  find it beside its own executable in a packaged app as well as in a services
+  install. See [Inference dispatcher](../../docs/inference-dispatcher.mdx).
 - Requests are addressed to a proxy port reported by the broker, never to an
   engine's own port, so the backend places them exactly as it would place any
   third-party client's traffic. PAIR makes no routing decision.
