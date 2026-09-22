@@ -54,17 +54,40 @@ func ollamaPartialSnapshot(root string) (ollamaPartialsBefore, error) {
 	return before, nil
 }
 
+// ollamaSteadyPasses counts, per path, how many cleanup passes in a row have
+// found the file holding still. One cancellation's retry loop keeps one of
+// these; it must not be nil, since a pass records into it.
+type ollamaSteadyPasses map[string]int
+
+// partialCleanupSteadyPasses is how many consecutive passes must find a
+// candidate unchanged before it is deleted.
+//
+// A single pass is not enough once there are several of them. Each observes
+// its own window, so every extra pass is another independent chance for a
+// writer that merely paused to look finished, and a transfer does pause. That
+// makes the retry loop — there to catch up with Ollama's asynchronous blob
+// release — likeliest to delete a shared file exactly when it tries hardest,
+// which is backwards. Requiring a run instead means any movement resets the
+// count, so a file has to hold still across the whole run to qualify, while
+// this pull's own released partial pays one extra pass.
+const partialCleanupSteadyPasses = 2
+
 // cleanupOllamaPartials removes the partial blobs this pull both reported and
 // created. Completed blobs may be shared by installed models, and a partial
 // that predates this download belongs to someone else; both are deliberately
 // retained. A file this pull created can still be shared — another client can
 // coalesce onto it afterwards — so one that is still moving is left alone and
 // reported through busy, letting the caller look again.
+//
+// steady carries the consecutive-stillness count between passes of one
+// cancellation, and a candidate is removed only once it has reached
+// partialCleanupSteadyPasses.
 func cleanupOllamaPartials(
 	ctx context.Context,
 	root string,
 	digests map[string]bool,
 	before ollamaPartialsBefore,
+	steady ollamaSteadyPasses,
 ) (busy bool, err error) {
 	if before == nil {
 		return false, nil
@@ -80,7 +103,24 @@ func cleanupOllamaPartials(
 		}
 	}
 	stable, busy := quiescentPaths(ctx, created)
+	held := make(map[string]bool, len(stable))
 	for _, candidate := range stable {
+		held[candidate.path] = true
+	}
+	// Anything that moved, vanished, or stopped being a candidate this pass
+	// starts its run over.
+	for path := range steady {
+		if !held[path] {
+			delete(steady, path)
+		}
+	}
+	for _, candidate := range stable {
+		steady[candidate.path]++
+		if steady[candidate.path] < partialCleanupSteadyPasses {
+			// Still enough for now, but not for long enough to act on.
+			busy = true
+			continue
+		}
 		removed, err := removeIfUnchanged(candidate)
 		if err != nil {
 			return true, err
@@ -88,6 +128,7 @@ func cleanupOllamaPartials(
 		if !removed {
 			// Claimed between the last observation and the unlink. Leave it
 			// and let the retry decide.
+			delete(steady, candidate.path)
 			busy = true
 		}
 	}
@@ -160,10 +201,11 @@ func cleanupOllamaAfterCancel(
 	digests map[string]bool,
 	before ollamaPartialsBefore,
 ) error {
+	steady := make(ollamaSteadyPasses)
 	deadline := time.Now().Add(partialCleanupBudget)
 	for {
 		time.Sleep(partialCleanupRetryInterval)
-		busy, err := cleanupOllamaPartials(ctx, root, digests, before)
+		busy, err := cleanupOllamaPartials(ctx, root, digests, before, steady)
 		if err == nil && !busy {
 			return nil
 		}
