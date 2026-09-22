@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,12 @@ import (
 	"sync"
 	"time"
 )
+
+// stopForceWait bounds the final wait after a forced kill. A forced kill
+// normally reaps the process immediately, so this only matters when the kill
+// itself fails (an elevated child the signal cannot reach); without a bound,
+// stop would hang shutdown forever.
+const stopForceWait = 5 * time.Second
 
 // managedProc is a spawned engine process with its stdout/stderr
 // captured line-by-line and a `done` channel that closes when it
@@ -75,21 +82,23 @@ func scanLines(r io.Reader, stream string, onLine func(stream, line string)) {
 	}
 }
 
-// stop stops the process and waits for it to exit, with no timeout.
+// stop stops the process and waits for it to exit.
 //
-// It sends one platform-appropriate stop signal (see gracefulSignal) and then
-// blocks until the process is gone:
-//   - Unix: SIGTERM to the process group — a graceful ask, with no escalation
-//     to SIGKILL. A well-behaved engine (Ollama, and the test fake) exits on it.
+// It sends one platform-appropriate stop signal (see gracefulSignal), waits
+// stopGrace(rt) (the manifest's stop spec, default 5s) for the engine to
+// honor it, and then escalates to a forced kill of the whole tree/group (see
+// forceSignal):
+//   - Unix: SIGTERM to the process group, then SIGKILL to the group if the
+//     engine is still alive after the grace period. The group kill reaches
+//     engines that forked helper processes (model runners, etc.).
 //   - Windows: taskkill /T /F. Our engines run windowless, and a windowless
-//     process can't receive a graceful (non-/F) close, so /F is the only signal
-//     that actually stops it — never force-killing there would leave the engine
-//     running forever.
+//     process can't receive a graceful (non-/F) close, so /F is the only
+//     signal that actually stops it — never force-killing there would leave
+//     the engine running forever.
 //
-// There is deliberately no timeout: a stop is complete only when the engine has
-// actually exited. On Unix an engine that ignored SIGTERM would not be stopped
-// and this would wait for it; in practice engines exit on SIGTERM.
-func (mp *managedProc) stop() {
+// A stop is complete only when the engine has actually exited, so after
+// escalation stop still blocks on the exit rather than returning early.
+func (mp *managedProc) stop(rt Runtime) {
 	if mp == nil || mp.cmd == nil || mp.cmd.Process == nil {
 		return
 	}
@@ -99,7 +108,26 @@ func (mp *managedProc) stop() {
 	default:
 	}
 	_ = gracefulSignal(mp.cmd)
-	<-mp.done
+	grace := time.NewTimer(stopGrace(rt))
+	defer grace.Stop()
+	select {
+	case <-mp.done:
+		return
+	case <-grace.C:
+	}
+	// The engine ignored the graceful signal: force the whole group. SIGKILL
+	// cannot be caught, so the process-exit goroutine will observe the exit
+	// and close done. Bound the final wait too, so a forced kill that itself
+	// fails (an elevated child taskkill cannot reach, say) cannot hang shutdown
+	// forever the way the old unconditional wait did.
+	_ = forceSignal(mp.cmd)
+	final := time.NewTimer(stopForceWait)
+	defer final.Stop()
+	select {
+	case <-mp.done:
+	case <-final.C:
+		slog.Warn("engine did not exit after a forced kill; abandoning the wait")
+	}
 }
 
 // terminatePID stops the process with the given PID (and its tree on

@@ -277,7 +277,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop()
+		proc.stop(rt)
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
@@ -496,7 +496,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop()
+		proc.stop(rt)
 	}
 
 	e.markStopped(st, engine)
