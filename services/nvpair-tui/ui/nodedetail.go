@@ -1245,11 +1245,19 @@ func (d *nodeDetail) arm(prompt string, run func() tea.Cmd) tea.Cmd {
 // reportSettingsOutcome says what an engine actually got, once, after a change
 // this screen asked for.
 //
-// A port is a request, not a promise: a running engine already holding one
-// outranks the proxy, so the backend binds elsewhere and reports the difference
-// as the effective port. Reporting the requested value as though it had been
-// honoured is the specific lie this exists to prevent — the old proxy path
-// rendered exactly that as "updated".
+// The verdict is the backend's, carried in the snapshot as a phase and, when it
+// failed, a reason. It is not inferred from comparing the saved ports against
+// the effective ones: the effective engine port is observed at the moment the
+// apply replies, and an engine that restarts onto its new port — LM Studio's
+// server re-launches detached, so the manager loses sight of it — finishes
+// after that. The reading then lags a change behind, and reading failure into
+// it reported a move that had plainly happened as one that had not, naming a
+// port nothing was listening on.
+//
+// The proxy port is compared, because that one is read live from the proxy
+// process rather than observed in passing. A proxy that could not take the
+// port it was given binds elsewhere and says so, and reporting the requested
+// value as though it had been honoured is the lie this exists to prevent.
 //
 // Only after this screen's own write, and only once. These snapshots also
 // arrive unprompted whenever anyone else changes settings, and a note firing on
@@ -1260,20 +1268,25 @@ func (d *nodeDetail) reportSettingsOutcome(snap enginesettings.Snapshot) {
 	}
 	d.settingsAwaited = ""
 	label := d.engineLabel(snap.Engine)
-	// A zero effective port means not bound yet rather than moved: a stopped
-	// engine has no port in force, and claiming it "stayed on :0" would be
-	// worse than saying nothing about where it landed.
 	switch {
+	case snap.Phase == settingsPhaseFailed:
+		// The backend's own words. It knows why; this screen would be guessing.
+		if snap.Error != "" {
+			d.status.error("%s settings: %s", label, snap.Error)
+			return
+		}
+		d.status.error("%s settings were not applied", label)
 	case snap.EffectiveProxyPort != 0 && snap.EffectiveProxyPort != snap.Settings.ProxyPort:
-		d.status.error("%s endpoint stayed on :%d - :%d is taken, most likely by a running engine",
+		d.status.error("%s endpoint is on :%d, not the :%d you asked for",
 			label, snap.EffectiveProxyPort, snap.Settings.ProxyPort)
-	case snap.EffectiveServerPort != 0 && snap.EffectiveServerPort != snap.Settings.ServerPort:
-		d.status.error("%s engine stayed on :%d - :%d is taken",
-			label, snap.EffectiveServerPort, snap.Settings.ServerPort)
 	default:
 		d.status.ok("%s settings saved", label)
 	}
 }
+
+// settingsPhaseFailed is the snapshot phase for an apply the backend refused or
+// could not complete.
+const settingsPhaseFailed = "failed"
 
 // resolveSettingsConfirm answers the restart prompt raised by a settings
 // change, applying it on "y" and discarding it on anything else.
