@@ -34,6 +34,7 @@ var Version = "dev"
 func main() {
 	brokerPath := flag.String("broker-path", "", "path to nvpair-ui-broker binary (default: ./nvpair-ui-broker alongside this executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	appearance := flag.String("appearance", "auto", "terminal background: auto, light, or dark")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
 
@@ -41,6 +42,15 @@ func main() {
 		fmt.Println(Version)
 		os.Exit(0)
 	}
+
+	// Before anything renders. Colours are chosen per draw, so a later call
+	// would repaint mid-session rather than start correct.
+	chosen, ok := ui.ParseAppearance(*appearance)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown --appearance %q: use auto, light, or dark\n", *appearance)
+		os.Exit(2)
+	}
+	ui.SetAppearance(chosen)
 
 	applog.Init("nvpair-tui", resolveLevel())
 

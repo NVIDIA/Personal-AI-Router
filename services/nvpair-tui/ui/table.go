@@ -209,7 +209,7 @@ func tableStyles() table.Styles {
 		BorderBottom(true)
 	s.Selected = s.Selected.
 		Bold(true).
-		Foreground(lipgloss.Color("0")).
+		Foreground(colorOnAccent).
 		Background(colorAccent)
 	return s
 }

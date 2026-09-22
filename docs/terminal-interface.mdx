@@ -65,10 +65,27 @@ cd <directory containing nvpair-tui>
 | --- | --- |
 | `--broker-path <path>` | Use a service binary that is not beside `nvpair-tui` |
 | `--log-level <level>` | Verbosity of the terminal interface's own logging: `debug`, `info`, `warn`, or `error`. PAIR also reads this from `NVPAIR_LOG_LEVEL` |
+| `--appearance <mode>` | `auto`, `light`, or `dark`. See below |
 | `--version` | Print the version and exit |
 
 The interface's own log output goes to stderr, so it never corrupts the display.
 Service logs appear on the **Logs** tab instead.
+
+### If the Colours Are Hard to Read
+
+PAIR picks its colours from your terminal's background, which it detects by
+asking the terminal and waiting for a reply. Some terminals do not answer —
+this is common over SSH and inside `tmux` — and PAIR then assumes a dark
+background. On a light theme the result is washed-out text and highlights you
+cannot read through.
+
+Tell it instead:
+
+```bash
+./nvpair-tui --appearance light
+```
+
+`dark` forces the other way, and `auto` is the default.
 
 Press `q` to quit. Quitting shuts the services down cleanly rather than leaving
 them running.
