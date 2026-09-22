@@ -167,13 +167,12 @@ func buildEngineProxyProfiles() []engineProxyProfile {
 		// LM Studio is the one engine engine-manager may move while running:
 		// its identified command-mode runtime has an official stop command.
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
-		// llama.cpp is managed — engine-manager installs it and owns its
-		// lifecycle — but it is deliberately never facade-promoted. PAIR
-		// assigns both of its ports, so there is no stock port to take over
-		// and nothing to relocate the engine off of; prepareEnabledFacades
-		// omits it for that reason. Ownership still reads managedEngine
-		// because the question that enum answers — may the broker reposition
-		// this engine while it runs — is yes.
+		// llama.cpp is managed like LM Studio: engine-manager installs it and
+		// owns its lifecycle, and prepareEnabledFacades claims its stock
+		// client port (8080) as the facade while relocating the engine to
+		// EnginePortBase (or one above an inherited LLAMA_ARG_PORT). Ownership
+		// reads managedEngine because the broker may reposition this engine
+		// while it runs.
 		"llamacpp": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
 	}
 	out := make([]engineProxyProfile, 0, len(engines.All()))

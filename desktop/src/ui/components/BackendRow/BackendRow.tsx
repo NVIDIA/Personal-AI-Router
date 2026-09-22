@@ -23,6 +23,7 @@ import { BackendFooter } from './BackendFooter'
 import { BackendUpdateBanner } from './BackendUpdateBanner'
 
 import { EngineSettingsSection } from './EngineSettingsSection'
+import { isExternalRuntime } from '@/ui/utils/engine-ownership'
 
 /**
  * The transitional status to display while an optimistic lifecycle command is
@@ -176,10 +177,7 @@ export function BackendRow({
     // peers; uninstall, update, and model load/delete remain local-only. A
     // llama.cpp runtime PAIR detected but does not manage is observe-only: its
     // owner keeps lifecycle, settings, and model changes.
-    const externalLlama =
-        backend.type === 'llamacpp' &&
-        backend.processStatus !== 'not-installed' &&
-        backend.managed !== true
+    const externalLlama = isExternalRuntime(backend.type, backend.processStatus, backend.managed)
     const controlsDisabled = isTransitioning || externalLlama
 
     const content = expanded ? (

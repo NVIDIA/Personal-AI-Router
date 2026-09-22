@@ -20,6 +20,7 @@ import { IncomingSyncPullRow } from './IncomingSyncPullRow'
 import { TransientModelStatusRow } from './TransientModelStatusRow'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
 import type { ModelEntry } from '@/ui/types/model-hub'
+import { isExternalRuntime } from '@/ui/utils/engine-ownership'
 
 export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId: string }) {
     const selfId = useConnectionStore(state => state.selfId)
@@ -32,7 +33,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             formatModelDisplayName(b.name, backend.type)
         )
     )
-    const externalLlama = backend.type === 'llamacpp' && backend.managed !== true
+    const externalLlama = isExternalRuntime(backend.type, backend.processStatus, backend.managed)
     const caps = externalLlama
         ? { ...EngineCapabilities[backend.type], hasEject: false, hasDeleteModel: false }
         : EngineCapabilities[backend.type]
@@ -217,18 +218,6 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     )}
                 </Stack>
             ))}
-
-            {backendType === 'llamacpp' && transientModel && transientPullProgress && (
-                <Button
-                    size="small"
-                    kind="tertiary"
-                    onClick={() =>
-                        window.pairApi.engines.cancelPull(backendType, nodeId, transientModel.name)
-                    }
-                >
-                    Cancel download
-                </Button>
-            )}
 
             {!isBusy && (
                 <>

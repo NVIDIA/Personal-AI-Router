@@ -28,7 +28,7 @@ Broker-owned workers:
 - `nvpair-proxy`, one process hosting a facade per enabled engine. It starts
  with no engine and no listener; the broker sends a `facade/enable` per engine
  carrying that engine's port. Clients still address each facade as
- `ollama-proxy:` / `lmstudio-proxy:`, and one supervisor covers them all, so a
+ `ollama-proxy:` / `lmstudio-proxy:` / `llamacpp-proxy:`, and one supervisor covers them all, so a
  crash is reported against `nvpair-proxy` and restarts every facade together;
 - `nvpair-node-scanner`;
 - `nvpair-node-info`;

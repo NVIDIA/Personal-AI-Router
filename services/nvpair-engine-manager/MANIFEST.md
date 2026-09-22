@@ -144,6 +144,15 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `run` | string[] | no | Argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. Requires a `fetch` (the artifact it unpacks). |
 | `script` | string[] | no | **Escape hatch** for vendors that only ship a script installer. Runs **without** checksum verification (logged as unpinned) and replaces `fetch`+`run`. Prefer `fetch`+`run` whenever the vendor publishes a script or artifact: download it first, then execute the local file. **Make failures loud:** a piped bootstrap such as `curl … \| bash` can mask a failed fetch, while a separate fetch prevents the run and reports the error. |
 | `mode` | string | no | `"user"` (default) or `"admin"`. The runner **refuses** `"admin"` (engine-manager is user-mode only); it is a deliberate, flagged exception, not a default. |
+| `driver` | string | no | Names a bundled install driver that backs this platform's install where the vendor's official distribution is not yet expressible as `fetch`+`run`. The only driver today is `llama-app`: it runs the pinned official installer script in download-only mode inside a private staging directory, verifies `llama version`/`llama licenses`, writes a provenance receipt, and promotes the stage into a two-slot `runtime`/`previous` layout. This is a bounded exception to manifest-only onboarding recorded as a current gap in [spec.md](spec.md); the runner accepts `llama-app` only on the bundled `llamacpp` manifest and no other manifest can use it. |
+| `archives` | fetch[] | no | Checksum-pinned official release archives the `llama-app` driver extracts into the staging directory instead of running the installer script (the Windows ARM64 CUDA bundles, the Intel Mac tarball). Every entry needs `url` and `sha256`; requires the driver and excludes `fetch`/`run`/`script`. |
+| `archive_root` | string | no | The fixed top-level directory a tar archive wraps its files in, stripped on extraction; a single safe path component. Requires `archives`. |
+| `upstream_first` | bool | no | Windows ARM64 `llama-app` only: try the current official upstream installer first in a bounded, separate staging attempt and fall back to the pinned `archives` when it fails verification or the device check. |
+| `cpu_fetch` | fetch | no | Windows ARM64 `llama-app` only: the pinned official CPU installer used when the hardware inventory confirms a non-NVIDIA device. |
+
+`uninstall.driver: "llama-app"` selects the driver's runtime-only removal (the
+`runtime` and `previous` slots), keeping the engine's separate model library
+and settings; `uninstall.run` (an argv) is the generic alternative.
 
 ### Runtime
 
@@ -163,12 +172,16 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 
 A **probe** is `{ "http": "<url>", "status": <int>, "timeout_s": <int>, "interval_s": <int> }`
 or `{ "tcp": "<host:port>", ... }`. `status` defaults to `200`. Prefer
-loopback URLs/addresses.
+loopback URLs/addresses. A probe may also name an **`identity`** the runner
+verifies before it treats a listener on the port as this engine: `"llamacpp"`
+requires the vendor's `Server: llama.cpp` response header and the router's
+`{"data":[...]}` model-list shape, so a stranger on the port is neither adopted
+nor spawned over.
 
 ### Actions
 
 Each action is a config-declared operation exposed over `engine:action`.
-Exactly one of `http`, `cmd`, or `remove_path`:
+Exactly one of `http`, `cmd`, `remove_path`, or `builtin`:
 
 - **`http`** — call the engine's loopback control API. The caller's
   `params` are sent as the JSON request body; `body_schema` is
@@ -182,10 +195,19 @@ Exactly one of `http`, `cmd`, or `remove_path`:
   action `params` as placeholders); the resolved target must stay under
   the declared root. Symlink escapes and missing targets are rejected.
   Does **not** require the engine to be running.
+- **`builtin`** — a bundled runner routine for a model-library operation the
+  vendor exposes only as a CLI or an on-disk layout. `llama-models` implements
+  `list_downloaded`, `pull_model` (the vendor's `llama download --hf-repo`),
+  `import_model` and `delete_model` over the engine-manager-owned Hugging Face
+  cache; `llama-cancel` implements `cancel_pull`. Like `driver`, builtins are
+  a bounded exception to manifest-only onboarding (a current gap recorded in
+  [spec.md](spec.md)); they are accepted only on the bundled `llamacpp`
+  manifest and never start a server.
 
 An optional **`result`** declares how `engine:models` extracts a normalized
 name list from the action's JSON response: `array` is the top-level array
-field to iterate and `field` is the string field to pull from each element.
+field to iterate and `field` is the string field to pull from each element (a
+dotted path such as `status.value` descends nested objects).
 It lets one engine-agnostic path turn each engine's `list_models` shape into a
 flat `[]string` with no per-engine code — Ollama's `/api/tags`
 (`{"models":[{"name":...}]}`) uses `{"array":"models","field":"name"}`, while
@@ -212,7 +234,10 @@ the models resident in memory (surfaced as `engine:models`'s `loadedByEngine`
 and pushed via `engine:models-changed`): Ollama's `GET /api/ps` is presence-only
 so it needs no `match` (`{"array":"models","field":"name"}`), while LM Studio's
 native `GET /api/v1/models` uses
-`{"array":"models","field":"key","match":{"field":"loaded_instances","nonempty":true}}`.
+`{"array":"models","field":"key","match":{"field":"loaded_instances","nonempty":true}}`,
+and llama.cpp's router `GET /models`, which lists every cached model tagged with
+its residency, uses
+`{"array":"data","field":"id","match":{"field":"status.value","in":["loaded"]}}`.
 A row whose `match.field` is missing or the wrong JSON type fails the match (it's
 excluded). The filter shape lives in the manifest so it can be updated without a
 code change if an engine's API drifts. An engine that declares no `loaded_models`
@@ -303,6 +328,7 @@ validation at load:
 | `{cli}` | The platform's `runtime.cli` path | runtime start/stop, action `cmd` |
 | `{download}` | Path of the verified download | `install.run` |
 | `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
+| `{model_dir}` | The engine's persistent model library outside the removable install dir (`Nvidia Corporation/Personal AI Router Models/<engine>`) | runtime env, launch preview |
 
 A `cmd` action additionally templates the action's own `params` as
 placeholders (e.g. `{model}`), resolved at call time. HTTP actions send
@@ -317,8 +343,11 @@ field is missing, `manifest_version` is unsupported, a platform key isn't
 `runtime.start` is empty in command mode), `install.run` has no `fetch`,
 `install.script` is combined with `fetch`/`run`, `install.mode` or
 `runtime.mode` is invalid, an action sets none or more than one of
-`http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
-`path`, a `result` is set without both `array` and `field` (or a
+`http`/`cmd`/`remove_path`/`builtin`, an install `driver`, uninstall `driver`
+or action `builtin` names an unknown routine or one bundled for another
+engine, `archives`/`archive_root`/`upstream_first`/`cpu_fetch` appear without
+the `llama-app` driver or its platform policy, a `remove_path` action omits
+`root` or `path`, a `result` is set without both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or
 a non-action templated string uses an unknown placeholder.
 

@@ -177,7 +177,11 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 	if err = promoteLlamaRuntime(st.installDir, candidate); err != nil {
 		return err
 	}
-	e.Detect(engine)
+	// A promoted candidate the manifest cannot detect is not an install; the
+	// generic path proves the same thing with waitDetect.
+	if installed, _ := e.Detect(engine); !installed {
+		return fmt.Errorf("engine %q was not detected after install", engine)
+	}
 	e.reporter.clear(installFailedID(engine))
 	e.emitInstallProgress(engine, "done", 100)
 	e.emitState(engine)

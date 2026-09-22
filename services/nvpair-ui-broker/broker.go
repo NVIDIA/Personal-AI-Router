@@ -3540,13 +3540,6 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 		}
 		return
 	}
-	requestedLlamaCppPort, isLlamaCppSetPort := llamacppSetPortRequest(msg.Method, msg.Params)
-	if isLlamaCppSetPort && requestedLlamaCppPort == llamacppEffectiveProfile().FacadePort && b.llamacppState().managedFacade.Load() {
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("port %d is reserved by the managed llama.cpp proxy; choose another backend port or disable managed port ownership and restart NVPAIR", llamacppEffectiveProfile().FacadePort)); err != nil {
-			log.Printf("failed to reject conflicting llama.cpp engine:set-port: %v", err)
-		}
-		return
-	}
 
 	em := b.getEngineMgr()
 	if em == nil {

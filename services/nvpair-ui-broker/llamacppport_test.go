@@ -147,15 +147,6 @@ func TestLlamaCppPortGuardsAreScopedToThisEngine(t *testing.T) {
 	if needsLlamaCppPortGate("engine:status", theirs) {
 		t.Error("another engine's engine:status is gated behind llama.cpp")
 	}
-	if _, ok := llamacppSetPortRequest("engine:set-port", mine); !ok {
-		t.Error("llama.cpp engine:set-port was not recognised")
-	}
-	if _, ok := llamacppSetPortRequest("engine:set-port", theirs); ok {
-		t.Error("another engine's engine:set-port was claimed by llama.cpp")
-	}
-	if _, ok := llamacppSetPortRequest("engine:start", mine); ok {
-		t.Error("a non set-port method was treated as one")
-	}
 }
 
 // The ownership gate is what holds engine requests while the port changes

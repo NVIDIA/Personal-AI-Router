@@ -161,6 +161,61 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, "Error: Failed to resolve artifact %q: The artifact does not exist or you do not have permission to read it\n", strings.ToLower(arg))
 			os.Exit(1)
+		case "download": // stand in for `llama download --hf-repo owner/repo [--hf-file name]`:
+			// write one GGUF into the hf-cache layout under LLAMA_CACHE and print
+			// its path, as the vendor CLI does. .llama-fixture.json beside the
+			// binary can delay the download (download_delay_ms) or make it return
+			// a preset instead of weights (download_preset), which the runner
+			// must reject.
+			var fixture struct {
+				DownloadPreset  bool `json:"download_preset"`
+				DownloadDelayMS int  `json:"download_delay_ms"`
+			}
+			bin, _ := os.Executable()
+			data, _ := os.ReadFile(filepath.Join(filepath.Dir(bin), ".llama-fixture.json"))
+			_ = json.Unmarshal(data, &fixture)
+			repo, file := "", ""
+			for i := 2; i+1 < len(os.Args); i += 2 {
+				switch os.Args[i] {
+				case "--hf-repo":
+					repo = os.Args[i+1]
+				case "--hf-file":
+					file = os.Args[i+1]
+				}
+			}
+			cache := os.Getenv("LLAMA_CACHE")
+			if repo == "" || cache == "" {
+				fmt.Fprintln(os.Stderr, "download: missing --hf-repo or LLAMA_CACHE")
+				os.Exit(2)
+			}
+			time.Sleep(time.Duration(fixture.DownloadDelayMS) * time.Millisecond)
+			if fixture.DownloadPreset {
+				preset := filepath.Join(cache, "preset.ini")
+				if os.WriteFile(preset, []byte("[preset]\n"), 0o600) != nil {
+					os.Exit(1)
+				}
+				fmt.Println(preset)
+				return
+			}
+			if file == "" {
+				file = "fixture-Q4_0.gguf"
+			}
+			const commit = "0123456789abcdef0123456789abcdef01234567"
+			base := filepath.Join(cache, "models--"+strings.ReplaceAll(repo, "/", "--"))
+			snapshot := filepath.Join(base, "snapshots", commit)
+			if os.MkdirAll(snapshot, 0o700) != nil || os.MkdirAll(filepath.Join(base, "refs"), 0o700) != nil {
+				os.Exit(1)
+			}
+			header := make([]byte, 32)
+			copy(header, "GGUF")
+			header[4] = 3 // GGUF version 3, little endian
+			header[8] = 1 // one tensor
+			path := filepath.Join(snapshot, file)
+			if os.WriteFile(path, header, 0o600) != nil || os.WriteFile(filepath.Join(base, "refs", "main"), []byte(commit), 0o600) != nil {
+				os.Exit(1)
+			}
+			fmt.Println(path)
+			return
 		case "noserve": // run but never bind — used to test readiness timeout
 			time.Sleep(time.Hour)
 			return

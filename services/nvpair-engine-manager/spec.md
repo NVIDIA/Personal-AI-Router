@@ -6,7 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 # Microservice: Engine Manager (`nvpair-engine-manager`)
 
 ## 1. Purpose
-A declarative, config-driven control plane for **local inference engines** (Ollama today; Intel / llama.cpp / others later). It owns an engine's entire lifecycle *except serving inference* — locate, install, launch, stop, restart, health, and config-declared actions — so one uniform API manages any engine across OSes with no per-engine code. A third party drops in a JSON manifest and their engine's install/launch/controls "just appear" over the same API: the core extensibility story for an open-source product.
+A declarative, config-driven control plane for **local inference engines** (Ollama, LM Studio and llama.cpp today). It owns an engine's entire lifecycle *except serving inference* — locate, install, launch, stop, restart, health, and config-declared actions — so one uniform API manages any engine across OSes with no per-engine code. A third party drops in a JSON manifest and their engine's install/launch/controls "just appear" over the same API: the core extensibility story for an open-source product.
+
+**Current implementation gap.** Lifecycle, probes, HTTP and CLI actions, model inventory extraction and launch settings are manifest-only for every bundled engine. llama.cpp's staged official-app installer (`install.driver`), its on-disk model cache operations (`action.builtin`) and its router identity probe (`probe.identity`) are backed by engine-specific Go that the manifest merely names; the runner accepts them only for the bundled llama.cpp manifest, so they are a bounded, documented limitation relative to this requirement, not an extension point and not a change to it ([MANIFEST.md](MANIFEST.md) records the fields). Closing the gap means expressing staged promotion, cache-layout scanning and identity probes as manifest-declared capabilities.
 
 ## 2. Scope
 **In scope**
@@ -36,7 +38,7 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
 - **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port.
 - **Run a declared action**: `engine:action {engine, action, params}` → the manifest-declared HTTP call to the engine's loopback control API (e.g. `127.0.0.1:{port}/api/pull`). (Methods, notifications, and UI events all use the colon form `engine:*`, matching the POC UI and the `errors:*` notifications.)
-- **Onboard a new engine (no code)**: a vendor adds `engines/<vendor>.json`; the generic runner exposes their lifecycle + actions immediately.
+- **Onboard a new engine (no code)**: a vendor adds `engines/<vendor>.json`; the generic runner exposes their lifecycle + actions immediately. This is the generic-manager surface; routing, discovery and client integration for an engine PAIR bundles are separate, profile-driven changes in the proxy, broker and clients.
 - **Edge case — already installed**: detect short-circuits install (idempotent).
 - **Edge case — checksum mismatch**: install fails before `run`, is reported, and never executes an unverified payload.
 - **Edge case — readiness timeout / crash**: failed readiness returns to Stopped; a later crash flips health and is reported.
@@ -77,6 +79,9 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   running: boolean
   healthy: boolean
   port: number
+  install_supported: boolean   // this platform has an install recipe the host can run
+  install_reason?: string      // why not, or what the recipe will do
+  managed: boolean             // the running instance is one this service owns
 }
 ```
 
@@ -126,6 +131,7 @@ Requests (caller → service):
 | `engine:remote-load-model` | `{ node, engine, model }` | the remote action result |
 | `engine:remote-unload-model` | `{ node, engine, model }` | the remote action result |
 | `engine:remote-delete-model` | `{ node, engine, model }` | the remote action result |
+| `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancel receipt (managed llama.cpp downloads) |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (manifest `runtime.bind`; no per-call bind on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
@@ -148,7 +154,7 @@ Example `engine:pull-progress` (stdout):
 - `manifest_version` gates manifest-schema evolution: unknown optional fields are ignored (backward-compatible growth); a version higher than supported is rejected.
 
 ### 7.2 Remote engine management (the `ec` surface)
-With `--control-port` and a clustered `--cluster-dir`, engine-manager serves a cluster-scoped remote-control surface over pin-based mTLS (`nvpair-shared/clustertrust`): it presents this node's cluster leaf, requires a client cert, and `403`s any caller that isn't a byte-for-byte pinned cluster peer. The listener is bound whenever `--control-port` is set and admits callers by live membership — its leaf is resolved per handshake, so an unclustered node presents none and every handshake is refused — so no restart is needed on `cluster:identity-changed`; the broker registers `ec` whenever a cluster dir is configured. Routes under `/v1`: `GET /engines`, streaming `POST /engines/install` and `/models/pull` (chunked NDJSON — zero+ `{"type":"progress"}` frames then one terminal `{"type":"result"}`/`{"type":"error"}` frame), non-streaming `POST /models/{load,unload,delete}`, and non-streaming `POST /engines/{start,stop}` returning `EngineStatus`.
+With `--control-port` and a clustered `--cluster-dir`, engine-manager serves a cluster-scoped remote-control surface over pin-based mTLS (`nvpair-shared/clustertrust`): it presents this node's cluster leaf, requires a client cert, and `403`s any caller that isn't a byte-for-byte pinned cluster peer. The listener is bound whenever `--control-port` is set and admits callers by live membership — its leaf is resolved per handshake, so an unclustered node presents none and every handshake is refused — so no restart is needed on `cluster:identity-changed`; the broker registers `ec` whenever a cluster dir is configured. Routes under `/v1`: `GET /engines`, streaming `POST /engines/install` and `/models/pull` (chunked NDJSON — zero+ `{"type":"progress"}` frames then one terminal `{"type":"result"}`/`{"type":"error"}` frame), non-streaming `POST /models/{load,unload,delete,cancel-pull}`, and non-streaming `POST /engines/{start,stop}` returning `EngineStatus`.
 
 The `engine:remote-*` methods are the client half: engine-manager resolves the target `node` in an `ec` peer directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker relay), dials the peer's `ec` surface with the same pinned identity, relays each streamed progress frame up as `engine:remote-progress` (keyed by a minted `opId`), and settles the request on the terminal frame. Remote install/pull run for the operation's full duration (no broker-imposed timeout); remote stop and model unload/delete are fast request/response, remote Ollama model load uses the readiness-sized response budget, and remote start waits for the engine's bounded readiness result. They error if this node isn't clustered or the target isn't a pinned peer.
 

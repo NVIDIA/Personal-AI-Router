@@ -525,7 +525,7 @@ func TestLlamaUpstreamRegistryAndOtherPlatformPins(t *testing.T) {
 			t.Fatalf("%s lost its existing pin", key)
 		}
 	}
-	for _, mutation := range []string{"other-platform", "other-driver", "one-archive", "unpinned-archive", "unpinned-fetch", "custom-script"} {
+	for _, mutation := range []string{"other-platform", "other-driver", "no-archive", "unpinned-archive", "unpinned-fetch", "custom-script"} {
 		t.Run(mutation, func(t *testing.T) {
 			fresh, _ := buildRegistry("").Get("llamacpp")
 			p := fresh.Platforms["windows/arm64"]
@@ -535,8 +535,8 @@ func TestLlamaUpstreamRegistryAndOtherPlatformPins(t *testing.T) {
 				key = "linux/arm64"
 			case "other-driver":
 				p.Install.Driver = ""
-			case "one-archive":
-				p.Install.Archives = p.Install.Archives[:1]
+			case "no-archive":
+				p.Install.Archives = nil
 			case "unpinned-archive":
 				p.Install.Archives[0].SHA256 = ""
 			case "unpinned-fetch":

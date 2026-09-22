@@ -199,7 +199,11 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		if err := removeLlamaRuntime(st); err != nil {
 			return err
 		}
-		e.Detect(engine)
+		if installed, _ := e.Detect(engine); installed {
+			uerr := fmt.Errorf("engine %q still detected after uninstall", engine)
+			e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+			return uerr
+		}
 		e.reporter.clear(uninstallFailedID(engine))
 		e.emitState(engine)
 		return e.setDesiredEnabled(engine, false)

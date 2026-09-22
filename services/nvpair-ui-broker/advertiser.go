@@ -20,9 +20,9 @@ import (
 // peers — self-forward into a loop. The real port is resolved per poll via
 // localEnginePort.
 //
-// llama.cpp is the one engine whose client-facing port PAIR assigns rather than
-// inherits, so its engine port is the table's EnginePortBase and its facade
-// port is what a client targets. Nothing claims llama.cpp's upstream default.
+// llama.cpp's stock client port (8080) is claimed by its facade like the other
+// two engines' ports; its engine runs on the table's EnginePortBase (8081), or
+// one above an inherited LLAMA_ARG_PORT, so that is its default engine port.
 var (
 	defaultOllamaPort        = ollamaProxyProfile.FacadePort
 	defaultLMStudioPort      = lmstudioProxyProfile.FacadePort
@@ -221,7 +221,9 @@ func (b *Broker) runAutoAdvertiseLlamaCpp(ctx context.Context) {
 // reconcileAdvertiseLlamaCpp brings this node's lc registration into line with
 // the local llama.cpp server, mirroring reconcileAdvertiseLMStudio: it
 // advertises the promoted proxy port (never the engine) and hands the engine's
-// loopback port to the facade via node/set-local-backend.
+// loopback port to the facade via node/set-local-backend. Like its siblings it
+// holds the node configuration lock, so a settings apply that has withdrawn the
+// advertisement cannot be undone by a poll tick landing mid-operation.
 //
 // This engine has a managed facade like the other two, but it needs neither
 // sibling's recovery path. The hazard both guard against is a stale
@@ -232,6 +234,8 @@ func (b *Broker) runAutoAdvertiseLlamaCpp(ctx context.Context) {
 // this one falls back to no port at all, so an unreachable manager cannot be
 // read as permission to adopt whatever answers on 8080.
 func (b *Broker) reconcileAdvertiseLlamaCpp(client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
 	// An unavailable manager is unknown ownership, never authority to adopt a
 	// process answering on the stock port.
 	enginePort, probe := b.localEnginePort("llamacpp", 0)

@@ -113,20 +113,6 @@ func needsLlamaCppPortGate(method string, params json.RawMessage) bool {
 	return json.Unmarshal(params, &request) == nil && request.Engine == llamacppProxyProfile.Name
 }
 
-func llamacppSetPortRequest(method string, params json.RawMessage) (int, bool) {
-	if method != "engine:set-port" {
-		return 0, false
-	}
-	var request struct {
-		Engine string `json:"engine"`
-		Port   int    `json:"port"`
-	}
-	if json.Unmarshal(params, &request) != nil || request.Engine != llamacppProxyProfile.Name || request.Port <= 0 {
-		return 0, false
-	}
-	return request.Port, true
-}
-
 func (b *Broker) reportLlamaCppPortOwnershipBlocked(reason string) {
 	b.forwardErrorsReport(errors.ServiceError{
 		ID: llamacppPortOwnershipBlockedID,

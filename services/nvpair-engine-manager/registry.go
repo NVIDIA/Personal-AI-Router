@@ -658,15 +658,18 @@ func (p *Platform) validate(key string) error {
 		if p.Install.CPUFetch != nil && (key != "windows/arm64" || p.Install.Driver != "llama-app" || !p.Install.UpstreamFirst || p.Install.CPUFetch.SHA256 == "" || p.Install.CPUFetch.URL == "") {
 			return fmt.Errorf("platform %q: cpu_fetch requires the Windows ARM64 llama-app policy and a pinned fetch", key)
 		}
-		if p.Install.ArchiveRoot != "" && (key != "darwin/amd64" || p.Install.Driver != "llama-app" || p.Install.ArchiveRoot != "llama-b10826" || len(p.Install.Archives) != 1) {
-			return fmt.Errorf("platform %q: archive_root requires the pinned Intel Mac llama archive", key)
+		// Recipe shape is validated here; the exact pinned build, URLs and
+		// digests of the bundled recipe are pinned by its tests, so a pin bump
+		// is a manifest change and a per-user override may carry its own set.
+		if p.Install.ArchiveRoot != "" && (p.Install.Driver != "llama-app" || len(p.Install.Archives) == 0 || !safeLlamaTarName(p.Install.ArchiveRoot) || strings.Contains(p.Install.ArchiveRoot, "/")) {
+			return fmt.Errorf("platform %q: archive_root requires the llama-app driver, at least one pinned archive and a single safe path component", key)
 		}
-		if p.Install.UpstreamFirst && (key != "windows/arm64" || p.Install.Driver != "llama-app" || len(p.Install.Archives) != 2) {
-			return fmt.Errorf("platform %q: upstream_first requires Windows ARM64 llama-app with two pinned fallback archives", key)
+		if p.Install.UpstreamFirst && (key != "windows/arm64" || p.Install.Driver != "llama-app" || len(p.Install.Archives) == 0) {
+			return fmt.Errorf("platform %q: upstream_first requires the Windows ARM64 llama-app policy with at least one pinned fallback archive", key)
 		}
 		if len(p.Install.Archives) > 0 {
-			if p.Install.Driver != "llama-app" || (key != "windows/arm64" && key != "darwin/amd64") || p.Install.Fetch != nil || len(p.Install.Run) > 0 || len(p.Install.Script) > 0 {
-				return fmt.Errorf("platform %q: archives require the Windows ARM64 or Intel Mac llama-app driver without fetch/run/script", key)
+			if p.Install.Driver != "llama-app" || p.Install.Fetch != nil || len(p.Install.Run) > 0 || len(p.Install.Script) > 0 {
+				return fmt.Errorf("platform %q: archives require the llama-app driver without fetch/run/script", key)
 			}
 			for _, archive := range p.Install.Archives {
 				if strings.TrimSpace(archive.URL) == "" || archive.SHA256 == "" {

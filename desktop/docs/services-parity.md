@@ -243,9 +243,12 @@ Personal AI Router uses:
 - `list_models`;
 - `pull_model`;
 - Ollama `run_model`, `unload_model` (`keep_alive: 0`), and `delete_model`;
-- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`).
+- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`);
+- llama.cpp `load_model`, `unload_model` (router `/models/load` and
+  `/models/unload`, settled on observed residency), `delete_model`,
+  `pull_model` and `import_model` (managed cache builtin), and `cancel_pull`.
 
-Both engines expose Load, Eject, and Delete in the model manager when the
+All three engines expose Load, Eject, and Delete in the model manager when the
 backend action exists. Keep-alive / expiry controls remain unsupported.
 
 LM Studio's `delete_model` declares `restart_after`, so the engine manager
