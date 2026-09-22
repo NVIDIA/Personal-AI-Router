@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"nvpair-shared/cors"
 	"os"
 	"strings"
 	"sync"
@@ -24,6 +25,14 @@ import (
 // directly in TestBackoffFor, so shortening it here costs no coverage.
 func TestMain(m *testing.M) {
 	retryBackoff = []time.Duration{time.Millisecond}
+	// The CORS tests exercise engine-policy intersection using browser origins
+	// the engines variously grant and deny. The request-entry allowlist gate
+	// runs ahead of that intersection, so every origin those tests send must be
+	// admitted here or the gate would deny before intersection is reached and
+	// the tests would no longer assert what they intend. The gate's own deny
+	// path is asserted directly in TestAllowlistGateRejectsUnlistedOrigin.
+	os.Setenv(cors.AllowedOriginsEnv,
+		"http://app.test,https://app.test,http://other.test,http://example.com,http://wrong.com,http://denied.test,https://app.example")
 	os.Exit(m.Run())
 }
 

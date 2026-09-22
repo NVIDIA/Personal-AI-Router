@@ -116,6 +116,8 @@ currently active node — except the model-list routes, which are queried across
 every candidate node concurrently and merged into one de-duplicated inventory.
 Point your client at the proxy and it handles routing.
 
+Inbound request bodies are buffered once so each failover attempt can replay them. That buffer is capped at 32 MiB: a larger body is refused with `413` before any candidate is resolved or forwarded, rather than read into memory unbounded. Long-context prompts fit far below the cap.
+
 When the broker supplies `aliasAddresses`, the facade reserves that
 loopback-only endpoint before reporting ready and serves it through the same
 routing and workload-lifecycle handler. A `localhost` alias reserves `127.0.0.1`
@@ -147,6 +149,8 @@ is where engine-manager runs a managed LM Studio, so a proxy restoring it would
 sit on the engine's own port. The stored value predates the current default.
 
 **Browser clients (CORS).** PAIR does not enable CORS or add default browser permissions. Configure origins through the engine; its built-in defaults and user configuration remain authoritative. Ordinary forwarded responses preserve the upstream status, body, and CORS headers, including missing headers. A denial is never replaced with a successful OPTIONS response or retried to find permission elsewhere. Proxy-generated errors carry their actual status without CORS permission headers, so browser JavaScript may see a generic CORS failure while curl and diagnostics show the real error.
+
+Above that per-engine policy sits a request-entry allowlist gate. The loopback listener is reachable by a browser page on any origin, and a simple cross-origin POST needs no preflight, so header policy alone cannot stop an unlisted page from driving the local engines. Browser callers (a request carrying an `Origin`) are therefore admitted only from exact origins the operator lists in `NVPAIR_PROXY_ALLOWED_ORIGINS` (comma-separated, scheme+host[:port], compared exactly); with no entry configured, every browser origin is refused with `403` `origin-not-allowed` before it can reach a candidate or reserve capacity. Non-browser callers (the Electron main process, CLI tools, health probes) send no `Origin` and are unaffected. The gate only admits or refuses; what an admitted origin may then read is still the engines' own intersection policy below.
 
 A browser preflight (OPTIONS with Origin and Access-Control-Request-Method) queries every currently routable target, with concurrency eight, a ten-second query deadline, and no redirects. A single target's response is relayed. Multiple responding targets must all permit the requested origin, method, and headers; PAIR grants only their shared permissions. Credentials require unanimous explicit support. Synthesized preflights allow browsers to cache the result for 60 seconds; PAIR itself does not cache decisions. A policy denial returns 403. Unavailable targets are skipped; if none can answer, the proxy returns 502. Ordinary OPTIONS requests retain normal routing. Preflights do not create inference jobs or reserve scheduler capacity. Paired ingress forwards only to its local engine.
 

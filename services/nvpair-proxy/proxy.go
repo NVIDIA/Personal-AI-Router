@@ -215,26 +215,34 @@ type workloadParams struct {
 
 // bufferBodyAndModel reads the request body once and returns the raw bytes
 // (so each failover attempt can replay it — see the loop in handleHTTP) along
-// with the JSON "model" field for workload tracking. Inference bodies are
-// small (prompt + model), so full buffering is cheap. Returns (nil, "") when
-// the body is absent and an empty model when none is parseable. The caller
-// restores r.Body from the returned bytes before each forward attempt.
-func bufferBodyAndModel(r *http.Request) ([]byte, string) {
+// with the JSON "model" field for workload tracking. Bodies are capped at
+// maxInferenceBodyBytes: without a limit, any loopback caller (or a cross-origin
+// browser POST) could stream an arbitrarily large body and exhaust proxy
+// memory. Returns (nil, "", false) when the body is absent and an empty model
+// when none is parseable. The caller restores r.Body from the returned bytes
+// before each forward attempt.
+func bufferBodyAndModel(r *http.Request) ([]byte, string, bool) {
 	if r.Body == nil {
-		return nil, ""
+		return nil, "", false
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxInferenceBodyBytes+1))
 	_ = r.Body.Close()
 	if err != nil {
-		return body, ""
+		// A mid-body read error leaves a truncated buffer; refuse it rather
+		// than forward a maimed prompt upstream. Reuses the over-limit
+		// outcome — the caller's only two states are "buffered" or "refuse".
+		return nil, "", true
+	}
+	if len(body) > maxInferenceBodyBytes {
+		return nil, "", true
 	}
 	var probe struct {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
-		return body, ""
+		return body, "", false
 	}
-	return body, probe.Model
+	return body, probe.Model, false
 }
 
 type statusCapture struct {
@@ -736,6 +744,11 @@ const (
 	proxyReadHeaderTimeout = 10 * time.Second
 	proxyServerIdleTimeout = 90 * time.Second
 	maxModelListBytes      = 16 << 20
+	// maxInferenceBodyBytes caps how much of an inbound request body the proxy
+	// buffers for replay across failover attempts. Long-context prompts fit
+	// far below this; anything larger is rejected with 413 instead of being
+	// buffered into memory unbounded.
+	maxInferenceBodyBytes = 32 << 20
 )
 
 // idleClientWriteTimeout bounds how long a single write of streamed response
@@ -1161,7 +1174,22 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse the request's model before choosing a node. Model eligibility only
 	// applies to inference routes; control endpoints retain their existing
 	// routing behavior even when their JSON happens to contain a model field.
-	bodyBytes, model := bufferBodyAndModel(r)
+	bodyBytes, model, bodyTooLarge := bufferBodyAndModel(r)
+	if bodyTooLarge {
+		slog.Warn("proxy request rejected",
+			"id", reqID, "method", r.Method, "path", r.URL.Path,
+			"remote", r.RemoteAddr, "reason", "request body exceeds limit")
+		writeIngressError(w, http.StatusRequestEntityTooLarge, "request-too-large", "request body exceeds limit")
+		f.notify("proxy/request", RequestEvent{
+			ID:       reqID,
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Status:   http.StatusRequestEntityTooLarge,
+			Duration: time.Since(start).Milliseconds(),
+			Error:    "request body exceeds limit",
+		})
+		return
+	}
 	isInf := isInferenceRequest(f.profile, r.Method, r.URL.Path)
 	routingModel := ""
 	if isInf {

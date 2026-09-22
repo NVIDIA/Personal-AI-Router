@@ -12,6 +12,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+
+	"nvpair-shared/cors"
 )
 
 const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
@@ -82,6 +84,16 @@ func (f *facade) handlePlain(w http.ResponseWriter, r *http.Request) {
 			"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
 		writeIngressError(w, http.StatusForbidden, "loopback-only",
 			"plaintext requests are accepted only from loopback; cluster peers must use the mTLS ingress")
+		return
+	}
+	// Cross-origin browser gate: a loopback bind does not exclude browser
+	// pages (they connect from loopback), so any Origin this process's
+	// allowlist does not name is refused before it can drive an engine.
+	if !cors.AllowRequest(r) {
+		slog.Warn("rejected cross-origin browser request not on the allowlist",
+			"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path,
+			"origin", r.Header.Get("Origin"))
+		cors.RejectOrigin(w)
 		return
 	}
 	// Engine-manager marks its private identity/action requests so this

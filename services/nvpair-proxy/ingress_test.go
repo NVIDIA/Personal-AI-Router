@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"nvpair-shared/cors"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,56 @@ func TestHandlePlainRejectsNonLoopback(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header on the refusal", got)
 	}
+}
+
+// TestAllowlistGateRejectsUnlistedOrigin covers the request-entry gate: a
+// loopback request from an origin the operator allowlist does not name is
+// refused with 403 before it can drive an engine. The Origin-less (non-browser)
+// caller is unaffected. This runs before engine-policy intersection, which is
+// what closes the blind-oracle path a simple cross-origin POST would otherwise
+// reach with no preflight.
+func TestAllowlistGateRejectsUnlistedOrigin(t *testing.T) {
+	t.Setenv(cors.AllowedOriginsEnv, "https://ui.example")
+
+	t.Run("unlisted origin is refused", func(t *testing.T) {
+		p := testProxy(anyProfile(t), NewDiscovery(), 11435)
+		req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+		p.soleFacade().handlePlain(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("unlisted origin status = %d, want %d", rec.Code, http.StatusForbidden)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("Access-Control-Allow-Origin = %q, want no grant on a refusal", got)
+		}
+	})
+
+	t.Run("allowlisted origin reaches routing", func(t *testing.T) {
+		p := testProxy(anyProfile(t), NewDiscovery(), 11435)
+		req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("Origin", "https://ui.example")
+		rec := httptest.NewRecorder()
+		// No engine is available, so the request reaches routing and is
+		// rejected there (502), not by the allowlist gate (403).
+		p.soleFacade().handlePlain(rec, req)
+		if rec.Code == http.StatusForbidden {
+			t.Fatalf("allowlisted origin was denied by the gate (403); want it to pass through to routing")
+		}
+	})
+
+	t.Run("no Origin is unaffected", func(t *testing.T) {
+		p := testProxy(anyProfile(t), NewDiscovery(), 11435)
+		req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		rec := httptest.NewRecorder()
+		p.soleFacade().handlePlain(rec, req)
+		if rec.Code == http.StatusForbidden {
+			t.Fatalf("Origin-less request was denied by the gate (403); want it unaffected")
+		}
+	})
 }
 
 // Preflight is subject to the same ingress gate as ordinary requests.
