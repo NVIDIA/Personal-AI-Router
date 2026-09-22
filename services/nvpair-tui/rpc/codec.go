@@ -15,6 +15,7 @@ package rpc
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -29,6 +30,16 @@ import (
 //
 // The largest real frame is engine:catalog's Ollama list, around 1.9 MiB.
 const maxFrame = jsonrpc.WorkerFrameBytes
+
+// ErrStreamBroken marks a read failure the transport cannot recover from, as
+// opposed to a frame this client merely could not parse.
+//
+// The distinction decides whether the read loop may continue. A bufio.Scanner
+// is finished after a read error — including an over-long line, which it cannot
+// skip past — so calling Scan again returns false forever. Treating that like a
+// malformed frame spins the loop at full speed instead of reporting the
+// disconnect, and the UI goes on claiming the service is ready.
+var ErrStreamBroken = errors.New("stream broken")
 
 // Message is a single JSON-RPC 2.0 frame. A frame is a request when it
 // has both an id and a method, a notification when it has a method but no
@@ -88,7 +99,7 @@ func NewCodec(r io.Reader, w io.Writer) *Codec {
 func (c *Codec) Read() (*Message, error) {
 	if !c.scanner.Scan() {
 		if err := c.scanner.Err(); err != nil {
-			return nil, fmt.Errorf("read error: %w", err)
+			return nil, fmt.Errorf("%w: %v", ErrStreamBroken, err)
 		}
 		return nil, io.EOF
 	}

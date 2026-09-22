@@ -105,11 +105,37 @@ func Spawn(ctx context.Context, brokerPath string) (*Supervisor, error) {
 	return &Supervisor{cmd: cmd, stdin: stdin, Client: client, Stderr: stderr}, nil
 }
 
-// Shutdown asks the broker to stop cleanly: send the shutdown RPC, close
-// its stdin (a second, EOF-based stop signal), then wait up to
-// shutdownGrace before killing it. The broker tears its own workers down
-// in response, so this leaves no orphans.
+// enginePrepareTimeout bounds the engine stop that precedes broker teardown.
+//
+// Stopping an engine waits on a third-party process, so this is longer than any
+// other broker call here — but deliberately far shorter than the thirty seconds
+// the desktop allows. The desktop can show a shutting-down window while it
+// waits; a terminal that stops redrawing looks hung, and the operator's next
+// move is ctrl+c, which is worse than a slightly abrupt engine stop. Whatever
+// has not stopped by now is stopped by the broker's own teardown immediately
+// afterwards.
+const enginePrepareTimeout = 6 * time.Second
+
+// Shutdown asks the broker to stop cleanly: stop the engines, send the shutdown
+// RPC, close its stdin (a second, EOF-based stop signal), then wait up to
+// shutdownGrace before killing it. The broker tears its own workers down in
+// response, so this leaves no orphans.
 func (s *Supervisor) Shutdown() {
+	// Engines first, and through prepare-shutdown specifically: it stops the
+	// running processes without clearing the persisted desired state, so an
+	// engine the operator had switched on comes back on next launch.
+	//
+	// Without this the broker's teardown raced the engines it supervises, which
+	// is why the architecture requires this call before broker teardown and why
+	// the desktop has always made it. The terminal client never did, so quitting
+	// it could leave an engine mid-stop.
+	//
+	// A failure is not fatal: the broker's own teardown still runs, and refusing
+	// to quit because an engine would not stop would be worse than a slow exit.
+	prepCtx, prepCancel := context.WithTimeout(context.Background(), enginePrepareTimeout)
+	_, _ = s.Client.Call(prepCtx, "engine:prepare-shutdown", nil)
+	prepCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	_, _ = s.Client.Call(ctx, "shutdown", nil)
 	cancel()
