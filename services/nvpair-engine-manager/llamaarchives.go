@@ -17,8 +17,8 @@ import (
 const maxLlamaArchiveEntries = 10000
 
 // Merge the pinned official app and dependency bundles into a fresh owned stage.
-// The actual ARM64 bundles are flat; relative directories are preserved, never flattened.
-func (e *Executor) stageLlamaArchives(ctx context.Context, st *engineState, candidate string) error {
+// The actual Windows bundles are flat; relative directories are preserved, never flattened.
+func (e *Executor) stageLlamaArchives(ctx context.Context, st *engineState, candidate string, archives []Fetch) error {
 	if err := validateLlamaOwnedPaths(st.installDir); err != nil {
 		return err
 	}
@@ -32,7 +32,7 @@ func (e *Executor) stageLlamaArchives(ctx context.Context, st *engineState, cand
 		return err
 	}
 	remaining, entries := maxDownloadBytes, 0
-	for _, fetch := range st.plat.Install.Archives {
+	for _, fetch := range archives {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

@@ -430,7 +430,20 @@ The existing version/license, candidate promotion/rollback and persistent model
 cache lifecycle apply. This artifact requires macOS 13.3 or newer and does not
 provide Radeon acceleration.
 
-Ordinary Windows x64 and Linux recipes retain vendor accelerator-to-CPU selection;
+On Windows x64 the official installer selects its CUDA build only when the CUDA
+Toolkit is installed; with just the NVIDIA driver it selects Vulkan. Install
+therefore reads one compute capability per GPU from `nvidia-smi` first. When
+every NVIDIA GPU reports 7.5 (Turing) or newer, PAIR stages the checksum-pinned
+b10826 CUDA 13.3 app ZIP plus CUDA runtime ZIP declared in
+`install.cuda_archives`, which need no toolkit, and requires the same `CUDA0:`
+device check before promotion. No NVIDIA GPU, an older or unreadable one, an
+unavailable archive or a failed device check runs the pinned installer below in
+a separate stage instead, and its receipt records the reason as
+`cuda_not_used`. Parent cancellation never starts that installer. A CUDA receipt
+records `source: pinned-cuda-archives`, `acceleration_policy: cuda`, the archive
+recipe and the reported compute capabilities.
+
+Linux and the Windows x64 installer path retain vendor accelerator-to-CPU selection;
 Apple Silicon retains its Metal installer. Selection is not automatic recovery
 from a GPU hang or incorrect model answer. `install_supported` and
 `install_reason` describe recipe availability and selection requirements, not

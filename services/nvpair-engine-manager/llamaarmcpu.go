@@ -106,7 +106,7 @@ func (e *Executor) prepareLlamaARMCPU(ctx context.Context, st *engineState, stag
 		return "", nil, fmt.Errorf("official Windows ARM CPU installer: %w", err)
 	}
 	candidate := filepath.Join(home, "llama-app")
-	identity, licenses, err := e.validateLlamaARMApp(ctx, st, candidate, 10826, false)
+	identity, licenses, err := e.validateLlamaApp(ctx, st, candidate, 10826, false)
 	if err != nil {
 		return "", nil, err
 	}

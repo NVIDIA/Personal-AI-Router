@@ -149,6 +149,7 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `archive_root` | string | no | The fixed top-level directory a tar archive wraps its files in, stripped on extraction; a single safe path component. Requires `archives`. |
 | `upstream_first` | bool | no | Windows ARM64 `llama-app` only: try the current official upstream installer first in a bounded, separate staging attempt and fall back to the pinned `archives` when it fails verification or the device check. |
 | `cpu_fetch` | fetch | no | Windows ARM64 `llama-app` only: the pinned official CPU installer used when the hardware inventory confirms a non-NVIDIA device. |
+| `cuda_archives` | fetch[] | no | Windows x64 `llama-app` only, alongside a pinned `fetch`: checksum-pinned official CUDA app and CUDA runtime archives installed when every NVIDIA GPU reports compute capability 7.5 or newer and the staged build passes the CUDA device check. Otherwise the `fetch` installer runs. Every entry needs `url` and `sha256`. |
 
 `uninstall.driver: "llama-app"` selects the driver's runtime-only removal (the
 `runtime` and `previous` slots), keeping the engine's separate model library
@@ -345,8 +346,8 @@ field is missing, `manifest_version` is unsupported, a platform key isn't
 `runtime.mode` is invalid, an action sets none or more than one of
 `http`/`cmd`/`remove_path`/`builtin`, an install `driver`, uninstall `driver`
 or action `builtin` names an unknown routine or one bundled for another
-engine, `archives`/`archive_root`/`upstream_first`/`cpu_fetch` appear without
-the `llama-app` driver or its platform policy, a `remove_path` action omits
+engine, `archives`/`archive_root`/`upstream_first`/`cpu_fetch`/`cuda_archives`
+appear without the `llama-app` driver or its platform policy, a `remove_path` action omits
 `root` or `path`, a `result` is set without both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or
 a non-action templated string uses an unknown placeholder.

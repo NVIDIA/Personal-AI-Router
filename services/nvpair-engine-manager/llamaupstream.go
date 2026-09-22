@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -92,10 +93,10 @@ func (e *Executor) latestLlamaBuild(ctx context.Context) (string, error) {
 // Checks a staged candidate without a server or model. The candidate must
 // report the exact numeric build that was selected for it.
 func (e *Executor) validateLlamaCUDA(ctx context.Context, st *engineState, candidate string, expected int64) (map[string]any, string, error) {
-	return e.validateLlamaARMApp(ctx, st, candidate, expected, true)
+	return e.validateLlamaApp(ctx, st, candidate, expected, true)
 }
 
-func (e *Executor) validateLlamaARMApp(ctx context.Context, st *engineState, candidate string, expected int64, requireCUDA bool) (map[string]any, string, error) {
+func (e *Executor) validateLlamaApp(ctx context.Context, st *engineState, candidate string, expected int64, requireCUDA bool) (map[string]any, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	env, err := childEnv(st)
@@ -111,7 +112,7 @@ func (e *Executor) validateLlamaARMApp(ctx context.Context, st *engineState, can
 	if build == 0 || expected != build {
 		return nil, "", errors.New("downloaded llama version did not match the selected build")
 	}
-	identity := map[string]any{"version": strings.TrimSpace(version), "selected_build": fmt.Sprintf("b%d", build), "platform": "windows/arm64"}
+	identity := map[string]any{"version": strings.TrimSpace(version), "selected_build": fmt.Sprintf("b%d", build), "platform": runtime.GOOS + "/" + runtime.GOARCH}
 	licenses, err := e.runCommandOutput(ctx, []string{bin, "licenses"}, env)
 	if err != nil || strings.TrimSpace(licenses) == "" {
 		return identity, "", errors.New("llama third-party licenses could not be read")
@@ -201,7 +202,7 @@ func (e *Executor) prepareLlamaUpstream(ctx context.Context, st *engineState, st
 	}
 	e.emitInstallProgress("llamacpp", "fallback", -1)
 	candidate = filepath.Join(stage, "fallback") // Never mix failed script bytes with the ZIPs.
-	if err := e.stageLlamaArchives(ctx, st, candidate); err != nil {
+	if err := e.stageLlamaArchives(ctx, st, candidate, st.plat.Install.Archives); err != nil {
 		return "", nil, fmt.Errorf("upstream attempt failed (%v); official CUDA fallback failed: %w", primaryErr, err)
 	}
 	fallback, licenses, err := e.validateLlamaCUDA(ctx, st, candidate, 10826)

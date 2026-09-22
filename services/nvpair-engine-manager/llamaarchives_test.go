@@ -58,7 +58,7 @@ func TestLlamaArchivesMergeAndRefuseCollision(t *testing.T) {
 				index++
 				return &http.Response{StatusCode: 200, ContentLength: int64(len(data)), Body: io.NopCloser(bytes.NewReader(data))}, nil
 			})}
-			err := e.stageLlamaArchives(context.Background(), st, candidate)
+			err := e.stageLlamaArchives(context.Background(), st, candidate, st.plat.Install.Archives)
 			if (err != nil) != collision {
 				t.Fatalf("collision=%v: %v", collision, err)
 			}

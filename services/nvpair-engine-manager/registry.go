@@ -81,8 +81,13 @@ type Install struct {
 	ArchiveRoot   string `json:"archive_root,omitempty"` // fixed prefix of the official Intel Mac tar
 	// Archives is the checksum-pinned official llama app and companion runtime
 	// bundle set for Windows ARM64, where the script distribution lacks CUDA.
-	Archives []Fetch  `json:"archives,omitempty"`
-	Run      []string `json:"run,omitempty"`
+	Archives []Fetch `json:"archives,omitempty"`
+	// CUDAArchives is the checksum-pinned official CUDA llama app and CUDA
+	// runtime bundle for Windows x64, whose script distribution installs CUDA
+	// only alongside the CUDA Toolkit. When an NVIDIA GPU cannot run the build,
+	// or the build reports no CUDA device, the pinned Fetch installer runs.
+	CUDAArchives []Fetch  `json:"cuda_archives,omitempty"`
+	Run          []string `json:"run,omitempty"`
 	// Script is an escape hatch for vendors that only ship a script
 	// installer. It runs without checksum verification — strictly opt-in
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
@@ -672,6 +677,16 @@ func (p *Platform) validate(key string) error {
 				return fmt.Errorf("platform %q: archives require the llama-app driver without fetch/run/script", key)
 			}
 			for _, archive := range p.Install.Archives {
+				if strings.TrimSpace(archive.URL) == "" || archive.SHA256 == "" {
+					return fmt.Errorf("platform %q: every llama archive requires a URL and checksum", key)
+				}
+			}
+		}
+		if len(p.Install.CUDAArchives) > 0 {
+			if key != "windows/amd64" || p.Install.Driver != "llama-app" || p.Install.Fetch == nil || p.Install.Fetch.SHA256 == "" || p.Install.UpstreamFirst {
+				return fmt.Errorf("platform %q: cuda_archives require the Windows x64 llama-app policy with a pinned fetch fallback", key)
+			}
+			for _, archive := range p.Install.CUDAArchives {
 				if strings.TrimSpace(archive.URL) == "" || archive.SHA256 == "" {
 					return fmt.Errorf("platform %q: every llama archive requires a URL and checksum", key)
 				}

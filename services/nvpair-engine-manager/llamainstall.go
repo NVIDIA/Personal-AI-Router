@@ -42,6 +42,9 @@ func llamaInstallSupport(goos, arch string) (bool, string) {
 	if goos == "windows" && arch == "arm64" {
 		return true, "Native hardware inventory selects CPU for non-NVIDIA ARM; NVIDIA ARM remains CUDA-required, including when its driver needs repair."
 	}
+	if goos == "windows" && arch == "amd64" {
+		return true, "NVIDIA GPUs with compute capability 7.5 or newer get the official CUDA build; other hardware uses the vendor installer's accelerator or CPU selection. Acceleration is verified after installation."
+	}
 	return true, "The vendor installer selects an available accelerator or CPU build; acceleration is verified after installation."
 }
 
@@ -106,16 +109,29 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 		candidate = filepath.Join(stage, "llama-app")
 	}
 	var provenance map[string]any
-	if st.plat.Install.UpstreamFirst {
+	cudaNotUsed := ""
+	if len(st.plat.Install.CUDAArchives) > 0 {
+		var cudaCandidate string
+		if cudaCandidate, provenance, cudaNotUsed, err = e.prepareLlamaWindowsCUDA(ctx, st, stage); err != nil {
+			return err
+		}
+		if provenance != nil {
+			candidate = cudaCandidate
+		}
+	}
+	switch {
+	case provenance != nil:
+		// The pinned Windows x64 CUDA build is staged and validated.
+	case st.plat.Install.UpstreamFirst:
 		candidate, provenance, err = e.prepareLlamaWindowsARM(ctx, st, stage)
 		if err != nil {
 			return err
 		}
-	} else if len(st.plat.Install.Archives) > 0 {
-		if err = e.stageLlamaArchives(ctx, st, candidate); err != nil {
+	case len(st.plat.Install.Archives) > 0:
+		if err = e.stageLlamaArchives(ctx, st, candidate, st.plat.Install.Archives); err != nil {
 			return fmt.Errorf("official llama archives: %w", err)
 		}
-	} else {
+	default:
 		script, downloadErr := e.download(ctx, engine, st.plat.Install.Fetch)
 		if downloadErr != nil {
 			return downloadErr
@@ -160,6 +176,9 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 		} else {
 			provenance["installer_sha256"] = st.plat.Install.Fetch.SHA256
 			provenance["installer_url"] = st.plat.Install.Fetch.URL
+		}
+		if cudaNotUsed != "" {
+			provenance["cuda_not_used"] = cudaNotUsed
 		}
 	}
 	receipt, err := json.MarshalIndent(provenance, "", "  ")

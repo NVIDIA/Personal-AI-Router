@@ -76,7 +76,17 @@
         "fetch": {
           "url": "https://raw.githubusercontent.com/ggml-org/llama-install.sh/27a82f3a6e0f259f88c2c31cd6b20d858a975f27/install.ps1",
           "sha256": "455084203db0c864f4eb218bc82792b4304458a96211c385275d8337a5049851"
-        }
+        },
+        "cuda_archives": [
+          {
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10826/llama-b10826-bin-win-cuda-13.3-x64.zip",
+            "sha256": "34549bd7c46717333277d7bfc4c8617a12be0fad33a5253748e59e1085ffda4f"
+          },
+          {
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10826/cudart-llama-bin-win-cuda-13.3-x64.zip",
+            "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e"
+          }
+        ]
       }
     },
     "windows/arm64": {

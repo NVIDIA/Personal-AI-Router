@@ -86,7 +86,9 @@ type Executor struct {
 	emit             func(method string, params any)
 	client           *http.Client
 	armHardwareQuery func(context.Context, map[string]string) (string, error) // nil uses the native inventory command
-	ollamaLoadClient *http.Client
+	// nvidiaComputeQuery returns one compute capability per NVIDIA GPU; nil runs nvidia-smi.
+	nvidiaComputeQuery func(context.Context, map[string]string) (string, error)
+	ollamaLoadClient   *http.Client
 	// progress fans install/pull progress to transient subscribers (the ec
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.

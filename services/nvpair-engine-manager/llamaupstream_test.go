@@ -36,6 +36,28 @@ func cudaLlamaFixture(build int) llamaRuntimeFixture {
 	return llamaRuntimeFixture{Version: fmt.Sprintf("version: 0.4.0-dev (build %d, commit fixture)", build), Licenses: "fixture third-party license", Devices: "Available devices:\n  CUDA0: Fixture NVIDIA device"}
 }
 
+// llamaFixtureZip builds an official-style flat bundle for the injected transport.
+func llamaFixtureZip(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	for name, body := range files {
+		h := &zip.FileHeader{Name: name, Method: zip.Deflate}
+		h.SetMode(0700)
+		w, err := z.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 type llamaUpstreamFixture struct {
 	e        *Executor
 	st       *engineState
@@ -103,26 +125,7 @@ Set-Content -LiteralPath (Join-Path $stagePath 'primary-only.txt') -Value 'prima
 		t.Fatal(err)
 	}
 	fallbackJSON, _ := json.Marshal(cudaLlamaFixture(10826))
-	archive := func(files map[string][]byte) []byte {
-		var buf bytes.Buffer
-		z := zip.NewWriter(&buf)
-		for name, body := range files {
-			h := &zip.FileHeader{Name: name, Method: zip.Deflate}
-			h.SetMode(0700)
-			w, err := z.CreateHeader(h)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := w.Write(body); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := z.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return buf.Bytes()
-	}
-	bundles := [][]byte{archive(map[string][]byte{"llama.exe": bin, ".llama-fixture.json": fallbackJSON, "fallback-only.txt": []byte("fallback")}), archive(map[string][]byte{"cuda.dll": []byte("fixture CUDA companion")})}
+	bundles := [][]byte{llamaFixtureZip(t, map[string][]byte{"llama.exe": bin, ".llama-fixture.json": fallbackJSON, "fallback-only.txt": []byte("fallback")}), llamaFixtureZip(t, map[string][]byte{"cuda.dll": []byte("fixture CUDA companion")})}
 	st.plat.Install.Archives = nil
 	for i, bundle := range bundles {
 		h := sha256.Sum256(bundle)
