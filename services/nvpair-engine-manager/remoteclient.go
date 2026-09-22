@@ -37,8 +37,9 @@ type remoteClient struct {
 	forget    func()
 }
 
-// waitsForEngineReadiness reports whether a peer may only answer after an
-// engine is healthy or an Ollama model is loaded, which the ordinary 30s
+// waitsForEngineReadiness reports whether a peer may only answer after slow
+// work inside its own handler — an engine becoming healthy, an Ollama model
+// loading, or a download being stopped — which the ordinary 30s
 // response-header budget cannot cover.
 //
 // Cutting such a call off is worse than slow. The initiator's cancellation
@@ -51,10 +52,18 @@ func waitsForEngineReadiness(path, engine string) bool {
 	}
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
+	//
+	// controlCancelPullPath: the peer interrupts the CLI, waits for it to
+	// acknowledge, and removes partial files before writing a header. The
+	// ordinary budget can expire while that is still in progress. Here the
+	// cancellation is already latched before the peer starts waiting, so being
+	// cut off does not undo it — the damage is that the initiator reports a
+	// cancel that is succeeding as failed, and the row rolls back to
+	// "Downloading" under a transfer that is stopping.
 	if path == controlLoadPath {
 		return engine == "ollama"
 	}
-	return path == controlStartPath || path == controlDeletePath
+	return path == controlStartPath || path == controlDeletePath || path == controlCancelPullPath
 }
 
 func newRemoteHTTPClient(base *http.Transport, responseHeaderTimeout time.Duration) *http.Client {
