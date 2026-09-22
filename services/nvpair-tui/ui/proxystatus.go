@@ -51,20 +51,6 @@ type proxyStatusMsg struct {
 	err   error
 }
 
-// proxyPortMsg is the outcome of a listen-port change.
-//
-// requested and actual are both carried because they differ more often than one
-// would guess, and the difference is the whole outcome. A running engine already
-// holding the port takes precedence over the proxy, so the broker resolves the
-// conflict and the proxy binds somewhere else — reporting success without the
-// port meant the screen claimed a change it had not made.
-type proxyPortMsg struct {
-	label     string
-	requested int
-	actual    int
-	err       error
-}
-
 // engineDisplayName is an engine's wire id rendered the way the operator sees
 // it elsewhere.
 //
@@ -152,25 +138,10 @@ func (p *proxyTracker) statusCmd(client *rpc.Client, idx int) tea.Cmd {
 	})
 }
 
-// setPortCmd changes a proxy's listen port. The broker intercepts this to
-// resolve conflicts with engine ports before relaying it, so the reply echoes
-// the port actually bound rather than the one asked for.
-func (p *proxyTracker) setPortCmd(client *rpc.Client, idx, port int) tea.Cmd {
-	e := p.engines[idx]
-	return call(client, e.prefix+":set-port", map[string]int{"port": port},
-		func(msg *rpc.Message, err error) tea.Msg {
-			out := proxyPortMsg{label: e.label, requested: port, err: err}
-			if err != nil {
-				return out
-			}
-			var r struct {
-				Port int `json:"port"`
-			}
-			_ = decodeParams(msg.Result, &r)
-			out.actual = r.Port
-			return out
-		})
-}
+// A proxy's listen port is not changed from here. It is one of the three
+// fields engine:apply-settings writes together against a revision, so it goes
+// through the node detail's settings editor with the server port and the launch
+// arguments. This tracker only reads: readiness, and the port in force.
 
 // apply folds a status reply into the tracker.
 func (p *proxyTracker) apply(msg proxyStatusMsg) {
