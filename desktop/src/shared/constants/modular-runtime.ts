@@ -79,6 +79,16 @@ export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 14 * 60_000
 // docs/services-parity.md.
 export const MODULAR_MODEL_ACTION_TIMEOUT_MS = 120_000
 
+// Upper bound for `engine:cancel-pull` / `engine:remote-cancel-pull`. The
+// backend answers only once the transfer has stopped and its partial files are
+// settled: LM Studio gets two interrupt windows before its CLI is reclaimed,
+// and Ollama retries blob removal while its writers release. The remote variant
+// adds the peer's own `remoteResponseHeaderTimeout`
+// (services/nvpair-engine-manager/remoteclient.go), which starts before the
+// peer writes a header — so this has to sit above that budget, not equal it, or
+// the desktop reports a failure while the cancel is still running.
+export const MODULAR_CANCEL_PULL_TIMEOUT_MS = 90_000
+
 // Poll interval for `cluster:invite-status` while a pairing handshake is open.
 // Also drives the pending-invite reconciliation sweep, the backstop for a missed
 // receiver-side `cluster:invite-canceled` / `cluster:invite-expired` push.

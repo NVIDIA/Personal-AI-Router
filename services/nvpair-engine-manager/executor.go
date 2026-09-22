@@ -71,6 +71,18 @@ type engineState struct {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	pullMu sync.Mutex
+	pulls  map[string]*activePull
+	// pendingCancels holds cancels that arrived before their pull registered,
+	// so the download aborts instead of running on under a UI that already
+	// shows "Canceling". Entries are consumed by the pull they name and expire
+	// after pendingCancelWindow.
+	pendingCancels map[string]time.Time
+	// pullClaims counts the accepted pull requests per engine+model that have
+	// not finished, so a cancel can tell a pull that has not registered yet
+	// from one that already completed. Claimed where the request is accepted;
+	// see claimPull.
+	pullClaims       map[string]int
 	settingsHub      settings.Hub
 	settingsParent   func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg              *Registry
@@ -235,6 +247,9 @@ func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
 func (e *Executor) emitPullProgress(ev ProgressEvent) {
 	params := map[string]any{
 		"engine": ev.Engine, "op": ev.Op, "stage": ev.Stage, "message": ev.Message,
+	}
+	if ev.Model != "" {
+		params["model"] = ev.Model
 	}
 	if wirePercentIncluded(ev.Percent) {
 		params["percent"] = ev.Percent

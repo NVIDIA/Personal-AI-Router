@@ -948,6 +948,7 @@ class ModularBridgeState {
      * replay it after a UI refresh mid-download.
      */
     private activePulls = new Map<string, EngineProgress>()
+    private cancelingPulls = new Map<string, string>()
     /**
      * Authoritative remote-engine facts keyed by {@link remoteOpKey}
      * (`${nodeId}:${engineType}`). Populated by the supervisor from each
@@ -960,27 +961,6 @@ class ModularBridgeState {
      * evicted.
      */
     private remoteEngineFacts = new Map<string, RemoteEngineFacts>()
-    /**
-     * The model of an in-flight remote pull keyed by {@link remoteOpKey}. The
-     * backend's `engine:remote-progress` frames carry **no** `model` field
-     * (`nvpair-engine-manager/remote.go` `remoteProgress`), so we stamp the model
-     * we dispatched with here and backfill it onto every incoming frame — that
-     * keeps the optimistic entry, the streamed percent updates, and the terminal
-     * clear all on one {@link engineProgressKey}. Cleared by
-     * {@link finishRemoteModelPull}.
-     */
-    private remotePullModels = new Map<string, string>()
-    /**
-     * The model of an in-flight local pull keyed by `engineType`. The backend's
-     * `engine:pull-progress` frames (the local counterpart of
-     * `engine:remote-progress`) carry **no** `model` field
-     * (`nvpair-engine-manager/executor.go` `emitPullProgress`), so we stamp the
-     * model we dispatched here and backfill it onto every incoming frame — one
-     * active local pull per engine, matching the backend's engine-scoped
-     * progress hub. Set by {@link beginModelPull}, cleared by
-     * {@link finishModelPull}.
-     */
-    private localPullModels = new Map<EngineType, string>()
     /**
      * The authoritative set of live inbound invites awaiting the local user's PIN
      * entry, keyed by `inviteId`. The cluster-manager pushes `cluster:invite-received`
@@ -1492,9 +1472,6 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        // Remember the model so the model-less `engine:remote-progress` frames can
-        // be re-associated with this exact entry (see remotePullModels).
-        this.remotePullModels.set(this.remoteOpKey(nodeId, engineType), model)
         this.activePulls.set(engineProgressKey(progress), progress)
         emitBridgePush('engines:progress-changed', progress)
     }
@@ -1515,8 +1492,8 @@ class ModularBridgeState {
      * is the only signal that removes the spinner.
      */
     finishRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
-        this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        this.cancelingPulls.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
     }
@@ -1531,14 +1508,11 @@ class ModularBridgeState {
         const op = stringValue(obj.op)
         const operation = op === 'pull' || op === 'pull_model' ? 'pull' : 'install'
         const stage = stringValue(obj.stage) || 'working'
-        // `engine:remote-progress` carries no `model`, so for a pull we backfill
-        // the model captured at dispatch — otherwise the frame would emit under a
-        // different key than the optimistic entry and never update/clear it.
-        const model =
-            stringValue(obj.model) ||
-            (operation === 'pull'
-                ? (this.remotePullModels.get(this.remoteOpKey(nodeId, engineType)) ?? '')
-                : '')
+        // The peer stamps the model on every pull frame it relays
+        // (`nvpair-engine-manager/remote.go` `remoteProgressFn`), which is what
+        // keys a frame to its optimistic entry. An install carries none, and
+        // needs none: its progress is tracked per engine.
+        const model = stringValue(obj.model)
 
         if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
             const progressKey =
@@ -1546,13 +1520,10 @@ class ModularBridgeState {
                     ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
                     : `${nodeId}:${engineType}:${operation}`
             emitBridgePush('engines:progress-cleared', { key: progressKey })
-            if (operation === 'pull') {
-                this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
-                if (model) {
-                    this.activePulls.delete(
-                        engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-                    )
-                }
+            if (operation === 'pull' && model) {
+                this.activePulls.delete(
+                    engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+                )
             }
             if (stage === 'already-installed' || stage === 'failed') {
                 this.clearRemoteEngineOp(nodeId, engineType)
@@ -1590,7 +1561,7 @@ class ModularBridgeState {
             nodeId,
             nodeName: node?.name ?? nodeId,
             operation,
-            status: stage,
+            status: this.cancelingPulls.has(pullKey) ? 'canceling' : stage,
             percent,
             model: model || undefined
         }
@@ -1820,7 +1791,6 @@ class ModularBridgeState {
     private dropRemoteEngineFacts(nodeId: string): void {
         for (const engine of PROXY_ENGINES) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
-            this.remotePullModels.delete(this.remoteOpKey(nodeId, engine))
         }
     }
 
@@ -2180,9 +2150,6 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        // Remember the model so the model-less `engine:pull-progress` frames can
-        // be re-associated with this exact entry (see localPullModels).
-        this.localPullModels.set(engineType, model)
         this.activePulls.set(engineProgressKey(progress), progress)
         emitBridgePush('engines:progress-changed', progress)
     }
@@ -2191,12 +2158,13 @@ class ModularBridgeState {
      * Project a `nvpair-engine-manager` `engine:pull-progress` for the local node
      * — the local counterpart of `engine:remote-progress`: live
      * download progress for a model pull driven via `engine:action`
-     * `pull_model`. The frame carries `{ engine, op, stage, percent, message }`
-     * and **no** `model`, so we backfill the model captured at dispatch and
-     * refresh the optimistic entry in place. Clearing stays with the awaited pull
-     * ({@link finishModelPull}), so this only advances percent/stage: it ignores
-     * the terminal error sentinel (`percent: -1`) and the non-download frames'
-     * `percent: 0` so the rendered bar never jumps backwards.
+     * `pull_model`. The frame carries `{ engine, model, op, stage, percent,
+     * message }` and its `model` identifies which optimistic entry to refresh —
+     * the backend queues concurrent pulls per engine, so the engine alone does
+     * not. Clearing stays with the awaited pull ({@link finishModelPull}), so
+     * this only advances percent/stage: it ignores the terminal error sentinel
+     * (`percent: -1`) and the non-download frames' `percent: 0` so the rendered
+     * bar never jumps backwards.
      */
     applyLocalEngineProgress(params: JsonValue | undefined): void {
         const nodeId = this.selfId
@@ -2206,7 +2174,7 @@ class ModularBridgeState {
         const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
-        const model = this.localPullModels.get(engineType)
+        const model = stringValue(obj.model)
         if (!model) return
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const existing = this.activePulls.get(key)
@@ -2215,7 +2183,9 @@ class ModularBridgeState {
         const percent = numberValue(obj.percent)
         const progress: EngineProgress = {
             ...existing,
-            status: stringValue(obj.stage) || existing.status,
+            status: this.cancelingPulls.has(key)
+                ? 'canceling'
+                : stringValue(obj.stage) || existing.status,
             percent: mergePullProgressPercent(percent, existing.percent)
         }
         this.activePulls.set(key, progress)
@@ -2235,10 +2205,29 @@ class ModularBridgeState {
     finishModelPull(engineType: EngineType, model: string): void {
         const nodeId = this.selfId
         if (!nodeId) return
-        this.localPullModels.delete(engineType)
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        this.cancelingPulls.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
+    }
+
+    setModelPullCanceling(
+        engineType: EngineType,
+        model: string,
+        canceling: boolean,
+        nodeId = this.selfId
+    ): boolean {
+        if (!nodeId) return false
+        const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        const existing = this.activePulls.get(key)
+        if (!existing || (canceling && this.cancelingPulls.has(key))) return false
+        const status = canceling ? 'canceling' : (this.cancelingPulls.get(key) ?? existing.status)
+        if (canceling) this.cancelingPulls.set(key, existing.status)
+        else this.cancelingPulls.delete(key)
+        const progress = { ...existing, status }
+        this.activePulls.set(key, progress)
+        emitBridgePush('engines:progress-changed', progress)
+        return true
     }
 
     getLogs(): LogEntry[] {

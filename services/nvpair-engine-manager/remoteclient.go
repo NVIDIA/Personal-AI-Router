@@ -157,7 +157,18 @@ func (c *remoteClient) postJSON(ctx context.Context, path, engine string, body a
 // stream POSTs body to a streaming ec endpoint and consumes its NDJSON frames,
 // calling onProgress for each progress frame and returning the terminal result
 // frame. An error frame (or a stream that ends without a result) is an error.
-func (c *remoteClient) stream(ctx context.Context, path string, body any, onProgress func(streamFrame)) (streamFrame, error) {
+//
+// onAccepted, when set, is called once the peer has answered with a success
+// status. The peer's handler has taken the operation by the time it writes that
+// header, so this is the point at which a second request about the same
+// operation can expect the peer to recognize it — see remotePullGate.
+func (c *remoteClient) stream(
+	ctx context.Context,
+	path string,
+	body any,
+	onProgress func(streamFrame),
+	onAccepted func(),
+) (streamFrame, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return streamFrame{}, err
@@ -176,6 +187,9 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return streamFrame{}, fmt.Errorf("remote %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	if onAccepted != nil {
+		onAccepted()
 	}
 
 	dec := json.NewDecoder(resp.Body)

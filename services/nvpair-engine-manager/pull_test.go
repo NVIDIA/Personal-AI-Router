@@ -117,7 +117,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 	}
 }
 
-// TestActionPullModelCmdMarkerAndResult covers the CLI (LM Studio `lms get`)
+// TestActionPullModelCmdMarkerAndResult covers the CLI fallback
 // pull path through the same engine:action routing: a Cmd-based pull_model can't
 // expose structured line progress, so it emits a single "pulling" marker and
 // returns the command's terminal result — the counterpart to the HTTP streaming
@@ -140,6 +140,9 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 		mu.Unlock()
 	}, t.TempDir())
 
+	progress, unsubscribe := ex.progress.subscribe(m.Engine)
+	defer unsubscribe()
+
 	// A Cmd action just runs a binary; the engine need not be started.
 	var out bytes.Buffer
 	mgr := NewManager(NewCodec(&out), ex, nil)
@@ -158,6 +161,17 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 	}
 	if pulls[0]["op"] != "pull" || pulls[0]["stage"] != "pulling" || pulls[0]["message"] != "demo:1b" {
 		t.Fatalf("unexpected CLI pull marker: %+v", pulls[0])
+	}
+	if pulls[0]["model"] != "demo:1b" {
+		t.Fatalf("CLI pull marker model = %v, want demo:1b", pulls[0]["model"])
+	}
+	select {
+	case event := <-progress:
+		if event.Model != "demo:1b" {
+			t.Fatalf("CLI pull hub model = %q, want demo:1b", event.Model)
+		}
+	default:
+		t.Fatal("CLI pull did not publish progress to the hub")
 	}
 	if _, hasPercent := pulls[0]["percent"]; hasPercent {
 		t.Fatalf("CLI pull marker must omit indeterminate percent, got %+v", pulls[0])

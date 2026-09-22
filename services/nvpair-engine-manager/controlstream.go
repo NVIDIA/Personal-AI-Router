@@ -32,6 +32,7 @@ const maxControlBody = 1 << 20 // 1 MiB
 // streamFrame is one NDJSON frame on the ec streaming endpoints. Type is
 // "progress", "result", or "error". Percent is omitted when indeterminate (0).
 type streamFrame struct {
+	Model   string          `json:"model,omitempty"`
 	Type    string          `json:"type"`
 	OpID    string          `json:"opId,omitempty"`
 	Engine  string          `json:"engine,omitempty"`
@@ -77,7 +78,7 @@ func (s *controlServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"engine" is required`, http.StatusBadRequest)
 		return
 	}
-	s.streamOp(w, r, req.OpID, req.Engine, "install", func(ctx context.Context) (streamFrame, error) {
+	s.streamOp(w, r, req.OpID, req.Engine, "install", "", func(ctx context.Context) (streamFrame, error) {
 		if err := s.exec.Install(ctx, req.Engine); err != nil {
 			return streamFrame{}, err
 		}
@@ -115,7 +116,14 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"model" or "params" is required`, http.StatusBadRequest)
 		return
 	}
-	s.streamOp(w, r, req.OpID, req.Engine, "pull", func(ctx context.Context) (streamFrame, error) {
+	if model := modelFromParams(req.Params); model != "" {
+		req.Model = model
+	}
+	// The initiator's cancel arrives as its own request, so claim the pull
+	// before starting it: a cancel that beats the download to the executor is
+	// then held for it instead of being read as a cancel for nothing.
+	defer s.exec.claimPull(req.Engine, req.Model, true)()
+	s.streamOp(w, r, req.OpID, req.Engine, "pull", req.Model, func(ctx context.Context) (streamFrame, error) {
 		res, err := s.exec.PullModelStream(ctx, req.Engine, req.Model, req.Params)
 		if err != nil {
 			model := req.Model
@@ -134,7 +142,7 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 // forwards each progress event as an NDJSON frame, and writes run's terminal
 // frame (or an error frame) last. run executes on the request context, so a
 // disconnected initiator cancels the operation.
-func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, engine, op string, run func(ctx context.Context) (streamFrame, error)) {
+func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, engine, op, modelFilter string, run func(ctx context.Context) (streamFrame, error)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -148,9 +156,17 @@ func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, e
 	defer cancelSub()
 
 	enc := json.NewEncoder(w)
+	// The subscription is per engine, so a model-scoped stream also sees the
+	// engine's install steps and any other model's pull. An install carries no
+	// model, so matching on the model alone would let it through — and the
+	// initiator would receive install progress stamped with its pull's opID.
 	writeProgress := func(ev ProgressEvent) {
+		if modelFilter != "" && (ev.Op != "pull" || ev.Model != modelFilter) {
+			return
+		}
 		f := streamFrame{
-			Type: "progress", OpID: opID, Engine: ev.Engine, Op: ev.Op,
+			Model: ev.Model,
+			Type:  "progress", OpID: opID, Engine: ev.Engine, Op: ev.Op,
 			Stage: ev.Stage, Message: ev.Message,
 		}
 		if wirePercentIncluded(ev.Percent) {

@@ -48,6 +48,17 @@ type actionParam struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
+// pullClaimFrom reports the engine and model of an engine:action that starts a
+// download, for Executor.claimPull. Malformed params are left to the handler,
+// which owns the error response.
+func pullClaimFrom(params json.RawMessage) (engine, model string, isPull bool) {
+	var p actionParam
+	if err := json.Unmarshal(params, &p); err != nil || p.Action != pullModelAction {
+		return "", "", false
+	}
+	return p.Engine, modelFromParams(p.Params), true
+}
+
 // setPortParam is the engine:set-port input: the engine whose server port to
 // change and the new port. The chosen port is persisted as a manifest
 // override and applied (the engine is bounced onto it if running).
@@ -72,7 +83,10 @@ type Manager struct {
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
-	cancel     context.CancelFunc
+	// remotePulls orders an engine:remote-cancel-pull behind the remote pull it
+	// targets, the way claimPull orders a local one.
+	remotePulls remotePullGate
+	cancel      context.CancelFunc
 }
 
 func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager {
@@ -270,12 +284,38 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		m.codec.Respond(msg.ID, map[string]int{"port": p.Port})
 
 	case "engine:action":
-		go m.runAction(ctx, msg)
+		// Claim a pull here rather than in the goroutine. This case and
+		// engine:cancel-pull below each dispatch their own, so a cancel can
+		// reach the executor first; claiming on the read loop preserves the
+		// order the client sent them in.
+		release := m.exec.claimPull(pullClaimFrom(msg.Params))
+		go func() {
+			defer release()
+			m.runAction(ctx, msg)
+		}()
+
+	case "engine:cancel-pull":
+		var p remoteParam
+		if !m.parse(msg, &p) {
+			return
+		}
+		if p.Engine == "" || p.Model == "" {
+			m.codec.RespondError(msg.ID, -32602, "engine and model are required")
+			return
+		}
+		go func() { m.respondOrErr(msg, nil, m.exec.CancelModelPull(ctx, p.Engine, p.Model)) }()
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
-		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
+		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull",
 		"engine:remote-start", "engine:remote-stop":
-		go m.runRemote(ctx, msg)
+		// Register a remote pull here for the same reason engine:action claims a
+		// local one: engine:remote-cancel-pull dispatches its own goroutine, so
+		// a cancel can otherwise reach the peer first. See remotePullGate.
+		release := m.remotePulls.register(remotePullClaimFrom(msg.Method, msg.Params))
+		go func() {
+			defer release()
+			m.runRemote(ctx, msg)
+		}()
 
 	default:
 		m.codec.RespondError(msg.ID, -32601, fmt.Sprintf("method not found: %s", msg.Method))
@@ -379,7 +419,7 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 			// error frame so a local subscriber converges off "pulling" even in
 			// that case, mirroring install's failed progress step.
 			userMsg := m.exec.reportPullFailed(p.Engine, model, err)
-			m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Op: "pull", Stage: "error", Percent: -1, Message: userMsg})
+			m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Model: model, Op: "pull", Stage: "error", Percent: -1, Message: userMsg})
 			m.codec.RespondError(msg.ID, -32000, userMsg)
 			return
 		}

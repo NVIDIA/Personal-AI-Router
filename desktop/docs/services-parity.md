@@ -267,15 +267,116 @@ the engine simply shows as stopped and then running.
 
 A local `pull_model` streams live download progress: the engine-manager routes
 `engine:action{pull_model}` through its streaming pull path and emits
-`engine:pull-progress` (`{ engine, op, stage, percent, message }`) — the local
+`engine:pull-progress` (`{ engine, model, op, stage, percent, message }`) — the local
 counterpart of `engine:remote-progress`. Personal AI Router consumes it in
 `applyLocalEngineProgress` (`modular-supervisor.ts` → `modular-state.ts`),
-backfilling the dispatched model (the frame carries none) and advancing the
-optimistic pull entry's percent in place, so a local pull shows "Pulling · N%"
+keying the frame to its optimistic pull entry by model and advancing that
+entry's percent in place, so a local pull shows "Pulling · N%"
 to completion just like a remote pull. The awaited action response owns
-completion (clearing the entry and refreshing the model list); a CLI-driven pull
-(LM Studio) emits a single `pulling` marker and degrades to the indeterminate
-spinner.
+completion (clearing the entry and refreshing the model list). LM Studio's CLI
+progress updates the same percentage display. A pull for an engine that already
+has one running is reported as `stage:"queued"` until its turn.
+
+The pull request itself stays pending for the whole download, so it is the
+request's own response that reports the outcome — a completion or a
+cancellation — while progress arrives out of band on the notification:
+
+```mermaid
+sequenceDiagram
+    participant UI as Model Manager
+    participant Bridge as Electron bridge
+    participant Manager as Engine manager
+    participant Engine as Ollama or LM Studio
+
+    UI->>Bridge: Download model
+    Bridge->>UI: Show optimistic "Pulling…" row
+    Bridge->>Manager: Start pull (request remains pending)
+    Manager->>Manager: Record the partial files already on disk
+    Manager->>Engine: Begin download
+
+    loop While downloading
+        Engine-->>Manager: Download status
+        Manager-->>Bridge: Progress {engine, model, stage, percent}
+        Bridge-->>UI: Update the matching model row
+    end
+
+    alt Download completes
+        Engine-->>Manager: Success
+        Manager-->>Bridge: Original pull request completes
+    else User cancels
+        UI->>Bridge: Cancel download
+        Bridge->>UI: Show "Canceling…"
+        Bridge->>Manager: Cancel {engine, model}
+        Manager->>Engine: Stop transfer
+        Manager->>Manager: Remove the partial files this pull created
+        Manager-->>Bridge: Cancellation completes
+        Manager-->>Bridge: Original pull settles as canceled
+    end
+
+    Bridge->>Manager: Refresh model list
+    Manager-->>Bridge: Authoritative models
+    Bridge->>UI: Replace temporary download state
+```
+
+`engine:cancel-pull` and `engine:remote-cancel-pull` cancel the selected model
+download. The UI keeps "Canceling…" visible until the pull settles, including
+when the cancel RPC's own budget elapses first — the backend is still working,
+so the row is not dropped back to "Downloading". Ollama closes the pull request
+and removes partial blobs named by its progress digests; LM Studio receives
+Ctrl+C and a negative answer to its background-download prompt, and after
+acknowledgement the partial files carrying the requested quantization are
+removed. Completed model files, other quantizations, and unrelated downloads are
+retained, and a cancellation the CLI never confirmed deletes nothing. Only a
+cancellation someone requested removes files: a pull interrupted by app
+shutdown, a dropped remote connection, or the action timeout leaves its partial
+data resumable.
+
+Both engines funnel every client on the machine into one cache, so naming a file
+is not the same as owning it — Ollama blobs are content-addressed, and the LM
+Studio app downloads into the same repository directory. Each pull therefore
+records the partial files already present before it starts, and cancelling it
+considers only the ones that appeared afterwards. A file that is still growing
+once the transfer has stopped is shared with another client even by that
+measure, so it survives as well:
+
+```mermaid
+flowchart TD
+    Request["Model pull requested"] --> Tracked["Track by engine + model"]
+    Tracked --> Busy{"Another PAIR pull active<br/>for this engine?"}
+
+    Busy -- No --> Snapshot["Record the partial files<br/>already on disk"]
+    Busy -- Yes --> Queued["Show as queued"]
+
+    Queued --> QueueCancel{"Canceled while queued?"}
+    QueueCancel -- Yes --> NeverStarted["Remove operation<br/>without starting download"]
+    QueueCancel -- No --> Wait["Wait for active pull to settle"]
+    Wait --> Snapshot
+
+    Snapshot --> Active["Start download"]
+    Active --> Cancel{"Cancellation requested?"}
+    Cancel -- No --> Complete["Download completes normally"]
+    Cancel -- Yes --> Engine{"Which engine?"}
+
+    Engine -- Ollama --> OllamaStop["Close HTTP pull request"]
+    OllamaStop --> OllamaCandidates["Select partial blobs named<br/>by this pull's digests"]
+
+    Engine -- LM Studio --> LMSStop["Send Ctrl+C"]
+    LMSStop --> LMSPrompt["Answer no to background download"]
+    LMSPrompt --> LMSCandidates[".part files carrying the<br/>requested quantization"]
+
+    OllamaCandidates --> Owned{"Absent from<br/>the snapshot?"}
+    LMSCandidates --> Owned
+    Owned -- No --> Preserve["Preserve completed,<br/>shared, and unrelated files"]
+    Owned -- Yes --> Quiet{"Held still across<br/>repeated checks?"}
+    Quiet -- No --> Preserve
+    Quiet -- Yes --> Delete["Remove the partial file"]
+
+    Delete --> Settle["Settle pull and refresh models"]
+    Preserve --> Settle
+    Complete --> Settle
+    NeverStarted --> Settle
+    Settle --> Next["Allow next queued pull to start"]
+```
 
 `engine:models` (and the `em` `GET /v1/models` surface) returns the flat model
 union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of

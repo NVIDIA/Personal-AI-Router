@@ -7,6 +7,7 @@ import { app } from 'electron'
 import {
     JsonRpcResponseError,
     JsonRpcSubprocess,
+    JsonRpcTimeoutError,
     type JsonObject,
     type JsonRpcInboundRequest,
     type JsonRpcNotification,
@@ -34,6 +35,7 @@ import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
+    MODULAR_CANCEL_PULL_TIMEOUT_MS,
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
@@ -1721,6 +1723,67 @@ class ModularSupervisor {
             }
         } finally {
             state.finishModelPull(engineType, model)
+        }
+    }
+
+    /**
+     * Stop a model download. The backend acknowledges only after the transfer
+     * has stopped and its partial files are cleaned up, so the row stays in
+     * "Canceling" for the whole of that — see
+     * {@link MODULAR_CANCEL_PULL_TIMEOUT_MS} for what bounds it.
+     *
+     * A timeout is not a failure: the backend is still cancelling, and dropping
+     * the row back to "downloading" seconds before it finishes would be a lie
+     * the user acts on. Only a real rejection restores the previous status, and
+     * either way the pull's own settling event clears the entry.
+     */
+    async cancelModelPull(
+        engine: string,
+        engineType: EngineType,
+        model: string,
+        nodeId?: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        const active = nodeId
+            ? state.isRemoteModelPullActive(nodeId, engineType, model)
+            : state.isModelPullActive(engineType, model)
+        if (!active) return
+        if (!state.setModelPullCanceling(engineType, model, true, nodeId)) return
+        try {
+            if (nodeId) {
+                await this.callProcess(
+                    'broker',
+                    'engine:remote-cancel-pull',
+                    {
+                        node: nodeId,
+                        engine,
+                        model
+                    },
+                    MODULAR_CANCEL_PULL_TIMEOUT_MS
+                )
+            } else {
+                await this.callProcess(
+                    'broker',
+                    'engine:cancel-pull',
+                    { engine, model },
+                    MODULAR_CANCEL_PULL_TIMEOUT_MS
+                )
+            }
+        } catch (err) {
+            if (err instanceof JsonRpcTimeoutError) {
+                log.warn({
+                    sublevel: 'broker',
+                    message: `cancel of ${engine} download is still running after ${MODULAR_CANCEL_PULL_TIMEOUT_MS}ms`
+                })
+                return
+            }
+            state.setModelPullCanceling(engineType, model, false, nodeId)
+            this.reportError(
+                `Failed to cancel download of ${model}: ${getErrorString(err)}`,
+                'error',
+                `engine-cancel-pull:${nodeId ?? 'local'}:${engine}:${model}`,
+                { engineType, nodeId, operation: 'pull', modelName: model }
+            )
         }
     }
 
