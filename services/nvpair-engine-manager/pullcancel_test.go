@@ -318,12 +318,18 @@ func TestStopLMSDownloadWhenTheInterruptCannotBeDelivered(t *testing.T) {
 func TestLMSPartialCleanupPreservesCompletedShards(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "owner", "repo")
-	partial := filepath.Join(target, "downloading_model-Q4_K_M.gguf.part")
 	complete := filepath.Join(target, "model-00001-of-00002.gguf")
-	writePartial(t, partial, "data")
 	writePartial(t, complete, "data")
 
-	if err := cleanupLMSPartials(settledContext(), root, "https://huggingface.co/owner/repo@Q4_K_M", nil); err != nil {
+	const model = "https://huggingface.co/owner/repo@Q4_K_M"
+	before, err := lmsPartialFiles(root, model)
+	if err != nil {
+		t.Fatalf("snapshot partials: %v", err)
+	}
+	partial := filepath.Join(target, "downloading_model-Q4_K_M.gguf.part")
+	writePartial(t, partial, "data")
+
+	if err := cleanupLMSPartials(settledContext(), root, model, before); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 	assertRemoved(t, partial)
@@ -404,6 +410,79 @@ func TestLMSPartialCleanupPreservesTheRequestedQuantizationWhileItGrows(t *testi
 		t.Fatalf("cleanup: %v", err)
 	}
 	assertPresent(t, shared)
+}
+
+// Growing since the snapshot is not evidence of ownership. A writer that paused
+// looks exactly like one that finished, so a partial already present when this
+// pull started stays another client's however many bytes it gained meanwhile.
+//
+// The model hub pulls unpinned ids, so quant is empty and the quantization
+// filter excludes nothing — every partial in the repository reaches this rule,
+// which is why it has to be the strict one.
+func TestLMSPartialCleanupPreservesAPreexistingPartialThatGrew(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "lmstudio-community", "Qwen3-8B-GGUF")
+	const model = "lmstudio-community/Qwen3-8B-GGUF"
+	theirs := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M.gguf.part")
+	writePartial(t, theirs, "app download")
+
+	before, err := lmsPartialFiles(root, model)
+	if err != nil {
+		t.Fatalf("snapshot partials: %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("snapshot missed the pre-existing partial: %v", before)
+	}
+	// The app writes more while our download runs, then stalls, so the file is
+	// perfectly still by the time cleanup observes it.
+	growFile(t, theirs)
+
+	if err := cleanupLMSPartials(settledContext(), root, model, before); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	assertPresent(t, theirs)
+}
+
+// `lms get` resumes in place, so the same rule means a cancelled resume leaves
+// its own partial behind. That is deliberate: nothing on disk tells a resume
+// target apart from another client's file, the bytes stay useful to the next
+// attempt, and the alternative is deleting a live download whenever the guess
+// goes the other way. Files this pull actually created are still removed.
+func TestLMSPartialCleanupLeavesAResumedDownloadsPartial(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "lmstudio-community", "Qwen3-8B-GGUF")
+	const model = "lmstudio-community/Qwen3-8B-GGUF"
+	resuming := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M.gguf.part")
+	writePartial(t, resuming, "bytes the attempt being resumed left behind")
+
+	before, err := lmsPartialFiles(root, model)
+	if err != nil {
+		t.Fatalf("snapshot partials: %v", err)
+	}
+	growFile(t, resuming)
+	fresh := filepath.Join(target, "downloading_Qwen3-8B-Q6_K.gguf.part")
+	writePartial(t, fresh, "a shard this pull started from nothing")
+
+	if err := cleanupLMSPartials(settledContext(), root, model, before); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	assertPresent(t, resuming)
+	assertRemoved(t, fresh)
+}
+
+// A nil snapshot means the inspection failed, not that the directory was empty.
+// Attribution is impossible without one, so cleanup deletes nothing — the rule
+// cleanupOllamaPartials already applies.
+func TestLMSPartialCleanupDeletesNothingWithoutASnapshot(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "owner", "repo")
+	partial := filepath.Join(target, "downloading_model-Q4_K_M.gguf.part")
+	writePartial(t, partial, "data")
+
+	if err := cleanupLMSPartials(settledContext(), root, "owner/repo@Q4_K_M", nil); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	assertPresent(t, partial)
 }
 
 // The cancel may only be acknowledged once the partial files are gone, because

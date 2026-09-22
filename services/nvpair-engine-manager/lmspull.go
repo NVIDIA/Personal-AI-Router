@@ -251,25 +251,37 @@ func lmsErrorDetail(text string) string {
 	return "…" + string(runes[len(runes)-lmsErrorDetailMax:])
 }
 
-// Remove only the partial files this `lms get` produced, preserving completed
+// Remove only the partial files this `lms get` created, preserving completed
 // shards. The LM Studio app and any other client download into the same
 // repository directory, so a file is deleted only when it carries the requested
-// quantization, differs from the snapshot taken before this download started,
-// and has stopped moving. Never delete a model directory or follow a symlink
-// outside the cache.
+// quantization, was absent from the snapshot taken before this download
+// started, and has stopped moving. Never delete a model directory or follow a
+// symlink outside the cache.
+//
+// Presence in the snapshot is disqualifying on its own; what the file has done
+// since is not consulted. Bytes gained during this pull look identical whether
+// another client is writing them or `lms get` is resuming the file in place,
+// and a writer that has merely paused cannot be told from one that finished. A
+// resumed download therefore keeps its partial through a cancellation, which
+// costs disk the vendor reuses on the next attempt; the alternative costs
+// another client its transfer.
 func cleanupLMSPartials(ctx context.Context, root, model string, before map[string]os.FileInfo) error {
+	// No snapshot means the inspection failed, not that the directory was
+	// empty, and nothing is attributable without one.
+	if before == nil {
+		return nil
+	}
 	files, err := lmsPartialFiles(root, model)
 	if err != nil {
 		return err
 	}
-	touched := make([]string, 0, len(files))
-	for path, info := range files {
-		if old, ok := before[path]; ok && old.Size() == info.Size() && old.ModTime().Equal(info.ModTime()) {
-			continue
+	created := make([]string, 0, len(files))
+	for path := range files {
+		if _, existed := before[path]; !existed {
+			created = append(created, path)
 		}
-		touched = append(touched, path)
 	}
-	stable, _ := quiescentPaths(ctx, touched)
+	stable, _ := quiescentPaths(ctx, created)
 	for _, candidate := range stable {
 		if _, err := removeIfUnchanged(candidate); err != nil {
 			return err
@@ -280,6 +292,11 @@ func cleanupLMSPartials(ctx context.Context, root, model string, before map[stri
 
 // lmsPartialFiles lists the in-progress downloads in a model's repository
 // directory that could belong to the requested quantization.
+//
+// A nil map means the listing could not be made — the reference names no
+// repository — and is distinct from an empty one, which means the repository
+// holds no partials. cleanupLMSPartials deletes nothing on the former, so the
+// two must not be conflated.
 func lmsPartialFiles(root, model string) (map[string]os.FileInfo, error) {
 	owner, repo, ok := lmsOwnerName(model)
 	if !ok {
@@ -294,14 +311,14 @@ func lmsPartialFiles(root, model string) (map[string]os.FileInfo, error) {
 	target := filepath.Join(root, owner, repo)
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return map[string]os.FileInfo{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	resolvedTarget, err := filepath.EvalSymlinks(target)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return map[string]os.FileInfo{}, nil
 	}
 	if err != nil {
 		return nil, err
