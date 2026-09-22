@@ -40,6 +40,48 @@ func TestEngineModels(t *testing.T) {
 	}
 }
 
+func TestEngineLoadedModels(t *testing.T) {
+	n := DirectoryNode{
+		Models: []string{"catalog-a", "catalog-b"},
+		ModelsByEngine: map[string][]string{
+			"llamacpp": {"catalog-a", "catalog-b"},
+		},
+		LoadedByEngine: map[string][]string{
+			"llamacpp": {"catalog-a"},
+		},
+	}
+	got := n.EngineLoadedModels("llamacpp")
+	if !reflect.DeepEqual(got, []string{"catalog-a"}) {
+		t.Fatalf("EngineLoadedModels(llamacpp) = %v, want [catalog-a]", got)
+	}
+	if got := n.EngineLoadedModels("ollama"); len(got) != 0 {
+		t.Fatalf("EngineLoadedModels(missing) = %v, want empty", got)
+	}
+	legacy := DirectoryNode{Models: []string{"catalog-a"}}
+	if got := legacy.EngineLoadedModels("llamacpp"); len(got) != 0 {
+		t.Fatalf("nil LoadedByEngine must not fall back to catalog, got %v", got)
+	}
+}
+
+func TestServiceLlamaCppKey(t *testing.T) {
+	if ServiceLlamaCpp != "lc" {
+		t.Fatalf("ServiceLlamaCpp = %q, want lc", ServiceLlamaCpp)
+	}
+	found := false
+	for _, k := range serviceKeyOrder {
+		if k == ServiceLlamaCpp {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("ServiceLlamaCpp missing from serviceKeyOrder")
+	}
+	if ServiceLlamaCpp.Transport() != TransportPlain {
+		t.Fatal("lc transport must be TransportPlain (same as ol/lm)")
+	}
+}
+
 func TestParseTXT(t *testing.T) {
 	txt := []string{
 		"v=1", "uuid=host-abc", "cluster-uuid=clu-xyz", "ip=192.168.1.10",

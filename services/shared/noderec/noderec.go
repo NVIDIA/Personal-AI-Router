@@ -87,6 +87,7 @@ const (
 	ServiceNodeInfo ServiceKey = "ni"
 	ServiceOllama   ServiceKey = "ol"
 	ServiceLMStudio ServiceKey = "lm"
+	ServiceLlamaCpp ServiceKey = "lc"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -104,7 +105,7 @@ const (
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
-	ServiceNodeInfo, ServiceOllama, ServiceLMStudio,
+	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCpp,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
 	ServiceEngineControl,
 }
@@ -575,6 +576,17 @@ func (n DirectoryNode) EngineModels(engine string) []string {
 		return n.ModelsByEngine[engine]
 	}
 	return n.Models
+}
+
+// EngineLoadedModels returns models currently resident in memory for one
+// engine. It never falls back to Models or ModelsByEngine: a missing
+// LoadedByEngine report means nothing is loaded, so a router cannot treat
+// catalog ids as eligible.
+func (n DirectoryNode) EngineLoadedModels(engine string) []string {
+	if n.LoadedByEngine == nil {
+		return nil
+	}
+	return n.LoadedByEngine[engine]
 }
 
 // SubscribeParams filters a subscription to nodes advertising any of the listed

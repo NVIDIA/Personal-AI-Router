@@ -201,7 +201,7 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 		if spec.Match != nil && !matchRow(el, spec.Match) {
 			continue
 		}
-		fv, ok := el[spec.Field]
+		fv, ok := lookupField(el, spec.Field)
 		if !ok {
 			continue
 		}
@@ -223,7 +223,7 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 // wrong-typed field fails the match, so a row we cannot classify is excluded
 // rather than counted as loaded.
 func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
-	fv, ok := el[m.Field]
+	fv, ok := lookupField(el, m.Field)
 	if !ok {
 		return false
 	}

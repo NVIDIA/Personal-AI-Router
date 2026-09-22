@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,6 +95,36 @@ func main() {
 		}
 		_ = json.NewEncoder(file).Encode(os.Args[1:])
 		_ = file.Close()
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "licenses" || (len(os.Args) == 3 && os.Args[1] == "cli" && os.Args[2] == "--list-devices")) {
+		// Socket-free llama install validation. Each staged copy can describe a
+		// different build/device result without changing the executor's env.
+		var fixture struct {
+			Version      string `json:"version"`
+			Licenses     string `json:"licenses"`
+			Devices      string `json:"devices"`
+			DelayCommand string `json:"delay_command"`
+			DelayMS      int    `json:"delay_ms"`
+		}
+		bin, _ := os.Executable()
+		data, _ := os.ReadFile(filepath.Join(filepath.Dir(bin), ".llama-fixture.json"))
+		_ = json.Unmarshal(data, &fixture)
+		if version := os.Getenv("FAKE_LLAMA_VERSION"); version != "" {
+			fixture.Version = version
+		}
+		if fixture.DelayCommand == os.Args[1] {
+			_ = os.WriteFile(filepath.Join(filepath.Dir(bin), ".llama-delay-started"), []byte(os.Args[1]), 0600)
+			time.Sleep(time.Duration(fixture.DelayMS) * time.Millisecond)
+		}
+		switch os.Args[1] {
+		case "version":
+			fmt.Println(fixture.Version)
+		case "licenses":
+			fmt.Println(fixture.Licenses)
+		case "cli":
+			fmt.Println(fixture.Devices)
+		}
+		return
 	}
 	// Subcommands used by command-mode + cmd-action tests. They run and
 	// exit (no server), standing in for a daemon's control CLI.

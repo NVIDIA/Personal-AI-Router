@@ -94,6 +94,15 @@ func (e *Executor) sweepLoaded(ctx context.Context, prevLoaded map[string][]stri
 	for name, ld := range res.LoadedByEngine {
 		next[name] = ld
 	}
+	// llama routing requires observed residency. A missed observation must
+	// publish unknown instead of leaving the last loaded set looking current.
+	if _, wasKnown := prevLoaded["llamacpp"]; wasKnown {
+		if _, known := res.LoadedByEngine["llamacpp"]; !known {
+			changed = append(changed, "llamacpp")
+			delete(next, "llamacpp")
+			sort.Strings(changed)
+		}
+	}
 	return changed, next, res
 }
 

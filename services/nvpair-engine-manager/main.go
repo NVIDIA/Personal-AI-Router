@@ -84,6 +84,11 @@ func main() {
 	reporter := NewReporter(codec)
 	emit := func(method string, params any) { _ = codec.Notify(method, params) }
 	exec := NewExecutor(reg, reporter, emit, installBase)
+	modelBaseDir, err := appdir.ModelsDir()
+	if err != nil {
+		log.Fatalf("resolve persistent model directory: %v", err)
+	}
+	exec.modelBaseDir = modelBaseDir
 	if err := exec.SetReservedPort(*reservedPort); err != nil {
 		log.Fatalf("invalid --reserved-port: %v", err)
 	}

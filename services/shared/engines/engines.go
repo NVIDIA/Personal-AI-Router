@@ -61,6 +61,11 @@
 //     relocates the engine to free that port, and the base of the next-free-port
 //     search. The two must differ.
 //
+//     Where an engine lets the user move that default through the environment,
+//     the value read at preparation time wins over the constant here. The
+//     constant is what a stock install uses, not an assertion about this
+//     machine.
+//
 //   - All is ordered, and Ollama is first. The broker prepares managed ports in
 //     this order, and Ollama's preparation reserves any inherited OLLAMA_HOST
 //     alias that later engines must route around. Iterating a map here would
@@ -89,7 +94,9 @@ type Engine struct {
 	DiscoveryService noderec.ServiceKey
 
 	// FacadePort is the engine's stock client-facing port, which PAIR's proxy
-	// claims in managed mode.
+	// claims in managed mode. An engine whose port the user can move through
+	// the environment supersedes this at preparation time; see the package
+	// comment.
 	FacadePort int
 
 	// EnginePortBase is where PAIR relocates the engine so the proxy can take
@@ -142,6 +149,23 @@ var all = []Engine{
 		FacadePort:       1234,
 		EnginePortBase:   1235,
 		PortFile:         "lmstudio-proxy-port.json",
+	},
+	{
+		// 8080 is llama.cpp's own default: common/common.h declares
+		// `int32_t port = 8080` and the server documents "listens on
+		// 127.0.0.1:8080". So it is treated exactly like the other two — the
+		// facade claims the port a llama.cpp client already points at, and
+		// the engine is relocated to EnginePortBase directly above it.
+		//
+		// A user who has set LLAMA_ARG_PORT has told us where their llama.cpp
+		// listens; that is read at preparation time and supersedes this
+		// default, the same way an inherited OLLAMA_HOST supersedes 11434.
+		Name:             "llamacpp",
+		DisplayName:      "llama.cpp",
+		DiscoveryService: noderec.ServiceLlamaCpp,
+		FacadePort:       8080,
+		EnginePortBase:   8081,
+		PortFile:         "llamacpp-proxy-port.json",
 	},
 }
 

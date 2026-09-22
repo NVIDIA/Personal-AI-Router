@@ -105,6 +105,85 @@ type facade struct {
 	// separates them. A shared counter would hand the second facade "2" and
 	// leave that guarantee untested.
 	nextRequestID atomic.Uint64
+
+	// inflightMu guards inflight, the cancel handle for every cancellable
+	// request this facade is currently serving.
+	//
+	// Per facade for exactly the reason nextRequestID is: ids restart at 1 in
+	// each facade and therefore collide across them, so a process-wide map
+	// keyed by id would let a cancel aimed at one engine abort another
+	// engine's request of the same number. The runId guard cannot catch that,
+	// because runId names the process and every facade shares it.
+	inflightMu sync.Mutex
+	inflight   map[string]*inflightRequest
+}
+
+// inflightRequest is one cancellable request in progress.
+type inflightRequest struct {
+	// cancel aborts the origin request's context, which propagates to the
+	// upstream connection so the engine stops generating rather than finishing
+	// a result nobody will read.
+	cancel context.CancelFunc
+
+	// cancelled records that the abort was asked for, rather than the client
+	// hanging up. Both reach the disconnect watcher as a cancelled context,
+	// and the workload's error text is user-visible, so reporting an operator
+	// cancel as a client disconnect would be a lie about what happened.
+	cancelled atomic.Bool
+}
+
+// trackInflight registers a request's cancel handle for the life of the
+// request. The returned cleanup forgets it and releases the context.
+//
+// Every section holding inflightMu releases it by defer, for the reason the
+// httpMu accessors below do: cancelInflight is reached from handleMessage,
+// which recovers panics, and a mutex stranded by a recovered panic would trade
+// a contained crash for a facade that can never track or cancel a request
+// again.
+func (f *facade) trackInflight(id string, cancel context.CancelFunc) (*inflightRequest, func()) {
+	req := &inflightRequest{cancel: cancel}
+	f.putInflight(id, req)
+	return req, func() {
+		f.forgetInflight(id)
+		cancel()
+	}
+}
+
+func (f *facade) putInflight(id string, req *inflightRequest) {
+	f.inflightMu.Lock()
+	defer f.inflightMu.Unlock()
+	if f.inflight == nil {
+		f.inflight = make(map[string]*inflightRequest)
+	}
+	f.inflight[id] = req
+}
+
+func (f *facade) forgetInflight(id string) {
+	f.inflightMu.Lock()
+	defer f.inflightMu.Unlock()
+	delete(f.inflight, id)
+}
+
+func (f *facade) lookupInflight(id string) *inflightRequest {
+	f.inflightMu.Lock()
+	defer f.inflightMu.Unlock()
+	return f.inflight[id]
+}
+
+// cancelInflight aborts one request by id and reports whether there was a live
+// request to abort.
+//
+// Acceptance means that request's context was cancelled, not that the engine
+// has acknowledged anything: the request's ordinary terminal workload event
+// still reports the outcome.
+func (f *facade) cancelInflight(id string) bool {
+	req := f.lookupInflight(id)
+	if req == nil {
+		return false
+	}
+	req.cancelled.Store(true)
+	req.cancel()
+	return true
 }
 
 func newFacade(host *Proxy, profile engineProfile, discovery *Discovery, port int) *facade {

@@ -19,9 +19,15 @@ import (
 // a fixed 11434 would advertise the proxy as Ollama and make the proxy — and
 // peers — self-forward into a loop. The real port is resolved per poll via
 // localEnginePort.
+//
+// llama.cpp is the one engine whose client-facing port PAIR assigns rather than
+// inherits, so its engine port is the table's EnginePortBase and its facade
+// port is what a client targets. Nothing claims llama.cpp's upstream default.
 var (
-	defaultOllamaPort   = ollamaProxyProfile.FacadePort
-	defaultLMStudioPort = lmstudioProxyProfile.FacadePort
+	defaultOllamaPort        = ollamaProxyProfile.FacadePort
+	defaultLMStudioPort      = lmstudioProxyProfile.FacadePort
+	defaultLlamaCppPort      = llamacppProxyProfile.EnginePortBase
+	defaultLlamaCppProxyPort = llamacppProxyProfile.FacadePort
 )
 
 const (
@@ -187,6 +193,64 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	}
 }
 
+// runAutoAdvertiseLlamaCpp is the llama.cpp sibling of runAutoAdvertiseLMStudio:
+// it polls the local llama-server and reconciles this node's lc service
+// registration against it.
+//
+// The three advertise loops are still one per engine even though one process
+// now hosts every facade. Only the health probe and the listen-port lookup are
+// table-driven so far; folding the loops themselves into the engine table is
+// deliberately left as follow-up rather than done alongside adding an engine.
+func (b *Broker) runAutoAdvertiseLlamaCpp(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseLlamaCpp(client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseLlamaCpp(client)
+		}
+	}
+}
+
+// reconcileAdvertiseLlamaCpp brings this node's lc registration into line with
+// the local llama.cpp server, mirroring reconcileAdvertiseLMStudio: it
+// advertises the promoted proxy port (never the engine) and hands the engine's
+// loopback port to the facade via node/set-local-backend.
+//
+// This engine has a managed facade like the other two, but it needs neither
+// sibling's recovery path. The hazard both guard against is a stale
+// engine:status still naming the stock port after the facade claimed it, which
+// would advertise the facade as the engine and forward it to itself; the equal
+// proxy/engine refuse below already drops exactly that reading. And where the
+// siblings fall back to their stock port when engine-manager is unavailable,
+// this one falls back to no port at all, so an unreachable manager cannot be
+// read as permission to adopt whatever answers on 8080.
+func (b *Broker) reconcileAdvertiseLlamaCpp(client *http.Client) {
+	// An unavailable manager is unknown ownership, never authority to adopt a
+	// process answering on the stock port.
+	enginePort, probe := b.localEnginePort("llamacpp", 0)
+	probe = probe && enginePort > 0
+	proxyPort := b.llamaCppProxyListenPort()
+	if proxyPort != 0 && enginePort == proxyPort {
+		enginePort = 0
+		probe = false
+	}
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkEngineHealth(llamacppProxyProfile, client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceLlamaCpp, Port: proxyPort})
+		b.setProxyLocalBackend(b.getLlamaCppProxy(), "llamacpp", enginePort, true)
+	} else {
+		b.unregisterService(noderec.ServiceLlamaCpp)
+		b.setProxyLocalBackend(b.getLlamaCppProxy(), "llamacpp", enginePort, false)
+	}
+}
+
 // proxyLocalBackend is the node/set-local-backend payload: the loopback engine
 // the proxy's cluster mTLS ingress forwards to, and the proxy's own self
 // candidate on the local routing path.
@@ -263,6 +327,10 @@ func (b *Broker) proxyListenPort() int {
 
 func (b *Broker) lmstudioProxyListenPort() int {
 	return b.engineProxyListenPort(lmstudioProxyProfile)
+}
+
+func (b *Broker) llamaCppProxyListenPort() int {
+	return b.engineProxyListenPort(llamacppProxyProfile)
 }
 
 // checkEngineHealth reports whether a local engine is answering on the given

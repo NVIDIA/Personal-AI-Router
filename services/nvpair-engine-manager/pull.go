@@ -72,6 +72,14 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 
 	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
 	defer cancel()
+	if act.Builtin == "llama-models" {
+		res, err := e.Action(ctx, engine, pullModelAction, params)
+		if err == nil {
+			e.reporter.clear(pullFailedID(engine, model))
+			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "done", Percent: 100, Message: model})
+		}
+		return res, err
+	}
 
 	// CLI action (e.g. lms get): no structured line progress; emit a start
 	// marker and return the final result via the existing runner.

@@ -12,10 +12,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// callTimeout bounds a single broker request. It is generous enough to
-// cover the broker's slowest relay (the 30s cluster-manager path) plus
-// headroom, so a healthy call never times out under us.
+// callTimeout bounds ordinary broker requests, not long engine mutations.
 const callTimeout = 35 * time.Second
+
+// Engine Manager allows 30 minutes for acquisition and model operations.
+// Keep its terminal response observable, with a little relay headroom.
+const engineOperationTimeout = 31 * time.Minute
 
 // NotificationMsg carries one broker server-push frame into the Bubble
 // Tea update loop. Every view receives it.
@@ -60,9 +62,13 @@ func waitForNotification(client *rpc.Client) tea.Cmd {
 // call issues a broker request on a background goroutine and feeds the
 // outcome back into the update loop via decode, which maps the response
 // (or error) to a view-specific message.
-func call(client *rpc.Client, method string, params any, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
+func call(client *rpc.Client, method string, params any, decode func(*rpc.Message, error) tea.Msg, budget ...time.Duration) tea.Cmd {
+	timeout := callTimeout
+	if len(budget) > 0 {
+		timeout = budget[0]
+	}
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		msg, err := client.Call(ctx, method, params)
 		return decode(msg, err)

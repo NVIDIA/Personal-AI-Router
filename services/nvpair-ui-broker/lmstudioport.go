@@ -38,8 +38,24 @@ func (b *Broker) markLMStudioPortReady() {
 	}
 }
 
+// managedPortGates are the per-engine ownership gates, in table order.
+//
+// A nil gate is skipped rather than waited on, which is the convention the rest
+// of this file already follows: nil means "no gate configured", as it is for a
+// test that drives one behaviour off a bare &Broker{}. Selecting on a nil
+// channel would block that caller forever instead.
+func (b *Broker) managedPortGates() []<-chan struct{} {
+	gates := make([]<-chan struct{}, 0, 3)
+	for _, gate := range []chan struct{}{b.ollamaPortReady, b.lmstudioPortReady, b.llamacppPortReady} {
+		if gate != nil {
+			gates = append(gates, gate)
+		}
+	}
+	return gates
+}
+
 func (b *Broker) waitForManagedPortOwnership(ctx context.Context) bool {
-	for _, ready := range []<-chan struct{}{b.ollamaPortReady, b.lmstudioPortReady} {
+	for _, ready := range b.managedPortGates() {
 		select {
 		case <-ctx.Done():
 			return false
@@ -50,7 +66,7 @@ func (b *Broker) waitForManagedPortOwnership(ctx context.Context) bool {
 }
 
 func (b *Broker) managedPortOwnershipReady() bool {
-	for _, ready := range []<-chan struct{}{b.ollamaPortReady, b.lmstudioPortReady} {
+	for _, ready := range b.managedPortGates() {
 		select {
 		case <-ready:
 		default:
@@ -354,17 +370,10 @@ func (b *Broker) reconcileLMStudioProxyPortOnReady(boundPort int) {
 func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint64, boundPort int) {
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
-	if b.loadEngineSettingsLocked() != nil {
+	if b.settingsGovernFacadeLocked(lmstudioProxyProfile) {
 		if b.lmstudioProxyGeneration.Load() == generation {
 			b.markLMStudioPortReady()
 		}
-		return
-	}
-	if b.lmstudioProxyGeneration.Load() != generation {
-		return
-	}
-	if _, explicit := b.explicitEngineSettingsLocked("lmstudio"); explicit {
-		b.markLMStudioPortReady()
 		return
 	}
 	if b.lmstudioProxyGeneration.Load() != generation {

@@ -102,11 +102,11 @@ func TestSubscribedToNode(t *testing.T) {
 			HostUUID: "uuid-a",
 			Name:     "host-a",
 			IP:       "10.0.0.5",
-			Models:   []string{"llama"},
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 				tc.profile.DiscoveryService: {Port: tc.profile.FacadePort},
 			},
 		}
+		tc.advertise(&withService, "llama")
 		got, ok := subscribedToNode(tc.profile, withService)
 		if !ok {
 			t.Fatal("node advertising this engine + IP should project")
@@ -153,15 +153,12 @@ func TestSubscribedToNode(t *testing.T) {
 			HostUUID: "uuid-d",
 			Name:     "host-d",
 			IP:       "10.0.0.7",
-			Models:   []string{"mine", "theirs"},
-			ModelsByEngine: map[string][]string{
-				tc.profile.Name: {"mine"},
-				other.Name:      {"theirs"},
-			},
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 				tc.profile.DiscoveryService: {Port: tc.profile.FacadePort},
 			},
 		}
+		advertiseEngine(&dual, tc.profile, "mine")
+		advertiseEngine(&dual, other, "theirs")
 		got, ok = subscribedToNode(tc.profile, dual)
 		if !ok {
 			t.Fatal("dual-engine node advertising this engine should project")

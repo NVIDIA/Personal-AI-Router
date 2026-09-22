@@ -11,8 +11,9 @@ local network: each node advertises itself over mDNS as one consolidated
 node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
-discovery. A node may be running [Ollama](https://ollama.com/), LM Studio, both,
-or neither, and its model inventory is fetched over HTTP from its engine-manager
+discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
+llama.cpp, any combination, or none, and its model inventory is fetched over HTTP
+from its engine-manager
 rather than crammed into mDNS TXT records, which are too small to carry it.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
@@ -40,7 +41,7 @@ This tree builds twelve Go binaries. `nvpair-ui-broker` is the parent service an
 | Binary | Role |
 | --- | --- |
 | `nvpair-ui-broker` | Parent service and JSON-RPC API surface used by the bundled UI and other clients. Supervises workers, relays consolidated discovery, and coordinates routing and scheduling. |
-| `nvpair-proxy` | The engine HTTP reverse proxy: one process hosting a facade per enabled engine, each enabled over `facade/enable` after spawn. Serves each engine's own dialect (Ollama-native and OpenAI-compatible), routes only to advertised model owners, and applies owner failover and scheduler priorities. |
+| `nvpair-proxy` | The engine HTTP reverse proxy: one process hosting a facade per enabled engine, each enabled over `facade/enable` after spawn. Serves each engine's own dialect (Ollama-native and OpenAI-compatible), routes only to advertised model owners, and applies owner failover and scheduler priorities. llama.cpp's facade is the one whose eligibility is **loaded** models only, because PAIR runs it with `--no-models-autoload`. |
 | `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
 | `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
 | `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
@@ -58,7 +59,7 @@ The mDNS responder is our own rather than the host's, because Windows ships none
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama and LM Studio together. Fresh maximum-GPU utilization is
+node across Ollama, LM Studio, and llama.cpp together. Fresh maximum-GPU utilization is
 smoothed into pressure 0–3; missing or stale telemetry is neutral. Rankings use
 `pending + gpuPressure`, and each proxy adds local reservations before choosing,
 so bursts spread without waiting for workload feedback.

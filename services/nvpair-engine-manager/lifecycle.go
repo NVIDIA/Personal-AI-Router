@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -174,6 +176,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		"host":        effectiveBind(rt.Bind, opts.Bind),
 		"port":        strconv.Itoa(port),
 		"install_dir": st.installDir,
+		"model_dir":   llamaModelDir(st),
 	}
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
@@ -237,10 +240,19 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
+	shared, err := childEnv(st, vars)
+	if err != nil {
+		return err
+	}
+	env := layerLaunchEnvironment(shared, launch.Env)
+	if err := e.prepareLlamaCompatibility(ctx, st, launch.Bin, launch.Args, env); err != nil {
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
+		return err
+	}
 
-	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
+	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), env)
 	defer diagnostics.close()
-	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+	proc, err := startManagedProc(launch.Bin, launch.Args, env, func(stream, line string) {
 		_, _ = diagnostics.Write([]byte(line + "\n"))
 		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
 		// out of exported engine logs; report exit/readiness failures separately.
@@ -293,6 +305,10 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 // daemon-style engine such as LM Studio), then waits for readiness.
 // There is no owned process — liveness comes from the probe.
 func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+	shared, err := childEnv(st, vars)
+	if err != nil {
+		return err
+	}
 	st.mu.Lock()
 	st.proc = nil
 	st.mu.Unlock()
@@ -326,10 +342,13 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 			}
 		}
 		argv := append([]string{launch.Bin}, launch.Args...)
-		run := e.runCommand
+		env := layerLaunchEnvironment(shared, launch.Env)
+		run := func(ctx context.Context, argv []string) error {
+			return e.runCommand(ctx, argv, env)
+		}
 		if rt.LaunchArgs != nil || rt.LaunchEnv != nil || len(launch.Env) > 0 {
 			run = func(ctx context.Context, argv []string) error {
-				return runPrivateLaunchCommand(ctx, argv, launch.Env, launchDiagnosticArgs(rt))
+				return runPrivateLaunchCommand(ctx, argv, env, launchDiagnosticArgs(rt))
 			}
 			// A vendor command may spawn its daemon and then exit unsuccessfully.
 			// Attempt its official cleanup even if the first command failed.
@@ -352,6 +371,30 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		return cleanup(werr)
 	}
 	return nil
+}
+
+// layerLaunchEnvironment builds the environment an engine start receives: the
+// shared child environment (manifest defaults plus the owned llama model cache),
+// then the resolved launch environment so saved launch settings and managed
+// controls override manifest defaults. The llama cache location is not a launch
+// setting; the validated, normalized path childEnv resolved stays authoritative.
+func layerLaunchEnvironment(shared, launch map[string]string) map[string]string {
+	env := make(map[string]string, len(shared)+len(launch))
+	for key, value := range shared {
+		env[key] = value
+	}
+	for key, value := range launch {
+		if _, owned := shared[key]; owned && llamaOwnedEnvironmentKey(key) {
+			continue
+		}
+		for existing := range env {
+			if environmentKey(existing) == environmentKey(key) {
+				delete(env, existing)
+			}
+		}
+		env[key] = value
+	}
+	return env
 }
 
 // Capture vendor startup diagnostics without interpreting engine options.
@@ -410,6 +453,19 @@ func (e *Executor) Stop(engine string) error {
 	st, err := e.state(engine)
 	if err != nil {
 		return err
+	}
+	if engine == "llamacpp" {
+		st.mu.Lock()
+		st.stopPending++
+		cancelMutation, cancelStart := st.mutationCancel, st.startCancel
+		st.mu.Unlock()
+		defer func() { st.mu.Lock(); st.stopPending--; st.mu.Unlock() }()
+		if cancelMutation != nil {
+			cancelMutation()
+		}
+		if cancelStart != nil {
+			cancelStart()
+		}
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
@@ -526,7 +582,12 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	// force-kills engine-manager on a timeout, so an unbounded stop command
 	// would wedge StopAll and, in turn, the whole app shutdown.
 	stopCtx, cancelStop := context.WithTimeout(context.Background(), commandStopTimeout(rt))
-	runErr := e.runCommand(stopCtx, argv)
+	env, envErr := childEnv(st)
+	if envErr != nil {
+		cancelStop()
+		return envErr
+	}
+	runErr := e.runCommand(stopCtx, argv, env)
 	cancelStop()
 	if runErr != nil {
 		return fmt.Errorf("stop %s: %w", engine, runErr)
@@ -773,9 +834,17 @@ func (e *Executor) StopAll() {
 			defer wg.Done()
 			st.mu.Lock()
 			cancel := st.startCancel
+			cancelMutation := st.mutationCancel
+			cancelPull := st.pullCancel
 			st.mu.Unlock()
 			if cancel != nil {
 				cancel()
+			}
+			if cancelMutation != nil {
+				cancelMutation()
+			}
+			if cancelPull != nil {
+				cancelPull()
 			}
 			st.opMu.Lock()
 			defer st.opMu.Unlock()
@@ -871,12 +940,28 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		if err != nil {
 			return false
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		if resp.StatusCode != want {
+			return false
+		}
+		if p.Identity == "llamacpp" {
+			if resp.Header.Get("Server") != "llama.cpp" {
+				return false
+			}
+			var payload struct {
+				Data json.RawMessage `json:"data"`
+			}
+			if json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&payload) != nil {
+				return false
+			}
+			var rows []json.RawMessage
+			return len(payload.Data) > 0 && string(payload.Data) != "null" && json.Unmarshal(payload.Data, &rows) == nil
+		}
+		return true
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)

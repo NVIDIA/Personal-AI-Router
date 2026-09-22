@@ -7,7 +7,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -20,6 +23,33 @@ import (
 // wedge StopAll (and the whole app shutdown) now that the broker no longer
 // force-kills engine-manager on a timeout.
 const taskkillTimeout = 5 * time.Second
+
+// Windows canonicalization expands ordinary8.3 aliases as well as reparse
+// points. Inspect actual filesystem attributes instead of treating every name
+// change as redirection. Check ancestors too, including above missing children.
+func validateLlamaPath(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		extended, err := llamaCachePath(current)
+		if err != nil {
+			return err
+		}
+		ptr, err := windows.UTF16PtrFromString(extended)
+		if err != nil {
+			return err
+		}
+		attrs, err := windows.GetFileAttributes(ptr)
+		if err != nil && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) && !errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+			return err
+		}
+		if err == nil && attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return fmt.Errorf("llama managed directory contains a reparse point; external data is left untouched")
+		}
+		if parent := filepath.Dir(current); parent == current {
+			break
+		}
+	}
+	return nil
+}
 
 // configureSysProcAttr hides the child's console window
 // (HideWindow + CREATE_NO_WINDOW), matching every other NVPAIR subprocess.

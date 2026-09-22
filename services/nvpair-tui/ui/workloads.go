@@ -16,16 +16,14 @@ type workload struct {
 	ID             string `json:"id"`
 	Model          string `json:"model"`
 	Engine         string `json:"engine"`
+	RunID          string `json:"runId"`
 	State          string `json:"state"`
 	OriginatedFrom string `json:"originatedFrom"`
+	ScheduledOn    string `json:"scheduledOn"`
 	CreatedAt      int64  `json:"createdAt"` // Unix millis
 }
 
-// workloadsView shows cluster-wide inference workloads. The table is built
-// purely from the live workloads:upsert / workloads:remove stream after
-// subscribing, so a workload already in flight when the TUI starts stays
-// invisible until its next transition. The broker does expose
-// workloads:get-initial for a baseline; this view does not yet call it.
+// workloadsView combines the initial snapshot with live workload events.
 type workloadsView struct {
 	client *rpc.Client
 	table  table.Model
@@ -37,6 +35,16 @@ type workloadsView struct {
 }
 
 type workloadsSubscribedMsg struct{ err error }
+type workloadsInitialMsg struct {
+	workloads []workload
+	err       error
+}
+type workloadCancelMsg struct {
+	accepted bool
+	err      error
+}
+
+var workloadCancelKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel local llama request"))
 
 func newWorkloadsView(client *rpc.Client) *workloadsView {
 	v := &workloadsView{client: client, byKey: map[string]workload{}}
@@ -65,14 +73,42 @@ func (v *workloadsView) SetSize(w, h int) {
 		{Title: "AGE", Width: age},
 	})
 	v.table.SetWidth(w)
-	v.table.SetHeight(clampWidth(h-1, 1))
+	v.table.SetHeight(clampWidth(h-3, 1))
 }
 
 func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case workloadCancelMsg:
+		if msg.err != nil {
+			v.status = "Cancel failed: " + msg.err.Error()
+		} else if msg.accepted {
+			v.status = "Cancellation requested; awaiting terminal workload event."
+		} else {
+			v.status = "Request is no longer active in that proxy run."
+		}
+		return nil
 	case workloadsSubscribedMsg:
 		if msg.err != nil {
 			v.status = "workloads subscribe failed: " + msg.err.Error()
+			return nil
+		}
+		return call(v.client, "workloads:get-initial", nil, func(msg *rpc.Message, err error) tea.Msg {
+			if err != nil {
+				return workloadsInitialMsg{err: err}
+			}
+			var result struct {
+				Workloads []workload `json:"workloads"`
+			}
+			err = decodeParams(msg.Result, &result)
+			return workloadsInitialMsg{workloads: result.Workloads, err: err}
+		})
+	case workloadsInitialMsg:
+		if msg.err != nil {
+			v.status = "Workload baseline unavailable: " + msg.err.Error()
+			return nil
+		}
+		for _, w := range msg.workloads {
+			v.upsert(w)
 		}
 		return nil
 
@@ -88,13 +124,40 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 			var p struct {
 				WorkloadID     string `json:"workloadId"`
 				OriginatedFrom string `json:"originatedFrom"`
+				Engine         string `json:"engine"`
+				RunID          string `json:"runId"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
-			v.remove(workloadKey(p.OriginatedFrom, p.WorkloadID))
+			for key, w := range v.byKey {
+				if w.OriginatedFrom == p.OriginatedFrom && w.ID == p.WorkloadID && (p.Engine == "" || p.Engine == w.Engine) && (p.RunID == "" || p.RunID == w.RunID) {
+					v.remove(key)
+				}
+			}
 		}
 		return nil
 
 	case tea.KeyMsg:
+		if key.Matches(msg, workloadCancelKey) {
+			index := v.table.Cursor()
+			if index < 0 || index >= len(v.order) {
+				return nil
+			}
+			w := v.byKey[v.order[index]]
+			if w.Engine != "llamacpp" || w.RunID == "" || w.State != "running" {
+				v.status = "Only active llama requests with a run identity can be cancelled."
+				return nil
+			}
+			return call(v.client, "workloads:cancel", map[string]string{"id": w.ID, "runId": w.RunID, "engine": w.Engine, "originatedFrom": w.OriginatedFrom}, func(msg *rpc.Message, err error) tea.Msg {
+				if err != nil {
+					return workloadCancelMsg{err: err}
+				}
+				var result struct {
+					Accepted bool `json:"accepted"`
+				}
+				err = decodeParams(msg.Result, &result)
+				return workloadCancelMsg{accepted: result.Accepted, err: err}
+			})
+		}
 		var cmd tea.Cmd
 		v.table, cmd = v.table.Update(msg)
 		return cmd
@@ -103,7 +166,10 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (v *workloadsView) upsert(w workload) {
-	key := workloadKey(w.OriginatedFrom, w.ID)
+	key := workloadKey(w.OriginatedFrom, w.ID, w.Engine, w.RunID)
+	if previous, ok := v.byKey[key]; ok && (previous.State == "completed" || previous.State == "failed") && w.State != "completed" && w.State != "failed" {
+		return
+	}
 	if _, ok := v.byKey[key]; !ok {
 		v.order = append(v.order, key)
 	}
@@ -141,15 +207,34 @@ func (v *workloadsView) refreshRows() {
 }
 
 func (v *workloadsView) View() string {
-	if v.status != "" {
-		return statusErrStyle.Render(v.status)
-	}
 	if len(v.order) == 0 {
-		return footerStyle.Render("No active workloads. Live cluster workloads will appear here as they run.")
+		empty := "No active workloads. Live cluster workloads will appear here as they run."
+		// An empty list and a failed baseline fetch look identical otherwise,
+		// so a subscribe or get-initial error would be written to v.status and
+		// never rendered.
+		if v.status != "" {
+			return footerStyle.Render(empty) + "\n" + footerStyle.Render(v.status)
+		}
+		return footerStyle.Render(empty)
 	}
-	return v.table.View()
+	detail := ""
+	if index := v.table.Cursor(); index >= 0 && index < len(v.order) {
+		w := v.byKey[v.order[index]]
+		target := w.ScheduledOn
+		if target == "" {
+			target = "unknown (not reported)"
+		}
+		detail = "Origin: " + w.OriginatedFrom + " | Runs on: " + target
+	}
+	return v.table.View() + "\n" + footerStyle.Width(v.width).Render(detail) + "\n" + footerStyle.Render(v.status)
 }
 
-func (v *workloadsView) Help() []key.Binding { return nil }
+func (v *workloadsView) Help() []key.Binding { return []key.Binding{workloadCancelKey} }
 
-func workloadKey(origin, id string) string { return origin + "/" + id }
+func workloadKey(origin, id string, identity ...string) string {
+	key := origin + "/" + id
+	for _, part := range identity {
+		key += "/" + part
+	}
+	return key
+}

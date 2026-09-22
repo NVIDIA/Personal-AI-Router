@@ -182,8 +182,16 @@ func (b *Broker) finishEngineProxyStartup(profile engineProxyProfile) {
 		b.finishOllamaProxyTerminal()
 	case lmstudioProxyProfile.Name:
 		b.finishLMStudioProxyTerminal()
+	case llamacppProxyProfile.Name:
+		b.finishLlamaCppProxyTerminal()
 	default:
-		slog.Warn("no startup-gate finisher for engine", "engine", profile.Name)
+		// Reaching this leaves that engine's gate shut for the life of the
+		// process, so every gated client request waits out its call timeout
+		// and answers "retry" forever. A warning is the most this can do from
+		// here, but an engine added without a finisher is a startup hang, not
+		// a logging gap.
+		slog.Error("no startup-gate finisher for engine; its gated requests will time out",
+			"engine", profile.Name)
 	}
 }
 
@@ -417,11 +425,7 @@ func needsOllamaPortGate(method string, params json.RawMessage) bool {
 func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
-	if b.loadEngineSettingsLocked() != nil {
-		b.markOllamaPortReady()
-		return
-	}
-	if _, explicit := b.explicitEngineSettingsLocked("ollama"); explicit {
+	if b.settingsGovernFacadeLocked(ollamaProxyProfile) {
 		b.markOllamaPortReady()
 		return
 	}

@@ -399,6 +399,16 @@ type Proxy struct {
 	// exists because each facade's request counter restarts at 1, so without it
 	// a reused id after a restart would collide in the broker's store.
 	runID string
+
+	// interruptRead unblocks a pending control-plane read at shutdown, set by
+	// the entrypoint because the transport is its to own. Optional: a nil
+	// value just means the read loop waits for the read to return by itself.
+	//
+	// It interrupts the read side only, never the whole transport, so the
+	// terminal workload events emitted while facades drain still reach the
+	// broker. That distinction is why this is a callback rather than a Close
+	// on the codec.
+	interruptRead func()
 }
 
 // NewProxy builds a facade-less process host. Facades arrive via
@@ -1281,6 +1291,16 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	var wlSeq int64
 	nextWlSeq := func() int64 { wlSeq++; return wlSeq }
 
+	// inflight is the handle workload/cancel reaches this request through, and
+	// is nil for anything that is not a cancellable workload. The request is
+	// re-pointed at a context derived from the origin's, so cancelling it does
+	// everything a client hangup does: the retry loop below reads r.Context()
+	// before every dispatch and every backoff, each attempt's context is a
+	// child of it, and the exhaustion response is suppressed on it. A cancel
+	// therefore tears down the attempt in flight, stops further retries, and
+	// is classified by the same reporters — once, through terminalOnce.
+	var inflight *inflightRequest
+
 	// Emit workload:submitted the moment the request is admitted, before any
 	// dispatch. A burst of concurrent inference requests must surface as job
 	// cards immediately — the upstream engine serializes work on a single GPU
@@ -1294,6 +1314,12 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// not tried would inflate its load. Each dispatch and each gap between
 	// attempts re-points it.
 	if isInf && model != "" {
+		requestCtx, cancelRequest := context.WithCancel(r.Context())
+		r = r.WithContext(requestCtx)
+		var forget func()
+		inflight, forget = f.trackInflight(reqID, cancelRequest)
+		defer forget()
+
 		createdMs := start.UnixMilli()
 		wl = &Workload{
 			ID:        reqID,
@@ -1347,15 +1373,29 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// cancelReason names why the request context ended. An asked-for cancel
+	// (workload/cancel) arrives as the same cancelled context a vanished client
+	// or our own shutdown does, and the workload's error text is user-visible,
+	// so reporting an operator's cancel as a disconnect would misstate what
+	// happened. Both reporters below go through this so the answer does not
+	// depend on which of them wins the race to emit.
+	cancelReason := func(otherwise string) string {
+		if inflight != nil && inflight.cancelled.Load() {
+			return "cancelled before completion"
+		}
+		return otherwise
+	}
+
 	// Watch for the client going away while the request is in flight. The
 	// terminal event is otherwise emitted only after the stream copy returns;
 	// a client that disconnects mid-stream can leave the copy blocked, so we
 	// emit the terminal here the moment r.Context() is cancelled instead of
-	// waiting for the unwind. Cancelling r.Context() (client close, or our own
-	// shutdown) also propagates to the ReverseProxy's upstream request, so the
-	// engine stops generating. terminalOnce keeps this from double-emitting
-	// with the normal path. The half-open case (no FIN, r.Context() never
-	// fires) is caught instead by statusCapture's write deadline below.
+	// waiting for the unwind. Cancelling r.Context() (client close, a
+	// workload/cancel, or our own shutdown) also propagates to the
+	// ReverseProxy's upstream request, so the engine stops generating.
+	// terminalOnce keeps this from double-emitting with the normal path. The
+	// half-open case (no FIN, r.Context() never fires) is caught instead by
+	// statusCapture's write deadline below.
 	if wl != nil {
 		reqCtx := r.Context()
 		finished := make(chan struct{})
@@ -1363,11 +1403,20 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			select {
 			case <-reqCtx.Done():
-				emitTerminal("cancelled", "client disconnected before completion")
+				emitTerminal("cancelled", cancelReason("client disconnected before completion"))
 			case <-finished:
 			}
 		}()
 	}
+
+	// Backstop terminal. finalize below recovers the ErrAbortHandler panic a
+	// truncated upstream raises and classifies the outcome, so in the ordinary
+	// course this is a no-op behind terminalOnce: it is registered before
+	// finalize and therefore runs after it. It exists for the unwind finalize
+	// itself does not survive — a panic raised inside finalize before its own
+	// emitTerminal, say from the codec — so a workload never stays "running"
+	// for the life of the broker whatever path the handler leaves by.
+	defer emitTerminal("failed", "request handler exited before completion")
 
 	// committedSC is the statusCapture of the candidate we committed to
 	// streaming; its wroteErr tells us after the fact whether the client write
@@ -1445,15 +1494,16 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if wl != nil {
 			switch {
 			case r.Context().Err() != nil:
-				// The request was cancelled before it finished — either the
-				// client disconnected or, on shutdown, we cancelled it to stop
-				// the in-flight inference. A mid-stream cancel never reaches
-				// ErrorHandler (the 200 headers are already sent), so without
-				// this branch it would be misreported as completed. (The
-				// watcher above usually beats us to it; emitTerminal makes that
-				// a no-op.) Cancelled rather than failed: nothing went wrong
-				// here, the requester stopped waiting.
-				emitTerminal("cancelled", "request cancelled before completion")
+				// The request was cancelled before it finished — the client
+				// disconnected, a workload/cancel asked for it, or, on
+				// shutdown, we cancelled it to stop the in-flight inference. A
+				// mid-stream cancel never reaches ErrorHandler (the 200 headers
+				// are already sent), so without this branch it would be
+				// misreported as completed. (The watcher above usually beats us
+				// to it; emitTerminal makes that a no-op.) Cancelled rather
+				// than failed: nothing went wrong here, the requester stopped
+				// waiting.
+				emitTerminal("cancelled", cancelReason("request cancelled before completion"))
 			case committedSC != nil && committedSC.wroteErr != nil:
 				// The response committed but a write to (or flush toward) the
 				// client failed — typically the idle deadline tripping on a
@@ -2538,16 +2588,41 @@ func subscribedToNode(p engineProfile, n noderec.DirectoryNode) (Node, bool) {
 		TXT:         n.AddressTXT(),
 		IP:          n.IP,
 		ClusterUUID: n.ClusterUUID,
-		// Filter on this node's Ollama models only, not the cross-engine union, so
-		// a model that a dual-engine node serves solely via LM Studio isn't
-		// accepted as an Ollama owner here (falls back to the union for a peer
-		// that sends no attribution — see DirectoryNode.EngineModels).
-		Models: append([]string(nil), n.EngineModels(p.Name)...),
+		// Filter on this node's models for this engine only, never the
+		// cross-engine union, so a model a dual-engine node serves solely via
+		// another engine is not accepted as an owner here.
+		Models: append([]string(nil), p.eligibleModels(n)...),
 	}, true
 }
 
+// eligibleModels is the node's inventory that makes it an owner for this
+// engine.
+//
+// The two on-demand engines read the catalog, falling back to the union for a
+// peer that sends no per-engine attribution (see DirectoryNode.EngineModels).
+// llama.cpp reads the loaded set with no fallback at all: a missing report
+// means nothing is loaded, and treating catalog ids as eligible there would
+// route to an owner that will not serve them.
+func (p engineProfile) eligibleModels(n noderec.DirectoryNode) []string {
+	if p.ModelEligibility == loadedModels {
+		return n.EngineLoadedModels(p.Name)
+	}
+	return n.EngineModels(p.Name)
+}
+
+// readLoop serves the control plane until the transport ends or ctx is done.
+//
+// The context is checked per iteration, and interruptRead is armed to unblock a
+// read that is already parked, so teardown does not wait on a message that may
+// never arrive. On the stdio transport the parent closing the pipe is what ends
+// the read in practice, since Close there is deliberately a no-op; the
+// interrupt is what ends it on an IPC connection, whose read deadline can be
+// brought forward without disturbing the write side.
 func (p *Proxy) readLoop(ctx context.Context) error {
-	for {
+	if p.interruptRead != nil {
+		defer context.AfterFunc(ctx, p.interruptRead)()
+	}
+	for ctx.Err() == nil {
 		msg, err := p.codec.Read()
 		if err != nil {
 			if err == io.EOF || ctx.Err() != nil {
@@ -2558,6 +2633,7 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 		}
 		p.handleMessage(msg)
 	}
+	return nil
 }
 
 // handleMessage dispatches one control-plane message.
@@ -2656,6 +2732,30 @@ func (p *Proxy) handleMessage(msg *Message) {
 		slog.Info("facade enabled", "engine", result.Engine, "port", result.Port)
 		if err := p.codec.Respond(msg.ID, result); err != nil {
 			log.Printf("failed to respond to facade/enable: %v", err)
+		}
+
+	case "workload/cancel":
+		f, ok := p.requireFacade(msg, engine)
+		if !ok {
+			return
+		}
+		var params struct {
+			ID    string `json:"id"`
+			RunID string `json:"runId"`
+		}
+		if json.Unmarshal(msg.Params, &params) != nil || params.ID == "" || params.RunID == "" {
+			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"id\",\"runId\"}")
+			return
+		}
+		// runId names this process, and request ids restart with it. A stale
+		// runId therefore identifies a request from a previous proxy lifetime
+		// whose id may now belong to an unrelated request, so it is refused
+		// rather than matched. The facade is addressed, which is what keeps
+		// one engine's cancel off another engine's identically numbered
+		// request.
+		accepted := params.RunID == p.runID && f.cancelInflight(params.ID)
+		if err := p.codec.Respond(msg.ID, map[string]bool{"accepted": accepted}); err != nil {
+			log.Printf("failed to respond to workload/cancel: %v", err)
 		}
 
 	case "nodes/list":

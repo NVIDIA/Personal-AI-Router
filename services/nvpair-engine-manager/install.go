@@ -28,6 +28,19 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
+	if engine == "llamacpp" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		st.mu.Lock()
+		if e.shuttingDown.Load() || st.stopPending > 0 {
+			st.mu.Unlock()
+			cancel()
+			return context.Canceled
+		}
+		st.mutationCancel = cancel
+		st.mu.Unlock()
+		defer func() { cancel(); st.mu.Lock(); st.mutationCancel = nil; st.mu.Unlock() }()
+	}
 	if ok, _ := e.Detect(engine); ok {
 		e.reporter.clear(installFailedID(engine))
 		e.emitInstallProgress(engine, "already-installed", 100)
@@ -60,11 +73,21 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		e.reportInstallFailed(engine, err)
 		return err
 	}
+	if inst.Driver == "llama-app" {
+		if engine != "llamacpp" {
+			return fmt.Errorf("llama-app driver requires llamacpp engine")
+		}
+		return e.installLlamaApp(ctx, st)
+	}
 	if err := os.MkdirAll(st.installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
 
 	vars := map[string]string{"install_dir": st.installDir}
+	env, err := childEnv(st)
+	if err != nil {
+		return err
+	}
 
 	if len(inst.Script) > 0 {
 		// Escape hatch: vendor-script install with no checksum. Logged
@@ -79,7 +102,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		for i := range argv {
 			argv[i] = expandPath(argv[i])
 		}
-		if err := e.runCommand(ctx, argv); err != nil {
+		if err := e.runCommand(ctx, argv, env); err != nil {
 			werr := fmt.Errorf("script install failed: %w", err)
 			e.reportInstallFailed(engine, werr)
 			return werr
@@ -106,7 +129,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			for i := range args {
 				args[i] = expandPath(args[i])
 			}
-			if err := e.runCommand(ctx, args); err != nil {
+			if err := e.runCommand(ctx, args, env); err != nil {
 				werr := fmt.Errorf("install command failed: %w", err)
 				e.reportInstallFailed(engine, werr)
 				return werr
@@ -138,7 +161,7 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		return e.setDesiredEnabled(engine, false) // already gone
 	}
 	un := st.plat.Uninstall
-	if un == nil || len(un.Run) == 0 {
+	if un == nil || (len(un.Run) == 0 && un.Driver == "") {
 		return fmt.Errorf("engine %q has no uninstall defined for this platform", engine)
 	}
 	st.mu.Lock()
@@ -169,6 +192,18 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: werr.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return werr
 	}
+	if un.Driver == "llama-app" {
+		if engine != "llamacpp" {
+			return fmt.Errorf("llama-app driver requires llamacpp engine")
+		}
+		if err := removeLlamaRuntime(st); err != nil {
+			return err
+		}
+		e.Detect(engine)
+		e.reporter.clear(uninstallFailedID(engine))
+		e.emitState(engine)
+		return e.setDesiredEnabled(engine, false)
+	}
 
 	args, err := resolveArgs(un.Run, map[string]string{"install_dir": st.installDir})
 	if err != nil {
@@ -178,8 +213,12 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		args[i] = expandPath(args[i])
 	}
 	var runErr error
+	env, err := childEnv(st)
+	if err != nil {
+		return err
+	}
 	for attempt := 1; attempt <= uninstallRetries; attempt++ {
-		if runErr = e.runCommand(ctx, args); runErr == nil {
+		if runErr = e.runCommand(ctx, args, env); runErr == nil {
 			break
 		}
 		if attempt < uninstallRetries {
@@ -248,6 +287,10 @@ func validateDownloadURL(raw string) error {
 }
 
 func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (string, error) {
+	return e.downloadLimited(ctx, engine, f, maxDownloadBytes)
+}
+
+func (e *Executor) downloadLimited(ctx context.Context, engine string, f *Fetch, limit int64) (string, error) {
 	if err := validateDownloadURL(f.URL); err != nil {
 		return "", err
 	}
@@ -278,15 +321,22 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 	}}
 	h := sha256.New()
 	// Read one byte past the cap so we can detect (and reject) overflow.
-	n, err := io.Copy(io.MultiWriter(tmp, h), io.TeeReader(io.LimitReader(resp.Body, maxDownloadBytes+1), pw))
-	tmp.Close()
+	n, err := io.Copy(io.MultiWriter(tmp, h), io.TeeReader(io.LimitReader(resp.Body, limit+1), pw))
+	// A close error means the last buffered bytes never reached disk, so the
+	// file on disk is not what the digest above was computed over. Report it
+	// here rather than letting a truncated artifact fail later in extraction,
+	// where the cause is no longer visible.
+	closeErr := tmp.Close()
+	if err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		os.Remove(tmp.Name())
 		return "", fmt.Errorf("download %s: %w", f.URL, err)
 	}
-	if n > maxDownloadBytes {
+	if n > limit {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf("download %s exceeds the %d-byte limit", f.URL, int64(maxDownloadBytes))
+		return "", fmt.Errorf("download %s exceeds the %d-byte limit", f.URL, limit)
 	}
 
 	sum := hex.EncodeToString(h.Sum(nil))
@@ -309,12 +359,14 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 // runCommand executes a manifest-declared argv (an install or uninstall
 // step), hiding the console window on Windows; on failure it returns the
 // combined output for diagnostics.
-func (e *Executor) runCommand(ctx context.Context, argv []string) error {
+func (e *Executor) runCommand(ctx context.Context, argv []string, env ...map[string]string) error {
 	if len(argv) == 0 {
 		return nil
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = commandEnv(env...)
 	configureSysProcAttr(cmd) // hide the console window on Windows
+	configureCommandCancel(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))

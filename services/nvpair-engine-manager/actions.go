@@ -30,6 +30,9 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, action)
 	}
+	if engine == "llamacpp" {
+		return e.actionLlama(ctx, st, action, act, params)
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err
@@ -126,7 +129,7 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	}
 	req.Header.Set(engineIdentityProbeHeader, "1")
 	client := e.client
-	if engine == "ollama" && action == "run_model" && e.ollamaLoadClient != nil {
+	if ((engine == "ollama" && action == "run_model") || (engine == "llamacpp" && action == "load_model")) && e.ollamaLoadClient != nil {
 		client = e.ollamaLoadClient
 	}
 	resp, err := client.Do(req)
@@ -234,7 +237,15 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 	vars["port"] = strconv.Itoa(port)
 	vars["install_dir"] = st.installDir
 	if cli := st.plat.Runtime.CLI; cli != "" {
-		vars["cli"] = expandPath(cli)
+		resolved, err := resolvePlaceholders(cli, vars)
+		if err != nil {
+			return nil, err
+		}
+		vars["cli"] = expandPath(resolved)
+	}
+	env, err := childEnv(st)
+	if err != nil {
+		return nil, err
 	}
 
 	// Most cmd actions run once with the params as given. An action that
@@ -263,9 +274,9 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		// failure is *not* retried in place — it falls through to the next
 		// source below (and runWithResume returns it immediately).
 		if lmsGet {
-			out, lastErr = e.runWithResume(ctx, argv)
+			out, lastErr = e.runWithResume(ctx, argv, env)
 		} else {
-			out, lastErr = e.runCommandOutput(ctx, argv)
+			out, lastErr = e.runCommandOutput(ctx, argv, env)
 		}
 		if lastErr == nil {
 			break
@@ -290,12 +301,14 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 
 // runCommandOutput runs argv and returns its stdout; on failure it
 // returns the error with stderr attached for diagnostics.
-func (e *Executor) runCommandOutput(ctx context.Context, argv []string) (string, error) {
+func (e *Executor) runCommandOutput(ctx context.Context, argv []string, env ...map[string]string) (string, error) {
 	if len(argv) == 0 {
 		return "", nil
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = commandEnv(env...)
 	configureSysProcAttr(cmd)
+	configureCommandCancel(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -323,11 +336,11 @@ var (
 // model-pull path, where re-running resumes the partial download. A
 // resolution failure or any hard error returns immediately, so the caller's
 // source-fallback (or final error) is reached.
-func (e *Executor) runWithResume(ctx context.Context, argv []string) (string, error) {
+func (e *Executor) runWithResume(ctx context.Context, argv []string, env ...map[string]string) (string, error) {
 	var out string
 	var err error
 	for attempt := 1; ; attempt++ {
-		out, err = e.runCommandOutput(ctx, argv)
+		out, err = e.runCommandOutput(ctx, argv, env...)
 		if err == nil {
 			return out, nil
 		}

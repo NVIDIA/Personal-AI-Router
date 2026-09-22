@@ -203,6 +203,14 @@ type Broker struct {
 	lmstudioPortReady                chan struct{}
 	lmstudioPortReadyOnce            sync.Once
 	lmstudioReadyMu                  sync.Mutex
+	// llamaCppProxyGeneration is a plain atomic like LM Studio's rather than
+	// alias-guarded like Ollama's: llama.cpp claims no host alias, so nothing
+	// has to be committed alongside the bump.
+	llamaCppProxyGeneration          atomic.Uint64
+	llamaCppProxyPublishedGeneration atomic.Uint64
+	llamacppPortReady                chan struct{}
+	llamacppPortReadyOnce            sync.Once
+	llamacppReadyMu                  sync.Mutex
 	store                            *discoveryStore
 	telemetry                        *telemetryCache
 	// relayDir is the discovery directory, fed by the promoted daemon's
@@ -417,6 +425,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		workloads:          workloadstore.New(),
 		ollamaPortReady:    make(chan struct{}),
 		lmstudioPortReady:  make(chan struct{}),
+		llamacppPortReady:  make(chan struct{}),
 	}
 }
 
@@ -535,15 +544,20 @@ func (b *Broker) restoreEnabledEnginesAfterPortGate(ctx context.Context) bool {
 	return true
 }
 
+// runEngineAvailabilityAfterPortGates starts every engine's advertise loop once
+// managed port ownership has settled. One loop runs on this goroutine and the
+// rest get their own, so the caller is not left holding a goroutine per engine.
 func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
 	runOllama func(context.Context),
 	runLMStudio func(context.Context),
+	runLlamaCpp func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
 	go runOllama(ctx)
+	go runLlamaCpp(ctx)
 	runLMStudio(ctx)
 	return true
 }
@@ -760,6 +774,8 @@ func (b *Broker) enableEngineFacade(
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.ollamaFacadeSpec(alias), b.ollamaFallbackPort)
 	case lmstudioProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.lmstudioFacadeSpec(), b.lmstudioFallbackPort)
+	case llamacppProxyProfile.Name:
+		return b.enableProxyFacadeWithFallback(ctx, pp, b.llamacppFacadeSpec(), b.llamacppFallbackPort)
 	default:
 		return fmt.Errorf("no facade spec for engine %q", profile.Name)
 	}
@@ -786,6 +802,11 @@ func (b *Broker) blockAndFinishEngineProxy(profile engineProxyProfile) {
 			_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy facade could not be brought up", nil)
 		}
 		b.finishLMStudioProxyTerminal()
+	case llamacppProxyProfile.Name:
+		if b.llamacppState().managedFacade.Load() {
+			_, _ = b.blockManagedLlamaCppFacade("the llama.cpp proxy facade could not be brought up", nil)
+		}
+		b.finishLlamaCppProxyTerminal()
 	default:
 		slog.Warn("no terminal handling for engine", "engine", profile.Name)
 	}
@@ -871,9 +892,11 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 	// lmstudioProxyGenerationIsCurrent is what drops the stale run.
 	lmstudioGeneration := b.lmstudioProxyGeneration.Add(1)
 
+	llamacppGeneration := b.llamaCppProxyGeneration.Add(1)
+
 	pp, err := startProxy(engines.ProxyComponent, b.proxyPath, applog.LevelString(), b.relayDir,
 		func(method string, params json.RawMessage) {
-			b.forwardProxyProcessNotification(ollamaGeneration, lmstudioGeneration, method, params)
+			b.forwardProxyProcessNotification(ollamaGeneration, lmstudioGeneration, llamacppGeneration, method, params)
 		}, b.proxyArgs()...)
 	if err != nil {
 		return nil, err
@@ -886,6 +909,7 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 		}
 	}
 	b.lmstudioProxyPublishedGeneration.Store(lmstudioGeneration)
+	b.llamaCppProxyPublishedGeneration.Store(llamacppGeneration)
 	slog.Info("proxy started", "path", b.proxyPath, "pid", pp.cmd.Process.Pid)
 
 	// The child is serving its JSON-RPC channel but has no listeners yet, so
@@ -936,6 +960,7 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 		// exists to prevent. A later successful spawn re-derives the real state.
 		b.markOllamaPortReady()
 		b.markLMStudioPortReady()
+		b.markLlamaCppPortReady()
 		return nil, fmt.Errorf("no engine facade could be brought up in %s", b.proxyPath)
 	}
 
@@ -957,6 +982,9 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 	if ready, port := pp.Status(lmstudioProxyProfile.Name); ready && port > 0 {
 		go b.reconcileLMStudioProxyPortOnReadyForGeneration(lmstudioGeneration, port)
 	}
+	if ready, port := pp.Status(llamacppProxyProfile.Name); ready && port > 0 {
+		go b.reconcileLlamaCppProxyPortOnReadyForGeneration(llamacppGeneration, port)
+	}
 	return pp, nil
 }
 
@@ -968,7 +996,7 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 // and must be handled exactly once, not once per engine — routing a workload
 // record through both handlers would record every job twice.
 func (b *Broker) forwardProxyProcessNotification(
-	ollamaGeneration, lmstudioGeneration uint64, method string, params json.RawMessage,
+	ollamaGeneration, lmstudioGeneration, llamacppGeneration uint64, method string, params json.RawMessage,
 ) {
 	engine, bare := engines.SplitAddressedMethod(method)
 	switch engine {
@@ -976,6 +1004,8 @@ func (b *Broker) forwardProxyProcessNotification(
 		b.forwardProxyNotificationForGeneration(ollamaGeneration, method, params)
 	case lmstudioProxyProfile.Name:
 		b.forwardLMStudioProxyNotificationForGeneration(lmstudioGeneration, method, params)
+	case llamacppProxyProfile.Name:
+		b.forwardLlamaCppProxyNotificationForGeneration(llamacppGeneration, method, params)
 	case "":
 		if !b.routeProcessScopedProxyNotification(bare, params) {
 			slog.Debug("ignoring unaddressed proxy notification", "method", bare)
@@ -1119,7 +1149,8 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 	// adopt or start a backend on the port the proxy alias owns.
 	b.syncCurrentEngineOllamaHostAliasReservation()
 	b.reconcileLMStudioProxyAfterEngineManagerReady()
-	// Initial restore waits for both managed compatibility ports below. A later
+	b.reconcileLlamaCppProxyAfterEngineManagerReady()
+	// Initial restore waits for the managed compatibility ports below. A later
 	// engine-manager respawn sees the already-open gates and restores here.
 	if b.managedPortOwnershipReady() {
 		b.restoreEnabledEngines(w)
@@ -1487,6 +1518,7 @@ func (b *Broker) forwardEngineNotification(method string, params json.RawMessage
 	}
 	if method == "engine:ready" {
 		b.reconcileLMStudioProxyAfterEngineManagerReady()
+		b.reconcileLlamaCppProxyAfterEngineManagerReady()
 		go func() {
 			b.engineConfigMu.Lock()
 			defer b.engineConfigMu.Unlock()
@@ -2180,9 +2212,11 @@ func (b *Broker) Serve(ctx context.Context) error {
 			slog.Warn("proxy failed to start; continuing without local engine proxies",
 				"path", b.proxyPath, "err", err)
 			b.proxySup = nil
-			// No facade will come up, so both engines take the terminal path:
+			// No facade will come up, so every engine takes the terminal path:
 			// report the blocked claim where one was made, then finish, which
-			// is what returns the OLLAMA_HOST alias reservation.
+			// is what returns the OLLAMA_HOST alias reservation and opens each
+			// ownership gate. An engine missed here keeps its gate shut for the
+			// life of the process.
 			if b.ollamaState().managedFacade.Load() {
 				b.blockManagedOllamaFacade("the proxy could not be started")
 			}
@@ -2191,6 +2225,10 @@ func (b *Broker) Serve(ctx context.Context) error {
 				_, _ = b.blockManagedLMStudioFacade("the proxy could not be started", nil)
 			}
 			b.finishLMStudioProxyTerminal()
+			if b.llamacppState().managedFacade.Load() {
+				_, _ = b.blockManagedLlamaCppFacade("the proxy could not be started", nil)
+			}
+			b.finishLlamaCppProxyTerminal()
 		} else {
 			defer b.proxySup.Stop()
 		}
@@ -2200,7 +2238,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseLlamaCpp)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -2410,22 +2448,16 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 	// enable retries. Deciding it here rather than there is deliberate: only
 	// this path knows whether the managed facade has to be given up, and it
 	// owns telling the user.
-	if method == "error" {
-		var ep struct {
-			Code string `json:"code"`
-			Port int    `json:"port"`
-		}
-		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && !b.ollamaState().explicitSettings.Load() {
-			switch {
-			case b.ollamaState().managedFacade.Load() && ep.Port == managedOllamaFacadePort:
-				b.blockManagedOllamaFacade("another process acquired the compatibility port during startup")
-			default:
-				// Without this the retry asks for the same port and the enable
-				// fails identically, leaving the facade down for the life of
-				// the process.
-				fallback := b.setOllamaProxyFallback(ep.Port)
-				slog.Warn("Ollama proxy bind failed; retrying on fallback", "port", ep.Port, "fallback", fallback)
-			}
+	if port, recover := b.facadeBindFailure(ollamaProxyProfile, method, params); recover {
+		switch {
+		case b.ollamaState().managedFacade.Load() && port == managedOllamaFacadePort:
+			b.blockManagedOllamaFacade("another process acquired the compatibility port during startup")
+		default:
+			// Without this the retry asks for the same port and the enable
+			// fails identically, leaving the facade down for the life of
+			// the process.
+			fallback := b.setOllamaProxyFallback(port)
+			slog.Warn("Ollama proxy bind failed; retrying on fallback", "port", port, "fallback", fallback)
 		}
 	}
 	// When the proxy announces a (re)bound port — notably its restored port
@@ -3236,9 +3268,11 @@ func (b *Broker) handleMessage(msg *Message) {
 	case "engine:set-port":
 		go b.handleSettingsPortRPC(msg, "")
 	case "ollama-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "ollama")
+		go b.handleSettingsPortRPC(msg, ollamaProxyProfile.Name)
 	case "lmstudio-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "lmstudio")
+		go b.handleSettingsPortRPC(msg, lmstudioProxyProfile.Name)
+	case "llamacpp-proxy:set-port":
+		go b.handleSettingsPortRPC(msg, llamacppProxyProfile.Name)
 
 	case "lmstudio-proxy:get-status":
 		// Answered locally from the lmstudio-proxy handle's captured state,
@@ -3277,6 +3311,45 @@ func (b *Broker) handleMessage(msg *Message) {
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
 			log.Printf("failed to respond to lmstudio-proxy:unsubscribe: %v", err)
 		}
+
+	case "llamacpp-proxy:get-status":
+		var result ProxyStatusResult
+		if p := b.getLlamaCppProxy(); p != nil {
+			ready, port := p.Status(llamacppProxyProfile.Name)
+			result.Ready = ready
+			result.Port = port
+		}
+		if err := b.codec.Respond(msg.ID, result); err != nil {
+			log.Printf("failed to respond to llamacpp-proxy:get-status: %v", err)
+		}
+
+	case "llamacpp-proxy:subscribe":
+		b.proxyMu.Lock()
+		wasSubscribed := b.setEngineProxySubscribed(llamacppProxyProfile, true)
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
+			log.Printf("failed to respond to llamacpp-proxy:subscribe: %v", err)
+		}
+		if !wasSubscribed {
+			if p := b.getLlamaCppProxy(); p != nil {
+				if rp := p.ReadyParams(llamacppProxyProfile.Name); rp != nil {
+					if err := b.codec.Notify("llamacpp-proxy:ready", rp); err != nil {
+						slog.Warn("emit baseline llamacpp-proxy:ready failed", "err", err)
+					}
+				}
+			}
+		}
+
+	case "llamacpp-proxy:unsubscribe":
+		b.proxyMu.Lock()
+		b.setEngineProxySubscribed(llamacppProxyProfile, false)
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
+			log.Printf("failed to respond to llamacpp-proxy:unsubscribe: %v", err)
+		}
+
+	case "workloads:cancel":
+		b.cancelLlamaWorkload(msg)
 
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
@@ -3435,6 +3508,17 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 		}()
 		return
 	}
+	if needsLlamaCppPortGate(msg.Method, msg.Params) && b.llamacppPortOwnershipPending() {
+		go func() {
+			select {
+			case <-b.llamacppPortReady:
+				b.relayToEngine(msg)
+			case <-time.After(rpcWorkerCallTimeout):
+				_ = b.codec.RespondError(msg.ID, -32000, "llama.cpp port setup did not finish; retry")
+			}
+		}()
+		return
+	}
 
 	requestedEngine, requestedPort, isEnginePortAssignment := enginePortAssignmentRequest(msg.Method, msg.Params)
 	if isEnginePortAssignment || msg.Method == "engine:stop" || msg.Method == "engine:start" || msg.Method == "engine:restart" {
@@ -3456,6 +3540,13 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	if isLMStudioSetPort && requestedLMStudioPort == managedLMStudioFacadePort && b.lmstudioState().managedFacade.Load() {
 		if err := b.codec.RespondError(msg.ID, -32000, "port 1234 is reserved by the managed LM Studio proxy; choose another backend port or disable managed port ownership and restart NVPAIR"); err != nil {
 			log.Printf("failed to reject conflicting LM Studio engine:set-port: %v", err)
+		}
+		return
+	}
+	requestedLlamaCppPort, isLlamaCppSetPort := llamacppSetPortRequest(msg.Method, msg.Params)
+	if isLlamaCppSetPort && requestedLlamaCppPort == llamacppEffectiveProfile().FacadePort && b.llamacppState().managedFacade.Load() {
+		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("port %d is reserved by the managed llama.cpp proxy; choose another backend port or disable managed port ownership and restart NVPAIR", llamacppEffectiveProfile().FacadePort)); err != nil {
+			log.Printf("failed to reject conflicting llama.cpp engine:set-port: %v", err)
 		}
 		return
 	}

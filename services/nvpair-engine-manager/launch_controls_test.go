@@ -109,7 +109,7 @@ func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
 func TestBundledNetworkingControls(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	// Adding a bundled engine requires an explicit networking review and cases.
-	wantEngines := []string{"lmstudio", "ollama"}
+	wantEngines := []string{"llamacpp", "lmstudio", "ollama"}
 	names := reg.Names()
 	slices.Sort(names)
 	if !slices.Equal(names, wantEngines) {
@@ -126,13 +126,20 @@ func TestBundledNetworkingControls(t *testing.T) {
 					t.Fatal("missing reviewed networking controls")
 				}
 				var valid, invalid []string
-				if name == "lmstudio" {
+				switch name {
+				case "llamacpp":
+					if !reflect.DeepEqual(policy.Controls, []LaunchControl{{Value: "{server.port}", Flags: []string{"--port"}}, {Value: "{server.host}", Flags: []string{"--host"}}}) {
+						t.Fatal("incomplete llama.cpp controls")
+					}
+					valid = []string{"--port 23456", "--port=23456", `"--port" "23456"`, "--host 127.0.0.1 --port 23456", "--port 23456 --host=127.0.0.1", "--port 23456 --ctx-size 4096"}
+					invalid = []string{"--port 0", "--port 65536", "--port", "--port no", "--port 23456 --port 23457", "--host 0.0.0.0", "--host=::", "--host 0.0.0.0 --port 23456"}
+				case "lmstudio":
 					if !reflect.DeepEqual(policy.Controls, []LaunchControl{{Value: "{server.port}", Flags: []string{"--port", "-p"}}, {Value: "{server.host}", Flags: []string{"--bind"}, Env: []string{"LMS_SERVER_HOST"}}, {Value: "{cors.enabled}", Implicit: implicitLaunchValue("true"), Flags: []string{"--cors"}}}) {
 						t.Fatal("incomplete LM Studio controls")
 					}
 					valid = []string{"--port 23456", "--port=23456", "-p 23456", "-p23456", "-p=23456", `"-p" "23456"`, "--port 23456 -p23456", "-- -p23456"}
 					invalid = []string{"-p0", "-p65536", "-p", "-pno", "--port 23456 -p23457", "-vp23456", "-vp=23456", "--bind 0.0.0.0", "--bind=::", "LMS_SERVER_HOST=0.0.0.0", "--cors=false", "--cors=true", "--cors=", "-- --bind 0.0.0.0"}
-				} else {
+				default:
 					if !reflect.DeepEqual(policy.Controls, []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"OLLAMA_HOST"}}, {Value: "{cors.origins}", Env: []string{"OLLAMA_ORIGINS"}}}) {
 						t.Fatal("incomplete Ollama controls")
 					}
