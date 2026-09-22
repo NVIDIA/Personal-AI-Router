@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -176,9 +177,59 @@ func TestLMSDownloadAnswersCancellationPrompt(t *testing.T) {
 	if stdin.String() != "n\n" {
 		t.Fatalf("answer = %q, want n followed by newline", stdin.String())
 	}
-	if !output.cancelled {
+	if cancelled, _, _ := output.state(); !cancelled {
 		t.Fatal("cancellation acknowledgement was not recorded")
 	}
+}
+
+// A process the worker could not reclaim keeps writing into this writer, so
+// withdrawing its confirmation has to stick. Clearing the flag alone would not:
+// the next redraw carrying "Download canceled." would set it again and re-arm
+// deletion of files nothing confirmed had stopped.
+func TestLMSDownloadDisownedOutputCannotConfirmACancellation(t *testing.T) {
+	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
+	if _, err := output.Write([]byte("Download canceled.")); err != nil {
+		t.Fatal(err)
+	}
+	if cancelled, _, _ := output.state(); !cancelled {
+		t.Fatal("acknowledgement was not recorded before the process was disowned")
+	}
+
+	output.disown()
+	if cancelled, _, _ := output.state(); cancelled {
+		t.Fatal("a disowned process still confirmed the cancellation")
+	}
+	// The abandoned CLI carries on writing; none of it may re-arm deletion.
+	if _, err := output.Write([]byte("\rDownload canceled.")); err != nil {
+		t.Fatal(err)
+	}
+	if cancelled, _, _ := output.state(); cancelled {
+		t.Fatal("output written after disowning re-armed partial-file deletion")
+	}
+}
+
+// The exec copy goroutine writes this struct while the goroutine handling the
+// cancellation reads it to decide whether a partial file may be deleted, and a
+// disowned process makes them overlap for real rather than in principle. The
+// assertion is the race detector's: this fails under -race if the fields are
+// touched without the lock.
+func TestLMSDownloadOutputToleratesConcurrentAccess(t *testing.T) {
+	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
+	writing := make(chan struct{})
+	go func() {
+		defer close(writing)
+		for i := range 200 {
+			if _, err := output.Write([]byte(fmt.Sprintf("\r[=== ] %d.00%%", i%100))); err != nil {
+				t.Errorf("write: %v", err)
+				return
+			}
+		}
+	}()
+	for range 200 {
+		output.state()
+	}
+	output.disown()
+	<-writing
 }
 
 func TestLMSDownloadInterruptsChild(t *testing.T) {
@@ -255,8 +306,8 @@ func TestLMSDownloadCancellationOutcomes(t *testing.T) {
 			case !strings.Contains(err.Error(), wantErrText):
 				t.Fatalf("cancellation = %v, want an error containing %q", err, wantErrText)
 			}
-			if output.cancelled != wantCancelled {
-				t.Errorf("acknowledged = %v, want %v (this is what gates deleting partial files)", output.cancelled, wantCancelled)
+			if cancelled, _, _ := output.state(); cancelled != wantCancelled {
+				t.Errorf("acknowledged = %v, want %v (this is what gates deleting partial files)", cancelled, wantCancelled)
 			}
 		})
 	}
@@ -884,6 +935,89 @@ func TestOllamaCancellationHandlesCompletion(t *testing.T) {
 	test("active transfer is canceled and cleaned", []string{"pulling layer"}, "cancelled")
 	test("success survives late cancellation", []string{"pulling layer", "success"}, "success")
 	test("success survives later frame and cancellation", []string{"pulling layer", "success", ""}, "success")
+}
+
+// blockPartialRemoval makes the unlink of path fail, standing in for the
+// sharing violations and permission errors cleanup meets in the field. The
+// platforms need different levers: Windows refuses to delete a file that has
+// an open handle which did not opt into FILE_SHARE_DELETE, which is the handle
+// Go's Open returns, while Unix refuses the unlink when the parent directory
+// is not writable.
+func blockPartialRemoval(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("hold %s open: %v", path, err)
+		}
+		t.Cleanup(func() { _ = file.Close() })
+		return
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions, so the unlink cannot be made to fail")
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat %s: %v", dir, err)
+	}
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatalf("make %s read-only: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, info.Mode().Perm()) })
+}
+
+// Cleanup that cannot finish is not a failed cancellation. The transfer has
+// already stopped, which is what was asked for, and the bytes left behind are
+// the vendor's to resume. Reporting the cleanup error as the pull's outcome
+// denied the one thing that did happen and left the row on "Canceling" over a
+// download that was already gone.
+func TestOllamaCancellationSucceedsWhenCleanupCannotFinish(t *testing.T) {
+	blobs := newOllamaBlobsDir(t)
+	partial := filepath.Join(blobs, blobA+"-partial")
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writePartial(t, partial, "partial")
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		if _, err := fmt.Fprintf(w, `{"status":"pulling layer","digest":%q,"total":100,"completed":25}`+"\n", digestA); err != nil {
+			t.Error(err)
+			return
+		}
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	ex := newOllamaPullExecutor(t, server.URL, nil)
+
+	ctx, cancel := context.WithTimeout(settledContext(), 60*time.Second)
+	defer cancel()
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.PullModelStream(ctx, "ollama", "demo", nil)
+		done <- got
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("pull did not start")
+	}
+	// The partial exists and is attributable to this pull by now, so this is
+	// the point its removal can be made to fail.
+	blockPartialRemoval(t, partial)
+
+	if err := ex.CancelModelPull(ctx, "ollama", "demo"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("pull = %v, want the cancellation to be reported as a cancellation", got.err)
+	}
+	assertPullStatus(t, got.result, "cancelled")
+	// Cleanup could not remove it, and saying so is the warning's job, not the
+	// cancel's. The file stays for the next attempt to resume.
+	assertPresent(t, partial)
 }
 
 // A predecessor here is another of this engine's downloads that registered

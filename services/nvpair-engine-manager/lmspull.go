@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,45 +23,102 @@ type downloadOutputKey struct{}
 
 // LMS redraws with carriage returns and ANSI controls, not newlines.
 // A bounded tail handles split writes without keeping the entire download log.
+//
+// mu guards every mutable field. The exec copy goroutine writes them while the
+// goroutine that asked for the cancellation reads them to decide whether any
+// partial file may be deleted, and a process this worker gives up on keeps its
+// writer alive past the call that started it — so the reader and the writer
+// genuinely overlap rather than merely appearing to.
 type lmsDownloadOutput struct {
+	mu          sync.Mutex
 	text        string
 	lastPercent int
 	cancelled   bool
 	completed   bool
 	answered    bool
-	stdin       io.Writer
-	progress    func(int)
+	// disowned records that this worker stopped waiting on the process behind
+	// this writer. Its later output cannot be this cancellation's
+	// confirmation, so state reports no cancellation once it is set, and a
+	// "Download canceled." arriving afterwards cannot re-arm file deletion.
+	disowned bool
+	stdin    io.Writer
+	progress func(int)
 }
 
 var lmsPercentPattern = regexp.MustCompile(`\]\s+(\d+(?:\.\d+)?)%`)
 var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]")
 
 func (w *lmsDownloadOutput) Write(data []byte) (int, error) {
+	w.mu.Lock()
 	w.text += string(data)
 	clean := ansiPattern.ReplaceAllString(w.text, "")
-	if strings.Contains(clean, "Continue to download in the background?") && !w.answered {
-		if _, err := io.WriteString(w.stdin, "n\n"); err != nil {
-			return 0, err
-		}
-		w.answered = true
-	}
+	answer := strings.Contains(clean, "Continue to download in the background?") && !w.answered
 	w.cancelled = w.cancelled || strings.Contains(clean, "Download canceled.")
 	w.completed = w.completed || strings.Contains(clean, "Download completed.")
+	percent := -1
 	matches := lmsPercentPattern.FindAllStringSubmatch(clean, -1)
 	if len(matches) > 0 {
 		value, err := strconv.ParseFloat(matches[len(matches)-1][1], 64)
 		if err == nil {
-			percent := max(0, min(100, int(value)))
-			if percent != w.lastPercent {
-				w.lastPercent = percent
-				w.progress(percent)
+			latest := max(0, min(100, int(value)))
+			if latest != w.lastPercent {
+				w.lastPercent = latest
+				percent = latest
 			}
 		}
 	}
 	if len(w.text) > 8192 {
 		w.text = w.text[len(w.text)-8192:]
 	}
+	stdin := w.stdin
+	w.mu.Unlock()
+
+	// Declining the prompt and publishing progress both reach outside this
+	// writer, and the stdin write can block on the child. Neither runs under
+	// the lock the cancelling goroutine needs to read the state above.
+	if answer {
+		if _, err := io.WriteString(stdin, "n\n"); err != nil {
+			return 0, err
+		}
+		w.mu.Lock()
+		w.answered = true
+		w.mu.Unlock()
+	}
+	if percent >= 0 {
+		w.progress(percent)
+	}
 	return len(data), nil
+}
+
+// state reports the output as one consistent snapshot, so a caller cannot pair
+// a stale completed with a fresh cancelled.
+func (w *lmsDownloadOutput) state() (cancelled, completed bool, text string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cancelled && !w.disowned, w.completed, w.text
+}
+
+// reset clears the previous run's output. It is called before the process
+// starts, where nothing is writing yet, but takes the lock anyway: an earlier
+// disowned process may still hold this writer.
+func (w *lmsDownloadOutput) reset(stdin io.Writer) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stdin = stdin
+	w.text = ""
+	w.cancelled = false
+	w.completed = false
+	w.answered = false
+}
+
+// disown withdraws this writer's cancellation confirmation for good, for a
+// process the worker could not reclaim. Clearing the flag alone would not
+// hold: the process is still running, so its next redraw could set it again
+// and delete files on the strength of a stop nothing confirmed.
+func (w *lmsDownloadOutput) disown() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.disowned = true
 }
 
 func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, model string) (json.RawMessage, error) {
@@ -85,11 +144,17 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 	// context also dies when PAIR quits mid-download, when a remote initiator
 	// disconnects, and when the action timeout elapses — and `lms get` is built
 	// to resume every one of those on the next attempt.
-	if err != nil && cancelRequested(ctx) && output.cancelled {
+	cancelled, _, _ := output.state()
+	if err != nil && cancelRequested(ctx) && cancelled {
 		// Cleanup outlives the cancellation that triggered it, so it runs on a
 		// context that keeps this one's values without its deadline.
 		if cleanupErr := cleanupLMSPartials(context.WithoutCancel(ctx), lmstudioModelsDir(), model, before); cleanupErr != nil {
-			return nil, fmt.Errorf("download stopped, but partial-file cleanup failed: %w", cleanupErr)
+			// The download did stop, which is what was asked for. Leftover
+			// bytes are the vendor's to resume, so reporting a failed cancel
+			// here would deny the one outcome that did happen and leave the
+			// row on "Canceling" over a transfer that is gone.
+			slog.Warn("partial-file cleanup failed after cancellation",
+				"engine", engine, "model", model, "err", cleanupErr)
 		}
 		return nil, context.Canceled
 	}
@@ -118,11 +183,7 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 		return "", err
 	}
 	defer stdin.Close()
-	output.stdin = stdin
-	output.text = ""
-	output.cancelled = false
-	output.completed = false
-	output.answered = false
+	output.reset(stdin)
 	cmd.Stdout = output
 	cmd.Stderr = output
 	if err := cmd.Start(); err != nil {
@@ -144,10 +205,11 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 			return stopLMSDownload(lmsCancelGracesFrom(ctx), cmd, finished, output)
 		}
 	}
+	_, _, text := output.state()
 	if runErr != nil {
-		return "", fmt.Errorf("%w: %s", runErr, lmsErrorDetail(output.text))
+		return "", fmt.Errorf("%w: %s", runErr, lmsErrorDetail(text))
 	}
-	return output.text, nil
+	return text, nil
 }
 
 // lmsCancelGraces bounds each stage of stopping the CLI. No wait here may be
@@ -196,8 +258,13 @@ func stopLMSDownload(
 ) (string, error) {
 	if err := interruptDownload(cmd); err != nil {
 		_ = killDownload(cmd)
-		if reaped, runErr := waitLMSExit(finished, graces.reap); reaped && runErr == nil && output.completed {
-			return output.text, nil
+		reaped, runErr := waitLMSExit(finished, graces.reap)
+		if !reaped {
+			output.disown()
+			return "", fmt.Errorf("could not confirm LM Studio cancellation and could not reclaim its process: %w", err)
+		}
+		if _, completed, text := output.state(); runErr == nil && completed {
+			return text, nil
 		}
 		return "", fmt.Errorf("could not confirm LM Studio cancellation: %w", err)
 	}
@@ -206,10 +273,11 @@ func stopLMSDownload(
 		exited, _ = waitLMSExit(finished, graces.retry)
 	}
 	if exited {
-		if output.completed {
-			return output.text, nil
+		cancelled, completed, text := output.state()
+		if completed {
+			return text, nil
 		}
-		if !output.cancelled {
+		if !cancelled {
 			return "", fmt.Errorf("LM Studio exited without confirming download cancellation")
 		}
 		return "", context.Canceled
@@ -219,8 +287,13 @@ func stopLMSDownload(
 	// cancellation the CLI never acknowledged. A process that outlasts even the
 	// kill is abandoned rather than waited on; see lmsCancelGraces.
 	_ = killDownload(cmd)
-	waitLMSExit(finished, graces.reap)
-	output.cancelled = false
+	reaped, _ := waitLMSExit(finished, graces.reap)
+	output.disown()
+	if !reaped {
+		// The writer is still attached to a live process, so its output from
+		// here belongs to nobody this worker is waiting on.
+		return "", fmt.Errorf("LM Studio did not confirm download cancellation and its process could not be reclaimed; the download may still be running in LM Studio")
+	}
 	return "", fmt.Errorf("LM Studio did not confirm download cancellation; the download may still be running in LM Studio")
 }
 

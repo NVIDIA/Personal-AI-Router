@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -126,8 +127,12 @@ func (e *Executor) pullModelStream(ctx context.Context, engine, model string, pa
 			// on a context that keeps this one's values without its deadline.
 			cleanupCtx := context.WithoutCancel(ctx)
 			if err := cleanupOllamaAfterCancel(cleanupCtx, ollamaBlobsDir(st), digests, before); err != nil {
-				resultErr = err
-				return
+				// The download did stop, which is what was asked for. Leftover
+				// blobs are Ollama's to resume, so reporting a failed cancel
+				// here would deny the one outcome that did happen and leave
+				// the row on "Canceling" over a transfer that is gone.
+				slog.Warn("partial-blob cleanup failed after cancellation",
+					"engine", engine, "model", model, "err", err)
 			}
 		}
 		resultErr = context.Canceled
