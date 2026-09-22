@@ -84,7 +84,7 @@ func TestViewFrameIsExactlyTerminalSized(t *testing.T) {
 // Swept across every supported height rather than sampled, and over the real
 // views, because the budget also depends on the active view's footer.
 func TestFrameStaysExactWithTheUpdateBanner(t *testing.T) {
-	withProductVersion(t, "0.91.7")
+	withReleaseVersion(t, "0.91.7")
 
 	for h := minTerminalHeight; h <= 44; h++ {
 		for i := range defaultViews(nil) {

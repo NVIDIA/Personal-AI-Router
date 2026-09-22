@@ -45,6 +45,42 @@ binding, and every candidate was either a letter that shadowed a view's own verb
 or a digit that looked like a tab number without being one — so it became the
 tab it was already pretending to be.
 
+### Update notice
+
+A newer published release is announced in a row under the tab bar, checked
+shortly after startup and every six hours against the public releases feed.
+
+It belongs to the shell rather than to the **Service** tab: the operator this is
+for is the one who lives on **Nodes** or **Jobs** and has no reason to open
+**Service**. `ctrl+x` dismisses it on every tab at once, and a release newer
+than the dismissed one brings it back — that version was never acknowledged.
+The key is `ctrl+x` because the views between them bind `a` through `y` and the
+table and viewport add the paging keys; the shell handles its own bindings
+before the active view sees them, so a global letter would silently shadow a
+verb.
+
+Two layout constraints, both regression-tested. The row comes out of
+`contentHeight()`, or it is a row the shell then deletes from the bottom of
+whichever view is showing — which is where every view keeps its messages. And
+the line is assembled longest-first against the real width, dropping the URL and
+then the version detail, because the frame is clamped to the terminal and the
+rightmost text is the dismiss hint: the only key that closes it.
+
+It compares `ui.ReleaseVersion`, stamped by both build paths from
+`desktop/package.json`, against the feed's latest stable tag. That is the
+release number users install and the one the tags are named for — this
+component's own version and the services suite version describe parts of the
+build and mean nothing to the comparison. Drafts and prereleases are ignored.
+
+Awareness only: nothing is downloaded or installed, because this client resolves
+the broker beside its own executable and that broker spawns the worker set from
+the same directory — replacing "the client" means swapping every binary
+atomically while they serve inference, and a partial swap leaves a new client
+driving old workers across a JSON-RPC contract that may have changed. Silent on
+failure, skipped for an unstamped build, and disabled by
+`NVPAIR_NO_UPDATE_CHECK`. A desktop-app install needs none of this: `nvpair-tui`
+ships in `cli-bin` and the app's updater replaces it.
+
 ### Node detail
 
 `enter` on a node opens a full-screen drill-down with two panes, switched with
@@ -83,6 +119,7 @@ does not carry, and only the open node is polled.
 
 - `tab` / `shift+tab` or the digits `1`-`5` — switch tabs
 - `?` — full help
+- `ctrl+x` — dismiss the update notice, while one is showing
 - `q` / `ctrl+c` — quit (the broker is shut down cleanly on exit)
 - Per-tab keys appear in the footer. While editing a field (port, PIN, address,
   model name) every key goes to the field until `enter` or `esc`.

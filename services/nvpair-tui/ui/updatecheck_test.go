@@ -13,12 +13,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// withProductVersion stamps a version for one test and restores it after.
-func withProductVersion(t *testing.T, v string) {
+// withReleaseVersion stamps a version for one test and restores it after.
+func withReleaseVersion(t *testing.T, v string) {
 	t.Helper()
-	prev := ProductVersion
-	ProductVersion = v
-	t.Cleanup(func() { ProductVersion = prev })
+	prev := ReleaseVersion
+	ReleaseVersion = v
+	t.Cleanup(func() { ReleaseVersion = prev })
 }
 
 func TestNewerVersionComparesReleaseNumbers(t *testing.T) {
@@ -64,7 +64,7 @@ func TestNewerVersionComparesReleaseNumbers(t *testing.T) {
 func TestUpdateCheckIsDisabledByEnvironment(t *testing.T) {
 	// A server reaching the internet unasked is a real objection, so the opt-out
 	// has to actually stop the request being built at all.
-	withProductVersion(t, "0.91.7")
+	withReleaseVersion(t, "0.91.7")
 	if !updateCheckEnabled() {
 		t.Fatal("check is disabled with nothing set")
 	}
@@ -84,7 +84,7 @@ func TestUpdateCheckIsDisabledByEnvironment(t *testing.T) {
 func TestUpdateCheckIsSkippedForAnUnstampedBuild(t *testing.T) {
 	// Running from source has nothing to compare, and a developer does not want
 	// to be told to go download a release.
-	withProductVersion(t, "dev")
+	withReleaseVersion(t, "dev")
 	if updateCheckEnabled() {
 		t.Error("check enabled for an unstamped build")
 	}
@@ -176,7 +176,7 @@ func send(m Model, msg tea.Msg) Model {
 }
 
 func TestBannerAnnouncesOnlyANewerRelease(t *testing.T) {
-	withProductVersion(t, "0.91.7")
+	withReleaseVersion(t, "0.91.7")
 
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 120, 30
@@ -211,7 +211,7 @@ func TestBannerAnnouncesOnlyANewerRelease(t *testing.T) {
 func TestBannerShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
 	// The whole point of moving it out of the Service tab: the operator it is
 	// for is the one who never opens that tab.
-	withProductVersion(t, "0.91.7")
+	withReleaseVersion(t, "0.91.7")
 
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 120, 30
@@ -257,7 +257,7 @@ func TestBannerKeepsTheDismissHintAtEveryWidth(t *testing.T) {
 	// a later, tidier single-line version from quietly putting it back.
 	//
 	// A stub view because the row depends on the width and the versions alone.
-	withProductVersion(t, "0.91.7")
+	withReleaseVersion(t, "0.91.7")
 
 	const hint = "ctrl+x to dismiss"
 	for w := minTerminalWidth; w <= 200; w++ {
@@ -277,7 +277,7 @@ func TestBannerComesOutOfTheContentBudget(t *testing.T) {
 	// A row added to the frame without coming out of the budget is a row the
 	// shell deletes from the bottom of the active view — and the bottom is where
 	// every view keeps its messages.
-	withProductVersion(t, "0.91.7")
+	withReleaseVersion(t, "0.91.7")
 
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 120, 30

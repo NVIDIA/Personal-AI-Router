@@ -29,6 +29,9 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+// The release version, which is what the published tags are named for. It lives
+// outside src/, so the alias cannot reach it and a relative import is correct.
+import pkg from '../package.json' with { type: 'json' }
 import {
     chmodSync,
     existsSync,
@@ -399,7 +402,13 @@ function buildBinary(
     repo: string,
     options: BuildOptions,
     baseName: string,
-    version: string
+    version: string,
+    /**
+     * Extra `-X` assignments. Used for `nvpair-tui`, which also carries the
+     * release version: that is what the published tags are named for, so its
+     * own component version means nothing to an update check.
+     */
+    extraLdflags = ''
 ): ManifestFile {
     assertSafeVersion(baseName, version)
     const componentDir = path.join(repo, baseName)
@@ -410,7 +419,15 @@ function buildBinary(
     const outFile = path.join(CLI_BIN_DIR, fileName)
     const res = spawnSync(
         'go',
-        ['build', '-trimpath', '-ldflags', `-s -w -X main.Version=${version}`, '-o', outFile, '.'],
+        [
+            'build',
+            '-trimpath',
+            '-ldflags',
+            `-s -w -X main.Version=${version}${extraLdflags}`,
+            '-o',
+            outFile,
+            '.'
+        ],
         {
             cwd: componentDir,
             env: {
@@ -514,7 +531,15 @@ function main(): void {
     }
     for (const binary of MODULAR_BUNDLED_BINARIES) {
         const version = versions.components[binary.baseName] ?? '0.0.0'
-        files.push(buildBinary(repo, options, binary.baseName, version))
+        // The terminal client's update notice compares against the published
+        // release tag, so it needs the release version stamped alongside its
+        // own. Mirrors services/build.sh.
+        let extra = ''
+        if (binary.baseName === 'nvpair-tui') {
+            assertSafeVersion('release', pkg.version)
+            extra = ` -X nvpair-tui/ui.ReleaseVersion=${pkg.version}`
+        }
+        files.push(buildBinary(repo, options, binary.baseName, version, extra))
     }
     files.push(buildDispatcher(repo, options, versions.services))
 
