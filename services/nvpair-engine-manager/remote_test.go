@@ -135,8 +135,12 @@ func TestRemotePullGateReleasesACancelWhenThePullNeverLands(t *testing.T) {
 }
 
 // Two requests for the same remote download share one attempt, because the peer
-// joins the duplicate onto the transfer already in flight. The cancel waits for
-// the peer to accept, not for both requests to end.
+// joins the duplicate onto the transfer already in flight. What releases the
+// cancel is the peer accepting, which happens however many requests are
+// outstanding — not the first of them ending. While one is still on its way to
+// the peer there is still a pull to chase, and letting the cancel go early
+// sends it to a peer with nothing registered, which is answered as a cancel for
+// nothing and leaves the row stuck on "Canceling".
 func TestRemotePullGateSharesOneAttemptAcrossDuplicateRequests(t *testing.T) {
 	var gate remotePullGate
 	key := remotePullKey("uuid-b", "ollama", "demo")
@@ -151,8 +155,16 @@ func TestRemotePullGateSharesOneAttemptAcrossDuplicateRequests(t *testing.T) {
 	}()
 	select {
 	case <-waited:
+		t.Fatal("cancel was sent while the second request was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Acceptance frees it without that request having ended.
+	gate.accepted(key)()
+	select {
+	case <-waited:
 	case <-time.After(10 * time.Second):
-		t.Fatal("cancel kept waiting after the first of two requests ended")
+		t.Fatal("cancel kept waiting after the peer accepted the pull")
 	}
 	second()
 
@@ -161,6 +173,34 @@ func TestRemotePullGateSharesOneAttemptAcrossDuplicateRequests(t *testing.T) {
 	gate.mu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("gate retained %d attempt(s) after both requests ended", remaining)
+	}
+}
+
+// When no request reaches the peer, the last one ending is what frees the
+// cancel — the shared attempt has to be exhausted, not merely reduced.
+func TestRemotePullGateHoldsACancelUntilEveryDuplicateHasEnded(t *testing.T) {
+	var gate remotePullGate
+	key := remotePullKey("uuid-b", "ollama", "demo")
+	first := gate.register(key, true)
+	second := gate.register(key, true)
+
+	first()
+	waited := make(chan struct{})
+	go func() {
+		defer close(waited)
+		gate.awaitAccepted(context.Background(), key)
+	}()
+	select {
+	case <-waited:
+		t.Fatal("cancel was sent while the second request was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	second()
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancel outlived every request it was chasing")
 	}
 }
 

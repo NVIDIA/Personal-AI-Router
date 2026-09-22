@@ -80,12 +80,27 @@ type remotePullAttempt struct {
 	refs int
 }
 
-// remotePullGateWindow bounds how long a cancel waits for its pull to reach the
-// peer. Dialing a peer's ec surface can be slow, but a cancel that waits
-// indefinitely would hold its own JSON-RPC response open for as long as the
-// pull runs. Sending it late is better than never: the peer either has the
-// download by then or has nothing to stop.
-const remotePullGateWindow = 10 * time.Second
+// remotePullGateWindow is the backstop under a cancel waiting for its pull to
+// reach the peer, not the mechanism. The two signals that actually free it
+// both close attempt.accepted: the peer taking the pull, or every request for
+// it ending. One of them always arrives, because the pull's own transport
+// gives up by itself — 30s to dial and 30s for the handshake, clustertrust's
+// fallback when no PeerClientOptions.Timeout is set, then
+// remoteResponseHeaderTimeout for the header, which is the point stream
+// reports acceptance.
+//
+// Those three phases chain only on success, so the sum is a ceiling the pull
+// cannot actually reach: getting as far as the header wait means the dial and
+// the handshake each finished inside their own 30s, putting the failure
+// strictly under this. The cancel's timer then starts later still, when the
+// cancel arrives rather than when the pull did.
+//
+// A timer that fires first is the bug rather than the safety net: it frees the
+// cancel while the pull is still legitimately in flight, and a cancel arriving
+// at a peer that has nothing registered is answered as a cancel for nothing,
+// leaving the transfer running under a row stuck on "Canceling". Waiting is
+// the cheaper error, because a pull that never lands releases this itself.
+const remotePullGateWindow = 90 * time.Second
 
 func remotePullKey(node, engine, model string) string {
 	return node + "\x00" + engine + "\x00" + model
@@ -135,13 +150,21 @@ func (g *remotePullGate) register(key string, isPull bool) func() {
 		once.Do(func() {
 			g.mu.Lock()
 			attempt.refs--
-			if attempt.refs == 0 {
+			last := attempt.refs == 0
+			if last {
 				delete(g.pulls, key)
 			}
 			g.mu.Unlock()
 			// An attempt that ended without the peer accepting it has nothing
-			// left for a cancel to chase.
-			attempt.settle.Do(func() { close(attempt.accepted) })
+			// left for a cancel to chase — but only once every request sharing
+			// it has ended. One duplicate failing while another is still on
+			// its way to the peer is not the attempt ending, and freeing the
+			// cancel there sends it ahead of a pull that may still be
+			// accepted. Acceptance has its own closer and does not wait on
+			// this count.
+			if last {
+				attempt.settle.Do(func() { close(attempt.accepted) })
+			}
 		})
 	}
 }
