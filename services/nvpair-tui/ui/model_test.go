@@ -108,6 +108,41 @@ func TestFrameStaysExactWithTheUpdateBanner(t *testing.T) {
 	}
 }
 
+// TestLeavingATabReturnsItToItsOwnFirstScreen checks a drill-down does not
+// outlive the visit that opened it.
+//
+// The Nodes tab replaces itself with one machine's detail screen. Left open,
+// switching to another tab and back put the operator inside that machine
+// again rather than on the list they asked for — the list one more keypress
+// away, with nothing on screen explaining why.
+func TestLeavingATabReturnsItToItsOwnFirstScreen(t *testing.T) {
+	nodes := newNodesView(nil)
+	nodes.feeds.discovered = []availableNode{
+		{HostUUID: "u1", Name: "this-host", IPAddress: "10.0.0.1", Port: 1},
+	}
+	nodes.rebuild()
+
+	m := newTestModel(nodes, &stubView{title: "Jobs", rows: 1})
+	nodes.openDetail()
+	if nodes.detail == nil {
+		t.Fatal("the detail screen did not open")
+	}
+
+	m.selectTab(1)
+	if nodes.detail != nil {
+		t.Error("leaving the tab left the drill-down open")
+	}
+
+	// And the tab still works normally on return: opening one again, then
+	// coming back to it directly, also lands on the list.
+	m.selectTab(0)
+	nodes.openDetail()
+	m.selectTab(0)
+	if nodes.detail != nil {
+		t.Error("re-selecting the tab did not return to the list")
+	}
+}
+
 // TestViewFrameHeightAcrossTerminalSizes checks the budget holds at the small
 // sizes where the header, tab bar, and footer alone can exceed the terminal.
 func TestViewFrameHeightAcrossTerminalSizes(t *testing.T) {
