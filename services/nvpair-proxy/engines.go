@@ -30,7 +30,7 @@ import (
 // POST to /v1/models is not a model list, and a GET to /api/chat is not
 // inference. Folding them into one constant keeps the two from disagreeing.
 //
-// The dialect distinction is meaningful only for model-list roles. All seven
+// The dialect distinction is meaningful only for model-list roles. All eight
 // of Ollama's inference paths are handled identically — no envelope, identity
 // field or response shape is selected — so there is deliberately no
 // per-dialect inference role.
@@ -122,6 +122,7 @@ var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
 	{Path: "/v1/completions", Role: roleInferencePOST},
 	{Path: "/v1/embeddings", Role: roleInferencePOST},
+	{Path: "/v1/messages", Role: roleInferencePOST},
 }
 
 var profiles = buildProfiles()

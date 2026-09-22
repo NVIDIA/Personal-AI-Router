@@ -354,6 +354,58 @@ func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 	})
 }
 
+// TestHandleHTTP_InferenceRouting proves every path classified as inference
+// applies model-based candidate filtering and is forwarded unchanged — not
+// only the single engineCase.inferencePath most bodies use. That includes
+// shared paths such as /v1/messages.
+func TestHandleHTTP_InferenceRouting(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		for _, r := range tc.profile.Routes {
+			if r.Role != roleInferencePOST {
+				continue
+			}
+			path := r.Path
+			t.Run(path, func(t *testing.T) {
+				var gotBody string
+				var gotPath string
+				good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					b, _ := io.ReadAll(r.Body)
+					gotBody = string(b)
+					gotPath = r.URL.Path
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer good.Close()
+
+				wrongModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					t.Error("wrong-model node should not receive request")
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer wrongModel.Close()
+
+				disc := NewDiscovery()
+				disc.AddManual(nodeForModel(t, "wrong", wrongModel.URL, "different-model"))
+				disc.AddManual(nodeForModel(t, "good", good.URL, tc.advertisedModel))
+				p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+				p.soleFacade().SetSelected("wrong")
+
+				body := tc.inferenceBody()
+				rec := httptest.NewRecorder()
+				p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200", rec.Code)
+				}
+				if gotBody != body {
+					t.Errorf("node got body %q, want %q", gotBody, body)
+				}
+				if gotPath != path {
+					t.Errorf("path = %q, want %q", gotPath, path)
+				}
+			})
+		}
+	})
+}
+
 // TestHandleHTTP_404FailoverInferenceOnly: a 404 (model-not-found) on an
 // inference call fails over to the next advertised owner, but a 404 on a
 // non-inference path is returned as-is.
@@ -379,15 +431,24 @@ func TestHandleHTTP_404FailoverInferenceOnly(t *testing.T) {
 			return p
 		}
 
-		// Inference POST: 404 on first → fail over → 200.
-		rec := httptest.NewRecorder()
-		newProxy().soleFacade().handleHTTP(rec, tc.inferenceRequest())
-		if rec.Code != http.StatusOK {
-			t.Fatalf("inference 404: status = %d, want 200 (should fail over)", rec.Code)
+		// Inference POST: 404 on first → fail over → 200, on every classified
+		// inference path (including shared routes such as /v1/messages).
+		for _, r := range tc.profile.Routes {
+			if r.Role != roleInferencePOST {
+				continue
+			}
+			path := r.Path
+			t.Run(path, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				newProxy().soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(tc.inferenceBody())))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("inference 404: status = %d, want 200 (should fail over)", rec.Code)
+				}
+			})
 		}
 
 		// An ordinary non-inference GET still returns the first node's 404.
-		rec = httptest.NewRecorder()
+		rec := httptest.NewRecorder()
 		newProxy().soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.nonInferencePath, nil))
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("non-inference 404: status = %d, want 404 (must NOT fail over)", rec.Code)

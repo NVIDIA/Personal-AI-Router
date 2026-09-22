@@ -70,6 +70,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	}
 	cases := []proxyCase{
 		{name: "ollama", rpcPrefix: "ollama-proxy", path: "/api/chat", port: ollamaPort},
+		{name: "ollama-anthropic", rpcPrefix: "ollama-proxy", path: "/v1/messages", port: ollamaPort},
 		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", path: "/v1/chat/completions", port: lmstudioPort},
 		{name: "lmstudio-anthropic", rpcPrefix: "lmstudio-proxy", path: "/v1/messages", port: lmstudioPort},
 	}
