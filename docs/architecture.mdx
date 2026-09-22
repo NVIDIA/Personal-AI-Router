@@ -40,8 +40,8 @@ flowchart TB
   one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node, Ollama or LM Studio. A node can
-  run both, one, or neither, and a node with no running engine is not eligible to
+- An **engine** is an inference server on a node: Ollama, LM Studio or llama.cpp.
+  A node can run several, one, or none, and a node with no running engine is not eligible to
   serve.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
   model on two nodes is two independent copies and that duplication is what makes
@@ -418,17 +418,16 @@ the same node.
 are the same unit of pending work, so "fewest jobs" is not "least busy." A node
 running one enormous request looks more idle than a node running two trivial ones.
 
-**Model load state is not considered.** Eligibility asks whether a node *has* the
-model, not whether it is already loaded in memory. PAIR knows which models are
-loaded, and the interface shows it, but routing does not use it, so a request can
-be sent to a node that must cold-load the model while a node holding it warm sits
-one place lower in the order.
+**Load eligibility depends on the engine.** llama.cpp routing requires the model
+to be reported loaded; downloaded-only or unknown residency is ineligible.
+Ollama and LM Studio can cold-load an advertised model, so their routing does
+not prefer a warm copy over a cold copy.
 
 **Only work PAIR routed contributes to pending counts.** Inference sent straight
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**Both engines are counted as one pool.** Ollama and LM Studio load is summed,
+**All engines are counted as one pool.** Ollama, LM Studio and llama.cpp load is summed,
 and maximum GPU pressure applies to the whole node. That is conservative on a
 typical single-GPU machine and can underuse a multi-GPU node where the engines
 occupy different devices.
@@ -712,7 +711,7 @@ desktop build compiles the sibling tree directly.
 | Build In | Output | Contents |
 | --- | --- | --- |
 | `desktop/` | `desktop/cli-bin/` | What the app supervises, one OS/arch |
-| `services/` | `services/build/bin/` | All 13 executables, for standalone use |
+| `services/` | `services/build/bin/` | All 14 executables, for standalone use |
 
 `desktop/scripts/build-modular-binaries.ts` compiles the runtime inventory for a
 selected target and writes a manifest recording the source identity, versions,
@@ -723,9 +722,10 @@ stale or hand-placed binary is caught rather than silently supervised.
 stamped from `versions.json`. Building one component by hand without restaging is
 the one thing to avoid: the broker keeps running whatever is in `build/bin/`.
 
-Both paths produce binaries you run on the machine that built them. This tree
-provides build materials only. There is no packaging, installer, or signing step
-here, and installable builds come from the
+Both paths support target-specific binaries. The desktop build scripts can also
+produce unsigned reference installers with the public electron-builder config.
+Signing and publication belong to NVIDIA's release pipeline; supported released
+installers come from the
 [releases page](https://github.com/NVIDIA/Personal-AI-Router/releases). Refer to
 [Building PAIR](building.mdx).
 

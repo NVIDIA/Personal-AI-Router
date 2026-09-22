@@ -23,7 +23,8 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.sh (Unix twin — update both in the same change)
 #
-# Explicit exclusions (never add): %USERPROFILE%\.ollama, .lmstudio, external
+# Explicit exclusions (never add): the sibling Personal AI Router Models directory,
+# %USERPROFILE%\.ollama, .lmstudio, external
 # engine installs, and the application install tree (Program Files\PAIR).
 # ---------------------------------------------------------------------------
 
@@ -51,7 +52,7 @@ Usage: scripts\wipe-app-data.cmd [options]
 Delete all Personal AI Router-owned application data (settings, logs, cluster
 identity, chat history, PAIR-managed engines under the app data root).
 
-Does NOT delete third-party model libraries (e.g. %USERPROFILE%\.ollama).
+Does NOT delete model libraries, including Personal AI Router Models\llamacpp.
 Does NOT uninstall the application binary.
 
 Options:
@@ -168,6 +169,16 @@ if ($DryRun) {
     exit 0
 }
 
+# Engine Manager alone migrates legacy llama weights to the retained library.
+# Never wipe an unmigrated cache, including a redirected models directory.
+foreach ($root in @($CurrentRoot, $LegacyRoot)) {
+    $legacyModels = Join-Path $root 'engine-bin\llamacpp\models'
+    if (Get-Item -LiteralPath $legacyModels -Force -ErrorAction SilentlyContinue) {
+        Write-Error "Llama models remain under app data. Open the updated app to migrate them before resetting: $legacyModels"
+        exit 1
+    }
+}
+
 # The app spawns this script detached and then exits, so the wipe must happen
 # after its process is gone. Otherwise Chromium flushes session/cache files back
 # into the directory we just deleted and the "clean" relaunch is not clean.
@@ -225,7 +236,7 @@ if (-not $Confirmed) {
     }
     Write-Host ''
     Write-Host 'WARNING: This permanently deletes all Personal AI Router app data.'
-    Write-Host 'Third-party model libraries (e.g. %USERPROFILE%\.ollama) are NOT removed.'
+    Write-Host 'Model libraries, including Personal AI Router Models\llamacpp, are NOT removed.'
     Write-Host ''
     Write-Host 'Paths to remove:'
     foreach ($t in $Targets) { Write-Host ("  - {0}" -f $t.Path) }

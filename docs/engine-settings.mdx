@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Engine Settings in NVIDIA Personal AI Router
 
-Open a device's Ollama or LM Studio row and expand **Settings**. Edit the server
+Open a device's Ollama, LM Studio or llama.cpp row and expand **Settings**. Edit the server
 port, proxy port and engine arguments, then select the green **Apply** button. A paired device
 that supports settings can be edited from another device in the cluster.
 
@@ -78,6 +78,7 @@ configuration consistent:
 | --- | --- | --- | --- |
 | Ollama | `OLLAMA_HOST=127.0.0.1:<port>` | The host in `OLLAMA_HOST` | `OLLAMA_ORIGINS` |
 | LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
+| llama.cpp | `--port` | `--host` | none; PAIR follows the engine's own responses |
 
 For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235` and `-p=1235`
 all synchronize the same server-port field. Conflicting repetitions and invalid
@@ -85,6 +86,10 @@ ports are rejected. Write managed short options separately; bundles containing
 them are ambiguous and rejected. CORS switches do not take `=true` or `=false`:
 add or remove the switch locally. Origin lists are normalized before validation;
 conflicting repeated lists are rejected. Other vendor options remain opaque.
+
+For managed llama.cpp, `serve --no-models-autoload` stays fixed so routing keeps
+treating only loaded models as eligible, and PAIR owns the model cache location:
+`LLAMA_CACHE` and `HF_HUB_CACHE` assignments are rejected in launch settings.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation
