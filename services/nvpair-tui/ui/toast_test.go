@@ -6,6 +6,7 @@ package ui
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -214,6 +215,69 @@ func TestNodesViewKeepsPinWhileInvitePending(t *testing.T) {
 func inviteEvent(method, inviteID string) NotificationMsg {
 	params, _ := json.Marshal(map[string]string{"inviteId": inviteID})
 	return NotificationMsg{Msg: &rpc.Message{Method: method, Params: params}}
+}
+
+// inviteReceived is an inbound pairing request, as the cluster manager pushes it.
+func inviteReceived(inviteID, from string) NotificationMsg {
+	params, _ := json.Marshal(map[string]string{
+		"inviteId": inviteID, "fromNodeName": from,
+	})
+	return NotificationMsg{Msg: &rpc.Message{
+		Method: "cluster:invite-received", Params: params,
+	}}
+}
+
+// TestInboundPairingIsPromptedOnce is the regression guard for the same
+// request being announced twice, in two wordings.
+//
+// It was both a pinned status line and a row of the frame. Two prompts for one
+// fact read as two requests, and the pinned one also outranked the status
+// line, so nothing that happened next could be reported there.
+func TestInboundPairingIsPromptedOnce(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(inviteReceived("inv-1", "M2GT9CR405"))
+
+	prompt := v.inboundPrompt()
+	if !contains(prompt, "M2GT9CR405") {
+		t.Fatalf("the prompt does not name the machine asking: %q", prompt)
+	}
+	if got := v.status.render(); contains(got, "pairing request") {
+		t.Errorf("the request is announced on the status line as well: %q", got)
+	}
+	// And once in the rendered frame, not twice.
+	if n := strings.Count(v.View(), "pairing request from"); n != 1 {
+		t.Errorf("the frame carries the prompt %d times, want 1", n)
+	}
+}
+
+// TestAcceptingPairingChangesThePrompt checks the prompt follows the request
+// into its second state.
+//
+// Pressing accept does not finish anything — it opens the PIN field — so a
+// prompt still offering "a to accept" told the operator to do what they had
+// just done, while the PIN it actually wanted sat on the line below.
+func TestAcceptingPairingChangesThePrompt(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(inviteReceived("inv-2", "M2GT9CR405"))
+	v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(nodePairKey.Help().Key)})
+
+	if v.mode != nodesInputPin {
+		t.Fatalf("accept did not open the PIN field (mode %v)", v.mode)
+	}
+	prompt := v.inboundPrompt()
+	if contains(prompt, "to accept") {
+		t.Errorf("still offering accept after it was pressed: %q", prompt)
+	}
+	if !contains(prompt, "PIN") {
+		t.Errorf("prompt %q does not say what is wanted now", prompt)
+	}
+	// The request is still pending until the PIN is submitted, so the machine
+	// it came from stays named.
+	if !contains(prompt, "M2GT9CR405") {
+		t.Errorf("prompt %q lost track of who is pairing", prompt)
+	}
 }
 
 // TestInviteOutcomeMatchesBySession is the regression guard for concurrent
@@ -546,16 +610,17 @@ func TestNodesViewClearsInboundInviteOnExpiry(t *testing.T) {
 	accept := nodePairKey.Help().Key
 
 	v := newNodesView(nil)
-	v.inbound = &clusterInvite{InviteID: "inv-1", FromNodeName: "peer"}
-	v.status.pin("pairing request from peer - press %s to accept, %s to decline",
-		accept, nodeDeclineKey.Help().Key)
+	v.Update(inviteReceived("inv-1", "peer"))
+	if !contains(v.inboundPrompt(), "to accept") {
+		t.Fatal("no prompt after a pairing request arrived")
+	}
 
 	v.Update(inviteEvent("cluster:invite-expired", "inv-1"))
 
 	if v.inbound != nil {
 		t.Error("expired inbound invite is still pending; accept would target a dead invite")
 	}
-	if contains(v.status.render(), "to accept") {
+	if contains(v.inboundPrompt(), "to accept") {
 		t.Error("still offering accept/decline for an expired invite")
 	}
 	if v.Help() == nil {

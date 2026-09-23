@@ -529,8 +529,10 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 		var inv clusterInvite
 		_ = decodeParams(msg.Params, &inv)
 		v.inbound = &inv
-		v.status.pin("pairing request from %s - press %s to accept, %s to decline",
-			inv.FromNodeName, nodePairKey.Help().Key, nodeDeclineKey.Help().Key)
+		// The prompt is a row of the frame, not a status line — see
+		// inboundPrompt. Pinning it here as well said the same thing twice, in
+		// two wordings, and left the status line unable to report what
+		// happened next because the pin outranked it.
 		v.SetSize(v.width, v.height)
 
 	default:
@@ -552,6 +554,28 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 // manager emits carries the invite it refers to, so an event without one
 // belongs to no session this view is tracking and is ignored rather than
 // applied to both.
+// inboundPrompt is the standing line for a pairing request someone sent us,
+// or empty when there is none.
+//
+// It follows the request through its two states rather than describing only
+// the first. Pressing "a" does not finish anything — it opens the PIN field —
+// so a prompt that went on offering "a to accept" after the field was already
+// up told the operator to do the thing they had just done, while the answer it
+// actually wanted was on the line below.
+func (v *nodesView) inboundPrompt() string {
+	if v.inbound == nil {
+		return ""
+	}
+	if v.mode == nodesInputPin {
+		return statusOKStyle.Render(fmt.Sprintf(
+			"accepting %s - enter the PIN shown on that machine",
+			v.inbound.FromNodeName))
+	}
+	return statusOKStyle.Render(fmt.Sprintf(
+		"pairing request from %s - %s to accept, %s to decline",
+		v.inbound.FromNodeName, nodePairKey.Help().Key, nodeDeclineKey.Help().Key))
+}
+
 func (v *nodesView) retireInvite(params []byte, outcome inviteResolution) {
 	var ref inviteRef
 	_ = decodeParams(params, &ref)
@@ -1144,12 +1168,7 @@ func (v *nodesView) View() string {
 		// than an empty one: it looks complete.
 		feedNote = statusErrStyle.Render("Some node data is " + warning)
 	}
-	inboundNote := ""
-	if v.inbound != nil {
-		inboundNote = statusOKStyle.Render(fmt.Sprintf(
-			"pairing request from %s - %s to accept, %s to decline",
-			v.inbound.FromNodeName, nodePairKey.Help().Key, nodeDeclineKey.Help().Key))
-	}
+	inboundNote := v.inboundPrompt()
 	editor := ""
 	if v.mode != nodesInputNone {
 		editor = v.inputLabel() + v.input.View()
