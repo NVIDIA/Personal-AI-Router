@@ -65,7 +65,7 @@ n/a
 n/a
 
 ### Bumps
-- product: none
+- services: none
 - nvpair-cluster-manager: none
 - nvpair-engine-manager: none
 - nvpair-errors: none
@@ -83,21 +83,21 @@ n/a
 
 If `services/versions.json` gained or lost a component, edit that file in the
 pull request with `<!-- pair-release-intent-allow-owned-files -->`, and
-regenerate the bump key list (`product` + sorted component names). Extra or
+regenerate the bump key list (`services` + sorted component names). Extra or
 missing keys fail the check.
 
 ## Shipping a product release
 
 1. Set each touched component to `patch`, `minor`, or `major` (SemVer meaning
    in `VERSIONING.md`). Untouched components stay `none`.
-2. Set `product` to a severity **≥** the highest component bump. UI-only
-   product notes may bump `product` while all components stay `none`.
+2. Set `services` to a severity **≥** the highest component bump. UI-only
+   notes may bump `services` while all components stay `none`.
 3. Replace changelog title/body with real **user-facing** prose (not `n/a`).
    Prefer bullets in the body.
 4. Leave owned files alone — `release-intent-apply.yml` writes them after the
    pull request merges.
 
-Example (engine-manager feature + product minor):
+Example (engine-manager feature + services minor):
 
 ```markdown
 <!-- pair-release-intent:v1 -->
@@ -108,7 +108,7 @@ Model downloads show live progress
 - Pulling a model on this machine now shows a live percentage instead of a spinner.
 
 ### Bumps
-- product: minor
+- services: minor
 - nvpair-cluster-manager: none
 - nvpair-engine-manager: minor
 - nvpair-errors: none
