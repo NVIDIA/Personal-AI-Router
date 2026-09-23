@@ -20,6 +20,7 @@ package main
 // nvpair-shared/engines.
 
 import (
+	"slices"
 	"strings"
 
 	"nvpair-shared/engines"
@@ -116,6 +117,23 @@ type engineProfile struct {
 	SupportsHostAlias bool
 }
 
+// ollamaBaseRoutes is the engine-specific surface that Ollama exposes before
+// the shared compatibility routes are added.
+var ollamaBaseRoutes = []route{
+	{Path: "/api/generate", Role: roleInferencePOST},
+	{Path: "/api/chat", Role: roleInferencePOST},
+	{Path: "/api/embeddings", Role: roleInferencePOST},
+	{Path: "/api/embed", Role: roleInferencePOST},
+	{Path: "/api/tags", Role: roleModelListNativeGET},
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
+// lmStudioBaseRoutes is the engine-specific surface that LM Studio exposes
+// before the shared compatibility routes are added.
+var lmStudioBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -133,21 +151,8 @@ var profiles = buildProfiles()
 func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
-	ollamaRoutes := []route{
-		{Path: "/api/generate", Role: roleInferencePOST},
-		{Path: "/api/chat", Role: roleInferencePOST},
-		{Path: "/api/embeddings", Role: roleInferencePOST},
-		{Path: "/api/embed", Role: roleInferencePOST},
-		{Path: "/api/tags", Role: roleModelListNativeGET},
-		{Path: "/v1/models", Role: roleModelListOpenAIGET},
-	}
-	ollamaRoutes = append(ollamaRoutes, openAIInferenceRoutes...)
-	ollamaRoutes = append(ollamaRoutes, anthropicInferenceRoutes...)
-	lmstudioRoutes := []route{
-		{Path: "/v1/models", Role: roleModelListOpenAIGET},
-	}
-	lmstudioRoutes = append(lmstudioRoutes, openAIInferenceRoutes...)
-	lmstudioRoutes = append(lmstudioRoutes, anthropicInferenceRoutes...)
+	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
+	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -161,7 +166,7 @@ func buildProfiles() []engineProfile {
 		{
 			Engine:         lmstudio,
 			StandalonePort: 1234,
-			Routes:         lmstudioRoutes,
+			Routes:         lmStudioRoutes,
 			ModelNaming:    exactID,
 			// 1235 is where engine-manager runs a managed LM Studio, so a
 			// proxy that restored it would sit on the engine's own port. The
