@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 0.1.5 — Avoid unnecessary cluster trust notifications (#62)
+
+- Cluster trust notifications now follow successfully saved peer endorsements. Duplicate endorsements and failed writes no longer cause unnecessary refreshes.
+
 ## 0.1.4 — Fix HTTP connection reuse in engine health probes (#37)
 
 - Periodic engine monitoring now reuses HTTP/1 connections instead of opening a new connection for every health probe.
