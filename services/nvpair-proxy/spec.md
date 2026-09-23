@@ -534,7 +534,10 @@ a redelivered snapshot must not clear live reservations.
 
 One port per facade, demultiplexed on the connection's first byte:
 
-- **Loopback plaintext** for local clients. A LAN caller is refused.
+- **Loopback plaintext** for local clients. A LAN caller is refused unless the
+  operator has enabled the API-key gate (`nvpair-shared/ingressauth`) and the
+  caller presents a configured key; a preflight gets no exemption. An admitted
+  caller is routed like a loopback client, with the key stripped first.
 - **Cluster mTLS** when `--cluster-dir` shows this node is a member: a peer
   whose client certificate matches a local pin is forwarded straight to the
   local engine reported by `node/set-local-backend`, never re-routed onward.

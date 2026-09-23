@@ -40,6 +40,12 @@ paths:
       tags:
         - Ollama-compatible
       operationId: ollamaChat
+      # Optional: loopback callers send no credential; a caller on another
+      # machine needs one only when the operator has enabled LAN access.
+      security:
+        - {}
+        - bearerAuth: []
+        - apiKeyAuth: []
       summary: Ollama-compatible chat
       description: >
         Send an Ollama-compatible chat request to the local PAIR proxy. PAIR
@@ -94,6 +100,12 @@ paths:
       tags:
         - OpenAI-compatible
       operationId: createChatCompletion
+      # Optional: loopback callers send no credential; a caller on another
+      # machine needs one only when the operator has enabled LAN access.
+      security:
+        - {}
+        - bearerAuth: []
+        - apiKeyAuth: []
       summary: OpenAI-compatible chat completion
       description: >
         Send an OpenAI-compatible chat completion request to the local PAIR
@@ -195,6 +207,23 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Needed only by a caller that is not on the node itself, and only when
+        the node's operator has enabled authenticated LAN access by configuring
+        API keys. Loopback callers send no credential. Send a configured key as
+        `Authorization: Bearer <key>`; the proxy strips it before forwarding.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: >
+        Alternative to bearerAuth for clients built on the Anthropic SDK
+        convention. Same scope: non-loopback callers, when the operator has
+        enabled LAN access.
   schemas:
     ChatRole:
       type: string

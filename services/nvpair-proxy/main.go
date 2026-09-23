@@ -17,6 +17,7 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/engines"
+	"nvpair-shared/ingressauth"
 )
 
 func main() {
@@ -81,6 +82,10 @@ func main() {
 	// presence: a left/removed node keeps its keypair by design, and would
 	// otherwise keep logging cluster_ingress with no cluster peers to serve.
 	proxy.mesh = clustertrust.Open(*clusterDir)
+	// The opt-in API-key gate for non-loopback plaintext callers. Configured
+	// from the environment (or the default key file); with nothing configured
+	// it stays disabled and plaintext remains loopback-only.
+	proxy.lanAuth = ingressauth.FromEnv()
 
 	go proxy.mesh.Watch(ctx, func(clustered bool) {
 		slog.Info("cluster inference ingress switched personality", "cluster_ingress", clustered)
