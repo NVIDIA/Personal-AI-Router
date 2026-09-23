@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -340,6 +341,11 @@ func TestStopLMSDownloadWhenTheInterruptCannotBeDelivered(t *testing.T) {
 			}
 			finished := make(chan error, 1)
 			finished <- cmd.Wait()
+			// The process is reaped, which is exactly the state that must not
+			// be signalled: its PID is free for the OS to reissue, and both
+			// signals reach more than the CLI.
+			var reaped atomic.Bool
+			reaped.Store(true)
 
 			output := &lmsDownloadOutput{
 				lastPercent: -1,
@@ -347,7 +353,7 @@ func TestStopLMSDownloadWhenTheInterruptCannotBeDelivered(t *testing.T) {
 				completed:   completed,
 				text:        "transcript",
 			}
-			text, err := stopLMSDownload(testLMSCancelGraces, cmd, finished, output)
+			text, err := stopLMSDownload(testLMSCancelGraces, cmd, finished, &reaped, output)
 			if text != wantText {
 				t.Errorf("text = %q, want %q", text, wantText)
 			}

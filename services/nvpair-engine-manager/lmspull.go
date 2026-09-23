@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -190,7 +191,16 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 		return "", err
 	}
 	finished := make(chan error, 1)
-	go func() { finished <- cmd.Wait() }()
+	// reaped is set before the result is published, so a reader that sees it
+	// knows the PID is already free for the OS to reissue. cmd.ProcessState
+	// cannot serve here: Wait writes it on this goroutine while the
+	// cancelling one would be reading it.
+	var reaped atomic.Bool
+	go func() {
+		err := cmd.Wait()
+		reaped.Store(true)
+		finished <- err
+	}()
 	var runErr error
 	select {
 	case runErr = <-finished:
@@ -202,7 +212,7 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 		select {
 		case runErr = <-finished:
 		default:
-			return stopLMSDownload(lmsCancelGracesFrom(ctx), cmd, finished, output)
+			return stopLMSDownload(lmsCancelGracesFrom(ctx), cmd, finished, &reaped, output)
 		}
 	}
 	_, _, text := output.state()
@@ -254,12 +264,31 @@ func stopLMSDownload(
 	graces lmsCancelGraces,
 	cmd *exec.Cmd,
 	finished <-chan error,
+	reaped *atomic.Bool,
 	output *lmsDownloadOutput,
 ) (string, error) {
-	if err := interruptDownload(cmd); err != nil {
+	// Neither signal addresses the CLI alone: on Unix it goes to the whole
+	// download process group, and on Windows it becomes a control event for
+	// everything sharing the launcher's console. A reaped PID is free for the
+	// OS to reissue, so one sent afterwards does not merely miss — it can
+	// reach a stranger. runLMSDownloadCommand's select prefers a finished run
+	// for this reason, but Wait can also complete while this is running.
+	interrupt := func() error {
+		if reaped.Load() {
+			return os.ErrProcessDone
+		}
+		return interruptDownload(cmd)
+	}
+	kill := func() {
+		if reaped.Load() {
+			return
+		}
 		_ = killDownload(cmd)
-		reaped, runErr := waitLMSExit(finished, graces.reap)
-		if !reaped {
+	}
+	if err := interrupt(); err != nil {
+		kill()
+		wasReaped, runErr := waitLMSExit(finished, graces.reap)
+		if !wasReaped {
 			output.disown()
 			return "", fmt.Errorf("could not confirm LM Studio cancellation and could not reclaim its process: %w", err)
 		}
@@ -269,7 +298,7 @@ func stopLMSDownload(
 		return "", fmt.Errorf("could not confirm LM Studio cancellation: %w", err)
 	}
 	exited, _ := waitLMSExit(finished, graces.interrupt)
-	if !exited && interruptDownload(cmd) == nil {
+	if !exited && interrupt() == nil {
 		exited, _ = waitLMSExit(finished, graces.retry)
 	}
 	if exited {
@@ -286,10 +315,10 @@ func stopLMSDownload(
 	// cancel as failed so no partial file is deleted on the strength of a
 	// cancellation the CLI never acknowledged. A process that outlasts even the
 	// kill is abandoned rather than waited on; see lmsCancelGraces.
-	_ = killDownload(cmd)
-	reaped, _ := waitLMSExit(finished, graces.reap)
+	kill()
+	wasReaped, _ := waitLMSExit(finished, graces.reap)
 	output.disown()
-	if !reaped {
+	if !wasReaped {
 		// The writer is still attached to a live process, so its output from
 		// here belongs to nobody this worker is waiting on.
 		return "", fmt.Errorf("LM Studio did not confirm download cancellation and its process could not be reclaimed; the download may still be running in LM Studio")

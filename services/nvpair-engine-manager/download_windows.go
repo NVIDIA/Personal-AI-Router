@@ -66,27 +66,38 @@ func runDownloadProcess(argv []string) int {
 	return 0
 }
 
-// isDownloadLauncher reports whether pid still names a launcher this worker
-// started, by checking that its image is this same executable. Windows reissues
-// a PID as soon as the last handle to the exited process closes, so a cancel
-// racing the CLI's exit could otherwise attach to a stranger's console — and
-// GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) reaches everything sharing it.
-func isDownloadLauncher(pid uint32) bool {
+// openDownloadLauncher returns an open handle to pid when it still names a
+// launcher this worker started, established by its image being this same
+// executable. A cancel racing the CLI's exit could otherwise attach to a
+// stranger's console — and GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) reaches
+// everything sharing it.
+//
+// The handle is the guard, not the image check. Windows reissues a PID as soon
+// as the last handle to the exited process closes, so verifying the image and
+// then closing the handle proves only what was true a moment ago: the PID can
+// be recycled before the caller attaches. Holding this handle keeps the
+// process object, and therefore the PID, from being reused — so the caller
+// must not close it until it has attached to the console.
+func openDownloadLauncher(pid uint32) (windows.Handle, bool) {
 	self, err := os.Executable()
 	if err != nil {
-		return false
+		return 0, false
 	}
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return false
+		return 0, false
 	}
-	defer windows.CloseHandle(handle)
 	image := make([]uint16, 32768)
 	size := uint32(len(image))
 	if err := windows.QueryFullProcessImageName(handle, 0, &image[0], &size); err != nil {
-		return false
+		_ = windows.CloseHandle(handle)
+		return 0, false
 	}
-	return strings.EqualFold(windows.UTF16ToString(image[:size]), self)
+	if !strings.EqualFold(windows.UTF16ToString(image[:size]), self) {
+		_ = windows.CloseHandle(handle)
+		return 0, false
+	}
+	return handle, true
 }
 
 func interruptDownload(cmd *exec.Cmd) error {
@@ -114,7 +125,8 @@ func handleDownloadProcess() bool {
 	if err != nil || pid == 0 {
 		os.Exit(1)
 	}
-	if !isDownloadLauncher(uint32(pid)) {
+	launcher, ok := openDownloadLauncher(uint32(pid))
+	if !ok {
 		fmt.Fprintln(os.Stderr, "download launcher is gone")
 		os.Exit(1)
 	}
@@ -124,8 +136,13 @@ func handleDownloadProcess() bool {
 	ignore := kernel.NewProc("SetConsoleCtrlHandler")
 	generate := kernel.NewProc("GenerateConsoleCtrlEvent")
 	free.Call()
-	if ok, _, err := attach.Call(uintptr(pid)); ok == 0 {
-		fmt.Fprintln(os.Stderr, err)
+	attached, _, attachErr := attach.Call(uintptr(pid))
+	// The handle has held the PID against reuse up to here, which is the point
+	// the console stops being addressed by number, so it has done its job.
+	// os.Exit below would skip a defer, so close it explicitly.
+	_ = windows.CloseHandle(launcher)
+	if attached == 0 {
+		fmt.Fprintln(os.Stderr, attachErr)
 		os.Exit(1)
 	}
 	if ok, _, err := ignore.Call(0, 1); ok == 0 {
