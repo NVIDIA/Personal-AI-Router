@@ -4,6 +4,7 @@
 package main
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -44,7 +45,12 @@ func TestLlamaLaunchSettingsResolveModelDirAndAreEditable(t *testing.T) {
 // engine, so the preview refuses it instead of dropping it silently.
 func TestLlamaLaunchSettingsRefuseOwnedCacheEnvironment(t *testing.T) {
 	e := NewExecutor(buildRegistry(""), NewReporter(nil), nil, t.TempDir())
-	for _, text := range []string{`LLAMA_CACHE="C:/elsewhere" --host 127.0.0.1 --port 8081`, `hf_hub_cache=/elsewhere --port 8081`} {
+	texts := []string{`LLAMA_CACHE="C:/elsewhere" --host 127.0.0.1 --port 8081`, `HF_HUB_CACHE=/elsewhere --port 8081`}
+	// Unix environment keys are case-sensitive; lowercase aliases are owned only on Windows.
+	if runtime.GOOS == "windows" {
+		texts = append(texts, `hf_hub_cache=/elsewhere --port 8081`)
+	}
+	for _, text := range texts {
 		preview, err := e.PreviewLaunch(settings.Request{Engine: "llamacpp", Settings: settings.Config{ServerPort: 8081, ProxyPort: 8080, LaunchText: text}})
 		if err != nil {
 			t.Fatal(err)
