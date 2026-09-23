@@ -12,10 +12,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Run builds the tabbed program over a connected broker client and the
-// broker's stderr stream, and blocks until the user quits. The caller is
-// responsible for shutting the broker down afterwards.
-func Run(client *rpc.Client, stderr io.Reader) error {
+// Run builds the tabbed program over a connected broker client and the broker's
+// stderr stream, and blocks until the user quits. The caller is responsible for
+// shutting the broker down afterwards, and for honouring the returned Outcome
+// once it has.
+func Run(client *rpc.Client, stderr io.Reader) (Outcome, error) {
 	logCh := make(chan string, 2000)
 	go scanLines(stderr, logCh)
 
@@ -23,8 +24,14 @@ func Run(client *rpc.Client, stderr io.Reader) error {
 		New(client, logCh, defaultViews(client)),
 		tea.WithAltScreen(),
 	)
-	_, err := p.Run()
-	return err
+	final, err := p.Run()
+	if m, ok := final.(Model); ok {
+		// Before returning, so a demo still inside its window does not leave
+		// dispatcher processes behind for the shell to inherit.
+		m.close()
+		return Outcome{WipeData: m.wipeOnExit}, err
+	}
+	return Outcome{}, err
 }
 
 // scanLines forwards each line of r onto out, closing out at EOF. The
@@ -40,17 +47,23 @@ func scanLines(r io.Reader, out chan<- string) {
 }
 
 // defaultViews lists the tabs in display order.
+//
+// The tab set is machine-first: Nodes is the primary surface because a node is
+// the unit an operator reasons about, and everything specific to one machine
+// hangs off its row rather than living in a tab of its own. Diagnostics come
+// last, errors before logs, which is the order you consult them in.
+//
+// Errors is a plain tab rather than an overlay on a dedicated key. As an overlay
+// it needed a global binding, and every candidate was either a letter that
+// shadowed a view's own verb or a digit that looked like a tab number without
+// being one. Its count rides on the tab label instead, so the tab bar is the
+// indicator and there is nothing extra to learn.
 func defaultViews(client *rpc.Client) []View {
 	return []View{
-		newHealthView(client),
-		newErrorsView(client),
 		newNodesView(client),
-		newProxiesView(client),
-		newWorkloadsView(client),
-		newEnginesView(client),
-		newClusterView(client),
-		newManualView(client),
-		newSettingsView(client),
+		newJobsView(client),
+		newServiceView(client),
+		newErrorsView(client),
 		newLogsView(client),
 	}
 }

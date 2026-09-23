@@ -95,7 +95,7 @@ echo
 
 build_subbinary() {
     local idx="$1" name="$2" version="$3"
-    echo "[$idx/12] Building $name (v$version)..."
+    echo "[$idx/13] Building $name (v$version)..."
     (cd "$ROOT/$name" && go build -ldflags "-X main.Version=$version" -o "$name" .)
     echo "      OK"
 }
@@ -111,6 +111,28 @@ build_subbinary 9 nvpair-ui-broker     "$V_BROKER"
 build_subbinary 10 nvpair-cluster-manager "$V_CLUMGR"
 build_subbinary 11 nvpair-job-scheduler   "$V_SCHED"
 build_subbinary 12 nvpair-tui            "$V_TUI"
+
+# inference-dispatcher is built here but is not a worker: it speaks no JSON-RPC,
+# nothing supervises it, and it is deliberately absent from versions.json. It is
+# an ordinary HTTP client that the Inference Demo spawns once per request, and it
+# is built here because the terminal interface runs the same demo and ships from
+# this bundle — a demo the desktop app can run and the terminal cannot is not a
+# useful distinction to an operator.
+#
+# Its module lives outside this tree, at the monorepo root, for the same reason:
+# it is not a service. The path is relative to services/, so a checkout without
+# it fails loudly here rather than producing a bundle that is quietly missing a
+# feature.
+DISPATCHER_SRC="$ROOT/../scripts/inference-dispatcher"
+echo "[13/13] Building inference-dispatcher (v$V_SERVICES)..."
+if [ ! -d "$DISPATCHER_SRC" ]; then
+    echo "ERROR: $DISPATCHER_SRC not found." >&2
+    echo "       The Inference Demo client lives at scripts/inference-dispatcher" >&2
+    echo "       in the monorepo root; this bundle cannot be built without it." >&2
+    exit 1
+fi
+(cd "$DISPATCHER_SRC" && go build -ldflags "-X main.Version=$V_SERVICES" -o inference-dispatcher .)
+echo "      OK"
 
 BIN_OUT="$ROOT/build/bin"
 
@@ -139,6 +161,9 @@ cp "$ROOT/nvpair-ui-broker/nvpair-ui-broker"       "$BIN_OUT/nvpair-ui-broker"
 cp "$ROOT/nvpair-cluster-manager/nvpair-cluster-manager" "$BIN_OUT/nvpair-cluster-manager"
 cp "$ROOT/nvpair-job-scheduler/nvpair-job-scheduler" "$BIN_OUT/nvpair-job-scheduler"
 cp "$ROOT/nvpair-tui/nvpair-tui"                   "$BIN_OUT/nvpair-tui"
+# Beside the binaries it is not one of: nvpair-tui resolves the broker next to
+# its own executable, and the demo finds this the same way.
+cp "$DISPATCHER_SRC/inference-dispatcher"          "$BIN_OUT/inference-dispatcher"
 
 echo
 echo "========================================"
@@ -157,4 +182,5 @@ printf '  UI Broker:    %s\n' "$BIN_OUT/nvpair-ui-broker"
 printf '  Cluster Mgr:  %s\n' "$BIN_OUT/nvpair-cluster-manager"
 printf '  Job Scheduler:%s\n' " $BIN_OUT/nvpair-job-scheduler"
 printf '  TUI:          %s\n' "$BIN_OUT/nvpair-tui"
+printf '  Demo client:  %s\n' "$BIN_OUT/inference-dispatcher"
 echo
