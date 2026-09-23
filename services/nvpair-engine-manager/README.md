@@ -166,9 +166,9 @@ would only collide on the port. Consequences worth knowing:
   **fails closed**: an adopted engine is declined with "running under external
   management" rather than terminated on a guess. That is the safe direction, but
   it also means a host without `lsof` cannot reclaim its own orphans — CI
-  installs `lsof` and `iproute2` on Linux for this reason, and
-  `services:macos-build` runs this module's tests natively so the `lsof` path is
-  exercised somewhere (the Linux gate excludes it by build tag).
+  installs `lsof` and `iproute2` on Linux for this reason, and the macOS leg of
+  the `build-script` job runs this module's tests natively so the `lsof` path is
+  exercised somewhere (the Linux `services` job excludes it by build tag).
   `ss` is iproute2 and therefore Linux-only; macOS has no equivalent fallback,
   so `lsof` is the single mechanism there.
 - **A symlinked install directory is followed to its target.** If
