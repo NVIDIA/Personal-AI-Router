@@ -12,9 +12,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"nvpair-shared/appdir"
+	"nvpair-shared/engines"
 	"nvpair-shared/jsonrpc"
 )
 
@@ -30,6 +33,7 @@ var (
 	manualNodesBin  string
 	clusterMgrBin   string
 	schedulerBin    string
+	testsConfigBase string
 )
 
 func TestMain(m *testing.M) {
@@ -135,6 +139,19 @@ func TestMain(m *testing.M) {
 		log.Fatalf("build nvpair-job-scheduler: %v", err)
 	}
 
+	// Every child binary inherits this environment, so its persisted state
+	// (ports, workloads, settings) lands under tmpDir instead of the
+	// developer's real config. These are the variables appdir resolves
+	// through on each platform. They are set after the builds, because go
+	// derives its module and build caches from these variables.
+	testsConfigBase = filepath.Join(tmpDir, "config")
+	for _, key := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA", "LOCALAPPDATA"} {
+		if err := os.Setenv(key, testsConfigBase); err != nil {
+			os.RemoveAll(tmpDir)
+			log.Fatalf("set %s: %v", key, err)
+		}
+	}
+
 	code := m.Run()
 	os.RemoveAll(tmpDir)
 	os.Exit(code)
@@ -208,4 +225,75 @@ func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Durat
 		}
 	}
 	return jsonrpc.Message{}
+}
+
+// TestLMStudioFacadeChildPersistsUnderPrivateBase proves a real proxy child
+// writes its persisted LM Studio port under the TestMain config base, so no
+// cross-process test can clobber the developer's saved port.
+func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
+	cmd := exec.Command(proxyBin)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	msgs := startMsgReader(stdout)
+
+	sendLine(t, stdin, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "facade/enable",
+		"params": map[string]any{
+			"engine":              "lmstudio",
+			"port":                freePort(t),
+			"ignorePersistedPort": true,
+		},
+	})
+	if resp := waitForResponse(t, msgs, 10*time.Second); resp.Error != nil {
+		t.Fatalf("facade/enable failed: %v", resp.Error)
+	}
+
+	persistedPort := freePort(t)
+	sendLine(t, stdin, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  engines.AddressMethod("lmstudio", "set-port"),
+		"params":  map[string]any{"port": persistedPort},
+	})
+	if resp := waitForResponse(t, msgs, 5*time.Second); resp.Error != nil {
+		t.Fatalf("lmstudio set-port failed: %v", resp.Error)
+	}
+
+	path, err := appdir.Path("lmstudio-proxy-port.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(testsConfigBase, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		t.Fatalf("lmstudio port path %q is outside test config base %q", path, testsConfigBase)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read persisted lmstudio port: %v", err)
+	}
+	var saved struct {
+		Port int `json:"port"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("parse persisted lmstudio port: %v", err)
+	}
+	if saved.Port != persistedPort {
+		t.Fatalf("persisted lmstudio port = %d, want %d", saved.Port, persistedPort)
+	}
 }
