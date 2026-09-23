@@ -950,6 +950,39 @@ func TestUnpairedNodeIsNotCalledSilent(t *testing.T) {
 	}
 }
 
+// TestUnpairedHintAgreesWithTheModelList checks the engines pane does not deny
+// what the pane below it is already showing.
+//
+// Discovery carries which engine serves each model and needs no pairing to do
+// it, so an unpaired node's model list arrives with its ENGINE column filled
+// in. "Its engines are not visible from here", printed directly above a list
+// naming Ollama, claimed less than the screen displayed. What pairing actually
+// buys is their state and their controls.
+func TestUnpairedHintAgreesWithTheModelList(t *testing.T) {
+	d := remoteDetail()
+	d.node.membership = membershipNone
+	d.models = modelsResult{ModelsByEngine: map[string][]string{
+		"ollama": {"gemma3:4b", "gemma4:12b"},
+	}}
+	d.refreshModels()
+
+	hint := d.emptyEnginesHint()
+	if !strings.Contains(hint, "Ollama") {
+		t.Errorf("hint %q does not name the engine the model list attributes rows to", hint)
+	}
+	if !strings.Contains(hint, "manage") {
+		t.Errorf("hint %q does not say what pairing would actually add", hint)
+	}
+
+	// With nothing advertised there is nothing to name, and the sentence must
+	// not trail off into an empty list.
+	bare := remoteDetail()
+	bare.node.membership = membershipNone
+	if got := bare.emptyEnginesHint(); strings.Contains(got, "advertises") {
+		t.Errorf("hint %q claims advertised engines for a node reporting none", got)
+	}
+}
+
 // TestNodeKeysDoNotCollide checks no two verbs on the Nodes tab claim the same
 // key, and that none of them shadows a shell binding.
 //
