@@ -885,20 +885,68 @@ func TestEngineNameDoesNotDependOnTheEngineFetch(t *testing.T) {
 	}
 }
 
-// TestEmptyEngineListExplainsItself checks the two empty states read
-// differently: the manager not answering, and the manager answering with
-// nothing. They have different causes and the operator's next move differs.
+// TestEmptyEngineListExplainsItself checks the empty states read differently.
+// The manager answering with nothing, the manager not answering, and the node
+// being one we cannot ask at all have different causes, and the operator's
+// next move differs for each.
 func TestEmptyEngineListExplainsItself(t *testing.T) {
 	local := localDetail()
 	if got := local.emptyEnginesHint(); !strings.Contains(got, "engine manager") {
 		t.Errorf("local hint does not point at the engine manager: %q", got)
 	}
-	remote := remoteDetail()
-	if got := remote.emptyEnginesHint(); !strings.Contains(got, "this node") {
-		t.Errorf("remote hint does not attribute the gap to the peer: %q", got)
+
+	member := remoteDetail()
+	member.node.membership = membershipMember
+	if got := member.emptyEnginesHint(); !strings.Contains(got, "this node") {
+		t.Errorf("remote member hint does not attribute the gap to the peer: %q", got)
 	}
-	if local.emptyEnginesHint() == remote.emptyEnginesHint() {
+
+	if local.emptyEnginesHint() == member.emptyEnginesHint() {
 		t.Error("local and remote read identically; the causes are different")
+	}
+}
+
+// TestUnpairedNodeIsNotCalledSilent is the regression guard for a machine that
+// was answering perfectly well being reported as unresponsive.
+//
+// A peer's engines are fetched over pin-based mTLS, so a node outside the
+// cluster cannot be asked at all. That call was made anyway, and its failure
+// rendered as "not answering" — beside a hardware readout, polled over an
+// endpoint that needs no pairing, visibly updating for the same machine.
+func TestUnpairedNodeIsNotCalledSilent(t *testing.T) {
+	cases := map[nodeMembership]string{
+		membershipNone:    "not in this cluster",
+		membershipForeign: "another cluster",
+		membershipPending: "still pairing",
+	}
+	for membership, want := range cases {
+		d := remoteDetail()
+		d.node.membership = membership
+
+		if d.enginesCmd() != nil {
+			t.Errorf("%v: asked for engines over a link that cannot carry the question", membership)
+		}
+		got := d.emptyEnginesHint()
+		if !strings.Contains(got, want) {
+			t.Errorf("%v: hint %q does not say %q", membership, got, want)
+		}
+		if strings.Contains(got, "not answering") {
+			t.Errorf("%v: hint %q calls a reachable node silent", membership, got)
+		}
+		// Models come from what the node advertises over discovery, which
+		// needs no pairing, so the models pane must not blame a stopped engine
+		// for what it cannot see either way.
+		d.node.presence = presenceOnline
+		if m := d.emptyModelsHint(); strings.Contains(m, "start an engine") {
+			t.Errorf("%v: models hint %q claims an engine needs starting", membership, m)
+		}
+	}
+
+	// A member is still asked, and is still allowed to be silent.
+	member := remoteDetail()
+	member.node.membership = membershipMember
+	if member.enginesCmd() == nil {
+		t.Error("a cluster member was not asked for its engines")
 	}
 }
 
