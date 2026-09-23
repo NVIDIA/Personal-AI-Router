@@ -189,15 +189,23 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			// 100%; error uses -1), so render them as outcomes rather than a
 			// misleading "success (0%)". A late failure that arrives after the
 			// synchronous call timed out still surfaces here.
+			//
+			// They also retire the entry, which is the only thing that does so
+			// for a download whose own request outlived callTimeout. That
+			// deadline is ignored deliberately, so without this the entry
+			// would stay in active for the rest of the session and keep
+			// offering a finished download as the cancel target.
 			switch p.Stage {
 			case "success":
 				v.status = fmt.Sprintf("pull %s: done", what)
+				v.retire(enginePull{engine: p.Engine, model: p.Model})
 			case "error":
 				detail := p.Message
 				if detail == "" {
 					detail = "failed"
 				}
 				v.status = fmt.Sprintf("pull %s failed: %s", what, detail)
+				v.retire(enginePull{engine: p.Engine, model: p.Model})
 			case "queued":
 				// The engine already has a download running; this one starts
 				// when that finishes. There is no percent to report yet.
@@ -314,12 +322,26 @@ func (v *enginesView) cancelPull() tea.Cmd {
 	}
 	v.status = fmt.Sprintf("canceling %s %s...", pull.engine, pull.model)
 	params := map[string]string{"engine": pull.engine, "model": pull.model}
-	return call(v.client, "engine:cancel-pull", params, func(_ *rpc.Message, err error) tea.Msg {
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	return call(v.client, "engine:cancel-pull", params, v.decodeCancel(pull))
+}
+
+// decodeCancel maps a cancel request's outcome onto the update loop.
+func (v *enginesView) decodeCancel(pull enginePull) func(*rpc.Message, error) tea.Msg {
+	return func(_ *rpc.Message, err error) tea.Msg {
+		// A deadline here is the call timeout, not the cancel's outcome, the
+		// same way it is for submitPull. Retiring the entry on it would drop
+		// the only cancel target for a download that is still running, so a
+		// second press would report nothing active on the engine while the
+		// transfer carried on. Leave it and let the pull's own terminal
+		// progress frame retire it.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		if err != nil {
 			return engineOpMsg{what: "cancel " + pull.model, engine: pull.engine, err: err}
 		}
 		return enginePullDoneMsg{pull: pull}
-	})
+	}
 }
 
 func (v *enginesView) newestPull(engine string) (enginePull, bool) {

@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -62,6 +63,106 @@ func TestPullProgressRendersModelAndQueuedStage(t *testing.T) {
 	test("success",
 		`{"engine":"lmstudio","model":"owner/model","op":"pull","stage":"success"}`,
 		"pull lmstudio owner/model: done")
+}
+
+// A pull's own request routinely outlives callTimeout, and that deadline is
+// ignored on purpose because the download carries on. The terminal progress
+// frame is then the only thing that can retire the entry — without it a
+// finished download stays in active for the rest of the session and keeps
+// being offered as the cancel target.
+func TestTerminalPullProgressRetiresTheDownload(t *testing.T) {
+	test := func(name, params string) {
+		t.Run(name, func(t *testing.T) {
+			v := newEnginesView(nil)
+			v.active = []enginePull{
+				{engine: "ollama", model: "llama3.2"},
+				{engine: "ollama", model: "qwen3:8b"},
+			}
+			v.Update(NotificationMsg{Msg: &rpc.Message{
+				Method: "engine:pull-progress",
+				Params: json.RawMessage(params),
+			}})
+			pull, ok := v.newestPull("ollama")
+			if !ok {
+				t.Fatal("the other download was retired too")
+			}
+			if pull.model != "llama3.2" {
+				t.Fatalf("newestPull = %q, want llama3.2 once qwen3:8b has finished", pull.model)
+			}
+		})
+	}
+	test("success", `{"engine":"ollama","model":"qwen3:8b","op":"pull","stage":"success"}`)
+	test("error", `{"engine":"ollama","model":"qwen3:8b","op":"pull","stage":"error","percent":-1,"message":"no space left on device"}`)
+}
+
+// The engine-manager acknowledges a cancel only after the transfer has stopped
+// and its partial files are cleaned up, so the reply can outlast callTimeout.
+// Retiring the entry on that deadline dropped the only cancel target for a
+// download that was still running: a second press reported no active download
+// on the engine while the transfer carried on.
+func TestCancelKeepsTheDownloadWhenTheCallTimesOut(t *testing.T) {
+	v := newEnginesView(nil)
+	pull := enginePull{engine: "ollama", model: "llama3.2"}
+	v.active = []enginePull{pull}
+
+	if msg := v.decodeCancel(pull)(nil, context.DeadlineExceeded); msg != nil {
+		t.Fatalf("a timed-out cancel produced %#v, want no message", msg)
+	}
+	if _, ok := v.newestPull("ollama"); !ok {
+		t.Fatal("the download is no longer cancelable after its cancel timed out")
+	}
+}
+
+// A cancel that actually failed is a different matter: it reports, and leaves
+// the entry so it can be tried again.
+func TestCancelReportsARealFailure(t *testing.T) {
+	v := newEnginesView(nil)
+	pull := enginePull{engine: "ollama", model: "llama3.2"}
+	v.active = []enginePull{pull}
+
+	msg := v.decodeCancel(pull)(nil, errors.New("engine ollama is not running"))
+	op, ok := msg.(engineOpMsg)
+	if !ok {
+		t.Fatalf("msg = %#v, want engineOpMsg", msg)
+	}
+	if !strings.Contains(op.what, pull.model) {
+		t.Errorf("what = %q, want it to name %q", op.what, pull.model)
+	}
+	if _, ok := v.newestPull("ollama"); !ok {
+		t.Error("a failed cancel left the download unselectable, so it cannot be retried")
+	}
+}
+
+// A cancel the engine-manager confirmed is the one case that retires the entry
+// on the reply itself.
+func TestConfirmedCancelRetiresTheDownload(t *testing.T) {
+	v := newEnginesView(nil)
+	pull := enginePull{engine: "ollama", model: "llama3.2"}
+	v.active = []enginePull{pull}
+
+	msg := v.decodeCancel(pull)(nil, nil)
+	if _, ok := msg.(enginePullDoneMsg); !ok {
+		t.Fatalf("msg = %#v, want enginePullDoneMsg", msg)
+	}
+	v.Update(msg)
+	if _, ok := v.newestPull("ollama"); ok {
+		t.Error("a confirmed cancel left the download offered as a cancel target")
+	}
+}
+
+// A non-terminal frame says the download is still going, so it must leave the
+// entry alone.
+func TestProgressFrameDoesNotRetireARunningDownload(t *testing.T) {
+	v := newEnginesView(nil)
+	running := enginePull{engine: "ollama", model: "llama3.2"}
+	v.active = []enginePull{running}
+	v.Update(NotificationMsg{Msg: &rpc.Message{
+		Method: "engine:pull-progress",
+		Params: json.RawMessage(`{"engine":"ollama","model":"llama3.2","op":"pull","stage":"downloading","percent":42}`),
+	}})
+	if _, ok := v.newestPull("ollama"); !ok {
+		t.Fatal("a running download was retired on a progress frame")
+	}
 }
 
 // The cancel key needs the model, not just the engine: several downloads can be
