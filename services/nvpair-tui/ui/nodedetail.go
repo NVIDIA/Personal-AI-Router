@@ -290,6 +290,13 @@ func (d *nodeDetail) telemetryCmd() tea.Cmd {
 }
 
 func (d *nodeDetail) enginesCmd() tea.Cmd {
+	if !d.enginesQueryable() {
+		// Asking would fail every time, and the failure is indistinguishable
+		// from the node being down — which is how an unpaired machine came to
+		// be reported as "not answering" while its hardware readout, which
+		// needs no pairing, updated beside it.
+		return nil
+	}
 	method, params := "engine:get-installed", map[string]any{}
 	if d.remote() {
 		method = "engine:remote-get-installed"
@@ -305,6 +312,22 @@ func (d *nodeDetail) enginesCmd() tea.Cmd {
 		_ = decodeParams(msg.Result, &r)
 		return detailEnginesMsg{engines: r.Engines}
 	})
+}
+
+// enginesQueryable reports whether this node's engine list can be fetched at
+// all.
+//
+// A peer answers engine:remote-* over pin-based mTLS, and a pin only exists
+// for a machine in this cluster — so for anything else the question cannot be
+// asked, rather than being asked and going unanswered. The two look identical
+// from here once the call fails, which is why this is decided before the call
+// rather than read out of its error.
+//
+// Hardware telemetry is a separate matter: that endpoint needs no pairing, so
+// an unpaired node can report its GPU and memory while its engines stay out of
+// reach. Anything saying "not answering" has to survive that combination.
+func (d *nodeDetail) enginesQueryable() bool {
+	return !d.remote() || d.node.membership == membershipMember
 }
 
 // modelsCmd asks the engine manager for this machine's inventory. A remote
@@ -1676,6 +1699,9 @@ func (d *nodeDetail) hardwareBudget() int {
 // installed", it is the engine manager failing to enumerate. Saying where to
 // look beats a flat statement the operator cannot act on.
 func (d *nodeDetail) emptyEnginesHint() string {
+	if !d.enginesQueryable() {
+		return "  " + d.unpairedEnginesHint()
+	}
 	if d.remote() {
 		return "  No engines reported by this node - its engine manager may not be running."
 	}
@@ -1684,10 +1710,39 @@ func (d *nodeDetail) emptyEnginesHint() string {
 	return "  No engines reported. Every supported engine should be listed here even when not installed, so this points at the engine manager rather than at what you have installed - check the Logs tab."
 }
 
+// unpairedEnginesHint says why a node's engines are out of reach, and what
+// would bring them into it.
+//
+// Each membership needs its own sentence because the next move differs: an
+// unrelated machine can be paired with from the Nodes list, one in another
+// cluster has to leave that cluster first, and one part-way through pairing
+// only needs the handshake to finish.
+func (d *nodeDetail) unpairedEnginesHint() string {
+	switch d.node.membership {
+	case membershipForeign:
+		return fmt.Sprintf(
+			"%s is in another cluster, so its engines are not visible from here.",
+			d.node.name)
+	case membershipPending:
+		return fmt.Sprintf(
+			"%s is still pairing - its engines appear once that finishes.", d.node.name)
+	default:
+		return fmt.Sprintf(
+			"%s is not in this cluster. Pair with it on the Nodes tab to manage its engines.",
+			d.node.name)
+	}
+}
+
 func (d *nodeDetail) emptyModelsHint() string {
 	switch {
 	case d.node.presence != presenceOnline:
 		return "  No models reported - this node is not reachable."
+	case !d.enginesQueryable():
+		// Its models come from what it advertises over discovery, which needs
+		// no pairing — so silence here means it is advertising none, not that
+		// something needs starting. Whether an engine is running is exactly
+		// what cannot be seen from outside the cluster.
+		return "  No models advertised by this node."
 	case !d.anyEngineRunning():
 		return "  No models reported - start an engine to see its models."
 	case d.remote():
