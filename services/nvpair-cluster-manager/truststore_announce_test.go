@@ -106,12 +106,20 @@ func assertStoredEndorsements(t *testing.T, ts *TrustStore, uuid string, want []
 	}
 }
 
+type endorsementMerge func(*TrustStore, *TrustedPin, []Endorsement) error
+
+func addEndorsements(ts *TrustStore, pin *TrustedPin, batch []Endorsement) error {
+	return ts.AddEndorsements(pin.NodeUUID, batch)
+}
+
+func pinWithEndorsements(ts *TrustStore, pin *TrustedPin, batch []Endorsement) error {
+	updated := *pin
+	updated.Endorsements = batch
+	return ts.Pin(&updated)
+}
+
 func TestTrustStoreAnnouncesNewEndorsementsAfterPersistence(t *testing.T) {
-	for _, identicalPin := range []bool{false, true} {
-		name := "AddEndorsements"
-		if identicalPin {
-			name = "IdenticalPin"
-		}
+	test := func(name string, merge endorsementMerge) {
 		t.Run(name, func(t *testing.T) {
 			ts, _ := newAnnouncingStore(t)
 			pin := testPin(t, "principal-peer")
@@ -129,18 +137,10 @@ func TestTrustStoreAnnouncesNewEndorsementsAfterPersistence(t *testing.T) {
 				// mutation lock was released before announcing the change.
 				assertStoredEndorsements(t, ts, pin.NodeUUID, want)
 			})
-			merge := func(batch []Endorsement) error {
-				if identicalPin {
-					updated := *pin
-					updated.Endorsements = batch
-					return ts.Pin(&updated)
-				}
-				return ts.AddEndorsements(pin.NodeUUID, batch)
-			}
 			// Mix an existing endorsement, a new endorsement, and an
 			// in-batch duplicate. One operation causes one announcement.
 			batch := []Endorsement{first, second, second}
-			if err := merge(batch); err != nil {
+			if err := merge(ts, pin, batch); err != nil {
 				t.Fatalf("merge: %v", err)
 			}
 			if calls != 1 {
@@ -151,29 +151,34 @@ func TestTrustStoreAnnouncesNewEndorsementsAfterPersistence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, noOp := range [][]Endorsement{batch, nil} {
-				if err := merge(noOp); err != nil {
-					t.Fatalf("no-op merge: %v", err)
-				}
-				if calls != 1 {
-					t.Fatalf("announcements after no-op = %d, want 1", calls)
-				}
+			if err := merge(ts, pin, batch); err != nil {
+				t.Fatalf("duplicate merge: %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("announcements after duplicate merge = %d, want 1", calls)
+			}
+			if err := merge(ts, pin, nil); err != nil {
+				t.Fatalf("empty merge: %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("announcements after empty merge = %d, want 1", calls)
 			}
 			after, err := os.ReadFile(ts.pinPath(pin.NodeUUID))
-			if err != nil || !bytes.Equal(before, after) {
-				t.Fatalf("no-op changed disk contents: %v", err)
+			if err != nil {
+				t.Fatalf("read pin after no-op merges: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("no-op merges changed disk contents")
 			}
 			assertStoredEndorsements(t, ts, pin.NodeUUID, want)
 		})
 	}
+	test("AddEndorsements", addEndorsements)
+	test("IdenticalPin", pinWithEndorsements)
 }
 
 func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
-	for _, identicalPin := range []bool{false, true} {
-		name := "AddEndorsements"
-		if identicalPin {
-			name = "IdenticalPin"
-		}
+	test := func(name string, merge endorsementMerge) {
 		t.Run(name, func(t *testing.T) {
 			ts, count := newAnnouncingStore(t)
 			pin := testPin(t, "principal-peer")
@@ -194,31 +199,29 @@ func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 			writeErr := errors.New("injected endorsement replace failure")
 			renameFile = func(_, _ string) error { return writeErr }
 			t.Cleanup(func() { renameFile = originalRename })
-			merge := func() error {
-				if identicalPin {
-					updated := *pin
-					updated.Endorsements = []Endorsement{second}
-					return ts.Pin(&updated)
-				}
-				return ts.AddEndorsements(pin.NodeUUID, []Endorsement{second})
-			}
-			if err := merge(); !errors.Is(err, writeErr) {
+			if err := merge(ts, pin, []Endorsement{second}); !errors.Is(err, writeErr) {
 				t.Fatalf("merge error = %v, want injected replace failure", err)
 			}
 			if count() != beforeCount {
 				t.Fatalf("announcements after failed write = %d, want %d", count(), beforeCount)
 			}
 			after, err := os.ReadFile(ts.pinPath(pin.NodeUUID))
-			if err != nil || !bytes.Equal(before, after) {
-				t.Fatalf("failed write changed disk contents: %v", err)
+			if err != nil {
+				t.Fatalf("read pin after failed write: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("failed write changed disk contents")
 			}
 			assertStoredEndorsements(t, ts, pin.NodeUUID, []Endorsement{first})
 			entries, err := os.ReadDir(ts.dir)
-			if err != nil || len(entries) != 1 || entries[0].Name() != pin.NodeUUID+".json" {
-				t.Fatalf("failed write left temporary residue: entries=%v err=%v", entries, err)
+			if err != nil {
+				t.Fatalf("list trusted directory after failed write: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != pin.NodeUUID+".json" {
+				t.Fatalf("failed write left temporary residue: entries=%v", entries)
 			}
 			renameFile = originalRename
-			if err := merge(); err != nil {
+			if err := merge(ts, pin, []Endorsement{second}); err != nil {
 				t.Fatalf("retry after storage recovery: %v", err)
 			}
 			if count() != beforeCount+1 {
@@ -227,6 +230,8 @@ func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 			assertStoredEndorsements(t, ts, pin.NodeUUID, []Endorsement{first, second})
 		})
 	}
+	test("AddEndorsements", addEndorsements)
+	test("IdenticalPin", pinWithEndorsements)
 }
 
 func TestTrustStoreConcurrentDuplicateEndorsementsAnnounceOnce(t *testing.T) {
