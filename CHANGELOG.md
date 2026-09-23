@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 0.1.3 — Route Anthropic Messages API requests (#27)
+
+- The Ollama and LM Studio endpoints offered by PAIR now accept requests for the Anthropic Messages API via POST to the /v1/messages endpoint and direct them to the owner of the requested model, just as happens with the other inference methods.
+
 ## 0.1.2 — fix(mdns): send responses from UDP 5353 (GitHub Issue #1) (#102)
 
 - Discovery traffic now originates from UDP 5353, allowing standards-compliant mDNS peers and network reflectors to accept PAIR node records.
