@@ -18,8 +18,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
+	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
 	"nvpair-tui/ui"
 )
@@ -32,6 +34,7 @@ var Version = "dev"
 func main() {
 	brokerPath := flag.String("broker-path", "", "path to nvpair-ui-broker binary (default: ./nvpair-ui-broker alongside this executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	appearance := flag.String("appearance", "auto", "terminal background: auto, light, or dark")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
 
@@ -39,6 +42,19 @@ func main() {
 		fmt.Println(Version)
 		os.Exit(0)
 	}
+
+	// Started before the program, not merely before the first draw. On auto
+	// this asks the terminal for its background and reads the answer, which
+	// only works while stdin is still ours — once Bubble Tea is running, its
+	// reader takes the reply and the query learns nothing. Joined below, after
+	// the broker is up, so a terminal that never answers costs its timeout
+	// alongside startup rather than in front of it.
+	chosen, ok := ui.ParseAppearance(*appearance)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown --appearance %q: use auto, light, or dark\n", *appearance)
+		os.Exit(2)
+	}
+	appearanceSettled := ui.StartAppearance(chosen)
 
 	applog.Init("nvpair-tui", resolveLevel())
 
@@ -67,13 +83,56 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The last moment the answer can be had: Bubble Tea takes stdin next, and
+	// the first frame is already choosing colours with it.
+	appearanceSettled()
+	// Recorded because a wrong answer is visible but unexplained: the operator
+	// sees colours that do not suit their terminal and has nothing telling
+	// them what PAIR concluded, or that --appearance would override it.
+	slog.Debug("terminal appearance", "requested", string(chosen),
+		"using", string(ui.DetectedAppearance()))
+
 	// The broker's stderr (its logs plus every worker's, prefixed) is fed
 	// into the UI's Logs view rather than the terminal, so it never
 	// collides with the full-screen TUI on stdout.
-	if err := ui.Run(sup.Client, sup.Stderr); err != nil {
+	outcome, err := ui.Run(sup.Client, sup.Stderr)
+	if err != nil {
 		slog.Error("ui error", "err", err)
 	}
 
 	sup.Shutdown()
+
+	// Only now, with every worker joined, is the data directory unowned. Wiping
+	// it while the broker ran would race a shutting-down worker into recreating
+	// the files we deleted.
+	if outcome.WipeData {
+		wipeAppData()
+	}
+
 	slog.Info("shutdown complete")
+}
+
+// wipeAppData deletes the per-user data directory: node settings, cluster
+// identity, trusted peers, and persisted ports. appdir.Dir is the single
+// location every component agrees on, so there is one path to remove and no
+// guessing at layout.
+func wipeAppData() {
+	dir, err := appdir.Dir()
+	if err != nil {
+		slog.Error("cannot resolve the data directory to reset", "err", err)
+		return
+	}
+	// appdir always appends two product segments, so this cannot be a bare home
+	// or root directory today. Asserted anyway: this is the one irreversible
+	// path in the program, and a relative path would be resolved against
+	// whatever directory the process happens to be running in.
+	if !filepath.IsAbs(dir) {
+		slog.Error("refusing to reset a non-absolute data directory", "dir", dir)
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		slog.Error("failed to reset data directory", "dir", dir, "err", err)
+		return
+	}
+	slog.Info("data directory reset", "dir", dir)
 }

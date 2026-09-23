@@ -46,10 +46,12 @@ Never launch one worker from both Electron and the broker. There is no
 broker-absent fallback.
 
 The Inference Demo's `inference-dispatcher` is the one non-broker executable
-Electron launches. It is not a worker: its source lives in
-`scripts/inference-dispatcher` at the monorepo root, it is absent from
-`services/versions.json` and `modular-binaries.ts`, and it ships in its own
-`tools/` resource directory. See "Inference Demo" below.
+Electron launches, and the only child `nvpair-tui` spawns besides its own broker.
+It is not a worker: its source lives in `scripts/inference-dispatcher` at the
+monorepo root, and it is absent from `services/versions.json` and
+`modular-binaries.ts`. It nonetheless ships inside `cli-bin` — beside the
+binaries it is not one of — so both front ends resolve it the same way. See
+"Inference Demo" below.
 
 The connector remains `connecting` until broker `app:ready` and the required
 Ollama proxy readiness arrive. A startup deadline routes failures to
@@ -175,20 +177,32 @@ pressure 1 for invalid, missing, or stale data, then ranks by
 ## Inference Demo
 
 A fixed sixty-second burst of synthetic traffic sent through the local proxies
-so job activity is visible on Overview.
+so job activity is visible.
 
-- Electron main owns the schedule (`src/electron/inference-demo.ts`,
- `src/electron/inference-demo-schedule.ts`).
+Both front ends run it, each owning its own schedule:
+
+- Electron main (`src/electron/inference-demo.ts`,
+ `src/electron/inference-demo-schedule.ts`), surfaced on Settings > Service and
+ visible on Overview.
+- `nvpair-tui` (`ui/demo.go`, `ui/demoschedule.go`), on the Jobs tab, driven by
+ the shell's one-second tick because every submission offset is a whole second.
+
+The two schedules must stay identical — cohorts, stages, offsets, and the
+ceiling. They are a contract between the front ends, not an implementation
+detail of either; a change to one is a change to both. Neither drives the other.
+
 - Each request spawns the bundled `inference-dispatcher`, which behaves as an
-  ordinary third-party HTTP client.
+ ordinary third-party HTTP client.
 - Requests target a broker-reported proxy port, never an engine's own port. The
-  backend decides placement; PAIR must not describe the demo as distributing
-  work itself.
-- Progress is broadcast on the `demo:state` Electron push channel
-  (`IpcPushChannelMap`), not the service push bus. State is node-local and is
-  not synchronized.
-- Children run with `stdio: 'ignore'` and with `INFERENCE_DISPATCHER_*` stripped
-  from the environment. Never surface or log prompts or responses.
+ backend decides placement; PAIR must not describe the demo as distributing
+ work itself.
+- State is node-local and is not synchronized. Electron broadcasts it on the
+ `demo:state` Electron push channel (`IpcPushChannelMap`); the terminal keeps it
+ in view state. Neither goes near the service push bus.
+- Stopping cancels only unsent requests. Never cancel, await, or report on one
+ already submitted.
+- Children run with stdio discarded and with `INFERENCE_DISPATCHER_*` stripped
+ from the environment. Never surface or log prompts or responses.
 
 ## Engines
 
@@ -203,12 +217,22 @@ operations.
   state.
 - Engine and proxy ports are persisted by their backend owners.
 - Running adopted engines reject operations that require process ownership.
-- Per-engine environment and CLI argument overrides are not part of the current
-  contract.
+- Per-engine launch arguments and environment are editable through
+ `engine:get-settings`, `engine:preview-settings`, and `engine:apply-settings`,
+ which write the server port, the proxy port, and the launch text together
+ against a revision. Do not write any of the three by another route: a second
+ writer with no shared revision cannot tell that it lost. Validate through the
+ preview and commit the settings it returns, not the draft that was sent.
+- Editability is the snapshot's `Editable` and `Reason`, not a rule restated in
+ a front end. The backend relays these to a peer, so a front end that refuses
+ remote editing on its own is wrong rather than cautious.
 
-The model hub is Electron-main functionality under `src/electron/model-hub/`.
-It provides curated Ollama and LM Studio catalogs; model operations still go
-through the engine manager.
+The model catalogue is owned by `nvpair-engine-manager` and served over
+`engine:catalog`, so the desktop app and the terminal interface browse one
+implementation. Electron relays it through
+`src/electron/service-bridge/model-catalog.ts`. It provides curated Ollama and
+LM Studio catalogs, filtered for the platform a model will install on; model
+operations go through the engine manager.
 
 ## Pairing and security
 

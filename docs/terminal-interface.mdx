@@ -13,9 +13,9 @@ desktop environment, or over SSH, where the desktop application cannot run. If a
 desktop is available, use the desktop application.
 
 **It has known limitations.** It is an operations tool, not a full replacement.
-It cannot list or delete models, change an engine's port, update an engine,
-control engines on other nodes, or show which node served a workload. The full
-list is in
+It cannot update an engine or send an inference request for you, and it stops
+when your connection drops unless you run it under a terminal multiplexer. The
+full list is in
 [What the Terminal Interface Cannot Do](#what-the-terminal-interface-cannot-do),
 and it is worth reading before you depend on it.
 
@@ -65,10 +65,36 @@ cd <directory containing nvpair-tui>
 | --- | --- |
 | `--broker-path <path>` | Use a service binary that is not beside `nvpair-tui` |
 | `--log-level <level>` | Verbosity of the terminal interface's own logging: `debug`, `info`, `warn`, or `error`. PAIR also reads this from `NVPAIR_LOG_LEVEL` |
+| `--appearance <mode>` | `auto`, `light`, or `dark`. See below |
 | `--version` | Print the version and exit |
 
 The interface's own log output goes to stderr, so it never corrupts the display.
 Service logs appear on the **Logs** tab instead.
+
+### If the Colours Are Hard to Read
+
+PAIR picks its colours from your terminal's background. It detects that by
+asking the terminal and reading the reply, which works in most terminals,
+including over SSH — the question and the answer travel the connection like
+anything else.
+
+Two cases cannot be detected. Inside `tmux` or `screen` the question is not
+asked at all, because one session can be attached to several terminals at once
+and there is no single background to report. A terminal that does not implement
+the query simply never answers. Both fall back to assuming a dark background,
+which on a light theme gives washed-out text.
+
+Tell it instead:
+
+```bash
+./nvpair-tui --appearance light
+```
+
+`dark` forces the other way, and `auto` is the default.
+
+A terminal that never answers also makes PAIR wait for the reply before it
+starts, which is a pause of a few seconds on the way in. That wait comes from
+the terminal library and applies whether or not you pass `--appearance`.
 
 Press `q` to quit. Quitting shuts the services down cleanly rather than leaving
 them running.
@@ -96,162 +122,357 @@ provides.
 
 ## The Screen
 
-The top line shows `NVPAIR TUI` and the connection state on the right:
-`connecting to broker...`, `broker ready v<version>`, or `broker disconnected`.
-The second line is the numbered tab bar. The footer shows the keys available on
-the current tab.
+The top line shows `NVPAIR` and the service state on the right:
+`starting service...`, `service ready v<version>`, or `service disconnected`.
+The second line is the numbered tab bar; when anything has gone wrong, the count
+appears on the **Errors** tab's own label. The footer shows the keys available
+where you are, starting with the ones that always work. When a newer release of
+PAIR exists, a notice sits between the tab bar and the content on every tab
+until you dismiss it — see [Update Notices](#update-notices).
 
 If you see `starting...`, the interface is waiting for the terminal size. If the
-header stays on `connecting to broker...`, the service tree did not come up, and
-the **Logs** tab says why.
+header stays on `starting service...`, the service tree did not come up, and the
+**Logs** tab says why.
 
-![The terminal interface on the Overview tab, showing the header with broker ready, the numbered tab bar, the worker table, and the footer keys.](assets/onboarding/terminal-interface/01-tui-overview.png)
+![The terminal interface on the Nodes tab, showing the header with the service ready, the numbered tab bar, the node table, and the footer keys.](assets/onboarding/terminal-interface/01-tui-overview.png)
 
 ## Moving Around
 
 | Key | Action |
 | --- | --- |
-| `tab`, `l`, `→` | Next tab |
-| `shift+tab`, `h`, `←` | Previous tab |
+| `1` – `5` | Go straight to a tab |
+| `tab`, `shift+tab` | Next, previous tab |
 | `?` | Toggle full help |
+| `ctrl+x` | Dismiss the update notice, while one is showing |
 | `q`, `ctrl+c` | Quit |
 
 Within a table, `j` / `k` (or `↓` / `↑`) move the selection, `f` / `b` page, and
-`g` / `G` jump to the first and last row.
+`home` / `end` jump to the first and last row. `h` / `l` and `←` / `→` move between
+panes rather than between tabs. Where a tab binds one of those letters to its own
+verb — on the Nodes list `d` declines a pending pairing request and `f` finds a
+machine by address, and on a node's detail screen `d` deletes a model in the
+Models pane while `u` uninstalls an engine in the Engines pane — that verb wins
+where it applies, and the paging key works elsewhere. The
+Service tab's settings list is not a table; it moves with `j` / `k` or the
+arrows. On the Nodes list `l` leaves the cluster rather than moving right, so
+it is armed and asks you to confirm.
 
 While you are typing into a field, such as a PIN, an address, a port, or a model
 name, every key goes to that field. Press `enter` to submit or `esc` to cancel.
-Tab switching and `q` do not work until you do.
+Tab switching and `q` do not work until you do. The footer shows only those two
+keys while a field is open, so it always reflects what actually works.
+
+Anything that destroys something asks first. Removing a machine from the
+cluster, leaving the cluster, deleting a model, uninstalling an engine, and
+resetting all data each arm on the first press and act only when you then press
+`y`; any other key cancels. The prompt names what will happen and stays on
+screen until you answer it.
+
+The terminal needs to be at least 40 by 12. Below that PAIR says so and waits
+for you to resize rather than drawing something unreadable.
 
 ## Tabs
 
 | # | Tab | What It Shows |
 | --- | --- | --- |
-| 1 | **Overview** | Service uptime and version, and an `ok` / `DOWN` table for each worker |
-| 2 | **Errors** | Active service errors by severity, age, node, and message |
-| 3 | **Nodes** | Nodes discovered on the network, with `Connected` or `In cluster` status |
-| 4 | **Proxies** | Both compatible proxies: listening port, discovered upstreams, and which node is selected |
-| 5 | **Workloads** | Live inference workloads: ID, model, engine, state, and age |
-| 6 | **Engines** | Local engines: installed, running, healthy, and port |
-| 7 | **Cluster** | This node's identity, cluster membership, and pairing |
-| 8 | **Manual** | Nodes you added by address, with reachability |
-| 9 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
-| 10 | **Logs** | Service log output, with live log-level control |
+| 1 | **Nodes** | Every machine PAIR knows about, whether reachable, and its cluster standing. `enter` opens one machine's engines, models, and hardware |
+| 2 | **Jobs** | The endpoints your clients connect to, and inference work as it runs. `t` sends a minute of test traffic |
+| 3 | **Service** | Uptime and version, an `ok` / `DOWN` / `?` row per worker, settings, and a data reset |
+| 4 | **Errors** | Active service errors by severity, age, node, and message |
+| 5 | **Logs** | Service log output, with a filter and save-to-file |
+
+The **Errors** tab shows its own count in the tab bar — `Errors (2)` — so you can
+see there is something to look at from any other tab.
 
 ## Pair This Machine with Another
 
 Pairing is the same six-digit PIN exchange the desktop application uses.
 
-**To invite a machine you can already see**, from the **Nodes** tab (3):
+You do not create a cluster first. Inviting your first machine forms one
+automatically, and if that invite fails the empty cluster is discarded.
+
+Everything below is on the **Nodes** tab (1).
+
+**To pair with a machine you can already see:**
 
 1. Select it with `j` / `k`.
-2. Press `i`. The status line shows the PIN.
+2. Press `p`. The status line shows the PIN.
 3. Read that PIN to whoever is at the other machine.
 
 This is the easier path, because there is no address to type. Prefer it whenever
 PAIR has already discovered the machine you want.
 
-**To invite a machine by address**, from the **Cluster** tab (7):
+The PIN stays on screen until the pairing is answered, then tells you the outcome
+— joined, declined, or expired. A machine that is already a member, or that
+belongs to another cluster, cannot be invited: PAIR says so instead of sending an
+invite that would be refused.
 
-1. Press `i`.
-2. Type the other machine's host, or `host:port` if it is not on the default
-   pairing port.
-3. Press `enter`. The status line shows the PIN.
-4. Read that PIN to whoever is at the other machine.
+**To pair with a machine by address**, press `n`, type the other machine's
+host — or `host:port` if it is not on the default pairing port — and press
+`enter`. Use this when discovery has not found the machine, for example on a
+network that filters multicast.
 
-Use this when discovery has not found the machine, for example on a network that
-filters multicast.
+**To accept a pairing request from another machine:**
 
-**To accept an invitation from another machine**, from the **Cluster** tab:
-
-1. Wait for the status line to read `invite received from <name>`.
+1. Wait for the prompt reading `pairing request from <name>`.
 2. Press `a`.
-3. Type the PIN displayed on the inviting machine and press `enter`.
+3. Type the PIN displayed on the other machine and press `enter`.
 
-Press `d` instead to decline. After pairing, the peer appears under **Members**.
+Press `d` instead to decline. After pairing, the peer's `CLUSTER` column reads
+`Member`. If the PIN was wrong, the status line says so and you will need a
+fresh invite — a PIN can only be used once.
 
 ![The terminal interface Nodes tab with a discovered machine selected and the pairing PIN on the status line.](assets/onboarding/terminal-interface/02-tui-pairing.png)
 
-| Key | Action | Tab |
-| --- | --- | --- |
-| `i` | Invite the selected discovered node | Nodes |
-| `i` | Invite by address | Cluster |
-| `a` | Accept an inbound invitation | Cluster |
-| `d` | Decline an inbound invitation | Cluster |
-| `r` | Remove the selected member | Cluster |
-| `L` | Leave the cluster (capital L) | Cluster |
+| Key | Action |
+| --- | --- |
+| `p` | Pair with the selected machine |
+| `n` | Pair with a machine by address |
+| `a` | Accept an inbound pairing request |
+| `d` | Decline an inbound pairing request |
+| `f` | Find a machine by address, without pairing with it |
+| `c` | Cancel the pairing request you sent |
+| `r` | Remove the selected machine from the cluster (asks you to confirm) |
+| `l` | Leave the cluster (asks you to confirm) |
+| `/` | Filter the list by name or address; `esc` clears it |
+
+Cancel an invite with `c` if you read the PIN to the wrong person, or simply
+change your mind. That invalidates the PIN straight away, so it can no longer be
+used to join, and tells the other machine to drop its prompt. An invite you
+leave alone expires on its own, but until it does it stays answerable.
 
 Only pair when you trust both machines and the network. The PIN is a short-lived
 bootstrap code, not a durable credential. Refer to the
 [security policy](../SECURITY.md).
 
-## Prepare an Engine and a Model
+## Look at One Machine
 
-From the **Engines** tab (6), select an engine with `j` / `k`, then:
+Press `enter` on any row of the **Nodes** tab. This works for your own machine
+and for any cluster peer.
+
+The screen opens on that machine's GPU, CPU, and memory, then two panes you move
+between with `h` / `l`:
+
+**Engines** — select one with `j` / `k`:
 
 | Key | Action |
 | --- | --- |
 | `i` | Install |
 | `s` | Start |
 | `x` | Stop |
-| `r` | Restart |
-| `u` | Uninstall |
-| `p` | Download a model |
+| `r` | Restart (this machine only) |
+| `u` | Uninstall (this machine only; asks you to confirm) |
+| `e` | Change the engine port |
+| `p` | Change the proxy port |
+| `a` | Edit the startup arguments |
 
-Pressing `p` opens a prompt. Type the model name, for example `qwen4:12b`, and
-press `enter`. Progress appears on the status line.
+Each engine shows two ports, because they are easy to confuse:
+
+- **ENGINE PORT** is where the engine itself listens. PAIR talks to it there.
+- **PROXY PORT** is where *your* clients connect, served by the proxy that
+  fronts that engine. This is the port you put in a tool's configuration.
+
+Both are changed here, on the engine they belong to.
+
+A port is a request rather than a promise. If a running engine already holds
+the port you asked for, PAIR binds elsewhere and tells you which port it ended
+up on — so a change you did not get is never reported as one you did.
+
+### Startup Arguments
+
+`a` opens the arguments and environment variables the engine is started with,
+as one line:
+
+```text
+OLLAMA_KEEP_ALIVE=5m OLLAMA_ORIGINS="https://example.com" --flag "two words"
+```
+
+Environment assignments come first, then arguments. Quoting works the way it
+does in a shell for single and double quotes, but nothing is expanded: `$HOME`,
+`~` and `%USERPROFILE%` are passed through as text, and pipes, redirects and
+command substitution are rejected rather than interpreted. The engine's own
+executable and its start subcommand are not editable.
+
+Press `enter` to check and save. PAIR validates before it saves anything, so a
+mistake comes back as a message rather than an engine that will not start. If
+the change requires restarting the engine, it says so and waits for `y`.
+
+The port fields and the arguments are saved together, so a port written into
+the arguments and the port in the field cannot drift apart. Editing the field
+rewrites the argument; editing the argument moves the field. If the two
+disagree in a way PAIR cannot settle, it names both numbers and asks you to
+make them agree.
+
+This works on a peer as well as on this machine. Whether a particular engine
+accepts the change is the engine's own answer: one PAIR did not start — one
+that was already running when PAIR found it — reports that it cannot be
+configured, and says why.
+
+**Models** — the models each engine holds, and which are loaded into memory:
+
+| Key | Action |
+| --- | --- |
+| `p` | Browse models to download |
+| `n` | Download by name |
+| `enter` | Load into memory |
+| `e` | Eject from memory |
+| `d` | Delete (asks you to confirm) |
+
+Pressing `p` opens the catalog of models this engine can download. Press `/` to
+filter — by name, family, or parameter size, so both `llama` and `8b` narrow the
+list — `o` to change the sort between popularity, name, and size, `enter` to
+download the highlighted model, and `esc` to back out. The footer shows how many
+models match and when the catalog was compiled.
+
+Press `n` instead if you already know exactly what you want and would rather type
+it. Either way, downloading needs a running engine, and progress appears on the
+status line.
+
+Restart and uninstall need PAIR to own the engine process, so they only apply
+to the machine you are sitting on. They are hidden on a peer rather than
+offered and then refused.
+
+Press `esc` to go back to the list. Switching to another tab also leaves it, so
+returning to **Nodes** always lands on the list rather than back inside the
+machine you were last looking at.
 
 A node can serve a request only when it is online, a compatible engine is
 running, and the requested model is present on that node. To route across several
-machines, download the same model on each.
+machines, download the same model on each — the Nodes tab's `MODELS` column, and
+each machine's model list, are how you check.
 
 ## Check Routing and Health
 
-The **Workloads** tab (5) lists inference work as it runs, with its model,
-engine, and state.
+The **Jobs** tab (2) leads with the endpoints your clients connect to, then lists
+inference work as it runs. Press `a` to include finished jobs.
 
-![The terminal interface Workloads tab listing live inference workloads with model, engine, state, and age.](assets/onboarding/terminal-interface/03-tui-workloads.png)
+`FROM` is the machine the request arrived at and `RAN ON` is the machine that
+served it. They differ whenever work is routed to a peer, which is how you can
+see routing actually happening. An active job that has not been placed yet reads
+`choosing`.
 
-The **Proxies** tab (4) shows each proxy's listening port and whether it is
-routing automatically (`selected=auto`) or pinned to one node. Press `g` to
-switch between the two engines, `enter` to pin the highlighted upstream, and `a`
-to return to automatic routing. Leave it on automatic unless you are
-deliberately testing one node.
+![The terminal interface Jobs tab listing live inference workloads with model, engine, state, and age.](assets/onboarding/terminal-interface/03-tui-workloads.png)
 
-The **Overview** tab (1) reports whether each worker is up. Worker status is
-best-effort. `DOWN` means a worker reported a crash.
+Routing is not something you set. PAIR chooses a node per request from pending
+work and GPU pressure, so the proxies always run in automatic mode.
+
+### Generate Some Traffic
+
+If you have no client sending work yet, press `t` on the **Jobs** tab to run the
+same sixty-second test the desktop application's **Test** button runs. It sends
+synthetic requests to your local endpoints, and the jobs appear in the table
+below as they are placed — including on peers, if the cluster has any.
+
+A progress line shows how many requests have gone out and how long is left.
+Press `t` again to stop early; requests already sent still finish. Nothing is
+sent after sixty seconds.
+
+It needs at least one engine running with a model installed. If nothing is
+available, the tab says so rather than starting.
+
+The test is local to the machine you run it on. Running it here does not start
+one anywhere else, and a peer running one does not show up as progress here —
+only as jobs.
+
+The **Service** tab (3) reports whether each worker is up. Worker status is
+best-effort: `DOWN` means a worker reported a crash. The error reporting worker
+is the one that collects those reports, so it cannot report its own — its row
+says so. If the service itself is not answering, every row reads `?` rather than
+`ok`: a worker is only known good because the crash stream said nothing about
+it, and that stream comes through the service.
+
+## Update Notices
+
+When a newer release of PAIR has been published, a line appears under the tab
+bar naming the new version, the one you are running, and where to get it. It
+checks shortly after startup and every six hours, the same cadence the desktop
+application uses.
+
+The notice is on every tab, not just **Service**, and stays until you press
+`ctrl+x` to dismiss it. Dismissing it clears it everywhere. A release newer than
+the one you dismissed brings it back, since that is not the version you
+acknowledged. On a narrow terminal the line shortens rather than pushing the
+dismiss key off the screen.
+
+It only tells you. It does not download or install anything, because the
+terminal interface is not a single program — it runs a broker and eleven
+workers from the directory beside it, and swapping some of them for a newer set
+while they are serving inference is how you get a client talking to workers that
+no longer understand it. Install the release the way you installed this one.
+
+If you installed PAIR as the desktop application, you do not need to: the
+terminal interface ships inside the application and its updater replaces this
+binary along with everything else, so `nvpair` picks up the new version the next
+time you run it.
+
+Nothing is reported when the check cannot reach the network — an unreachable
+feed is not news. To stop it checking at all, set `NVPAIR_NO_UPDATE_CHECK=1`
+before starting `nvpair`. Builds run from source never check.
 
 ## Look at Errors and Logs
 
-On **Errors** (2), press `c` to clear the selected entry.
+On **Errors** (4), press `c` to clear the selected entry. The tab label carries
+the count, so you do not have to go looking. The line under the table describes
+whichever entry you have selected — which engine and operation it came from, the
+model if there was one, and what the service suggests doing about it.
 
-On **Logs** (10), scroll with `j` / `k` and the page keys. Set the log level for
-the whole service fleet with `d` (debug), `i` (info), `w` (warn), or `e` (error).
-This is the first place to look when something has not started.
+Errors are shared across the cluster, but clearing one only works on the machine
+that reported it — the `NODE` column tells you which that is. Select an entry
+from another machine and `c` is withdrawn from the footer, with a line naming the
+node to clear it from. Clearing there removes it everywhere.
+
+On **Logs** (5), scroll with `j` / `k` and the page keys. Press `/` to filter to
+lines containing a string, `c` to clear the filter, and `t` to toggle tailing
+the newest line — scrolling up releases follow on its own. This is the first place
+to look when something has not started.
+
+Press `s` to write the log buffer to a timestamped file in your home directory.
+The whole buffer is saved, not just what the filter shows.
+
+Set how much detail the services log on the **Service** tab, not here.
 
 ## Change Settings
 
-On **Settings** (9), move with `j` / `k` and press `enter`. Booleans toggle
-immediately. Text fields open for editing, with `enter` to save and `esc` to
-cancel.
+On **Service** (3), move with `j` / `k` and press `enter`. The cluster name opens
+as a text field, with `enter` to save and `esc` to cancel. Ports are not changed
+here — they belong to a machine, so they live on its detail screen.
 
-Change proxy ports on the **Proxies** tab with `p`, not here. Refer to
+**Cluster name** is a label for your own benefit and is stored on the machine you
+set it on. It is not shared with the rest of the cluster, so setting it here does
+not rename anything on your peers — set it on each machine you want it to show
+on. Nothing operational depends on it; the cluster's real identity is an id you
+never have to type.
+
+**Service log level** opens a picker showing all four levels — debug, info,
+warn, and error — with the one currently in force highlighted. Move with `←` /
+`→` (or `h` / `l`), press `enter` to apply, and `esc` to leave it alone. The
+level applies to every service, not just one.
+
+Ports and startup arguments are not changed here. They live on the engine they
+belong to, on that machine's node detail screen — press `enter` on a machine on
+the **Nodes** tab. Refer to
 [Ports](getting-started.mdx#7-connecting-your-agents-and-port-information)
 for how PAIR arranges ports.
+
+**Reset all data and quit** deletes this machine's settings, cluster identity,
+and pairing, then exits. It asks for confirmation first, and cannot be undone.
+The services are stopped before anything is deleted, so nothing rewrites the
+files on the way out. You will need to pair again afterwards.
 
 ## What the Terminal Interface Cannot Do
 
 It is an operations tool, not a full replacement for the desktop application:
 
-- It cannot list or delete models. You can download one, but the interface shows
-  no model inventory.
-- It cannot change an engine's port. The port column is read-only. Use the
-  desktop application to change it.
-- It cannot update an engine or control engines on other cluster nodes.
-- It does not show which node served a particular workload.
-- It has no built-in way to send an inference request. Use `curl` or another
-  client against the proxy port, as in
-  [Getting Started](getting-started.mdx#6-run-your-first-inference).
+- It cannot update an engine to a newer version. Use the desktop application.
+- It has no built-in way to send an inference request of your own. Use `curl`
+  or another client against the endpoint port, as in
+  [Getting Started](getting-started.mdx#6-run-your-first-inference). The
+  synthetic test traffic on the **Jobs** tab is not a substitute: you do not
+  choose the prompt and you never see the reply.
+- It cannot install PAIR updates. It tells you when a release is available;
+  installing one is the same job it was before.
+- It does not survive losing your connection. Use a terminal multiplexer, as
+  above.
 
 ## See Also
 

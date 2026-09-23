@@ -8,23 +8,23 @@ import type { SupportedPlatform } from '@/shared/types/platform'
  *
  * The dispatcher is deliberately not part of the services binary inventory in
  * `modular-binaries.ts`: it speaks no JSON-RPC, is absent from
- * `services/versions.json`, and is never supervised by the broker. Its source
- * lives in the monorepo's `scripts/inference-dispatcher` module and it ships in
- * its own `extraResources` directory so `cli-bin/` can keep asserting an exact
- * match against the services inventory.
+ * `services/versions.json`, and is never supervised by the broker. It is an
+ * ordinary HTTP client, spawned once per Inference Demo request, whose source
+ * lives in the monorepo's `scripts/inference-dispatcher` module.
  *
- * Shared by `scripts/build-inference-dispatcher.ts` (producer),
+ * It nonetheless ships **inside `cli-bin/`**, beside the services binaries,
+ * because the terminal interface runs the same demo and finds the dispatcher the
+ * same way it finds the broker: next to its own executable. A separate resource
+ * directory would mean either a second copy of the binary in every package or a
+ * second resolution rule in `nvpair-tui`, and neither is worth keeping the
+ * inventory assertion free of one named exception.
+ *
+ * Shared by `scripts/build-modular-binaries.ts` (producer),
  * `electron-builder.config.ts` (packaging assertion), and
  * `src/electron/inference-demo.ts` (runtime resolution).
  */
 
 export const INFERENCE_DISPATCHER_BASE_NAME = 'inference-dispatcher'
-
-/**
- * Resource directory holding the dispatcher, relative to `resourcesPath` in a
- * packaged build and to the desktop project root in development.
- */
-export const INFERENCE_DISPATCHER_RESOURCE_DIR = 'tools'
 
 export function inferenceDispatcherFileName(platform: SupportedPlatform): string {
     return platform === 'win32'

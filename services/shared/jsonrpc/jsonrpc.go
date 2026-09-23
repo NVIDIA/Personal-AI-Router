@@ -66,6 +66,27 @@ func (m *Message) IsResponse() bool {
 	return m.ID != nil && m.Method == ""
 }
 
+// WorkerFrameBytes is the inbound frame cap for the hops that carry large
+// worker replies: the orchestrator's generic rpcWorker links (engine-manager,
+// manual-nodes, node-settings, job-scheduler), engine-manager's own inbound
+// codec, and a terminal client's link to the orchestrator.
+//
+// It is declared here rather than per-package because the cap only works if
+// every hop on a path agrees. A reply has to survive the worker's writer, the
+// orchestrator's reader, and the client's reader; one hop left at a smaller
+// value fails the whole path, and it fails badly — bufio.Scanner cannot resync
+// past an over-long line, so the frame surfaces as a terminal read error that
+// takes the peer down (see NewCodecMaxFrame).
+//
+// It is deliberately not repo-wide. The purpose-built links — discovery,
+// errors, cluster, the proxies, workload-manager, node-info — keep their own
+// smaller caps, sized to what those workers actually send. Before raising one,
+// check every hop on that worker's path, not just the one that overflowed.
+//
+// 8 MiB is far above any real frame. The largest today is engine:catalog's
+// Ollama list at roughly 1.9 MiB; the previous 1 MiB default could not carry it.
+const WorkerFrameBytes = 8 << 20
+
 // Codec handles newline-delimited JSON-RPC 2.0 over an io.ReadWriter.
 // Writes are safe for concurrent use.
 type Codec struct {

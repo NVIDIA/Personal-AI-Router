@@ -12,7 +12,7 @@ import {
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 import { engineManagerName } from '@/shared/utils/engines'
-import { getEngineHubModels } from '@/electron/model-hub'
+import { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import { getModularSupervisor } from './modular-supervisor'
 import {
     parseEngineSettings,
