@@ -18,8 +18,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
+	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
 	"nvpair-tui/ui"
 )
@@ -70,10 +72,44 @@ func main() {
 	// The broker's stderr (its logs plus every worker's, prefixed) is fed
 	// into the UI's Logs view rather than the terminal, so it never
 	// collides with the full-screen TUI on stdout.
-	if err := ui.Run(sup.Client, sup.Stderr); err != nil {
+	outcome, err := ui.Run(sup.Client, sup.Stderr)
+	if err != nil {
 		slog.Error("ui error", "err", err)
 	}
 
 	sup.Shutdown()
+
+	// Only now, with every worker joined, is the data directory unowned. Wiping
+	// it while the broker ran would race a shutting-down worker into recreating
+	// the files we deleted.
+	if outcome.WipeData {
+		wipeAppData()
+	}
+
 	slog.Info("shutdown complete")
+}
+
+// wipeAppData deletes the per-user data directory: node settings, cluster
+// identity, trusted peers, and persisted ports. appdir.Dir is the single
+// location every component agrees on, so there is one path to remove and no
+// guessing at layout.
+func wipeAppData() {
+	dir, err := appdir.Dir()
+	if err != nil {
+		slog.Error("cannot resolve the data directory to reset", "err", err)
+		return
+	}
+	// appdir always appends two product segments, so this cannot be a bare home
+	// or root directory today. Asserted anyway: this is the one irreversible
+	// path in the program, and a relative path would be resolved against
+	// whatever directory the process happens to be running in.
+	if !filepath.IsAbs(dir) {
+		slog.Error("refusing to reset a non-absolute data directory", "dir", dir)
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		slog.Error("failed to reset data directory", "dir", dir, "err", err)
+		return
+	}
+	slog.Info("data directory reset", "dir", dir)
 }
