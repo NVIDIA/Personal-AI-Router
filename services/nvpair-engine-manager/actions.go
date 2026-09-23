@@ -294,6 +294,9 @@ func (e *Executor) runCommandOutput(ctx context.Context, argv []string) (string,
 	if len(argv) == 0 {
 		return "", nil
 	}
+	if output, ok := ctx.Value(downloadOutputKey{}).(*lmsDownloadOutput); ok {
+		return runLMSDownloadCommand(ctx, argv, output)
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	configureSysProcAttr(cmd)
 	out, err := cmd.Output()

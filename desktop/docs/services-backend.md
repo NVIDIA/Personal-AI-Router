@@ -121,6 +121,7 @@ reserved for inference clients.
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:settings-changed`                            | Validate and republish the owning node's settings snapshot                                                                      | `engines:settings-changed`                                |
 | `engine:install-progress` / `engine:remote-progress` | Update operation progress                                                                                                       | engine progress pushes                                    |
+| `engine:pull-progress`                               | Advance the optimistic pull entry the `model` field names                                                                       | engine progress pushes                                    |
 | `errors:update`                                      | Replace the error snapshot                                                                                                      | `errors:update`                                           |
 | `cluster:invite-received`                            | Parse inbound invite                                                                                                            | `cluster:invite-received`                                 |
 | `cluster:invite-canceled` / `cluster:invite-expired` | Prune the canceled or timed-out inbound invite from the authoritative set                                                       | `cluster:pending-invites-changed`                         |
@@ -152,6 +153,26 @@ progress, or error pushes.
 Local engine operations include install, start, stop, uninstall, update, port
 changes, and model actions. Remote cluster operations use the engine manager's
 remote control surface where supported.
+
+### Cancelling a download
+
+`engine:cancel-pull` stops a download on this node and
+`engine:remote-cancel-pull` stops one on a pinned peer. Both name their target
+with a `model` field, which is what distinguishes them from the engine-wide
+commands: an engine may have several downloads in flight, and the frames on
+`engine:pull-progress` carry the same field so each one lands on its own row.
+
+Neither returns state. The backend answers only once the transfer has stopped
+and its partial files are settled, so the reply is an acknowledgement and the
+row clears from the pull's own settling, not from the cancel.
+
+That answer can outlive the desktop's budget. A peer is served by the engine
+manager's readiness client, whose response-header budget is far longer than
+`MODULAR_CANCEL_PULL_TIMEOUT_MS`, because cutting a peer off mid-cancel is
+worse than waiting for it. A timeout therefore means "still cancelling", not
+"failed": the row stays in Canceling rather than dropping back to Downloading,
+and the cancel can be issued again. Only an explicit rejection restores the
+previous status and reports an error.
 
 ### Engine settings
 

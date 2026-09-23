@@ -40,12 +40,14 @@ Requests (caller → service):
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind) |
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
+| `engine:cancel-pull` | `{ engine, model }` | `null`, once the transfer has stopped **and** its partial files are settled — so a UI can hold "Canceling" until the backend is genuinely done. See "Cancelling a pull" below |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
+| `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result. Held until the peer has accepted the matching `engine:remote-pull-model`, so a cancel dispatched right behind a pull cannot reach the peer first |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
@@ -60,14 +62,19 @@ loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `loadedByEngine`) so a consumer swaps its whole snapshot,
 `engine:install-progress{engine, stage, percent}`,
-`engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
-local model pull driven via `engine:action{action:"pull_model"}` — the local
-counterpart of `engine:remote-progress`; frames are coalesced to changes in
+`engine:pull-progress{engine, model, op, stage, percent, message}` (live progress
+for a local model pull driven via `engine:action{action:"pull_model"}` — the
+local counterpart of `engine:remote-progress`; frames are coalesced to changes in
 stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
 a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
-UI converges even if its synchronous call already timed out),
-`engine:remote-progress{opId, node, engine, op, stage, percent, message}`
-(relayed live progress for a remote install/pull), and — for the error
+UI converges even if its synchronous call already timed out. `model` names the
+download the frame belongs to, so a consumer can tell two concurrent pulls on
+one engine apart; a pull waiting on another of the same engine's downloads
+reports `stage:"queued"` until its turn),
+`engine:remote-progress{opId, node, engine, model, op, stage, percent, message}`
+(relayed live progress for a remote install/pull; `model` is carried through
+from the peer's frame for the same reason it appears on the local
+notification), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
 
@@ -182,6 +189,43 @@ external app first and re-starting on its usual port works too. Auto-assigned
 ports (manifest `runtime.port: 0`) never adopt — there's no fixed address to
 probe — so they always spawn an owned process.
 
+### Cancelling a pull
+
+`engine:cancel-pull` answers only once the transfer has stopped and its partial
+files are settled, because a UI reads that answer as "it is safe to download
+this again". The pull's own `engine:action{pull_model}` request settles
+separately, as `{"status":"cancelled"}`.
+
+**Only a cancellation someone asked for deletes anything.** A pull's context
+also dies on shutdown, on a dropped remote connection, and on the action
+timeout, and none of those mean the user gave up on the bytes already on disk —
+those leave the partial data for the next attempt to resume.
+
+**Naming a file is not owning it.** Both vendors funnel every client on the
+machine into one cache: Ollama coalesces a pull of the same layer — from its
+CLI, its desktop app, another engine-manager, any client on the daemon — onto
+the very same content-addressed partial, and the LM Studio app downloads into
+the same repository directory. So each pull records the partial files already
+present before it starts, and cancelling it considers only the ones that
+appeared afterwards. A file that is still growing once the transfer has stopped
+is shared by that measure too, and also survives; cleanup retries within a
+bounded budget and leaves anything still busy at the deadline, which is not a
+failure. Completed model files are never candidates — they may be layers of an
+installed model.
+
+LM Studio additionally requires the CLI to confirm: declining its
+background-download prompt is what aborts the daemon's task, so a CLI that
+exited without answering it may still be fetching, and nothing is deleted.
+
+A cancel can also arrive **before** the pull it names has registered, since the
+read loop dispatches each onto its own goroutine. That leaves a short-lived
+tombstone the pull consumes instead of starting, rather than a success report
+for a download that then runs on under a UI stuck on "Canceling". The tombstone
+is scoped to the accepted request, so it cannot be inherited by a later retry.
+On the remote path the same ordering is enforced by holding
+`engine:remote-cancel-pull` until the peer has accepted the matching
+`engine:remote-pull-model`.
+
 ## Remote engine management
 
 When the parent passes `--control-port`, engine-manager serves the **`ec`
@@ -211,6 +255,7 @@ Endpoints (all under `/v1`):
 | `GET /v1/engines` | JSON | remote `engine:get-installed` |
 | `POST /v1/engines/install` | NDJSON stream | remote install (+ optional start) with live progress |
 | `POST /v1/models/pull` | NDJSON stream | remote model pull with live progress |
+| `POST /v1/models/cancel-pull` | JSON | remote `engine:cancel-pull` |
 | `POST /v1/engines/start` | JSON | remote start → `EngineStatus` |
 | `POST /v1/engines/stop` | JSON | remote stop → `EngineStatus` |
 

@@ -29,11 +29,20 @@ type engineStatus struct {
 	Port        int    `json:"port"`
 }
 
+// enginePull identifies one in-flight model download. Several can be
+// registered per engine — the engine-manager queues rather than rejects them —
+// so the cancel key needs the model, not just the engine.
+type enginePull struct {
+	engine string
+	model  string
+}
+
 // enginesView manages local inference engines via the engine-manager
 // control plane: an installed/running/healthy table plus lifecycle
 // actions, kept live from engine:state-changed and engine:install-progress.
-// It can also pull a model (engine:action{action:"pull_model"}), rendering
-// the live engine:pull-progress feed the way remote pulls already show.
+// It can also pull a model (engine:action{action:"pull_model"}) and cancel one
+// (engine:cancel-pull), rendering the live engine:pull-progress feed the way
+// remote pulls already show.
 type enginesView struct {
 	client     *rpc.Client
 	table      table.Model
@@ -43,6 +52,9 @@ type enginesView struct {
 	input      textinput.Model
 	pulling    bool
 	pullEngine string
+	// active is every download this view started, oldest first, so the cancel
+	// key can name the newest one on the selected engine.
+	active []enginePull
 
 	width, height int
 }
@@ -58,13 +70,22 @@ type engineOpMsg struct {
 	err    error
 }
 
+// enginePullDoneMsg retires a download from active once its request settles,
+// whether it succeeded or failed. A failed entry left behind stays selectable,
+// and the next cancel would target a download that is not running.
+type enginePullDoneMsg struct {
+	pull enginePull
+	err  error
+}
+
 var (
-	engStartKey     = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start"))
-	engStopKey      = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "stop"))
-	engRestartKey   = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restart"))
-	engInstallKey   = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "install"))
-	engUninstallKey = key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "uninstall"))
-	engPullKey      = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pull model"))
+	engStartKey      = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start"))
+	engStopKey       = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "stop"))
+	engRestartKey    = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restart"))
+	engInstallKey    = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "install"))
+	engUninstallKey  = key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "uninstall"))
+	engPullKey       = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pull model"))
+	engCancelPullKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel pull"))
 )
 
 func newEnginesView(client *rpc.Client) *enginesView {
@@ -151,27 +172,54 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		case "engine:pull-progress":
 			var p struct {
 				Engine  string `json:"engine"`
+				Model   string `json:"model"`
 				Stage   string `json:"stage"`
 				Percent int    `json:"percent"`
 				Message string `json:"message"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
+			// The engine-manager queues concurrent pulls per engine, so every
+			// frame is attributed by model — without it one download's percent
+			// would be rendered against another's name.
+			what := p.Engine
+			if p.Model != "" {
+				what = p.Engine + " " + p.Model
+			}
 			// Terminal stages carry no meaningful percent (success is implicitly
 			// 100%; error uses -1), so render them as outcomes rather than a
 			// misleading "success (0%)". A late failure that arrives after the
 			// synchronous call timed out still surfaces here.
+			//
+			// They also retire the entry, which is the only thing that does so
+			// for a download whose own request outlived callTimeout. That
+			// deadline is ignored deliberately, so without this the entry
+			// would stay in active for the rest of the session and keep
+			// offering a finished download as the cancel target.
 			switch p.Stage {
 			case "success":
-				v.status = fmt.Sprintf("pull %s: done", p.Engine)
+				v.status = fmt.Sprintf("pull %s: done", what)
+				v.retire(enginePull{engine: p.Engine, model: p.Model})
 			case "error":
 				detail := p.Message
 				if detail == "" {
 					detail = "failed"
 				}
-				v.status = fmt.Sprintf("pull %s failed: %s", p.Engine, detail)
+				v.status = fmt.Sprintf("pull %s failed: %s", what, detail)
+				v.retire(enginePull{engine: p.Engine, model: p.Model})
+			case "queued":
+				// The engine already has a download running; this one starts
+				// when that finishes. There is no percent to report yet.
+				v.status = fmt.Sprintf("pull %s: queued", what)
 			default:
-				v.status = fmt.Sprintf("pull %s: %s (%d%%)", p.Engine, p.Stage, p.Percent)
+				v.status = fmt.Sprintf("pull %s: %s (%d%%)", what, p.Stage, p.Percent)
 			}
+		}
+		return nil
+
+	case enginePullDoneMsg:
+		v.retire(msg.pull)
+		if msg.err != nil {
+			v.status = fmt.Sprintf("pull %s %s failed: %s", msg.pull.engine, msg.pull.model, msg.err.Error())
 		}
 		return nil
 
@@ -208,6 +256,9 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.input.Focus()
 		return textinput.Blink
 	}
+	if key.Matches(msg, engCancelPullKey) {
+		return v.cancelPull()
+	}
 	if cmd, handled := v.handleAction(msg); handled {
 		return cmd
 	}
@@ -240,14 +291,75 @@ func (v *enginesView) submitPull() tea.Cmd {
 		v.status = "model name required"
 		return nil
 	}
-	v.status = fmt.Sprintf("pull %s: %s...", engine, model)
+	pull := enginePull{engine: engine, model: model}
+	v.active = append(v.active, pull)
+	v.status = fmt.Sprintf("pull %s %s...", engine, model)
 	params := pullParams(engine, model)
 	return call(v.client, "engine:action", params, func(_ *rpc.Message, err error) tea.Msg {
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			return engineOpMsg{what: "pull " + model, engine: engine, err: err}
+		// A deadline here is the call timeout, not the download's outcome: the
+		// pull runs on and the progress feed still reports it, so the entry has
+		// to stay cancellable.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil
 		}
-		return nil
+		return enginePullDoneMsg{pull: pull, err: err}
 	})
+}
+
+// cancelPull stops the newest download this view started on the selected
+// engine. The engine-manager acknowledges only after the transfer has stopped
+// and its partial files are cleaned up, so the reply can be slow enough to hit
+// the call timeout — which the progress feed then settles.
+func (v *enginesView) cancelPull() tea.Cmd {
+	engine := v.selectedEngine()
+	if engine == "" {
+		return nil
+	}
+	pull, ok := v.newestPull(engine)
+	if !ok {
+		v.status = "no download in progress on " + engine
+		return nil
+	}
+	v.status = fmt.Sprintf("canceling %s %s...", pull.engine, pull.model)
+	params := map[string]string{"engine": pull.engine, "model": pull.model}
+	return call(v.client, "engine:cancel-pull", params, v.decodeCancel(pull))
+}
+
+// decodeCancel maps a cancel request's outcome onto the update loop.
+func (v *enginesView) decodeCancel(pull enginePull) func(*rpc.Message, error) tea.Msg {
+	return func(_ *rpc.Message, err error) tea.Msg {
+		// A deadline here is the call timeout, not the cancel's outcome, the
+		// same way it is for submitPull. Retiring the entry on it would drop
+		// the only cancel target for a download that is still running, so a
+		// second press would report nothing active on the engine while the
+		// transfer carried on. Leave it and let the pull's own terminal
+		// progress frame retire it.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		if err != nil {
+			return engineOpMsg{what: "cancel " + pull.model, engine: pull.engine, err: err}
+		}
+		return enginePullDoneMsg{pull: pull}
+	}
+}
+
+func (v *enginesView) newestPull(engine string) (enginePull, bool) {
+	for i := len(v.active) - 1; i >= 0; i-- {
+		if v.active[i].engine == engine {
+			return v.active[i], true
+		}
+	}
+	return enginePull{}, false
+}
+
+func (v *enginesView) retire(pull enginePull) {
+	for i, active := range v.active {
+		if active == pull {
+			v.active = append(v.active[:i], v.active[i+1:]...)
+			return
+		}
+	}
 }
 
 func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -333,7 +445,7 @@ func (v *enginesView) View() string {
 }
 
 func (v *enginesView) Help() []key.Binding {
-	return []key.Binding{engStartKey, engStopKey, engRestartKey, engInstallKey, engUninstallKey, engPullKey}
+	return []key.Binding{engStartKey, engStopKey, engRestartKey, engInstallKey, engUninstallKey, engPullKey, engCancelPullKey}
 }
 
 func yesNo(b bool) string {

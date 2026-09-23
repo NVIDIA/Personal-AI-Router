@@ -14,10 +14,8 @@ package main
 // Ollama's /api/pull streams newline-delimited JSON status objects
 // ({"status":...,"total":N,"completed":M}); each line maps to a progress event,
 // coalesced so only changes in stage/percent are emitted (a single layer streams
-// many byte-progress lines at the same rendered percent). CLI-driven pulls (LM
-// Studio's `lms get`) don't expose structured line progress here, so they emit a
-// single "pulling" marker and return the final result — the security/trust
-// boundary and result contract are identical.
+// many byte-progress lines at the same rendered percent). LM Studio's lms get
+// output is streamed through lmspull.go, including its cancellation prompt.
 
 import (
 	"bufio"
@@ -26,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,6 +57,15 @@ func modelFromParams(params json.RawMessage) string {
 // params is empty it defaults to {"name","model"} (covering Ollama's `name` body
 // key and the {model} CLI placeholder), so a caller can pass just a model name.
 func (e *Executor) PullModelStream(ctx context.Context, engine, model string, params json.RawMessage) (json.RawMessage, error) {
+	if fromParams := modelFromParams(params); fromParams != "" {
+		model = fromParams
+	}
+	return e.trackedPull(ctx, engine, model, func(ctx context.Context) (json.RawMessage, error) {
+		return e.pullModelStream(ctx, engine, model, params)
+	})
+}
+
+func (e *Executor) pullModelStream(ctx context.Context, engine, model string, params json.RawMessage) (result json.RawMessage, resultErr error) {
 	st, err := e.state(engine)
 	if err != nil {
 		return nil, err
@@ -73,17 +81,62 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
 	defer cancel()
 
-	// CLI action (e.g. lms get): no structured line progress; emit a start
+	if act.ModelResolution == modelResolutionLMSGet {
+		return e.pullLMSModel(ctx, st, engine, model)
+	}
+
+	// Other CLI actions without a progress adapter emit a start
 	// marker and return the final result via the existing runner.
 	if len(act.Cmd) > 0 {
 		st.mu.Lock()
 		port := st.port
 		st.mu.Unlock()
-		e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: model})
+		e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "pulling", Message: model})
 		return e.runCmdAction(ctx, st, act, port, params)
 	}
 
 	// HTTP action (e.g. Ollama /api/pull): stream NDJSON progress.
+	digests := make(map[string]bool)
+	completed := false
+	// Record the partial blobs on disk before a byte moves. Only the files this
+	// pull goes on to create are unambiguously its own, so this snapshot is
+	// what keeps a cancellation off another client's transfer and off a partial
+	// an earlier attempt deliberately left resumable. A snapshot that could not
+	// be taken stays nil, and cleanup then deletes nothing rather than guess.
+	var before ollamaPartialsBefore
+	if engine == "ollama" {
+		if snapshot, snapshotErr := ollamaPartialSnapshot(ollamaBlobsDir(st)); snapshotErr == nil {
+			before = snapshot
+		}
+	}
+	defer func() {
+		if ctx.Err() != context.Canceled {
+			return
+		}
+		if completed {
+			result = json.RawMessage(`{"status":"success"}`)
+			resultErr = nil
+			return
+		}
+		// Only a cancellation someone asked for may delete partial blobs. The
+		// same context also dies when PAIR quits mid-download and when a remote
+		// initiator's connection drops, and a resumable transfer must survive
+		// both rather than restart from zero on the next attempt.
+		if engine == "ollama" && cancelRequested(ctx) {
+			// Cleanup outlives the cancellation that triggered it, so it runs
+			// on a context that keeps this one's values without its deadline.
+			cleanupCtx := context.WithoutCancel(ctx)
+			if err := cleanupOllamaAfterCancel(cleanupCtx, ollamaBlobsDir(st), digests, before); err != nil {
+				// The download did stop, which is what was asked for. Leftover
+				// blobs are Ollama's to resume, so reporting a failed cancel
+				// here would deny the one outcome that did happen and leave
+				// the row on "Canceling" over a transfer that is gone.
+				slog.Warn("partial-blob cleanup failed after cancellation",
+					"engine", engine, "model", model, "err", err)
+			}
+		}
+		resultErr = context.Canceled
+	}()
 	st.mu.Lock()
 	running := st.running
 	port := st.port
@@ -127,7 +180,25 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 			continue
 		}
 		last = append(json.RawMessage(nil), line...)
+		var frame struct {
+			Digest string `json:"digest"`
+			Error  string `json:"error"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(line, &frame); err != nil {
+			return nil, err
+		}
+		if frame.Error != "" {
+			return nil, fmt.Errorf("%s", frame.Error)
+		}
+		if frame.Status == "success" {
+			completed = true
+		}
+		if frame.Digest != "" {
+			digests[frame.Digest] = true
+		}
 		ev := pullProgressFromLine(engine, line)
+		ev.Model = model
 		if ev.Stage == lastStage && ev.Percent == lastPct {
 			continue
 		}

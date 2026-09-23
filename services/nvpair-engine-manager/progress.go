@@ -10,6 +10,7 @@ import "sync"
 // engine:install-progress notification path (this node's own UI) and the ec
 // streaming handlers that relay live progress to a remote initiator.
 type ProgressEvent struct {
+	Model   string `json:"model,omitempty"`
 	Engine  string `json:"engine"`
 	Op      string `json:"op"` // "install" | "pull"
 	Stage   string `json:"stage,omitempty"`
