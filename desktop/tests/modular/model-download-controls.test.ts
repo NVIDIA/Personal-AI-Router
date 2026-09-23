@@ -52,11 +52,15 @@ const rows = [
 
 for (const row of rows) {
     describe(row.name, () => {
+        // "canceling" stays enabled: a cancel that outlives its budget stops
+        // being awaited while the download keeps running, and this button is
+        // the only way to ask again. Duplicate clicks are absorbed by the
+        // bridge, which knows when a cancel is genuinely outstanding.
         it.each([
             { status: 'pulling', disabled: false },
             { status: 'queued', disabled: false },
             { status: 'downloading', disabled: false },
-            { status: 'canceling', disabled: true },
+            { status: 'canceling', disabled: false },
             { status: 'idle', disabled: true },
             { status: 'error', disabled: true }
         ])('cancellation availability during $status', ({ status, disabled }) => {

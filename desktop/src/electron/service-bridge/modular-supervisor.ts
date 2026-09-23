@@ -344,6 +344,12 @@ class ModularSupervisor {
     private modelRefreshGenerations = new Map<EngineType, number>()
     private discoveryModelRetryTimers = new Map<ProxyEngine, ReturnType<typeof setTimeout>>()
     private discoveryModelRetryAttempts = new Map<ProxyEngine, number>()
+
+    // Download cancellations this is currently awaiting a broker reply for,
+    // keyed by node, engine and model. Held only for the duration of the await
+    // so a cancel that outlives its budget can be re-issued; see
+    // {@link ModularSupervisor.cancelModelPull}.
+    private cancelsInFlight = new Set<string>()
     // Authoritative value is the persisted ui-config `modularLogLevel`; the
     // connector seeds it via setLogLevel() before start() so spawn args use it.
     // This default only applies if start() runs before the connector seeds.
@@ -1736,6 +1742,13 @@ class ModularSupervisor {
      * the row back to "downloading" seconds before it finishes would be a lie
      * the user acts on. Only a real rejection restores the previous status, and
      * either way the pull's own settling event clears the entry.
+     *
+     * It does not make the cancel one-shot, though. A request that outlives
+     * its budget has stopped being awaited, and the row it left in "Canceling"
+     * is the user's only handle on a download that may still be running, so
+     * asking again has to reach the backend. Only a cancel this is currently
+     * waiting on is refused, which is what keeps a mashed button from fanning
+     * out duplicate requests.
      */
     async cancelModelPull(
         engine: string,
@@ -1748,7 +1761,10 @@ class ModularSupervisor {
             ? state.isRemoteModelPullActive(nodeId, engineType, model)
             : state.isModelPullActive(engineType, model)
         if (!active) return
+        const inFlight = `${nodeId ?? 'local'}:${engineType}:${model}`
+        if (this.cancelsInFlight.has(inFlight)) return
         if (!state.setModelPullCanceling(engineType, model, true, nodeId)) return
+        this.cancelsInFlight.add(inFlight)
         try {
             if (nodeId) {
                 await this.callProcess(
@@ -1784,6 +1800,8 @@ class ModularSupervisor {
                 `engine-cancel-pull:${nodeId ?? 'local'}:${engine}:${model}`,
                 { engineType, nodeId, operation: 'pull', modelName: model }
             )
+        } finally {
+            this.cancelsInFlight.delete(inFlight)
         }
     }
 

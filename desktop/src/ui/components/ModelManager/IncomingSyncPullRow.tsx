@@ -41,10 +41,11 @@ export function IncomingSyncPullRow({
                         </Text>
                     </Flex>
                 </Flex>
+                {/* Still clickable while canceling — see TransientModelStatusRow. */}
                 <Button
                     size="small"
                     kind="secondary"
-                    disabled={canceling || ['idle', 'error'].includes(row.status)}
+                    disabled={['idle', 'error'].includes(row.status)}
                     onClick={onCancel}
                 >
                     {canceling ? 'Canceling…' : 'Cancel download'}

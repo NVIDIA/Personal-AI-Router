@@ -44,14 +44,15 @@ export function TransientModelStatusRow({
                     </Text>
                 </Flex>
                 {pulling && (
+                    // Still clickable while canceling. A cancel that outlives
+                    // its budget stops being awaited while the download keeps
+                    // running, and this row is the only handle on it. The
+                    // bridge ignores a click while a cancel is genuinely
+                    // outstanding, so asking again is free.
                     <Button
                         size="small"
                         kind="secondary"
-                        disabled={
-                            canceling ||
-                            !pullProgress ||
-                            ['idle', 'error'].includes(pullProgress.status)
-                        }
+                        disabled={!pullProgress || ['idle', 'error'].includes(pullProgress.status)}
                         onClick={onCancel}
                     >
                         {canceling ? 'Canceling…' : 'Cancel download'}

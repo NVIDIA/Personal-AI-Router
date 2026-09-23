@@ -21,7 +21,7 @@ afterEach(() => {
 })
 
 describe('model download cancellation', () => {
-    it('keeps Canceling visible across late progress and rejects duplicate cancellation', () => {
+    it('keeps Canceling visible across late progress', () => {
         const state = getModularBridgeState()
         const events: EngineProgress[] = []
         unsubscribe = subscribePush(event => {
@@ -29,7 +29,6 @@ describe('model download cancellation', () => {
         })
         state.beginRemoteModelPull('peer', 'lm-studio', 'owner/model')
         expect(state.setModelPullCanceling('lm-studio', 'owner/model', true, 'peer')).toBe(true)
-        expect(state.setModelPullCanceling('lm-studio', 'owner/model', true, 'peer')).toBe(false)
         state.applyRemoteEngineProgress({
             node: 'peer',
             engine: 'lmstudio',
@@ -59,6 +58,31 @@ describe('model download cancellation', () => {
         state.setModelPullCanceling('ollama', 'demo', true, 'peer')
         state.setModelPullCanceling('ollama', 'demo', false, 'peer')
         expect(events.at(-1)).toMatchObject({ status: 'downloading', percent: 25 })
+    })
+
+    // A cancel may be re-issued after an earlier one stopped being awaited.
+    // Each repeat must keep pointing at the status the download had before any
+    // of them, or a rejection would restore the row to "canceling" — the state
+    // it is being told the backend refused to enter.
+    it('remembers the status from before the first cancel when one is re-issued', () => {
+        const state = getModularBridgeState()
+        const events: EngineProgress[] = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload)
+        })
+        state.beginRemoteModelPull('peer', 'ollama', 'demo')
+        state.applyRemoteEngineProgress({
+            node: 'peer',
+            engine: 'ollama',
+            model: 'demo',
+            op: 'pull',
+            stage: 'downloading',
+            percent: 40
+        })
+        expect(state.setModelPullCanceling('ollama', 'demo', true, 'peer')).toBe(true)
+        expect(state.setModelPullCanceling('ollama', 'demo', true, 'peer')).toBe(true)
+        state.setModelPullCanceling('ollama', 'demo', false, 'peer')
+        expect(events.at(-1)).toMatchObject({ status: 'downloading', percent: 40 })
     })
 
     it('clears cancellation state when the pull finishes and allows retry', () => {

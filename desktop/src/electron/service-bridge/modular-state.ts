@@ -2211,6 +2211,16 @@ class ModularBridgeState {
         emitBridgePush('engines:progress-cleared', { key })
     }
 
+    /**
+     * Move a tracked download into or out of "Canceling", remembering the
+     * status it had so a rejected cancel can restore it.
+     *
+     * Returns false only when there is no such download to mark. It is not the
+     * guard against concurrent cancels — the supervisor holds that for as long
+     * as it awaits a reply, because a cancel that outlives its budget is still
+     * running and the row must stay in "Canceling" while the user remains able
+     * to ask again.
+     */
     setModelPullCanceling(
         engineType: EngineType,
         model: string,
@@ -2220,10 +2230,18 @@ class ModularBridgeState {
         if (!nodeId) return false
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const existing = this.activePulls.get(key)
-        if (!existing || (canceling && this.cancelingPulls.has(key))) return false
-        const status = canceling ? 'canceling' : (this.cancelingPulls.get(key) ?? existing.status)
-        if (canceling) this.cancelingPulls.set(key, existing.status)
-        else this.cancelingPulls.delete(key)
+        if (!existing) return false
+        const remembered = this.cancelingPulls.get(key)
+        if (canceling) {
+            // Record the pre-cancel status on the first cancel only. A retry
+            // would otherwise record "canceling" as the status to restore, and
+            // a later rejection would put the row back into the very state it
+            // is trying to leave.
+            if (remembered === undefined) this.cancelingPulls.set(key, existing.status)
+        } else {
+            this.cancelingPulls.delete(key)
+        }
+        const status = canceling ? 'canceling' : (remembered ?? existing.status)
         const progress = { ...existing, status }
         this.activePulls.set(key, progress)
         emitBridgePush('engines:progress-changed', progress)

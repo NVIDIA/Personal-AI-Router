@@ -82,8 +82,9 @@ describe('cancelling a model download', () => {
             { engine: 'ollama', model: 'demo' },
             MODULAR_CANCEL_PULL_TIMEOUT_MS
         )
-        // The peer's own header budget is 30s and starts before it writes one,
-        // so an outer budget that merely matched it would expire first.
+        // A local cancel stops the transfer and settles its partial files
+        // before the backend answers, which the ordinary 30s request budget
+        // cannot cover.
         expect(MODULAR_CANCEL_PULL_TIMEOUT_MS).toBeGreaterThan(30_000)
     })
 
@@ -106,6 +107,40 @@ describe('cancelling a model download', () => {
             undefined
         )
         expect(reportError).not.toHaveBeenCalled()
+    })
+
+    // The row left in "Canceling" is the user's only handle on a download that
+    // may still be running, so a cancel that stopped being awaited cannot be
+    // the last one they get to send.
+    it('lets a cancel that outlived its budget be re-issued', async () => {
+        vi.spyOn(supervisor, 'reportError').mockImplementation(() => {})
+        const call = vi
+            .spyOn(supervisor, 'callProcess')
+            .mockRejectedValue(new JsonRpcTimeoutError('broker engine:cancel-pull timed out'))
+
+        await supervisor.cancelModelPull('ollama', 'ollama', 'demo')
+        await supervisor.cancelModelPull('ollama', 'ollama', 'demo')
+
+        expect(call).toHaveBeenCalledTimes(2)
+    })
+
+    // While one is genuinely outstanding, though, a mashed button must not fan
+    // out duplicate requests that each hold their own budget.
+    it('refuses a second cancel while the first is still outstanding', async () => {
+        const releases: Array<() => void> = []
+        const call = vi
+            .spyOn(supervisor, 'callProcess')
+            .mockImplementation(() => new Promise(resolve => releases.push(() => resolve(null))))
+
+        const attempts = [
+            supervisor.cancelModelPull('ollama', 'ollama', 'demo'),
+            supervisor.cancelModelPull('ollama', 'ollama', 'demo')
+        ]
+
+        expect(call).toHaveBeenCalledTimes(1)
+
+        releases.forEach(release => release())
+        await Promise.all(attempts)
     })
 
     it('restores the previous status when the backend rejects the cancel', async () => {
