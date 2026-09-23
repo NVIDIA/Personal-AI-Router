@@ -16,8 +16,33 @@ import type {
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
+import type {
+    EngineSettingsTarget,
+    EngineSettingsRequest,
+    EngineSettingsSnapshot,
+    EngineSettingsPreview,
+    EngineSettingsReceipt
+} from '@/shared/types/engine-settings'
 
 export interface IEngineApi {
+    /** Read the owning node's authoritative settings snapshot for one engine. */
+    getSettings(target: EngineSettingsTarget): Promise<EngineSettingsSnapshot>
+    /**
+     * Validate a draft against the owner without persisting or touching any
+     * process: returns the normalized settings, per-field errors, any port
+     * conflict, and whether applying would restart or rebind.
+     */
+    previewSettings(request: EngineSettingsRequest): Promise<EngineSettingsPreview>
+    /**
+     * Commit a draft. The receipt only acknowledges that the owner accepted the
+     * operation — completion arrives on `onSettingsChanged`, because a stop,
+     * rebind, and restart outlive the call.
+     */
+    applySettings(request: EngineSettingsRequest): Promise<EngineSettingsReceipt>
+    /** A settings snapshot changed on some node — the only source of applied state. */
+    onSettingsChanged(callback: (snapshot: EngineSettingsSnapshot) => void): () => void
+    /** A node's settings authority became unreachable; its cached snapshot is stale. */
+    onSettingsDisconnected(callback: (target: { nodeId: string }) => void): () => void
     /** Fetch initial engine state: statuses, models, progress, and update availability. */
     getInitialState(): Promise<EngineInitialState>
 
@@ -27,16 +52,6 @@ export interface IEngineApi {
     install(engineType: EngineType, nodeId: string): void
     /** Uninstall an engine from a node without removing downloaded models. */
     uninstall(engineType: EngineType, nodeId: string): void
-    /**
-     * Apply the engine server port and/or proxy port on a node in one safe
-     * transaction. Pass only the ports that changed; the bridge orders the
-     * operations so the engine and proxy never collide (including a full swap).
-     */
-    setPorts(
-        engineType: EngineType,
-        nodeId: string,
-        ports: { enginePort?: number; proxyPort?: number }
-    ): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
     /** Load a model into memory on a node. */
@@ -70,6 +85,11 @@ function fireCommand(transport: ServiceTransport, payload: EngineCommandPayload)
 
 export function createEngineApi(transport: ServiceTransport): IEngineApi {
     return {
+        getSettings: target => transport.invoke('engines:get-settings', target),
+        previewSettings: request => transport.invoke('engines:preview-settings', request),
+        applySettings: request => transport.invoke('engines:apply-settings', request),
+        onSettingsChanged: cb => transport.subscribePush('engines:settings-changed', cb),
+        onSettingsDisconnected: cb => transport.subscribePush('engines:settings-disconnected', cb),
         getInitialState: () => transport.invoke('engines:get-initial'),
 
         toggle: (engineType, nodeId) =>
@@ -78,14 +98,6 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
             fireCommand(transport, { command: 'install', engineType, nodeId }),
         uninstall: (engineType, nodeId) =>
             fireCommand(transport, { command: 'uninstall', engineType, nodeId }),
-        setPorts: (engineType, nodeId, ports) =>
-            fireCommand(transport, {
-                command: 'setPorts',
-                engineType,
-                nodeId,
-                enginePort: ports.enginePort,
-                proxyPort: ports.proxyPort
-            }),
         pullModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
         loadModel: (engineType, nodeId, model) =>

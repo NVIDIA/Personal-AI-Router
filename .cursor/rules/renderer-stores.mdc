@@ -1,0 +1,53 @@
+---
+description: Renderer store and React component rules
+globs: src/ui/**/*.{ts,tsx}
+alwaysApply: false
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Renderer Stores
+
+Use the existing domain store:
+
+- connection;
+- nodes and discovered nodes;
+- metrics;
+- engine status, models, progress, updates, and pending actions;
+- workloads;
+- errors;
+- cluster invitations;
+- overview-only UI state.
+
+Initialization and teardown belong in `src/ui/stores/init.ts`.
+
+## Selectors
+
+- Select stable scalar or object references when possible.
+- Wrap arrays created from a `Map` with `useShallow`.
+- Do not use `useShallow` directly on `Array.from(map.entries())`; each entry
+  tuple is a new array.
+- For nested map projections, subscribe to a stable generation value and build
+  the projection in `useMemo`.
+
+## State boundary
+
+- Service state comes from `window.pairApi` snapshots and push events.
+- Components do not keep duplicate engine lifecycle or progress state.
+- Engine and model optimism comes only from `pending-actions.store.ts`.
+- Local component state is appropriate for transient view concerns such as
+  open menus, draft form values, or selected tabs.
+
+## Communication
+
+Do not call backend HTTP endpoints directly from renderer code. Use:
+
+- `window.pairApi` for service data and commands;
+- `window.windowApi` for Electron-native operations.
+
+## Window routing
+
+`src/ui/components/App.tsx` selects the application surface from the `window`
+query parameter. Keep new windows in that central router.

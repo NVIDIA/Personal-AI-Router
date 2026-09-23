@@ -18,8 +18,8 @@ const (
 	defaultHost       = "127.0.0.1"
 	defaultBackend    = "ollama"
 	defaultOllamaPort = 11434
-	// LM Studio's own default, which is also the port PAIR's lmstudio-proxy
-	// facade claims (services/lmstudio-proxy/portstore.go defaultProxyPort).
+	// LM Studio's own default, which is also the port PAIR's LM Studio proxy
+	// facade claims (the FacadePort in services/shared/engines).
 	// PAIR's managed LM Studio backend is moved behind it starting at 1235;
 	// pass --port explicitly to reach that directly, which bypasses routing.
 	defaultLMStudioPort = 1234

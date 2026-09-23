@@ -56,6 +56,7 @@ echo "Stopping Personal AI Router processes..."
 for proc in \
   "PAIR" \
   "nvpair-tui" \
+  "nvpair-proxy" \
   "ollama-proxy" \
   "lmstudio-proxy" \
   "nvpair-node-info" \
@@ -74,7 +75,10 @@ sleep 1
 
 FW=/usr/libexec/ApplicationFirewall/socketfilterfw
 if [ -x "$FW" ]; then
-  for bin in ollama-proxy lmstudio-proxy nvpair-node-info nvpair-node-scanner \
+  # ollama-proxy and lmstudio-proxy are pre-unification names, kept so an
+  # upgrade's leftover firewall entries are removed too; --remove on a path
+  # that was never added is a no-op.
+  for bin in nvpair-proxy ollama-proxy lmstudio-proxy nvpair-node-info nvpair-node-scanner \
              nvpair-workload-manager nvpair-errors nvpair-cluster-manager nvpair-engine-manager; do
     "$FW" --remove "$APP_PATH/Contents/Resources/cli-bin/$bin" >/dev/null 2>&1 || true
   done

@@ -15,6 +15,17 @@ export const EngineTypes = ['ollama', 'lm-studio'] as const
 // appearing the moment its type exists.
 export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio'] as const
 
+/**
+ * How `nvpair-engine-manager` spells each engine on the wire. Only LM Studio
+ * differs from PAIR's `EngineType`; every other engine is identical on both
+ * sides. This is the single translation table — use `engineManagerName()` and
+ * `engineTypeFromManagerName()` rather than re-deriving it from a literal.
+ */
+export const EngineManagerNames = {
+    ollama: 'ollama',
+    'lm-studio': 'lmstudio'
+} as const satisfies Record<EngineType, string>
+
 export const EngineSources = ['bundled', 'detected', 'installed'] as const
 
 export const EngineDisplayNames: Record<EngineType, string> = {

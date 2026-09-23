@@ -140,7 +140,7 @@ func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 // TestBrokerBridgesManualNodeIntoProxy is the leg-A repro: with the broker
 // supervising both nvpair-manual-nodes and ollama-proxy, a manual node whose
 // Ollama is reachable must be bridged into the proxy (node/add-manual) so it
-// shows up in proxy:nodes/list and can be routed to — even though it never
+// shows up in ollama-proxy:nodes/list and can be routed to — even though it never
 // appears over mDNS.
 func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 	if portBusy(11435) {
@@ -151,7 +151,7 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 
 	stdin, msgs, _, cleanup := startBrokerWith(t,
 		"--manual-nodes-path", manualNodesBin,
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 	)
 	t.Cleanup(cleanup)
 
@@ -163,14 +163,14 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 		t.Fatalf("write node/add: %v", err)
 	}
 
-	// Poll the proxy's node set (via the broker's proxy: relay) until the
+	// Poll the proxy's node set (via the broker's ollama-proxy: relay) until the
 	// bridged manual node appears. The first probe fires immediately on
 	// node/add; re-probes every 10s re-bridge if the proxy wasn't ready yet.
 	deadline := time.After(25 * time.Second)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	reqID := 901
-	sendReq(t, stdin, reqID, "proxy:nodes/list")
+	sendReq(t, stdin, reqID, "ollama-proxy:nodes/list")
 	for {
 		select {
 		case msg, ok := <-msgs:
@@ -183,9 +183,9 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 			}
 		case <-ticker.C:
 			reqID++
-			sendReq(t, stdin, reqID, "proxy:nodes/list")
+			sendReq(t, stdin, reqID, "ollama-proxy:nodes/list")
 		case <-deadline:
-			t.Fatalf("timed out waiting for manual node %q in proxy:nodes/list", nodeName)
+			t.Fatalf("timed out waiting for manual node %q in ollama-proxy:nodes/list", nodeName)
 		}
 	}
 }
@@ -194,7 +194,7 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 // manual node's node-info reports its stable hostUuid, the proxy candidate must
 // be keyed by that UUID — the same operational key the discovery store and
 // scheduler use — so scheduler priority (node/set-priority) and scheduledOn
-// resolve to it. The candidate must therefore appear in proxy:nodes/list under
+// resolve to it. The candidate must therefore appear in ollama-proxy:nodes/list under
 // the learned hostUuid, not the user-supplied manual name.
 func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 	if portBusy(11435) {
@@ -207,7 +207,7 @@ func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 
 	stdin, msgs, _, cleanup := startBrokerWith(t,
 		"--manual-nodes-path", manualNodesBin,
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 	)
 	t.Cleanup(cleanup)
 
@@ -223,7 +223,7 @@ func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	reqID := 941
-	sendReq(t, stdin, reqID, "proxy:nodes/list")
+	sendReq(t, stdin, reqID, "ollama-proxy:nodes/list")
 	for {
 		select {
 		case msg, ok := <-msgs:
@@ -241,9 +241,9 @@ func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 			}
 		case <-ticker.C:
 			reqID++
-			sendReq(t, stdin, reqID, "proxy:nodes/list")
+			sendReq(t, stdin, reqID, "ollama-proxy:nodes/list")
 		case <-deadline:
-			t.Fatalf("timed out waiting for manual node under learned hostUuid in proxy:nodes/list")
+			t.Fatalf("timed out waiting for manual node under learned hostUuid in ollama-proxy:nodes/list")
 		}
 	}
 }
@@ -260,7 +260,7 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 
 	stdin, msgs, _, cleanup := startBrokerWithConfigDir(t, configDir,
 		"--manual-nodes-path", manualNodesBin,
-		"--lmstudio-proxy-path", lmstudioProxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "lmstudio",
 	)
 	t.Cleanup(cleanup)
 

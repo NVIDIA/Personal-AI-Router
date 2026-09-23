@@ -1,0 +1,247 @@
+---
+description: Current PAIR runtime architecture, communication paths, modular services, and security boundaries
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# System Architecture
+
+`docs/architecture.md` is the rendered current-state reference.
+
+## Process model
+
+PAIR is an Electron application backed by the sibling `services/` tree.
+
+- Electron starts only `nvpair-ui-broker`.
+- The broker supervises every runtime worker.
+- Backend processes communicate with their parent over stdio JSON-RPC.
+- Development binaries live in `cli-bin/`.
+- Packaged binaries live in `process.resourcesPath/cli-bin`.
+
+The canonical inventory is `src/shared/constants/modular-binaries.ts`.
+
+Broker-owned workers:
+
+- `nvpair-proxy`, one process hosting a facade per enabled engine. It starts
+ with no engine and no listener; the broker sends a `facade/enable` per engine
+ carrying that engine's port. Clients still address each facade as
+ `ollama-proxy:` / `lmstudio-proxy:`, and one supervisor covers them all, so a
+ crash is reported against `nvpair-proxy` and restarts every facade together;
+- `nvpair-node-scanner`;
+- `nvpair-node-info`;
+- `nvpair-workload-manager`;
+- `nvpair-cluster-manager`;
+- `nvpair-node-settings`;
+- `nvpair-manual-nodes`;
+- `nvpair-engine-manager`;
+- `nvpair-errors`;
+- `nvpair-job-scheduler`.
+
+`nvpair-tui` is bundled but not supervised by Electron or the broker.
+
+Never launch one worker from both Electron and the broker. There is no
+broker-absent fallback.
+
+The Inference Demo's `inference-dispatcher` is the one non-broker executable
+Electron launches. It is not a worker: its source lives in
+`scripts/inference-dispatcher` at the monorepo root, it is absent from
+`services/versions.json` and `modular-binaries.ts`, and it ships in its own
+`tools/` resource directory. See "Inference Demo" below.
+
+The connector remains `connecting` until broker `app:ready` and the required
+Ollama proxy readiness arrive. A startup deadline routes failures to
+Settings > Service with the error and log/restart controls; late readiness
+transitions the existing process tree to connected.
+
+## Communication
+
+### Renderer to service
+
+`window.pairApi` is the only renderer service-control API. It uses
+`window.__PAIR_TRANSPORT__`, the `service-bridge:*` IPC envelope, Electron main
+handlers, and the broker.
+
+Logical invoke and push types live in `src/shared/types/ws-channels.ts`.
+Browser mode is unsupported.
+
+### Renderer to Electron
+
+`window.windowApi` is reserved for:
+
+- window and tray management;
+- clipboard;
+- service lifecycle and logs;
+- updater control;
+- first-run state.
+
+IPC types live in `src/shared/types/ipc-channels.ts`. All handlers use
+`safeHandle()`.
+
+### Terminal
+
+PAIR has no Electron-backed console client. The `nvpair` command on PATH is a
+launcher for the bundled Go `nvpair-tui`, which owns its own broker and worker
+tree. Electron generates that launcher on packaged builds
+(`src/electron/nvpair-command.ts`); the Debian package installs the equivalent
+wrapper at `/usr/bin/nvpair`. Do not add a TypeScript command surface, control
+socket, or local control server.
+
+### Node telemetry
+
+Electron directly polls each discovered node's advertised `/v1/node-info`
+endpoint every two seconds while it is healthy. Consecutive failures back off to
+4, 8, 16, then 30 seconds and reset on success or an endpoint change. This is the
+only service-data HTTP exception because rich telemetry is not exposed by the
+broker JSON-RPC contract.
+
+This renderer-facing metrics path is display-only. Independently, the backend
+scanner provides compact maximum-GPU utilization on the same healthy cadence and
+capped failure backoff; the manual-node worker supplies the same payload shape.
+The broker uses both for scheduling.
+
+### Inference HTTP
+
+Ollama and LM Studio proxies expose local client-compatible HTTP endpoints.
+Chat behaves as a local third-party client. Prompts, messages, chunks, and
+response bodies must never be logged.
+
+## Runtime defaults
+
+Backend-coupled constants belong in
+`src/shared/constants/modular-runtime.ts`.
+
+- Prefer live broker or discovery values.
+- Do not assume a proxy port before the broker reports it.
+- Native chat fallbacks are Ollama `127.0.0.1:11434` and LM Studio
+  `127.0.0.1:1234`.
+- Cluster pairing currently uses port `14321`.
+- Node telemetry path is `/v1/node-info`.
+
+Backend discovery service names and TXT layouts are not PAIR contracts. Consume
+the broker's reported discovery snapshots instead of duplicating those details.
+
+## State flow
+
+The service is authoritative.
+
+1. The UI sends commands.
+2. The broker and workers execute them.
+3. Backend notifications update `ModularBridgeState`.
+4. Typed push events update renderer stores.
+
+Stores fetch domain snapshots on startup and subscribe to push events. Engine
+commands return no state. The centralized pending-actions store is the only
+optimistic engine/model state in the renderer.
+
+Current push channels are declared in `WsPushChannelMap`; do not maintain a
+second handwritten channel list.
+
+## Discovery
+
+`nvpair-node-scanner` is the discovery authority. The broker exposes canonical
+addresses, trust state, model inventory, and per-engine model attribution in
+`AvailableNode`.
+
+Electron merges discovery, proxy presence, engine-manager facts, and node-info
+metrics into the renderer node model.
+
+Manual nodes go through the broker's `node/add`, `node/remove`, and `nodes/list`
+relay. Electron persists and replays user entries.
+
+## Routing
+
+Routing is backend-owned:
+
+1. for model-bearing inference, filter to nodes whose per-engine inventory
+   advertises the requested model;
+2. within that owner set, apply explicit manual selection;
+3. apply `nvpair-job-scheduler` priority;
+4. use deterministic proxy default order.
+
+Empty and non-matching inventories are excluded. If no advertised owner is
+routable, the proxy returns a local `502`; retryable upstream failures continue
+only through other advertised owners.
+
+PAIR does not call `node/select` and must not implement a TypeScript router.
+The broker relays pending workload and source-aware GPU telemetry. The scheduler
+uses EWMA-smoothed fresh utilization to derive pressure 0–3, with neutral
+pressure 1 for invalid, missing, or stale data, then ranks by
+`pending + gpuPressure`, pressure, and UUID. Each proxy minimizes
+`pending + gpuPressure + localReservations` for capable nodes.
+
+## Inference Demo
+
+A fixed sixty-second burst of synthetic traffic sent through the local proxies
+so job activity is visible on Overview.
+
+- Electron main owns the schedule (`src/electron/inference-demo.ts`,
+ `src/electron/inference-demo-schedule.ts`).
+- Each request spawns the bundled `inference-dispatcher`, which behaves as an
+  ordinary third-party HTTP client.
+- Requests target a broker-reported proxy port, never an engine's own port. The
+  backend decides placement; PAIR must not describe the demo as distributing
+  work itself.
+- Progress is broadcast on the `demo:state` Electron push channel
+  (`IpcPushChannelMap`), not the service push bus. State is node-local and is
+  not synchronized.
+- Children run with `stdio: 'ignore'` and with `INFERENCE_DISPATCHER_*` stripped
+  from the environment. Never surface or log prompts or responses.
+
+## Engines
+
+`nvpair-engine-manager` owns lifecycle, port, desired-state, and model
+operations.
+
+- Local lifecycle supports install, start, stop, uninstall, update, and port
+  changes.
+- Remote lifecycle uses the engine manager's remote control methods where
+  available.
+- `engine:prepare-shutdown` stops processes without clearing persisted desired
+  state.
+- Engine and proxy ports are persisted by their backend owners.
+- Running adopted engines reject operations that require process ownership.
+- Per-engine environment and CLI argument overrides are not part of the current
+  contract.
+
+The model hub is Electron-main functionality under `src/electron/model-hub/`.
+It provides curated Ollama and LM Studio catalogs; model operations still go
+through the engine manager.
+
+## Pairing and security
+
+`nvpair-cluster-manager` and the other backend workers own cluster identity,
+PIN pairing, trusted certificates, membership, and every node-to-node channel.
+PAIR implements **no** security or cryptography: it relays pairing and
+membership commands, renders the resulting notifications, and never reads keys
+or builds transport security.
+
+The PIN is a convenience pairing code, not a strong authenticator. See
+`.cursor/rules/security.mdc`.
+
+## Packaging
+
+`npm run build:modular-binaries` builds the backend for the target platform and
+writes `cli-bin/manifest.json`. Packaging rejects stale or unexpected `cli-bin`
+files.
+
+The macOS privileged helper firewall list is derived from
+`needsFirewallAccess` in `MODULAR_RUNTIME_BINARIES`.
+`npm run service-contracts:check` verifies parity with the Swift helper.
+
+Build and release details live in `docs/macos-privileged-helper.md`.
+
+## Documentation
+
+Keep these current when contracts change:
+
+- `docs/architecture.md`;
+- `docs/frontend-api.md`;
+- `docs/services-backend.md`;
+- `docs/services-parity.md`;
+- this rule and `architecture.mdc`.
+
+Do not add migration diaries or completed historical narratives. Git history is
+the history.

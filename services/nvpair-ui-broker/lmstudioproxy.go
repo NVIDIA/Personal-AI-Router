@@ -4,15 +4,8 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"log"
 	"log/slog"
-	"strings"
-
-	"nvpair-shared/applog"
-	"nvpair-shared/noderec"
 )
 
 // lmstudioproxy.go is the broker's LM Studio counterpart to its ollama-proxy
@@ -25,70 +18,38 @@ import (
 // manual LM Studio node into routing, the same way it does for Ollama.
 
 func (b *Broker) setLMStudioProxy(p *proxyProcess) {
-	b.workersMu.Lock()
-	b.lmstudioProxy = p
-	b.workersMu.Unlock()
+	b.setEngineProxyHandle(lmstudioProxyProfile, p)
 }
 
 func (b *Broker) getLMStudioProxy() *proxyProcess {
-	b.workersMu.Lock()
-	defer b.workersMu.Unlock()
-	return b.lmstudioProxy
+	return b.engineProxyHandle(lmstudioProxyProfile)
 }
 
 func (b *Broker) finishLMStudioProxyTerminal() {
-	b.managedLMStudioFacade.Store(false)
+	b.lmstudioState().managedFacade.Store(false)
 	b.markLMStudioPortReady()
 }
 
-func (b *Broker) configureLMStudioProxySupervisorCallbacks(sup *supervisor) {
-	sup.onCrash, sup.onRecovered = b.supervisedWorkerCallbacks("lmstudio-proxy", func() { b.setLMStudioProxy(nil) })
-	sup.onExhausted = func(attempt int) {
-		slog.Warn("lmstudio-proxy is terminally unavailable; releasing ownership gate", "attempt", attempt)
-		b.finishLMStudioProxyTerminal()
+// lmstudioFacadeSpec is the enable request for LM Studio's facade, mirroring
+// ollamaFacadeSpec. It has no alias addresses: the alias stands in for an
+// inherited host variable, which only Ollama has.
+func (b *Broker) lmstudioFacadeSpec() enableFacadeRequest {
+	spec := enableFacadeRequest{Engine: lmstudioProxyProfile.Name}
+	if port := int(b.lmstudioState().startupPort.Load()); port != 0 {
+		spec.Port = port
+		spec.IgnorePersistedPort = true
 	}
+	return spec
 }
 
-func (b *Broker) lmstudioProxyArgs() []string {
-	var args []string
-	if port := int(b.lmstudioProxyStartupPort.Load()); port != 0 {
-		args = []string{"--port", fmt.Sprintf("%d", port), "--ignore-persisted-port"}
+// lmstudioFallbackPort mirrors ollamaFallbackPort: prefer the port the
+// bind-failed notification already chose, since that path also decides whether
+// the managed facade stays in play, and recompute only if it did not run.
+func (b *Broker) lmstudioFallbackPort(failed int) int {
+	if planned := int(b.lmstudioState().startupPort.Load()); planned != 0 && planned != failed {
+		return planned
 	}
-	return append(args, b.clusterDirArgs()...)
-}
-
-// spawnLMStudioProxy is the lmstudio-proxy supervisor's spawn closure,
-// mirroring spawnProxy. It reuses startProxy because the two proxies share a
-// binary protocol.
-func (b *Broker) spawnLMStudioProxy() (supervisedHandle, error) {
-	b.lmstudioReadyMu.Lock()
-	generation := b.lmstudioProxyGeneration.Add(1)
-	b.lmstudioReadyMu.Unlock()
-	// Thread the cluster dir so the LM Studio proxy brings up its pin-gated LAN
-	// mTLS ingress (and dials peers over mTLS) once this node is clustered.
-	pp, err := startProxy(
-		"lmstudio-proxy",
-		b.lmstudioProxyPath,
-		applog.LevelString(),
-		b.relayDir,
-		func(method string, params json.RawMessage) {
-			b.forwardLMStudioProxyNotificationForGeneration(generation, method, params)
-		},
-		b.lmstudioProxyArgs()...,
-	)
-	if err != nil {
-		return nil, err
-	}
-	b.setLMStudioProxy(pp)
-	b.lmstudioProxyPublishedGeneration.Store(generation)
-	// A fast child can announce ready before its handle is published. Replay
-	// reconciliation after publication; the gate's sync.Once makes this safe
-	// when the notification goroutine already handled it.
-	if ready, port := pp.Status(); ready && port > 0 {
-		go b.reconcileLMStudioProxyPortOnReadyForGeneration(generation, port)
-	}
-	slog.Info("lmstudio-proxy started", "path", b.lmstudioProxyPath, "pid", pp.cmd.Process.Pid)
-	return pp, nil
+	return b.setLMStudioProxyFallback(failed)
 }
 
 // forwardLMStudioProxyNotification is the hook startProxy invokes on the
@@ -107,19 +68,29 @@ func (b *Broker) forwardLMStudioProxyNotificationForGeneration(generation uint64
 	if b.lmstudioProxyGeneration.Load() != generation {
 		return
 	}
-	if b.dispatchErrorsNotif("lmstudio-proxy", method, params) {
+	// Strip the facade address before anything dispatches on the method,
+	// starting with the errors relay directly below: it matches bare names.
+	method, addressed := facadeMethodFor(lmstudioProxyProfile, method)
+	if !addressed {
+		return
+	}
+	if b.dispatchErrorsNotif(lmstudioProxyProfile.ComponentName(), method, params) {
 		return
 	}
 	// A process can win :1234 after preparation's free-port check but before
-	// the proxy binds. The failed process is exiting, so set the next spawn to
-	// an explicit fallback without calling back into this reader goroutine.
+	// the facade binds. Choose an explicit fallback here, without calling back
+	// into this reader goroutine.
+	//
+	// The failed process is not exiting any more: this notification precedes
+	// the failing enable's response, so the port chosen here is what
+	// lmstudioFallbackPort finds when that enable retries in-process.
 	if method == "error" {
 		var ep struct {
 			Code string `json:"code"`
 			Port int    `json:"port"`
 		}
-		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" {
-			if b.managedLMStudioFacade.Load() && ep.Port == managedLMStudioFacadePort {
+		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && !b.lmstudioState().explicitSettings.Load() {
+			if b.lmstudioState().managedFacade.Load() && ep.Port == managedLMStudioFacadePort {
 				_, _ = b.blockManagedLMStudioFacade("another process acquired the compatibility port during startup", nil)
 			} else {
 				fallback := b.setLMStudioProxyFallback(ep.Port)
@@ -127,65 +98,11 @@ func (b *Broker) forwardLMStudioProxyNotificationForGeneration(generation uint64
 			}
 		}
 	}
-	if proxyWorkloadMethods[method] {
-		b.routeProxyWorkload(method, params)
-		return
-	}
-	if method == noderec.NotifyNodeActivity {
-		b.routeNodeActivity(params)
-		return
-	}
 	if method == "ready" {
 		var rp proxyReadyParams
 		if err := json.Unmarshal(params, &rp); err == nil && rp.Port > 0 {
 			go b.reconcileLMStudioProxyPortOnReadyForGeneration(generation, rp.Port)
 		}
 	}
-	b.proxyMu.Lock()
-	subscribed := b.lmstudioProxySubscribed
-	b.proxyMu.Unlock()
-	if !subscribed {
-		return
-	}
-	if err := b.codec.Notify("lmstudio-proxy:"+method, params); err != nil {
-		slog.Warn("forward lmstudio-proxy notification failed", "method", method, "err", err)
-	}
-}
-
-// relayToLMStudioProxy forwards an lmstudio-proxy:<method> request to
-// lmstudio-proxy as <method> (prefix stripped) and maps its response straight
-// back, mirroring relayToProxy. lmstudio-proxy:shutdown is refused — the broker
-// owns the proxy's lifecycle.
-func (b *Broker) relayToLMStudioProxy(msg *Message) {
-	method := strings.TrimPrefix(msg.Method, "lmstudio-proxy:")
-	if method == "shutdown" {
-		if err := b.codec.RespondError(msg.ID, -32601, "lmstudio-proxy:shutdown is not allowed; the broker owns the proxy lifecycle"); err != nil {
-			log.Printf("failed to respond to lmstudio-proxy:shutdown: %v", err)
-		}
-		return
-	}
-
-	p := b.getLMStudioProxy()
-	if p == nil {
-		if err := b.codec.RespondError(msg.ID, -32000, "lmstudio-proxy not available"); err != nil {
-			log.Printf("failed to respond to %s: %v", msg.Method, err)
-		}
-		return
-	}
-
-	result, rpcErr, err := p.Call(context.Background(), method, msg.Params)
-	switch {
-	case err != nil:
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("lmstudio-proxy call failed: %v", err)); err != nil {
-			log.Printf("failed to respond to %s: %v", msg.Method, err)
-		}
-	case rpcErr != nil:
-		if err := b.codec.RespondError(msg.ID, rpcErr.Code, rpcErr.Message); err != nil {
-			log.Printf("failed to relay lmstudio-proxy error for %s: %v", msg.Method, err)
-		}
-	default:
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to relay lmstudio-proxy result for %s: %v", msg.Method, err)
-		}
-	}
+	b.forwardEngineProxyNotification(lmstudioProxyProfile, method, params)
 }

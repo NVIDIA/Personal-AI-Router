@@ -1,0 +1,87 @@
+---
+description: Backend-owned proxy routing and inference logging rules
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Proxy and Inference Routing
+
+Routing is owned by `nvpair-proxy` (one process hosting a facade per engine,
+addressed by clients as `ollama-proxy:` / `lmstudio-proxy:`),
+`nvpair-job-scheduler`, and `nvpair-ui-broker`.
+
+For model-bearing inference, each facade first filters a request-local discovery
+snapshot to nodes whose per-engine inventory advertises the requested model.
+Empty and non-matching inventories are ineligible; an empty owner set returns a
+local `502` without contacting an engine. Ollama normalizes the implicit
+`:latest` tag; LM Studio IDs match exactly.
+
+Within that eligible owner set, proxy target precedence is:
+
+1. explicit manual selection;
+2. the scheduler priority list;
+3. deterministic proxy default ordering.
+
+An ineligible manual selection cannot override the capability gate. Retryable
+failover, including an upstream model `404` caused by stale positive inventory,
+continues only through other advertised owners and never broadens to excluded
+nodes.
+
+The scanner and manual-node worker feed compact maximum-GPU telemetry into the
+broker's source-aware cache; scanner observations take precedence. The broker
+ages and relays this feed to `nvpair-job-scheduler`.
+
+The scheduler smooths fresh utilization into pressure 0–3, treats invalid,
+missing, or older-than-10-second telemetry as neutral pressure 1, and ranks by
+`pending + gpuPressure`, then pressure, then stable UUID. It emits
+`schedule:priority` snapshots containing order, pending counts, and pressure.
+Each facade chooses with `pending + gpuPressure + localReservations`, so
+concurrent bursts do not wait for workload feedback.
+
+Those reservations are **process-wide, shared by every facade**. Two facades
+bursting at once compete for the same node's GPU, so a dispatch through either
+must be visible to the other; this is the reason the engines share one process.
+A reservation is stamped with the snapshot generation it was counted against,
+released when its request ends, and moved to the node a failover actually
+lands on. A snapshot supersedes the reservations taken before it, so a release
+arriving after one is ignored rather than double-counted.
+
+## PAIR responsibilities
+
+- Register and pass the scheduler path through the canonical modular binary
+  inventory.
+- Consume proxy readiness, node presence, workload, and error effects.
+- Keep proxies in automatic routing mode.
+- Treat model **Load** as an engine model action, never a route selection.
+
+## Prohibited PAIR behavior
+
+- Do not call `node/select`.
+- Do not implement a TypeScript scheduler or load balancer.
+- Do not derive routing decisions from renderer telemetry.
+- Do not emit a separate proxy-node-switch log.
+- Do not treat GPU pressure as GPU capability, VRAM capacity, or device affinity.
+- Do not mirror scheduler smoothing or proxy load/reservation accounting in
+  TypeScript.
+
+The GPU chart's `inferenceHardwareIds` filter is display-only.
+
+## Inference logging
+
+Never log:
+
+- prompts or chat messages;
+- request bodies;
+- stream chunks;
+- full inference responses;
+- credentials or pairing data.
+
+Log only operational metadata such as engine, model, job ID, node ID, path,
+stream flag, and normalized error text.
+
+Use `getErrorString` or the relevant normalized backend error helper instead of
+serializing raw errors. Keep high-frequency request and routing details below
+the default info level.

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 
+	"nvpair-shared/engines"
 	"nvpair-shared/errors"
 )
 
@@ -23,6 +24,12 @@ import (
 // the proxy off a port a running engine holds. Sticky (no timestamp suffix)
 // so repeated bumps upsert one entry; cleared when the user later picks a
 // proxy port that doesn't collide.
+// These restate values the engine table already carries. They stay untyped
+// constants because they feed int32 atomics throughout the package, where
+// converting a table field at every use would be pure noise;
+// TestBrokerConstantsMatchTheEngineTable fails if they ever disagree with the
+// table. The prefix is ComponentName, which is also the relay prefix and the
+// supervisor label.
 const (
 	proxyPortBumpedID         = "ollama-proxy:port-bumped"
 	portOwnershipBlockedID    = "ollama-proxy:port-ownership-blocked"
@@ -41,35 +48,16 @@ type managedPortPlan struct {
 	Blocked     string
 }
 
-// planManagedOllamaPorts is the policy core kept separate from RPC so every
-// safety branch is deterministic in tests. It never plans a move for a
-// running engine; a stopped backend whose configured port is occupied advances
-// to the next available managed backend port.
+// ollamaProxyProfile is the descriptor entry this file's Ollama-specific
+// callers plan against. It is resolved once; a missing entry is a programming
+// error in engineproxy.go, not a runtime condition.
+var ollamaProxyProfile = mustEngineProxyProfile("ollama")
+
+// planManagedOllamaPorts plans Ollama's managed ports. Ollama is an adopted
+// engine, so the shared policy refuses to move it while it is running and
+// blocks up front on an occupied facade port.
 func planManagedOllamaPorts(enabled bool, st ollamaPortStatus, available func(int) bool) managedPortPlan {
-	if !enabled {
-		return managedPortPlan{}
-	}
-	if st.Running && (st.Port == managedOllamaFacadePort || st.Port == 0) {
-		return managedPortPlan{Blocked: "Ollama is already running on the compatibility port"}
-	}
-	if !available(managedOllamaFacadePort) {
-		return managedPortPlan{Blocked: "the compatibility port is already in use"}
-	}
-	if st.Port > 0 && st.Port != managedOllamaFacadePort {
-		if !st.Running && !available(st.Port) {
-			backend := nextAvailablePort(managedOllamaBackendStart, available)
-			if backend == 0 {
-				return managedPortPlan{Blocked: "no free backend port is available"}
-			}
-			return managedPortPlan{Enabled: true, BackendPort: backend}
-		}
-		return managedPortPlan{Enabled: true}
-	}
-	backend := nextAvailablePort(managedOllamaBackendStart, available)
-	if backend == 0 {
-		return managedPortPlan{Blocked: "no free backend port is available"}
-	}
-	return managedPortPlan{Enabled: true, BackendPort: backend}
+	return planManagedEnginePorts(ollamaProxyProfile, enabled, st, available)
 }
 
 func nextAvailablePort(start int, available func(int) bool) int {
@@ -119,11 +107,8 @@ func (b *Broker) reportPortOwnershipBlocked(reason string) {
 // persisted :11434 must not make a blocked proxy crash-loop behind an existing
 // owner. It returns the fallback so a live proxy can rebind there too.
 func (b *Broker) blockManagedOllamaFacade(reason string, excludedPorts ...int) int {
-	b.managedOllamaFacade.Store(false)
+	b.ollamaState().managedFacade.Store(false)
 	b.managedOllamaBackend.Store(0)
-	if backend := int(b.ollamaBackendPort.Load()); backend > 0 {
-		excludedPorts = append(excludedPorts, backend)
-	}
 	fallback := b.setOllamaProxyFallback(excludedPorts...)
 	b.reportPortOwnershipBlocked(reason)
 	b.markOllamaPortReady()
@@ -136,12 +121,123 @@ func (b *Broker) markOllamaPortReady() {
 	}
 }
 
+// finishOllamaProxyTerminal releases the ownership gate when ollama-proxy will
+// never come back, mirroring finishLMStudioProxyTerminal. Without it a
+// terminally-failed proxy leaves the gate closed for the life of the process,
+// so every engine:status / engine:get-installed for Ollama waits out
+// rpcWorkerCallTimeout and answers "retry" forever.
+//
+// Ollama needs more than closing the channel. Its gate re-checks
+// ollamaFacadeIsPendingBackend after the wait, so a pending move left behind by
+// the dead proxy would keep rejecting requests even with the channel closed.
+// Clearing the move state is what actually reopens the path; LM Studio has no
+// equivalent second check.
+func (b *Broker) finishOllamaProxyTerminal() {
+	b.ollamaState().managedFacade.Store(false)
+	b.managedOllamaBackend.Store(0)
+	b.ollamaMoveInFlight.Store(false)
+	// The inherited OLLAMA_HOST alias is reserved with engine-manager during
+	// preparation, before enablement is known, so every terminal path has to
+	// give it back. Releasing it here rather than at each call site is what
+	// makes that true: it was previously released on the two live-failure paths
+	// and missed on the disabled-engine one, which left the alias port refusing
+	// engine:set-port for the life of the process, citing a proxy alias that
+	// did not exist.
+	b.disableOllamaHostAliasReservation()
+	b.markOllamaPortReady()
+}
+
+// configureProxySupervisorCallbacks wires the one proxy supervisor.
+//
+// Every engine's facade lives in the supervised process, so a crash is reported
+// once for the process and clears every engine's handle — shared fate is the
+// accepted cost of putting all the facades' reservations in one place. Each
+// engine's ownership gate is still released individually, because a caller
+// waiting on LM Studio's gate must not be held by Ollama's state.
+func (b *Broker) configureProxySupervisorCallbacks(sup *supervisor) {
+	sup.onCrash, sup.onRecovered = b.supervisedWorkerCallbacks(engines.ProxyComponent, func() {
+		for _, profile := range engineProxyProfiles {
+			b.setEngineProxyHandle(profile, nil)
+		}
+	})
+	sup.onExhausted = func(attempt int) {
+		slog.Warn("the proxy is terminally unavailable; releasing every engine's ownership gate",
+			"attempt", attempt)
+		for _, profile := range engineProxyProfiles {
+			b.finishEngineProxyStartup(profile)
+		}
+	}
+	sup.onSpawned = b.replayProxyStateAfterSpawn
+}
+
+// finishEngineProxyStartup releases one engine's port-ownership gate when its
+// facade will not be coming up, so callers stop waiting on it.
+//
+// Ollama needs more than closing a channel, which is why this dispatches rather
+// than looping over a single helper: its gate re-checks whether a backend move
+// is pending, so clearing that move state is what actually reopens the path.
+func (b *Broker) finishEngineProxyStartup(profile engineProxyProfile) {
+	switch profile.Name {
+	case ollamaProxyProfile.Name:
+		b.finishOllamaProxyTerminal()
+	case lmstudioProxyProfile.Name:
+		b.finishLMStudioProxyTerminal()
+	default:
+		slog.Warn("no startup-gate finisher for engine", "engine", profile.Name)
+	}
+}
+
+// rebindOllamaProxy moves the live Ollama facade onto a port, mirroring
+// rebindLMStudioProxy. Best-effort: the caller has already given up the managed
+// claim and released the gate, so a failure here leaves the facade where it is
+// rather than blocking startup.
+//
+// No process restart. Every engine's facade shares this process, so restarting
+// to move Ollama would drop LM Studio's listener and the inference on it.
+func (b *Broker) rebindOllamaProxy(p *proxyProcess, port int, from int) {
+	if p == nil || port == 0 || port == from {
+		return
+	}
+	body, err := json.Marshal(map[string]int{"port": port})
+	if err != nil {
+		slog.Warn("failed to encode Ollama facade rebind", "port", port, "err", err)
+		return
+	}
+	result, rpcErr, callErr := p.Call(context.Background(), ollamaProxyProfile.addressed("set-port"), body)
+	if callErr != nil || rpcErr != nil {
+		slog.Warn("failed to move the Ollama facade off the compatibility port",
+			"from", from, "to", port, "err", callErr, "rpcErr", rpcErr)
+		return
+	}
+	var ready proxyReadyParams
+	if json.Unmarshal(result, &ready) != nil || ready.Port != port {
+		slog.Warn("Ollama facade did not confirm the rebind", "from", from, "to", port)
+		return
+	}
+	slog.Info("moved the Ollama facade off the compatibility port", "from", from, "to", port)
+}
+
+// setOllamaProxyFallback picks an explicit port for the proxy to start on when
+// the managed facade is not in play. The engine's own configured port is
+// excluded here rather than at each call site, so no caller can forget it.
 func (b *Broker) setOllamaProxyFallback(excludedPorts ...int) int {
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		excludedPorts = append(excludedPorts, aliasPort)
 	}
+	for port := range b.siblingEngineProxyPorts(ollamaProxyProfile) {
+		excludedPorts = append(excludedPorts, port)
+	}
+	if backend := int(b.ollamaState().backendPort.Load()); backend > 0 {
+		excludedPorts = append(excludedPorts, backend)
+	} else {
+		// No authoritative backend port yet, so a free port is not evidence
+		// the engine will not claim it. The stock backend port in particular
+		// is where a managed Ollama gets placed, and taking it now means the
+		// proxy is squatting the engine's port when it starts.
+		excludedPorts = append(excludedPorts, managedOllamaFacadePort, managedOllamaBackendStart)
+	}
 	fallback := nextAvailablePortExcluding(managedOllamaBackendStart, excludedPorts, tcpPortAvailable)
-	b.ollamaProxyStartupPort.Store(int32(fallback))
+	b.ollamaState().startupPort.Store(int32(fallback))
 	return fallback
 }
 
@@ -154,6 +250,9 @@ func (b *Broker) prepareManagedOllamaFacade() {
 }
 
 func (b *Broker) prepareManagedOllamaFacadeWithPortCheck(portAvailable func(int) bool) {
+	if b.prepareExplicitEngineSettings("ollama") {
+		return
+	}
 	b.setOllamaHostAlias(ollamaHostAlias{})
 	// Resolve the worker inside the deferred method: engine-manager can respawn
 	// while the blocking settings/status calls below are preparing the alias.
@@ -215,13 +314,13 @@ func (b *Broker) prepareManagedOllamaFacadeWithPortCheck(portAvailable func(int)
 		b.blockManagedOllamaFacade("Ollama status could not be decoded")
 		return
 	}
-	b.ollamaBackendPort.Store(int32(st.Port))
+	b.ollamaState().backendPort.Store(int32(st.Port))
 	b.prepareOllamaHostAlias(policy.Value, st.Port)
 	if !policy.Value {
 		// Opting out after a managed run commonly leaves stopped Ollama on
 		// :11435. Start the proxy explicitly elsewhere so it cannot squat that
 		// configured backend port before Ollama starts.
-		b.managedOllamaFacade.Store(false)
+		b.ollamaState().managedFacade.Store(false)
 		b.managedOllamaBackend.Store(0)
 		b.setOllamaProxyFallback(st.Port)
 		b.forwardErrorsClear(portOwnershipBlockedID)
@@ -233,9 +332,9 @@ func (b *Broker) prepareManagedOllamaFacadeWithPortCheck(portAvailable func(int)
 		b.blockManagedOllamaFacade(plan.Blocked, st.Port)
 		return
 	}
-	b.managedOllamaFacade.Store(plan.Enabled)
+	b.ollamaState().managedFacade.Store(plan.Enabled)
 	b.managedOllamaBackend.Store(int32(plan.BackendPort))
-	b.ollamaProxyStartupPort.Store(managedOllamaFacadePort)
+	b.ollamaState().startupPort.Store(int32(managedOllamaFacadePort))
 	if plan.BackendPort == 0 {
 		slog.Info("preserving custom Ollama backend port", "port", st.Port)
 		b.markOllamaPortReady()
@@ -257,7 +356,7 @@ func (b *Broker) cacheOllamaPortStatus() {
 	}
 	var st ollamaPortStatus
 	if json.Unmarshal(result, &st) == nil && st.Port > 0 {
-		b.ollamaBackendPort.Store(int32(st.Port))
+		b.ollamaState().backendPort.Store(int32(st.Port))
 	}
 }
 
@@ -293,17 +392,6 @@ func (b *Broker) rejectOllamaHostAliasPort(msg *Message, port int, owner string)
 	return true
 }
 
-func (b *Broker) handleLMStudioProxySetPort(msg *Message) {
-	var params struct {
-		Port int `json:"port"`
-	}
-	if json.Unmarshal(msg.Params, &params) == nil &&
-		b.rejectOllamaHostAliasPort(msg, params.Port, "the LM Studio proxy") {
-		return
-	}
-	b.relayToLMStudioProxy(msg)
-}
-
 // needsOllamaPortGate reports the client requests that can probe and adopt the
 // configured Ollama port. While :11434 is changing from backend to facade,
 // those probes must wait or they can mistake the proxy for a local engine.
@@ -320,91 +408,6 @@ func needsOllamaPortGate(method string, params json.RawMessage) bool {
 	return json.Unmarshal(params, &request) == nil && request.Engine == "ollama"
 }
 
-// handleProxySetPort intercepts proxy:set-port (rather than relaying it
-// verbatim like the rest of the proxy: namespace) so it can resolve a port
-// conflict against the running engines before handing the proxy the port to
-// bind. It responds with the proxy's own set-port result (which echoes the
-// actually-bound port).
-func (b *Broker) handleProxySetPort(msg *Message) {
-	p := b.getProxy()
-	if p == nil {
-		if err := b.codec.RespondError(msg.ID, -32000, "ollama-proxy not available"); err != nil {
-			log.Printf("failed to respond to proxy:set-port: %v", err)
-		}
-		return
-	}
-	var params struct {
-		Port int `json:"port"`
-	}
-	if err := json.Unmarshal(msg.Params, &params); err != nil {
-		if err := b.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"port\": <int>}"); err != nil {
-			log.Printf("failed to respond to proxy:set-port: %v", err)
-		}
-		return
-	}
-	if params.Port < 1 || params.Port > 65535 {
-		if err := b.codec.RespondError(msg.ID, -32602, "port must be between 1 and 65535"); err != nil {
-			log.Printf("failed to respond to proxy:set-port: %v", err)
-		}
-		return
-	}
-
-	effective := b.resolveProxyPort(params.Port)
-
-	body, err := json.Marshal(map[string]int{"port": effective})
-	if err != nil {
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("encode set-port: %v", err)); err != nil {
-			log.Printf("failed to respond to proxy:set-port: %v", err)
-		}
-		return
-	}
-	result, rpcErr, err := p.Call(context.Background(), "set-port", body)
-	switch {
-	case err != nil:
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("proxy set-port failed: %v", err)); err != nil {
-			log.Printf("failed to respond to proxy:set-port: %v", err)
-		}
-	case rpcErr != nil:
-		if err := b.codec.RespondError(msg.ID, rpcErr.Code, rpcErr.Message); err != nil {
-			log.Printf("failed to relay proxy set-port error: %v", err)
-		}
-	default:
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to relay proxy set-port result: %v", err)
-		}
-	}
-}
-
-// resolveProxyPort returns the port the proxy should actually bind for a
-// requested port: the request itself when free, or the next free port when a
-// running engine already holds it (engines take precedence). A bump surfaces
-// a sticky warning into the errors pipeline; a clean request clears any stale
-// one so the notice doesn't outlive the conflict.
-func (b *Broker) resolveProxyPort(requested int) int {
-	if b.managedOllamaFacade.Load() {
-		b.forwardErrorsClear(proxyPortBumpedID)
-		return managedOllamaFacadePort
-	}
-	taken := b.runningEnginePorts()
-	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
-		taken[aliasPort] = true
-	}
-	effective := nextFreeProxyPort(requested, taken)
-	if effective != requested {
-		b.forwardErrorsReport(errors.ServiceError{
-			ID:        proxyPortBumpedID,
-			Message:   fmt.Sprintf("Port %d is in use by a running engine; the proxy was moved to %d.", requested, effective),
-			Timestamp: nowMillis(),
-			NodeID:    b.nodeID,
-			Severity:  "warning",
-			Action:    "none",
-		})
-	} else {
-		b.forwardErrorsClear(proxyPortBumpedID)
-	}
-	return effective
-}
-
 // reconcileProxyPortOnReady runs after the proxy announces a bound port
 // (notably its restored port on startup). If a running engine now holds that
 // port, it steers the proxy to a free one — engines take precedence — and
@@ -412,16 +415,34 @@ func (b *Broker) resolveProxyPort(requested int) int {
 // goroutine that calls forwardProxyNotification), so the p.Call round-trip
 // can't deadlock the very reader that would deliver its response.
 func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
-	if b.managedOllamaFacade.Load() {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+	if b.loadEngineSettingsLocked() != nil {
+		b.markOllamaPortReady()
+		return
+	}
+	if _, explicit := b.explicitEngineSettingsLocked("ollama"); explicit {
+		b.markOllamaPortReady()
+		return
+	}
+	if b.ollamaState().managedFacade.Load() {
 		p := b.getProxy()
 		if p == nil {
 			return
 		}
 		if boundPort != managedOllamaFacadePort {
 			body, _ := json.Marshal(map[string]int{"port": managedOllamaFacadePort})
-			if _, rpcErr, err := p.Call(context.Background(), "set-port", body); err != nil || rpcErr != nil {
-				b.blockManagedOllamaFacade("the proxy could not bind the compatibility port")
+			if _, rpcErr, err := p.Call(context.Background(), ollamaProxyProfile.addressed("set-port"), body); err != nil || rpcErr != nil {
 				slog.Warn("failed to bind managed Ollama facade", "err", err, "rpcErr", rpcErr)
+				// Give up the managed claim, then actually move the live facade
+				// off the port it is on. blockManagedOllamaFacade only plans a
+				// fallback for the next spawn, so without this the facade stays
+				// where it bound — possibly on the engine's own backend port —
+				// and nothing corrects it until a restart. LM Studio has had
+				// this since its port recovery became facade-scoped; Ollama's
+				// half was missing.
+				fallback := b.blockManagedOllamaFacade("the proxy could not bind the compatibility port")
+				b.rebindOllamaProxy(p, fallback, boundPort)
 			}
 			return
 		}
@@ -447,7 +468,7 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 				vacated := false
 				if fallback != 0 {
 					body, _ := json.Marshal(map[string]int{"port": fallback})
-					if _, moveErr, callErr := p.Call(context.Background(), "set-port", body); callErr != nil || moveErr != nil {
+					if _, moveErr, callErr := p.Call(context.Background(), ollamaProxyProfile.addressed("set-port"), body); callErr != nil || moveErr != nil {
 						slog.Warn("failed to vacate managed Ollama facade", "err", callErr, "rpcErr", moveErr)
 					} else {
 						vacated = true
@@ -463,7 +484,7 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 				return
 			}
 			b.managedOllamaBackend.Store(0)
-			b.ollamaBackendPort.Store(int32(backend))
+			b.ollamaState().backendPort.Store(int32(backend))
 			slog.Info("configured managed Ollama backend port", "port", backend)
 			b.ollamaMoveInFlight.Store(false)
 		}
@@ -502,13 +523,13 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 		slog.Warn("failed to encode corrective proxy set-port", "err", err)
 		return
 	}
-	if _, rpcErr, err := p.Call(context.Background(), "set-port", body); err != nil || rpcErr != nil {
+	if _, rpcErr, err := p.Call(context.Background(), ollamaProxyProfile.addressed("set-port"), body); err != nil || rpcErr != nil {
 		slog.Warn("failed to reconcile proxy port on ready", "err", err, "rpcErr", rpcErr)
 	}
 }
 
 func (b *Broker) takePendingManagedOllamaBackend(boundPort int) int {
-	if !b.managedOllamaFacade.Load() || boundPort != managedOllamaFacadePort {
+	if !b.ollamaState().managedFacade.Load() || boundPort != managedOllamaFacadePort {
 		return 0
 	}
 	if !b.ollamaMoveInFlight.CompareAndSwap(false, true) {
@@ -522,7 +543,7 @@ func (b *Broker) takePendingManagedOllamaBackend(boundPort int) int {
 }
 
 func (b *Broker) ollamaBackendSourcePort() int {
-	if port := int(b.ollamaBackendPort.Load()); port > 0 {
+	if port := int(b.ollamaState().backendPort.Load()); port > 0 {
 		return port
 	}
 	return managedOllamaFacadePort

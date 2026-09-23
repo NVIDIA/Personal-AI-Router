@@ -65,7 +65,10 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         switch (state) {
             case 'queued':
                 value = workload.createdAt
-                label = 'Queued at'
+                // Not "Queued at": PAIR runs no queue of its own, and the
+                // elapsed wait is the useful part for a job that has been
+                // accepted but is not generating yet.
+                label = 'Waiting since'
                 break
             case 'running':
                 value = workload.startedAt ?? 0
@@ -78,6 +81,10 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
             case 'failed':
                 value = workload.completedAt ?? 0
                 label = 'Failed at'
+                break
+            case 'cancelled':
+                value = workload.completedAt ?? 0
+                label = 'Cancelled at'
                 break
         }
 
@@ -93,18 +100,16 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         )
     }, [workload.state, workload.createdAt, workload.startedAt, workload.completedAt])
 
-    // const showBadge = useMemo(
-    //     () =>
-    //         workload.state === 'initializing' ||
-    //         workload.state === 'queued' ||
-    //         workload.state === 'running',
-    //     [workload.state]
-    // )
-
     const className = useMemo(() => {
         let result = `h-auto dir-ltr max-w-full min-w-0 pair-paper workload-card workload-card-${workload.state}`
 
-        if (workload.state === 'failed' || workload.state === 'completed') {
+        // Terminal states read as history and are dimmed; only live work keeps
+        // full contrast.
+        if (
+            workload.state === 'failed' ||
+            workload.state === 'completed' ||
+            workload.state === 'cancelled'
+        ) {
             result += ' card-low'
         }
 

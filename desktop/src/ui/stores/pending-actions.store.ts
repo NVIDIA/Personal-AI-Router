@@ -32,7 +32,7 @@ import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import type { EngineCommandPayload, EngineCommandType } from '@/shared/types/engine-api'
 import type { EngineProcessStatus, EngineType } from '@/shared/types/engines'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
-import { isEngineType } from '@/shared/utils/engines'
+import { engineTypeFromManagerName, isEngineType } from '@/shared/utils/engines'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 
 /** Re-enable a control after this long if no superseding push ever arrives. */
@@ -69,11 +69,29 @@ const MODEL_COMMANDS: ReadonlySet<EngineCommandType> = new Set<EngineCommandType
     'deleteModel'
 ])
 
+/**
+ * Operations this store covers. Applying engine settings travels its own
+ * `engines:apply-settings` channel rather than `engine:command`, but it needs
+ * the same cover between the click and the backend's first push, so it is
+ * tracked here instead of growing a second optimistic mechanism.
+ */
+type PendingOperation = EngineCommandType | 'applySettings'
+
+/**
+ * Read a stored operation back as an engine command. A settings apply keeps its
+ * own key and is read through `isSettingsPending`, so it can never appear under
+ * a lifecycle or model key.
+ */
+function asCommand(action: PendingOperation | undefined): EngineCommandType | undefined {
+    return action === undefined || action === 'applySettings' ? undefined : action
+}
+
 interface PendingAction {
     nodeId: string
     engineType: EngineType
-    action: EngineCommandType
+    action: PendingOperation
     model?: string
+    requestId?: string
     /**
      * Engine process status captured when a lifecycle command fired. The entry
      * clears on the first `engines:state-changed` whose status differs from
@@ -106,6 +124,10 @@ function modelKey(nodeId: string, engineType: EngineType, model: string): string
     return `${nodeId}:${engineType}:model:${model}`
 }
 
+function settingsKey(nodeId: string, engineType: EngineType): string {
+    return `${nodeId}:${engineType}:settings`
+}
+
 interface PendingActionsState {
     pending: Map<string, PendingAction>
     /** Record an optimistic pending entry for a fired command. No-op for non-lifecycle/non-model commands. */
@@ -118,6 +140,16 @@ interface PendingActionsState {
         engineType: EngineType,
         model: string
     ): EngineCommandType | undefined
+    /**
+     * Cover an engine settings apply from the click until the backend's first
+     * snapshot for it. From there `snapshot.phase === 'applying'` is authoritative,
+     * so this entry only has to outlast one round trip.
+     */
+    beginSettings(nodeId: string, engineType: EngineType, requestId: string): void
+    /** Release the cover when validation refuses the change before it is sent. */
+    endSettings(nodeId: string, engineType: EngineType, requestId: string): void
+    /** Whether a settings apply is in flight and not yet reflected in a snapshot. */
+    isSettingsPending(nodeId: string, engineType: EngineType): boolean
     initialize(): void
     cleanup(): void
 }
@@ -175,10 +207,33 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
     },
 
     getLifecyclePending: (nodeId, engineType) =>
-        get().pending.get(lifecycleKey(nodeId, engineType))?.action,
+        asCommand(get().pending.get(lifecycleKey(nodeId, engineType))?.action),
 
     getModelPending: (nodeId, engineType, model) =>
-        get().pending.get(modelKey(nodeId, engineType, model))?.action,
+        asCommand(get().pending.get(modelKey(nodeId, engineType, model))?.action),
+
+    beginSettings: (nodeId, engineType, requestId) => {
+        if (connectorStatus === 'disconnected') return
+        const next = new Map(get().pending)
+        next.set(settingsKey(nodeId, engineType), {
+            nodeId,
+            engineType,
+            action: 'applySettings',
+            requestId,
+            expiresAt: Date.now() + PENDING_TIMEOUT_MS
+        })
+        set({ pending: next })
+    },
+
+    endSettings: (nodeId, engineType, requestId) => {
+        const key = settingsKey(nodeId, engineType)
+        if (get().pending.get(key)?.requestId !== requestId) return
+        const next = new Map(get().pending)
+        next.delete(key)
+        set({ pending: next })
+    },
+
+    isSettingsPending: (nodeId, engineType) => get().pending.has(settingsKey(nodeId, engineType)),
 
     initialize: () => {
         // Guard against double-subscribe: initialize() runs on connect and again
@@ -241,6 +296,13 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                     // entry -- the progress store now owns the visual.
                     if (!progress.model) return
                     clearKeys([modelKey(progress.nodeId, progress.engineType, progress.model)])
+                }),
+                window.pairApi.engines.onSettingsChanged(snapshot => {
+                    // The snapshot's own phase takes over from here.
+                    const engineType = engineTypeFromManagerName(snapshot.engine)
+                    if (!engineType) return
+                    const key = settingsKey(snapshot.nodeId, engineType)
+                    if (get().pending.get(key)?.requestId === snapshot.requestId) clearKeys([key])
                 }),
                 window.pairApi.errors.onUpdate(errors => {
                     const toClear: string[] = []

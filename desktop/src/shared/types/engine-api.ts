@@ -44,7 +44,6 @@ export type EngineCommandType =
     | 'installAll'
     | 'uninstall'
     | 'update'
-    | 'setPorts'
     | 'pullModel'
     | 'loadModel'
     | 'unloadModel'
@@ -57,17 +56,6 @@ export interface EngineCommandPayload {
     engineType: EngineType
     nodeId: string
     model?: string
-    /**
-     * `setPorts` only. The engine HTTP server port to apply. Omitted when the
-     * server port did not change so the bridge sends only what the user edited.
-     */
-    enginePort?: number
-    /**
-     * `setPorts` only. The proxy listen port to apply. Omitted when the proxy
-     * port did not change. When both ports change the bridge orders the
-     * transaction so the engine and proxy never fight over a port (incl. swaps).
-     */
-    proxyPort?: number
     expiry?: string
 }
 

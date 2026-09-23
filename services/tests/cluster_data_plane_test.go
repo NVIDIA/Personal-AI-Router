@@ -226,9 +226,10 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 		t.Skip("engine-manager em port 14322 already in use; skipping")
 	}
 
-	// startBrokerProc pins an empty cluster dir, so this node is a non-member.
-	_, msgs, cleanup := startBrokerProc(t,
-		"--scanner-path", scannerBin,
+	// Isolate both cluster identity and engine desired state. A developer's
+	// saved enabled engine can otherwise start here and block inventory reads
+	// behind restoration, even though this test only exercises ingress policy.
+	_, msgs, _, cleanup := startBrokerWith(t,
 		"--engine-manager-path", engineMgrBin,
 	)
 	t.Cleanup(cleanup)

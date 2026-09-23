@@ -9,12 +9,13 @@ import (
 	"sort"
 	"time"
 
+	"nvpair-shared/engines"
 	"nvpair-shared/schedulerwire"
 )
 
-// schedulerEngines is the fixed set of engine-specific output contracts. Both
-// receive the same node-wide ranking because their work shares node resources.
-var schedulerEngines = []string{"ollama", "lmstudio"}
+// schedulerEngines is the set of engine-specific output contracts. Every engine
+// receives the same node-wide ranking because their work shares node resources.
+var schedulerEngines = engines.Names()
 
 // NodeRank is retained as the scheduler's public status type while the wire
 // definition is shared with the broker and proxies.

@@ -10,10 +10,10 @@ SPDX-License-Identifier: Apache-2.0
 
 NVIDIA Personal AI Router (PAIR) is a local inference router for a group of
 compatible computers on the same network. It discovers participating nodes,
-manages supported inference engines, and presents Ollama-compatible and
-OpenAI-compatible proxy endpoints to applications and agents. Independent
-requests can be routed to eligible nodes according to engine availability,
-model availability, and current workload.
+manages supported inference engines, and presents local proxy endpoints for
+Ollama-compatible, OpenAI-compatible, and Anthropic Messages API requests.
+Independent requests can be routed to eligible nodes according to engine
+availability, model availability, and current workload.
 
 PAIR is useful for concurrent local workloads such as multi-agent applications.
 Prompts and responses are intended to remain on the local network when every
@@ -221,22 +221,25 @@ Each entry assumes the ones before it.
    most users need.
 3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
    update, and uninstall engines; what PAIR restores after you quit or relaunch.
-4. **[Terminal interface](docs/terminal-interface.mdx)** — the same tasks from a
+4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and
+   its launch command, on this machine or a paired one, and give a browser access
+   to your models.
+5. **[Terminal interface](docs/terminal-interface.mdx)** — the same tasks from a
    terminal, for a machine with no desktop environment. Skip it if every machine
    you run has a desktop.
-5. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
+6. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
    you need it, so you know where the diagnostics live. Alongside it,
    **[Known issues](docs/known-issues.mdx)** lists the significant limitations we
    are already aware of, and
    **[Collecting and sanitizing logs](docs/log-collection.mdx)** covers preparing
    a log you can share.
-6. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
+7. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
    routed, and where the trust boundaries are. Read this before changing
    anything, or if you want to know why PAIR behaves the way it does.
-7. **[Building and running](docs/building.mdx)** — prerequisites, building from
+8. **[Building and running](docs/building.mdx)** — prerequisites, building from
    source, running the services without the desktop application, and writing
    your own client against the JSON-RPC API.
-8. **[Developer guide](docs/developing.mdx)** — read this before contributing:
+9. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
 
@@ -252,24 +255,59 @@ Component references, for when you already know what you are looking for:
 See the [releases page](https://github.com/NVIDIA/Personal-AI-Router/releases)
 for what changed in each release.
 
-## Where PAIR is going
+## Roadmap
 
-We have plenty of ideas about where to take PAIR, and no fixed commitments about
-which of them land or when. If you have a thought about the product's direction,
-something that would make it more useful to you, a workflow it does not support
-yet, or a use we have not considered — we would like to hear it. Open an issue
-and start the conversation.
+These are features we want to add to PAIR. This list is a direction for the
+project, not a commitment to delivery or implementation order. Community
+feedback and contributions will help shape priorities.
 
-**Routing is the clearest example.** Today PAIR ships a single scheduling policy
-that combines queued work with a coarse, smoothed GPU-utilization signal. It does
-not consider GPU model, available memory, model warmness, or how expensive a
-request looks, which still makes it a better fit for similar machines than a
-highly mixed cluster. Making that smarter, and likely letting you choose a
-policy, is something we want to do — and hearing which of those signals matters
-on your hardware is exactly the kind of input that would shape it.
+### Platform support
 
-Feedback from people running PAIR on their own hardware is more useful to us than
-any plan written in advance.
+- [ ] Full support for Windows ARM64 systems.
+- [ ] DGX Station support.
+
+### Engines and integrations
+
+- [ ] llama.cpp support.
+- [ ] vLLM support.
+- [ ] EXO support.
+- [ ] ComfyUI integration.
+- [ ] Unsloth support.
+- [ ] Tailscale integration.
+
+### Routing and clusters
+
+- [ ] Route OpenAI-compatible API requests across different inference engines.
+- [ ] Inference request queuing.
+- [ ] Increase number of scheduler variables for better QoS.
+- [ ] A "cluster as a node" view.
+- [ ] KV cache-aware scheduling.
+
+### Usability and reliability
+
+- [ ] Requester-only clients that send work without hosting an inference engine.
+- [ ] Launch PAIR automatically on system startup.
+- [x] Configure engine launch options and environment variables from PAIR.
+- [ ] Stability and reliability improvements informed by real-world use.
+
+Have a feature request or a workflow you want PAIR to support? Open an
+[issue](https://github.com/NVIDIA/Personal-AI-Router/issues) and tell us how you
+would use it.
+
+## Development Team
+
+NVIDIA team members working on PAIR:
+
+| Name | GitHub | Role |
+| --- | --- | --- |
+| Noah Tervalon (Terve) | [@Noah-Tervalon-Nvidia](https://github.com/Noah-Tervalon-Nvidia) | PAIR Developer - Community Lead |
+| Chris Kelsey | [@ckelseynv](https://github.com/ckelseynv) | PAIR Developer - UI/UX Lead |
+| Sherief Farouk | [@sherief-nv](https://github.com/sherief-nv) | PAIR Developer - Scheduling, Team Lead |
+| Preston Goode | [@nv-pgoode](https://github.com/nv-pgoode) | PAIR Developer - Engine Management Lead |
+| Kaylee Lubick | [@kjlubick](https://github.com/kjlubick) | PAIR Developer - Security Lead |
+| Lucas Brodzinski | [@LB-NV](https://github.com/lb-nv) | PAIR Technical Program Manager |
+| Ambrish Dantrey | [@adantrey](https://github.com/adantrey) | PAIR Engineering Manager |
+| Seth Schneider | [@NV-sschneider](https://github.com/NV-sschneider) | PAIR Product Manager |
 
 ## Contributing and governance
 

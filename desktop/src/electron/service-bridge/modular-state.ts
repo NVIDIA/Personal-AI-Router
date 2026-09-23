@@ -22,7 +22,12 @@ import {
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
-import { isEngineType, emptyEngineStatus } from '@/shared/utils/engines'
+import {
+    emptyEngineStatus,
+    engineManagerName,
+    engineTypeFromManagerName,
+    isEngineType
+} from '@/shared/utils/engines'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
@@ -35,6 +40,14 @@ import { serviceLogLevel } from './service-log-level'
 // worker discovery protocols directly.
 type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy'
 type BrokerNodeSource = ProxyNodeSource | 'broker'
+
+/**
+ * The engine proxies, by the one name that identifies each of them everywhere:
+ * the broker's relay prefix, the errors-pipeline source, and the node source
+ * recorded here. That is `ComponentName` in `services/shared/engines`, always
+ * `<engine>-proxy`.
+ */
+export const PROXY_NODE_SOURCES: readonly ProxyNodeSource[] = ['ollama-proxy', 'lmstudio-proxy']
 
 /**
  * Engines surfaced by the broker's proxy plane. Other engine-manager engines
@@ -305,7 +318,7 @@ function parseServiceError(value: JsonValue | undefined): ServiceError | null {
     // `EngineType` union so the renderer's retry/display logic recognizes it.
     // Unknown ids fall through unchanged (no retry affordance will match).
     const engineType = stringValue(obj.engineType)
-    if (engineType) error.engineType = engineManagerEngineType(engineType) ?? engineType
+    if (engineType) error.engineType = engineTypeFromManagerName(engineType) ?? engineType
     const operation = stringValue(obj.operation)
     if (operation) error.operation = operation
     const modelName = stringValue(obj.modelName)
@@ -328,7 +341,7 @@ export function parseServiceErrors(value: JsonValue | undefined): ServiceError[]
  * Per-node proxy "upstream unreachable" warnings duplicate the node list's
  * offline group, so they are never surfaced in the error UI. Backend id shape:
  * `<engine>-proxy:upstream-unreachable:<nodeId>`
- * (services/ollama-proxy/proxy.go `upstreamUnreachableID`).
+ * (services/nvpair-proxy/proxy.go `upstreamUnreachableID`).
  */
 export function isUpstreamUnreachableError(error: ServiceError): boolean {
     return error.id.includes(':upstream-unreachable:')
@@ -349,7 +362,7 @@ function parseWorkload(value: JsonValue | undefined): Workload | null {
     // The workload-manager stamps the engine-manager id (`lmstudio`); map it onto
     // our closed `EngineType` union (`lm-studio`) before narrowing so LM Studio
     // jobs are not silently dropped.
-    const engine = engineManagerEngineType(stringValue(obj.engine))
+    const engine = engineTypeFromManagerName(stringValue(obj.engine))
     if (!engine) return null
     const stateValue = stringValue(obj.state)
     if (!isWorkloadState(stateValue)) return null
@@ -402,32 +415,12 @@ function pendingEngineOpIdleTimeoutMs(status: EngineProcessStatus): number {
 }
 
 /**
- * Map a `nvpair-engine-manager` engine identifier onto our closed `EngineType`
- * union. The engine-manager uses `lmstudio`; we use `lm-studio`.
- */
-function engineManagerEngineType(name: string): EngineType | null {
-    const normalized = name === 'lmstudio' ? 'lm-studio' : name
-    return isEngineType(normalized) ? normalized : null
-}
-
-/**
- * Inverse of {@link engineManagerEngineType} for the proxy engines: our closed
- * union uses `lm-studio`; engine-manager (and the `modelsByEngine` map keys) use
- * `lmstudio`. Ollama is spelled the same on both sides.
- */
-function proxyEngineToManagerName(engine: ProxyEngine): string {
-    return engine === 'lm-studio' ? 'lmstudio' : engine
-}
-
-/**
  * The set of models a node reports loaded in memory for an engine, read from
  * `ModularNode.loadedByEngine` (enriched from the backend's per-engine
- * `loadedByEngine`). Keyed by engine-manager name, so `lm-studio` maps
- * to `lmstudio`; any other type is spelled the same on both sides.
+ * `loadedByEngine`), whose keys use the engine-manager's spelling.
  */
 function loadedNamesForEngine(node: ModularNode | undefined, engineType: EngineType): Set<string> {
-    const managerName = engineType === 'lm-studio' ? 'lmstudio' : engineType
-    return new Set(node?.loadedByEngine[managerName] ?? [])
+    return new Set(node?.loadedByEngine[engineManagerName(engineType)] ?? [])
 }
 
 function sameStringList(left: string[], right: string[]): boolean {
@@ -1369,7 +1362,7 @@ class ModularBridgeState {
     applyEngineManagerStatus(params: JsonValue | undefined): void {
         const obj = objectValue(params)
         if (!obj) return
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
         this.engineManagerFacts.set(engineType, {
@@ -1408,7 +1401,9 @@ class ModularBridgeState {
      */
     failLocalEngineOp(engineManagerEngine: string, operation: string): void {
         if (operation !== 'start' && operation !== 'install' && operation !== 'uninstall') return
-        const engineType = engineManagerEngineType(engineManagerEngine)
+        const engineType =
+            engineTypeFromManagerName(engineManagerEngine) ??
+            (isEngineType(engineManagerEngine) ? engineManagerEngine : null)
         if (!engineType) return
         this.clearLocalEngineOp(engineType)
     }
@@ -1530,7 +1525,7 @@ class ModularBridgeState {
         const obj = objectValue(params)
         if (!obj) return
         const nodeId = stringValue(obj.node)
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!nodeId || !engineType) return
 
         const op = stringValue(obj.op)
@@ -1781,7 +1776,7 @@ class ModularBridgeState {
         for (const entry of list) {
             const engineObj = objectValue(entry)
             if (!engineObj) continue
-            const engineType = engineManagerEngineType(stringValue(engineObj.engine))
+            const engineType = engineTypeFromManagerName(stringValue(engineObj.engine))
             if (!engineType || !isProxyEngine(engineType)) continue
             this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
                 installed: booleanValue(engineObj.installed),
@@ -1840,7 +1835,7 @@ class ModularBridgeState {
      * — no double-sourcing.
      */
     modelPullTarget(engineManagerEngine: string): EngineType | null {
-        return engineManagerEngineType(engineManagerEngine)
+        return engineTypeFromManagerName(engineManagerEngine)
     }
 
     /**
@@ -1981,7 +1976,7 @@ class ModularBridgeState {
         // engine serves none (NOT the cross-engine union). Mirrors
         // noderec.DirectoryNode.EngineModels.
         if (Object.keys(node.modelsByEngine).length > 0) {
-            return node.modelsByEngine[proxyEngineToManagerName(engine)] ?? []
+            return node.modelsByEngine[engineManagerName(engine)] ?? []
         }
         // Fallback for a pre-attribution peer: the flat union is unattributed, so
         // attribute it only when exactly one proxy engine is active on the node,
@@ -2120,7 +2115,7 @@ class ModularBridgeState {
         if (!nodeId) return
         const obj = objectValue(params)
         if (!obj) return
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
         const stage = stringValue(obj.stage) || 'installing'
@@ -2208,7 +2203,7 @@ class ModularBridgeState {
         if (!nodeId) return
         const obj = objectValue(params)
         if (!obj) return
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
         const model = this.localPullModels.get(engineType)
@@ -2279,7 +2274,7 @@ class ModularBridgeState {
     }
 
     handleNotification(notification: JsonRpcNotification): void {
-        if (notification.source === 'proxy') {
+        if (notification.source === 'ollama-proxy') {
             this.handleProxyNotification(notification, 'ollama')
             return
         }
@@ -2437,7 +2432,7 @@ class ModularBridgeState {
         if (merged.id === this.selfId && existing) {
             const unionChanged = !sameStringList(existing.models, merged.models)
             for (const engine of PROXY_ENGINES) {
-                const managerEngine = proxyEngineToManagerName(engine)
+                const managerEngine = engineManagerName(engine)
                 const hadEngine = managerEngine in existing.modelsByEngine
                 const hasEngine = managerEngine in merged.modelsByEngine
                 const attributionChanged =

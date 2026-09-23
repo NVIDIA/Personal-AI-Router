@@ -1,0 +1,26 @@
+---
+description: Read the backend's rules and docs before changing services code
+alwaysApply: true
+---
+
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Agent onboarding (services)
+
+Before writing or changing code under `services/`, read its rules and docs into
+context and follow them:
+
+- Root `AGENTS.md` (services section) and `services/*/spec.md` — the twelve
+  binaries, build/versioning, and subprocess + JSON-RPC conventions.
+- `.cursor/rules/*` — monorepo rules (especially `service-contracts.mdc` and
+  `services-change-propagation.mdc`).
+- The touched module's `README.md` and `spec.md`. `spec.md` is normative — where
+  a module README and its `spec.md` disagree, `spec.md` wins.
+
+The desktop UI lives in sibling `desktop/` in this monorepo. When a JSON-RPC
+contract, port, or push event changes, update the producing Go service, the
+Electron bridge under `desktop/src/electron/service-bridge/`, and run
+`npm --prefix desktop run service-contracts:check`.

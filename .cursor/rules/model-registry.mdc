@@ -1,0 +1,57 @@
+---
+description: Electron-main engine model hub (Ollama committed list + LM Studio catalog)
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Model Registry — engine model hub
+
+- The backend has **no model-search RPC**, so the "Add Model" browse is
+  served by a standalone Electron-main module, **`src/electron/model-hub/`**
+  (main process, because the renderer cannot call `huggingface.co` under
+  CSP+CORS). There is **no generic Hugging Face browse and no shared GGUF
+  registry** — each enabled engine has exactly one curated source declared via
+  `EngineCaps.engineHub`.
+- **Ollama** (`ollama-library.ts`): a **locked, committed list**, not a live
+  scrape. `src/electron/model-hub/ollama-models.json` (wire shape
+  `{ scrapedAt, source, count, models: OllamaTagsModel[] }`) is bundled into
+  the main process (`resolveJsonModule` + electron-vite inlining), so
+  `loadOllamaModels()` returns instantly with **no network access at runtime**.
+  Devs regenerate it with `npm run scrape:ollama-models`
+  (`scripts/scrape-ollama-models.ts`) when Ollama's catalog changes, then review
+  the diff and commit. The scraper is the **only** place Ollama scraping lives:
+  two phases — (A) parse the `https://ollama.com/library` index (anchored on
+  each card's `<a class="group w-full">` link, capability chips are
+  `text-indigo-600`, size chips `text-blue-600`, updated timestamp in the stats
+  span `title`), then (B) fetch each `https://ollama.com/library/<base>/tags`
+  page (concurrency 4, anchored on the self-contained mobile card
+  `class="md:hidden"`) for per-tag digest + binary byte size + context window;
+  falls back to `https://ollama.com/api/tags` only if Phase A fails. Cloud-only
+  variants are filtered. Names are used as-is for `ollama pull`. **When Ollama
+  changes their markup, update the parser in the script and re-run it** — the
+  running app is unaffected.
+- **LM Studio** (`lmstudio-catalog.ts`, `lmStudioCatalogCache`): still a **live
+  fetch**. GETs
+  `https://huggingface.co/api/models?author=lmstudio-community&sort=downloads&direction=-1&limit=500`
+  and normalizes each repo to a pull-ready id (e.g.
+  `lmstudio-community/Qwen3-8B-GGUF`, accepted by `lms get`). This is the
+  **only** remaining network call in the model hub, and it is main-process only
+  (6-hour TTL + in-flight guard so PAIR never fetches continuously).
+- Both sources normalize to the shared `EngineHubModel`
+  (`src/shared/types/engine-api.ts`).
+- `index.ts` exposes `getEngineHubModels(engineType)` (Ollama returns the
+  committed list synchronously; LM Studio awaits a cold cache's initial load;
+  returns `{ models }`) and `warmEngineHubs()` (warms **only** LM Studio —
+  Ollama needs none). The `engine:search-hub` handler in `empty-handlers.ts`
+  calls the former; the `overview:ready` handler in `window.ipc.ts` calls the
+  latter. Warm on renderer-ready, **not** on service connect: a catalog fetch
+  started before the window has painted competes with the renderer's own load,
+  and a hanging one leaves an unpainted window behind.
+- The renderer (`src/ui/components/ModelHub/`) fetches an engine's full
+  catalog once (cached per-engine), filters by the search box **locally** on
+  each keystroke, and sorts client-side by Updated / Name / Size. Pulling goes
+  through the backend (`engine:pull-model` → `pull_model`); the hub only
+  produces the pull-ready id.

@@ -23,8 +23,8 @@ const (
 	// engine processes it launched (StopAll) on its way out. Cutting that short is
 	// exactly what the old 2s-grace-then-kill did, and it orphaned engines.
 	// graceFor reserves this out of the shared budget so the workers joined ahead
-	// of it cannot spend it — it is joined eighth of eleven, so join order alone
-	// would otherwise decide how much it gets.
+	// of it cannot spend it — it is joined late in the sequence, so join order
+	// alone would otherwise decide how much it gets.
 	engineManagerStopGrace = 6 * time.Second
 
 	// engineStopAllBudget bounds the broker's wait for engine-manager to stop the
@@ -39,9 +39,9 @@ const (
 
 	// teardownBudget bounds everything the broker does between being told to shut
 	// down and its last worker join. The joins run one after another, so
-	// per-worker graces alone add up: a tree where each of the eleven workers
-	// hangs for its own grace outlives the parent's shutdown grace several times
-	// over, and being killed from outside mid-teardown skips the rest of shutdown.
+	// per-worker graces alone add up: a tree where every worker hangs for its
+	// own grace outlives the parent's shutdown grace several times over, and
+	// being killed from outside mid-teardown skips the rest of shutdown.
 	//
 	// The accounting the parent's grace has to cover, in order:
 	//
@@ -49,8 +49,8 @@ const (
 	//	workload history shutdown flush    <= workloadHistoryFlushJoinTimeout (5s)
 	//
 	// which is the 15s the desktop parent and nvpair-tui both allow. Everything
-	// inside the first line — the two proxy joins, the engine StopAll wait, and
-	// all eleven joins — draws on this one budget, so no step can be lengthened
+	// inside the first line — the proxy join, the engine StopAll wait, and every
+	// other worker join — draws on this one budget, so no step can be lengthened
 	// without the others giving way. It must also exceed the largest single worker
 	// grace, or that worker could never be granted it.
 	teardownBudget = 10 * time.Second
@@ -67,10 +67,10 @@ const (
 // teardownClock records when shutdown began.
 //
 // It is armed explicitly rather than by the first join, because a join also
-// happens at ordinary runtime: supervisor.Restart stops the current worker before
-// spawning a replacement, which LM Studio port reconciliation does on a rebind.
-// Arming the clock there would leave the budget permanently spent for the life of
-// the process, so every later join — including engine-manager's at the real
+// happens at ordinary runtime: spawnProxy stops the child it just started when
+// no engine facade came up, so the supervisor can retry a clean one. Arming the
+// clock there would leave the budget permanently spent for the life of the
+// process, so every later join — including engine-manager's at the real
 // shutdown — would fall to minWorkerGrace and be signalled almost immediately.
 var teardownClock struct {
 	mu    sync.Mutex
@@ -87,9 +87,10 @@ func beginTeardown() {
 }
 
 // teardownRemaining reports what is left of the budget, and whether the budget
-// applies at all. A Stop outside teardown (supervisor.Restart) is not clipped:
-// there is no sequence of joins for it to add up with, and a restarting worker
-// still deserves its full grace to drain.
+// applies at all. A Stop outside teardown — spawnProxy discarding a child whose
+// facades all failed — is not clipped: there is no sequence of joins for it to
+// add up with, and a worker being replaced still deserves its full grace to
+// drain.
 func teardownRemaining() (time.Duration, bool) {
 	teardownClock.mu.Lock()
 	defer teardownClock.mu.Unlock()

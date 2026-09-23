@@ -4,12 +4,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 func canMoveAdoptedEngine(rt Runtime) bool {
@@ -94,49 +96,125 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 }
 
 // persistPort writes (or removes) the per-engine manifest override that pins
-// runtime.port so the chosen port survives a restart. For a bundled engine it
-// writes only the {engine, runtime:{port}} delta (which deep-merges onto the
-// bundled manifest at load), and removes the override entirely when the port
-// is back at the bundled default — keeping the override set minimal. For a
-// non-bundled engine (a full manifest that lives only in the override dir) it
-// merges the port into the existing file rather than clobbering it. Atomic
-// (tmp + rename).
+// runtime.port so the chosen port survives a restart. Only the port is owned
+// by this operation: arguments, environment and unrelated overrides survive.
+// A host-platform port is updated too, when present, because platform values
+// take precedence over shared runtime defaults at load time.
 func (e *Executor) persistPort(engine string, port int) error {
+	return e.persistRuntimeConfig(engine, port, nil, nil)
+}
+
+// persistRuntimeConfig writes the port override plus, when non-nil, the launch
+// argument and environment overrides. A nil slice pointer leaves that override
+// exactly as it is on disk; an empty slice clears it to "declared, but empty".
+func (e *Executor) persistRuntimeConfig(engine string, port int, args, environment *[]string) error {
 	if e.overrideDir == "" {
 		return fmt.Errorf("no config directory available to persist the port")
 	}
-	if err := os.MkdirAll(e.overrideDir, 0o755); err != nil {
+	if err := os.MkdirAll(e.overrideDir, 0o700); err != nil {
 		return fmt.Errorf("create override dir: %w", err)
 	}
-	path := filepath.Join(e.overrideDir, engine+".json")
-	delta := map[string]any{"engine": engine, "runtime": map[string]any{"port": port}}
-
-	if def, ok := e.reg.bundledDefaultPort(engine); ok {
-		// Bundled engine: back to default ⇒ drop the override; else persist
-		// just the delta so bundled upgrades to everything else still apply.
-		if def == port {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove override: %w", err)
-			}
-			return nil
-		}
-		return writeJSONAtomic(path, delta)
+	if err := os.Chmod(e.overrideDir, 0o700); err != nil {
+		return fmt.Errorf("restrict override dir: %w", err)
 	}
-
-	// Non-bundled engine: the full manifest lives only here, so merge the
-	// port into it rather than overwriting the file with a partial.
+	path := filepath.Join(e.overrideDir, engine+".json")
+	m := map[string]any{"engine": engine}
 	existing, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return writeJSONAtomic(path, delta)
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read override: %w", err)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(existing, &m); err != nil {
-		return fmt.Errorf("parse override %s: %w", path, err)
+	if err == nil {
+		m = nil
+		decoder := json.NewDecoder(bytes.NewReader(existing))
+		decoder.UseNumber() // unrelated manifest numbers must not lose precision
+		if !json.Valid(existing) {
+			return fmt.Errorf("override must be a JSON object")
+		}
+		if err := decoder.Decode(&m); err != nil || m == nil {
+			return fmt.Errorf("override must be a JSON object")
+		}
+		if name, ok := m["engine"].(string); !ok || name != engine {
+			return fmt.Errorf("override engine does not match %q", engine)
+		}
 	}
-	return writeJSONAtomic(path, deepMerge(m, delta))
+	rt, err := overrideObject(m, "runtime")
+	if err != nil {
+		return err
+	}
+	platforms, err := overrideObject(m, "platforms")
+	if err != nil {
+		return err
+	}
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	platform, err := overrideObject(platforms, host)
+	if err != nil {
+		return err
+	}
+	hostRuntime, err := overrideObject(platform, "runtime")
+	if err != nil {
+		return err
+	}
+	def, bundled := e.reg.bundledDefaultPort(engine)
+	if bundled && def == port {
+		delete(rt, "port")
+		delete(hostRuntime, "port")
+	} else {
+		rt["port"] = port
+		_, hostPort := hostRuntime["port"]
+		// A bundled platform-specific port would otherwise shadow the new
+		// shared value even when the user's override has no platform block.
+		var base struct {
+			Platforms map[string]struct {
+				Runtime map[string]json.RawMessage `json:"runtime"`
+			} `json:"platforms"`
+		}
+		if raw := e.reg.bundledRaw[engine]; len(raw) != 0 {
+			if err := json.Unmarshal(raw, &base); err != nil {
+				return fmt.Errorf("read bundled port: %w", err)
+			}
+		}
+		if _, bundledHostPort := base.Platforms[host].Runtime["port"]; hostPort || bundledHostPort {
+			hostRuntime["port"] = port
+		}
+	}
+	if args != nil {
+		literal := append([]string{}, (*args)...)
+		hostRuntime["launch_args"] = literal
+	}
+	if environment != nil {
+		hostRuntime["launch_env"] = append([]string{}, (*environment)...)
+	}
+	setOverrideObject(platform, "runtime", hostRuntime)
+	setOverrideObject(platforms, host, platform)
+	setOverrideObject(m, "platforms", platforms)
+	setOverrideObject(m, "runtime", rt)
+	if bundled && len(m) == 1 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove override: %w", err)
+		}
+		return nil
+	}
+	return writeJSONAtomic(path, m)
+}
+
+func overrideObject(parent map[string]any, key string) (map[string]any, error) {
+	value, exists := parent[key]
+	if !exists {
+		return make(map[string]any), nil
+	}
+	object, ok := value.(map[string]any)
+	if !ok || object == nil {
+		return nil, fmt.Errorf("override %s must be a JSON object", key)
+	}
+	return object, nil
+}
+
+func setOverrideObject(parent map[string]any, key string, object map[string]any) {
+	if len(object) == 0 {
+		delete(parent, key)
+	} else {
+		parent[key] = object
+	}
 }
 
 // writeJSONAtomic marshals v and writes it to path via a tmp file + rename so
@@ -146,9 +224,18 @@ func writeJSONAtomic(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(path), ".override-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create override: %w", err)
+	}
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("write override: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close override: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

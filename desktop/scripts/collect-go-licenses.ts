@@ -5,7 +5,7 @@
  * Collects license information for the Go modules linked into the shipped
  * service binaries.
  *
- * The installer bundles all thirteen Go executables from `../services` as
+ * The installer bundles all twelve Go executables from `../services` as
  * `extraResources`, so their dependencies are redistributed and need attribution
  * in the notice file that ships inside the application.
  *

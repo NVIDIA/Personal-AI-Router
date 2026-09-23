@@ -46,7 +46,7 @@ export interface ServiceStatus {
  */
 export interface ServiceVersions {
     appVersion: string
-    modularProduct: string
+    modularServices: string
     binaries: { name: string; version: string }[]
     /** SPDX-ish id parsed at runtime from the shipped LICENSE; '' if unavailable. */
     licenseType: string

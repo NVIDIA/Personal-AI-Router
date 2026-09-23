@@ -451,7 +451,7 @@ value and stays in the normal ranking.
 Improving this, and likely offering a choice of policies, is planned work. Which
 of these gaps matters most depends on the hardware people actually run, so
 reports from real deployments are more useful than guesses. Refer to
-[Where PAIR is going](../README.md#where-pair-is-going).
+[Roadmap](../README.md#roadmap).
 
 ## Engines and Ports
 
@@ -587,13 +587,17 @@ scanner mints one and persists it.
 ### Sharing UDP 5353
 
 PAIR runs its own mDNS responder rather than depending on a system one, because
-Windows ships none. That responder must coexist with whatever else is on the
-port, including Bonjour, Avahi, and PAIR's own sibling processes. It therefore
-sets `SO_REUSEADDR` on the socket to share UDP 5353.
+Windows ships none. Its receive socket and short-lived per-interface send
+sockets bind UDP 5353, as RFC 6762 requires for mDNS queries and responses.
+Binding each sender to the selected interface address also preserves reliable
+egress on multi-homed Windows hosts.
 
-It deliberately does **not** set `SO_REUSEPORT`. On Linux that load-balances
-incoming unicast datagrams across every socket sharing the port, which would let
-one process swallow mDNS replies meant for another.
+Those sockets set `SO_REUSEADDR` so they coexist with Bonjour, Avahi, and other
+PAIR processes. A Darwin sender also sets `SO_REUSEPORT`, matching the BSD
+multicast sharing behavior needed to coexist with the system mDNS responder.
+Linux deliberately omits `SO_REUSEPORT`: there it can load-balance incoming
+unicast datagrams into a short-lived send socket and steal replies from the
+long-lived receiver.
 
 ### Node Enrichment
 
@@ -687,6 +691,11 @@ The important boundaries are:
    permissions. JSON-RPC has no independent per-message token.
 3. **Loopback HTTP.** Local clients can submit sensitive inference content.
    Listener addresses, browser access, CORS, and host account security matter.
+   The proxies add no permissive CORS default: they pass the upstream engine's
+   headers and its refusals through, so a web page reaches a model through PAIR
+   only where the engine would have allowed it directly, and a cluster-wide
+   request needs every engine that answered to allow the origin. Refer to
+   [Engine settings](engine-settings.mdx) for allowing an origin.
 4. **LAN discovery and metadata.** The network can reveal service presence and
    selected host information. Some enrichment endpoints use plain HTTP.
 5. **Pairing bootstrap.** A six-digit PIN bootstraps certificate trust. It is a

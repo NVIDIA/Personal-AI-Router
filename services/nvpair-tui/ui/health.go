@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-shared/engines"
 	svcerrors "nvpair-shared/errors"
 	"nvpair-tui/rpc"
 
@@ -30,16 +31,28 @@ const healthPollInterval = 5 * time.Second
 // healthWorkers are the workers the broker supervises and reports crashes
 // for. nvpair-errors is deliberately absent: it is the error sink itself and
 // cannot report its own death, so it has no crash entry to key on.
+//
+// The proxy appears once, as engines.ProxyComponent, because one nvpair-proxy
+// process hosts every engine's facade under one supervisor — so the broker
+// reports one crash for the process rather than one per engine. Keying this on
+// the per-engine ComponentName instead would be silent in both directions: the
+// real crash entry would match no row, and the per-engine rows could never
+// leave "ok". See the identity split in nvpair-shared/engines.
 var healthWorkers = []string{
 	"scanner",
 	"node-info",
-	"proxy",
-	"lmstudio-proxy",
+	engines.ProxyComponent,
 	"workload-manager",
 	"engine-manager",
 	"manual-nodes",
 	"settings",
 	"cluster-manager",
+	// The scheduler produces the rankings every facade routes on. Without it
+	// each facade holds an empty ranking, takes no reservations, and dispatch
+	// stops spreading — so its death is exactly the kind an operator would come
+	// to this screen to find. Its crash key is "scheduler", from
+	// startOptionalWorker in the broker.
+	"scheduler",
 }
 
 // healthView is the Overview tab: broker liveness/version/uptime from

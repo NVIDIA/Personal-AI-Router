@@ -1,0 +1,49 @@
+---
+description: Type-safe modular test patterns and isolation requirements
+globs: tests/**/*.{ts,tsx}
+alwaysApply: false
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Test Discipline
+
+Tests follow the same type and import rules as production code:
+
+- no type casts, `any`, or `unknown` data shapes;
+- static imports only;
+- `@/...` for cross-directory source imports;
+- real shared contract types instead of test-specific copies.
+
+## Typed mocks
+
+Parameterize `vi.fn` with the function type being replaced.
+
+```ts
+const invoke = vi.fn<PreloadServiceTransport['invoke']>()
+```
+
+Use `vi.mocked(realFunction)` for configured module mocks and call assertions.
+Reusable fakes implement the production interface they replace.
+
+## Fixtures
+
+- Use typed `.ts` fixtures.
+- Prefer `satisfies` for object-shape validation.
+- Keep reusable filesystem isolation in `tests/fixtures/tmpdir.ts`.
+- Keep process and network isolation in `tests/fixtures/isolation.ts`.
+
+## Side effects
+
+Mock process, filesystem, network, registry, and Electron boundaries in the test
+runtime. Do not add test-only branches or environment flags to production code.
+
+`PAIR_USER_DATA` is the supported runtime override used by tests to isolate
+application data. Do not add `PAIR_TEST_DISABLE_*` switches.
+
+## Verification
+
+Tests are part of `npm run typecheck` through `tsconfig.test.json`. Run the
+targeted Vitest project and `npm run typecheck` after changing test contracts.

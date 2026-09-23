@@ -1,0 +1,111 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Engine Settings in NVIDIA Personal AI Router
+
+Open a device's Ollama or LM Studio row and expand **Settings**. Edit the server
+port, proxy port and engine arguments, then select the green **Apply** button. A paired device
+that supports settings can be edited from another device in the cluster.
+
+PAIR fixes the executable, lifecycle commands and loopback address. Unsupported
+vendor options can fail at startup.
+
+For installing, starting and updating engines, refer to
+[Managing engines](engine-lifecycle.mdx).
+
+## Argument notation
+
+The text contains engine arguments and optional leading environment assignments.
+PAIR supplies the executable and startup subcommand. Leave the text empty to use
+managed defaults. Tokens are passed directly to the engine, using the same
+notation on every operating system.
+
+- Spaces, tabs and line breaks separate unquoted tokens.
+- Single quotes enclose literal text. Double quotes enclose literal text with
+  two escapes, `\"` and `\\`; any other backslash stays literal, so a Windows
+  path such as `C:\new\tools` needs no doubling.
+- A quoted and an unquoted part can form one token, as in `--name="two words"`.
+  An empty quoted string is an empty argument.
+- Nothing is expanded: `$HOME`, `%USERPROFILE%`, `{port}` and `~` are literal,
+  and there are no comments, pipelines, redirects or command substitution.
+  Unquoted `|`, `&`, `;`, `<`, `>`, a backtick or `$(` is rejected — quote them
+  when the engine really wants that character.
+- At most 16 KiB and 256 tokens, valid UTF-8.
+
+Environment assignments go first, followed by engine arguments:
+
+```text
+OLLAMA_ORIGINS="https://example.com"
+--port 1235 --bind 127.0.0.1
+```
+
+## Environment variables
+
+Environment assignments are saved and passed literally to the engine on every
+launch. PAIR does not maintain a list of supported variables or validate their
+engine-specific values. Editing or removing one takes effect at the next launch.
+
+Managed CORS settings, including LM Studio's `--cors` switch, can only be changed
+on the device running the engine. A paired device can preserve an existing CORS
+policy while changing other settings, but cannot enable, disable or replace it.
+Other environment assignments can also be edited from a paired device.
+
+Origin lists need a scheme and a specific host, so bare `localhost` and `*` are
+rejected, including wildcards hidden inside extra quotes. Wildcard subdomains
+such as `https://*.example.com` and ports such as `http://localhost:*` are supported.
+List the origins you want to allow. This is
+how you give a web page access to your models: PAIR's local endpoints add no
+permissive default of their own, so a browser reaches a model through PAIR only
+where the engine would have allowed it directly. For a request that spans the
+cluster, every engine that answers has to allow the origin.
+
+An engine does not need a CORS launch option to work with PAIR. The proxy follows
+the engine's HTTP responses regardless of how its CORS policy is configured.
+If the engine grants no CORS permission, PAIR does not add permission for it.
+
+Startup failures include a bounded excerpt of the engine’s own output. PAIR
+redacts supplied values by exact match, but an engine may transform or encode
+them. Do not put secrets in launch values.
+
+## Ports and validation
+
+PAIR understands only the networking controls needed to keep engine and proxy
+configuration consistent:
+
+| Engine | Server port | Loopback bind | Browser access |
+| --- | --- | --- | --- |
+| Ollama | `OLLAMA_HOST=127.0.0.1:<port>` | The host in `OLLAMA_HOST` | `OLLAMA_ORIGINS` |
+| LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
+
+For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235` and `-p=1235`
+all synchronize the same server-port field. Conflicting repetitions and invalid
+ports are rejected. Write managed short options separately; bundles containing
+them are ambiguous and rejected. CORS switches do not take `=true` or `=false`:
+add or remove the switch locally. Origin lists are normalized before validation;
+conflicting repeated lists are rejected. Other vendor options remain opaque.
+
+Changing the server-port field updates the port in the command. Editing the
+command's port updates the numeric field. If both are edited before validation
+finishes, the numeric field takes precedence. The server and proxy must use
+different ports; a collision opens an error dialog explaining which port
+collides. Invalid settings and failed saves also open an error dialog.
+
+Apply validates the complete change. Confirmation is requested only when a running engine
+needs to restart. Progress appears as a spinner inside Apply. A running engine
+restarts for launch/server changes; changing only the proxy port leaves the
+engine running. Stopped engines remain stopped. Saved settings survive restart.
+
+## Concurrent edits
+
+Changes from another device update a clean editor. An unfinished draft stays
+intact; applying a stale draft opens an error dialog. **Reload saved settings** deliberately
+discards that draft. Failed starts retain the saved settings for correction and
+show one error dialog. Validation on leaving a field quietly synchronizes ports;
+errors appear only when Apply is selected, without duplicate text below the command.
+
+Offline, unpaired or older devices cannot be edited. A process started outside
+PAIR may require stopping it in its own application before changing its launch.
+The displayed arguments describe a future PAIR launch, not an external process's
+original arguments.

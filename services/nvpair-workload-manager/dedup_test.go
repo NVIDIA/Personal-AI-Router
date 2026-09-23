@@ -96,6 +96,75 @@ func TestDedupDistinguishesEngineAndRun(t *testing.T) {
 	}
 }
 
+// TestDedupDistinguishesPlacement guards the re-point: a failover or a retry
+// moves a workload to another node while its state stays "running", so the two
+// events differ on scheduledOn and nothing else. With scheduledOn out of the
+// key the second was dropped as a duplicate, and every peer went on showing
+// the job on the node it was first sent to for the rest of its life. A repeat
+// of the same placement must still dedup, which is what keeps a broadcast
+// retry from being re-applied.
+func TestDedupDistinguishesPlacement(t *testing.T) {
+	d := newDedupIndex(8)
+
+	first := &Workload{ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r1", State: StateRunning, ScheduledOn: "node-A"}
+	repointed := &Workload{ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r1", State: StateRunning, ScheduledOn: "node-B"}
+
+	if d.seenOrAdd(keyLifecycle(first)) {
+		t.Fatal("first placement on node-A should be new")
+	}
+	if d.seenOrAdd(keyLifecycle(repointed)) {
+		t.Fatal("a re-point to node-B differs only in scheduledOn and must not dedup against node-A")
+	}
+	if !d.seenOrAdd(keyLifecycle(first)) {
+		t.Fatal("a resent frame for the node-A placement should still dedup")
+	}
+}
+
+// TestDedupDistinguishesRepeatedPlacements is the reason the key carries the
+// producer's event sequence rather than only the workload's current shape.
+//
+// This index is a permanent set, so any shape-derived key collides as soon as a
+// workload revisits a shape it already had — and the retry loop does that
+// routinely: queued on A, placement cleared between attempts, then queued on A
+// again. Keyed on shape alone the third event matched the first, so every peer
+// dropped it and their brokers kept the interim unplaced record while the job
+// was really running on A, which took it out of A's pending load.
+//
+// The redelivery case still has to dedup, because that is what stops an
+// out-of-order broadcast retry from reverting a placement.
+func TestDedupDistinguishesRepeatedPlacements(t *testing.T) {
+	d := newDedupIndex(8)
+
+	base := func(seq int64, node string) *Workload {
+		return &Workload{
+			ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r1",
+			State: StateQueued, ScheduledOn: node, Seq: seq,
+		}
+	}
+
+	onA := base(1, "node-A")
+	cleared := base(2, "")
+	backOnA := base(3, "node-A")
+
+	if d.seenOrAdd(keyLifecycle(onA)) {
+		t.Fatal("first placement on node-A should be new")
+	}
+	if d.seenOrAdd(keyLifecycle(cleared)) {
+		t.Fatal("clearing the placement between attempts should be new")
+	}
+	if d.seenOrAdd(keyLifecycle(backOnA)) {
+		t.Fatal("re-dispatching to node-A repeats an earlier shape and must NOT dedup against it")
+	}
+	// A redelivery of any of those frames carries its original sequence, so it
+	// is still recognised as one.
+	if !d.seenOrAdd(keyLifecycle(base(1, "node-A"))) {
+		t.Fatal("a resent frame for the first placement should still dedup")
+	}
+	if !d.seenOrAdd(keyLifecycle(base(3, "node-A"))) {
+		t.Fatal("a resent frame for the third event should still dedup")
+	}
+}
+
 // TestDedupRemovalDistinguishesNodes mirrors TestDedupDistinguishesNodes for
 // the removal path: the same workloadId removed on two nodes must be two
 // distinct dedup entries.

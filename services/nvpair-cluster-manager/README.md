@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 > This README is the **integrator's guide**: how a parent process drives
 > cluster membership and node pairing over this component's JSON-RPC
 > protocol. The binary is built by `build.sh` / `build.bat` alongside the
-> other twelve components and is spawned by `nvpair-ui-broker` at startup,
+> other eleven components and is spawned by `nvpair-ui-broker` at startup,
 > as an optional worker — a missing binary leaves the broker running without
 > cluster pairing.
 

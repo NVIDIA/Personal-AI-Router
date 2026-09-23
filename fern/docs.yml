@@ -31,6 +31,9 @@ navigation:
       - page: Managing Engines
         path: ../docs/engine-lifecycle.mdx
         slug: engine-lifecycle
+      - page: Engine Settings
+        path: ../docs/engine-settings.mdx
+        slug: engine-settings
       - page: Terminal Interface
         path: ../docs/terminal-interface.mdx
         slug: terminal-interface

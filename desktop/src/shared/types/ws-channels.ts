@@ -30,6 +30,13 @@ import type {
     EngineStatePatch
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
+import type {
+    EngineSettingsTarget,
+    EngineSettingsRequest,
+    EngineSettingsSnapshot,
+    EngineSettingsPreview,
+    EngineSettingsReceipt
+} from '@/shared/types/engine-settings'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
@@ -91,6 +98,9 @@ export interface WsInvokeChannelMap {
 
     // Engines
     'engines:get-initial': { request: void; response: EngineInitialState }
+    'engines:get-settings': { request: EngineSettingsTarget; response: EngineSettingsSnapshot }
+    'engines:preview-settings': { request: EngineSettingsRequest; response: EngineSettingsPreview }
+    'engines:apply-settings': { request: EngineSettingsRequest; response: EngineSettingsReceipt }
     'engine:command': { request: EngineCommandPayload; response: null }
     'engine:search-hub': { request: { engineType: EngineType }; response: EngineHubSearchResponse }
 
@@ -119,6 +129,8 @@ export interface WsPushChannelMap {
 
     // Engines
     'engines:state-changed': EngineStatePatch
+    'engines:settings-changed': EngineSettingsSnapshot
+    'engines:settings-disconnected': { nodeId: string }
     'engines:progress-changed': EngineProgress
     'engines:progress-cleared': { key: string }
 

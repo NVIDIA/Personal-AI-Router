@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export function buildCspHeader(): string {
-    const connectSrc = ["'self'", 'http://127.0.0.1:*', 'http://localhost:*']
+    // https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html
+    // https://www.w3.org/TR/CSP/
     return (
         [
             "default-src 'none'",
             "script-src 'self'",
             "style-src 'self' 'unsafe-inline'",
-            `connect-src ${connectSrc.join(' ')}`,
+            "connect-src 'self'",
             // `blob:` is needed so the SVG rasterizer can assign a blob URL
             // to `<img>` for decode (see `extract-svg.ts`). `data:` covers
             // the inline previews we generate from base64 attachments.
@@ -18,10 +19,7 @@ export function buildCspHeader(): string {
             // fallbacks only, so no remote font origin is needed.
             "font-src 'self'",
             "manifest-src 'self'",
-            // `'self'` covers the Vite-served pdf.js worker module; `blob:`
-            // is the pdf.js fallback when the worker module can't be loaded
-            // directly (some Chromium builds spin up a blob-URL shim).
-            "worker-src 'self' blob:",
+            "worker-src 'none'",
             "object-src 'none'",
             "frame-src 'none'",
             "base-uri 'self'",

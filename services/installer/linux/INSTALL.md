@@ -23,8 +23,7 @@ You should end up with this layout:
 NVIDIA-Personal-AI-Router-<version>/
 ├── bin/
 │   ├── nvpair-ui-broker              # primary entry point (JSON-RPC over stdio / IPC)
-│   ├── ollama-proxy
-│   ├── lmstudio-proxy
+│   ├── nvpair-proxy
 │   ├── nvpair-node-info
 │   ├── nvpair-node-scanner
 │   ├── nvpair-manual-nodes

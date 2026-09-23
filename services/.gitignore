@@ -10,8 +10,7 @@ dist/
 # Linux/macOS subprocess build artifacts. Explicit per-component patterns
 # instead of a broader glob so we never accidentally ignore source files that
 # happen to share a name with a component directory.
-ollama-proxy/ollama-proxy
-lmstudio-proxy/lmstudio-proxy
+nvpair-proxy/nvpair-proxy
 nvpair-node-info/nvpair-node-info
 nvpair-node-scanner/nvpair-node-scanner
 nvpair-manual-nodes/nvpair-manual-nodes

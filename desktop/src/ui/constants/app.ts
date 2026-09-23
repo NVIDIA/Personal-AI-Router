@@ -10,9 +10,9 @@ export const MAX_HISTORY_ITEMS = 30
 export const stateOrder: Record<WorkloadState, number> = {
     running: 0,
     queued: 1,
-    initializing: 2,
-    completed: 3,
-    failed: 4
+    completed: 2,
+    failed: 3,
+    cancelled: 4
 }
 
 export const ContentBaseClass = 'grow w-full min-h-0 min-w-0'

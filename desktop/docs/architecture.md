@@ -42,8 +42,7 @@ The canonical runtime inventory is
 | Binary                    | Owner            | Purpose                                     |
 | ------------------------- | ---------------- | ------------------------------------------- |
 | `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay  |
-| `ollama-proxy`            | Broker           | Ollama-compatible proxy and cluster routing |
-| `lmstudio-proxy`          | Broker, optional | LM Studio OpenAI-compatible proxy           |
+| `nvpair-proxy`            | Broker           | Engine proxy and cluster routing; one process hosting a facade per enabled engine |
 | `nvpair-node-scanner`     | Broker           | LAN discovery and announcement              |
 | `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint        |
 | `nvpair-workload-manager` | Broker, optional | Workload replication                        |
@@ -145,12 +144,16 @@ Personal AI Router uses commands down and events up:
 Renderer stores fetch domain snapshots at startup and then subscribe to push
 events. Engine lifecycle and model commands do not return replacement state.
 The centralized pending-actions store is the only optimistic renderer state for
-engine operations.
+engine operations, and it covers applying engine settings as well: that call
+waits for the owning node's stop, rebind, restart, and readiness checks before
+returning an operation receipt. Settings snapshots supply the authoritative state
+and progress while the call is in flight.
 
 Important push domains include:
 
 - `nodes:upsert` / `nodes:remove`;
 - `engines:state-changed`;
+- `engines:settings-changed` / `engines:settings-disconnected`;
 - `engines:progress-changed` / `engines:progress-cleared`;
 - `metrics:update`;
 - `workloads:upsert` / `workloads:remove`;
@@ -194,6 +197,35 @@ repository [`SECURITY.md`](../../SECURITY.md).
 Engine lifecycle and model operations flow through the broker's `engine:*`
 relay to `nvpair-engine-manager`. The renderer identifies engines with the
 closed `EngineType` union and narrows external strings with `isEngineType()`.
+`engineManagerName()` / `engineTypeFromManagerName()` are the one place that
+translation to and from the engine manager's own spelling lives.
+
+### Engine settings
+
+Server port, proxy port, and the engine arguments are one authoritative
+record owned by the node running the engine. The broker exposes it as
+`engines:get-settings`, `engines:preview-settings`, and
+`engines:apply-settings`; a request naming another node is relayed to that
+peer's engine manager, so a clustered device is edited exactly like the local
+one.
+
+Preview validates without persisting or touching a process. Apply journals the
+accepted revision, then stops, rebinds the proxy, and restarts as needed; its
+response is only an acknowledgement, and the outcome arrives as an
+`engines:settings-changed` snapshot. A revision mismatch is rejected rather than
+merged, and an operation interrupted by a crash is recovered from the journal at
+startup. The deadline ladder for all of this is declared once in
+`nvpair-ui-broker/enginesettings.go`, each rung with headroom over the layer it
+waits on.
+
+Launch arguments and environment values pass through literally, without a
+per-engine option catalog. Semantic validation is limited to managed networking
+and CORS. The owning node rejects managed CORS origin changes relayed from a peer;
+ordinary environment assignments can be edited locally or by a pinned peer.
+
+`engine:set-port` remains a separate port-only RPC for the TUI. It runs the same
+authoritative settings operation rather than forwarding to the engine manager,
+so both entry points validate, restart, and persist identically.
 
 The Ollama and LM Studio proxies are cluster-aware. For model-bearing inference,
 each proxy first keeps only nodes whose per-engine discovery inventory advertises
@@ -269,6 +301,16 @@ cannot yet be reported are centralized in
 - Cluster pairing currently uses port `14321`.
 - Node telemetry is read from `/v1/node-info` at each discovered node's
   advertised port.
+
+Browser access is decided by the engines, not by the proxies. A proxy passes
+through the upstream engine's CORS headers and its refusals, and adds no
+permissive default, so a web page reaches a model through PAIR only where the
+engine would have allowed it directly. A request that fans out across the
+cluster needs every engine that responded to allow the origin; an engine that
+denied it fails the request rather than returning a partial model list, while an
+engine that was unreachable is excluded instead of failing it. Preflights carry
+a short non-zero `Access-Control-Max-Age` so a browser is not re-fanning out on
+every request.
 
 Inference prompts, messages, chunks, and response bodies must not be logged.
 

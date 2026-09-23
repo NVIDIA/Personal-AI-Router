@@ -5,12 +5,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"nvpair-shared/engines"
 )
 
 // TestClusterManagerConfigDirTracksBrokerClusterDir pins the invariant that keeps
@@ -123,16 +124,16 @@ func (h *orderedLifecycleHandle) Stop() {
 	})
 }
 
-func TestInferenceShutdownStopsProxiesBeforeEngines(t *testing.T) {
-	order := make(chan string, 3)
-	ollama := newOrderedLifecycleHandle("ollama-proxy", order)
-	lmstudio := newOrderedLifecycleHandle("lmstudio-proxy", order)
-	proxySup := newSupervisor("proxy", noRestartPolicy(), func() (supervisedHandle, error) { return ollama, nil })
-	lmstudioSup := newSupervisor("lmstudio-proxy", noRestartPolicy(), func() (supervisedHandle, error) { return lmstudio, nil })
+// Ingress stops before engines drain, so no new inference can arrive while
+// engine-manager is stopping engines. One proxy process holds every engine's
+// facade now, so there is one proxy stop rather than two — but it must still
+// precede engine-manager.
+func TestInferenceShutdownStopsTheProxyBeforeEngines(t *testing.T) {
+	order := make(chan string, 2)
+	proxy := newOrderedLifecycleHandle(engines.ProxyComponent, order)
+	proxySup := newSupervisor(engines.ProxyComponent, noRestartPolicy(),
+		func() (supervisedHandle, error) { return proxy, nil })
 	if err := proxySup.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if err := lmstudioSup.Start(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -151,48 +152,64 @@ func TestInferenceShutdownStopsProxiesBeforeEngines(t *testing.T) {
 		_ = codec.Respond(msg.ID, nil)
 	}()
 
-	b := &Broker{proxySup: proxySup, lmstudioProxySup: lmstudioSup}
+	b := &Broker{proxySup: proxySup}
 	b.setEngineMgr(engine)
 	b.shutdownInferenceStack()
 
-	got := []string{<-order, <-order, <-order}
-	if got[0] != "lmstudio-proxy" || got[1] != "ollama-proxy" || got[2] != "engine-manager" {
-		t.Fatalf("shutdown order = %v, want [lmstudio-proxy ollama-proxy engine-manager]", got)
+	got := []string{<-order, <-order}
+	if got[0] != engines.ProxyComponent || got[1] != "engine-manager" {
+		t.Fatalf("shutdown order = %v, want [%s engine-manager]", got, engines.ProxyComponent)
 	}
 }
 
-func TestLMStudioSupervisorTerminalFailureOpensGate(t *testing.T) {
+// A terminally failed proxy releases every engine's ownership gate. Shared fate
+// is the accepted cost of one process, so a caller waiting on LM Studio's gate
+// must not be left waiting because the failure was reported for the process.
+func TestTerminalProxyFailureOpensEveryEnginesGate(t *testing.T) {
 	spawned := make(chan *fakeHandle, 1)
-	sup := newSupervisor("lmstudio-proxy", noRestartPolicy(), func() (supervisedHandle, error) {
+	sup := newSupervisor(engines.ProxyComponent, noRestartPolicy(), func() (supervisedHandle, error) {
 		h := newFakeHandle()
 		spawned <- h
 		return h, nil
 	})
-	b := &Broker{lmstudioPortReady: make(chan struct{})}
-	b.managedLMStudioFacade.Store(true)
-	b.configureLMStudioProxySupervisorCallbacks(sup)
+	b := &Broker{
+		ollamaPortReady:   make(chan struct{}),
+		lmstudioPortReady: make(chan struct{}),
+	}
+	b.ollamaState().managedFacade.Store(true)
+	b.lmstudioState().managedFacade.Store(true)
+	b.configureProxySupervisorCallbacks(sup)
 	if err := sup.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer sup.Stop()
 
 	mustSpawn(t, spawned).crash()
-	select {
-	case <-b.lmstudioPortReady:
-	case <-time.After(2 * time.Second):
-		t.Fatal("terminal LM Studio proxy failure left ownership pending")
+	for name, gate := range map[string]<-chan struct{}{
+		ollamaProxyProfile.Name:   b.ollamaPortReady,
+		lmstudioProxyProfile.Name: b.lmstudioPortReady,
+	} {
+		select {
+		case <-gate:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("terminal proxy failure left %s ownership pending", name)
+		}
 	}
-	if b.managedLMStudioFacade.Load() {
-		t.Fatal("terminal LM Studio proxy failure left managed ownership enabled")
+	if b.ollamaState().managedFacade.Load() || b.lmstudioState().managedFacade.Load() {
+		t.Fatal("terminal proxy failure left managed ownership enabled")
 	}
 }
 
-// TestLMStudioProxyRestartInvalidatesPendingGeneration: a requested LM Studio
-// proxy restart must invalidate the current logical generation and handle before
-// the restart is observable, so a ready notification already queued by the
-// outgoing process cannot open the port-ownership gate — and the replacement
-// generation's ready still does.
-func TestLMStudioProxyRestartInvalidatesPendingGeneration(t *testing.T) {
+// An unbindable LM Studio facade is given up on by itself: its ownership gate
+// is released so callers stop waiting, without restarting the process and
+// without clearing the shared proxy handle.
+//
+// This used to restart the process, which was fine when a process hosted one
+// engine. It is not fine now: the same process hosts Ollama's facade, so a
+// restart to fix LM Studio's port would drop Ollama's listener and the
+// inference in flight on it. The handle assertion is the load-bearing one —
+// clearing it would strand every other facade's traffic.
+func TestUnbindableLMStudioFacadeFinishesWithoutRestartingTheProcess(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -202,59 +219,56 @@ func TestLMStudioProxyRestartInvalidatesPendingGeneration(t *testing.T) {
 	go proxy.peer.Serve(nil, nil)
 
 	b := &Broker{clusterDir: "cluster", lmstudioPortReady: make(chan struct{})}
-	b.lmstudioBackendPort.Store(managedLMStudioBackendStart)
+	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
 	b.lmstudioProxyGeneration.Store(1)
 	b.lmstudioProxyPublishedGeneration.Store(1)
 	b.setLMStudioProxy(proxy)
-	b.lmstudioProxySup = newSupervisor("lmstudio-proxy", noRestartPolicy(), nil)
+	// Both engines resolve to this one process, which is what the assertions
+	// below rely on: Ollama's handle has to be observable to show it survived.
+	b.setProxy(proxy)
+	b.proxySup = newSupervisor(engines.ProxyComponent, noRestartPolicy(), nil)
 
+	// Answer every set-port with a port other than the one asked for, which is
+	// how the child reports it could not take it.
 	go func() {
 		codec := NewCodec(proxyServer)
-		msg, err := codec.Read()
-		if err == nil {
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		for {
+			msg, err := codec.Read()
+			if err != nil {
+				return
+			}
+			_ = codec.Respond(msg.ID, proxyReadyParams{Port: 1})
 		}
 	}()
 
 	b.lmstudioReadyMu.Lock()
-	b.restartLMStudioProxyOrFinish(1)
+	port, ok := b.rebindLMStudioFacadeOrFinish(proxy, 1, managedLMStudioFacadePort)
 	b.lmstudioReadyMu.Unlock()
-	select {
-	case <-b.lmstudioProxySup.restartCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("restart request did not reach the LM Studio proxy supervisor")
-	}
-	b.forwardLMStudioProxyNotificationForGeneration(1, "ready", json.RawMessage(`{"port":1236}`))
-	select {
-	case <-b.lmstudioPortReady:
-		t.Fatal("old-generation ready opened gate after restart")
-	case <-time.After(100 * time.Millisecond):
-	}
-	if b.lmstudioProxyGeneration.Load() == 1 || b.getLMStudioProxy() != nil {
-		t.Fatal("restart did not invalidate LM Studio generation and handle")
-	}
 
-	replacementClient, replacementServer := net.Pipe()
-	t.Cleanup(func() {
-		_ = replacementClient.Close()
-		_ = replacementServer.Close()
-	})
-	replacement := &proxyProcess{peer: NewPeer(NewCodec(replacementClient))}
-	go replacement.peer.Serve(nil, nil)
-	replacementGeneration := b.lmstudioProxyGeneration.Add(1)
-	b.setLMStudioProxy(replacement)
-	b.lmstudioProxyPublishedGeneration.Store(replacementGeneration)
-	go func() {
-		codec := NewCodec(replacementServer)
-		msg, err := codec.Read()
-		if err == nil {
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
-		}
-	}()
-	b.forwardLMStudioProxyNotificationForGeneration(replacementGeneration, "ready", json.RawMessage(`{"port":1236}`))
+	if ok || port != 0 {
+		t.Fatalf("rebind reported success (port %d) though every set-port was refused", port)
+	}
+	// The gate has to open, or every engine:status for LM Studio waits out the
+	// call timeout and answers "retry" for the life of the process.
 	select {
 	case <-b.lmstudioPortReady:
 	case <-time.After(2 * time.Second):
-		t.Fatal("replacement generation did not open gate after the restart")
+		t.Fatal("an unbindable facade left its ownership gate closed")
+	}
+	if b.lmstudioState().managedFacade.Load() {
+		t.Error("managed LM Studio mode survived an unbindable facade")
+	}
+	// The process is untouched: the same handle is still published for BOTH
+	// engines, so Ollama's facade in that same process keeps serving. Handle
+	// identity is the whole property — a process restart would replace it,
+	// which is what would take Ollama's listener down to fix LM Studio's port.
+	//
+	// The Ollama handle is published in the setup precisely so this can fail:
+	// asserting on a slot that was never populated would pass no matter what.
+	if b.getLMStudioProxy() != proxy {
+		t.Error("a facade port failure replaced the shared proxy handle")
+	}
+	if b.getProxy() != proxy {
+		t.Error("a facade port failure disturbed the other engine's handle on the same process")
 	}
 }

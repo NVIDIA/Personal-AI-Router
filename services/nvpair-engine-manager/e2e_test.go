@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	settings "nvpair-shared/enginesettings"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +79,48 @@ func TestE2EOverStdio(t *testing.T) {
 
 	send(t, stdin, 5, "shutdown", nil)
 	waitResult(t, frames, "5", 5*time.Second)
+}
+
+// Saving a bundled engine's port through the real worker must preserve the
+// rest of its override across a new worker process, not just in-memory state.
+func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
+	cfg, home := t.TempDir(), t.TempDir()
+	override := map[string]any{
+		"engine": "ollama",
+		"runtime": map[string]any{
+			"args": []string{"serve", "--custom-option"},
+			"env":  map[string]string{"CUSTOM_SETTING": "retained"},
+		},
+	}
+	for _, dir := range []string{
+		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
+		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeJSONAtomic(filepath.Join(dir, "ollama.json"), override); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := startE2EManager(t, cfg, home)
+	send(t, first.stdin, 1, "engine:set-port", map[string]any{"engine": "ollama", "port": 26001})
+	var saved EngineStatus
+	if err := json.Unmarshal(waitResult(t, first.frames, "1", 10*time.Second), &saved); err != nil || saved.Port != 26001 || saved.Running {
+		t.Fatalf("saved status=%+v, err=%v", saved, err)
+	}
+	first.stop(t)
+	second := startE2EManager(t, cfg, home)
+	send(t, second.stdin, 1, "engine:describe", map[string]any{"engine": "ollama"})
+	var manifest Manifest
+	if err := json.Unmarshal(waitResult(t, second.frames, "1", 10*time.Second), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	platform, ok := manifest.HostPlatform()
+	if !ok || platform.Runtime.Port != 26001 || len(platform.Runtime.Args) != 2 || platform.Runtime.Args[1] != "--custom-option" || platform.Runtime.Env["CUSTOM_SETTING"] != "retained" {
+		t.Fatalf("worker restart lost settings: %+v", platform)
+	}
+	second.stop(t)
 }
 
 func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
@@ -287,6 +330,7 @@ func overrideEnv(over map[string]string) []string {
 }
 
 type frame struct {
+	Params json.RawMessage `json:"params"`
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Result json.RawMessage `json:"result"`
@@ -362,4 +406,61 @@ func waitNotify(t *testing.T, frames <-chan frame, method string, timeout time.D
 			t.Fatalf("timed out waiting for notification %q", method)
 		}
 	}
+}
+
+// Configure can request a parent rebind while both stdio readers continue
+// servicing unrelated messages; literal settings survive a fresh worker.
+func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
+	cfg, home := t.TempDir(), t.TempDir()
+	fixture := settingsExecutor(t, false)
+	manifest, _ := fixture.reg.Get("fake")
+	for _, dir := range []string{filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"), filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines")} {
+		writeE2EManifest(t, dir, manifest)
+	}
+	manager := startE2EManager(t, cfg, home)
+	send(t, manager.stdin, 1, "engine:get-installed", nil)
+	waitResult(t, manager.frames, "1", 5*time.Second)
+	send(t, manager.stdin, 2, "engine:get-launch", map[string]string{"engine": "fake"})
+	var launch settings.LaunchState
+	if err := json.Unmarshal(waitResult(t, manager.frames, "2", 5*time.Second), &launch); err != nil {
+		t.Fatal(err)
+	}
+	desired := settings.Config{ServerPort: launch.ServerPort, ProxyPort: 54301, LaunchText: `OLLAMA_ORIGINS="http://localhost" PAIR_TEST_LITERAL="$HOME {port}" ` + launch.LaunchText}
+	send(t, manager.stdin, 3, "engine:configure-launch", settings.Configure{Engine: "fake", Settings: desired, OperationID: "operation"})
+	var relay settings.Relay
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	waiting := true
+	for waiting {
+		select {
+		case f := <-manager.frames:
+			if f.Method == "engine:settings-request" {
+				if err := json.Unmarshal(f.Params, &relay); err != nil {
+					t.Fatal(err)
+				}
+				waiting = false
+			}
+		case <-timer.C:
+			t.Fatal("worker never requested parent rebind")
+		}
+	}
+	if relay.Method != "rebind" || relay.Request.RequestID != "operation" || relay.Request.Settings.ProxyPort != 54301 {
+		t.Fatalf("bad relay: %+v", relay)
+	}
+	send(t, manager.stdin, 4, "engine:describe", map[string]string{"engine": "fake"})
+	waitResult(t, manager.frames, "4", 5*time.Second)
+	notify(t, manager.stdin, "engine:settings-reply", settingsReply{ID: relay.ID, Result: json.RawMessage(`{}`)})
+	if err := json.Unmarshal(waitResult(t, manager.frames, "3", 5*time.Second), &launch); err != nil || launch.Running {
+		t.Fatalf("configure result %+v %v", launch, err)
+	}
+	saved := launch.LaunchText
+	manager.stop(t)
+	restored := startE2EManager(t, cfg, home)
+	send(t, restored.stdin, 1, "engine:get-installed", nil)
+	waitResult(t, restored.frames, "1", 5*time.Second)
+	send(t, restored.stdin, 2, "engine:get-launch", map[string]string{"engine": "fake"})
+	if err := json.Unmarshal(waitResult(t, restored.frames, "2", 5*time.Second), &launch); err != nil || launch.LaunchText != saved {
+		t.Fatalf("worker reload lost literal settings: %+v %v", launch, err)
+	}
+	restored.stop(t)
 }
