@@ -20,6 +20,7 @@ package main
 // nvpair-shared/engines.
 
 import (
+	"slices"
 	"strings"
 
 	"nvpair-shared/engines"
@@ -30,8 +31,8 @@ import (
 // POST to /v1/models is not a model list, and a GET to /api/chat is not
 // inference. Folding them into one constant keeps the two from disagreeing.
 //
-// The dialect distinction is meaningful only for model-list roles. All seven
-// of Ollama's inference paths are handled identically — no envelope, identity
+// The dialect distinction is meaningful only for model-list roles. All of
+// Ollama's inference paths are handled identically — no envelope, identity
 // field or response shape is selected — so there is deliberately no
 // per-dialect inference role.
 type routeRole int
@@ -116,12 +117,33 @@ type engineProfile struct {
 	SupportsHostAlias bool
 }
 
-// openAIInferenceRoutes is the inference surface every OpenAI-compatible
-// engine exposes. Ollama serves these alongside its native routes.
+// ollamaBaseRoutes is the engine-specific surface that Ollama exposes before
+// the shared compatibility routes are added.
+var ollamaBaseRoutes = []route{
+	{Path: "/api/generate", Role: roleInferencePOST},
+	{Path: "/api/chat", Role: roleInferencePOST},
+	{Path: "/api/embeddings", Role: roleInferencePOST},
+	{Path: "/api/embed", Role: roleInferencePOST},
+	{Path: "/api/tags", Role: roleModelListNativeGET},
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
+// lmStudioBaseRoutes is the engine-specific surface that LM Studio exposes
+// before the shared compatibility routes are added.
+var lmStudioBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
+// openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
 	{Path: "/v1/completions", Role: roleInferencePOST},
 	{Path: "/v1/embeddings", Role: roleInferencePOST},
+}
+
+// anthropicInferenceRoutes is the Anthropic-compatible inference surface.
+var anthropicInferenceRoutes = []route{
+	{Path: "/v1/messages", Role: roleInferencePOST},
 }
 
 var profiles = buildProfiles()
@@ -129,19 +151,14 @@ var profiles = buildProfiles()
 func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
+	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
+	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 
 	return []engineProfile{
 		{
-			Engine:         ollama,
-			StandalonePort: 11435,
-			Routes: append([]route{
-				{Path: "/api/generate", Role: roleInferencePOST},
-				{Path: "/api/chat", Role: roleInferencePOST},
-				{Path: "/api/embeddings", Role: roleInferencePOST},
-				{Path: "/api/embed", Role: roleInferencePOST},
-				{Path: "/api/tags", Role: roleModelListNativeGET},
-				{Path: "/v1/models", Role: roleModelListOpenAIGET},
-			}, openAIInferenceRoutes...),
+			Engine:                ollama,
+			StandalonePort:        11435,
+			Routes:                ollamaRoutes,
 			ModelNaming:           impliedLatestTag,
 			ReservedPersistedPort: 0,
 			SupportsHostAlias:     true,
@@ -149,10 +166,8 @@ func buildProfiles() []engineProfile {
 		{
 			Engine:         lmstudio,
 			StandalonePort: 1234,
-			Routes: append([]route{
-				{Path: "/v1/models", Role: roleModelListOpenAIGET},
-			}, openAIInferenceRoutes...),
-			ModelNaming: exactID,
+			Routes:         lmStudioRoutes,
+			ModelNaming:    exactID,
 			// 1235 is where engine-manager runs a managed LM Studio, so a
 			// proxy that restored it would sit on the engine's own port. The
 			// stored value predates the current default of 1234.

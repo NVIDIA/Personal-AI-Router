@@ -641,6 +641,87 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 	})
 }
 
+// TestHandleHTTP_InferenceRouting proves each engine inference route is
+// model-routed, retries a model-not-found response, and
+// forwards the request path and body unchanged.
+func TestHandleHTTP_InferenceRouting(t *testing.T) {
+	test := func(name, path string, profiles ...engineProfile) {
+		t.Run(name, func(t *testing.T) {
+			for _, profile := range profiles {
+				t.Run(profile.Name, func(t *testing.T) {
+					requestedModel := "requested-model"
+					advertisedModel := profile.normalizeModel(requestedModel)
+
+					wrongModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						t.Error("wrong-model node should not receive request")
+						w.WriteHeader(http.StatusOK)
+					}))
+					defer wrongModel.Close()
+
+					missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusNotFound)
+						if _, err := io.WriteString(w, `{"error":"model not found"}`); err != nil {
+							t.Errorf("write missing-model response: %v", err)
+						}
+					}))
+					defer missing.Close()
+
+					var gotBody string
+					var gotPath string
+					good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, err := io.ReadAll(r.Body)
+						if err != nil {
+							t.Errorf("read forwarded request body: %v", err)
+							w.WriteHeader(http.StatusInternalServerError)
+							return
+						}
+						gotBody = string(body)
+						gotPath = r.URL.Path
+						w.WriteHeader(http.StatusOK)
+					}))
+					defer good.Close()
+
+					disc := NewDiscovery()
+					disc.AddManual(nodeForModel(t, "wrong", wrongModel.URL, "different-model"))
+					disc.AddManual(nodeForModel(t, "missing", missing.URL, advertisedModel))
+					disc.AddManual(nodeForModel(t, "good", good.URL, advertisedModel))
+					p := testProxy(profile, disc, profile.FacadePort)
+					p.soleFacade().SetSelected("wrong")
+					// Stable node ordering would send this request to "good" first and
+					// never exercise 404 failover. Prioritize "missing" so the test
+					// independently proves both model filtering and retry behavior.
+					p.SetPriority([]string{"missing", "good"})
+
+					body := `{"model":"requested-model","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+					rec := httptest.NewRecorder()
+					p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+
+					if rec.Code != http.StatusOK {
+						t.Fatalf("status = %d, want 200 after 404 failover", rec.Code)
+					}
+					if gotBody != body {
+						t.Errorf("node got body %q, want %q", gotBody, body)
+					}
+					if gotPath != path {
+						t.Errorf("path = %q, want %q", gotPath, path)
+					}
+				})
+			}
+		})
+	}
+
+	ollama := ollamaCase(t).profile
+	lmstudio := lmstudioCase(t).profile
+	test("native Ollama generate", "/api/generate", ollama)
+	test("native Ollama chat", "/api/chat", ollama)
+	test("native Ollama embeddings", "/api/embeddings", ollama)
+	test("native Ollama embed", "/api/embed", ollama)
+	test("OpenAI chat completions", "/v1/chat/completions", ollama, lmstudio)
+	test("OpenAI completions", "/v1/completions", ollama, lmstudio)
+	test("OpenAI embeddings", "/v1/embeddings", ollama, lmstudio)
+	test("Anthropic messages", "/v1/messages", ollama, lmstudio)
+}
+
 func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		hits := 0

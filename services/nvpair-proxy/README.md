@@ -102,7 +102,7 @@ and the health crash key are matched against each other, so they move together
 | Standalone port, used when `port` is omitted | 11435 | 1234 |
 | Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` |
 | Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) |
-| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI set | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` |
+| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/messages` |
 | Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte |
 
 The route table is a **classifier, not an allowlist**. An unlisted path is

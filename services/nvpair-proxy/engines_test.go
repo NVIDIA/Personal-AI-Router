@@ -29,12 +29,14 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	}{
 		{"ollama native chat", ollama, "POST", "/api/chat", roleInferencePOST, true},
 		{"ollama openai chat", ollama, "POST", "/v1/chat/completions", roleInferencePOST, true},
+		{"ollama anthropic messages", ollama, "POST", "/v1/messages", roleInferencePOST, true},
 		{"ollama native list", ollama, "GET", "/api/tags", roleModelListNativeGET, true},
 		{"ollama openai list", ollama, "GET", "/v1/models", roleModelListOpenAIGET, true},
 		{"ollama passthrough", ollama, "POST", "/api/pull", 0, false},
 		{"ollama version passthrough", ollama, "GET", "/api/version", 0, false},
 
 		{"lmstudio chat", lmstudio, "POST", "/v1/chat/completions", roleInferencePOST, true},
+		{"lmstudio anthropic messages", lmstudio, "POST", "/v1/messages", roleInferencePOST, true},
 		{"lmstudio list", lmstudio, "GET", "/v1/models", roleModelListOpenAIGET, true},
 		// LM Studio serves no native Ollama routes, so /api/chat is not
 		// inference for it — it is forwarded verbatim like any other path.
