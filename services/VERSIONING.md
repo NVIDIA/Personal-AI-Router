@@ -31,7 +31,8 @@ this?", not "how compatible is it?".
 
 A MINOR or MAJOR release version is a deliberate manual edit at cut time. The
 automation only ever moves it one PATCH forward, so it cannot promote a release
-on its own.
+on its own. Make the edit with `npm version <version> --no-git-tag-version` in
+`desktop/`, which also moves the two copies in `desktop/package-lock.json`.
 
 The release version and `services` are **not** held equal, and no attempt is
 made to align them. They version different artifacts.

@@ -77,6 +77,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 VERSIONS_PATH = REPO_ROOT / 'services' / 'versions.json'
 CHANGELOG_PATH = REPO_ROOT / 'CHANGELOG.md'
 PACKAGE_JSON_PATH = REPO_ROOT / 'desktop' / 'package.json'
+PACKAGE_LOCK_PATH = REPO_ROOT / 'desktop' / 'package-lock.json'
 
 VERSIONS_COMMENT = (
     'Single source of truth for all version numbers. See VERSIONING.md for bump rules.'
@@ -155,6 +156,47 @@ def render_package_json(text: str, version: str) -> str:
     if count != 1:
         raise ValueError('Could not locate a single "version" field in package.json')
     return replaced
+
+
+_LOCK_ROOT_PACKAGE_RE = re.compile(r'"packages"\s*:\s*\{\s*""\s*:\s*\{')
+
+
+def render_package_lock(text: str, version: str) -> str:
+    """Set both copies of the release version in desktop/package-lock.json.
+
+    npm records the root package's version at the top level and again under
+    packages[""], and both must match package.json. Each is replaced in place,
+    as in render_package_json, and the result is compared with a parsed edit so
+    a layout that puts some other "version" first fails here rather than
+    committing a lockfile with the wrong entry changed.
+    """
+    expected: Any = json.loads(text)
+    if not isinstance(expected, dict):
+        raise ValueError('package-lock.json: top-level value must be a JSON object')
+    packages = expected.get('packages')
+    root = packages.get('') if isinstance(packages, dict) else None
+    if not isinstance(root, dict) or 'version' not in expected or 'version' not in root:
+        raise ValueError('package-lock.json: missing version or packages[""].version')
+    expected['version'] = version
+    root['version'] = version
+
+    def substitute(segment: str) -> tuple[str, int]:
+        return _PACKAGE_VERSION_RE.subn(
+            lambda m: f'{m.group("lead")}{version}{m.group("tail")}', segment, count=1
+        )
+
+    root_match = _LOCK_ROOT_PACKAGE_RE.search(text)
+    if root_match is None:
+        raise ValueError('package-lock.json: could not locate packages[""]')
+    head, head_count = substitute(text[: root_match.end()])
+    tail, tail_count = substitute(text[root_match.end() :])
+    rendered = head + tail
+    if head_count != 1 or tail_count != 1 or json.loads(rendered) != expected:
+        raise ValueError(
+            'package-lock.json: could not set the top-level and packages[""] '
+            'versions in place'
+        )
+    return rendered
 
 
 def load_versions(path: Path = VERSIONS_PATH) -> tuple[VersionsManifest, dict[str, Any]]:
