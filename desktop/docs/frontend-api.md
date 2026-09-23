@@ -78,7 +78,7 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `getInitialState()` returns engine statuses, models, active progress, and available
   updates.
 - `toggle`, `install`, `uninstall`, and `update` manage engine lifecycle.
-- `pullModel`, `loadModel`, `unloadModel`, `deleteModel`, and
+- `pullModel`, `cancelModelPull`, `loadModel`, `unloadModel`, `deleteModel`, and
   `setModelExpiry` manage models.
 - `searchHub(engineType)` returns the curated model catalog for an engine.
 - `onStateChanged`, `onProgress`, and `onProgressRemove` expose backend truth.
@@ -112,6 +112,7 @@ environment assignments pass through without an engine-option catalog.
 - `uninstall`;
 - `update`;
 - `pullModel`;
+- `cancelModelPull`;
 - `loadModel`;
 - `unloadModel`;
 - `deleteModel`;
@@ -120,6 +121,17 @@ environment assignments pass through without an engine-option catalog.
 Commands return no state. Renderer stores update from
 `engines:state-changed`, `engines:progress-changed`, and
 `engines:progress-cleared`.
+
+The model-bearing commands — `pullModel`, `cancelModelPull`, `loadModel`,
+`unloadModel`, `deleteModel`, and `setModelExpiry` — carry the target in
+`model`. It is what lets a node run several downloads at once and have each
+one cancelled, and progress-tracked, on its own.
+
+`cancelModelPull` reaches `engine:cancel-pull`, or `engine:remote-cancel-pull`
+when `nodeId` names a peer. The download is not cancelled when the command
+returns: the row moves to Canceling and clears when the pull itself settles. A
+cancel whose request outlives its budget leaves the row in Canceling, because
+the backend is still working on it, and stays available to issue again.
 
 ### `pairApi.workloads`
 

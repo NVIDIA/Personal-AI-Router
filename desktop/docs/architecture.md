@@ -200,6 +200,23 @@ closed `EngineType` union and narrows external strings with `isEngineType()`.
 `engineManagerName()` / `engineTypeFromManagerName()` are the one place that
 translation to and from the engine manager's own spelling lives.
 
+### Model downloads
+
+A download is started with `engine:action{pull_model}`, or
+`engine:remote-pull-model` for a pinned peer, and stopped with
+`engine:cancel-pull` or `engine:remote-cancel-pull`. All of them name their
+target in a `model` field: an engine can be downloading several models at once,
+and `engine:pull-progress` carries the same field so every frame lands on the
+row it belongs to.
+
+Cancellation is a request, not a result. The engine manager stops the transfer
+and settles the partial files before answering, and the row clears when the
+pull itself settles. A peer is given a much longer budget to answer than the
+desktop waits, on purpose — cutting a peer off part-way through a cancel is
+worse than waiting for it — so the desktop giving up first means the cancel is
+still running, not that it failed. The row stays in Canceling and the cancel
+can be issued again.
+
 ### Engine settings
 
 Server port, proxy port, and the engine arguments are one authoritative
