@@ -1717,20 +1717,51 @@ func (d *nodeDetail) emptyEnginesHint() string {
 // unrelated machine can be paired with from the Nodes list, one in another
 // cluster has to leave that cluster first, and one part-way through pairing
 // only needs the handshake to finish.
+//
+// Where the node advertises models, the engines serving them are named. Saying
+// its engines cannot be seen, directly above a model list with an ENGINE
+// column filled in, claims less than the screen is already showing: discovery
+// carries which engine serves each model, and needs no pairing to do it. What
+// pairing buys is their state and their controls, so that is what the sentence
+// promises.
 func (d *nodeDetail) unpairedEnginesHint() string {
+	var advertised string
+	if names := d.advertisedEngines(); len(names) > 0 {
+		advertised = fmt.Sprintf(" It advertises models for %s, listed below.",
+			strings.Join(names, " and "))
+	}
 	switch d.node.membership {
 	case membershipForeign:
 		return fmt.Sprintf(
-			"%s is in another cluster, so its engines are not visible from here.",
-			d.node.name)
+			"%s is in another cluster, so its engines cannot be managed from here.%s",
+			d.node.name, advertised)
 	case membershipPending:
 		return fmt.Sprintf(
-			"%s is still pairing - its engines appear once that finishes.", d.node.name)
+			"%s is still pairing - its engines appear once that finishes.%s",
+			d.node.name, advertised)
 	default:
 		return fmt.Sprintf(
-			"%s is not in this cluster. Pair with it on the Nodes tab to manage its engines.",
-			d.node.name)
+			"%s is not in this cluster.%s Pair with it on the Nodes tab to manage its engines.",
+			d.node.name, advertised)
 	}
+}
+
+// advertisedEngines are the engines this node attributes models to, by display
+// name, in a stable order.
+//
+// Discovery carries the attribution, so this is known for any node on the
+// network whether or not it is a peer. It is what the node says it serves, not
+// what is installed on it: an engine holding no models is not represented.
+func (d *nodeDetail) advertisedEngines() []string {
+	names := make([]string, 0, len(d.models.ModelsByEngine))
+	for engine, models := range d.models.ModelsByEngine {
+		if len(models) == 0 {
+			continue
+		}
+		names = append(names, d.engineLabel(engine))
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (d *nodeDetail) emptyModelsHint() string {
