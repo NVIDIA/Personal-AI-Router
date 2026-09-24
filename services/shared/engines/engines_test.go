@@ -34,6 +34,19 @@ func TestNames(t *testing.T) {
 	}
 }
 
+func TestProxyDefaults(t *testing.T) {
+	got := ProxyDefaults()
+	want := []string{"ollama", "lmstudio"}
+	if len(got) != len(want) {
+		t.Fatalf("ProxyDefaults() = %v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i].Name != name || !got[i].ProxyEnabledByDefault {
+			t.Fatalf("ProxyDefaults() = %v, want %v", got, want)
+		}
+	}
+}
+
 // There are two proxy identities: ComponentName per facade, ProxyComponent per
 // process. Ollama's relay prefix was once the bare "proxy" while its error IDs
 // were already "ollama-proxy" — two near-identical values that coincided for LM

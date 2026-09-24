@@ -25,13 +25,13 @@ type proxyNode struct {
 	Port int    `json:"port"`
 }
 
-// buildProxyEngines makes one tab per engine, in the shared table's order, so
-// an engine added there appears here rather than being silently absent from
-// this view.
+// buildProxyEngines makes one tab per default-enabled facade, in the shared
+// table's order. Opt-in engines appear only when the TUI passes an explicit
+// selection to the broker and this view.
 func buildProxyEngines() []*proxyEngine {
-	all := engines.All()
-	out := make([]*proxyEngine, 0, len(all))
-	for _, e := range all {
+	defaults := engines.ProxyDefaults()
+	out := make([]*proxyEngine, 0, len(defaults))
+	for _, e := range defaults {
 		out = append(out, &proxyEngine{label: e.DisplayName, prefix: e.ComponentName(), table: newTable(nil)})
 	}
 	return out
