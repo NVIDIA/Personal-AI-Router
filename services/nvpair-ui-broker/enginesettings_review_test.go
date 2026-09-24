@@ -21,8 +21,10 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 		t.Run(profile.Name, func(t *testing.T) {
 			h := newSettingsHarness(t)
 			p := h.b.getProxy()
-			_, ollamaBefore := p.Status("ollama")
-			_, lmstudioBefore := p.Status("lmstudio")
+			before := make(map[string]int, len(engineProxyProfiles))
+			for _, candidate := range engineProxyProfiles {
+				_, before[candidate.Name] = p.Status(candidate.Name)
+			}
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -32,13 +34,8 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 			if err := h.b.rebindSettingsProxy(profile.Name, port); err != nil {
 				t.Fatal(err)
 			}
-			wantOllama, wantLMStudio := ollamaBefore, lmstudioBefore
-			if profile.Name == "ollama" {
-				wantOllama = port
-			} else {
-				wantLMStudio = port
-			}
-			for engine, want := range map[string]int{"ollama": wantOllama, "lmstudio": wantLMStudio} {
+			before[profile.Name] = port
+			for engine, want := range before {
 				ready, got := p.Status(engine)
 				if !ready || got != want {
 					t.Fatalf("%s ready=%v port=%d, want %d", engine, ready, got, want)
@@ -61,10 +58,13 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 				t.Fatal("explicit settings were not restored")
 			}
 			failure := settingsJSON(map[string]any{"code": "bind-failed", "port": requested})
-			if profile.Name == "ollama" {
+			switch profile.Name {
+			case "ollama":
 				b.forwardProxyNotification("error", failure)
-			} else {
+			case "lmstudio":
 				b.forwardLMStudioProxyNotification("error", failure)
+			default:
+				b.forwardPrepositionedProxyNotification(profile, profile.addressed("error"), failure)
 			}
 			if got := b.engineProxy(profile).startupPort.Load(); got != requested {
 				t.Fatalf("bind notification changed chosen port to %d", got)

@@ -46,6 +46,7 @@ func TestEngineHealthProbePaths(t *testing.T) {
 	}{
 		{"ollama", "/"},
 		{"lmstudio", "/v1/models"},
+		{"llamacpp", "/health"},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -92,7 +93,7 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	}
 }
 
-// Ownership is the one judgment call in adding an engine, so the two values in
+// Ownership is the one judgment call in adding an engine, so every value in
 // the table today are pinned explicitly. Getting these backwards does not fail
 // to compile — it silently changes which engine the broker believes it may stop.
 func TestEngineOwnershipAssignments(t *testing.T) {
@@ -102,6 +103,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 	}{
 		{"ollama", adoptedEngine},
 		{"lmstudio", managedEngine},
+		{"llamacpp", prepositionedEngine},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {

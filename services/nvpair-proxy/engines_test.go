@@ -3,7 +3,42 @@
 
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"nvpair-shared/engines"
+)
+
+func TestProfilesMatchSharedEngines(t *testing.T) {
+	names := make([]string, len(profiles))
+	for i, profile := range profiles {
+		names[i] = profile.Name
+	}
+	if !slices.Equal(names, engines.Names()) {
+		t.Fatalf("proxy profiles = %v, want canonical engines %v", names, engines.Names())
+	}
+}
+
+func TestLlamaCPPProfile(t *testing.T) {
+	profile, ok := profileFor("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp profile missing")
+	}
+	route, ok := profile.routeFor("GET", "/v1/models")
+	if !ok || route.Role != roleModelListOpenAIGET || route.upstreamPath() != "/models" {
+		t.Fatalf("model list route = %+v, %v", route, ok)
+	}
+	if role, ok := profile.roleFor("POST", "/v1/chat/completions"); !ok || role != roleInferencePOST {
+		t.Fatalf("chat route = %v, %v", role, ok)
+	}
+	if got := profile.normalizeModel("org/model:Q4_K_M"); got != "org/model:Q4_K_M" {
+		t.Fatalf("exact model id normalized to %q", got)
+	}
+	if profile.StandalonePort != 8080 || profile.ReservedPersistedPort != 8081 {
+		t.Fatalf("ports = facade %d, reserved %d", profile.StandalonePort, profile.ReservedPersistedPort)
+	}
+}
 
 // Routes is a classifier, not an allowlist. handlePlain forwards every
 // loopback path into handleHTTP with no filtering, so a path the table does

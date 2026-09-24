@@ -171,6 +171,7 @@ func buildEngineProxyProfiles() []engineProxyProfile {
 		// LM Studio is the one engine engine-manager may move while running:
 		// its identified command-mode runtime has an official stop command.
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
+		"llamacpp": {Ownership: prepositionedEngine, HealthProbePath: "/health"},
 	}
 	out := make([]engineProxyProfile, 0, len(engines.All()))
 	for _, e := range engines.All() {
@@ -423,6 +424,9 @@ func (b *Broker) prepareEnabledFacades() {
 }
 
 func (b *Broker) preparePrepositionedFacade(profile engineProxyProfile) {
+	if b.prepareExplicitEngineSettings(profile.Name) {
+		return
+	}
 	b.engineProxy(profile).backendPort.Store(int32(profile.EnginePortBase))
 }
 

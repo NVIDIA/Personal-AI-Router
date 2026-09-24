@@ -135,6 +135,12 @@ var lmStudioBaseRoutes = []route{
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
 
+// llamaCPPBaseRoutes maps the facade's OpenAI-compatible model-list path to
+// llama.cpp's router endpoint. The response already uses the OpenAI envelope.
+var llamaCPPBaseRoutes = []route{
+	{Path: "/v1/models", UpstreamPath: "/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -152,8 +158,10 @@ var profiles = buildProfiles()
 func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
+	llamacpp, _ := engines.ByName("llamacpp")
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
+	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -173,6 +181,13 @@ func buildProfiles() []engineProfile {
 			// proxy that restored it would sit on the engine's own port. The
 			// stored value predates the current default of 1234.
 			ReservedPersistedPort: 1235,
+		},
+		{
+			Engine:                llamacpp,
+			StandalonePort:        8080,
+			Routes:                llamaCPPRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: 8081,
 		},
 	}
 }

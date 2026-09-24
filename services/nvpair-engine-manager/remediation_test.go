@@ -453,7 +453,7 @@ func TestBundledManifestsGolden(t *testing.T) {
 	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
 		t.Fatalf("bundled manifests invalid: %v", err)
 	}
-	for _, want := range []string{"ollama", "lmstudio"} {
+	for _, want := range []string{"ollama", "lmstudio", "llamacpp"} {
 		m, ok := reg.Get(want)
 		if !ok {
 			t.Fatalf("missing bundled engine %q (have %v)", want, reg.Names())
