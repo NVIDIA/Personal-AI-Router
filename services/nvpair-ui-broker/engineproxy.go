@@ -509,6 +509,52 @@ func (b *Broker) setEngineProxySubscribed(p engineProxyProfile, subscribed bool)
 	return was
 }
 
+// handleEngineProxyBrokerRequest serves the facade methods owned by the broker
+// rather than the proxy child. It reports whether method was handled.
+func (b *Broker) handleEngineProxyBrokerRequest(profile engineProxyProfile, method string, msg *Message) bool {
+	switch method {
+	case "get-status":
+		var result ProxyStatusResult
+		if proxy := b.engineProxyHandle(profile); proxy != nil {
+			result.Ready, result.Port = proxy.Status(profile.Name)
+		}
+		if err := b.codec.Respond(msg.ID, result); err != nil {
+			log.Printf("failed to respond to %s:get-status: %v", profile.ComponentName(), err)
+		}
+		return true
+
+	case "subscribe":
+		b.proxyMu.Lock()
+		wasSubscribed := b.setEngineProxySubscribed(profile, true)
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
+			log.Printf("failed to respond to %s:subscribe: %v", profile.ComponentName(), err)
+		}
+		// The acknowledgement must precede the baseline notification. A
+		// redundant subscription is already live and needs no replay.
+		if !wasSubscribed {
+			if proxy := b.engineProxyHandle(profile); proxy != nil {
+				if params := proxy.ReadyParams(profile.Name); params != nil {
+					if err := b.codec.Notify(profile.ComponentName()+":ready", params); err != nil {
+						slog.Warn("emit baseline proxy ready failed", "engine", profile.Name, "err", err)
+					}
+				}
+			}
+		}
+		return true
+
+	case "unsubscribe":
+		b.proxyMu.Lock()
+		b.setEngineProxySubscribed(profile, false)
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
+			log.Printf("failed to respond to %s:unsubscribe: %v", profile.ComponentName(), err)
+		}
+		return true
+	}
+	return false
+}
+
 // relayToEngineProxy forwards an <engine>-proxy:<method> client request to that
 // engine's facade and maps the response straight back.
 //
