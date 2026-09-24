@@ -80,6 +80,21 @@ func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsNestedResultMatch(t *testing.T) {
+	m := validManifest()
+	m.Actions["list_models"] = Action{
+		HTTP: &ActionHTTP{Method: "GET", Path: "/models"},
+		Result: &ActionResult{
+			Array: "data",
+			Field: "id",
+			Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}},
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("nested result match rejected: %v", err)
+	}
+}
+
 func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
@@ -162,6 +177,16 @@ func TestValidateRejects(t *testing.T) {
 				ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
 			}
 		}, "requires the HTTP pull_model action"},
+		{"invalid match field path", func(m *Manifest) {
+			m.Actions["list_models"] = Action{
+				HTTP: &ActionHTTP{Method: "GET", Path: "/models"},
+				Result: &ActionResult{
+					Array: "models",
+					Field: "id",
+					Match: &ResultMatch{Field: "status..value", In: []string{"loaded"}},
+				},
+			}
+		}, "is not a valid object path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

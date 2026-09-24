@@ -40,6 +40,7 @@ var allowedPlaceholders = map[string]bool{
 }
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+var resultMatchFieldPathRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*(?:\.[a-zA-Z_][a-zA-Z0-9_-]*)*$`)
 
 // engineNameRe restricts engine names to a safe charset — the name is
 // used as a filesystem path component (the per-engine install dir), so
@@ -233,9 +234,10 @@ type ActionResult struct {
 
 // ResultMatch is the optional row filter on an ActionResult. Exactly one of
 // In or Nonempty must be set:
-//   - In: keep the element when Field (decoded as a JSON string) equals one of In.
-//   - Nonempty: keep the element when Field is a JSON array with length > 0
-//     (LM Studio's /api/v1/models models[].loaded_instances).
+//   - In: keep the element when the dot-separated object path Field (decoded as
+//     a JSON string) equals one of In.
+//   - Nonempty: keep the element when Field resolves to a JSON array with length
+//     > 0 (LM Studio's /api/v1/models models[].loaded_instances).
 type ResultMatch struct {
 	Field    string   `json:"field"`              // element field to test, e.g. "state" / "loaded_instances"
 	In       []string `json:"in,omitempty"`       // accepted string values, e.g. ["loaded"]
@@ -722,6 +724,9 @@ func (a *Action) validate(name string) error {
 		m := a.Result.Match
 		if strings.TrimSpace(m.Field) == "" {
 			return fmt.Errorf("action %q: result.match.field is required when result.match is set", name)
+		}
+		if !resultMatchFieldPathRe.MatchString(m.Field) {
+			return fmt.Errorf("action %q: result.match.field %q is not a valid object path", name, m.Field)
 		}
 		hasIn := len(m.In) > 0
 		if hasIn == m.Nonempty {
