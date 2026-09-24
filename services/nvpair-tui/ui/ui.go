@@ -53,6 +53,7 @@ func defaultViews(client *rpc.Client, proxyEngines []engines.Engine) []View {
 	return append(views,
 		newWorkloadsView(client),
 		newEnginesView(client),
+		newModelsView(client),
 		newClusterView(client),
 		newManualView(client),
 		newSettingsView(client),

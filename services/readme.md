@@ -31,8 +31,8 @@ never intercepted.
 The backend's llama.cpp facade is currently opt-in: launch the broker or TUI
 with `--proxy-engines ollama,lmstudio,llamacpp`. It exposes OpenAI-compatible
 traffic on `http://localhost:8080` while the managed router runs on `8081`. The
-TUI builds its proxy controls from that selection but does not yet expose model
-inventory/load/unload controls; the desktop still has no llama.cpp workflow.
+TUI builds proxy controls from that selection and shows local inventory with
+load/unload actions; the desktop still has no llama.cpp workflow.
 
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the

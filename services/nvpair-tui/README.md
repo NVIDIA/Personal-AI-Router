@@ -33,6 +33,7 @@ Tabs:
 | **Proxies** | Selected reverse-proxy facades: status, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). Defaults to Ollama and LM Studio. |
 | **Workloads** | Live cluster workloads (`workloads:subscribe` / `workloads:upsert` / `workloads:remove`). |
 | **Engines** | Local inference engines: install (`i`), start (`s`), stop (`x`), restart (`r`), uninstall (`u`). |
+| **Models** | Local model inventory and loaded/idle/unknown state for every running engine; load (`enter`) or unload (`u`) the selected model. |
 | **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, remove a member (`r`), leave (`L`). |
 | **Manual** | User-added nodes: add by address (`a`), remove (`r`). |
 | **Settings** | The node-settings store (force-ports, cluster auto-sync, cluster id/name). |
