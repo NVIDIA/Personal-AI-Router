@@ -41,6 +41,8 @@ var allowedPlaceholders = map[string]bool{
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 var resultMatchFieldPathRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*(?:\.[a-zA-Z_][a-zA-Z0-9_-]*)*$`)
+var artifactNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+var sha256Re = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 // engineNameRe restricts engine names to a safe charset — the name is
 // used as a filesystem path component (the per-engine install dir), so
@@ -68,12 +70,13 @@ type Platform struct {
 	Runtime   Runtime    `json:"runtime"`
 }
 
-// Install describes how to obtain the engine in user mode. A pinned
-// download (fetch.sha256 set) is checksum-verified before its `run`
-// command executes; an unpinned fetch is HTTPS-only (see download).
+// Install describes how to obtain the engine in user mode. Fetch may be
+// unpinned, but every member of Artifacts is checksum-verified before `run`
+// executes. All downloads are HTTPS-only outside loopback.
 type Install struct {
-	Fetch *Fetch   `json:"fetch,omitempty"`
-	Run   []string `json:"run,omitempty"`
+	Fetch     *Fetch            `json:"fetch,omitempty"`
+	Artifacts []InstallArtifact `json:"artifacts,omitempty"`
+	Run       []string          `json:"run,omitempty"`
 	// Script is an escape hatch for vendors that only ship a script
 	// installer. It runs without checksum verification — strictly opt-in
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
@@ -95,6 +98,14 @@ type Uninstall struct {
 // Fetch is an engine download. SHA256, when set, pins it (verified
 // before run); when empty the download is HTTPS-only with a warning.
 type Fetch struct {
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256"`
+}
+
+// InstallArtifact is one checksum-pinned member of a multi-file install.
+// Its download is available to install.run as {download_<name>}.
+type InstallArtifact struct {
+	Name   string `json:"name"`
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
 }
@@ -643,14 +654,34 @@ func (p *Platform) validate(key string) error {
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
-		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || len(p.Install.Run) > 0) {
-			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/run (a script install cannot also be checksum-pinned)", key)
+		hasArtifacts := len(p.Install.Artifacts) > 0
+		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || hasArtifacts || len(p.Install.Run) > 0) {
+			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/artifacts/run (a script install cannot also be checksum-pinned)", key)
 		}
-		if len(p.Install.Run) > 0 && p.Install.Fetch == nil {
-			return fmt.Errorf("platform %q: install.run requires a fetch (the artifact the run command unpacks)", key)
+		if p.Install.Fetch != nil && hasArtifacts {
+			return fmt.Errorf("platform %q: install.fetch and install.artifacts are mutually exclusive", key)
+		}
+		if len(p.Install.Run) > 0 && p.Install.Fetch == nil && !hasArtifacts {
+			return fmt.Errorf("platform %q: install.run requires a fetch or artifacts (the downloads the run command uses)", key)
 		}
 		if p.Install.Fetch != nil && strings.TrimSpace(p.Install.Fetch.URL) == "" {
 			return fmt.Errorf("platform %q: install.fetch.url is required when fetch is present", key)
+		}
+		names := make(map[string]bool, len(p.Install.Artifacts))
+		for index, artifact := range p.Install.Artifacts {
+			if !artifactNameRe.MatchString(artifact.Name) {
+				return fmt.Errorf("platform %q: install.artifacts[%d].name %q must match [a-z][a-z0-9_]{0,31}", key, index, artifact.Name)
+			}
+			if names[artifact.Name] {
+				return fmt.Errorf("platform %q: duplicate install artifact name %q", key, artifact.Name)
+			}
+			names[artifact.Name] = true
+			if err := validateDownloadURL(artifact.URL); err != nil {
+				return fmt.Errorf("platform %q: install artifact %q: %w", key, artifact.Name, err)
+			}
+			if !sha256Re.MatchString(strings.TrimSpace(artifact.SHA256)) {
+				return fmt.Errorf("platform %q: install artifact %q requires a 64-character hexadecimal sha256", key, artifact.Name)
+			}
 		}
 		switch p.Install.Mode {
 		case "", "user", "admin":
@@ -756,10 +787,22 @@ func (a *Action) validate(name string) error {
 // validatePlaceholders rejects any `{token}` outside allowedPlaceholders
 // across every templated string in the manifest.
 func (m *Manifest) validatePlaceholders() error {
+	allowed := make(map[string]bool, len(allowedPlaceholders))
+	for name := range allowedPlaceholders {
+		allowed[name] = true
+	}
+	for _, platform := range m.Platforms {
+		if platform.Install == nil {
+			continue
+		}
+		for _, artifact := range platform.Install.Artifacts {
+			allowed["download_"+artifact.Name] = true
+		}
+	}
 	for _, s := range m.templatedStrings() {
 		for _, match := range placeholderRe.FindAllStringSubmatch(s, -1) {
-			if !allowedPlaceholders[match[1]] {
-				return fmt.Errorf("unknown placeholder {%s} (allowed: %s)", match[1], strings.Join(allowedPlaceholderList(), ", "))
+			if !allowed[match[1]] {
+				return fmt.Errorf("unknown placeholder {%s} (allowed: %s)", match[1], strings.Join(placeholderList(allowed), ", "))
 			}
 		}
 	}
@@ -769,8 +812,12 @@ func (m *Manifest) validatePlaceholders() error {
 // allowedPlaceholderList returns the allowed placeholder names, sorted,
 // so error messages can't drift from the actual allow-set.
 func allowedPlaceholderList() []string {
-	out := make([]string, 0, len(allowedPlaceholders))
-	for k := range allowedPlaceholders {
+	return placeholderList(allowedPlaceholders)
+}
+
+func placeholderList(placeholders map[string]bool) []string {
+	out := make([]string, 0, len(placeholders))
+	for k := range placeholders {
 		out = append(out, k)
 	}
 	sort.Strings(out)

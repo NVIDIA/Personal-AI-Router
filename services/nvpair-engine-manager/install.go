@@ -96,6 +96,18 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			vars["download"] = dp
 			e.emitInstallProgress(engine, "verified", 50)
 		}
+		if len(inst.Artifacts) > 0 {
+			paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
+			defer removeDownloadedFiles(paths)
+			if err != nil {
+				e.reportInstallFailed(engine, err)
+				return err
+			}
+			for name, downloadPath := range artifactVars {
+				vars[name] = downloadPath
+			}
+			e.emitInstallProgress(engine, "verified", 50)
+		}
 		if len(inst.Run) > 0 {
 			e.emitInstallProgress(engine, "installing", 75)
 			args, err := resolveArgs(inst.Run, vars)
@@ -234,6 +246,9 @@ func validateDownloadURL(raw string) error {
 	if err != nil {
 		return fmt.Errorf("invalid download url %q: %w", raw, err)
 	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("download url %q must include a host", raw)
+	}
 	switch u.Scheme {
 	case "https":
 		return nil
@@ -248,6 +263,53 @@ func validateDownloadURL(raw string) error {
 }
 
 func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (string, error) {
+	return e.downloadWithProgress(ctx, engine, f, func(percent int) {
+		e.emitInstallProgress(engine, "downloading", percent)
+	})
+}
+
+func (e *Executor) downloadInstallArtifacts(
+	ctx context.Context,
+	engine string,
+	artifacts []InstallArtifact,
+) ([]string, map[string]string, error) {
+	paths := make([]string, 0, len(artifacts))
+	vars := make(map[string]string, len(artifacts))
+	e.emitInstallProgress(engine, "downloading", 0)
+	for index, artifact := range artifacts {
+		fetch := &Fetch{URL: artifact.URL, SHA256: artifact.SHA256}
+		downloadPath, err := e.downloadWithProgress(ctx, engine, fetch, func(percent int) {
+			e.emitInstallProgress(engine, "downloading", aggregateArtifactProgress(index, len(artifacts), percent))
+		})
+		if err != nil {
+			return paths, vars, fmt.Errorf("download artifact %q: %w", artifact.Name, err)
+		}
+		paths = append(paths, downloadPath)
+		vars["download_"+artifact.Name] = downloadPath
+		e.emitInstallProgress(engine, "downloading", aggregateArtifactProgress(index, len(artifacts), 100))
+	}
+	return paths, vars, nil
+}
+
+func aggregateArtifactProgress(index, count, percent int) int {
+	percent = max(0, min(percent, 100))
+	start := index * 50 / count
+	end := (index + 1) * 50 / count
+	return start + (end-start)*percent/100
+}
+
+func removeDownloadedFiles(paths []string) {
+	for _, downloadPath := range paths {
+		_ = os.Remove(downloadPath)
+	}
+}
+
+func (e *Executor) downloadWithProgress(
+	ctx context.Context,
+	engine string,
+	f *Fetch,
+	onProgress func(int),
+) (string, error) {
 	if err := validateDownloadURL(f.URL); err != nil {
 		return "", err
 	}
@@ -273,9 +335,7 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 	if err != nil {
 		return "", err
 	}
-	pw := &progressWriter{total: resp.ContentLength, onPct: func(p int) {
-		e.emitInstallProgress(engine, "downloading", p)
-	}}
+	pw := &progressWriter{total: resp.ContentLength, onPct: onProgress}
 	h := sha256.New()
 	// Read one byte past the cap so we can detect (and reject) overflow.
 	n, err := io.Copy(io.MultiWriter(tmp, h), io.TeeReader(io.LimitReader(resp.Body, maxDownloadBytes+1), pw))

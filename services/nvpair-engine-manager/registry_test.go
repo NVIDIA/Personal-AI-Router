@@ -105,6 +105,29 @@ func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsNamedInstallArtifacts(t *testing.T) {
+	m := validManifest()
+	setInstallArtifacts(&m, validInstallArtifacts())
+	if err := m.Validate(); err != nil {
+		t.Fatalf("named install artifacts rejected: %v", err)
+	}
+}
+
+func validInstallArtifacts() []InstallArtifact {
+	return []InstallArtifact{
+		{Name: "server", URL: "https://example/server.zip", SHA256: strings.Repeat("a", 64)},
+		{Name: "cudart", URL: "https://example/cudart.zip", SHA256: strings.Repeat("b", 64)},
+	}
+}
+
+func setInstallArtifacts(m *Manifest, artifacts []InstallArtifact) {
+	p := m.Platforms["linux/amd64"]
+	p.Install.Fetch = nil
+	p.Install.Artifacts = artifacts
+	p.Install.Run = []string{"extract", "{download_server}", "{download_cudart}"}
+	m.Platforms["linux/amd64"] = p
+}
+
 func TestValidateRejectsBadEngineName(t *testing.T) {
 	for _, bad := range []string{"../evil", "a/b", `a\b`, "..", ".", "a b", ""} {
 		m := validManifest()
@@ -149,6 +172,37 @@ func TestValidateRejects(t *testing.T) {
 			p.Install.Fetch = nil
 			m.Platforms["linux/amd64"] = p
 		}, "requires a fetch"},
+		{"fetch with artifacts", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Install.Artifacts = validInstallArtifacts()
+			m.Platforms["linux/amd64"] = p
+		}, "mutually exclusive"},
+		{"invalid artifact name", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[0].Name = "../server"
+			setInstallArtifacts(m, artifacts)
+		}, "must match"},
+		{"duplicate artifact name", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[1].Name = artifacts[0].Name
+			setInstallArtifacts(m, artifacts)
+		}, "duplicate install artifact"},
+		{"insecure artifact URL", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[0].URL = "http://example.com/server.zip"
+			setInstallArtifacts(m, artifacts)
+		}, "must be https"},
+		{"invalid artifact checksum", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[0].SHA256 = "deadbeef"
+			setInstallArtifacts(m, artifacts)
+		}, "64-character hexadecimal"},
+		{"unknown artifact placeholder", func(m *Manifest) {
+			setInstallArtifacts(m, validInstallArtifacts())
+			p := m.Platforms["linux/amd64"]
+			p.Install.Run = append(p.Install.Run, "{download_gpu}")
+			m.Platforms["linux/amd64"] = p
+		}, "unknown placeholder {download_gpu}"},
 		{"bad install mode", func(m *Manifest) {
 			p := m.Platforms["linux/amd64"]
 			p.Install.Mode = "root"
