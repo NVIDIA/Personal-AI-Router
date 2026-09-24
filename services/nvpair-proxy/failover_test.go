@@ -536,6 +536,32 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 	})
 }
 
+func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/models" || r.URL.RawQuery != "scope=all" {
+			t.Errorf("upstream request = %s %s?%s, want GET /models?scope=all", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"remapped"}]}`)
+	}))
+	defer upstream.Close()
+
+	profile := lmstudioCase(t).profile
+	profile.Routes = []route{{
+		Path:         "/v1/models",
+		UpstreamPath: "/models",
+		Role:         roleModelListOpenAIGET,
+	}}
+	disc := NewDiscovery()
+	disc.AddManual(nodeFor(t, "remapped", upstream.URL))
+	rec := httptest.NewRecorder()
+	testProxy(profile, disc, profile.FacadePort).soleFacade().
+		handleHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models?scope=all", nil))
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"remapped"`) {
+		t.Fatalf("response = %d %s, want remapped model list", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		serveEmpty := func() *httptest.Server {

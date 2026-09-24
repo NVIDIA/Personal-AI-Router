@@ -78,8 +78,9 @@ const (
 
 // route is one classified request path.
 type route struct {
-	Path string
-	Role routeRole
+	Path         string
+	UpstreamPath string
+	Role         routeRole
 }
 
 // engineProfile is everything the proxy needs to front one engine.
@@ -195,9 +196,9 @@ func engineNames() string {
 	return strings.Join(names, ", ")
 }
 
-// roleFor classifies a request. The bool reports whether the path is one this
+// routeFor classifies a request. The bool reports whether the path is one this
 // engine handles specially; false means forward it verbatim.
-func (p engineProfile) roleFor(method, path string) (routeRole, bool) {
+func (p engineProfile) routeFor(method, path string) (route, bool) {
 	for _, r := range p.Routes {
 		// Keep scanning on a method mismatch rather than bailing: a path may
 		// legitimately appear twice under different methods, and returning
@@ -206,9 +207,21 @@ func (p engineProfile) roleFor(method, path string) (routeRole, bool) {
 		if r.Path != path || r.Role.method() != method {
 			continue
 		}
-		return r.Role, true
+		return r, true
 	}
-	return 0, false
+	return route{}, false
+}
+
+func (p engineProfile) roleFor(method, path string) (routeRole, bool) {
+	r, ok := p.routeFor(method, path)
+	return r.Role, ok
+}
+
+func (r route) upstreamPath() string {
+	if r.UpstreamPath != "" {
+		return r.UpstreamPath
+	}
+	return r.Path
 }
 
 // method is the HTTP method a role applies to.
