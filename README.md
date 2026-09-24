@@ -242,6 +242,8 @@ Each entry assumes the ones before it.
 9. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
+10. **[Proxy response-header timeout](docs/proxy-response-header-timeout.mdx)** —
+   the 120 s upstream header deadline, when it trips, and how to configure it.
 
 Component references, for when you already know what you are looking for:
 
