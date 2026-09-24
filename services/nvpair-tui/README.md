@@ -30,7 +30,7 @@ Tabs:
 | **Overview** | Broker liveness/version/uptime (`ping`) and a per-worker health table derived from the broker's `supervisor:subprocess-crashed:*` errors. |
 | **Errors** | The service-error datastore (`errors:get-initial` + live `errors:update`); `c` clears the selected entry. |
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
-| **Proxies** | Ollama and LM Studio reverse proxies: status, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). |
+| **Proxies** | Selected reverse-proxy facades: status, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). Defaults to Ollama and LM Studio. |
 | **Workloads** | Live cluster workloads (`workloads:subscribe` / `workloads:upsert` / `workloads:remove`). |
 | **Engines** | Local inference engines: install (`i`), start (`s`), stop (`x`), restart (`r`), uninstall (`u`). |
 | **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, remove a member (`r`), leave (`L`). |
@@ -55,9 +55,14 @@ installed `bin/` layout). Override with `--broker-path`:
 ```sh
 nvpair-tui                                   # broker is a sibling binary
 nvpair-tui --broker-path /opt/nvpair/bin/nvpair-ui-broker
+nvpair-tui --proxy-engines ollama,lmstudio,llamacpp
 nvpair-tui --log-level debug                 # own logging (to stderr)
 nvpair-tui --version
 ```
+
+`--proxy-engines` accepts canonical engine ids from the shared engine table,
+passes the same selection to the broker, and builds the Proxies view from it.
+llama.cpp remains opt-in at this checkpoint.
 
 Logging goes to stderr (the broker's logs are shown inside the **Logs**
 tab, not on the terminal), so it never corrupts the full-screen UI.

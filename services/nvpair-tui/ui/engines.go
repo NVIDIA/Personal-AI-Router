@@ -218,10 +218,9 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 // pullParams builds the engine:action{action:"pull_model"} params for a pull.
 // The model name is sent under BOTH "name" and "model" — mirroring
-// PullModelStream's own empty-params default — because the two engines key it
-// differently: Ollama's pull_model is HTTP /api/pull (body key "name"), while
-// LM Studio's is a CLI action `lms get {model}` resolved from the "model" key.
-// Sending only one key silently no-ops the pull on the other engine.
+// PullModelStream's own empty-params default — because bundled engines key it
+// differently: Ollama's HTTP action uses "name", while LM Studio and llama.cpp
+// resolve "model". Sending only one key silently no-ops a supported engine.
 func pullParams(engine, model string) map[string]any {
 	return map[string]any{"engine": engine, "action": "pull_model", "params": map[string]string{"name": model, "model": model}}
 }

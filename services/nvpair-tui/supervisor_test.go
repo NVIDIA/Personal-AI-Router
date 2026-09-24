@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"nvpair-shared/engines"
 )
 
 // TestMain doubles as a fake nvpair-ui-broker when NVPAIR_TUI_FAKE_BROKER=1.
@@ -72,7 +74,7 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sup, err := Spawn(ctx, os.Args[0])
+	sup, err := Spawn(ctx, os.Args[0], engines.ProxyDefaults())
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -103,5 +105,16 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown did not complete")
+	}
+}
+
+func TestBrokerArgsForwardProxySelection(t *testing.T) {
+	llamacpp, ok := engines.ByName("llamacpp")
+	if !ok {
+		t.Fatal("shared engine table has no llamacpp")
+	}
+	got := brokerArgs([]engines.Engine{llamacpp})
+	if len(got) != 2 || got[0] != "--proxy-engines" || got[1] != "llamacpp" {
+		t.Fatalf("broker args = %v, want [--proxy-engines llamacpp]", got)
 	}
 }
