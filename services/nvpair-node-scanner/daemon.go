@@ -1467,6 +1467,17 @@ func (d *daemon) refreshPeersLoop(ctx context.Context) {
 			}
 			d.refreshClusterIdentityOnce()
 			d.refreshModelsOnce()
+			// Re-enrich self. onBrowse deliberately skips our own entry (self
+			// is registry-driven), and publishSelf is otherwise only called
+			// when the registry moves -- a service (un)register, an identity
+			// or address change. Nothing else refreshes the local node GPU,
+			// CPU and memory figures, so they stayed frozen at whatever they
+			// were when the daemon started. Observed on an RTX 3060: the card
+			// filled to 9.1 GB while the directory kept reporting the 0.12 GB
+			// it held at startup, with node-info serving the true value every
+			// two seconds the whole time. A peer converges because every
+			// browse event re-enriches it; self had no equivalent path.
+			d.publishSelf()
 		}
 	}
 }
