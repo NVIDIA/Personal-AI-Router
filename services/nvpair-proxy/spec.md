@@ -98,17 +98,17 @@ The process starts with **no engine and no listener**. The broker then sends one
 `facade/enable` per engine, carrying that engine's port and any alias addresses.
 
 A flag cannot express this. The broker plans a different port for each engine —
-Ollama's managed facade wants `:11434` while LM Studio's wants `:1234`, and
-either may be absent so the child keeps its own persisted port — and a
-single-valued flag carries only one plan.
+Ollama's managed facade wants `:11434`, LM Studio's wants `:1234`, and
+llama.cpp's opt-in facade wants `:8080`; any may be absent so the child keeps
+its own persisted port — and a single-valued flag carries only one plan.
 
 ### 3.1 Why one process
 
 Between scheduler snapshots a facade takes short-lived **reservations** for work
 it has dispatched but that the scheduler has not yet observed. Those live in the
 process, and every facade shares them. If each engine had its own proxy
-process, neither could see the other's reservations, so simultaneous bursts of
-Ollama and LM Studio requests could both select the same node, each incorrectly
+process, none could see the others' reservations, so simultaneous bursts across
+Ollama, LM Studio, and llama.cpp could select the same node, each incorrectly
 believing it was idle.
 Sharing the map is the reason the engines share a process.
 
@@ -163,8 +163,8 @@ For a model-bearing inference request:
 
 1. Filter a request-local discovery snapshot to nodes whose per-engine inventory
    advertises the requested model. Ollama normalizes the implicit `:latest` tag;
-   LM Studio ids match exactly. An empty owner set returns a local `502` without
-   contacting an engine.
+   LM Studio and llama.cpp ids match exactly. An empty owner set returns a local
+   `502` without contacting an engine.
 2. Order the eligible owners: explicit `node/select` pin, then the scheduler's
    priority list, then deterministic default ordering.
 3. Reserve the least estimated-loaded scheduler-listed candidate and move it to
@@ -177,6 +177,9 @@ For a model-bearing inference request:
 
 An ineligible manual selection cannot override the capability gate, and failover
 never broadens to an excluded node.
+
+The llama.cpp facade exposes the OpenAI-compatible `GET /v1/models` route and
+remaps it to the router's `GET /models`; its inference routes remain `/v1/*`.
 
 ### 5.1 Retry bounds
 
@@ -549,12 +552,12 @@ untouched, the primary listener stays up, and a warning is reported.
 
 ## 8. Ports
 
-| | Ollama | LM Studio |
-| --- | --- | --- |
-| Engine's own client-facing port | 11434 | 1234 |
-| Where PAIR relocates the engine | 11435 | 1235 |
-| Standalone port, when `port` is omitted | 11435 | 1234 |
-| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` |
+| | Ollama | LM Studio | llama.cpp |
+| --- | --- | --- | --- |
+| Engine's own client-facing port | 11434 | 1234 | 8080 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 |
+| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 |
+| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` |
 
 A port chosen at runtime via `set-port` is persisted per engine and restored
 when that facade is enabled, taking precedence over the requested port, so the

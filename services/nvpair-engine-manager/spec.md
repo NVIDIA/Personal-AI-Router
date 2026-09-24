@@ -6,7 +6,13 @@ SPDX-License-Identifier: Apache-2.0
 # Microservice: Engine Manager (`nvpair-engine-manager`)
 
 ## 1. Purpose
-A declarative, config-driven control plane for **local inference engines** (Ollama today; Intel / llama.cpp / others later). It owns an engine's entire lifecycle *except serving inference* — locate, install, launch, stop, restart, health, and config-declared actions — so one uniform API manages any engine across OSes with no per-engine code. A third party drops in a JSON manifest and their engine's install/launch/controls "just appear" over the same API: the core extensibility story for an open-source product.
+A declarative, config-driven control plane for **local inference engines**
+(currently Ollama, LM Studio, and llama.cpp). It owns an engine's entire
+lifecycle *except serving inference* — locate, install, launch, stop, restart,
+health, and config-declared actions — so one uniform API manages any engine
+across OSes with no per-engine code. A third party drops in a JSON manifest and
+their engine's install/launch/controls "just appear" over the same API: the core
+extensibility story for an open-source product.
 
 ## 2. Scope
 **In scope**
@@ -22,7 +28,19 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   host-platform port overrides, deleting the file only when it has no other
   settings. Host-platform precedence must not override a successfully saved port
   on reload; malformed existing overrides fail the save and remain intact.
-- Config-declared **actions** covering the full model lifecycle — Ollama: `list_models`, `loaded_models`, `pull_model`, `run_model`, `unload_model`, `delete_model`; LM Studio: `list_models`/`list_downloaded`, `loaded_models`, `pull_model`, `load_model`, `chat`, `unload_model`, `delete_model` (`remove_path` with `lms-disk-path` resolution) — mapped to each engine's local control API. `loaded_models` reports the models currently resident in memory (Ollama `GET /api/ps`, LM Studio `GET /api/v1/models` filtered by nonempty `loaded_instances`), name-extracted via the same declarative `result` spec (with an optional `match` row filter).
+- Config-declared **actions** mapped to each engine's local control API:
+  Ollama declares `list_models`, `loaded_models`, `pull_model`, `run_model`,
+  `unload_model`, and `delete_model`; LM Studio declares
+  `list_models`/`list_downloaded`, `loaded_models`, `pull_model`, `load_model`,
+  `chat`, `unload_model`, and `delete_model` (`remove_path` with
+  `lms-disk-path` resolution);
+  llama.cpp declares list, loaded-list, pull, load, and unload with exact model
+  ids, and intentionally declares no delete action. `loaded_models` reports
+  models currently resident in memory, name-extracted via the same declarative
+  `result` spec with optional nested-path and row filters: Ollama uses
+  `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
+  `GET /api/v1/models`, and llama.cpp matches nested `status.value == loaded`
+  records from `GET /models`.
 - Per-engine stdout/stderr log capture and structured operational error records, surfaced via the errors pipeline.
 - A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls the loaded set and pushes `engine:models-changed` when it changes (explicit load/unload, JIT auto-load, TTL/idle eviction).
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
@@ -31,6 +49,7 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - **Inference traffic** — stays with `nvpair-proxy`; this service never proxies `/api/chat` etc.
 - **Multi-instance per engine and an MCP server** — future-additive, not v1.
 - **The node's error list** — owned by `nvpair-errors`, which holds it as in-memory session state; this service only emits `errors:report` / `errors:clear`.
+- Automatic cleanup of persistent llama.cpp model downloads.
 
 ## 3. Key Use Cases
 - **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
@@ -160,7 +179,12 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
 ## 9. Data Ownership
 - **Owned**: the in-memory engine registry (parsed manifests + per-engine runtime state) and per-engine log/error ring buffers — transient only.
 - **Source of truth**: no — `nvpair-errors` owns the node's error list (in memory, for the session); model inventories belong to the engines; manifests on disk are authored elsewhere.
-- **Storage**: in-memory; manifests read from the per-user data dir's `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on macOS) plus bundled `manifests/*.json`. No database.
+- **Storage**: in-memory; manifests read from the per-user data dir's
+  `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on
+  Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, and
+  `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on
+  macOS) plus bundled `manifests/*.json`. llama.cpp uses a managed sibling cache
+  that survives uninstall and must currently be removed manually. No database.
 
 ## 10. Design Constraints
 - **Performance**: control plane, not inference; sub-second RPCs except install (network-bound) and start (bounded by the readiness timeout).

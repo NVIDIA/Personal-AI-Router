@@ -24,6 +24,7 @@ history.
 | Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
+| llama.cpp backend          | Backend-only opt-in             | Services can manage and route it; Electron and renderer contracts do not expose it yet                                                          |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
@@ -99,26 +100,28 @@ they survive worker restarts.
 
 ## Routing and inference
 
-Both text-engine facades are broker-owned and cluster-aware. They live in one
+All engine facades are broker-owned and cluster-aware. They live in one
 `nvpair-proxy` process, each enabled after spawn on its own port, and each
 serves its engine's dialect:
 
 - the Ollama facade serves the Ollama-compatible surface;
-- the LM Studio facade serves the LM Studio/OpenAI-compatible surface.
+- the LM Studio facade serves the LM Studio/OpenAI-compatible surface;
+- the opt-in llama.cpp facade serves OpenAI-compatible routes and remaps
+  `GET /v1/models` to the router's `GET /models`.
 
 Sharing a process is what lets them share the burst reservations the scheduler
-depends on: two facades bursting at once compete for the same node's GPU, so a
-dispatch through either has to be visible to the other.
+depends on: facades bursting at once compete for the same node's GPU, so a
+dispatch through any one has to be visible to the others.
 
 Routing precedence is manual selection, scheduler priority, then deterministic
 proxy ordering. Personal AI Router leaves proxies in automatic mode.
 
-`nvpair-job-scheduler` combines total queued and running workload across both
-engines with a smoothed 0–3 GPU-pressure signal. The backend scanner and manual
-node worker provide maximum-GPU utilization, while invalid, missing, or
-older-than-10-second samples receive neutral pressure. The scheduler emits order,
-pending count, and pressure; the broker forwards each `schedule:priority`
-snapshot to the matching proxy through `node/set-priority`. Each proxy adds
+`nvpair-job-scheduler` combines total queued and running workload across all
+enabled engines with a smoothed 0–3 GPU-pressure signal. The backend scanner and
+manual node worker provide maximum-GPU utilization, while invalid, missing, or
+older-than-10-second samples receive neutral pressure. The scheduler emits
+order, pending count, and pressure; the broker forwards each `schedule:priority`
+snapshot to the matching facade through `node/set-priority`. Each facade adds
 local reservations, so its estimate is
 `pending + gpuPressure + localReservations` during concurrent bursts.
 
@@ -133,8 +136,8 @@ LAN-reachable. Each node's proxy exposes two personalities on one listener: a
 loopback-only plaintext path for local clients, and a LAN ingress gated by
 cluster mTLS that forwards trusted-peer requests to the loopback engine. Because
 the engine port is private, discovery advertises the **promoted proxy port** for
-`ol`/`lm`, and the peer's real engine port is knowable only from authoritative
-`engine:remote-get-installed` facts.
+`ol`/`lm`/`lc`, and the peer's real engine port is knowable only from
+authoritative `engine:remote-get-installed` facts.
 
 Personal AI Router consequences (all reflection, no security implementation):
 
@@ -144,6 +147,25 @@ Personal AI Router consequences (all reflection, no security implementation):
 - Because both peers must speak the mTLS channel, mixed-version clusters cannot
   run inference across the version boundary. Local use and the shared
   nearby-model list are unaffected.
+
+### llama.cpp backend checkpoint
+
+The bundled backend manifest can install and start `llama-server`, list exact
+router model ids, stream model downloads over SSE, and load or unload a model.
+It declares no delete action, so persistent downloads currently require manual
+cache cleanup. Its `LLAMA_CACHE` directory is a sibling of the install directory
+and survives uninstall and reinstall.
+
+Windows and Linux installs use checksum-pinned server and CUDA-runtime archive
+pairs; macOS uses the standard Metal-capable archive. The on-demand download is
+roughly 0.6–0.8 GiB and is not part of the application installer. GPU layers
+remain `auto`, allowing supported NVIDIA/Metal acceleration and dynamic CPU
+fallback; hardware acceptance is still required to confirm acceleration.
+
+The broker keeps the facade out of its default set. A backend operator must pass
+`--proxy-engines ollama,lmstudio,llamacpp`, which places the facade on `8080`
+and the managed router on `8081`. Electron has no llama.cpp engine identity,
+catalog, bridge mapping, or renderer workflow at this checkpoint.
 
 ## Engine lifecycle
 

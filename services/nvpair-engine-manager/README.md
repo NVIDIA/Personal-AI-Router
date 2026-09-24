@@ -5,14 +5,30 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-engine-manager
 
-A config-driven control plane for local inference engines (Ollama today;
-Intel/others via a dropped-in manifest). It manages everything about an
-engine **except serving inference**: detect, user-mode install,
+A config-driven control plane for local inference engines. The bundled
+manifests support Ollama, LM Studio, and llama.cpp. It manages everything about
+an engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
+
+### llama.cpp backend checkpoint
+
+The `llamacpp` manifest runs `llama-server` in router mode on loopback port
+`8081`. It can list, download, load, and unload exact model ids such as
+`owner/repository:Q4_K_M`; deletion is not declared. Downloads use `/models/sse`
+for progress, and `LLAMA_CACHE` points to a managed sibling directory so models
+survive engine uninstall and reinstall. Remove that cache manually when needed.
+
+Windows and Linux installs download checksum-pinned server and CUDA-runtime
+archive pairs (CUDA 12.x for x64 and CUDA 13.4 for arm64); macOS uses the
+standard Metal-capable archive. These on-demand downloads are roughly
+0.6–0.8 GiB and do not enlarge the PAIR installer. llama.cpp keeps its `auto`
+GPU-layer policy: supported NVIDIA/Metal devices can accelerate, while the
+dynamic CPU backend remains the fallback. Hardware acceptance, not `/health`
+alone, is required to claim GPU activation.
 
 ## Communication
 

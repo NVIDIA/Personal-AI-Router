@@ -154,9 +154,9 @@ func (b *Broker) engineProxy(p engineProxyProfile) *engineProxyRuntime {
 	return b.engineProxies[p.Name]
 }
 
-// ollamaState and lmstudioState are shorthand for the two engines this build
-// ships, for code that is inherently about one of them. Profile-generic code
-// should take an engineProxyProfile and call engineProxy instead.
+// ollamaState and lmstudioState are shorthands for code that is inherently
+// about those engines' special ownership behavior. Profile-generic code should
+// take an engineProxyProfile and call engineProxy instead.
 func (b *Broker) ollamaState() *engineProxyRuntime   { return b.engineProxy(ollamaProxyProfile) }
 func (b *Broker) lmstudioState() *engineProxyRuntime { return b.engineProxy(lmstudioProxyProfile) }
 
