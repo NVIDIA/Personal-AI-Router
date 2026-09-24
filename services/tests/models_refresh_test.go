@@ -93,14 +93,16 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 	// only the periodic refresh loop can converge the directory. The deadline
 	// comfortably exceeds the refresh interval so at least one sweep runs.
 	stub.set(map[string]any{
-		"models": []string{"llama3:8b", "qwen:0.5b"},
+		"models": []string{"llama3:8b", "qwen:0.5b", "org/router-model-GGUF:Q4_K_M"},
 		"modelsByEngine": map[string][]string{
 			"ollama":   {"llama3:8b"},
 			"lmstudio": {"qwen:0.5b"},
+			"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 		},
 		"loadedByEngine": map[string][]string{
 			"ollama":   {"llama3:8b"},
 			"lmstudio": {},
+			"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 		},
 	})
 	pollForNode(t, stdin, msgs, instance, 45*time.Second, func(n availableNode) bool {
@@ -116,13 +118,15 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 		"modelsByEngine": map[string][]string{
 			"ollama":   {},
 			"lmstudio": {},
+			"llamacpp": {},
 		},
 		"loadedByEngine": map[string][]string{
 			"ollama":   {},
 			"lmstudio": {},
+			"llamacpp": {},
 		},
 	})
-	emptyByEngine := map[string][]string{"ollama": {}, "lmstudio": {}}
+	emptyByEngine := map[string][]string{"ollama": {}, "lmstudio": {}, "llamacpp": {}}
 	pollForNode(t, stdin, msgs, instance, 45*time.Second, func(n availableNode) bool {
 		return len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
 			byEngineEqual(n.LoadedByEngine, emptyByEngine)
