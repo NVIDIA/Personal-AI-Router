@@ -69,6 +69,17 @@ func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
+	m := validManifest()
+	m.Actions[pullModelAction] = Action{
+		HTTP:             &ActionHTTP{Method: "POST", Path: "/models"},
+		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("llama.cpp model pull protocol rejected: %v", err)
+	}
+}
+
 func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
@@ -139,6 +150,18 @@ func TestValidateRejects(t *testing.T) {
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
+		{"unknown progress protocol", func(m *Manifest) {
+			m.Actions[pullModelAction] = Action{
+				HTTP:             &ActionHTTP{Method: "POST", Path: "/models"},
+				ProgressProtocol: "unknown",
+			}
+		}, "unsupported progress_protocol"},
+		{"progress protocol on other action", func(m *Manifest) {
+			m.Actions["list_models"] = Action{
+				HTTP:             &ActionHTTP{Method: "GET", Path: "/models"},
+				ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+			}
+		}, "requires the HTTP pull_model action"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

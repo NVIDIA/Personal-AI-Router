@@ -7,9 +7,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -56,6 +61,133 @@ func TestModelFromParams(t *testing.T) {
 		if got := modelFromParams([]byte(c.params)); got != c.want {
 			t.Fatalf("modelFromParams(%q) = %q, want %q", c.params, got, c.want)
 		}
+	}
+}
+
+func TestLlamaCPPModelsEventPercentAggregatesFiles(t *testing.T) {
+	var event llamaCPPModelsEvent
+	err := json.Unmarshal([]byte(`{
+		"model":"owner/repo:Q4_K_M",
+		"event":"download_progress",
+		"data":{"progress":{
+			"model.gguf":{"done":75,"total":100},
+			"mmproj.gguf":{"done":25,"total":100}
+		}}
+	}`), &event)
+	if err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	if got := event.percent(); got != 50 {
+		t.Fatalf("aggregate percent = %d, want 50", got)
+	}
+}
+
+func TestPullModelLlamaCPPSSESubscribesBeforeStarting(t *testing.T) {
+	const model = "owner/repo:Q4_K_M"
+	subscribed := make(chan struct{})
+	started := make(chan struct{})
+	var postBeforeSubscribe atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models/sse", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		close(subscribed)
+		_, _ = fmt.Fprint(w, ": ready\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-started:
+		case <-r.Context().Done():
+			return
+		}
+		write := func(event map[string]any) {
+			data, err := json.Marshal(event)
+			if err != nil {
+				t.Errorf("encode SSE event: %v", err)
+				return
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			w.(http.Flusher).Flush()
+		}
+		write(map[string]any{"model": "other/model", "event": "download_finished", "data": map[string]any{}})
+		write(map[string]any{
+			"model": model,
+			"event": "download_progress",
+			"data": map[string]any{"progress": map[string]any{
+				"model.gguf":  map[string]int64{"done": 75, "total": 100},
+				"mmproj.gguf": map[string]int64{"done": 25, "total": 100},
+			}},
+		})
+		write(map[string]any{"model": model, "event": "download_finished", "data": map[string]any{}})
+	})
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-subscribed:
+		default:
+			postBeforeSubscribe.Store(true)
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Model != model {
+			http.Error(w, "invalid model", http.StatusBadRequest)
+			return
+		}
+		close(started)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"success":true}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, portText, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+	m := testEngineManifest(fakeEngineBin)
+	m.Actions[pullModelAction] = Action{
+		HTTP:             &ActionHTTP{Method: http.MethodPost, Path: "/models"},
+		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+	}
+	reg := NewRegistry()
+	reg.engines[m.Engine] = m
+	ex := NewExecutor(reg, NewReporter(nil), nil, t.TempDir())
+	st, err := ex.state(m.Engine)
+	if err != nil {
+		t.Fatalf("resolve engine state: %v", err)
+	}
+	st.running = true
+	st.port = port
+	progress, cancel := ex.progress.subscribe(m.Engine)
+	defer cancel()
+
+	result, err := ex.PullModelStream(context.Background(), m.Engine, model, json.RawMessage(`{"model":"`+model+`"}`))
+	if err != nil {
+		t.Fatalf("pull model: %v", err)
+	}
+	var response struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil || !response.Success {
+		t.Fatalf("pull result = %s, error %v", result, err)
+	}
+	if postBeforeSubscribe.Load() {
+		t.Fatal("download POST arrived before the SSE subscription was open")
+	}
+	var events []ProgressEvent
+	for len(progress) > 0 {
+		events = append(events, <-progress)
+	}
+	if len(events) != 2 {
+		t.Fatalf("progress events = %+v, want downloading and success", events)
+	}
+	if events[0].Stage != "downloading" || events[0].Percent != 50 {
+		t.Fatalf("download event = %+v, want 50%%", events[0])
+	}
+	if events[1].Stage != "success" || events[1].Percent != 100 {
+		t.Fatalf("terminal event = %+v, want success at 100%%", events[1])
 	}
 }
 

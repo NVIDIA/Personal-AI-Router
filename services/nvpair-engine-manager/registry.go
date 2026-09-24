@@ -193,6 +193,11 @@ type Action struct {
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
 	Cmd         []string          `json:"cmd,omitempty"`
 	RemovePath  *ActionRemovePath `json:"remove_path,omitempty"`
+	// ProgressProtocol selects a narrowly defined streaming adapter for an
+	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
+	// behavior; named protocols are validated so a typo cannot silently fall
+	// back to the wrong completion semantics.
+	ProgressProtocol string `json:"progress_protocol,omitempty"`
 	// ModelResolution, when set, expands or resolves the model param:
 	//   - "lms-get" on Cmd actions: try as-given → Hub id → Hugging Face URL.
 	//   - "lms-disk-path" on RemovePath actions: map logical ids to on-disk
@@ -701,6 +706,14 @@ func (a *Action) validate(name string) error {
 	}
 	if hasHTTP && (strings.TrimSpace(a.HTTP.Method) == "" || strings.TrimSpace(a.HTTP.Path) == "") {
 		return fmt.Errorf("action %q: http.method and http.path are required", name)
+	}
+	if a.ProgressProtocol != "" {
+		if name != pullModelAction || !hasHTTP {
+			return fmt.Errorf("action %q: progress_protocol requires the HTTP pull_model action", name)
+		}
+		if a.ProgressProtocol != pullProgressProtocolLlamaCPPModelsSSE {
+			return fmt.Errorf("action %q: unsupported progress_protocol %q", name, a.ProgressProtocol)
+		}
 	}
 	if a.Result != nil && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
 		return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)

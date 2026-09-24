@@ -14,10 +14,10 @@ package main
 // Ollama's /api/pull streams newline-delimited JSON status objects
 // ({"status":...,"total":N,"completed":M}); each line maps to a progress event,
 // coalesced so only changes in stage/percent are emitted (a single layer streams
-// many byte-progress lines at the same rendered percent). CLI-driven pulls (LM
-// Studio's `lms get`) don't expose structured line progress here, so they emit a
-// single "pulling" marker and return the final result — the security/trust
-// boundary and result contract are identical.
+// many byte-progress lines at the same rendered percent). llama.cpp instead
+// acknowledges POST /models immediately and reports completion on /models/sse;
+// its manifest opts into that named adapter. CLI-driven pulls (LM Studio's
+// `lms get`) emit one "pulling" marker and return the final result.
 
 import (
 	"bufio"
@@ -31,8 +31,13 @@ import (
 	"strings"
 )
 
-// pullModelAction is the manifest action name every engine uses for model pulls.
-const pullModelAction = "pull_model"
+const (
+	// pullModelAction is the manifest action name every engine uses for model pulls.
+	pullModelAction = "pull_model"
+	// pullProgressProtocolLlamaCPPModelsSSE names the pinned llama.cpp router
+	// protocol: subscribe first, POST /models, then await a matching terminal SSE.
+	pullProgressProtocolLlamaCPPModelsSSE = "llamacpp-models-sse"
+)
 
 // modelFromParams extracts a human-readable model name from an engine:action
 // pull_model params object, preferring Ollama's "name" body key then the generic
@@ -91,6 +96,9 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	if !running {
 		return nil, fmt.Errorf("engine %q is not running", engine)
 	}
+	if act.ProgressProtocol == pullProgressProtocolLlamaCPPModelsSSE {
+		return e.pullModelLlamaCPPSSE(ctx, engine, model, act, port, params)
+	}
 	path, err := resolvePlaceholders(act.HTTP.Path, map[string]string{"port": strconv.Itoa(port)})
 	if err != nil {
 		return nil, err
@@ -138,6 +146,117 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		return nil, fmt.Errorf("pull %q: %w", model, err)
 	}
 	return last, nil
+}
+
+// pullModelLlamaCPPSSE runs llama.cpp's asynchronous router download protocol.
+// The SSE response must be open before POST /models because terminal events are
+// one-shot broadcasts; subscribing afterward can miss a fast completion.
+func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model string, act Action, port int, params json.RawMessage) (json.RawMessage, error) {
+	if strings.TrimSpace(model) == "" {
+		return nil, fmt.Errorf("pull model is required for %s", pullProgressProtocolLlamaCPPModelsSSE)
+	}
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	sseReq, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models/sse", nil)
+	if err != nil {
+		return nil, err
+	}
+	sseReq.Header.Set("Accept", "text/event-stream")
+	sseResp, err := e.client.Do(sseReq)
+	if err != nil {
+		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, err)
+	}
+	defer sseResp.Body.Close()
+	if sseResp.StatusCode < 200 || sseResp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(sseResp.Body, 64*1024))
+		return nil, fmt.Errorf("pull %q: progress stream returned HTTP %d: %s", model, sseResp.StatusCode, strings.TrimSpace(string(data)))
+	}
+
+	path, err := resolvePlaceholders(act.HTTP.Path, map[string]string{"port": strconv.Itoa(port)})
+	if err != nil {
+		return nil, err
+	}
+	startReq, err := http.NewRequestWithContext(ctx, strings.ToUpper(act.HTTP.Method), baseURL+path, bytes.NewReader(params))
+	if err != nil {
+		return nil, err
+	}
+	startReq.Header.Set("Content-Type", "application/json")
+	startResp, err := e.client.Do(startReq)
+	if err != nil {
+		return nil, fmt.Errorf("pull %q: start download: %w", model, err)
+	}
+	startData, readErr := io.ReadAll(io.LimitReader(startResp.Body, 64*1024))
+	startResp.Body.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("pull %q: read start response: %w", model, readErr)
+	}
+	if startResp.StatusCode < 200 || startResp.StatusCode >= 300 {
+		return nil, fmt.Errorf("pull %q: engine returned HTTP %d: %s", model, startResp.StatusCode, strings.TrimSpace(string(startData)))
+	}
+	var started struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(startData, &started); err != nil || !started.Success {
+		return nil, fmt.Errorf("pull %q: engine did not accept the download", model)
+	}
+
+	lastPct := -1
+	sc := bufio.NewScanner(sseResp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		var event llamaCPPModelsEvent
+		if err := json.Unmarshal(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:"))), &event); err != nil || event.Model != model {
+			continue
+		}
+		switch event.Event {
+		case "download_progress":
+			pct := event.percent()
+			if pct != lastPct {
+				lastPct = pct
+				e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "downloading", Percent: pct, Message: model})
+			}
+		case "download_finished":
+			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: model})
+			return json.RawMessage(startData), nil
+		case "download_failed":
+			return nil, fmt.Errorf("pull %q: llama.cpp reported download failure", model)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("pull %q: progress stream: %w", model, err)
+	}
+	return nil, fmt.Errorf("pull %q: progress stream ended before completion", model)
+}
+
+type llamaCPPModelsEvent struct {
+	Model string `json:"model"`
+	Event string `json:"event"`
+	Data  struct {
+		Progress map[string]struct {
+			Done  int64 `json:"done"`
+			Total int64 `json:"total"`
+		} `json:"progress"`
+	} `json:"data"`
+}
+
+func (e llamaCPPModelsEvent) percent() int {
+	var done, total int64
+	for _, file := range e.Data.Progress {
+		if file.Total <= 0 {
+			continue
+		}
+		total += file.Total
+		if file.Done > 0 {
+			done += min(file.Done, file.Total)
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return int(done * 100 / total)
 }
 
 // engineDisplayName returns the manifest display name for user-facing copy.
