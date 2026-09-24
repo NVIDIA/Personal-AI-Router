@@ -755,6 +755,26 @@ func (b *Broker) proxyBringUpContext() (context.Context, context.CancelFunc) {
 func (b *Broker) enableEngineFacade(
 	ctx context.Context, pp *proxyProcess, profile engineProxyProfile, alias ollamaHostAlias,
 ) error {
+	return b.enableEngineFacadeWithPortCheck(ctx, pp, profile, alias, tcpPortAvailable)
+}
+
+func (b *Broker) enableEngineFacadeWithPortCheck(
+	ctx context.Context,
+	pp *proxyProcess,
+	profile engineProxyProfile,
+	alias ollamaHostAlias,
+	available func(int) bool,
+) error {
+	if profile.Ownership == prepositionedEngine {
+		return b.enableProxyFacadeWithFallback(
+			ctx,
+			pp,
+			b.prepositionedFacadeSpec(profile),
+			func(failed int) int {
+				return b.prepositionedFallbackPortWithCheck(profile, failed, available)
+			},
+		)
+	}
 	switch profile.Name {
 	case ollamaProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.ollamaFacadeSpec(alias), b.ollamaFallbackPort)
@@ -775,6 +795,9 @@ func (b *Broker) enableEngineFacade(
 // alias. Finishing is what returns the alias, which is only correct once this
 // engine is known not to be coming up.
 func (b *Broker) blockAndFinishEngineProxy(profile engineProxyProfile) {
+	if profile.Ownership == prepositionedEngine {
+		return
+	}
 	switch profile.Name {
 	case ollamaProxyProfile.Name:
 		if b.ollamaState().managedFacade.Load() {
@@ -981,8 +1004,13 @@ func (b *Broker) forwardProxyProcessNotification(
 			slog.Debug("ignoring unaddressed proxy notification", "method", bare)
 		}
 	default:
-		slog.Warn("proxy addressed a notification to an unknown engine",
-			"engine", engine, "method", bare)
+		profile, known := engineProxyProfileFor(engine)
+		if known && profile.Ownership == prepositionedEngine {
+			b.forwardPrepositionedProxyNotification(profile, method, params)
+			return
+		}
+		slog.Warn("proxy addressed a notification without a handler",
+			"engine", engine, "method", bare, "known", known)
 	}
 }
 

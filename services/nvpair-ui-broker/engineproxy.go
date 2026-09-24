@@ -30,8 +30,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-// engineOwnership answers a single question: may the broker reposition this
-// engine's process while it is running?
+// engineOwnership selects the broker's port-ownership strategy.
 type engineOwnership int
 
 const (
@@ -45,6 +44,11 @@ const (
 	// and has an official stop command for it, so it may be stopped and
 	// repositioned before the proxy starts. LM Studio.
 	managedEngine
+
+	// prepositionedEngine — engine-manager already owns the process and keeps
+	// it on EnginePortBase. The broker only places the facade, never gates
+	// engine requests or takes over/repositions the backend.
+	prepositionedEngine
 )
 
 // engineProxyProfile is everything the broker needs to supervise one engine's
@@ -52,9 +56,9 @@ const (
 type engineProxyProfile struct {
 	engines.Engine
 
-	// Ownership decides the port choreography: plan-then-commit for an
-	// adopted engine, move-then-verify for a managed one. It is the only
-	// judgment call in adding an engine.
+	// Ownership decides the port choreography: plan-then-commit for an adopted
+	// engine, move-then-verify for a managed one, or facade-only placement for
+	// a prepositioned one. It is the only judgment call in adding an engine.
 	Ownership engineOwnership
 
 	// HealthProbePath is the path whose 200 means "this engine is answering".
@@ -295,6 +299,34 @@ func (b *Broker) enableProxyFacadeWithFallback(
 	return b.enableProxyFacade(parent, p, spec)
 }
 
+// prepositionedFacadeSpec prefers the stock facade port, while preserving a
+// fallback or explicit port already selected for this broker lifetime.
+func (b *Broker) prepositionedFacadeSpec(profile engineProxyProfile) enableFacadeRequest {
+	spec := enableFacadeRequest{Engine: profile.Name, Port: profile.FacadePort}
+	if port := int(b.engineProxy(profile).startupPort.Load()); port != 0 {
+		spec.Port = port
+		spec.IgnorePersistedPort = true
+	}
+	return spec
+}
+
+// prepositionedFallbackPortWithCheck keeps a fallback off the fixed backend
+// port and every sibling's facade/backend/persisted ports.
+func (b *Broker) prepositionedFallbackPortWithCheck(
+	profile engineProxyProfile, failed int, available func(int) bool,
+) int {
+	excluded := []int{failed, profile.EnginePortBase}
+	if alias := b.currentOllamaHostAlias().Port; alias > 0 {
+		excluded = append(excluded, alias)
+	}
+	for port := range b.siblingEngineProxyPorts(profile) {
+		excluded = append(excluded, port)
+	}
+	fallback := nextAvailablePortExcluding(profile.FacadePort, excluded, available)
+	b.engineProxy(profile).startupPort.Store(int32(fallback))
+	return fallback
+}
+
 // facadeMethodFor strips a facade-scoped notification's engine address and
 // confirms it belongs to the engine this reader speaks for.
 //
@@ -361,10 +393,10 @@ func (b *Broker) proxyEnabled(p engineProxyProfile) bool {
 	return false
 }
 
-// prepareEnabledFacades prepares managed port ownership for the engines the
-// broker is actually going to front, in the table's order — Ollama first,
-// because its preparation reserves any inherited OLLAMA_HOST alias that later
-// engines must route around.
+// prepareEnabledFacades prepares port ownership for the engines the broker is
+// actually going to front, in table order — Ollama first, because its alias
+// reservation constrains later engines. A prepositioned backend needs no gate
+// or move; recording its fixed backend port is its entire preparation.
 //
 // The enablement check belongs here and not downstream, because preparation is
 // not read-only: for a managed engine the backend move runs inside it, so
@@ -373,12 +405,25 @@ func (b *Broker) proxyEnabled(p engineProxyProfile) bool {
 // symptom, since its move is deferred until its proxy proves it holds the
 // facade — which is exactly why this cannot be left to the callee.
 func (b *Broker) prepareEnabledFacades() {
-	if b.proxyEnabled(ollamaProxyProfile) {
-		b.prepareManagedOllamaFacade()
+	for _, profile := range engineProxyProfiles {
+		if !b.proxyEnabled(profile) {
+			continue
+		}
+		switch {
+		case profile.Name == ollamaProxyProfile.Name:
+			b.prepareManagedOllamaFacade()
+		case profile.Name == lmstudioProxyProfile.Name:
+			b.prepareManagedLMStudioFacade()
+		case profile.Ownership == prepositionedEngine:
+			b.preparePrepositionedFacade(profile)
+		default:
+			slog.Warn("no port preparation strategy for engine", "engine", profile.Name)
+		}
 	}
-	if b.proxyEnabled(lmstudioProxyProfile) {
-		b.prepareManagedLMStudioFacade()
-	}
+}
+
+func (b *Broker) preparePrepositionedFacade(profile engineProxyProfile) {
+	b.engineProxy(profile).backendPort.Store(int32(profile.EnginePortBase))
 }
 
 // proxyDisabledReason explains why an engine has no proxy, and reports whether
@@ -452,10 +497,6 @@ func (b *Broker) setEngineProxyHandle(p engineProxyProfile, proxy *proxyProcess)
 //
 // This is the end of the line for a notification — every path consumes it, so
 // there is nothing for a caller to do afterwards and nothing to report back.
-// The heads of the two callers stay separate: the bind-failure and readiness
-// handling genuinely differ by ownership, and folding them in behind a
-// callback would move those bodies into this file without making them any more
-// shared.
 func (b *Broker) forwardEngineProxyNotification(profile engineProxyProfile, method string, params json.RawMessage) {
 	if b.routeProcessScopedProxyNotification(method, params) {
 		return
@@ -470,6 +511,20 @@ func (b *Broker) forwardEngineProxyNotification(profile engineProxyProfile, meth
 	if err := b.codec.Notify(profile.ComponentName()+":"+method, params); err != nil {
 		slog.Warn("forward proxy notification failed", "engine", profile.Name, "method", method, "err", err)
 	}
+}
+
+// forwardPrepositionedProxyNotification is the facade-only notification path:
+// there is no ownership or readiness reconciliation because the backend stays
+// fixed on EnginePortBase.
+func (b *Broker) forwardPrepositionedProxyNotification(profile engineProxyProfile, method string, params json.RawMessage) {
+	method, addressed := facadeMethodFor(profile, method)
+	if !addressed {
+		return
+	}
+	if b.dispatchErrorsNotif(profile.ComponentName(), method, params) {
+		return
+	}
+	b.forwardEngineProxyNotification(profile, method, params)
 }
 
 // routeProcessScopedProxyNotification handles the notifications that belong to

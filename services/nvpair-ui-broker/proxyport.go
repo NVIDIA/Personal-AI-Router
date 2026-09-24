@@ -177,6 +177,9 @@ func (b *Broker) configureProxySupervisorCallbacks(sup *supervisor) {
 // than looping over a single helper: its gate re-checks whether a backend move
 // is pending, so clearing that move state is what actually reopens the path.
 func (b *Broker) finishEngineProxyStartup(profile engineProxyProfile) {
+	if profile.Ownership == prepositionedEngine {
+		return
+	}
 	switch profile.Name {
 	case ollamaProxyProfile.Name:
 		b.finishOllamaProxyTerminal()
