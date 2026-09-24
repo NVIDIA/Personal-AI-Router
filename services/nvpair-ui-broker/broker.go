@@ -537,14 +537,18 @@ func (b *Broker) restoreEnabledEnginesAfterPortGate(ctx context.Context) bool {
 
 func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
-	runOllama func(context.Context),
-	runLMStudio func(context.Context),
+	runners ...func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
-	go runOllama(ctx)
-	runLMStudio(ctx)
+	for index, run := range runners {
+		if index == len(runners)-1 {
+			run(ctx)
+			break
+		}
+		go run(ctx)
+	}
 	return true
 }
 
@@ -2224,11 +2228,21 @@ func (b *Broker) Serve(ctx context.Context) error {
 		}
 	}
 
-	// Restore engines and begin both advertising loops only after both proxy
+	// Restore engines and begin advertising only after both managed proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	availabilityRunners := []func(context.Context){b.runAutoAdvertise, b.runAutoAdvertiseLMStudio}
+	for _, profile := range engineProxyProfiles {
+		if profile.Ownership != prepositionedEngine || !b.proxyEnabled(profile) {
+			continue
+		}
+		profile := profile
+		availabilityRunners = append(availabilityRunners, func(ctx context.Context) {
+			b.runAutoAdvertisePrepositioned(ctx, profile)
+		})
+	}
+	go b.runEngineAvailabilityAfterPortGates(ctx, availabilityRunners...)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events

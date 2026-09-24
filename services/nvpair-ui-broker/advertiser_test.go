@@ -6,9 +6,13 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
+	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
 
@@ -105,6 +109,108 @@ func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 	if got := int(b.lmstudioState().backendPort.Load()); got != managedLMStudioBackendStart {
 		t.Fatalf("backend cache = %d, want %d (fallback must not overwrite the confirmed backend)", got, managedLMStudioBackendStart)
 	}
+}
+
+func TestPrepositionedAdvertiserTracksBackendHealth(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	_, portText, err := net.SplitHostPort(backend.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendPort, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyPort := 44000
+	if backendPort == proxyPort {
+		proxyPort++
+	}
+
+	profile := testPrepositionedProfile()
+	profile.DiscoveryService = noderec.ServiceLMStudio
+	b := brokerWithPrepositionedProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+	b.engineProxy(profile).backendPort.Store(int32(backendPort))
+	updates := attachAdvertiserProxy(t, b, profile, proxyPort)
+
+	b.reconcileAdvertisePrepositioned(profile, backend.Client())
+	registrations := b.regCache.Snapshot()
+	if len(registrations) != 1 || registrations[0].Service != profile.DiscoveryService ||
+		registrations[0].Port != proxyPort {
+		t.Fatalf("healthy registration = %+v, want %s on %d", registrations, profile.DiscoveryService, proxyPort)
+	}
+	if got := <-updates; !got.Healthy || got.Port != backendPort || got.Engine != profile.Name {
+		t.Fatalf("healthy local backend = %+v", got)
+	}
+
+	backend.Close()
+	b.reconcileAdvertisePrepositioned(profile, backend.Client())
+	if got := b.regCache.Snapshot(); len(got) != 0 {
+		t.Fatalf("unhealthy engine remained advertised: %+v", got)
+	}
+	if got := <-updates; got.Healthy || got.Port != backendPort {
+		t.Fatalf("unhealthy local backend = %+v", got)
+	}
+}
+
+func TestPrepositionedAdvertiserRejectsSelfForwardLoop(t *testing.T) {
+	profile := testPrepositionedProfile()
+	profile.DiscoveryService = noderec.ServiceLMStudio
+	b := brokerWithPrepositionedProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+	b.regCache.Register(noderec.RegisterParams{Service: profile.DiscoveryService, Port: 44000})
+	b.engineProxy(profile).backendPort.Store(44000)
+	updates := attachAdvertiserProxy(t, b, profile, 44000)
+
+	// A nil client proves the collision check short-circuits before probing the
+	// facade as though it were the backend.
+	b.reconcileAdvertisePrepositioned(profile, nil)
+	if got := b.regCache.Snapshot(); len(got) != 0 {
+		t.Fatalf("self-forwarding facade remained advertised: %+v", got)
+	}
+	if got := <-updates; got.Healthy {
+		t.Fatalf("self-forwarding backend remained healthy: %+v", got)
+	}
+}
+
+func attachAdvertiserProxy(
+	t *testing.T,
+	b *Broker,
+	profile engineProxyProfile,
+	port int,
+) <-chan proxyLocalBackend {
+	t.Helper()
+	proxyClient, proxyServer := net.Pipe()
+	t.Cleanup(func() {
+		_ = proxyClient.Close()
+		_ = proxyServer.Close()
+	})
+	proxy := &proxyProcess{
+		peer:        NewPeer(NewCodec(proxyClient)),
+		facadeState: readyFacade(profile.Name, port),
+	}
+	go proxy.peer.Serve(nil, nil)
+	b.setEngineProxyHandle(profile, proxy)
+
+	updates := make(chan proxyLocalBackend, 4)
+	go func() {
+		codec := NewCodec(proxyServer)
+		for {
+			msg, err := codec.Read()
+			if err != nil {
+				return
+			}
+			var update proxyLocalBackend
+			if json.Unmarshal(msg.Params, &update) == nil {
+				updates <- update
+			}
+			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		}
+	}()
+	return updates
 }
 
 // TestProxyListenPortNoProxy: with no proxy supervised, proxyListenPort is 0,
