@@ -17,19 +17,24 @@ import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
 import {
     getModularBridgeState,
-    isProxyEngine,
     isUpstreamUnreachableError,
     parseServiceErrors,
-    parseWorkloadsInitial,
+    parseWorkloadsInitial
+} from './modular-state'
+import {
+    isProxyEngine,
+    proxyEngineFromManagerId,
+    proxyEngineFromSource,
+    proxySourceForEngine,
     PROXY_ENGINES,
     PROXY_NODE_SOURCES,
     type ProxyEngine
-} from './modular-state'
+} from './proxy-engines'
 import { emitBridgePush } from './broadcaster'
 import { parseEngineSettings } from './engine-settings'
 import { resolvePullCatchError } from './pull-error-handling'
 import { serviceLogLevel } from './service-log-level'
-import { engineManagerName, engineTypeFromManagerName } from '@/shared/utils/engines'
+import { engineManagerName } from '@/shared/utils/engines'
 import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
@@ -290,17 +295,6 @@ interface LocalEngineBridge {
 
 function emptyLocalEngineBridge(): LocalEngineBridge {
     return { running: false, port: 0, bridgedId: '', bridgedPort: 0, selfWarned: false }
-}
-
-/** Translate an engine-manager engine id into a proxy engine, or null. */
-function proxyEngineFromManagerId(id: string): ProxyEngine | null {
-    const engine = engineTypeFromManagerName(id)
-    return engine && isProxyEngine(engine) ? engine : null
-}
-
-/** The broker relay namespace fronting an engine's reverse proxy. */
-function proxyRelayPrefix(engine: ProxyEngine): string {
-    return engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'
 }
 
 /**
@@ -677,7 +671,7 @@ class ModularSupervisor {
         method: string,
         params?: JsonValue
     ): Promise<JsonValue | undefined> {
-        return this.callProcess('broker', `${proxyRelayPrefix(engine)}:${method}`, params)
+        return this.callProcess('broker', `${proxySourceForEngine(engine)}:${method}`, params)
     }
 
     /**
@@ -873,8 +867,9 @@ class ModularSupervisor {
             }
         }
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
-        await subscribe('ollama-proxy:subscribe', 'subscribe to broker ollama-proxy relay')
-        await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
+        for (const source of PROXY_NODE_SOURCES) {
+            await subscribe(`${source}:subscribe`, `subscribe to broker ${source} relay`)
+        }
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1071,12 +1066,12 @@ class ModularSupervisor {
         try {
             const result = await this.callProcess(
                 'broker',
-                `${proxyRelayPrefix(engine)}:get-status`
+                `${proxySourceForEngine(engine)}:get-status`
             )
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
+                    source: proxySourceForEngine(engine),
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1097,14 +1092,14 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
+                    source: proxySourceForEngine(engine),
                     method: 'node/discovered',
                     params: node
                 })
             }
         } catch (err) {
             log.verbose({
-                sublevel: proxyRelayPrefix(engine),
+                sublevel: proxySourceForEngine(engine),
                 message: `Unable to hydrate ${engine} proxy nodes: ${getErrorString(err)}`
             })
         }
@@ -1263,12 +1258,7 @@ class ModularSupervisor {
             this.scheduleRemoteEngineStatusRefresh()
         }
 
-        const proxyEngine: ProxyEngine | null =
-            event.source === 'ollama-proxy'
-                ? 'ollama'
-                : event.source === 'lmstudio-proxy'
-                  ? 'lm-studio'
-                  : null
+        const proxyEngine = proxyEngineFromSource(event.source)
         if (proxyEngine && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
@@ -2187,7 +2177,7 @@ class ModularSupervisor {
             if (!bridge.selfWarned) {
                 bridge.selfWarned = true
                 log.warn({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message:
                         `Skipping local-node ${engine} proxy bridge: engine port ` +
                         `${bridge.port} matches the proxy's own listen port ` +
@@ -2214,7 +2204,7 @@ class ModularSupervisor {
                 bridge.bridgedPort = bridge.port
             } catch (err) {
                 log.warn({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message: `Failed to bridge local node into ${engine} proxy: ${getErrorString(err)}`
                 })
             }
@@ -2229,7 +2219,7 @@ class ModularSupervisor {
                 await this.callProxy(engine, 'node/remove-manual', { id: previousId })
             } catch (err) {
                 log.verbose({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message: `Local node was not bridged into ${engine} proxy: ${getErrorString(err)}`
                 })
             }

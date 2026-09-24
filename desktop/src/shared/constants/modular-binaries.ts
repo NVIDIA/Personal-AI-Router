@@ -65,7 +65,7 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         // naming it after an engine would claim a per-engine process that does
         // not exist.
         // The per-engine identities are the relay sources (`ollama-proxy` /
-        // `lmstudio-proxy`), which live in modular-state.ts.
+        // `lmstudio-proxy`), which live in proxy-engines.ts.
         processName: 'nvpair-proxy',
         baseName: 'nvpair-proxy',
         args: [],
