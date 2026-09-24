@@ -18,12 +18,12 @@ import {
 import { engineManagerName } from '@/shared/utils/engines'
 
 describe('proxy engine identity', () => {
-    it('keeps the enabled proxy set and ordering unchanged', () => {
-        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio'])
-        expect(PROXY_NODE_SOURCES).toEqual(['ollama-proxy', 'lmstudio-proxy'])
+    it('declares the complete proxy set in stable order', () => {
+        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp'])
+        expect(PROXY_NODE_SOURCES).toEqual(['ollama-proxy', 'lmstudio-proxy', 'llamacpp-proxy'])
         expect(isProxyEngine('ollama')).toBe(true)
         expect(isProxyEngine('lm-studio')).toBe(true)
-        expect(isProxyEngine('llama-cpp')).toBe(false)
+        expect(isProxyEngine('llama-cpp')).toBe(true)
     })
 
     it('round-trips engine, manager, and relay source identities', () => {
@@ -34,7 +34,7 @@ describe('proxy engine identity', () => {
         }
         expect(proxyEngineFromSource('other-proxy')).toBeNull()
         expect(proxyEngineFromManagerId('other')).toBeNull()
-        expect(proxyEngineFromManagerId('llamacpp')).toBeNull()
+        expect(proxyEngineFromManagerId('llamacpp')).toBe('llama-cpp')
     })
 
     it('routes each proxy notification to the mapped engine', () => {
@@ -64,6 +64,52 @@ describe('proxy engine identity', () => {
                 ip: '192.0.2.40'
             }
         })
+        state.handleNotification({
+            source: 'llamacpp-proxy',
+            method: 'ready',
+            params: { port: 8080 }
+        })
+        state.handleNotification({
+            source: 'llamacpp-proxy',
+            method: 'node/discovered',
+            params: {
+                id: nodeId,
+                host: 'proxy-identity-host',
+                port: 8080,
+                addresses: ['192.0.2.40'],
+                ip: '192.0.2.40'
+            }
+        })
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'proxy-identity-host',
+                        ipAddress: '192.0.2.40',
+                        port: 14318,
+                        models: ['owner/alpha:Q4_K_M', 'owner/beta:Q4_K_M'],
+                        modelsByEngine: {
+                            llamacpp: ['owner/alpha:Q4_K_M', 'owner/beta:Q4_K_M']
+                        },
+                        loadedByEngine: { llamacpp: ['owner/alpha:Q4_K_M'] }
+                    }
+                ]
+            }
+        })
+        state.applyRemoteEngineFacts(nodeId, {
+            engines: [
+                {
+                    engine: 'llamacpp',
+                    installed: true,
+                    running: true,
+                    healthy: true,
+                    port: 8081
+                }
+            ]
+        })
 
         const statuses = state
             .getEngineInitialState()
@@ -78,7 +124,72 @@ describe('proxy engine identity', () => {
                 engineType: 'lm-studio',
                 processStatus: 'running',
                 proxyPort: 1234
+            }),
+            expect.objectContaining({
+                engineType: 'llama-cpp',
+                processStatus: 'running',
+                enginePort: 8081,
+                proxyPort: 8080
             })
         ])
+
+        const llamaModels = state
+            .getEngineInitialState()
+            .models.find(models => models.nodeId === nodeId && models.engineType === 'llama-cpp')
+        expect(llamaModels?.models).toEqual([
+            expect.objectContaining({ name: 'owner/alpha:Q4_K_M', status: 'loaded' }),
+            expect.objectContaining({ name: 'owner/beta:Q4_K_M', status: 'idle' })
+        ])
+    })
+
+    it('projects local llama.cpp lifecycle and residency into the initial snapshot', () => {
+        const state = getModularBridgeState()
+        const nodeId = 'proxy-identity-local'
+        const model = 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M'
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'proxy-identity-local-host',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+        state.handleNotification({
+            source: 'llamacpp-proxy',
+            method: 'ready',
+            params: { port: 8080 }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'llamacpp',
+            installed: true,
+            running: true,
+            healthy: true,
+            port: 8081
+        })
+        state.setLocalEngineModels('llama-cpp', [model])
+        state.applyLocalLoadedModels({ llamacpp: [model] })
+
+        const initial = state.getEngineInitialState()
+        expect(
+            initial.statuses.find(
+                status => status.nodeId === nodeId && status.engineType === 'llama-cpp'
+            )
+        ).toMatchObject({
+            processStatus: 'running',
+            enginePort: 8081,
+            proxyPort: 8080
+        })
+        expect(
+            initial.models.find(
+                models => models.nodeId === nodeId && models.engineType === 'llama-cpp'
+            )?.models
+        ).toEqual([expect.objectContaining({ name: model, status: 'loaded' })])
     })
 })

@@ -260,8 +260,8 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // first-class load action, so we POST its `run_model` HTTP action
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
-            // LM Studio declares a real `load_model` CLI action (`lms load`).
-            // Both require the engine running (HTTP/CLI action), matching the
+            // LM Studio and llama.cpp declare real `load_model` manifest actions.
+            // All require the engine running (HTTP/CLI action), matching the
             // disabled rule in ModelRow.tsx.
             // See docs/services-parity.md#models.
             if (payload.model) {
@@ -401,8 +401,7 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     // Proxy node selection is owned by the backend nvpair-job-scheduler (it drives
     // node/set-priority via the broker); PAIR UI never pins node/select, and a user
     // clicking "Load" must not pin a route. Ollama loads via its `run_model` HTTP
-    // action, LM Studio via its `load_model` CLI action — both handled locally in
-    // routeEngineManagerCommand.
+    // action; LM Studio and llama.cpp use their manifest `load_model` actions.
 
     // Remote peers: `nvpair-engine-manager` exposes `engine:remote-*` client methods
     // (cluster mTLS `ec` surface) for install/start/stop/pull and model ops.

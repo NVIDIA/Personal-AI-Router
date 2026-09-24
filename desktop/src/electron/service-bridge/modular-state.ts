@@ -139,7 +139,8 @@ interface ModularNode {
     // fallback path (a peer that sends no per-engine attribution).
     models: string[]
     // Per-engine attribution of the enriched model list, keyed by engine-manager
-    // engine name ("ollama", "lmstudio"), carried on `AvailableNode.modelsByEngine`.
+    // engine name ("ollama", "lmstudio", "llamacpp"), carried on
+    // `AvailableNode.modelsByEngine`.
     // When present it is authoritative — {@link toEngineModels} attributes each
     // model to the engine that actually serves it, so a dual-engine node no
     // longer blanks its cards. A present engine key with [] is known empty; an
@@ -148,7 +149,7 @@ interface ModularNode {
     // noderec.DirectoryNode.EngineModels.
     modelsByEngine: Record<string, string[]>
     // Per-engine set of models currently loaded in memory, keyed by
-    // engine-manager engine name ("ollama", "lmstudio"), carried on
+    // engine-manager engine name ("ollama", "lmstudio", "llamacpp"), carried on
     // `AvailableNode.loadedByEngine`. Normally a subset of
     // {@link modelsByEngine}. An engine key with an empty list means
     // "running, nothing loaded"; a missing key means loaded state wasn't
@@ -164,7 +165,11 @@ function emptyPresence(): EnginePresence {
 }
 
 function emptyEngines(): Record<ProxyEngine, EnginePresence> {
-    return { ollama: emptyPresence(), 'lm-studio': emptyPresence() }
+    return {
+        ollama: emptyPresence(),
+        'lm-studio': emptyPresence(),
+        'llama-cpp': emptyPresence()
+    }
 }
 
 /** Immutably set one engine's presence, preserving the other. */
@@ -847,7 +852,7 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
 
 /**
  * Compare two per-engine model maps. The attribution can change while the flat
- * union stays identical (e.g. a model that both engines now serve moved between
+ * union stays identical (e.g. a model that multiple engines now serve moved between
  * the per-engine buckets), so this must be checked independently of
  * {@link sameStringList} on `models` or a card would miss the re-attribution.
  */
@@ -871,8 +876,12 @@ class ModularBridgeState {
     private logs: LogEntry[] = []
     // Per-engine bound proxy port reported by the broker. 0 = not reported yet;
     // we never fabricate a default — an unknown port surfaces as null, not a
-    // guess. `ollama` is the `ollama-proxy`, `lm-studio` is the `lmstudio-proxy`.
-    private proxyPorts: Record<ProxyEngine, number> = { ollama: 0, 'lm-studio': 0 }
+    // guess. Keys map to relay sources through proxy-engines.ts.
+    private proxyPorts: Record<ProxyEngine, number> = {
+        ollama: 0,
+        'lm-studio': 0,
+        'llama-cpp': 0
+    }
     private selfId: string | null = null
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
@@ -1918,8 +1927,8 @@ class ModularBridgeState {
      * Remote peers prefer facts over proxy presence for attribution. Presence is
      * per-engine but coarse — it only says the peer is reachable for that engine,
      * not which engine actually serves a given model. For a pre-attribution peer
-     * that sends no `modelsByEngine`, whenever both engines are momentarily `up`,
-     * leaning on presence makes two engines look "active" at once, which defeats
+     * that sends no `modelsByEngine`, whenever multiple engines are momentarily `up`,
+     * leaning on presence makes multiple engines look "active" at once, which defeats
      * the single-active-engine attribution in {@link modelsForEngine} and blanks
      * the model list. So once a peer's authoritative facts exist they are the sole
      * truth; presence is used only when facts are absent (an unclustered peer, or
@@ -1945,7 +1954,7 @@ class ModularBridgeState {
      * so a dual-engine node attributes each model to the engine that serves it.
      * A pre-attribution peer sends no map, so the flat `AvailableNode.models`
      * union is attributed only when exactly one proxy engine is active (never
-     * cross-attributed when both run). Mirrors
+     * cross-attributed when multiple run). Mirrors
      * noderec.DirectoryNode.EngineModels.
      */
     private modelsForEngine(node: ModularNode, engine: ProxyEngine): string[] {
@@ -1959,7 +1968,7 @@ class ModularBridgeState {
         }
         // Fallback for a pre-attribution peer: the flat union is unattributed, so
         // attribute it only when exactly one proxy engine is active on the node,
-        // and never cross-attribute when both run.
+        // and never cross-attribute when multiple run.
         const active = PROXY_ENGINES.filter(candidate =>
             this.engineActiveForModels(node, candidate)
         )
@@ -2061,14 +2070,14 @@ class ModularBridgeState {
                       ? 'stopped'
                       : 'not-installed',
                 // The engine-manager reports the manifest's configured port for a
-                // pinned-port engine (Ollama 11434, managed LM Studio 1235 behind
-                // its 1234 proxy facade) whether it is running or merely installed,
+                // pinned-port engine (for example managed llama.cpp on 8081 behind
+                // its 8080 proxy facade) whether it is running or merely installed,
                 // so surface it in both states —
                 // matching the `EngineStatusData.enginePort` contract. Auto-assign
                 // engines report 0 until started, which stays null.
                 enginePort: facts.installed && facts.port > 0 ? facts.port : null,
                 // Each proxy-fronted engine has its own broker proxy
-                // (`ollama-proxy` / `lmstudio-proxy`); report that engine's bound
+                // (mapped in proxy-engines.ts); report that engine's bound
                 // proxy port. Loopback-only engines get null.
                 proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
             }
@@ -2508,7 +2517,7 @@ class ModularBridgeState {
         // install/running state; discovery only fills in models. A remote node
         // has no local engine-manager, so its status comes from authoritative
         // peer facts or its advertisement, and is omitted when neither is known.
-        // Push per proxy-engine (Ollama + LM Studio) so both light up per node.
+        // Push per proxy engine so each one lights up independently per node.
         const isSelf = merged.id === this.selfId
         for (const engine of PROXY_ENGINES) {
             if (!isSelf) {
@@ -2563,8 +2572,8 @@ class ModularBridgeState {
             }
         }
 
-        // A proxy source (ollama-proxy / lmstudio-proxy): refresh only that
-        // engine's presence; keep the other engine, telemetry, and node-info.
+        // A proxy source refreshes only that engine's presence; keep the other
+        // engines, telemetry, and node-info.
         const engine = proxyEngineFromSource(source)
         return {
             ...next,

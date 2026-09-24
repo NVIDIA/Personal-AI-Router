@@ -97,7 +97,7 @@ function getModularBinaryPath(baseName: string): string {
  * Read the build provenance (`sourceFingerprint` + `services`) and per-component
  * versions that `scripts/build-modular-binaries.ts` stamps into
  * `cli-bin/manifest.json`.
- * `components` is keyed by binary base name (e.g. `ollama-proxy`). Returns empty
+ * `components` is keyed by binary base name (e.g. `nvpair-proxy`). Returns empty
  * values when the manifest is absent.
  */
 export function readCliBinManifest(): {
@@ -160,26 +160,43 @@ function booleanValue(value: JsonValue | undefined): boolean {
  * Extract model names from a `nvpair-engine-manager` `list_models` action result.
  * The action returns the engine's raw response, which differs per engine:
  * Ollama's `/api/tags` yields `{ models: [{ name }] }`, LM Studio's native
- * `/api/v1/models` yields `{ models: [{ key }] }`. A present empty array is
- * authoritative; a missing or malformed inventory throws so callers retain or
- * fall back to their last-good source instead of silently clearing it.
+ * `/api/v1/models` yields `{ models: [{ key }] }`, and llama.cpp's router
+ * `/models` yields `{ data: [{ id }] }`. A present empty array is authoritative;
+ * a missing or malformed inventory throws so callers retain or fall back to
+ * their last-good source instead of silently clearing it.
  */
 export function parseListModelNames(result: JsonValue | undefined): string[] {
     const obj = objectValue(result)
     if (!obj) throw new Error('list_models returned a non-object response')
-    const names: string[] = []
+
+    let rows: JsonValue[]
+    let fields: string[]
     if (Array.isArray(obj.models)) {
-        for (const entry of obj.models) {
-            const row = objectValue(entry)
-            const name = stringValue(row?.name) || stringValue(row?.key)
-            if (name) names.push(name)
-        }
-        if (obj.models.length > 0 && names.length === 0) {
-            throw new Error('list_models returned no usable model names')
-        }
-        return names
+        rows = obj.models
+        fields = ['name', 'key']
+    } else if (obj.models !== undefined) {
+        throw new Error('list_models response is missing its model array')
+    } else if (Array.isArray(obj.data)) {
+        rows = obj.data
+        fields = ['id']
+    } else {
+        throw new Error('list_models response is missing its model array')
     }
-    throw new Error('list_models response is missing its model array')
+
+    const names: string[] = []
+    for (const entry of rows) {
+        const row = objectValue(entry)
+        for (const field of fields) {
+            const name = stringValue(row?.[field])
+            if (!name) continue
+            names.push(name)
+            break
+        }
+    }
+    if (rows.length > 0 && names.length === 0) {
+        throw new Error('list_models returned no usable model names')
+    }
+    return names
 }
 
 /**
@@ -209,16 +226,16 @@ function normalizeLogLevel(value: string | undefined): ModularLogLevel {
 
 /**
  * Shape the `pull_model` action params per engine. Ollama's `pull_model` body is
- * sent verbatim to `/api/pull` (reads `name`); LM Studio's CLI action templates
- * `{model}` into `lms get {model} --yes`. Sending the wrong key leaves the
- * placeholder unresolved and the engine-manager rejects the call.
+ * sent verbatim to `/api/pull` (reads `name`); every other manifest consumes
+ * `model` either as an HTTP body field or a CLI template. Sending the wrong key
+ * leaves the placeholder unresolved or fails body-schema validation.
  */
-function pullModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+export function pullModelParams(engineManagerEngine: string, model: string): JsonObject {
+    return engineManagerEngine === 'ollama' ? { name: model } : { model }
 }
 
 function deleteModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+    return engineManagerEngine === 'ollama' ? { name: model } : { model }
 }
 
 /**
@@ -304,12 +321,12 @@ function emptyLocalEngineBridge(): LocalEngineBridge {
  * `docs/services-backend.md`):
  *
  * - The `nvpair-ui-broker` is the **only** Electron-spawned binary and is itself the
- *   parent of every broker-owned worker (`ollama-proxy`, `lmstudio-proxy`,
+ *   parent of every broker-owned worker (`nvpair-proxy`,
  *   `nvpair-node-scanner`, `nvpair-node-info`, `nvpair-workload-manager`,
  *   `nvpair-cluster-manager`, `nvpair-node-settings`, `nvpair-manual-nodes`,
  *   `nvpair-engine-manager`, `nvpair-errors`, `nvpair-job-scheduler`). Electron passes their resolved paths to
  *   the broker (see `brokerStartupArgs`) and reaches each through a broker relay:
- *   `ollama-proxy:` / `lmstudio-proxy:` for the two engine proxies, `engine:` for the
+ *   the mapped `<engine>-proxy:` facade relays, `engine:` for the
  *   engine-manager, `errors:` for the error pipeline, `node/*` for manual nodes,
  *   `settings/*` and `cluster:` for the rest. Local inference jobs arrive on the
  *   broker's `workloads:subscribe` stream.
@@ -2126,8 +2143,8 @@ class ModularSupervisor {
      * engine:state-changed and reconcile. The engine:state-changed carries the
      * **real** local engine port, which is the one the proxy must route to (mDNS
      * self-discovery can advertise the wrong port even when it works). Applies to
-     * every proxy-fronted engine (Ollama → ollama-proxy, LM Studio →
-     * lmstudio-proxy); loopback-only engines are ignored.
+     * every proxy-fronted engine through the mapping in proxy-engines.ts;
+     * loopback-only engines are ignored.
      */
     private updateLocalNodeBridgeFromEngineState(params: JsonValue | undefined): void {
         const obj = objectValue(params)

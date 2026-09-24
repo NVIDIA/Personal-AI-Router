@@ -91,4 +91,42 @@ describe('local model load command', () => {
             expect.any(Function)
         )
     })
+
+    it('routes llama.cpp load and unload through its manifest actions', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'loadModel',
+            engineType: 'llama-cpp',
+            nodeId: 'local-node',
+            model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M'
+        })
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'unloadModel',
+            engineType: 'llama-cpp',
+            nodeId: 'local-node',
+            model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M'
+        })
+
+        expect(mocks.supervisor.sendProcess).toHaveBeenNthCalledWith(
+            1,
+            'broker',
+            'engine:action',
+            {
+                engine: 'llamacpp',
+                action: 'load_model',
+                params: { model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M' }
+            },
+            expect.any(Function)
+        )
+        expect(mocks.supervisor.sendProcess).toHaveBeenNthCalledWith(
+            2,
+            'broker',
+            'engine:action',
+            {
+                engine: 'llamacpp',
+                action: 'unload_model',
+                params: { model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M' }
+            },
+            expect.any(Function)
+        )
+    })
 })
