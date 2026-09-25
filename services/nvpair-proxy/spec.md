@@ -99,7 +99,7 @@ The process starts with **no engine and no listener**. The broker then sends one
 
 A flag cannot express this. The broker plans a different port for each engine —
 Ollama's managed facade wants `:11434`, LM Studio's wants `:1234`, and
-llama.cpp's opt-in facade wants `:8080`; any may be absent so the child keeps
+llama.cpp's managed facade wants `:8080`; any may be absent so the child keeps
 its own persisted port — and a single-valued flag carries only one plan.
 
 ### 3.1 Why one process

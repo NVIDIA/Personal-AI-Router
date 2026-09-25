@@ -40,9 +40,9 @@ flowchart TB
   one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node, Ollama or LM Studio. A node can
-  run both, one, or neither, and a node with no running engine is not eligible to
-  serve.
+- An **engine** is an inference server on a node: Ollama, LM Studio, or
+  llama.cpp. A node can run any combination, and a node with no running engine
+  is not eligible to serve.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
   model on two nodes is two independent copies and that duplication is what makes
   the two nodes interchangeable for a request.
@@ -314,8 +314,8 @@ ordering reaches a proxy in three steps:
 
 The ranking combines *pending work and GPU pressure*. A workload counts as
 pending while it is queued or running, and it is attributed to the node it was
-placed on. Both engines count together, so Ollama load affects LM Studio ordering
-and vice versa.
+placed on. Every engine counts in the same node-wide pool, so work through one
+facade affects the others' ordering.
 
 GPU pressure is deliberately coarse. The scheduler smooths the busiest GPU's
 utilization, maps it to 0–3 pressure units at 40%, 70%, and 85%, and uses lower
@@ -428,8 +428,8 @@ one place lower in the order.
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**Both engines are counted as one pool.** Ollama and LM Studio load is summed,
-and maximum GPU pressure applies to the whole node. That is conservative on a
+**All engines are counted as one pool.** Ollama, LM Studio, and llama.cpp load is
+summed, and maximum GPU pressure applies node-wide. This is conservative on a
 typical single-GPU machine and can underuse a multi-GPU node where the engines
 occupy different devices.
 
@@ -466,6 +466,9 @@ known install locations for each engine, so an Ollama or LM Studio you installed
 yourself is found where it already is. "Installing" an engine that is already
 present downloads nothing and reports it as installed.
 
+llama.cpp uses PAIR's managed install rather than adopting an arbitrary existing
+server. Its model cache is separate and survives uninstall or reinstall.
+
 Starting is similarly deferential. If something is already serving the engine's
 port, PAIR **adopts** that instance instead of spawning a second copy, and reports
 it as running even though it did not start it.
@@ -483,8 +486,8 @@ An application that already works with Ollama is configured for `11434`. If PAIR
 listened somewhere else, every tool would need reconfiguring to gain anything, so
 PAIR inverts it: the **proxy** takes the port the engine would normally use, and
 the engine moves behind it — Ollama to `11435` and upwards, LM Studio to `1235`
-and upwards. Existing clients keep working untouched and transparently gain the
-cluster.
+and upwards. The managed llama.cpp router stays on `8081` while its facade takes
+`8080`. Existing clients keep working untouched and transparently gain the cluster.
 
 This is also what makes the engine unreachable from outside. Engines PAIR starts
 bind to loopback, so the only network-facing listener is the proxy, which is where
@@ -492,7 +495,7 @@ cluster authentication lives.
 
 An inherited `OLLAMA_HOST` naming a different local plaintext port is honored as
 well. The broker gives the proxy that normalized loopback-only alias, reserved
-against every engine and both proxies' port plans so a relocating engine can never
+against every engine and every facade's port plan so a relocating engine can never
 land on it. `localhost` claims IPv4 and IPv6 together, and remote and HTTPS
 targets are never intercepted. Clients already configured through the variable
 therefore enter the same routing path without being reconfigured.
@@ -522,6 +525,7 @@ A default installation listens on these ports:
 | --- | --- |
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
+| `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
 | `14318` | Node hardware and model inventory |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
@@ -550,7 +554,7 @@ browsing themselves.
 The scanner advertises one `_nvpair-node._tcp` multicast DNS (mDNS) record for
 each host, and that record carries two kinds of content:
 
-- The ports its sibling services registered: node-info, both proxies, errors,
+- The ports its sibling services registered: node-info, engine proxies, errors,
   workloads, cluster manager, and engine manager
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
   reach it — `ip=` for the address the node ranks first, and `ips=` for the whole

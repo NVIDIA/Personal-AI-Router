@@ -89,7 +89,7 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
+service connection, while per-engine proxy readiness remains an
 asynchronous capability signal. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
@@ -116,7 +116,7 @@ reserved for inference clients.
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `ollama-proxy:ready` / `lmstudio-proxy:ready`        | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `ollama-proxy:ready` / `lmstudio-proxy:ready` / `llamacpp-proxy:ready` | Record engine proxy port                                                                                          | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:settings-changed`                            | Validate and republish the owning node's settings snapshot                                                                      | `engines:settings-changed`                                |
@@ -128,7 +128,7 @@ reserved for inference clients.
 | `nodes:changed`                                      | Replace membership snapshot                                                                                                     | `nodes:changed`                                           |
 | `workloads:upsert` / `workloads:remove`              | Update workload catalog                                                                                                         | workload pushes                                           |
 
-`nvpair-job-scheduler` combines queued and running work across both engines with
+`nvpair-job-scheduler` combines queued and running work across all engines with
 a smoothed 0–3 pressure from the busiest GPU. Invalid, missing, or
 older-than-10-second telemetry receives neutral pressure. It emits
 `schedule:priority` with order, pending count, and pressure; the broker applies
@@ -254,8 +254,9 @@ reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
 good metrics and never marks a node offline.
 
 The renderer model hub is not a backend search service. Electron main obtains
-curated Ollama and LM Studio catalogs, then sends pull-ready model IDs through
-the engine manager.
+curated Ollama, LM Studio, and llama.cpp catalogs, then sends pull-ready model
+IDs through the engine manager. Ollama and llama.cpp use locked bundled lists;
+LM Studio retains its cached live catalog.
 
 ## Pairing and security
 

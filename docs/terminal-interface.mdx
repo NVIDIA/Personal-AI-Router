@@ -13,9 +13,8 @@ desktop environment, or over SSH, where the desktop application cannot run. If a
 desktop is available, use the desktop application.
 
 **It has known limitations.** It is an operations tool, not a full replacement.
-It cannot list or delete models, change an engine's port, update an engine,
-control engines on other nodes, or show which node served a workload. The full
-list is in
+It cannot delete models, change an engine's port, update an engine, control
+engines on other nodes, or show which node served a workload. The full list is in
 [What the Terminal Interface Cannot Do](#what-the-terminal-interface-cannot-do),
 and it is worth reading before you depend on it.
 
@@ -64,12 +63,12 @@ cd <directory containing nvpair-tui>
 | Flag | Effect |
 | --- | --- |
 | `--broker-path <path>` | Use a service binary that is not beside `nvpair-tui` |
-| `--proxy-engines <csv>` | Select the proxy facades to start and show. Defaults to `ollama,lmstudio`; add `llamacpp` to opt in to llama.cpp |
+| `--proxy-engines <csv>` | Select the proxy facades to start and show. Defaults to `ollama,lmstudio,llamacpp` |
 | `--log-level <level>` | Verbosity of the terminal interface's own logging: `debug`, `info`, `warn`, or `error`. PAIR also reads this from `NVPAIR_LOG_LEVEL` |
 | `--version` | Print the version and exit |
 
-For example, start and display all three current facades with
-`nvpair-tui --proxy-engines ollama,lmstudio,llamacpp`.
+For example, limit the process to the llama.cpp facade with
+`nvpair-tui --proxy-engines llamacpp`.
 
 The interface's own log output goes to stderr, so it never corrupts the display.
 Service logs appear on the **Logs** tab instead.
@@ -204,7 +203,9 @@ From the **Engines** tab (6), select an engine with `j` / `k`, then:
 | `p` | Download a model |
 
 Pressing `p` opens a prompt. Type the model name, for example `qwen4:12b`, and
-press `enter`. Progress appears on the status line.
+press `enter`. llama.cpp names include the repository and quantization, for
+example `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`. Progress appears on the status
+line.
 
 The **Models** tab (7) lists every running engine's local inventory. Select a
 model and press `enter` to load it into memory or `u` to unload it. State changes

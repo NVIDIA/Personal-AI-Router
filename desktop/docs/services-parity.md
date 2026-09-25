@@ -24,7 +24,7 @@ history.
 | Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
-| llama.cpp backend          | Backend-only opt-in             | Services can manage and route it; Electron and renderer contracts do not expose it yet                                                          |
+| llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                            |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
@@ -34,7 +34,7 @@ history.
 | Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                           |
 | Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none |
 | Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                            |
-| Model catalog search       | Electron-owned                  | Curated Ollama and LM Studio catalogs are fetched in Electron main                                                                              |
+| Model catalog search       | Electron-owned                  | Locked Ollama/llama.cpp catalogs and the cached live LM Studio catalog are served from Electron main                                            |
 
 ## Supervision
 
@@ -106,7 +106,7 @@ serves its engine's dialect:
 
 - the Ollama facade serves the Ollama-compatible surface;
 - the LM Studio facade serves the LM Studio/OpenAI-compatible surface;
-- the opt-in llama.cpp facade serves OpenAI-compatible routes and remaps
+- the llama.cpp facade serves OpenAI-compatible routes and remaps
   `GET /v1/models` to the router's `GET /models`.
 
 Sharing a process is what lets them share the burst reservations the scheduler
@@ -148,7 +148,7 @@ Personal AI Router consequences (all reflection, no security implementation):
   run inference across the version boundary. Local use and the shared
   nearby-model list are unaffected.
 
-### llama.cpp backend checkpoint
+### llama.cpp support
 
 The bundled backend manifest can install and start `llama-server`, list exact
 router model ids, stream model downloads over SSE, and load or unload a model.
@@ -162,10 +162,17 @@ roughly 0.6–0.8 GiB and is not part of the application installer. GPU layers
 remain `auto`, allowing supported NVIDIA/Metal acceleration and dynamic CPU
 fallback; hardware acceptance is still required to confirm acceleration.
 
-The broker keeps the facade out of its default set. A backend operator must pass
-`--proxy-engines ollama,lmstudio,llamacpp`, which places the facade on `8080`
-and the managed router on `8081`. Electron has no llama.cpp engine identity,
-catalog, bridge mapping, or renderer workflow at this checkpoint.
+The facade is in the default broker and TUI set: local OpenAI-compatible clients
+use the broker-reported listener (normally `8080`) while the managed router runs
+on `8081`. Desktop and TUI expose install, lifecycle, download progress,
+inventory, load/unload, endpoint, routed state, and inference-demo workflows.
+Desktop browsing uses a locked four-model catalog with one reviewed `Q4_K_M`
+pull ID per model and no runtime catalog request.
+
+Current limits are explicit: there is no llama.cpp model delete action, the
+manual-node worker does not probe llama.cpp, the catalog offers no alternate
+quantizations, and package selection is fixed rather than driver-aware or
+offline-repacked.
 
 ## Engine lifecycle
 
@@ -231,10 +238,12 @@ Personal AI Router uses:
 - `list_models`;
 - `pull_model`;
 - Ollama `run_model`, `unload_model` (`keep_alive: 0`), and `delete_model`;
-- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`).
+- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`);
+- llama.cpp `load_model` and `unload_model`.
 
-Both engines expose Load, Eject, and Delete in the model manager when the
-backend action exists. Keep-alive / expiry controls remain unsupported.
+All three engines expose Load and Eject in the model manager. Ollama and LM
+Studio also expose Delete; llama.cpp cache deletion is not yet implemented.
+Keep-alive / expiry controls remain unsupported.
 
 LM Studio's `delete_model` declares `restart_after`, so the engine manager
 restarts a running LM Studio once the files are removed — its `/v1/models` is
@@ -320,8 +329,9 @@ safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 `sizeVram`/`expiresAt` — the backend delivers the simpler `loadedByEngine`
 name-set, not structured details.
 
-The model hub is intentionally outside the backend: Electron main fetches
-curated catalogs and sends selected pull-ready IDs to the engine manager.
+The model hub is intentionally outside the backend: Electron main serves locked
+Ollama and llama.cpp catalogs plus the cached live LM Studio catalog, then sends
+selected pull-ready IDs to the engine manager.
 
 ## Errors
 
@@ -465,7 +475,7 @@ provide an equivalent client-facing contract:
 | Persist and replay manual node entries                      | `manual-nodes-store.ts`, `modular-supervisor.ts` |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
-| Serve the model hub (Ollama committed list, LM Studio live) | `src/electron/model-hub/`                        |
+| Serve the model hub (Ollama/llama.cpp locked, LM Studio live) | `src/electron/model-hub/`                     |
 | Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
 | Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
 | Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |

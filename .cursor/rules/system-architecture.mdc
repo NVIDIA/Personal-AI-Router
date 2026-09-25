@@ -28,8 +28,9 @@ Broker-owned workers:
 - `nvpair-proxy`, one process hosting a facade per enabled engine. It starts
  with no engine and no listener; the broker sends a `facade/enable` per engine
  carrying that engine's port. Clients still address each facade as
- `ollama-proxy:` / `lmstudio-proxy:`, and one supervisor covers them all, so a
- crash is reported against `nvpair-proxy` and restarts every facade together;
+ `ollama-proxy:`, `lmstudio-proxy:`, or `llamacpp-proxy:`, and one supervisor
+ covers them all, so a crash is reported against `nvpair-proxy` and restarts
+ every facade together;
 - `nvpair-node-scanner`;
 - `nvpair-node-info`;
 - `nvpair-workload-manager`;
@@ -104,9 +105,9 @@ The broker uses both for scheduling.
 
 ### Inference HTTP
 
-Ollama and LM Studio proxies expose local client-compatible HTTP endpoints.
-Chat behaves as a local third-party client. Prompts, messages, chunks, and
-response bodies must never be logged.
+Ollama, LM Studio, and llama.cpp proxies expose local client-compatible HTTP
+endpoints. Chat behaves as a local third-party client. Prompts, messages,
+chunks, and response bodies must never be logged.
 
 ## Runtime defaults
 
@@ -115,8 +116,8 @@ Backend-coupled constants belong in
 
 - Prefer live broker or discovery values.
 - Do not assume a proxy port before the broker reports it.
-- Native chat fallbacks are Ollama `127.0.0.1:11434` and LM Studio
-  `127.0.0.1:1234`.
+- Native chat fallbacks are Ollama `127.0.0.1:11434`, LM Studio
+  `127.0.0.1:1234`, and llama.cpp `127.0.0.1:8080`.
 - Cluster pairing currently uses port `14321`.
 - Node telemetry path is `/v1/node-info`.
 
@@ -207,8 +208,14 @@ operations.
   contract.
 
 The model hub is Electron-main functionality under `src/electron/model-hub/`.
-It provides curated Ollama and LM Studio catalogs; model operations still go
-through the engine manager.
+It provides curated Ollama, LM Studio, and llama.cpp catalogs; model operations
+still go through the engine manager. The locked llama.cpp starter catalog uses
+exact `owner/repository:Q4_K_M` pull IDs.
+
+Managed llama.cpp installation uses CUDA archives on Windows and Linux and
+standard Metal-capable archives on macOS. Package choice is based on platform
+and architecture, not the installed driver; CPU fallback remains available.
+Checksums and required runtime artifacts are verified before installation.
 
 ## Pairing and security
 

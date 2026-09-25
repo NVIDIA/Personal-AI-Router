@@ -99,6 +99,12 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
+`EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
+`searchHub()` serves a locked local catalog for Ollama and llama.cpp and a
+cached live catalog for LM Studio. llama.cpp pull IDs are exact
+`owner/repository:quantization` values; load and unload are supported, but
+`deleteModel` is hidden because its manifest declares no delete action.
+
 Port and launch changes work on a clustered peer as well as the local device,
 with one exception: **managed CORS origin settings** are local-only. The owning
 node rejects a change to browser access policy relayed from a peer. Other
@@ -196,8 +202,9 @@ Commands return no state. Renderer stores update from
 - update check, download, install, and status;
 - the node-local Inference Demo (`inferenceDemo.getState()` / `start()` / `stop()`
   and the `demo:state` push). `start()` rejects if a demo is already running on
-  this node or if no local engine exposed a text-generation model; callers show
-  that as an ordinary error banner. Demo state is not synchronized across nodes.
+  this node or if no Ollama, LM Studio, or llama.cpp proxy exposed a
+  text-generation model; callers show that as an ordinary error banner. Demo
+  state is not synchronized across nodes.
 
 `demo:state` is a main-to-renderer broadcast rather than a service push, so it is
 typed in `IpcPushChannelMap` (`shared/types/ipc-channels.ts`) instead of the

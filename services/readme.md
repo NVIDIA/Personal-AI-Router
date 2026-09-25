@@ -28,11 +28,12 @@ can serve that loopback-only address from the same router when it is free —
 `localhost` is claimed on IPv4 and IPv6 together, and remote or HTTPS targets are
 never intercepted.
 
-The backend's llama.cpp facade is currently opt-in: launch the broker or TUI
-with `--proxy-engines ollama,lmstudio,llamacpp`. It exposes OpenAI-compatible
-traffic on `http://localhost:8080` while the managed router runs on `8081`. The
-TUI builds proxy controls from that selection and shows local inventory with
-load/unload actions; the desktop still has no llama.cpp workflow.
+The llama.cpp facade is enabled by default alongside Ollama and LM Studio. It
+exposes OpenAI-compatible traffic on `http://localhost:8080` while the managed
+router runs on `8081`; a safe fallback is reported when the facade port is
+occupied. The desktop and TUI expose its managed lifecycle, downloads,
+inventory, and load/unload actions. `--proxy-engines` can still restrict the
+facades a standalone broker or TUI starts.
 
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the

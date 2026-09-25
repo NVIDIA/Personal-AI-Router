@@ -22,7 +22,7 @@ because the broker plans a different port for each engine.
 They share a process on purpose. Between scheduler snapshots a facade takes
 short-lived reservations for work it has dispatched, and those live in the
 process — a process per engine split that picture, so simultaneous bursts on
-both engines could pick the same node believing it idle.
+different engines could pick the same node believing it idle.
 
 The cost is shared fate for the **process**: a crash takes every facade down and
 the supervisor restarts them together. Smaller failures are contained to one
@@ -60,7 +60,7 @@ success, so a redelivered enable never tears down a working listener.
 ### Flags
 
 Only process-scoped settings are flags. Anything per-engine is a `facade/enable`
-parameter, because one flag cannot carry two engines' plans.
+parameter, because one flag cannot carry multiple engines' plans.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -109,9 +109,9 @@ The route table is a **classifier, not an allowlist**. An unlisted path is
 forwarded verbatim, which is how `/api/show`, `/api/pull`, `/api/ps`,
 `/api/version` and `OPTIONS` preflights keep working.
 
-The broker enables only Ollama and LM Studio by default. Opt in to the
-llama.cpp facade with `--proxy-engines llamacpp`; local OpenAI-compatible
-clients then use `8080`, while the managed `llama-server` stays on `8081`.
+The broker enables all three facades by default. Local llama.cpp-compatible
+clients use `8080`, while the managed `llama-server` stays on `8081`.
+`--proxy-engines` can restrict a standalone broker or TUI to a subset.
 
 ### HTTP Reverse Proxy
 

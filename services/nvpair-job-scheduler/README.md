@@ -57,8 +57,8 @@ rank thrash. Invalid, missing, or older-than-10-second telemetry contributes a
 neutral pressure of 1.
 
 Nodes are sorted by `pending + gpuPressure`, then lower GPU pressure, then
-stable node ID. Pending counts include **both** engines together, so Ollama load
-affects the LM Studio ordering and vice versa.
+stable node ID. Pending counts include **all** engines together, so work through
+one facade affects every other facade's ordering.
 
 Rankings are recomputed when the node set, catalog, or effective pressure
 changes, and reconciled on the interval timer. A ranking is only emitted when
@@ -66,7 +66,8 @@ the order, pending counts, or pressure actually changed.
 
 ## Output
 
-One `schedule:priority` notification per engine (`ollama`, `lmstudio`):
+One `schedule:priority` notification per engine (`ollama`, `lmstudio`,
+`llamacpp`):
 
 ```json
 {
@@ -84,7 +85,7 @@ One `schedule:priority` notification per engine (`ollama`, `lmstudio`):
 ```
 
 The broker relays each snapshot to the matching proxy as `node/set-priority`.
-Both engines currently receive the same node-wide ordering; the per-engine
+All engines currently receive the same node-wide ordering; the per-engine
 envelope exists so the routing contract can diverge later without a wire change.
 
 Each proxy then adds its own reservations for in-flight requests whose workload

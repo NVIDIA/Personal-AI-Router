@@ -1,5 +1,5 @@
 ---
-description: Electron-main engine model hub (Ollama committed list + LM Studio catalog)
+description: Electron-main engine model hub (locked Ollama/llama.cpp + live LM Studio)
 alwaysApply: true
 ---
 <!--
@@ -40,12 +40,16 @@ SPDX-License-Identifier: Apache-2.0
   `lmstudio-community/Qwen3-8B-GGUF`, accepted by `lms get`). This is the
   **only** remaining network call in the model hub, and it is main-process only
   (6-hour TTL + in-flight guard so PAIR never fetches continuously).
-- Both sources normalize to the shared `EngineHubModel`
+- **llama.cpp** (`llamacpp-catalog.ts`): a small locked, reviewed list of
+  text-generation GGUF repositories. Every entry is an exact
+  `owner/repository:Q4_K_M` router pull ID; there is one quantization per starter
+  model and no runtime network request.
+- All sources normalize to the shared `EngineHubModel`
   (`src/shared/types/engine-api.ts`).
-- `index.ts` exposes `getEngineHubModels(engineType)` (Ollama returns the
-  committed list synchronously; LM Studio awaits a cold cache's initial load;
-  returns `{ models }`) and `warmEngineHubs()` (warms **only** LM Studio —
-  Ollama needs none). The `engine:search-hub` handler in `empty-handlers.ts`
+- `index.ts` exposes `getEngineHubModels(engineType)` (Ollama and llama.cpp
+  return committed lists synchronously; LM Studio awaits a cold cache's initial
+  load; all return `{ models }`) and `warmEngineHubs()` (warms **only** LM
+  Studio — the locked catalogs need none). The `engine:search-hub` handler in `empty-handlers.ts`
   calls the former; the `overview:ready` handler in `window.ipc.ts` calls the
   latter. Warm on renderer-ready, **not** on service connect: a catalog fetch
   started before the window has painted competes with the renderer's own load,

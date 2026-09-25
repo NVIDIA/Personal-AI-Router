@@ -5,9 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # Engine Settings in NVIDIA Personal AI Router
 
-Open a device's Ollama or LM Studio row and expand **Settings**. Edit the server
-port, proxy port and engine arguments, then select the green **Apply** button. A paired device
-that supports settings can be edited from another device in the cluster.
+Open a device's Ollama, LM Studio, or llama.cpp row and expand **Settings**.
+Edit the server port, proxy port and engine arguments, then select the green
+**Apply** button. A paired device that supports settings can be edited from
+another device in the cluster.
 
 PAIR fixes the executable, lifecycle commands and loopback address. Unsupported
 vendor options can fail at startup.
@@ -78,6 +79,7 @@ configuration consistent:
 | --- | --- | --- | --- |
 | Ollama | `OLLAMA_HOST=127.0.0.1:<port>` | The host in `OLLAMA_HOST` | `OLLAMA_ORIGINS` |
 | LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
+| llama.cpp | `--port` | `--host` | `--cors-origins` |
 
 For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235` and `-p=1235`
 all synchronize the same server-port field. Conflicting repetitions and invalid
