@@ -8,6 +8,7 @@ import {
     lmStudioCatalogCache,
     type LmStudioCatalogModel
 } from '@/electron/model-hub/lmstudio-catalog'
+import { loadLlamaCppModels } from './llamacpp-catalog'
 
 function ollamaToHubModel(m: OllamaTagsModel): EngineHubModel {
     const base = m.name.includes(':') ? m.name.slice(0, m.name.indexOf(':')) : m.name
@@ -40,10 +41,9 @@ function lmStudioToHubModel(m: LmStudioCatalogModel): EngineHubModel {
 }
 
 /**
- * Serve an engine's model hub. Ollama is served from the committed, locked list
- * (`ollama-models.json`), so it returns instantly with no network access. LM
- * Studio still fetches its live `lmstudio-community` catalog and awaits a cold
- * cache's initial load. Engines without a hub return empty.
+ * Serve an engine's model hub. Ollama and llama.cpp use committed locked lists,
+ * so they return instantly with no network access. LM Studio still fetches its
+ * live `lmstudio-community` catalog and awaits a cold cache's initial load.
  */
 export async function getEngineHubModels(engineType: EngineType): Promise<EngineHubSearchResponse> {
     switch (engineType) {
@@ -52,6 +52,8 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
         case 'lm-studio':
             await lmStudioCatalogCache.ensureLoaded()
             return { models: lmStudioCatalogCache.list().map(lmStudioToHubModel) }
+        case 'llama-cpp':
+            return { models: loadLlamaCppModels() }
         default:
             return { models: [] }
     }
@@ -59,9 +61,9 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
 
 /**
  * Kick a background refresh of the live engine hub caches so the first modal
- * open is instant. Ollama needs no warming (it is a committed static list);
+ * open is instant. The committed Ollama and llama.cpp lists need no warming;
  * only LM Studio fetches from the network. Fire-and-forget; failures are logged
- * inside each cache.
+ * inside its cache.
  *
  * Called once the Overview renderer reports ready, deliberately not on service
  * connect: a network fetch started before the window has painted competes with
