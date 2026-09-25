@@ -21,15 +21,17 @@ import (
 // engineStatus mirrors nvpair-engine-manager's EngineStatus snapshot, the
 // element of engine:get-installed and the engine:state-changed payload.
 type engineStatus struct {
-	Engine           string `json:"engine"`
-	DisplayName      string `json:"display_name"`
-	Installed        bool   `json:"installed"`
-	Running          bool   `json:"running"`
-	Healthy          bool   `json:"healthy"`
-	Port             int    `json:"port"`
-	InstallSupported bool   `json:"install_supported"`
-	InstallReason    string `json:"install_reason"`
-	Managed          bool   `json:"managed"`
+	Engine           string   `json:"engine"`
+	DisplayName      string   `json:"display_name"`
+	Installed        bool     `json:"installed"`
+	Running          bool     `json:"running"`
+	Healthy          bool     `json:"healthy"`
+	Port             int      `json:"port"`
+	InstallSupported bool     `json:"install_supported"`
+	InstallReason    string   `json:"install_reason"`
+	Acceleration     string   `json:"acceleration"`
+	Devices          []string `json:"devices"`
+	Managed          bool     `json:"managed"`
 }
 
 // enginesView manages local inference engines via the engine-manager
@@ -516,6 +518,9 @@ func (v *enginesView) refreshRows() {
 		label := e.Engine
 		if e.DisplayName != "" {
 			label = e.DisplayName
+		}
+		if e.Engine == "llamacpp" && e.Acceleration != "" {
+			label += " " + strings.ToUpper(e.Acceleration)
 		}
 		port := "-"
 		if e.Port != 0 {

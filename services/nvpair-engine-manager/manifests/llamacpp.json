@@ -99,7 +99,6 @@
       },
       "install": {
         "fetch": null,
-        "upstream_first": true,
         "cpu_fetch": {
           "url": "https://raw.githubusercontent.com/ggml-org/llama-install.sh/27a82f3a6e0f259f88c2c31cd6b20d858a975f27/install.ps1",
           "sha256": "455084203db0c864f4eb218bc82792b4304458a96211c385275d8337a5049851"

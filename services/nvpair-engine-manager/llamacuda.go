@@ -43,10 +43,14 @@ func llamaCUDACapabilities(out string) ([]string, error) {
 // build reports no CUDA device, it returns no candidate and the reason so the
 // caller runs the pinned vendor installer instead. Only cancellation and local
 // write failures are errors.
-func (e *Executor) prepareLlamaWindowsCUDA(ctx context.Context, st *engineState, stage string) (string, map[string]any, string, error) {
+// nvidiaCUDACapabilities reads one compute capability per NVIDIA GPU and
+// decides whether the pinned CUDA build applies to every one of them. A
+// non-empty reason means CUDA is not used and says why; only cancellation
+// and local failures are errors. Shared by the Windows x64 and Linux gates.
+func (e *Executor) nvidiaCUDACapabilities(ctx context.Context, st *engineState) ([]string, string, error) {
 	env, err := childEnv(st)
 	if err != nil {
-		return "", nil, "", err
+		return nil, "", err
 	}
 	query := e.nvidiaComputeQuery
 	if query == nil {
@@ -58,19 +62,30 @@ func (e *Executor) prepareLlamaWindowsCUDA(ctx context.Context, st *engineState,
 	raw, err := query(queryCtx, env)
 	cancel()
 	if ctx.Err() != nil {
-		return "", nil, "", ctx.Err()
+		return nil, "", ctx.Err()
 	}
 	if err != nil {
-		return "", nil, fmt.Sprintf("no NVIDIA GPU reported by nvidia-smi: %v", err), nil
+		return nil, fmt.Sprintf("no NVIDIA GPU reported by nvidia-smi: %v", err), nil
 	}
 	capabilities, err := llamaCUDACapabilities(raw)
 	if err != nil {
-		return "", nil, err.Error(), nil
+		return nil, err.Error(), nil
 	}
 	for _, capability := range capabilities {
 		if value, _ := strconv.ParseFloat(capability, 64); value < llamaMinCUDACapability {
-			return "", nil, fmt.Sprintf("NVIDIA compute capability %s is below the 7.5 the CUDA build requires", capability), nil
+			return nil, fmt.Sprintf("NVIDIA compute capability %s is below the 7.5 the CUDA build requires", capability), nil
 		}
+	}
+	return capabilities, "", nil
+}
+
+func (e *Executor) prepareLlamaWindowsCUDA(ctx context.Context, st *engineState, stage string) (string, map[string]any, string, error) {
+	capabilities, reason, err := e.nvidiaCUDACapabilities(ctx, st)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if reason != "" {
+		return "", nil, reason, nil
 	}
 	candidate := filepath.Join(stage, "cuda")
 	if err := e.stageLlamaArchives(ctx, st, candidate, st.plat.Install.CUDAArchives); err != nil {

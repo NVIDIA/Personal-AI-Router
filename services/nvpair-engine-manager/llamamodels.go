@@ -4,11 +4,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -234,20 +237,56 @@ func (e *Executor) llamaModelAction(ctx context.Context, st *engineState, action
 		}
 		env["LLAMA_CACHE"] = cachePath
 		env["HF_HUB_CACHE"] = cachePath
-		cmd := exec.CommandContext(ctx, filepath.Join(st.installDir, "runtime", bin), args...)
+		// The transfer is bounded by lack of progress, not wall-clock. The vendor
+		// writes its transfer progress to stderr, so every stderr line is progress;
+		// the text itself stays private (paths, unstructured diagnostics).
+		stall := newStallContext(ctx, llamaStallIdle, llamaTransferMax)
+		defer stall.Stop()
+		cmd := exec.CommandContext(stall, filepath.Join(st.installDir, "runtime", bin), args...)
 		cmd.Env = commandEnv(env)
 		configureSysProcAttr(cmd)
 		configureCommandCancel(cmd)
 		cmd.WaitDelay = 10 * time.Second
-		// Vendor output contains paths and unstructured diagnostics, not reliable percentages.
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return nil, err
+		}
 		e.emitPullProgress(ProgressEvent{Engine: st.manifest.Engine, Op: "pull", Stage: "pulling", Percent: -1, Message: p.Model})
-		out, err := cmd.Output()
+		if err := cmd.Start(); err != nil {
+			return nil, llamaDownloadError(err)
+		}
+		var detail bytes.Buffer
+		sc := bufio.NewScanner(stderr)
+		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		heartbeat := time.Now()
+		for sc.Scan() {
+			stall.Touch()
+			if detail.Len() < 16384 {
+				detail.WriteString(sc.Text())
+				detail.WriteByte('\n')
+			}
+			if time.Since(heartbeat) >= 5*time.Second {
+				heartbeat = time.Now()
+				e.emitPullProgress(ProgressEvent{Engine: st.manifest.Engine, Op: "pull", Stage: "pulling", Percent: -1, Message: p.Model})
+			}
+		}
+		err = cmd.Wait()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		if err != nil {
+			if cause := context.Cause(stall); stall.Err() != nil && cause != nil && cause != context.Canceled {
+				return nil, fmt.Errorf("llama model download failed: %v", cause)
+			}
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				exit.Stderr = detail.Bytes() // Output() would have filled this; the pipe consumed it instead.
+			}
 			return nil, llamaDownloadError(err)
 		}
+		out := stdout.Bytes()
 		if err := validateLlamaDownload(root, string(out)); err != nil {
 			return nil, err
 		}

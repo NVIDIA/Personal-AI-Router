@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"time"
 )
 
 func llamaExecutable() string {
@@ -42,10 +41,10 @@ func llamaInstallSupport(goos, arch string) (bool, string) {
 	if goos == "windows" && arch == "arm64" {
 		return true, "Native hardware inventory selects CPU for non-NVIDIA ARM; NVIDIA ARM remains CUDA-required, including when its driver needs repair."
 	}
-	if goos == "windows" && arch == "amd64" {
-		return true, "NVIDIA GPUs with compute capability 7.5 or newer get the official CUDA build; other hardware uses the vendor installer's accelerator or CPU selection. Acceleration is verified after installation."
+	if (goos == "windows" && arch == "amd64") || goos == "linux" {
+		return true, "NVIDIA GPUs with compute capability 7.5 or newer get the official CUDA build; other hardware uses the vendor installer's accelerator or CPU selection. The verified accelerator is recorded after installation."
 	}
-	return true, "The vendor installer selects an available accelerator or CPU build; acceleration is verified after installation."
+	return true, "The vendor installer selects an available accelerator or CPU build; the verified accelerator is recorded after installation."
 }
 
 // The vendor installer owns a fixed home-relative staging directory. Give it
@@ -98,8 +97,16 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 			_ = safeRemoveUnderRoot(st.installDir, stage)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
+	// Transfers are bounded by lack of progress rather than wall-clock: a slow
+	// link that keeps moving bytes finishes, a stalled one fails with a reason.
+	// The vendor installer downloads silently, so growth of its staging tree is
+	// the progress signal; each growth tick also keeps a waiting UI alive.
+	stall := newStallContext(ctx, llamaStallIdle, llamaTransferMax)
+	defer stall.Stop()
+	ctx = stall
+	watching := make(chan struct{})
+	defer close(watching)
+	go watchTreeGrowth(ctx, stage, stallPollEvery, func(int64) { e.emitInstallProgress(engine, "installing", -1) }, watching)
 	env, err := llamaInstallerEnv(st, stage)
 	if err != nil {
 		return err
@@ -119,10 +126,21 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 			candidate = cudaCandidate
 		}
 	}
+	if provenance == nil && llamaLinuxCUDAGate && st.plat.Install.Fetch != nil && len(st.plat.Install.Archives) == 0 && !st.plat.Install.UpstreamFirst {
+		var cudaCandidate string
+		if cudaCandidate, provenance, cudaNotUsed, err = e.prepareLlamaLinuxCUDA(ctx, st, stage); err != nil {
+			return err
+		}
+		if provenance != nil {
+			candidate = cudaCandidate
+		}
+	}
 	switch {
 	case provenance != nil:
 		// The pinned Windows x64 CUDA build is staged and validated.
-	case st.plat.Install.UpstreamFirst:
+	case st.plat.Install.UpstreamFirst || st.plat.Install.CPUFetch != nil:
+		// The Windows ARM64 policy: hardware inventory decides between the pinned
+		// CUDA archives (or the opt-in upstream-latest installer) and the CPU installer.
 		candidate, provenance, err = e.prepareLlamaWindowsARM(ctx, st, stage)
 		if err != nil {
 			return err
@@ -138,8 +156,8 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 		}
 		defer os.Remove(script)
 		e.emitInstallProgress(engine, "installing", -1)
-		if err = e.runCommand(ctx, llamaInstallerArgs(runtime.GOOS, script), env); err != nil {
-			return fmt.Errorf("official llama installer: %w", err)
+		if err = e.runInstaller(ctx, script, env); err != nil {
+			return fmt.Errorf("official llama installer: %w", transferError(ctx, err))
 		}
 	}
 	e.emitInstallProgress(engine, "installing", -1)
@@ -159,6 +177,9 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 		if err = os.WriteFile(filepath.Join(candidate, "THIRD-PARTY-LICENSES.txt"), []byte(licenses), 0o600); err != nil {
 			return err
 		}
+		// The vendor installer chose the accelerator; record what it actually
+		// produced so a Vulkan or CPU landing is visible instead of silent.
+		listing, listErr := e.llamaListDevices(ctx, bin, env)
 		f, err := os.Open(bin)
 		if err != nil {
 			return err
@@ -179,6 +200,11 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 		}
 		if cudaNotUsed != "" {
 			provenance["cuda_not_used"] = cudaNotUsed
+		}
+		if listErr != nil {
+			provenance["devices_error"] = listErr.Error()
+		} else {
+			provenance["acceleration_policy"], provenance["devices"] = llamaAcceleration(listing)
 		}
 	}
 	receipt, err := json.MarshalIndent(provenance, "", "  ")

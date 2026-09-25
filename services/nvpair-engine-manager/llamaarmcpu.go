@@ -51,7 +51,7 @@ func (e *Executor) prepareLlamaWindowsARM(ctx context.Context, st *engineState, 
 	}
 	// Legacy test/custom recipes without CPUFetch stay CUDA-required.
 	if st.plat.Install.CPUFetch == nil {
-		return e.prepareLlamaUpstream(ctx, st, stage)
+		return e.prepareLlamaARMCUDA(ctx, st, stage)
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -77,9 +77,27 @@ func (e *Executor) prepareLlamaWindowsARM(ctx context.Context, st *engineState, 
 		return "", nil, err
 	}
 	if cuda {
-		return e.prepareLlamaUpstream(ctx, st, stage)
+		return e.prepareLlamaARMCUDA(ctx, st, stage)
 	}
 	return e.prepareLlamaARMCPU(ctx, st, stage)
+}
+
+// prepareLlamaARMCUDA installs NVIDIA Windows ARM64 straight from the
+// checksum-pinned CUDA archives. Without a CUDA Toolkit the former default,
+// the upstream-latest installer, could only produce a CPU build, fail the CUDA
+// check and fall back to these same archives after a wasted attempt; that
+// path stays available behind install.upstream_first for hosts that want the
+// newest CUDA build and have the toolkit.
+func (e *Executor) prepareLlamaARMCUDA(ctx context.Context, st *engineState, stage string) (string, map[string]any, error) {
+	if st.plat.Install.UpstreamFirst {
+		return e.prepareLlamaUpstream(ctx, st, stage)
+	}
+	candidate := filepath.Join(stage, "cuda")
+	provenance, err := e.stageLlamaPinnedCUDA(ctx, st, candidate)
+	if err != nil {
+		return "", nil, err
+	}
+	return candidate, provenance, ctx.Err()
 }
 
 func (e *Executor) prepareLlamaARMCPU(ctx context.Context, st *engineState, stage string) (string, map[string]any, error) {

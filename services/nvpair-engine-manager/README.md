@@ -129,11 +129,12 @@ unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
-reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+reports the failed start. Stop sends one graceful stop signal (SIGTERM to the
+process group on Unix; `taskkill /T /F` on Windows, where the windowless engines
+we spawn can't receive a graceful close) and waits for the engine to exit; if
+the engine, or a model child it spawned, is still alive fifteen seconds later
+the whole process group is force-killed, so a stop is complete only when
+nothing PAIR started is left running.
 
 ### Managed install/uninstall contract
 
@@ -376,14 +377,19 @@ is `b10826`. Install reports an already-installed managed runtime as
 older managed runtime to a newer build, and uninstall-then-install is not run as
 a substitute for one.
 
-NVIDIA Windows ARM64 Install first tries the current official
-`ggml-org/llama-install.sh` PowerShell installer. `install.upstream_first` is
-restricted to that platform and driver, with two pinned fallback archives.
-The fixed official version endpoint resolves one numeric build, which is then
+NVIDIA Windows ARM64 Install stages the two checksum-pinned b10826 CUDA 13.4
+archives declared in `install.archives` directly and requires the CUDA device
+check below before promotion. The official installer's CUDA path needs a CUDA
+Toolkit on the host; without one it produced a CPU build that failed the check
+and fell back to these same archives after a wasted attempt, so that attempt is
+no longer the default. Setting `install.upstream_first` (restricted to this
+platform and driver, with the two pinned archives as fallback) opts back into
+trying the current official `ggml-org/llama-install.sh` PowerShell installer
+first: the fixed official version endpoint resolves one numeric build, which is
 passed to the installer; the whole attempt, including validation, is limited to
-three minutes. The version response is limited to 64 bytes and the script to
-1 MiB. Builds older than the qualified fallback are refused. The installer gets
-CUDA enabled and Vulkan skipped; the app still owns artifact/device selection.
+three minutes; the version response is limited to 64 bytes and the script to
+1 MiB; builds older than the qualified fallback are refused; the installer gets
+CUDA enabled and Vulkan skipped.
 
 Before promotion, PAIR checks the exact selected build, nonempty vendor licenses,
 and an actual `CUDA0:` (or other numbered CUDA device) row from
@@ -443,11 +449,34 @@ a separate stage instead, and its receipt records the reason as
 records `source: pinned-cuda-archives`, `acceleration_policy: cuda`, the archive
 recipe and the reported compute capabilities.
 
-Linux and the Windows x64 installer path retain vendor accelerator-to-CPU selection;
-Apple Silicon retains its Metal installer. Selection is not automatic recovery
-from a GPU hang or incorrect model answer. `install_supported` and
-`install_reason` describe recipe availability and selection requirements, not
-proof of a GPU or a particular model. Native validation verifies the actual host.
+Linux applies the same gate with the same pinned installer. When every NVIDIA
+GPU reports 7.5 or newer, Install runs the installer restricted to its CUDA
+payload (`SKIP_VULKAN=1 SKIP_ROCM=1`) in a private stage, requires the `CUDA0:`
+device check before promotion, and retries the transfer once, because the
+unrestricted installer falls through to Vulkan or CPU without saying so when
+the CUDA payload download fails or no CUDA build exists for the GPU (Jetson
+Thor at b10826). If both attempts fail, the unrestricted installer runs in a
+separate stage and the receipt records the reason as `cuda_not_used`. A CUDA
+receipt records `source: official-installer-cuda`, `acceleration_policy: cuda`
+and the reported compute capabilities.
+
+Every install path records the accelerator the promoted runtime actually has:
+`pair-install.json` carries `acceleration_policy` (`cuda`, `vulkan`, `metal`,
+`cpu`, ...) and `devices`, the rows `llama cli --list-devices` printed, and
+`engine:status` exposes them as `acceleration` and `devices` for a managed
+runtime so a Vulkan or CPU landing is visible rather than silent. The Windows
+x64 installer path and Apple Silicon retain the vendor's accelerator selection.
+Selection is not automatic recovery from a GPU hang or incorrect model answer.
+`install_supported` and `install_reason` describe recipe availability and
+selection requirements, not proof of a GPU or a particular model. Native
+validation verifies the actual host.
+
+Downloads and the vendor installer are bounded by lack of progress rather than
+a fixed budget: an install or model pull fails when nothing has been transferred
+for ten minutes (or after six hours in total), with that reason in the error,
+instead of failing a slow but live link at thirty minutes. Progress heartbeats
+are emitted while the installer's staging tree grows and while the vendor
+downloader prints transfer output.
 
 The per-user `engine-bin/llamacpp` directory contains `runtime` and `previous`.
 Models live outside removable application data, in the sibling

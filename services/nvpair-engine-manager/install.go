@@ -298,7 +298,12 @@ func (e *Executor) downloadLimited(ctx context.Context, engine string, f *Fetch,
 	if err := validateDownloadURL(f.URL); err != nil {
 		return "", err
 	}
-	dctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	// A stall-bounded caller (the llama install) already fails on lack of
+	// progress; a fixed budget would only cut a slow but live transfer short.
+	dctx, cancel := ctx, context.CancelFunc(func() {})
+	if !hasStall(ctx) {
+		dctx, cancel = context.WithTimeout(ctx, 30*time.Minute)
+	}
 	defer cancel()
 	req, err := http.NewRequestWithContext(dctx, http.MethodGet, f.URL, nil)
 	if err != nil {
@@ -322,7 +327,7 @@ func (e *Executor) downloadLimited(ctx context.Context, engine string, f *Fetch,
 	}
 	pw := &progressWriter{total: resp.ContentLength, onPct: func(p int) {
 		e.emitInstallProgress(engine, "downloading", p)
-	}}
+	}, touch: func() { touchStall(dctx) }}
 	h := sha256.New()
 	// Read one byte past the cap so we can detect (and reject) overflow.
 	n, err := io.Copy(io.MultiWriter(tmp, h), io.TeeReader(io.LimitReader(resp.Body, limit+1), pw))
@@ -336,7 +341,7 @@ func (e *Executor) downloadLimited(ctx context.Context, engine string, f *Fetch,
 	}
 	if err != nil {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf("download %s: %w", f.URL, err)
+		return "", fmt.Errorf("download %s: %w", f.URL, transferError(dctx, err))
 	}
 	if n > limit {
 		os.Remove(tmp.Name())
@@ -394,11 +399,15 @@ type progressWriter struct {
 	read  int64
 	last  int
 	onPct func(int)
+	touch func() // every chunk, even when the percentage has not moved
 }
 
 func (p *progressWriter) Write(b []byte) (int, error) {
 	n := len(b)
 	p.read += int64(n)
+	if p.touch != nil {
+		p.touch()
+	}
 	if p.total > 0 && p.onPct != nil {
 		pct := int(p.read * 100 / p.total)
 		if pct != p.last {

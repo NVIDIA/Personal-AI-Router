@@ -51,6 +51,14 @@ export interface EngineStatusData {
     installedVersion?: string
     installSupported?: boolean
     installReason?: string
+    /**
+     * llama.cpp compute backend reported by the owning node's engine-manager
+     * ("cuda" | "vulkan" | "metal" | "cpu" | "hip" | "sycl" | "opencl").
+     * Absent when unknown or the engine is not installed.
+     */
+    acceleration?: string
+    /** Device rows from `llama cli --list-devices`, e.g. "CUDA0: NVIDIA GB10 (122564 MiB, 512 MiB free)". */
+    devices?: string[]
     managed?: boolean
 }
 

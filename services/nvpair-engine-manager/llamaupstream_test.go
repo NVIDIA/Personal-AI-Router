@@ -98,8 +98,10 @@ func newLlamaUpstreamFixture(t *testing.T, primary llamaRuntimeFixture) *llamaUp
 	// also reconciles presence; leaving the vendor readiness probe here would
 	// cause a real loopback dial outside the injected HTTP transport.
 	st.plat.Runtime.Ready, st.plat.Runtime.Health = nil, nil
-	// This existing suite exercises the CUDA-required policy, not host inventory.
+	// This existing suite exercises the CUDA-required policy, not host inventory,
+	// and the opt-in upstream-latest path rather than the default pinned archives.
 	st.plat.Install.CPUFetch = nil
+	st.plat.Install.UpstreamFirst = true
 	fixtureSource := filepath.Join(t.TempDir(), "primary.json")
 	data, _ := json.Marshal(primary)
 	if err := os.WriteFile(fixtureSource, data, 0600); err != nil {
@@ -515,8 +517,8 @@ func TestLlamaUpstreamRegistryAndOtherPlatformPins(t *testing.T) {
 	mf, _ := buildRegistry("").Get("llamacpp")
 	for key, p := range mf.Platforms {
 		if key == "windows/arm64" {
-			if !p.Install.UpstreamFirst || p.Install.Fetch != nil || len(p.Install.Archives) != 2 {
-				t.Fatal("Windows ARM64 recipe lost its bounded opt-in/fallback")
+			if p.Install.UpstreamFirst || p.Install.Fetch != nil || len(p.Install.Archives) != 2 || p.Install.CPUFetch == nil {
+				t.Fatal("Windows ARM64 recipe must install the pinned CUDA archives directly, with upstream-latest opt-in only")
 			}
 		} else if key == "darwin/amd64" {
 			if p.Install.UpstreamFirst || p.Install.Fetch != nil || p.Install.ArchiveRoot != "llama-b10826" || len(p.Install.Archives) != 1 ||

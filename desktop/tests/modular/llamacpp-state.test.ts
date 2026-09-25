@@ -16,6 +16,7 @@ describe('managed llama state', () => {
             const state = getModularBridgeState()
             const self = 'llama-noop-self'
             const peer = 'llama-noop-peer'
+            const devices = ['CUDA0: NVIDIA GB10 (122564 MiB, 512 MiB free)']
             const facts = {
                 engine: 'llamacpp',
                 installed: true,
@@ -23,7 +24,9 @@ describe('managed llama state', () => {
                 port: 8082,
                 managed: true,
                 install_supported: true,
-                install_reason: 'Supported'
+                install_reason: 'Supported',
+                acceleration: 'cuda',
+                devices
             }
             state.setSelfId(self)
             for (const id of [self, peer]) {
@@ -66,6 +69,8 @@ describe('managed llama state', () => {
                         managed: true,
                         installSupported: true,
                         installReason: 'Supported',
+                        acceleration: 'cuda',
+                        devices,
                         enginePort: 8082
                     })
                     expect(cleared).toContain(nodeId + ':llamacpp:install')
@@ -218,5 +223,58 @@ describe('managed llama state', () => {
         })
         state.setLocalEngineModels('llamacpp', ['catalogue-only'], false)
         expect(models()?.[0]).toMatchObject({ downloaded: false, status: 'idle' })
+    })
+    it('carries llama.cpp acceleration and devices and drops malformed devices', () => {
+        const state = getModularBridgeState()
+        const self = 'llama-accel-self'
+        const peer = 'llama-accel-peer'
+        const devices = ['CUDA0: NVIDIA GB10 (122564 MiB, 512 MiB free)']
+        const facts = {
+            engine: 'llamacpp',
+            installed: true,
+            running: true,
+            port: 8082,
+            managed: true,
+            install_supported: true,
+            install_reason: 'Supported',
+            acceleration: 'cuda',
+            devices
+        }
+        state.setSelfId(self)
+        for (const id of [self, peer]) {
+            state.handleNotification({
+                source: 'llamacpp-proxy',
+                method: 'node/discovered',
+                params: { id, port: 8080 }
+            })
+        }
+        const status = (nodeId: string) =>
+            state
+                .getEngineInitialState()
+                .statuses.find(s => s.nodeId === nodeId && s.engineType === 'llamacpp')
+
+        state.applyEngineManagerStatus(facts)
+        state.applyRemoteEngineFacts(peer, { engines: [facts] })
+        for (const nodeId of [self, peer]) {
+            expect(status(nodeId)).toMatchObject({ acceleration: 'cuda', devices })
+        }
+
+        // A non-array `devices` or empty `acceleration` never reaches the UI.
+        const malformed = { ...facts, acceleration: '', devices: 'CUDA0: not a list' }
+        state.applyEngineManagerStatus(malformed)
+        state.applyRemoteEngineStatusResult(peer, 'llamacpp', malformed)
+        for (const nodeId of [self, peer]) {
+            expect(status(nodeId)?.acceleration).toBeUndefined()
+            expect(status(nodeId)?.devices).toBeUndefined()
+        }
+
+        // Non-string rows are dropped; string rows survive.
+        state.applyEngineManagerStatus({ ...facts, devices: ['CPU: 12 cores', 7, null] })
+        expect(status(self)).toMatchObject({ acceleration: 'cuda', devices: ['CPU: 12 cores'] })
+
+        // Older engine-managers (or a not-installed engine) omit both fields.
+        state.applyEngineManagerStatus({ engine: 'llamacpp', installed: false, running: false })
+        expect(status(self)?.acceleration).toBeUndefined()
+        expect(status(self)?.devices).toBeUndefined()
     })
 })

@@ -36,7 +36,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
         const parts: string[] = []
         for (const [type, s] of nodeStatuses) {
             parts.push(
-                `${type}:${s.processStatus}:${s.enginePort ?? ''}:${s.proxyPort ?? ''}:${s.installedVersion ?? ''}:${s.installSupported ?? ''}:${s.installReason ?? ''}:${s.managed ?? ''}`
+                `${type}:${s.processStatus}:${s.enginePort ?? ''}:${s.proxyPort ?? ''}:${s.installedVersion ?? ''}:${s.installSupported ?? ''}:${s.installReason ?? ''}:${s.acceleration ?? ''}:${s.devices?.join(',') ?? ''}:${s.managed ?? ''}`
             )
         }
         return parts.join('|')
@@ -100,6 +100,8 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                     installedVersion: status.installedVersion,
                     installSupported: status.installSupported,
                     installReason: status.installReason,
+                    acceleration: status.acceleration,
+                    devices: status.devices,
                     managed: status.managed,
                     updateAvailable
                 },

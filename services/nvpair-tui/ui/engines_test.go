@@ -139,6 +139,20 @@ func TestNoManagedLlamaUpdateControl(t *testing.T) {
 	}
 }
 
+func TestLlamaAccelerationLabel(t *testing.T) {
+	v := newEnginesView(nil)
+	v.SetSize(90, 20)
+	v.merge(engineStatus{Engine: "llamacpp", DisplayName: "llama.cpp", Installed: true, Managed: true, Acceleration: "cuda", Devices: []string{"CUDA0: NVIDIA GB10 (122564 MiB, 512 MiB free)"}})
+	v.merge(engineStatus{Engine: "ollama", DisplayName: "Ollama", Installed: true, Acceleration: "cuda"})
+	if rows := v.table.Rows(); rows[0][0] != "llama.cpp CUDA" || rows[1][0] != "Ollama" {
+		t.Fatalf("rows = %v", rows)
+	}
+	v.merge(engineStatus{Engine: "llamacpp", DisplayName: "llama.cpp"})
+	if rows := v.table.Rows(); rows[0][0] != "llama.cpp" {
+		t.Fatalf("stale acceleration after uninstall: %v", rows)
+	}
+}
+
 func TestLlamaModelInventorySeparatesDownloadedAndLoaded(t *testing.T) {
 	v := newEnginesView(nil)
 	v.SetSize(90, 20)

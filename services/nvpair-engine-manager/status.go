@@ -171,7 +171,7 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 			supported, reason = false, missing
 		}
 	}
-	return EngineStatus{
+	status := EngineStatus{
 		InstallSupported: supported,
 		InstallReason:    reason,
 		Managed:          st.installed && !st.adopted && isManagedInstallPath(st.binPath, st.installDir),
@@ -182,6 +182,10 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Healthy:          st.healthy,
 		Port:             st.port,
 	}
+	if engine == "llamacpp" && status.Managed {
+		status.Acceleration, status.Devices = llamaReceiptAcceleration(st.installDir)
+	}
+	return status
 }
 
 // reconcilePresence reconciles filesystem detection with a fixed-port engine

@@ -105,6 +105,8 @@ interface RemoteEngineFacts {
     port: number
     installSupported?: boolean
     installReason?: string
+    acceleration?: string
+    devices?: string[]
     managed?: boolean
 }
 
@@ -922,6 +924,8 @@ class ModularBridgeState {
             port: number
             installSupported?: boolean
             installReason?: string
+            acceleration?: string
+            devices?: string[]
             managed?: boolean
         }
     >()
@@ -1412,6 +1416,8 @@ class ModularBridgeState {
             installSupported:
                 typeof obj.install_supported === 'boolean' ? obj.install_supported : undefined,
             installReason: stringValue(obj.install_reason),
+            acceleration: stringValue(obj.acceleration) || undefined,
+            devices: optionalStringArrayValue(obj.devices),
             managed: typeof obj.managed === 'boolean' ? obj.managed : undefined
         })
         // A fresh authoritative state is the resolution of whatever op was in
@@ -1771,6 +1777,8 @@ class ModularBridgeState {
                 nodeId,
                 installSupported: facts.installSupported,
                 installReason: facts.installReason,
+                acceleration: facts.acceleration,
+                devices: facts.devices,
                 managed: facts.managed,
                 processStatus: facts.running
                     ? 'running'
@@ -1835,6 +1843,8 @@ class ModularBridgeState {
                         ? engineObj.install_supported
                         : undefined,
                 installReason: stringValue(engineObj.install_reason),
+                acceleration: stringValue(engineObj.acceleration) || undefined,
+                devices: optionalStringArrayValue(engineObj.devices),
                 managed: typeof engineObj.managed === 'boolean' ? engineObj.managed : undefined
             })
             seen.add(engineType)
@@ -1868,6 +1878,8 @@ class ModularBridgeState {
             installSupported:
                 typeof obj.install_supported === 'boolean' ? obj.install_supported : undefined,
             installReason: stringValue(obj.install_reason),
+            acceleration: stringValue(obj.acceleration) || undefined,
+            devices: optionalStringArrayValue(obj.devices),
             managed: typeof obj.managed === 'boolean' ? obj.managed : undefined
         })
         this.emitRemoteEngineStatus(nodeId, engineType)
@@ -2141,6 +2153,8 @@ class ModularBridgeState {
                 nodeId,
                 installSupported: facts?.installSupported,
                 installReason: facts?.installReason,
+                acceleration: facts?.acceleration,
+                devices: facts?.devices,
                 managed: facts?.managed,
                 processStatus: pending,
                 enginePort: facts && facts.running && facts.port > 0 ? facts.port : null,
@@ -2154,6 +2168,8 @@ class ModularBridgeState {
                 nodeId,
                 installSupported: facts.installSupported,
                 installReason: facts.installReason,
+                acceleration: facts.acceleration,
+                devices: facts.devices,
                 managed: facts.managed,
                 processStatus: facts.running
                     ? 'running'

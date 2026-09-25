@@ -75,7 +75,9 @@ type Install struct {
 	Driver string `json:"driver,omitempty"`
 	Fetch  *Fetch `json:"fetch,omitempty"`
 	// UpstreamFirst opts only Windows ARM64 llama into the fixed official latest
-	// installer, retaining Archives as its checksum-qualified CUDA fallback.
+	// installer (useful with a CUDA Toolkit present), retaining Archives as its
+	// checksum-qualified CUDA fallback. Off by default: NVIDIA ARM64 installs
+	// the pinned CUDA archives directly.
 	UpstreamFirst bool   `json:"upstream_first,omitempty"`
 	CPUFetch      *Fetch `json:"cpu_fetch,omitempty"`    // confirmed non-NVIDIA Windows ARM CPU path
 	ArchiveRoot   string `json:"archive_root,omitempty"` // fixed prefix of the official Intel Mac tar
@@ -660,8 +662,8 @@ func (p *Platform) validate(key string) error {
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
-		if p.Install.CPUFetch != nil && (key != "windows/arm64" || p.Install.Driver != "llama-app" || !p.Install.UpstreamFirst || p.Install.CPUFetch.SHA256 == "" || p.Install.CPUFetch.URL == "") {
-			return fmt.Errorf("platform %q: cpu_fetch requires the Windows ARM64 llama-app policy and a pinned fetch", key)
+		if p.Install.CPUFetch != nil && (key != "windows/arm64" || p.Install.Driver != "llama-app" || len(p.Install.Archives) == 0 || p.Install.CPUFetch.SHA256 == "" || p.Install.CPUFetch.URL == "") {
+			return fmt.Errorf("platform %q: cpu_fetch requires the Windows ARM64 llama-app policy with pinned CUDA archives and a pinned fetch", key)
 		}
 		// Recipe shape is validated here; the exact pinned build, URLs and
 		// digests of the bundled recipe are pinned by its tests, so a pin bump

@@ -82,6 +82,8 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   install_supported: boolean   // this platform has an install recipe the host can run
   install_reason?: string      // why not, or what the recipe will do
   managed: boolean             // the running instance is one this service owns
+  acceleration?: string        // llama.cpp: backend verified at install ("cuda", "vulkan", "metal", "cpu", ...)
+  devices?: string[]           // llama.cpp: `llama cli --list-devices` rows recorded in the install receipt
 }
 ```
 

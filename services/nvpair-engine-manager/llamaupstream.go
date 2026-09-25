@@ -117,11 +117,17 @@ func (e *Executor) validateLlamaApp(ctx context.Context, st *engineState, candid
 	if err != nil || strings.TrimSpace(licenses) == "" {
 		return identity, "", errors.New("llama third-party licenses could not be read")
 	}
-	if requireCUDA {
-		devices, err := e.runCommandOutput(ctx, []string{bin, "cli", "--list-devices"}, env)
-		if err != nil || !llamaCUDADevice.MatchString(devices) {
-			return identity, "", errors.New("llama did not report a CUDA device; check the NVIDIA driver and retry")
-		}
+	devices, err := e.runCommandOutput(ctx, []string{bin, "cli", "--list-devices"}, env)
+	switch {
+	case err == nil:
+		identity["acceleration_policy"], identity["devices"] = llamaAcceleration(devices)
+	case requireCUDA:
+		return identity, "", errors.New("llama did not report a CUDA device; check the NVIDIA driver and retry")
+	default:
+		identity["devices_error"] = err.Error()
+	}
+	if requireCUDA && !llamaCUDADevice.MatchString(devices) {
+		return identity, "", errors.New("llama did not report a CUDA device; check the NVIDIA driver and retry")
 	}
 	f, err := os.Open(bin)
 	if err != nil {
@@ -202,17 +208,30 @@ func (e *Executor) prepareLlamaUpstream(ctx context.Context, st *engineState, st
 	}
 	e.emitInstallProgress("llamacpp", "fallback", -1)
 	candidate = filepath.Join(stage, "fallback") // Never mix failed script bytes with the ZIPs.
-	if err := e.stageLlamaArchives(ctx, st, candidate, st.plat.Install.Archives); err != nil {
+	fallback, err := e.stageLlamaPinnedCUDA(ctx, st, candidate)
+	if err != nil {
 		return "", nil, fmt.Errorf("upstream attempt failed (%v); official CUDA fallback failed: %w", primaryErr, err)
 	}
-	fallback, licenses, err := e.validateLlamaCUDA(ctx, st, candidate, 10826)
-	if err != nil {
-		return "", nil, fmt.Errorf("upstream attempt failed (%v); official CUDA fallback validation failed: %w", primaryErr, err)
-	}
-	fallback["source"], fallback["fallback_reason"], fallback["upstream_attempt"] = "pinned-cuda-archives", primaryErr.Error(), provenance
-	fallback["archives"], fallback["recipe_sha256"] = st.plat.Install.Archives, llamaArchiveRecipeHash(st.plat.Install.Archives)
-	if err = os.WriteFile(filepath.Join(candidate, "THIRD-PARTY-LICENSES.txt"), []byte(licenses), 0600); err != nil {
-		return "", nil, err
-	}
+	fallback["fallback_reason"], fallback["upstream_attempt"] = primaryErr.Error(), provenance
 	return candidate, fallback, ctx.Err()
+}
+
+// stageLlamaPinnedCUDA stages the checksum-pinned CUDA archives (install.archives)
+// into dir, validates the result as the qualified b10826 CUDA runtime and
+// returns its receipt provenance. Shared by the Windows ARM64 default path and
+// the opt-in upstream-latest fallback.
+func (e *Executor) stageLlamaPinnedCUDA(ctx context.Context, st *engineState, dir string) (map[string]any, error) {
+	if err := e.stageLlamaArchives(ctx, st, dir, st.plat.Install.Archives); err != nil {
+		return nil, fmt.Errorf("official CUDA archives: %w", err)
+	}
+	identity, licenses, err := e.validateLlamaCUDA(ctx, st, dir, 10826)
+	if err != nil {
+		return nil, fmt.Errorf("official CUDA archive validation: %w", err)
+	}
+	identity["source"], identity["acceleration_policy"] = "pinned-cuda-archives", "cuda"
+	identity["archives"], identity["recipe_sha256"] = st.plat.Install.Archives, llamaArchiveRecipeHash(st.plat.Install.Archives)
+	if err := os.WriteFile(filepath.Join(dir, "THIRD-PARTY-LICENSES.txt"), []byte(licenses), 0600); err != nil {
+		return nil, err
+	}
+	return identity, nil
 }

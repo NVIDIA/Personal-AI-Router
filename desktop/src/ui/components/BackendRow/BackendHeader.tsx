@@ -112,6 +112,21 @@ export function BackendHeader({
                     <Text kind="body/semibold/md">{backend.displayName}</Text>
                 </button>
 
+                {backend.acceleration && (
+                    <Text
+                        kind="body/regular/xs"
+                        className="shrink-0 rounded-full px-1.5 py-0.5 text-subtle-color"
+                        style={{
+                            backgroundColor: 'color-mix(in srgb, currentColor 12%, transparent)',
+                            letterSpacing: '0.04em',
+                            lineHeight: 1
+                        }}
+                        title={backend.devices?.length ? backend.devices.join('\n') : undefined}
+                    >
+                        {backend.acceleration.toUpperCase()}
+                    </Text>
+                )}
+
                 <Flex align="center">
                     {isLocalNode &&
                         backend.proxyPort &&
