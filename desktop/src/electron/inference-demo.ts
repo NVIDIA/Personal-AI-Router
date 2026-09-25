@@ -28,9 +28,9 @@ import { buildDemoSchedule, type ScheduledRequest } from '@/electron/inference-d
  * Inference Demo scheduler (node-local).
  *
  * Owns the open-loop submission schedule described in the mini spec. The Go
- * `inference-dispatcher` binary is unchanged: it still runs one backend/model
- * per invocation, so this module spawns one short-lived dispatcher process per
- * scheduled request and lets NV PAIR do all queueing and routing.
+ * `inference-dispatcher` runs one engine/model per invocation, so this module
+ * spawns one short-lived dispatcher process per scheduled request and lets
+ * NV PAIR do all queueing and routing.
  *
  * Three invariants matter more than anything else here:
  *
@@ -366,7 +366,7 @@ export async function startInferenceDemo(): Promise<DemoState> {
         // Deliberately names no port: the proxies own their listeners, and
         // quoting a number here would be the same mistake as hardcoding one.
         throw new Error(
-            'No local inference engine exposed a text-generation model. Start Ollama or LM Studio, wait for it to appear in Settings, and try again.'
+            'No local inference engine exposed a text-generation model. Start Ollama, LM Studio, or llama.cpp, wait for it to appear in Settings, and try again.'
         )
     }
 
