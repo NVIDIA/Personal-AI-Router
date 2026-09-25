@@ -113,6 +113,42 @@ func transferError(ctx context.Context, err error) error {
 	return err
 }
 
+// boundedCapture keeps the first and the last limit bytes written to it, the
+// same shape os/exec keeps for ExitError.Stderr, so a diagnostic that arrives
+// after a long progress stream is still there to classify.
+type boundedCapture struct {
+	limit int
+	head  []byte
+	tail  []byte
+	total int
+}
+
+func newBoundedCapture(limit int) *boundedCapture { return &boundedCapture{limit: limit} }
+
+func (b *boundedCapture) Write(p []byte) (int, error) {
+	b.total += len(p)
+	if room := b.limit - len(b.head); room > 0 {
+		b.head = append(b.head, p[:min(room, len(p))]...)
+	}
+	b.tail = append(b.tail, p...)
+	if len(b.tail) > b.limit {
+		b.tail = append(b.tail[:0:0], b.tail[len(b.tail)-b.limit:]...)
+	}
+	return len(p), nil
+}
+
+// Bytes returns everything when it fits, or head and tail joined without
+// repeating the bytes they share.
+func (b *boundedCapture) Bytes() []byte {
+	switch {
+	case b.total <= b.limit:
+		return b.head
+	case b.total <= 2*b.limit:
+		return append(append([]byte{}, b.head...), b.tail[len(b.tail)-(b.total-b.limit):]...)
+	}
+	return append(append(append([]byte{}, b.head...), "\n[...]\n"...), b.tail...)
+}
+
 // watchTreeGrowth reports progress while files beneath root keep growing. The
 // vendor installer runs curl silently, so the bytes it writes into its staging
 // home are the only progress signal; onGrowth also lets the caller emit a

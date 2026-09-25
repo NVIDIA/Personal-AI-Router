@@ -451,7 +451,8 @@ recipe and the reported compute capabilities.
 
 Linux applies the same gate with the same pinned installer. When every NVIDIA
 GPU reports 7.5 or newer, Install runs the installer restricted to its CUDA
-payload (`SKIP_VULKAN=1 SKIP_ROCM=1`) in a private stage, requires the `CUDA0:`
+payload (`SKIP_VULKAN=1 SKIP_ROCM=1`; the script has no CPU skip, so a CPU
+landing is rejected by the device check) in a private stage, requires the `CUDA0:`
 device check before promotion, and retries the transfer once, because the
 unrestricted installer falls through to Vulkan or CPU without saying so when
 the CUDA payload download fails or no CUDA build exists for the GPU (Jetson

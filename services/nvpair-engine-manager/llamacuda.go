@@ -90,14 +90,14 @@ func (e *Executor) prepareLlamaWindowsCUDA(ctx context.Context, st *engineState,
 	candidate := filepath.Join(stage, "cuda")
 	if err := e.stageLlamaArchives(ctx, st, candidate, st.plat.Install.CUDAArchives); err != nil {
 		if ctx.Err() != nil {
-			return "", nil, "", ctx.Err()
+			return "", nil, "", context.Cause(ctx)
 		}
 		return "", nil, fmt.Sprintf("official CUDA archives: %v", err), nil
 	}
 	identity, licenses, err := e.validateLlamaCUDA(ctx, st, candidate, 10826)
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", nil, "", ctx.Err()
+			return "", nil, "", context.Cause(ctx)
 		}
 		return "", nil, fmt.Sprintf("official CUDA build: %v", err), nil
 	}

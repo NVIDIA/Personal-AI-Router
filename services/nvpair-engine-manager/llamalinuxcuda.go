@@ -39,17 +39,20 @@ func (e *Executor) prepareLlamaLinuxCUDA(ctx context.Context, st *engineState, s
 	for attempt, dir := range []string{"cuda", "cuda-retry"} {
 		candidate, provenance, err := e.stageLlamaInstallerCUDA(ctx, st, filepath.Join(stage, dir), capabilities)
 		if err == nil {
+			if lastErr != nil {
+				provenance["retried_after"] = lastErr.Error() // why the first attempt was rejected, kept for diagnosis
+			}
 			return candidate, provenance, "", nil
 		}
 		if ctx.Err() != nil {
-			return "", nil, "", ctx.Err()
+			return "", nil, "", context.Cause(ctx) // a stall reason, or the caller's cancellation
 		}
 		lastErr = err
 		if attempt == 0 {
 			e.emitInstallProgress("llamacpp", "retrying", -1)
 		}
 	}
-	return "", nil, fmt.Sprintf("official CUDA build: %v", lastErr), nil
+	return "", nil, fmt.Sprintf("official CUDA build for compute capability %v: %v", capabilities, lastErr), nil
 }
 
 // stageLlamaInstallerCUDA runs the pinned installer, restricted to its CUDA

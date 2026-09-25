@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -257,19 +256,24 @@ func (e *Executor) llamaModelAction(ctx context.Context, st *engineState, action
 		if err := cmd.Start(); err != nil {
 			return nil, llamaDownloadError(err)
 		}
-		var detail bytes.Buffer
-		sc := bufio.NewScanner(stderr)
-		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		// The vendor redraws its progress in place, so bytes read (not lines) are
+		// the progress signal. Diagnostics keep the head and the tail of stderr:
+		// an HTTP status arrives early, a full disk late.
+		detail := newBoundedCapture(16 * 1024)
+		buf := make([]byte, 32*1024)
 		heartbeat := time.Now()
-		for sc.Scan() {
-			stall.Touch()
-			if detail.Len() < 16384 {
-				detail.WriteString(sc.Text())
-				detail.WriteByte('\n')
+		for {
+			n, readErr := stderr.Read(buf)
+			if n > 0 {
+				stall.Touch()
+				detail.Write(buf[:n])
+				if time.Since(heartbeat) >= 5*time.Second {
+					heartbeat = time.Now()
+					e.emitPullProgress(ProgressEvent{Engine: st.manifest.Engine, Op: "pull", Stage: "pulling", Percent: -1, Message: p.Model})
+				}
 			}
-			if time.Since(heartbeat) >= 5*time.Second {
-				heartbeat = time.Now()
-				e.emitPullProgress(ProgressEvent{Engine: st.manifest.Engine, Op: "pull", Stage: "pulling", Percent: -1, Message: p.Model})
+			if readErr != nil {
+				break
 			}
 		}
 		err = cmd.Wait()
@@ -286,8 +290,7 @@ func (e *Executor) llamaModelAction(ctx context.Context, st *engineState, action
 			}
 			return nil, llamaDownloadError(err)
 		}
-		out := stdout.Bytes()
-		if err := validateLlamaDownload(root, string(out)); err != nil {
+		if err := validateLlamaDownload(root, stdout.String()); err != nil {
 			return nil, err
 		}
 		return json.Marshal(map[string]string{"status": "success", "model": p.Model})

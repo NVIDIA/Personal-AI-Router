@@ -18,6 +18,28 @@ import (
 
 // The receipt classifies whatever `llama cli --list-devices` printed, so a
 // vendor build that landed on Vulkan or CPU is visible instead of silent.
+// TestBoundedCaptureKeepsHeadAndTail: a diagnostic written after a long
+// progress stream must survive for llamaDownloadError to classify.
+func TestBoundedCaptureKeepsHeadAndTail(t *testing.T) {
+	b := newBoundedCapture(8)
+	b.Write([]byte("abcdef"))
+	if got := string(b.Bytes()); got != "abcdef" {
+		t.Fatalf("short capture = %q", got)
+	}
+	b.Write([]byte("ghijkl")) // 12 bytes: head and tail overlap
+	if got := string(b.Bytes()); got != "abcdefghijkl" {
+		t.Fatalf("overlapping capture = %q", got)
+	}
+	for range 100 {
+		b.Write([]byte("0123456789"))
+	}
+	b.Write([]byte("No space left on device"))
+	got := string(b.Bytes())
+	if !strings.HasPrefix(got, "abcdefgh") || !strings.HasSuffix(got, "n device") || !strings.Contains(got, "\n[...]\n") || len(got) != 8+8+len("\n[...]\n") {
+		t.Fatalf("long capture = %q", got)
+	}
+}
+
 func TestLlamaAccelerationClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name, listing, policy string
@@ -27,7 +49,9 @@ func TestLlamaAccelerationClassification(t *testing.T) {
 		{"cuda-and-vulkan", "Available devices:\n  CUDA0: NVIDIA RTX 5070 (12226 MiB, 11017 MiB free)\n  Vulkan1: AMD Radeon RX 7900 XTX (24560 MiB, 24000 MiB free)\n", "cuda", 2},
 		{"vulkan-multi", "Available devices:\r\n  Vulkan0: Intel(R) Arc(TM) A770 Graphics (16256 MiB, 15487 MiB free)\r\n  Vulkan1: Intel(R) Arc(TM) B580 Graphics (12116 MiB, 11347 MiB free)\r\n", "vulkan", 2},
 		{"vulkan-tegra", "Available devices:\n  Vulkan0: NVIDIA Tegra NVIDIA Thor (94329 MiB, 94328 MiB free)\n", "vulkan", 1},
-		{"metal", "Available devices:\n  Metal0: Apple M4 Max (49152 MiB, 49000 MiB free)\n", "metal", 1},
+		{"metal", "Available devices:\n  MTL0: Apple M1 (5461 MiB, 5460 MiB free)\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n", "metal", 2},
+		{"metal-long-name", "Available devices:\n  Metal0: Apple M4 Max (49152 MiB, 49000 MiB free)\n", "metal", 1},
+		{"rocm", "Available devices:\n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24000 MiB free)\n", "rocm", 1},
 		{"accelerate-cpu", "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n", "cpu", 1},
 		{"none", "Available devices:\n  (none)\n", "cpu", 0},
 		{"empty", "", "cpu", 0},
@@ -239,6 +263,10 @@ func TestLlamaLinuxCUDAGate(t *testing.T) {
 				}
 				if caps, _ := receipt["compute_capabilities"].([]any); len(caps) != 1 {
 					t.Fatalf("receipt lacks compute capabilities: %v", receipt)
+				}
+				// A retried install keeps the first attempt's rejection for diagnosis; a clean one records nothing.
+				if retried, _ := receipt["retried_after"].(string); (tc.failInstalls > 0) != (retried != "") {
+					t.Fatalf("retried_after = %q with %d failed attempts", retried, tc.failInstalls)
 				}
 			} else {
 				note, _ := receipt["cuda_not_used"].(string)

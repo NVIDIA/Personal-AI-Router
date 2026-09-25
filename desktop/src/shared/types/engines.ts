@@ -53,7 +53,7 @@ export interface EngineStatusData {
     installReason?: string
     /**
      * llama.cpp compute backend reported by the owning node's engine-manager
-     * ("cuda" | "vulkan" | "metal" | "cpu" | "hip" | "sycl" | "opencl").
+     * ("cuda" | "rocm" | "metal" | "vulkan" | "sycl" | "opencl" | "cann" | "musa" | "cpu").
      * Absent when unknown or the engine is not installed.
      */
     acceleration?: string

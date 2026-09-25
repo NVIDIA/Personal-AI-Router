@@ -18,18 +18,29 @@ import (
 //	Available devices:
 //	  CUDA0: NVIDIA GB10 (122564 MiB, 512 MiB free)
 //	  Vulkan1: Intel(R) Arc(TM) B580 Graphics (12116 MiB, 11347 MiB free)
+//	  MTL0: Apple M1 (5461 MiB, 5460 MiB free)
 //	  BLAS: Accelerate (0 MiB, 0 MiB free)
 //	  (none)
 //
-// The backend name is the alphabetic prefix of the row label. A row's presence
-// says which backends the installed build can use on this host; it does not
-// say which device a given model will land on.
+// The backend name is the alphabetic prefix of the row label, as ggml names
+// its devices (CUDA, ROCm, MTL, Vulkan, SYCL, OpenCL, CANN, MUSA). A row's
+// presence says which backends the installed build can use on this host; it
+// does not say which device a given model will land on.
 var llamaDeviceRow = regexp.MustCompile(`(?m)^[\t ]*([A-Za-z]+)[0-9]*:[\t ]+(\S.*?)[\t \r]*$`)
+
+// llamaDevicePolicies maps a lower-cased ggml device prefix to the policy name
+// the receipt records; the names follow the vendor installer's variants
+// (cuda, rocm, vulkan, cpu) plus the backends it has no variant for. BLAS and
+// CPU rows are not accelerators.
+var llamaDevicePolicies = map[string]string{
+	"cuda": "cuda", "rocm": "rocm", "hip": "rocm", "mtl": "metal", "metal": "metal",
+	"vulkan": "vulkan", "sycl": "sycl", "opencl": "opencl", "cann": "cann", "musa": "musa",
+}
 
 // llamaAccelerationPolicies orders backends from the most to the least
 // preferred accelerator. The policy recorded for a build is the first one
 // that enumerated a device; a build that lists nothing usable is "cpu".
-var llamaAccelerationPolicies = []string{"cuda", "hip", "metal", "vulkan", "sycl", "opencl"}
+var llamaAccelerationPolicies = []string{"cuda", "rocm", "metal", "vulkan", "sycl", "opencl", "cann", "musa"}
 
 // llamaAcceleration classifies a `--list-devices` listing into the
 // acceleration policy the receipt records and the device rows behind it.
@@ -40,7 +51,7 @@ func llamaAcceleration(listing string) (policy string, devices []string) {
 		if backend == "available" {
 			continue // the header line
 		}
-		seen[backend] = true
+		seen[llamaDevicePolicies[backend]] = true
 		devices = append(devices, strings.TrimSpace(row[0]))
 	}
 	for _, candidate := range llamaAccelerationPolicies {

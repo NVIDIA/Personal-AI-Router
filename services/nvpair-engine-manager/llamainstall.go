@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 func llamaExecutable() string {
@@ -104,9 +105,14 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 	stall := newStallContext(ctx, llamaStallIdle, llamaTransferMax)
 	defer stall.Stop()
 	ctx = stall
-	watching := make(chan struct{})
-	defer close(watching)
-	go watchTreeGrowth(ctx, stage, stallPollEvery, func(int64) { e.emitInstallProgress(engine, "installing", -1) }, watching)
+	watching, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		watchTreeGrowth(ctx, stage, stallPollEvery, func(int64) { e.emitInstallProgress(engine, "installing", -1) }, watching)
+	}()
+	// Joined before promotion, so no heartbeat can follow the terminal event.
+	stopWatching := sync.OnceFunc(func() { close(watching); <-watched })
+	defer stopWatching()
 	env, err := llamaInstallerEnv(st, stage)
 	if err != nil {
 		return err
@@ -216,9 +222,10 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 	}
 	// A cancellation (Stop, shutdown, or the caller's context) that arrives
 	// after the candidate is complete must still leave the runtime slot alone.
-	if err = ctx.Err(); err != nil {
-		return err
+	if ctx.Err() != nil {
+		return context.Cause(ctx) // the stall reason when there is one, else the cancellation
 	}
+	stopWatching()
 	if err = promoteLlamaRuntime(st.installDir, candidate); err != nil {
 		return err
 	}

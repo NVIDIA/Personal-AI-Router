@@ -97,6 +97,7 @@ func (e *Executor) validateLlamaCUDA(ctx context.Context, st *engineState, candi
 }
 
 func (e *Executor) validateLlamaApp(ctx context.Context, st *engineState, candidate string, expected int64, requireCUDA bool) (map[string]any, string, error) {
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	env, err := childEnv(st)
@@ -117,17 +118,12 @@ func (e *Executor) validateLlamaApp(ctx context.Context, st *engineState, candid
 	if err != nil || strings.TrimSpace(licenses) == "" {
 		return identity, "", errors.New("llama third-party licenses could not be read")
 	}
-	devices, err := e.runCommandOutput(ctx, []string{bin, "cli", "--list-devices"}, env)
-	switch {
-	case err == nil:
+	if requireCUDA {
+		devices, err := e.runCommandOutput(ctx, []string{bin, "cli", "--list-devices"}, env)
+		if err != nil || !llamaCUDADevice.MatchString(devices) {
+			return identity, "", errors.New("llama did not report a CUDA device (no CUDA build for this GPU, or the NVIDIA driver is unavailable)")
+		}
 		identity["acceleration_policy"], identity["devices"] = llamaAcceleration(devices)
-	case requireCUDA:
-		return identity, "", errors.New("llama did not report a CUDA device; check the NVIDIA driver and retry")
-	default:
-		identity["devices_error"] = err.Error()
-	}
-	if requireCUDA && !llamaCUDADevice.MatchString(devices) {
-		return identity, "", errors.New("llama did not report a CUDA device; check the NVIDIA driver and retry")
 	}
 	f, err := os.Open(bin)
 	if err != nil {
@@ -140,7 +136,19 @@ func (e *Executor) validateLlamaApp(ctx context.Context, st *engineState, candid
 		return identity, "", err
 	}
 	identity["binary_sha256"], identity["cuda_device_verified"] = hex.EncodeToString(h.Sum(nil)), requireCUDA
-	return identity, licenses, ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return identity, licenses, err
+	}
+	if !requireCUDA {
+		// Enumeration is a fact to record, not a gate: it runs on its own budget
+		// after validation, so a slow probe cannot fail a non-CUDA install.
+		if devices, err := e.llamaListDevices(parent, bin, env); err == nil {
+			identity["acceleration_policy"], identity["devices"] = llamaAcceleration(devices)
+		} else {
+			identity["devices_error"] = err.Error()
+		}
+	}
+	return identity, licenses, nil
 }
 
 func (e *Executor) stageLlamaUpstream(ctx context.Context, st *engineState, stage string) (candidate string, provenance map[string]any, err error) {
@@ -149,7 +157,7 @@ func (e *Executor) stageLlamaUpstream(ctx context.Context, st *engineState, stag
 	// Command helpers include exit diagnostics but do not preserve cancellation.
 	defer func() {
 		if ctx.Err() != nil {
-			err = ctx.Err()
+			err = context.Cause(ctx)
 		}
 	}()
 	provenance = map[string]any{"installer_url": llamaLatestInstallerURL, "version_url": llamaLatestVersionURL, "source": "official-upstream", "installer_provenance": "HTTPS official source, pinned by commit and verified against a prequalified SHA256 before execution"}
@@ -200,8 +208,8 @@ func (e *Executor) stageLlamaUpstream(ctx context.Context, st *engineState, stag
 // always a complete, validated runtime; the caller promotes it.
 func (e *Executor) prepareLlamaUpstream(ctx context.Context, st *engineState, stage string) (string, map[string]any, error) {
 	candidate, provenance, primaryErr := e.stageLlamaUpstream(ctx, st, filepath.Join(stage, "upstream"))
-	if err := ctx.Err(); err != nil {
-		return "", nil, err // A parent cancellation never authorizes a fallback.
+	if ctx.Err() != nil {
+		return "", nil, context.Cause(ctx) // A parent cancellation never authorizes a fallback.
 	}
 	if primaryErr == nil {
 		return candidate, provenance, nil
