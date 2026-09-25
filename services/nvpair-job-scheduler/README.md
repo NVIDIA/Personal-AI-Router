@@ -129,3 +129,11 @@ go test ./...
 - [`../nvpair-workload-manager/README.md`](../nvpair-workload-manager/README.md)
   — where workload state originates
 - [`../VERSIONING.md`](../VERSIONING.md) — SemVer bump rules
+
+## Delivery failures
+
+The last-emitted snapshot and timestamp are updated only after the local
+JSON-RPC notification write succeeds. A failed update leaves the previous
+successful snapshot intact, so ordinary reconciliation retries changed ranks
+without requiring another workload event. Each engine is tracked independently;
+a successful delivery is not repeated merely because another engine failed.
