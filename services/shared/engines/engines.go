@@ -156,7 +156,7 @@ var all = []Engine{
 		FacadePort:            8080,
 		EnginePortBase:        8081,
 		PortFile:              "llamacpp-proxy-port.json",
-		ProxyEnabledByDefault: false,
+		ProxyEnabledByDefault: true,
 	},
 }
 

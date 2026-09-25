@@ -9,7 +9,7 @@ import (
 )
 
 func TestDefaultProxyEngineCSVUsesSharedDefaults(t *testing.T) {
-	if got, want := defaultProxyEngineCSV(), "ollama,lmstudio"; got != want {
+	if got, want := defaultProxyEngineCSV(), "ollama,lmstudio,llamacpp"; got != want {
 		t.Fatalf("default proxy engines = %q, want %q", got, want)
 	}
 }

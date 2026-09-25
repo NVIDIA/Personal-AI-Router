@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func TestLlamaCPPProxyIsExcludedFromBrokerDefaults(t *testing.T) {
+func TestLlamaCPPProxyIsIncludedInBrokerDefaults(t *testing.T) {
 	stdin, msgs, stderr, cleanup := startBrokerWith(t, "--proxy-path", proxyBin)
 	t.Cleanup(cleanup)
 	go func() {
@@ -24,27 +24,12 @@ func TestLlamaCPPProxyIsExcludedFromBrokerDefaults(t *testing.T) {
 	}()
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
-	const requestID = 7100
-	writeRawFrame(t, stdin, fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:get-status"}`, requestID,
-	))
-	response := waitForResponseID(t, msgs, requestID, 5*time.Second)
-	if response.Error != nil {
-		t.Fatalf("llamacpp-proxy:get-status failed: %d %s", response.Error.Code, response.Error.Message)
-	}
-	var status struct {
-		Ready bool `json:"ready"`
-		Port  int  `json:"port"`
-	}
-	if err := json.Unmarshal(response.Result, &status); err != nil {
-		t.Fatalf("decode llama.cpp status %s: %v", response.Result, err)
-	}
-	if status.Ready || status.Port != 0 {
-		t.Fatalf("default llama.cpp status = %+v, want disabled", status)
+	if port := waitEngineProxyReady(t, "llamacpp-proxy", stdin, msgs, 15*time.Second); port <= 0 {
+		t.Fatalf("default llama.cpp proxy port = %d, want a listening facade", port)
 	}
 }
 
-func TestLlamaCPPOptInFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
+func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 	const model = "org/router-model-GGUF:Q4_K_M"
 	var modelListHits atomic.Int32
 	var inferenceHits atomic.Int32

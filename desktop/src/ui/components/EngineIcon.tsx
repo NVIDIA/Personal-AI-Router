@@ -5,6 +5,7 @@ import type { CSSProperties } from 'react'
 import { type EngineType } from '@/shared/types/engines'
 import ollamaIcon from '@/ui/assets/engine-icons/ollama.png?inline'
 import lmStudioIcon from '@/ui/assets/engine-icons/lm-studio.png?inline'
+import llamaCppIcon from '@/ui/assets/engine-icons/llama-cpp.svg?inline'
 
 export default function EngineIcon({ type, size = 32 }: { type: EngineType; size?: number }) {
     const dimension = `${size}px`
@@ -35,6 +36,14 @@ export default function EngineIcon({ type, size = 32 }: { type: EngineType; size
         return (
             <div style={containerStyle}>
                 <img src={lmStudioIcon} alt="LM Studio" style={imgStyle} />
+            </div>
+        )
+    }
+
+    if (type === 'llama-cpp') {
+        return (
+            <div style={containerStyle}>
+                <img src={llamaCppIcon} alt="llama.cpp" style={imgStyle} />
             </div>
         )
     }

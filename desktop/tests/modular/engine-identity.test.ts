@@ -12,14 +12,15 @@ import {
 import { engineManagerName, engineTypeFromManagerName, isEngineType } from '@/shared/utils/engines'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { getWelcomeEngineCandidates, WELCOME_ENGINE_DEFAULT_SELECTED } from '@/ui/constants/welcome'
+import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 
 describe('engine identity', () => {
-    it('declares llama.cpp without enabling its desktop workflows', () => {
+    it('enables llama.cpp workflows without preselecting its large install', () => {
         expect(EngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp'])
-        expect(EnabledEngineTypes).toEqual(['ollama', 'lm-studio'])
-        expect(getWelcomeEngineCandidates('Windows')).not.toContain('llama-cpp')
-        expect(getWelcomeEngineCandidates('MacOS')).not.toContain('llama-cpp')
-        expect(getWelcomeEngineCandidates('Linux')).not.toContain('llama-cpp')
+        expect(EnabledEngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp'])
+        expect(getWelcomeEngineCandidates('Windows')).toContain('llama-cpp')
+        expect(getWelcomeEngineCandidates('MacOS')).toContain('llama-cpp')
+        expect(getWelcomeEngineCandidates('Linux')).toContain('llama-cpp')
         expect(WELCOME_ENGINE_DEFAULT_SELECTED['llama-cpp']).toBe(false)
     })
 
@@ -53,5 +54,6 @@ describe('engine identity', () => {
             hasDeleteModel: false,
             engineHub: { label: 'llama.cpp' }
         })
+        expect(gatewayEndpointDisplayUrl(8080, 'llama-cpp')).toBe('http://127.0.0.1:8080')
     })
 })

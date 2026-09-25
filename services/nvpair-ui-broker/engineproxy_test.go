@@ -164,8 +164,8 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 // --proxy-engines selects which engines the one binary is started for.
 func TestParseProxyEngines(t *testing.T) {
 	defaults := defaultProxyEngineNames()
-	if len(defaults) != 2 || defaults[0] != "ollama" || defaults[1] != "lmstudio" {
-		t.Fatalf("defaultProxyEngineNames() = %v, want [ollama lmstudio]", defaults)
+	if len(defaults) != 3 || defaults[0] != "ollama" || defaults[1] != "lmstudio" || defaults[2] != "llamacpp" {
+		t.Fatalf("defaultProxyEngineNames() = %v, want [ollama lmstudio llamacpp]", defaults)
 	}
 	for _, tc := range []struct {
 		name    string
@@ -173,7 +173,7 @@ func TestParseProxyEngines(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{name: "default set", csv: "ollama,lmstudio", want: []string{"ollama", "lmstudio"}},
+		{name: "default set", csv: "ollama,lmstudio,llamacpp", want: []string{"ollama", "lmstudio", "llamacpp"}},
 		{name: "single engine", csv: "lmstudio", want: []string{"lmstudio"}},
 		{name: "whitespace and blanks are tolerated", csv: " ollama , , lmstudio ", want: []string{"ollama", "lmstudio"}},
 		{name: "duplicates collapse", csv: "ollama,ollama", want: []string{"ollama"}},

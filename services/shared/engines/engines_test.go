@@ -36,7 +36,7 @@ func TestNames(t *testing.T) {
 
 func TestProxyDefaults(t *testing.T) {
 	got := ProxyDefaults()
-	want := []string{"ollama", "lmstudio"}
+	want := []string{"ollama", "lmstudio", "llamacpp"}
 	if len(got) != len(want) {
 		t.Fatalf("ProxyDefaults() = %v, want %v", got, want)
 	}

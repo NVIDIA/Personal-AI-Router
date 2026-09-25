@@ -4,13 +4,12 @@
 import { EngineType, ModelExpiry } from '@/shared/types/engines'
 
 // The engines `nvpair-engine-manager` ships a manifest for, and therefore the
-// only ones PAIR can install, run or route to. Keep staged engines out of
-// EnabledEngineTypes until every desktop consumer is ready to expose them.
+// only ones PAIR can install, run or route to.
 export const EngineTypes = ['ollama', 'lm-studio', 'llama-cpp'] as const
 
 // Kept as a distinct export so a future engine can ship behind it rather than
 // appearing the moment its type exists.
-export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio'] as const
+export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llama-cpp']
 
 /**
  * How `nvpair-engine-manager` spells each engine on the wire. This is the
