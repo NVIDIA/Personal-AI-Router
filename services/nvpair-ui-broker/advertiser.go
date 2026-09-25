@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"nvpair-shared/httpcon"
 	"nvpair-shared/noderec"
 )
 
@@ -346,6 +347,6 @@ func checkEngineHealth(profile engineProxyProfile, client *http.Client, port int
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	httpcon.DrainAndClose(resp.Body)
 	return resp.StatusCode == http.StatusOK
 }

@@ -10,10 +10,10 @@ SPDX-License-Identifier: Apache-2.0
 
 NVIDIA Personal AI Router (PAIR) is a local inference router for a group of
 compatible computers on the same network. It discovers participating nodes,
-manages supported inference engines, and presents Ollama-compatible and
-OpenAI-compatible proxy endpoints to applications and agents. Independent
-requests can be routed to eligible nodes according to engine availability,
-model availability, and current workload.
+manages supported inference engines, and presents local proxy endpoints for
+Ollama-compatible, OpenAI-compatible, and Anthropic Messages API requests.
+Independent requests can be routed to eligible nodes according to engine
+availability, model availability, and current workload.
 
 PAIR is useful for concurrent local workloads such as multi-agent applications.
 Prompts and responses are intended to remain on the local network when every
