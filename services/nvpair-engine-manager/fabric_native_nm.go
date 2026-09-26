@@ -996,8 +996,102 @@ func fabricNMAddArgs(iface fabricInterface, receipt fabricNativeReceipt) []strin
 		"802-3-ethernet.mac-address", receipt.NM.PermanentMAC, "802-3-ethernet.cloned-mac-address", "preserve", "802-3-ethernet.mtu", strconv.Itoa(iface.MTU),
 		"802-3-ethernet.auto-negotiate", "no", "802-3-ethernet.speed", "0", "802-3-ethernet.duplex", "", "802-3-ethernet.wake-on-lan", "ignore",
 		"ipv4.method", "manual", "ipv4.addresses", iface.Address, "ipv4.never-default", "yes", "ipv4.ignore-auto-dns", "yes", "ipv4.ignore-auto-routes", "yes",
-		"ipv4.gateway", "", "ipv4.dns", "", "ipv4.dns-search", "", "ipv4.routes", "", "ipv4.route-table", "254", "ipv4.dad-timeout", "1000", "ipv4.may-fail", "no", "ipv4.link-local", "disabled",
+		"ipv4.gateway", "", "ipv4.dns", "", "ipv4.dns-search", "", "ipv4.routes", fabricNMRoutes(iface), "ipv4.route-table", "254", "ipv4.dad-timeout", "1000", "ipv4.may-fail", "no", "ipv4.link-local", "disabled",
 		"ipv6.method", "disabled", "ipv6.never-default", "yes", "ipv6.ignore-auto-dns", "yes"}
+}
+
+// nmcli's terse profile readback renders ipv4.routes in this same
+// "destination gateway" form it accepts, joined by ", ".
+func fabricNMRoutes(iface fabricInterface) string {
+	routes := make([]string, 0, len(iface.Routes))
+	for _, route := range iface.Routes {
+		routes = append(routes, route.Destination+" "+route.Gateway)
+	}
+	return strings.Join(routes, ", ")
+}
+
+// The kernel's main-table IPv4 routes through one interface. Local-table rows
+// are kernel-owned per-address state; any other table using it holds.
+func fabricNMKernelRoutes(ctx context.Context, run fabricNMRun, iface fabricInterface) ([]fabricNativeRoute, error) {
+	data, err := run(ctx, "ip", "-j", "-4", "route", "show", "table", "all")
+	if err != nil {
+		return nil, errors.New("kernel route readback unavailable")
+	}
+	rows, _, err := fabricParseRoutes(data)
+	if err != nil {
+		return nil, err
+	}
+	var selected []fabricNativeRoute
+	for _, row := range rows {
+		uses := row.Dev == iface.Name
+		for _, hop := range row.Nexthops {
+			uses = uses || hop.Dev == iface.Name
+		}
+		if !uses {
+			continue
+		}
+		switch strings.Trim(string(row.Table), `"`) {
+		case "local", "255":
+		case "", "main", "254":
+			selected = append(selected, row)
+		default:
+			return nil, errors.New("another routing table uses the owned fabric interface")
+		}
+	}
+	return selected, nil
+}
+
+// Beyond its connected prefix, the owned interface carries exactly the
+// reviewed host routes, each once and through its reviewed gateway.
+func fabricNMRoutesExact(rows []fabricNativeRoute, iface fabricInterface) bool {
+	prefix, err := fabricNativePrefix(iface)
+	if err != nil {
+		return false
+	}
+	pending := map[string]string{}
+	for _, route := range iface.Routes {
+		pending[route.Destination] = route.Gateway
+	}
+	for _, row := range rows {
+		destination, ok := fabricRouteDestination(row.Dst)
+		if !ok || len(row.Nexthops) != 0 || row.Type != "" && row.Type != "unicast" {
+			return false
+		}
+		if row.Gateway == "" && destination == prefix.Masked() {
+			continue
+		}
+		gateway, reviewed := pending[destination.String()]
+		if !reviewed || gateway != row.Gateway {
+			return false
+		}
+		delete(pending, destination.String())
+	}
+	return len(pending) == 0
+}
+
+func fabricNMRoutesAbsent(rows []fabricNativeRoute, iface fabricInterface) bool {
+	for _, row := range rows {
+		destination, ok := fabricRouteDestination(row.Dst)
+		for _, route := range iface.Routes {
+			if ok && destination.String() == route.Destination {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Profile deletion withdraws its routes with it. Only a routed profile needs
+// the extra read; an unrouted interface's absence proof is its address.
+func fabricNMOwnedRoutesGone(ctx context.Context, run fabricNMRun, iface fabricInterface) (bool, error) {
+	if len(iface.Routes) == 0 {
+		return true, nil
+	}
+	rows, err := fabricNMKernelRoutes(ctx, run, iface)
+	if err != nil {
+		return false, err
+	}
+	return fabricNMRoutesAbsent(rows, iface), nil
 }
 
 func fabricNMProfileDigest(fields map[string]string) string {
@@ -1037,7 +1131,7 @@ func fabricNMProfileOwned(ctx context.Context, run fabricNMRun, iface fabricInte
 	f := profile.Fields
 	want := map[string]string{"connection.id": "nvpair-fabric-" + receipt.Label, "connection.uuid": receipt.NM.UUID, "connection.interface-name": iface.Name,
 		"connection.autoconnect": "no", "802-3-ethernet.cloned-mac-address": "preserve", "802-3-ethernet.auto-negotiate": "no", "802-3-ethernet.duplex": "",
-		"ipv4.method": "manual", "ipv4.addresses": iface.Address, "ipv4.never-default": "yes", "ipv4.ignore-auto-dns": "yes", "ipv4.ignore-auto-routes": "yes", "ipv4.gateway": "", "ipv4.dns": "", "ipv4.dns-search": "", "ipv4.routes": "", "ipv4.may-fail": "no", "ipv6.method": "disabled", "ipv6.never-default": "yes", "ipv6.ignore-auto-dns": "yes"}
+		"ipv4.method": "manual", "ipv4.addresses": iface.Address, "ipv4.never-default": "yes", "ipv4.ignore-auto-dns": "yes", "ipv4.ignore-auto-routes": "yes", "ipv4.gateway": "", "ipv4.dns": "", "ipv4.dns-search": "", "ipv4.routes": fabricNMRoutes(iface), "ipv4.may-fail": "no", "ipv6.method": "disabled", "ipv6.never-default": "yes", "ipv6.ignore-auto-dns": "yes"}
 	for key, expected := range want {
 		actual, exists := f[key]
 		if !exists || actual != expected {
@@ -1232,6 +1326,13 @@ func fabricNMAdd(ctx context.Context, iface fabricInterface, receipt fabricNativ
 			}
 			if len(addresses) == 1 {
 				if address, ok := addresses[iface.Address]; ok && fabricNativeOwnedAddress(address, iface.Name) {
+					routes, err := fabricNMKernelRoutes(ctx, io.run, iface)
+					if err != nil {
+						return err
+					}
+					if !fabricNMRoutesExact(routes, iface) {
+						return errors.New("exact NetworkManager routes were not confirmed by the kernel")
+					}
 					receipt.NM.PolicyEstablished = true
 					return io.save(receipt)
 				}
@@ -1280,8 +1381,12 @@ func fabricNMRemove(ctx context.Context, iface fabricInterface, receipt fabricNa
 			return err
 		}
 		_, present := addresses[iface.Address]
-		if found || present {
-			return errors.New("completed NetworkManager cleanup now has replacement profile or address evidence; preserved")
+		routesGone, err := fabricNMOwnedRoutesGone(ctx, io.run, iface)
+		if err != nil {
+			return err
+		}
+		if found || present || !routesGone {
+			return errors.New("completed NetworkManager cleanup now has replacement profile, address or host route evidence; preserved")
 		}
 		return nil
 	}
@@ -1296,8 +1401,12 @@ func fabricNMRemove(ctx context.Context, iface fabricInterface, receipt fabricNa
 		if err := fabricNMRestoreAutoconnect(ctx, iface, receipt, io); err != nil {
 			return err
 		}
-		if _, exists := addresses[iface.Address]; exists && receipt.NM.SettingsPath != "" {
-			return errors.New("address remains without owned NetworkManager profile; preserved")
+		routesGone, err := fabricNMOwnedRoutesGone(ctx, io.run, iface)
+		if err != nil {
+			return err
+		}
+		if _, exists := addresses[iface.Address]; (exists || !routesGone) && receipt.NM.SettingsPath != "" {
+			return errors.New("address or host route remains without owned NetworkManager profile; preserved")
 		}
 		receipt.NM.CleanupConfirmed = true
 		return io.save(receipt)
@@ -1343,7 +1452,11 @@ func fabricNMRemove(ctx context.Context, iface fabricInterface, receipt fabricNa
 			return err
 		}
 		_, addressPresent := addresses[iface.Address]
-		if !stillPresent && !addressPresent {
+		routesGone, err := fabricNMOwnedRoutesGone(ctx, io.run, iface)
+		if err != nil {
+			return err
+		}
+		if !stillPresent && !addressPresent && routesGone {
 			if err := fabricNMBaselineCurrent(current, iface, receipt); err != nil {
 				return err
 			}
@@ -1357,7 +1470,7 @@ func fabricNMRemove(ctx context.Context, iface fabricInterface, receipt fabricNa
 			return err
 		}
 	}
-	return errors.New("owned NetworkManager profile or address cleanup remains unconfirmed")
+	return errors.New("owned NetworkManager profile, address or host route cleanup remains unconfirmed")
 }
 
 func fabricNMReceiptValid(receipt fabricNativeReceipt) bool {

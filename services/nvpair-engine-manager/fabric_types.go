@@ -11,7 +11,11 @@ import (
 )
 
 const fabricRecipe = "spark-two-node-temporary-addresses-v1"
-const fabricRingRecipe = "spark-three-node-ring-temporary-addresses-v1"
+const fabricRingRecipe = "spark-three-node-ring-routed-v2"
+
+// Reviews never offer this recipe. It stays recognized only so retained
+// operations remain inspectable, requalifiable and exactly reversible.
+const fabricRingRetainedRecipe = "spark-three-node-ring-temporary-addresses-v1"
 const fabricLeaseSeconds = 0 // Until explicit rollback or reboot; never expires beneath a workload.
 const fabricControlPath = "/v1/fabric/control"
 
@@ -31,6 +35,14 @@ type fabricInterface struct {
 	RDMADevices      []string                `json:"rdmaDevices"`
 	MTU              int                     `json:"mtu"`
 	GeneratedDefault *fabricGeneratedDefault `json:"generatedDefault,omitempty"`
+	Routes           []fabricRoute           `json:"routes,omitempty"`
+}
+
+// A routed ring reaches a peer's advertised address, which sits on another
+// cable, via that peer's address on the cable the two members share.
+type fabricRoute struct {
+	Destination string `json:"destination"`
+	Gateway     string `json:"gateway"`
 }
 
 // Native inspection supplies this exact selected-device binding before pause
@@ -72,12 +84,13 @@ type fabricNativeFacts struct {
 	GeneratedDefaults []fabricGeneratedDefault `json:"generatedDefaults,omitempty"`
 }
 type fabricTarget struct {
-	NodeID     string             `json:"nodeId"`
-	Principal  string             `json:"principal"`
-	SwitchID   string             `json:"switchId,omitempty"`
-	PortName   string             `json:"portName,omitempty"`
-	Ports      []fabricTargetPort `json:"ports,omitempty"`
-	Interfaces []fabricInterface  `json:"interfaces"`
+	NodeID            string             `json:"nodeId"`
+	Principal         string             `json:"principal"`
+	SwitchID          string             `json:"switchId,omitempty"`
+	PortName          string             `json:"portName,omitempty"`
+	Ports             []fabricTargetPort `json:"ports,omitempty"`
+	AdvertisedAddress string             `json:"advertisedAddress,omitempty"`
+	Interfaces        []fabricInterface  `json:"interfaces"`
 }
 type fabricTargetPort struct {
 	SwitchID string `json:"switchId"`
@@ -124,8 +137,9 @@ type fabricOperation struct {
 
 // CandidateIPs are published only after the existing fabric owner proves the
 // exact local route and a certificate-pinned identity read in both directions.
-// They are peer-specific; a ring has no single fabric address reachable by all
-// three members.
+// Lane rows are peer-specific cable endpoints. A routed ring adds one row per
+// member with a Gateway: proof that the peer's advertised address is reached
+// over the cable the two share. Routed rows carry no RDMA binding.
 type fabricCandidateIP struct {
 	NodeID         string `json:"nodeId"`
 	PeerNodeID     string `json:"peerNodeId"`
@@ -141,6 +155,11 @@ type fabricCandidateIP struct {
 	RDMAPort       int    `json:"rdmaPort"`
 	GIDIndex       int    `json:"gidIndex"`
 	GIDType        string `json:"gidType"`
+	Gateway        string `json:"gateway,omitempty"`
+}
+
+func fabricQualifiedRecipe(recipeID string) bool {
+	return recipeID == fabricRecipe || recipeID == fabricRingRecipe || recipeID == fabricRingRetainedRecipe
 }
 
 type fabricRDMABinding struct {

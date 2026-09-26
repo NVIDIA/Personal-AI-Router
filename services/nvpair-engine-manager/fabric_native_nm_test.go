@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ type fabricNMTestHost struct {
 	regenerateAt           string
 	regeneratedPlaceholder *fabricNMProfile
 	malformed              map[string]string
+	kernelEdit             func([]map[string]any) []map[string]any
 }
 
 func fabricNMTestNew(t *testing.T) *fabricNMTestHost {
@@ -153,8 +155,38 @@ func (h *fabricNMTestHost) ownedProfile() fabricNMProfile {
 func (h *fabricNMTestHost) completeActivation() {
 	h.activating = false
 	h.state = 100
-	h.native[h.iface.Address] = fabricNativeAddress{Local: "172.31.240.1", PrefixLen: 30, Label: h.iface.Name,
+	prefix := netip.MustParsePrefix(h.iface.Address)
+	h.native[h.iface.Address] = fabricNativeAddress{Local: prefix.Addr().String(), PrefixLen: prefix.Bits(), Label: h.iface.Name,
 		Valid: json.RawMessage(`4294967295`), Preferred: json.RawMessage(`4294967295`)}
+}
+
+// The kernel view follows the mocked addresses and the activated owned
+// profile's configured routes, the way NetworkManager programs them.
+func (h *fabricNMTestHost) kernelRoutes() []byte {
+	rows := []map[string]any{{"dst": "default", "gateway": "192.0.2.1", "dev": "wlP9s9", "protocol": "dhcp", "flags": []string{}}}
+	for _, cidr := range slices.Sorted(maps.Keys(h.native)) {
+		prefix := netip.MustParsePrefix(cidr)
+		rows = append(rows,
+			map[string]any{"dst": prefix.Masked().String(), "dev": h.iface.Name, "protocol": "kernel", "scope": "link", "prefsrc": prefix.Addr().String(), "flags": []string{}},
+			map[string]any{"type": "local", "dst": prefix.Addr().String(), "table": "local", "dev": h.iface.Name, "protocol": "kernel", "scope": "host", "prefsrc": prefix.Addr().String(), "flags": []string{}})
+	}
+	for _, p := range h.profiles {
+		if p.UUID != h.receipt.NM.UUID || !p.Active || h.state != 100 || p.Fields["ipv4.routes"] == "" {
+			continue
+		}
+		for _, route := range strings.Split(p.Fields["ipv4.routes"], ", ") {
+			destination, gateway, _ := strings.Cut(route, " ")
+			rows = append(rows, map[string]any{"dst": strings.TrimSuffix(destination, "/32"), "gateway": gateway, "dev": h.iface.Name, "protocol": "static", "flags": []string{}})
+		}
+	}
+	if h.kernelEdit != nil {
+		rows = h.kernelEdit(rows)
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return data
 }
 
 func (h *fabricNMTestHost) run(_ context.Context, command string, args ...string) ([]byte, error) {
@@ -243,12 +275,18 @@ func (h *fabricNMTestHost) run(_ context.Context, command string, args ...string
 			}
 		}
 	}
+	if command == "ip" && match("-j", "-4", "route", "show", "table", "all") {
+		return h.kernelRoutes(), nil
+	}
 	if command == "nmcli" {
 		if len(args) >= 4 && slices.Equal(args[:4], []string{"--wait", "2", "connection", "add"}) {
 			if h.retirePlaceholders {
 				h.profiles = slices.DeleteFunc(h.profiles, func(p fabricNMProfile) bool { return p.Flags == 3 })
 			}
 			profile := h.ownedProfile()
+			if i := slices.Index(args, "ipv4.routes"); i >= 0 && i+1 < len(args) {
+				profile.Fields["ipv4.routes"] = args[i+1]
+			}
 			maps.Copy(profile.Fields, h.createdFields)
 			h.profiles = append(h.profiles, profile)
 			return []byte("Connection successfully added\n"), h.createErr
@@ -392,7 +430,7 @@ func TestFabricNMMockedLifecyclePreservesExactRuntimePolicy(t *testing.T) {
 	}
 	for key, want := range map[string]string{"save": "no", "ifname": h.iface.Name, "connection.uuid": receipt.NM.UUID,
 		"connection.autoconnect": "no", "802-3-ethernet.mac-address": h.iface.MAC, "802-3-ethernet.cloned-mac-address": "preserve",
-		"802-3-ethernet.mtu": "1500", "connection.lldp": "disable", "ipv4.route-table": "254", "ipv4.dad-timeout": "1000", "ipv4.addresses": h.iface.Address} {
+		"802-3-ethernet.mtu": "1500", "connection.lldp": "disable", "ipv4.route-table": "254", "ipv4.dad-timeout": "1000", "ipv4.addresses": h.iface.Address, "ipv4.routes": ""} {
 		i := slices.Index(add, key)
 		if i < 0 || i+1 >= len(add) || add[i+1] != want {
 			t.Fatalf("creation option %s = %q; wanted %q", key, add, want)
@@ -414,6 +452,158 @@ func TestFabricNMMockedLifecyclePreservesExactRuntimePolicy(t *testing.T) {
 	}
 	if len(h.profiles) != 0 || len(h.native) != 0 || h.state != 30 {
 		t.Fatal("owned profile or address survived cleanup")
+	}
+}
+
+// fabricNMTestNewRouted is a routed ring member's p0 interface.
+func fabricNMTestNewRouted(t *testing.T) *fabricNMTestHost {
+	t.Helper()
+	h := fabricNMTestNew(t)
+	h.iface.Address = "10.253.0.0/31"
+	h.iface.Routes = []fabricRoute{{Destination: "10.253.0.4/32", Gateway: "10.253.0.1"}}
+	h.receipt.Interface = h.iface
+	h.receipt.NM.UUID = fabricNMUUID(h.receipt.Operation, h.iface)
+	return h
+}
+
+func (h *fabricNMTestHost) createArg(key string) (string, bool) {
+	for _, call := range h.calls {
+		if call[0] == "nmcli" && slices.Contains(call, "add") {
+			if i := slices.Index(call, key); i >= 0 && i+1 < len(call) {
+				return call[i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+func (h *fabricNMTestHost) routeReads() int {
+	n := 0
+	for _, call := range h.calls {
+		if call[0] == "ip" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestFabricNMRoutedProfileCarriesAndProvesExactlyItsHostRoute(t *testing.T) {
+	h := fabricNMTestNewRouted(t)
+	receipt := h.add(t)
+	if routes, ok := h.createArg("ipv4.routes"); !ok || routes != "10.253.0.4/32 10.253.0.1" {
+		t.Fatalf("routed profile creation wrote ipv4.routes=%q", routes)
+	}
+	if !receipt.NM.PolicyEstablished || !fabricNMReceiptValid(receipt) || h.routeReads() == 0 {
+		t.Fatal("routed activation did not prove its kernel routes before establishing policy")
+	}
+	if err := fabricNMRemove(context.Background(), h.iface, receipt, h.io()); err != nil {
+		t.Fatal(err)
+	}
+	completed := h.latestReceipt()
+	if !completed.NM.CleanupConfirmed || len(h.profiles) != 0 || len(h.native) != 0 {
+		t.Fatal("routed profile, address or host route survived cleanup")
+	}
+	if err := fabricNMRemove(context.Background(), h.iface, completed, h.io()); err != nil {
+		t.Fatalf("second routed cleanup: %v", err)
+	}
+	if c, a, d := h.mutations(); c != 1 || a != 1 || d != 1 {
+		t.Fatalf("routed mutations = create:%d activate:%d delete:%d", c, a, d)
+	}
+}
+
+func TestFabricNMUnroutedProfileNeverReadsRoutesDuringRollback(t *testing.T) {
+	h := fabricNMTestNew(t)
+	h.iface.Address = "10.253.0.2/31"
+	h.receipt.Interface = h.iface
+	h.receipt.NM.UUID = fabricNMUUID(h.receipt.Operation, h.iface)
+	receipt := h.add(t)
+	if routes, ok := h.createArg("ipv4.routes"); !ok || routes != "" {
+		t.Fatalf("unrouted profile creation wrote ipv4.routes=%q", routes)
+	}
+	reads := h.routeReads()
+	if err := fabricNMRemove(context.Background(), h.iface, receipt, h.io()); err != nil {
+		t.Fatal(err)
+	}
+	if !h.latestReceipt().NM.CleanupConfirmed || h.routeReads() != reads {
+		t.Fatal("unrouted rollback changed its exact cleanup evidence")
+	}
+}
+
+func TestFabricNMRoutedProfileReadbackRejectsRouteDrift(t *testing.T) {
+	for name, routes := range map[string]string{
+		"missing":       "",
+		"extra":         "10.253.0.4/32 10.253.0.1, 10.253.0.5/32 10.253.0.1",
+		"wrong gateway": "10.253.0.4/32 10.253.0.9",
+		"with metric":   "10.253.0.4/32 10.253.0.1 100",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := fabricNMTestNewRouted(t)
+			h.createdFields = map[string]string{"ipv4.routes": routes}
+			if err := fabricNMAdd(context.Background(), h.iface, h.receipt, h.io()); err == nil {
+				t.Fatal("drifted owned profile routes were accepted")
+			}
+			if c, a, d := h.mutations(); c != 1 || a != 0 || d != 0 {
+				t.Fatal("drifted routed profile was activated or deleted")
+			}
+		})
+	}
+}
+
+func TestFabricNMRoutedKernelReadbackRejectsRouteDrift(t *testing.T) {
+	iface := fabricNMTestNewRouted(t).iface.Name
+	for name, edit := range map[string]func([]map[string]any) []map[string]any{
+		"missing": func(rows []map[string]any) []map[string]any {
+			return slices.DeleteFunc(rows, func(row map[string]any) bool { return row["gateway"] == "10.253.0.1" })
+		},
+		"extra": func(rows []map[string]any) []map[string]any {
+			return append(rows, map[string]any{"dst": "10.253.0.5", "gateway": "10.253.0.1", "dev": iface})
+		},
+		"wrong gateway": func(rows []map[string]any) []map[string]any {
+			for _, row := range rows {
+				if row["gateway"] == "10.253.0.1" {
+					row["gateway"] = "10.253.0.9"
+				}
+			}
+			return rows
+		},
+		"another table": func(rows []map[string]any) []map[string]any {
+			return append(rows, map[string]any{"dst": "10.253.0.4", "gateway": "10.253.0.1", "dev": iface, "table": "120"})
+		},
+		"multipath": func(rows []map[string]any) []map[string]any {
+			return append(rows, map[string]any{"dst": "10.253.0.5", "nexthops": []map[string]string{{"dev": iface, "gateway": "10.253.0.1"}}})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := fabricNMTestNewRouted(t)
+			h.kernelEdit = edit
+			if err := fabricNMAdd(context.Background(), h.iface, h.receipt, h.io()); err == nil {
+				t.Fatal("kernel route drift was accepted")
+			}
+			if len(h.saved) == 0 || h.latestReceipt().NM.PolicyEstablished {
+				t.Fatal("kernel route drift established owned policy")
+			}
+		})
+	}
+}
+
+func TestFabricNMRoutedCleanupHoldsWhileTheHostRouteRemains(t *testing.T) {
+	h := fabricNMTestNewRouted(t)
+	receipt := h.add(t)
+	h.kernelEdit = func(rows []map[string]any) []map[string]any {
+		return append(rows, map[string]any{"dst": "10.253.0.4", "gateway": "10.253.0.1", "dev": h.iface.Name, "protocol": "static"})
+	}
+	if err := fabricNMRemove(context.Background(), h.iface, receipt, h.io()); err == nil {
+		t.Fatal("cleanup confirmed while the owned host route remained")
+	}
+	if h.latestReceipt().NM.CleanupConfirmed {
+		t.Fatal("remaining host route was recorded as confirmed cleanup")
+	}
+	h.kernelEdit = nil
+	if err := fabricNMRemove(context.Background(), h.iface, h.latestReceipt(), h.io()); err != nil {
+		t.Fatal(err)
+	}
+	if !h.latestReceipt().NM.CleanupConfirmed {
+		t.Fatal("routed cleanup was not confirmed once the host route disappeared")
 	}
 }
 

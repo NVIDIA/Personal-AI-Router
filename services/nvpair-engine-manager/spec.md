@@ -50,9 +50,13 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   back to a stopped pointer, or removed, but is never admitted for a new review,
   start, or recovery.
 - Review, apply, inspect, recover, and roll back PAIR-owned temporary direct or
-  ring fabric configuration. An active qualified fabric may be leased to an
-  exact serving-group generation; rollback is refused until that consumer is
-  clean.
+  ring fabric configuration. The ring is routed: each member advertises its p0
+  `/31` address and carries one `/32` host route on p0, so every member reaches
+  every advertised address over the cable the two share, and qualification
+  proves each routed path. Retained unrouted ring records stay inspectable and
+  exactly reversible but are never offered for a new review. An active
+  qualified fabric may be leased to an exact serving-group generation; rollback
+  is refused until that consumer is clean.
 
 **Out of scope**
 - **Inference traffic** — stays with `nvpair-proxy`; this service never proxies `/api/chat` etc.
@@ -191,7 +195,7 @@ Requests (caller → service):
 | `engine:cable-start` | `{ reviewId }` | retained bounded cable-check run |
 | `engine:cable-status` / `engine:cable-cancel` | exact review or run identity | current result or exact-run cancellation/cleanup |
 | `engine:fabric-inventory` | `{ nodeIds }` (1-3 current paired nodes) | bounded read-only eligible physical-port projection from fresh node-info facts; no routes, addresses, commands, credentials, or mutation authority |
-| `engine:fabric-review` | cable selection plus optional `inspectSelectedProfiles` | reviewed temporary address/port plan and blockers |
+| `engine:fabric-review` | cable selection plus optional `inspectSelectedProfiles` | reviewed temporary address/route/port plan and blockers |
 | `engine:fabric-approve` | `{ reviewId, administratorApproved, selectedPortPauseApproved }` | retained fabric operation after apply and qualification |
 | `engine:fabric-status` | `{ operationId }` | current exact operation and cleanup/lease state |
 | `engine:fabric-cancel` / `engine:fabric-recover` | `{ operationId, administratorApproved }` | exact owned rollback or recovery result |

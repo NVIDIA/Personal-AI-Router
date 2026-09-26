@@ -3,7 +3,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Badge, Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
-import type { FabricInventorySnapshot, FabricPortRef, FabricSelection } from '@/shared/types/fabric'
+import type {
+    FabricCandidateIP,
+    FabricInventorySnapshot,
+    FabricPortRef,
+    FabricSelection
+} from '@/shared/types/fabric'
 import type { NodeItem } from '@/shared/types/nodes'
 import {
     acceptedCleanupHostKeys,
@@ -27,6 +32,14 @@ type Layout = 'direct' | 'ring'
 const portKey = (nodeId: string, portName: string) => `${nodeId}\n${portName}`
 const switchKey = (nodeId: string, portName: string) => `${portKey(nodeId, portName)}\nswitch`
 const directNameKey = (nodeId: string) => `${nodeId}\ndirect-name`
+
+const qualificationSummary = (candidates: FabricCandidateIP[]) => {
+    const routed = candidates.filter(candidate => candidate.gateway).length
+    const lanes = `${candidates.length - routed} peer-specific fast-control endpoints`
+    return routed
+        ? `${lanes} and ${routed} routed advertised-address paths are qualified.`
+        : `${lanes} are qualified.`
+}
 
 interface FabricSetupCardProps {
     /** Isolated render/test seed. Product callers use current stores and Engine Manager. */
@@ -792,7 +805,7 @@ export default function FabricSetupCard({ initialTopology }: FabricSetupCardProp
                         {operation.state === 'active' && (
                             <Text kind="body/regular/sm" className="text-subtle-color">
                                 {operation.qualifiedAt && operation.candidateIPs?.length
-                                    ? `${operation.candidateIPs.length} peer-specific fast-control endpoints are qualified.`
+                                    ? qualificationSummary(operation.candidateIPs)
                                     : 'Fast-control qualification is not reported.'}{' '}
                                 RDMA traffic, RoCE payload, NCCL, bandwidth and inference remain
                                 unverified.

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -102,6 +103,7 @@ func fabricSelectedTarget(facts fabricInventory, ref cableprobe.PortRef) (fabric
 		}
 		selected := iface.fabricInterface
 		selected.GeneratedDefault = nil // Only authenticated native INSPECT supplies pause bindings.
+		selected.Routes = nil           // Only the reviewed ring allocation supplies routes.
 		out.Interfaces = append(out.Interfaces, selected)
 	}
 	if len(out.Interfaces) != 2 || out.Interfaces[0].RDMADevices[0] == out.Interfaces[1].RDMADevices[0] || out.Interfaces[0].MAC == out.Interfaces[1].MAC {
@@ -236,12 +238,15 @@ func fabricAllocateRing(targets []fabricTarget, inventories []fabricInventory) e
 		1: {"p0": "10.253.0.4/31", "p1": "10.253.0.1/31"},
 		2: {"p0": "10.253.0.3/31", "p1": "10.253.0.5/31"},
 	}
-	for role := range targets {
-		if len(targets[role].Interfaces) != 2 {
+	allocated := make([]fabricTarget, len(targets))
+	for role, target := range targets {
+		if len(target.Interfaces) != 2 {
 			return errors.New("ring participant primary interfaces are incomplete")
 		}
-		for i := range targets[role].Interfaces {
-			iface := &targets[role].Interfaces[i]
+		allocated[role] = target
+		allocated[role].Interfaces = slices.Clone(target.Interfaces)
+		for i := range allocated[role].Interfaces {
+			iface := &allocated[role].Interfaces[i]
 			address, ok := addresses[role][iface.PhysicalPort.PortName]
 			if !ok {
 				return errors.New("ring participant port role is invalid")
@@ -249,6 +254,11 @@ func fabricAllocateRing(targets []fabricTarget, inventories []fabricInventory) e
 			iface.Address = address
 		}
 	}
+	routed, err := fabricRingRouted(allocated)
+	if err != nil {
+		return err
+	}
+	copy(targets, routed)
 	return nil
 }
 
@@ -279,8 +289,10 @@ func fabricSameTarget(want fabricTarget, facts fabricInventory) bool {
 	if err != nil {
 		return false
 	}
+	actual.AdvertisedAddress = want.AdvertisedAddress
 	for i := range actual.Interfaces {
 		actual.Interfaces[i].Address = want.Interfaces[i].Address
+		actual.Interfaces[i].Routes = want.Interfaces[i].Routes
 		// Node inventory cannot supply privileged profile evidence. The native
 		// worker independently rechecks this reviewed binding before effects.
 		actual.Interfaces[i].GeneratedDefault = want.Interfaces[i].GeneratedDefault

@@ -22,6 +22,9 @@ func fabricNativeRoutes(context.Context) ([]string, error) { return nil, errFabr
 func fabricNativeRouteQualified(context.Context, fabricInterface, string) (fabricRDMABinding, error) {
 	return fabricRDMABinding{}, errFabricNativePlatform
 }
+func fabricNativeRoutedQualified(context.Context, fabricInterface, fabricRoute) error {
+	return errFabricNativePlatform
+}
 func fabricNativeAdd(context.Context, fabricInterface, string, int, bool) error {
 	return errFabricNativePlatform
 }

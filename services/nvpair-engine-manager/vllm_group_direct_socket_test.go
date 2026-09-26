@@ -226,7 +226,7 @@ func qualifiedDirectFabricFixture(t *testing.T) (*fabricService, *fabricRunRecor
 	close(r.done)
 	r.Public.State, r.Public.RecipeID, r.Public.EffectsApplied = "active", fabricRecipe, true
 	r.Attempted = []bool{true, true}
-	candidates, err := fabricCandidates(r.Public.Targets)
+	candidates, err := fabricCandidates(fabricRecipe, r.Public.Targets)
 	if err != nil {
 		t.Fatal(err)
 	}

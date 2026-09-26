@@ -244,6 +244,12 @@ export interface FabricGeneratedDefault {
     activePath: string
 }
 
+/** Reaches a peer's advertised address, which sits on another cable, via that peer on the shared cable. */
+export interface FabricRoute {
+    destination: string
+    gateway: string
+}
+
 export interface FabricInterface {
     name: string
     index: number
@@ -255,6 +261,7 @@ export interface FabricInterface {
     rdmaDevices: string[]
     mtu: number
     generatedDefault?: FabricGeneratedDefault
+    routes?: FabricRoute[]
 }
 
 export interface FabricTarget {
@@ -263,6 +270,7 @@ export interface FabricTarget {
     switchId?: string
     portName?: string
     ports?: Array<{ switchId: string; portName: string }>
+    advertisedAddress?: string
     interfaces: FabricInterface[]
 }
 
@@ -270,9 +278,7 @@ export interface FabricReview {
     schemaVersion: 1
     reviewId: string
     ownerNodeId: string
-    recipeId:
-        | 'spark-two-node-temporary-addresses-v1'
-        | 'spark-three-node-ring-temporary-addresses-v1'
+    recipeId: 'spark-two-node-temporary-addresses-v1' | 'spark-three-node-ring-routed-v2'
     cableRunId?: string
     persistence: 'until-reboot'
     state: 'blocked' | 'ready'
@@ -301,6 +307,8 @@ export interface FabricCandidateIP {
     rdmaPort: number
     gidIndex: number
     gidType: string
+    /** Present only on a routed ring proof, which carries no RDMA binding. */
+    gateway?: string
 }
 
 export type FabricOperationState =
@@ -317,7 +325,8 @@ export interface FabricOperation {
     operationId: string
     reviewId: string
     ownerNodeId: string
-    recipeId?: FabricReview['recipeId']
+    /** Retained operations may still carry the unrouted ring recipe that reviews no longer offer. */
+    recipeId?: FabricReview['recipeId'] | 'spark-three-node-ring-temporary-addresses-v1'
     cableRunId?: string
     state: FabricOperationState
     targets: FabricTarget[]

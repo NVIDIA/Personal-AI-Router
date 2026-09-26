@@ -204,6 +204,28 @@ func TestSetupViewRendersExactHoldsAndBindings(t *testing.T) {
 	}
 }
 
+func TestSetupFabricRendersRoutedRingProofsWithoutRDMA(t *testing.T) {
+	v := newSetupView(nil)
+	v.fabricOperation = &setupFabricOperation{
+		SchemaVersion: 1, OperationID: strings.Repeat("c", 32), ReviewID: strings.Repeat("c", 32), RecipeID: "spark-three-node-ring-routed-v2", State: "active",
+		Targets: []setupFabricTarget{{NodeID: "node-a", Principal: "principal-a", AdvertisedAddress: "10.253.0.0", Interfaces: []setupFabricInterface{
+			{Name: "enp1s0f0np0", Index: 7, Address: "10.253.0.0/31", Routes: []setupFabricRoute{{Destination: "10.253.0.4/32", Gateway: "10.253.0.1"}}},
+		}}},
+		CandidateIPs: []setupFabricCandidateIP{{NodeID: "node-a", PeerNodeID: "node-b", PeerPrincipal: "principal-b", Address: "10.253.0.0", PeerAddress: "10.253.0.4", InterfaceName: "enp1s0f0np0", InterfaceIndex: 7, SwitchID: "switch-a", PortName: "p0", Gateway: "10.253.0.1"}},
+	}
+	var b strings.Builder
+	v.renderFabric(&b)
+	view := b.String()
+	for _, want := range []string{"advertised=10.253.0.0", "route=10.253.0.4/32 via 10.253.0.1", "routed node-a(10.253.0.0) -> node-b(10.253.0.4) via gateway 10.253.0.1 on enp1s0f0np0#7"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing routed ring detail %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "rdma=:0") || strings.Contains(view, "gid=0/") {
+		t.Fatalf("routed proof rendered as an RDMA lane:\n%s", view)
+	}
+}
+
 func TestSetupRPCJourneyUsesOnlyPublicOwnerMethods(t *testing.T) {
 	candidate := setupCandidate{CandidateID: "candidate-a", Label: "A", Address: "192.0.2.10", Port: 22}
 	request, _ := runTUICommand(t, func(client *rpc.Client) tea.Cmd { return setupCandidatesCmd(client) }, map[string]any{"candidates": []setupCandidate{candidate}, "artifacts": []setupArtifact{}})

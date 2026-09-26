@@ -203,17 +203,135 @@ func fabricInterfaceAt(target fabricTarget, portName string) (fabricInterface, b
 	return fabricInterface{}, false
 }
 
+type fabricRingSide struct {
+	role int
+	port string
+}
+
+// The sealed ring cabling: each member's p0 meets the next member's p1.
+var fabricRingCables = [3][2]fabricRingSide{{{0, "p0"}, {1, "p1"}}, {{0, "p1"}, {2, "p0"}}, {{1, "p0"}, {2, "p1"}}}
+
+// fabricRingRouted returns the targets with each member's advertised p0
+// address and the host routes that reach every advertised address over the
+// cable two members share. A peer advertised on the shared cable needs none.
+func fabricRingRouted(targets []fabricTarget) ([]fabricTarget, error) {
+	if len(targets) != 3 {
+		return nil, errors.New("three ordered ring targets required")
+	}
+	routed := make([]fabricTarget, len(targets))
+	for role, target := range targets {
+		p0, ok := fabricInterfaceAt(target, "p0")
+		prefix, err := netip.ParsePrefix(p0.Address)
+		if !ok || err != nil || prefix.Bits() != 31 {
+			return nil, errors.New("ring member has no reviewed p0 address to advertise")
+		}
+		routed[role] = target
+		routed[role].AdvertisedAddress = prefix.Addr().String()
+		routed[role].Interfaces = slices.Clone(target.Interfaces)
+		for i := range routed[role].Interfaces {
+			routed[role].Interfaces[i].Routes = nil
+		}
+	}
+	for _, cable := range fabricRingCables {
+		for _, end := range [][2]fabricRingSide{{cable[0], cable[1]}, {cable[1], cable[0]}} {
+			local, peer := end[0], end[1]
+			localIface, okLocal := fabricInterfaceAt(targets[local.role], local.port)
+			peerIface, okPeer := fabricInterfaceAt(targets[peer.role], peer.port)
+			lp, localErr := netip.ParsePrefix(localIface.Address)
+			pp, peerErr := netip.ParsePrefix(peerIface.Address)
+			if !okLocal || !okPeer || localErr != nil || peerErr != nil || lp.Bits() != 31 || pp.Bits() != 31 || lp.Masked() != pp.Masked() {
+				return nil, errors.New("ring endpoint addresses do not share the sealed /31 edge")
+			}
+			if pp.Addr().String() == routed[peer.role].AdvertisedAddress {
+				continue
+			}
+			for i := range routed[local.role].Interfaces {
+				iface := &routed[local.role].Interfaces[i]
+				if iface.PhysicalPort.PortName == local.port {
+					iface.Routes = append(iface.Routes, fabricRoute{Destination: routed[peer.role].AdvertisedAddress + "/32", Gateway: pp.Addr().String()})
+				}
+			}
+		}
+	}
+	return routed, nil
+}
+
+// A reviewed host route is one /32 private destination outside the p0
+// interface's own /31, reached via the other address on that /31.
+func validFabricInterfaceRoutes(iface fabricInterface) bool {
+	if len(iface.Routes) == 0 {
+		return true
+	}
+	prefix, err := fabricNativePrefix(iface)
+	if err != nil || len(iface.Routes) != 1 || prefix.Bits() != 31 || iface.PhysicalPort.PortName != "p0" {
+		return false
+	}
+	route := iface.Routes[0]
+	destination, destinationErr := netip.ParsePrefix(route.Destination)
+	gateway, gatewayErr := netip.ParseAddr(route.Gateway)
+	return destinationErr == nil && gatewayErr == nil && destination.String() == route.Destination && gateway.String() == route.Gateway &&
+		destination.Bits() == 32 && destination.Addr().Is4() && destination.Addr().IsPrivate() && !prefix.Contains(destination.Addr()) &&
+		prefix.Contains(gateway) && gateway != prefix.Addr()
+}
+
+// The recipe-independent shape a native worker accepts: at most one routed
+// interface, whose own address is the target's advertised address.
+func validFabricTargetRoutes(target fabricTarget) bool {
+	advertised := ""
+	for _, iface := range target.Interfaces {
+		if !validFabricInterfaceRoutes(iface) {
+			return false
+		}
+		if len(iface.Routes) != 0 {
+			prefix, err := netip.ParsePrefix(iface.Address)
+			if advertised != "" || err != nil {
+				return false
+			}
+			advertised = prefix.Addr().String()
+		}
+	}
+	return target.AdvertisedAddress == advertised
+}
+
+// Only the routed ring recipe carries advertised addresses and host routes,
+// and exactly the ones its reviewed addresses and cabling imply.
+func fabricRecipeTargetsValid(recipeID string, targets []fabricTarget) bool {
+	if recipeID != fabricRingRecipe {
+		for _, target := range targets {
+			if target.AdvertisedAddress != "" {
+				return false
+			}
+			for _, iface := range target.Interfaces {
+				if len(iface.Routes) != 0 {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	expected, err := fabricRingRouted(targets)
+	if err != nil {
+		return false
+	}
+	for role, target := range targets {
+		if target.AdvertisedAddress != expected[role].AdvertisedAddress {
+			return false
+		}
+		for i, iface := range target.Interfaces {
+			if !slices.Equal(iface.Routes, expected[role].Interfaces[i].Routes) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func fabricRingCandidates(targets []fabricTarget) ([]fabricCandidateIP, error) {
 	if len(targets) != 3 {
 		return nil, errors.New("three ordered ring targets required")
 	}
-	type side struct {
-		role int
-		port string
-	}
-	edges := [][2]side{{{0, "p0"}, {1, "p1"}}, {{0, "p1"}, {2, "p0"}}, {{1, "p0"}, {2, "p1"}}}
 	result := make([]fabricCandidateIP, 0, 6)
-	for _, edge := range edges {
+	for _, edge := range fabricRingCables {
 		left, okLeft := fabricInterfaceAt(targets[edge[0].role], edge[0].port)
 		right, okRight := fabricInterfaceAt(targets[edge[1].role], edge[1].port)
 		if !okLeft || !okRight || len(left.RDMADevices) != 1 || len(right.RDMADevices) != 1 {
@@ -233,6 +351,44 @@ func fabricRingCandidates(targets []fabricTarget) ([]fabricCandidateIP, error) {
 		appendDirection(targets[edge[1].role], targets[edge[0].role], right, left)
 	}
 	return result, nil
+}
+
+// One routed proof per host route: the member reaches that peer's advertised
+// address from its own address on the routed interface.
+func fabricRingRoutedCandidates(targets []fabricTarget) ([]fabricCandidateIP, error) {
+	result := make([]fabricCandidateIP, 0, len(targets))
+	for _, local := range targets {
+		for _, iface := range local.Interfaces {
+			for _, route := range iface.Routes {
+				prefix, err := netip.ParsePrefix(iface.Address)
+				destination, destinationErr := netip.ParsePrefix(route.Destination)
+				var peer fabricTarget
+				peers := 0
+				for _, candidate := range targets {
+					if destinationErr == nil && candidate.NodeID != local.NodeID && candidate.AdvertisedAddress == destination.Addr().String() {
+						peer, peers = candidate, peers+1
+					}
+				}
+				if err != nil || peers != 1 {
+					return nil, errors.New("routed ring proof has no single advertised peer")
+				}
+				result = append(result, fabricCandidateIP{NodeID: local.NodeID, PeerNodeID: peer.NodeID, PeerPrincipal: peer.Principal, Address: prefix.Addr().String(), PeerAddress: destination.Addr().String(), InterfaceName: iface.Name, InterfaceIndex: iface.Index, MAC: iface.MAC, SwitchID: iface.PhysicalPort.SwitchID, PortName: iface.PhysicalPort.PortName, Gateway: route.Gateway})
+			}
+		}
+	}
+	return result, nil
+}
+
+// Routed proofs reach an advertised address through a peer and never bind
+// RDMA, so lane consumers see only the direct cable endpoints.
+func fabricLaneEndpoints(endpoints []fabricCandidateIP) []fabricCandidateIP {
+	lanes := make([]fabricCandidateIP, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if endpoint.Gateway == "" {
+			lanes = append(lanes, endpoint)
+		}
+	}
+	return lanes
 }
 
 func fabricTwoNodeCandidates(targets []fabricTarget) ([]fabricCandidateIP, error) {
@@ -261,11 +417,27 @@ func fabricTwoNodeCandidates(targets []fabricTarget) ([]fabricCandidateIP, error
 	return result, nil
 }
 
-func fabricCandidates(targets []fabricTarget) ([]fabricCandidateIP, error) {
-	if len(targets) == 2 {
-		return fabricTwoNodeCandidates(targets)
+func fabricCandidates(recipeID string, targets []fabricTarget) ([]fabricCandidateIP, error) {
+	if !fabricRecipeTargetsValid(recipeID, targets) {
+		return nil, errors.New("fabric targets do not match their reviewed recipe")
 	}
-	return fabricRingCandidates(targets)
+	switch recipeID {
+	case fabricRecipe:
+		return fabricTwoNodeCandidates(targets)
+	case fabricRingRetainedRecipe:
+		return fabricRingCandidates(targets)
+	case fabricRingRecipe:
+		lanes, err := fabricRingCandidates(targets)
+		if err != nil {
+			return nil, err
+		}
+		routed, err := fabricRingRoutedCandidates(targets)
+		if err != nil {
+			return nil, err
+		}
+		return append(lanes, routed...), nil
+	}
+	return nil, errors.New("fabric recipe has no qualification contract")
 }
 
 func fabricCandidatesQualified(base, qualified []fabricCandidateIP) bool {
@@ -274,6 +446,12 @@ func fabricCandidatesQualified(base, qualified []fabricCandidateIP) bool {
 	}
 	for i := range base {
 		candidate := qualified[i]
+		if candidate.Gateway != "" {
+			if candidate != base[i] {
+				return false
+			}
+			continue
+		}
 		if candidate.RDMAPort < 1 || candidate.RDMAPort > 255 || candidate.GIDIndex < 0 || candidate.GIDIndex > 255 || candidate.GIDType != "RoCE v2" {
 			return false
 		}
@@ -309,7 +487,7 @@ func (s *fabricService) proveFabric(ctx context.Context, run *fabricRunRecord, m
 	if method != "qualify" && method != "requalify" {
 		return nil, errors.New("unsupported fabric proof method")
 	}
-	candidates, err := fabricCandidates(run.Public.Targets)
+	candidates, err := fabricCandidates(run.Public.RecipeID, run.Public.Targets)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +539,7 @@ func (s *fabricService) proveFabric(ctx context.Context, run *fabricRunRecord, m
 	for _, base := range candidates {
 		found := false
 		for _, candidate := range qualified {
-			if candidate.NodeID == base.NodeID && candidate.PeerNodeID == base.PeerNodeID && candidate.InterfaceIndex == base.InterfaceIndex {
+			if candidate.NodeID == base.NodeID && candidate.PeerNodeID == base.PeerNodeID && candidate.InterfaceIndex == base.InterfaceIndex && candidate.Gateway == base.Gateway {
 				ordered = append(ordered, candidate)
 				found = true
 				break
@@ -456,10 +634,10 @@ func (s *fabricService) qualifiedFabric(nodeIDs []string) (string, string, []fab
 	var operationID, digest string
 	var endpoints []fabricCandidateIP
 	for _, run := range s.runs {
-		if run.Public.State != "active" || (run.Public.RecipeID != fabricRecipe && run.Public.RecipeID != fabricRingRecipe) || run.Public.QualifiedAt <= 0 || len(run.Public.CandidateIPs) != 2*len(run.Public.Targets) || s.qualified[run.Public.OperationID] != run.Public.QualificationDigest {
+		if run.Public.State != "active" || !fabricQualifiedRecipe(run.Public.RecipeID) || run.Public.QualifiedAt <= 0 || s.qualified[run.Public.OperationID] != run.Public.QualificationDigest {
 			continue
 		}
-		base, err := fabricCandidates(run.Public.Targets)
+		base, err := fabricCandidates(run.Public.RecipeID, run.Public.Targets)
 		if err != nil || !fabricCandidatesQualified(base, run.Public.CandidateIPs) || run.Public.QualificationDigest != fabricQualificationDigest(run.Public.OperationID, run.Public.RecipeID, run.Public.Targets, run.Public.CandidateIPs) {
 			continue
 		}

@@ -274,32 +274,39 @@ func (s *fabricService) lockAdmission(ctx context.Context, wait time.Duration) e
 }
 
 func (s *fabricService) qualifyLocal(ctx context.Context, target fabricTarget, candidates []fabricCandidateIP) ([]fabricCandidateIP, error) {
-	if len(candidates) != 2 || target.NodeID != s.m.cableLocal.nodeID {
+	routes := 0
+	for _, iface := range target.Interfaces {
+		routes += len(iface.Routes)
+	}
+	if len(candidates) != 2+routes || target.NodeID != s.m.cableLocal.nodeID || !validFabricTargetRoutes(target) {
 		return nil, fabricQualificationFailure("result-invalid", errors.New("exact local fabric candidates are required"))
 	}
 	qualified := slices.Clone(candidates)
-	seenInterfaces := map[int]bool{}
+	seenLanes, seenRoutes := map[int]bool{}, map[int]bool{}
 	for i, candidate := range qualified {
-		if candidate.NodeID != target.NodeID || seenInterfaces[candidate.InterfaceIndex] {
+		seen := seenLanes
+		if candidate.Gateway != "" {
+			seen = seenRoutes
+		}
+		if candidate.NodeID != target.NodeID || seen[candidate.InterfaceIndex] {
 			return nil, fabricQualificationFailure("result-invalid", errors.New("fabric candidate binding is ambiguous"))
 		}
-		seenInterfaces[candidate.InterfaceIndex] = true
-		var iface fabricInterface
-		matched := false
-		for _, selected := range target.Interfaces {
-			prefix, err := fabricNativePrefix(selected)
-			if err == nil && selected.Index == candidate.InterfaceIndex && selected.Name == candidate.InterfaceName && selected.MAC == candidate.MAC && selected.PhysicalPort.SwitchID == candidate.SwitchID && selected.PhysicalPort.PortName == candidate.PortName && len(selected.RDMADevices) == 1 && selected.RDMADevices[0] == candidate.RDMADevice && prefix.Addr().String() == candidate.Address {
-				iface, matched = selected, true
-			}
-		}
+		seen[candidate.InterfaceIndex] = true
+		iface, route, matched := fabricLocalEndpoint(target, candidate)
 		if !matched {
 			return nil, fabricQualificationFailure("result-invalid", errors.New("fabric candidate does not match the owned local endpoint"))
 		}
-		binding, err := fabricNativeRouteQualified(ctx, iface, candidate.PeerAddress)
-		if err != nil {
-			return nil, fabricQualificationFailure("route-unavailable", err)
+		if candidate.Gateway != "" {
+			if err := fabricNativeRoutedQualified(ctx, iface, route); err != nil {
+				return nil, fabricQualificationFailure("route-unavailable", err)
+			}
+		} else {
+			binding, err := fabricNativeRouteQualified(ctx, iface, candidate.PeerAddress)
+			if err != nil {
+				return nil, fabricQualificationFailure("route-unavailable", err)
+			}
+			qualified[i].RDMAPort, qualified[i].GIDIndex, qualified[i].GIDType = binding.Port, binding.GIDIndex, binding.GIDType
 		}
-		qualified[i].RDMAPort, qualified[i].GIDIndex, qualified[i].GIDType = binding.Port, binding.GIDIndex, binding.GIDType
 		peer, ok := s.m.peers.lookup(candidate.PeerNodeID)
 		if !ok || peer.clusterUUID != candidate.PeerPrincipal || peer.port < 1 || peer.port > 65535 {
 			return nil, fabricQualificationFailure("pinned-identity-unavailable", errors.New("fabric peer identity or engine-control service is unavailable"))
@@ -309,6 +316,26 @@ func (s *fabricService) qualifyLocal(ctx context.Context, target fabricTarget, c
 		}
 	}
 	return qualified, nil
+}
+
+// fabricLocalEndpoint binds a requested candidate to its exact owned local
+// interface and, for a routed proof, to that interface's reviewed host route.
+func fabricLocalEndpoint(target fabricTarget, candidate fabricCandidateIP) (fabricInterface, fabricRoute, bool) {
+	for _, selected := range target.Interfaces {
+		prefix, err := fabricNativePrefix(selected)
+		if err != nil || selected.Index != candidate.InterfaceIndex || selected.Name != candidate.InterfaceName || selected.MAC != candidate.MAC || selected.PhysicalPort.SwitchID != candidate.SwitchID || selected.PhysicalPort.PortName != candidate.PortName || prefix.Addr().String() != candidate.Address {
+			continue
+		}
+		if candidate.Gateway == "" {
+			return selected, fabricRoute{}, len(selected.RDMADevices) == 1 && selected.RDMADevices[0] == candidate.RDMADevice
+		}
+		for _, route := range selected.Routes {
+			if route.Gateway == candidate.Gateway && route.Destination == candidate.PeerAddress+"/32" && candidate.RDMADevice == "" && candidate.RDMAPort == 0 && candidate.GIDIndex == 0 && candidate.GIDType == "" {
+				return selected, route, true
+			}
+		}
+	}
+	return fabricInterface{}, fabricRoute{}, false
 }
 
 // pinnedFabricIdentityAt uses the existing cluster-mTLS pool and existing

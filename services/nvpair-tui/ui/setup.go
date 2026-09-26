@@ -1658,6 +1658,10 @@ func (v *setupView) renderFabric(b *strings.Builder) {
 		renderFabricTargets(b, op.Targets)
 		renderSetupPermission(b, op.Permission)
 		for _, binding := range op.CandidateIPs {
+			if binding.Gateway != "" {
+				fmt.Fprintf(b, "  routed %s(%s) -> %s(%s) via gateway %s on %s#%d/%s/%s principal=%s\n", binding.NodeID, binding.Address, binding.PeerNodeID, binding.PeerAddress, binding.Gateway, binding.InterfaceName, binding.InterfaceIndex, binding.SwitchID, binding.PortName, binding.PeerPrincipal)
+				continue
+			}
 			fmt.Fprintf(b, "  route %s(%s) -> %s(%s) via %s#%d/%s/%s rdma=%s:%d gid=%d/%s principal=%s\n", binding.NodeID, binding.Address, binding.PeerNodeID, binding.PeerAddress, binding.InterfaceName, binding.InterfaceIndex, binding.SwitchID, binding.PortName, binding.RDMADevice, binding.RDMAPort, binding.GIDIndex, binding.GIDType, binding.PeerPrincipal)
 		}
 		if op.Message != "" {
@@ -1682,9 +1686,16 @@ func renderFabricTargets(b *strings.Builder, targets []setupFabricTarget) {
 		if target.SwitchID != "" {
 			fmt.Fprintf(b, " port=%s/%s", target.SwitchID, target.PortName)
 		}
+		if target.AdvertisedAddress != "" {
+			fmt.Fprintf(b, " advertised=%s", target.AdvertisedAddress)
+		}
 		b.WriteByte('\n')
 		for _, iface := range target.Interfaces {
-			fmt.Fprintf(b, "    %s#%d@%s physical=%s/%s address=%s mtu=%d rdma=%s\n", iface.Name, iface.Index, iface.MAC, iface.PhysicalPort.SwitchID, iface.PhysicalPort.PortName, iface.Address, iface.MTU, strings.Join(iface.RDMADevices, ","))
+			fmt.Fprintf(b, "    %s#%d@%s physical=%s/%s address=%s mtu=%d rdma=%s", iface.Name, iface.Index, iface.MAC, iface.PhysicalPort.SwitchID, iface.PhysicalPort.PortName, iface.Address, iface.MTU, strings.Join(iface.RDMADevices, ","))
+			for _, route := range iface.Routes {
+				fmt.Fprintf(b, " route=%s via %s", route.Destination, route.Gateway)
+			}
+			b.WriteByte('\n')
 		}
 	}
 }

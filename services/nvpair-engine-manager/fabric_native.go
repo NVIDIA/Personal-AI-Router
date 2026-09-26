@@ -49,19 +49,27 @@ func fabricParseRoutes(data []byte) ([]fabricNativeRoute, []string, error) {
 		if row.Dst == "default" {
 			continue
 		}
-		p, err := netip.ParsePrefix(row.Dst)
-		if err != nil {
-			a, e := netip.ParseAddr(row.Dst)
-			if e != nil {
-				return nil, nil, errors.New("native route destination is ambiguous")
-			}
-			p = netip.PrefixFrom(a, a.BitLen())
+		p, ok := fabricRouteDestination(row.Dst)
+		if !ok {
+			return nil, nil, errors.New("native route destination is ambiguous")
 		}
 		if p.Bits() != 0 {
 			prefixes = append(prefixes, p.Masked().String())
 		}
 	}
 	return rows, fabricSorted(prefixes), nil
+}
+
+// iproute2 prints a host route's destination without its prefix length.
+func fabricRouteDestination(dst string) (netip.Prefix, bool) {
+	if p, err := netip.ParsePrefix(dst); err == nil {
+		return p, true
+	}
+	a, err := netip.ParseAddr(dst)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(a, a.BitLen()), true
 }
 
 func fabricSorted(values []string) []string {
@@ -109,7 +117,9 @@ func fabricNativePrefix(iface fabricInterface) (netip.Prefix, error) {
 	return p, nil
 }
 
-func fabricRouteSelectionQualified(data []byte, iface fabricInterface, peer string) bool {
+// An empty gateway requires the peer on-link; a routed proof names the peer
+// address on the shared cable that the kernel must choose as next hop.
+func fabricRouteSelectionQualified(data []byte, iface fabricInterface, peer, gateway string) bool {
 	var rows []struct {
 		Destination string `json:"dst"`
 		From        string `json:"from"`
@@ -133,7 +143,7 @@ func fabricRouteSelectionQualified(data []byte, iface fabricInterface, peer stri
 	if source == "" {
 		source = row.Source
 	}
-	return row.Destination == peer && row.Device == iface.Name && source == prefix.Addr().String() && row.Gateway == "" && (row.Type == "" || row.Type == "unicast")
+	return row.Destination == peer && row.Device == iface.Name && source == prefix.Addr().String() && row.Gateway == gateway && (row.Type == "" || row.Type == "unicast")
 }
 
 func fabricNativeAddressesMatch(target, actual fabricInterface, afterGeneratedPause bool) bool {
@@ -178,19 +188,20 @@ func fabricRouteBlockers(rows []fabricNativeRoute, targets []fabricInterface) []
 				blockers = append(blockers, err.Error())
 				continue
 			}
-			existing, err := netip.ParsePrefix(row.Dst)
-			if err != nil {
-				if a, e := netip.ParseAddr(row.Dst); e == nil {
-					existing = netip.PrefixFrom(a, a.BitLen())
-				}
-			}
-			if existing.IsValid() && existing.Overlaps(proposed) {
+			existing, ok := fabricRouteDestination(row.Dst)
+			if ok && existing.Overlaps(proposed) {
 				// An exact already-present target address is for the coordinator to
 				// adopt; the native writer never takes ownership of it.
 				if selected && slices.Contains(target.Addresses, target.Address) && proposed.Contains(existing.Addr()) && existing.Bits() >= proposed.Bits() {
 					continue
 				}
 				blockers = append(blockers, "proposed fabric subnet overlaps an existing route: "+row.Dst)
+			}
+			for _, route := range target.Routes {
+				destination, err := netip.ParsePrefix(route.Destination)
+				if ok && err == nil && existing.Overlaps(destination) {
+					blockers = append(blockers, "proposed fabric host route overlaps an existing route: "+row.Dst)
+				}
 			}
 		}
 	}

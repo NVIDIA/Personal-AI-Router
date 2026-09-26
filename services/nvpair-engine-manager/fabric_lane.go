@@ -70,15 +70,16 @@ func (s *fabricService) laneBetween(ctx context.Context, source, target string) 
 	if run.Public.State != "active" || digest == "" || s.qualified[run.Public.OperationID] != digest {
 		return fabricLane{}, errors.New("the fabric linking these Sparks changed during requalification")
 	}
+	lanes := fabricLaneEndpoints(run.Public.CandidateIPs)
 	var near []fabricCandidateIP
-	for _, endpoint := range run.Public.CandidateIPs {
+	for _, endpoint := range lanes {
 		if endpoint.NodeID == source && endpoint.PeerNodeID == target {
 			near = append(near, endpoint)
 		}
 	}
 	sort.Slice(near, func(i, j int) bool { return near[i].InterfaceIndex < near[j].InterfaceIndex })
 	for _, a := range near {
-		for _, b := range run.Public.CandidateIPs {
+		for _, b := range lanes {
 			if b.NodeID == target && b.PeerNodeID == source && b.Address == a.PeerAddress && b.PeerAddress == a.Address {
 				return fabricLane{OperationID: run.Public.OperationID, Qualification: digest, SourceAddress: a.Address, TargetAddress: b.Address}, nil
 			}

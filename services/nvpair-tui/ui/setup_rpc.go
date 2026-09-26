@@ -192,15 +192,22 @@ type setupFabricInterface struct {
 	Driver       string                  `json:"driver"`
 	RDMADevices  []string                `json:"rdmaDevices"`
 	MTU          int                     `json:"mtu"`
+	Routes       []setupFabricRoute      `json:"routes,omitempty"`
+}
+
+type setupFabricRoute struct {
+	Destination string `json:"destination"`
+	Gateway     string `json:"gateway"`
 }
 
 type setupFabricTarget struct {
-	NodeID     string                  `json:"nodeId"`
-	Principal  string                  `json:"principal"`
-	SwitchID   string                  `json:"switchId,omitempty"`
-	PortName   string                  `json:"portName,omitempty"`
-	Ports      []setupFabricTargetPort `json:"ports,omitempty"`
-	Interfaces []setupFabricInterface  `json:"interfaces"`
+	NodeID            string                  `json:"nodeId"`
+	Principal         string                  `json:"principal"`
+	SwitchID          string                  `json:"switchId,omitempty"`
+	PortName          string                  `json:"portName,omitempty"`
+	Ports             []setupFabricTargetPort `json:"ports,omitempty"`
+	AdvertisedAddress string                  `json:"advertisedAddress,omitempty"`
+	Interfaces        []setupFabricInterface  `json:"interfaces"`
 }
 
 type setupFabricTargetPort struct {
@@ -247,6 +254,7 @@ type setupFabricCandidateIP struct {
 	RDMAPort       int    `json:"rdmaPort"`
 	GIDIndex       int    `json:"gidIndex"`
 	GIDType        string `json:"gidType"`
+	Gateway        string `json:"gateway,omitempty"`
 }
 
 type setupFabricOperation struct {

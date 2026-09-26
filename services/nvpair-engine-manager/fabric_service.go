@@ -269,10 +269,10 @@ func (s *fabricService) load() {
 func validFabricRecord(r fabricRunRecord) bool {
 	op := r.Public
 	leaseState := op.State == "active" || op.State == "recovery-required"
-	if r.ConsumerLease != nil && (!validFabricConsumerLease(*r.ConsumerLease) || !leaseState || op.RecipeID != fabricRecipe && op.RecipeID != fabricRingRecipe) {
+	if r.ConsumerLease != nil && (!validFabricConsumerLease(*r.ConsumerLease) || !leaseState || !fabricQualifiedRecipe(op.RecipeID)) {
 		return false
 	}
-	ring := op.RecipeID == fabricRingRecipe
+	ring := op.RecipeID == fabricRingRecipe || op.RecipeID == fabricRingRetainedRecipe
 	participants := 2
 	prefixBits := 30
 	if ring {
@@ -378,8 +378,11 @@ func validFabricRecord(r fabricRunRecord) bool {
 			return false
 		}
 	}
+	if !fabricRecipeTargetsValid(op.RecipeID, op.Targets) {
+		return false
+	}
 	if op.RecipeID == fabricRecipe || ring {
-		candidates, err := fabricCandidates(op.Targets)
+		candidates, err := fabricCandidates(op.RecipeID, op.Targets)
 		_, digestErr := hex.DecodeString(op.QualificationDigest)
 		qualified := op.QualifiedAt > 0 || len(op.CandidateIPs) != 0 || op.QualificationDigest != ""
 		complete := op.QualifiedAt > 0 && fabricCandidatesQualified(candidates, op.CandidateIPs) && len(op.QualificationDigest) == 64 && digestErr == nil && op.QualificationDigest == fabricQualificationDigest(op.OperationID, op.RecipeID, op.Targets, op.CandidateIPs)
@@ -446,9 +449,9 @@ func (s *fabricService) review(ctx context.Context, request cableProductReviewRe
 		if ring {
 			public.Permission.Effects = []string{
 				"Revalidate the fresh completed reciprocal p0/p1 ring receipt, exact participant identities, management routes, DNS and existing network configuration before any write.",
-				"Pause Autoconnect only on the six selected primary functions and create operation-owned, unsaved, never-default/no-DNS /31 profiles. Preserve Wi-Fi, its default route, saved profiles, policy rules and the six sibling functions.",
-				"Prove all six source/interface-constrained routes and all six certificate-pinned peer identity reads before publishing peer-specific CandidateIPs. This qualifies a fast control route only; it does not claim RDMA, RoCE, NCCL, bandwidth or directness.",
-				"Cancel or recover by withdrawing only this operation's CandidateIPs and removing only its owned profiles and addresses, then restore the recorded Autoconnect policy.",
+				"Pause Autoconnect only on the six selected primary functions and create operation-owned, unsaved, never-default/no-DNS /31 profiles. Each p0 profile also carries one /32 host route, so every member's advertised p0 address is reachable over the cable it shares with each peer. Preserve Wi-Fi, its default route, saved profiles, policy rules and the six sibling functions.",
+				"Prove all six source/interface-constrained routes, the three routed advertised-address paths and all nine certificate-pinned peer identity reads before publishing CandidateIPs. This qualifies a fast control route only; it does not claim RDMA, RoCE, NCCL, bandwidth or directness.",
+				"Cancel or recover by withdrawing only this operation's CandidateIPs and removing only its owned profiles, their host routes and addresses, then restore the recorded Autoconnect policy.",
 			}
 		}
 	}

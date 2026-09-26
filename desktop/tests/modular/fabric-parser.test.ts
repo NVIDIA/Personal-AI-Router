@@ -9,6 +9,7 @@ import {
     parseCableReview,
     parseCableRun,
     parseFabricOperation,
+    parseFabricReview,
     parseFabricSelection
 } from '@/shared/utils/fabric'
 
@@ -44,6 +45,97 @@ const target = (nodeId: string) => ({
     ],
     rawPrivilege: 'present'
 })
+
+const ringNodes = ['node-a', 'node-b', 'node-c']
+const ringAddresses = [
+    { p0: '10.253.0.0', p1: '10.253.0.2' },
+    { p0: '10.253.0.4', p1: '10.253.0.1' },
+    { p0: '10.253.0.3', p1: '10.253.0.5' }
+]
+// Each p0 cable meets the next member's p1; that member advertises its p0.
+const ringRoutes = [
+    { destination: '10.253.0.4/32', gateway: '10.253.0.1' },
+    { destination: '10.253.0.3/32', gateway: '10.253.0.5' },
+    { destination: '10.253.0.0/32', gateway: '10.253.0.2' }
+]
+
+function ringTarget(member: number, routed = true) {
+    const nodeId = ringNodes[member]
+    return {
+        nodeId,
+        principal: `principal-${nodeId}`,
+        ports: ['p0', 'p1'].map(portName => ({ switchId: `switch-${nodeId}`, portName })),
+        ...(routed ? { advertisedAddress: ringAddresses[member].p0 } : {}),
+        interfaces: (['p0', 'p1'] as const).map((portName, lane) => ({
+            name: `eth-${nodeId}-${portName}`,
+            index: lane + 2,
+            mac: `02:00:00:00:0${member}:0${lane}`,
+            physicalPort: { source: 'linux-sysfs', switchId: `switch-${nodeId}`, portName },
+            addresses: [],
+            address: `${ringAddresses[member][portName]}/31`,
+            driver: 'mlx5_core',
+            rdmaDevices: [`mlx5_${member * 2 + lane}`],
+            mtu: 9000,
+            ...(routed && portName === 'p0' ? { routes: [ringRoutes[member]] } : {})
+        }))
+    }
+}
+
+function ringCandidate(
+    member: number,
+    portName: 'p0' | 'p1',
+    peer: number,
+    peerAddress: string,
+    gateway?: string
+) {
+    const iface = ringTarget(member).interfaces[portName === 'p0' ? 0 : 1]
+    return {
+        nodeId: ringNodes[member],
+        peerNodeId: ringNodes[peer],
+        peerPrincipal: `principal-${ringNodes[peer]}`,
+        address: ringAddresses[member][portName],
+        peerAddress,
+        interfaceName: iface.name,
+        interfaceIndex: iface.index,
+        mac: iface.mac,
+        switchId: iface.physicalPort.switchId,
+        portName,
+        ...(gateway
+            ? { rdmaDevice: '', rdmaPort: 0, gidIndex: 0, gidType: '', gateway }
+            : { rdmaDevice: iface.rdmaDevices[0], rdmaPort: 1, gidIndex: 3, gidType: 'RoCE v2' })
+    }
+}
+
+function routedRingOperation() {
+    return {
+        schemaVersion: 1,
+        operationId: id('d'),
+        reviewId: id('d'),
+        ownerNodeId: 'node-a',
+        recipeId: 'spark-three-node-ring-routed-v2',
+        cableRunId: id('a'),
+        state: 'active',
+        targets: ringNodes.map((_, member) => ringTarget(member)),
+        cleanupConfirmed: false,
+        effectsApplied: true,
+        message: 'Fast control route qualified; RDMA remains unverified.',
+        createdAt: 1,
+        expiresAt: 0,
+        qualifiedAt: 2,
+        qualificationDigest: 'b'.repeat(64),
+        candidateIPs: [
+            ringCandidate(0, 'p0', 1, '10.253.0.1'),
+            ringCandidate(1, 'p1', 0, '10.253.0.0'),
+            ringCandidate(0, 'p1', 2, '10.253.0.3'),
+            ringCandidate(2, 'p0', 0, '10.253.0.2'),
+            ringCandidate(1, 'p0', 2, '10.253.0.5'),
+            ringCandidate(2, 'p1', 1, '10.253.0.4'),
+            ringCandidate(0, 'p0', 1, '10.253.0.4', '10.253.0.1'),
+            ringCandidate(1, 'p0', 2, '10.253.0.3', '10.253.0.5'),
+            ringCandidate(2, 'p0', 0, '10.253.0.0', '10.253.0.2')
+        ]
+    }
+}
 
 function cableRun() {
     return {
@@ -338,5 +430,148 @@ describe('physical cable and fabric parsers', () => {
                 failure: { nodeId: 'node-b', phase: 'execute', code: 'provider-failed' }
             })
         ).toThrow()
+    })
+
+    it('parses the routed ring with exact advertised addresses, p0 host routes and routed proofs', () => {
+        const parsed = parseFabricOperation(routedRingOperation())
+        expect(parsed.recipeId).toBe('spark-three-node-ring-routed-v2')
+        expect(parsed.targets.map(target => target.advertisedAddress)).toEqual([
+            '10.253.0.0',
+            '10.253.0.4',
+            '10.253.0.3'
+        ])
+        expect(parsed.targets.map(target => target.interfaces[0].routes)).toEqual(
+            ringRoutes.map(route => [route])
+        )
+        expect(parsed.targets.every(target => target.interfaces[1].routes === undefined)).toBe(true)
+        expect(parsed.candidateIPs).toHaveLength(9)
+        expect(parsed.candidateIPs?.filter(candidate => candidate.gateway)).toEqual([
+            expect.objectContaining({
+                nodeId: 'node-a',
+                peerAddress: '10.253.0.4',
+                gateway: '10.253.0.1'
+            }),
+            expect.objectContaining({
+                nodeId: 'node-b',
+                peerAddress: '10.253.0.3',
+                gateway: '10.253.0.5'
+            }),
+            expect.objectContaining({
+                nodeId: 'node-c',
+                peerAddress: '10.253.0.0',
+                gateway: '10.253.0.2'
+            })
+        ])
+    })
+
+    it('rejects every routed ring mismatch and routes outside the routed recipe', () => {
+        type RingOperation = ReturnType<typeof routedRingOperation>
+        const mutations: Record<string, (operation: RingOperation) => void> = {
+            'route on p1': operation => {
+                const [p0, p1] = operation.targets[2].interfaces
+                Object.assign(p1, { routes: p0.routes })
+                delete p0.routes
+            },
+            'missing route': operation => {
+                delete operation.targets[0].interfaces[0].routes
+            },
+            'extra route': operation => {
+                operation.targets[0].interfaces[0].routes = [ringRoutes[0], ringRoutes[1]]
+            },
+            'gateway off the p0 cable': operation => {
+                operation.targets[1].interfaces[0].routes = [
+                    { destination: '10.253.0.3/32', gateway: '10.253.0.9' }
+                ]
+            },
+            'gateway is the member itself': operation => {
+                operation.targets[1].interfaces[0].routes = [
+                    { destination: '10.253.0.3/32', gateway: '10.253.0.4' }
+                ]
+            },
+            'destination no peer advertises': operation => {
+                operation.targets[2].interfaces[0].routes = [
+                    { destination: '10.253.0.9/32', gateway: '10.253.0.2' }
+                ]
+            },
+            'advertised address off p0': operation => {
+                operation.targets[2].advertisedAddress = '10.253.0.5'
+            },
+            'routed proofs withheld': operation => {
+                operation.candidateIPs = operation.candidateIPs.slice(0, 6)
+            },
+            'routed proof claims RDMA': operation => {
+                Object.assign(operation.candidateIPs[6], { rdmaPort: 1 })
+            },
+            'routed proof names another gateway': operation => {
+                Object.assign(operation.candidateIPs[6], { gateway: '10.253.0.5' })
+            },
+            'routes on the retained ring recipe': operation => {
+                operation.recipeId = 'spark-three-node-ring-temporary-addresses-v1'
+            }
+        }
+        for (const [name, mutate] of Object.entries(mutations)) {
+            const operation = structuredClone(routedRingOperation())
+            mutate(operation)
+            expect(() => parseFabricOperation(operation), name).toThrow()
+        }
+        const direct = {
+            ...routedRingOperation(),
+            recipeId: 'spark-two-node-temporary-addresses-v1',
+            state: 'failed',
+            cleanupConfirmed: true,
+            qualifiedAt: undefined,
+            qualificationDigest: undefined,
+            candidateIPs: undefined
+        }
+        expect(() =>
+            parseFabricOperation({ ...direct, targets: [ringTarget(0), ringTarget(1)] })
+        ).toThrow(/fabric recipe routes/)
+        expect(
+            parseFabricOperation({
+                ...direct,
+                targets: [ringTarget(0, false), ringTarget(1, false)]
+            }).state
+        ).toBe('failed')
+    })
+
+    it('keeps retained unrouted ring operations inspectable while reviews offer only the routed ring', () => {
+        const retained = {
+            ...routedRingOperation(),
+            recipeId: 'spark-three-node-ring-temporary-addresses-v1',
+            targets: ringNodes.map((_, member) => ringTarget(member, false)),
+            candidateIPs: routedRingOperation().candidateIPs.slice(0, 6)
+        }
+        expect(parseFabricOperation(retained).candidateIPs).toHaveLength(6)
+        expect(() =>
+            parseFabricOperation({ ...retained, candidateIPs: routedRingOperation().candidateIPs })
+        ).toThrow()
+        const review = {
+            schemaVersion: 1,
+            reviewId: id('e'),
+            ownerNodeId: 'node-a',
+            recipeId: 'spark-three-node-ring-routed-v2',
+            cableRunId: id('a'),
+            persistence: 'until-reboot',
+            state: 'ready',
+            executable: true,
+            remainingMs: 20_000,
+            targets: ringNodes.map((_, member) => ringTarget(member)),
+            blockers: [],
+            effectsApplied: false
+        }
+        expect(parseFabricReview(review).targets[0].interfaces[0].routes).toEqual([ringRoutes[0]])
+        expect(() =>
+            parseFabricReview({
+                ...review,
+                recipeId: 'spark-three-node-ring-temporary-addresses-v1',
+                targets: ringNodes.map((_, member) => ringTarget(member, false))
+            })
+        ).toThrow(/fabric recipe/)
+        expect(() =>
+            parseFabricReview({
+                ...review,
+                targets: ringNodes.map((_, member) => ringTarget(member, false))
+            })
+        ).toThrow(/routed ring target/)
     })
 })

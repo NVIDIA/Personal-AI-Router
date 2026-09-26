@@ -341,6 +341,16 @@ refused until that group generation is clean. "Active" proves the reviewed
 temporary configuration and qualification only—not RDMA payload, NCCL,
 bandwidth, or inference.
 
+A three-node ring uses the `spark-three-node-ring-routed-v2` recipe. Each member
+advertises its p0 `/31` address, and its p0 profile carries one `/32` host
+route to the peer on that cable, via that peer's cable address, so every member
+reaches every advertised address over the cable the two share. Qualification
+adds a routed proof per member: the kernel must choose that gateway, interface,
+and source, and a certificate-pinned identity read at the advertised address
+must succeed. Retained records of the earlier unrouted ring recipe stay
+inspectable, requalifiable, and exactly reversible, but reviews no longer offer
+it.
+
 Engine Manager itself stays unprivileged. Start and unresolved-rank reconcile
 may carry one-use administrator choices for the exact reviewed participants;
 those bytes are passed only to the fixed participant helper, cleared on every

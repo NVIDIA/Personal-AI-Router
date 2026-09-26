@@ -287,6 +287,9 @@ func runFabricAddressWorker(ctx context.Context, input io.Reader, output io.Writ
 			return errors.New("exact generated-default inspection and selected-port pause consent required")
 		}
 	}
+	if !validFabricTargetRoutes(request.Target) {
+		return errors.New("invalid reviewed fabric host routes")
+	}
 	limit := 25 * time.Second
 	if request.Method == "apply" {
 		limit = 120 * time.Second

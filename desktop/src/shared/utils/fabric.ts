@@ -29,11 +29,16 @@ import type {
     FabricPortRef,
     FabricRetainedOperations,
     FabricReview,
+    FabricRoute,
     FabricSelection,
     FabricTarget
 } from '@/shared/types/fabric'
 
 type Row = Record<string, unknown>
+
+const routedRingRecipe = 'spark-three-node-ring-routed-v2'
+const reviewRecipes = ['spark-two-node-temporary-addresses-v1', routedRingRecipe] as const
+const operationRecipes = [...reviewRecipes, 'spark-three-node-ring-temporary-addresses-v1'] as const
 
 function row(value: unknown, label: string, keys: readonly string[]): Row {
     if (!value || typeof value !== 'object' || Array.isArray(value)) invalid(label)
@@ -108,6 +113,22 @@ function oneOf<T extends string>(value: unknown, values: readonly T[], label: st
 
 function distinct(values: string[], label: string): void {
     if (new Set(values).size !== values.length) invalid(label)
+}
+
+function ipv4Value(value: string): number | null {
+    const parts = value.split('.')
+    if (
+        parts.length !== 4 ||
+        parts.some(part => !/^(0|[1-9][0-9]{0,2})$/.test(part) || Number(part) > 255)
+    )
+        return null
+    return parts.reduce((total, part) => total * 256 + Number(part), 0)
+}
+
+function ipv4(value: unknown, label: string): string {
+    const result = string(value, label, 15)
+    if (ipv4Value(result) === null) invalid(label)
+    return result
 }
 
 export function exactFabricKeys(value: unknown, keys: readonly string[], label: string): Row {
@@ -790,6 +811,14 @@ function parseGeneratedDefault(value: unknown): FabricGeneratedDefault {
     }
 }
 
+function parseFabricRoute(value: unknown): FabricRoute {
+    const valueRow = row(value, 'fabric host route', ['destination', 'gateway'])
+    const destination = string(valueRow.destination, 'fabric route destination', 18)
+    if (!destination.endsWith('/32') || ipv4Value(destination.slice(0, -3)) === null)
+        invalid('fabric route destination')
+    return { destination, gateway: ipv4(valueRow.gateway, 'fabric route gateway') }
+}
+
 function parseFabricInterface(value: unknown): FabricInterface {
     const valueRow = row(value, 'fabric interface', [
         'name',
@@ -801,7 +830,8 @@ function parseFabricInterface(value: unknown): FabricInterface {
         'driver',
         'rdmaDevices',
         'mtu',
-        'generatedDefault'
+        'generatedDefault',
+        'routes'
     ])
     const port = row(valueRow.physicalPort, 'fabric physical port', [
         'source',
@@ -824,7 +854,10 @@ function parseFabricInterface(value: unknown): FabricInterface {
         mtu: integer(valueRow.mtu, 'fabric MTU', 1, 1_000_000),
         ...(valueRow.generatedDefault === undefined
             ? {}
-            : { generatedDefault: parseGeneratedDefault(valueRow.generatedDefault) })
+            : { generatedDefault: parseGeneratedDefault(valueRow.generatedDefault) }),
+        ...(valueRow.routes === undefined
+            ? {}
+            : { routes: list(valueRow.routes, 'fabric host routes', 1, 1).map(parseFabricRoute) })
     }
 }
 
@@ -835,6 +868,7 @@ function parseFabricTarget(value: unknown): FabricTarget {
         'switchId',
         'portName',
         'ports',
+        'advertisedAddress',
         'interfaces'
     ])
     const ports =
@@ -857,8 +891,71 @@ function parseFabricTarget(value: unknown): FabricTarget {
             ? {}
             : { portName: id(valueRow.portName, 'fabric port name') }),
         ...(ports ? { ports } : {}),
+        ...(valueRow.advertisedAddress === undefined
+            ? {}
+            : { advertisedAddress: ipv4(valueRow.advertisedAddress, 'fabric advertised address') }),
         interfaces: list(valueRow.interfaces, 'fabric interfaces', 2, 2).map(parseFabricInterface)
     }
+}
+
+// Only the routed ring carries advertised addresses and host routes. Each
+// member advertises its p0 address and routes to one peer's advertised address
+// through the other end of its own p0 /31.
+function validateRecipeTargets(recipeId: string | undefined, targets: FabricTarget[]): void {
+    for (const target of targets) {
+        const routed = target.interfaces.filter(iface => iface.routes)
+        if (recipeId !== routedRingRecipe) {
+            if (target.advertisedAddress !== undefined || routed.length)
+                invalid('fabric recipe routes')
+            continue
+        }
+        if (routed.length !== 1) invalid('routed ring target')
+        const p0 = routed[0]
+        const route = p0.routes?.[0]
+        const [own, bits] = p0.address.split('/')
+        const ownValue = ipv4Value(own)
+        const gatewayValue = route ? ipv4Value(route.gateway) : null
+        if (
+            !route ||
+            p0.physicalPort.portName !== 'p0' ||
+            bits !== '31' ||
+            ownValue === null ||
+            gatewayValue === null ||
+            gatewayValue === ownValue ||
+            Math.floor(gatewayValue / 2) !== Math.floor(ownValue / 2) ||
+            target.advertisedAddress !== own ||
+            !targets.some(
+                peer =>
+                    peer.nodeId !== target.nodeId &&
+                    peer.advertisedAddress !== undefined &&
+                    `${peer.advertisedAddress}/32` === route.destination
+            )
+        )
+            invalid('routed ring target')
+    }
+}
+
+// A routed proof names one reviewed host route of its own member.
+function validateRoutedCandidates(targets: FabricTarget[], candidates: FabricCandidateIP[]): void {
+    const routes = targets.flatMap(target =>
+        target.interfaces.flatMap(iface =>
+            (iface.routes ?? []).map(route => ({ nodeId: target.nodeId, iface, route }))
+        )
+    )
+    const routed = candidates.filter(candidate => candidate.gateway !== undefined)
+    const bound = routed.map(candidate =>
+        routes.findIndex(
+            ({ nodeId, iface, route }) =>
+                candidate.nodeId === nodeId &&
+                candidate.interfaceName === iface.name &&
+                candidate.interfaceIndex === iface.index &&
+                `${candidate.address}/31` === iface.address &&
+                `${candidate.peerAddress}/32` === route.destination &&
+                candidate.gateway === route.gateway
+        )
+    )
+    if (bound.includes(-1) || new Set(bound).size !== bound.length)
+        invalid('routed fabric candidates')
 }
 
 export function parseFabricReview(value: unknown): FabricReview {
@@ -881,18 +978,11 @@ export function parseFabricReview(value: unknown): FabricReview {
     ])
     if (valueRow.schemaVersion !== 1 || valueRow.effectsApplied !== false) invalid('fabric review')
     const targets = list(valueRow.targets, 'fabric review targets', 0, 3).map(parseFabricTarget)
-    return {
+    const review: FabricReview = {
         schemaVersion: 1,
         reviewId: operationId(valueRow.reviewId, 'fabric review'),
         ownerNodeId: optionalString(valueRow.ownerNodeId, 'fabric owner', 128) ?? '',
-        recipeId: oneOf(
-            valueRow.recipeId,
-            [
-                'spark-two-node-temporary-addresses-v1',
-                'spark-three-node-ring-temporary-addresses-v1'
-            ] as const,
-            'fabric recipe'
-        ),
+        recipeId: oneOf(valueRow.recipeId, reviewRecipes, 'fabric recipe'),
         ...(valueRow.cableRunId === undefined
             ? {}
             : { cableRunId: operationId(valueRow.cableRunId, 'bound cable run') }),
@@ -915,6 +1005,8 @@ export function parseFabricReview(value: unknown): FabricReview {
                   inspectionAvailable: flag(valueRow.inspectionAvailable, 'inspection availability')
               })
     }
+    validateRecipeTargets(review.recipeId, review.targets)
+    return review
 }
 
 function parseFabricCandidate(value: unknown): FabricCandidateIP {
@@ -932,9 +1024,10 @@ function parseFabricCandidate(value: unknown): FabricCandidateIP {
         'rdmaDevice',
         'rdmaPort',
         'gidIndex',
-        'gidType'
+        'gidType',
+        'gateway'
     ])
-    return {
+    const endpoint = {
         nodeId: id(valueRow.nodeId, 'fabric candidate node'),
         peerNodeId: id(valueRow.peerNodeId, 'fabric candidate peer'),
         peerPrincipal: id(valueRow.peerPrincipal, 'fabric peer principal'),
@@ -944,11 +1037,30 @@ function parseFabricCandidate(value: unknown): FabricCandidateIP {
         interfaceIndex: integer(valueRow.interfaceIndex, 'fabric interface index', 1),
         mac: string(valueRow.mac, 'fabric candidate MAC', 32),
         switchId: id(valueRow.switchId, 'fabric switch identity'),
-        portName: id(valueRow.portName, 'fabric port name'),
-        rdmaDevice: id(valueRow.rdmaDevice, 'RDMA device'),
-        rdmaPort: integer(valueRow.rdmaPort, 'RDMA port', 1, 255),
-        gidIndex: integer(valueRow.gidIndex, 'RDMA GID index', 0, 255),
-        gidType: oneOf(valueRow.gidType, ['RoCE v2'] as const, 'RDMA GID type')
+        portName: id(valueRow.portName, 'fabric port name')
+    }
+    if (valueRow.gateway === undefined)
+        return {
+            ...endpoint,
+            rdmaDevice: id(valueRow.rdmaDevice, 'RDMA device'),
+            rdmaPort: integer(valueRow.rdmaPort, 'RDMA port', 1, 255),
+            gidIndex: integer(valueRow.gidIndex, 'RDMA GID index', 0, 255),
+            gidType: oneOf(valueRow.gidType, ['RoCE v2'] as const, 'RDMA GID type')
+        }
+    if (
+        valueRow.rdmaDevice !== '' ||
+        valueRow.rdmaPort !== 0 ||
+        valueRow.gidIndex !== 0 ||
+        valueRow.gidType !== ''
+    )
+        invalid('routed fabric candidate')
+    return {
+        ...endpoint,
+        rdmaDevice: '',
+        rdmaPort: 0,
+        gidIndex: 0,
+        gidType: '',
+        gateway: ipv4(valueRow.gateway, 'fabric candidate gateway')
     }
 }
 
@@ -991,7 +1103,7 @@ export function parseFabricOperation(value: unknown): FabricOperation {
     const candidateIPs =
         valueRow.candidateIPs === undefined
             ? undefined
-            : list(valueRow.candidateIPs, 'fabric candidates', 0, 6).map(parseFabricCandidate)
+            : list(valueRow.candidateIPs, 'fabric candidates', 0, 9).map(parseFabricCandidate)
     const qualificationDigest = optionalString(
         valueRow.qualificationDigest,
         'fabric qualification digest',
@@ -1004,16 +1116,7 @@ export function parseFabricOperation(value: unknown): FabricOperation {
         ownerNodeId: id(valueRow.ownerNodeId, 'fabric owner'),
         ...(valueRow.recipeId === undefined
             ? {}
-            : {
-                  recipeId: oneOf(
-                      valueRow.recipeId,
-                      [
-                          'spark-two-node-temporary-addresses-v1',
-                          'spark-three-node-ring-temporary-addresses-v1'
-                      ] as const,
-                      'fabric recipe'
-                  )
-              }),
+            : { recipeId: oneOf(valueRow.recipeId, operationRecipes, 'fabric recipe') }),
         ...(valueRow.cableRunId === undefined
             ? {}
             : { cableRunId: operationId(valueRow.cableRunId, 'bound cable run') }),
@@ -1054,6 +1157,9 @@ export function parseFabricOperation(value: unknown): FabricOperation {
     const participantCount = operation.recipeId?.includes('three-node') ? 3 : 2
     if (operation.recipeId && operation.targets.length !== participantCount)
         invalid('fabric participant set')
+    validateRecipeTargets(operation.recipeId, operation.targets)
+    if (operation.candidateIPs) validateRoutedCandidates(operation.targets, operation.candidateIPs)
+    const routedProofs = operation.recipeId === routedRingRecipe ? participantCount : 0
     if (
         operation.state === 'active' &&
         operation.recipeId !== undefined &&
@@ -1062,7 +1168,7 @@ export function parseFabricOperation(value: unknown): FabricOperation {
             operation.cleanupConfirmed ||
             !operation.qualifiedAt ||
             !operation.qualificationDigest ||
-            operation.candidateIPs?.length !== participantCount * 2)
+            operation.candidateIPs?.length !== participantCount * 2 + routedProofs)
     )
         invalid('active fabric qualification')
     if (

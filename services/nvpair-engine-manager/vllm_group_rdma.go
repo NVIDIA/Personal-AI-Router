@@ -52,6 +52,7 @@ type vllmGroupMemberFabric struct {
 }
 
 func bindQwen38FabricFacts(selection vllmGroupSelection, facts []vllmGroupFacts, principals []string, operationID, qualification string, endpoints []fabricCandidateIP) error {
+	endpoints = fabricLaneEndpoints(endpoints)
 	if len(facts) != len(selection.NodeIDs) || len(principals) != len(selection.NodeIDs) || len(endpoints) != 2*len(selection.NodeIDs) || !onboardingID.MatchString(operationID) || !onboardingSHA.MatchString(qualification) {
 		return errors.New("qualified fabric endpoint set is incomplete")
 	}
@@ -109,6 +110,7 @@ func currentVLLMGroupTransport(owner interface{}, plan vllmGroupPlan) error {
 }
 
 func vllmFabricEndpointsMatchPlan(plan vllmGroupPlan, endpoints []fabricCandidateIP) bool {
+	endpoints = fabricLaneEndpoints(endpoints)
 	if len(endpoints) != len(plan.Members)*2 {
 		return false
 	}

@@ -90,7 +90,7 @@ func fabricNativeRouteQualified(ctx context.Context, iface fabricInterface, peer
 		return fabricRDMABinding{}, fabricQualificationFailure("route-unavailable", errors.New("fabric interface identity or owned address changed"))
 	}
 	data, err := fabricNativeCommand(ctx, "ip", "-j", "-4", "route", "get", peer, "from", prefix.Addr().String(), "oif", iface.Name)
-	if err != nil || !fabricRouteSelectionQualified(data, iface, peer) {
+	if err != nil || !fabricRouteSelectionQualified(data, iface, peer, "") {
 		return fabricRDMABinding{}, fabricQualificationFailure("route-unavailable", errors.New("source/interface-constrained fabric route proof failed"))
 	}
 	binding, err := fabricNativeRDMABinding(iface, prefix.Addr())
@@ -98,6 +98,26 @@ func fabricNativeRouteQualified(ctx context.Context, iface fabricInterface, peer
 		return fabricRDMABinding{}, fabricQualificationFailure("gid-unavailable", err)
 	}
 	return binding, nil
+}
+
+// The query names no output interface: the kernel's own selection for this
+// source must be the reviewed gateway on this interface, not another link.
+func fabricNativeRoutedQualified(ctx context.Context, iface fabricInterface, route fabricRoute) error {
+	prefix, err := fabricNativePrefix(iface)
+	destination, destinationErr := netip.ParsePrefix(route.Destination)
+	if err != nil || destinationErr != nil || !validFabricInterfaceRoutes(iface) || !slices.Contains(iface.Routes, route) {
+		return fabricQualificationFailure("route-unavailable", errors.New("invalid sealed fabric routed proof"))
+	}
+	current, err := fabricNativeInterfaceCurrent(iface, true)
+	if err != nil || !slices.Contains(current.Addresses, iface.Address) {
+		return fabricQualificationFailure("route-unavailable", errors.New("fabric interface identity or owned address changed"))
+	}
+	peer := destination.Addr().String()
+	data, err := fabricNativeCommand(ctx, "ip", "-j", "-4", "route", "get", peer, "from", prefix.Addr().String())
+	if err != nil || !fabricRouteSelectionQualified(data, iface, peer, route.Gateway) {
+		return fabricQualificationFailure("route-unavailable", errors.New("source-constrained fabric routed proof failed"))
+	}
+	return nil
 }
 
 func fabricNativeRDMABinding(iface fabricInterface, address netip.Addr) (fabricRDMABinding, error) {
@@ -678,6 +698,9 @@ func fabricNativeAdd(ctx context.Context, iface fabricInterface, operationID str
 	if _, err := fabricNativePrefix(iface); err != nil {
 		return err
 	}
+	if !validFabricInterfaceRoutes(iface) {
+		return errors.New("fabric host routes must be one reviewed /32 route via the p0 cable peer")
+	}
 	dir, lock, err := fabricNativeJournal()
 	if err != nil {
 		return err
@@ -726,6 +749,9 @@ func fabricNativeAdd(ctx context.Context, iface fabricInterface, operationID str
 	}
 	if iface.GeneratedDefault != nil && nmReceipt == nil {
 		return errors.New("reviewed generated-default manager is unavailable; no unmanaged fallback")
+	}
+	if len(iface.Routes) != 0 && nmReceipt == nil {
+		return errors.New("reviewed fabric host routes require an operation-owned NetworkManager profile; no unmanaged fallback")
 	}
 	var receipt fabricNativeReceipt
 	if nmReceipt != nil {
