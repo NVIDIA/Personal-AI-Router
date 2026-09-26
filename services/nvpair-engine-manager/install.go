@@ -22,26 +22,33 @@ import (
 // Install obtains the engine in user mode: download (checksum-verified)
 // then run the declared command. No-op if already detected.
 func (e *Executor) Install(ctx context.Context, engine string) error {
+	if err := e.rejectVLLMGroupMutation(engine, "install"); err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
+		if _, known := e.reg.Get(engine); known {
+			unavailable := fmt.Errorf("engine %q install is unavailable: %s", engine, unavailablePlatformInstallReason(engine))
+			e.reportInstallFailed(engine, unavailable)
+			return unavailable
+		}
 		return err
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
-	if engine == "llamacpp" {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithCancel(ctx)
-		st.mu.Lock()
-		if e.shuttingDown.Load() || st.stopPending > 0 {
-			st.mu.Unlock()
-			cancel()
-			return context.Canceled
-		}
-		st.mutationCancel = cancel
-		st.mu.Unlock()
-		defer func() { cancel(); st.mu.Lock(); st.mutationCancel = nil; st.mu.Unlock() }()
+	ctx, finish, err := e.beginVLLMMutation(ctx, st)
+	if err != nil {
+		return err
 	}
-	if ok, _ := e.Detect(engine); ok {
+	defer finish()
+	if engine == "vllm" {
+		if err := e.reconcileManagedVLLMActivation(ctx, st); err != nil {
+			return err
+		}
+	}
+	if ok, detectErr := e.Detect(engine); detectErr != nil {
+		return fmt.Errorf("detect existing engine %q: %w", engine, detectErr)
+	} else if ok {
 		e.reporter.clear(installFailedID(engine))
 		e.emitInstallProgress(engine, "already-installed", 100)
 		return nil
@@ -51,6 +58,9 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	st.mu.Unlock()
 	presence := e.reconcilePresence(ctx, engine, st, false, port, false)
 	if presence.Identified {
+		if err := adoptedVLLMMutationError(st, "install"); err != nil {
+			return err
+		}
 		// A healthy service is already present even though no managed binary
 		// was detected. Treat it as an external installation and never fetch a
 		// second copy. reconcilePresence emits the adopted state; the terminal
@@ -68,12 +78,24 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	if inst == nil {
 		return fmt.Errorf("engine %q has no install block for this platform", engine)
 	}
+	if supported, reason := installSupport(engine, st.plat); !supported {
+		err := fmt.Errorf("engine %q install is unavailable: %s", engine, reason)
+		e.reportInstallFailed(engine, err)
+		return err
+	}
 	if inst.ModeOrDefault() == "admin" {
 		err := fmt.Errorf("engine %q declares an admin install, which is refused (engine-manager is user-mode only)", engine)
 		e.reportInstallFailed(engine, err)
 		return err
 	}
-	if inst.Driver == "llama-app" {
+	switch inst.Driver {
+	case "vllm-python":
+		if err := e.installManagedVLLM(ctx, st, false); err != nil {
+			e.reportInstallFailed(engine, err)
+			return err
+		}
+		return nil
+	case "llama-app":
 		if engine != "llamacpp" {
 			return fmt.Errorf("llama-app driver requires llamacpp engine")
 		}
@@ -83,7 +105,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		return fmt.Errorf("create install dir: %w", err)
 	}
 
-	vars := map[string]string{"install_dir": st.installDir}
+	vars := map[string]string{"install_dir": st.installDir, "models_dir": st.modelDir}
 	env, err := childEnv(st)
 	if err != nil {
 		return err
@@ -151,12 +173,78 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 // Uninstall runs the manifest's uninstall command (user-mode), stopping
 // the engine first. No-op if the engine isn't currently detected.
 func (e *Executor) Uninstall(ctx context.Context, engine string) error {
+	if err := e.rejectVLLMGroupMutation(engine, "uninstall"); err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return err
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
+	ctx, finish, err := e.beginVLLMMutation(ctx, st)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	if engine == "vllm" {
+		record, recordErr := readVLLMRuntimeRecord(st)
+		if recordErr != nil {
+			return recordErr
+		}
+		if record.Activating != nil {
+			if err := e.reconcileManagedVLLMActivation(ctx, st); err != nil {
+				return err
+			}
+			record, recordErr = readVLLMRuntimeRecord(st)
+			if recordErr != nil {
+				return recordErr
+			}
+		}
+		if record.Removing {
+			if err := e.uninstallManagedVLLM(ctx, st); err != nil {
+				return err
+			}
+			e.reporter.clear(uninstallFailedID(engine))
+			e.emitState(engine)
+			return e.setDesiredEnabled(engine, false)
+		}
+		pathInstalled := record.Active != ""
+		if pathInstalled {
+			cli, receipt, validateErr := validateVLLMEnvironment(st, record.Active)
+			if validateErr != nil {
+				return validateErr
+			}
+			st.mu.Lock()
+			st.installed, st.binPath, st.version = true, cli, receipt.Version
+			st.mu.Unlock()
+		}
+		st.mu.Lock()
+		port := st.port
+		st.mu.Unlock()
+		if pathInstalled {
+			if _, _, observeErr := e.observeManagedVLLMRecordedListener(ctx, st, record); observeErr != nil {
+				return observeErr
+			}
+		}
+		presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, false)
+		if err := adoptedVLLMMutationError(st, "uninstall"); err != nil {
+			return err
+		}
+		st.mu.Lock()
+		ownedProcess := st.proc != nil
+		st.mu.Unlock()
+		if presence.Occupied && !presence.Identified && !ownedProcess {
+			return fmt.Errorf("cannot uninstall engine %q: port %d is occupied by an unidentified service", engine, port)
+		}
+		if err := e.uninstallManagedVLLM(ctx, st); err != nil {
+			e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
+			return err
+		}
+		e.reporter.clear(uninstallFailedID(engine))
+		e.emitState(engine)
+		return e.setDesiredEnabled(engine, false)
+	}
 	if ok, _ := e.Detect(engine); !ok {
 		return e.setDesiredEnabled(engine, false) // already gone
 	}

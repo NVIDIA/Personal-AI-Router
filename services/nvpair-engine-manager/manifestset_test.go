@@ -11,12 +11,10 @@ import (
 	"nvpair-shared/engines"
 )
 
-// nvpair-shared/engines states that an engine's Name must match its manifest
-// basename, and argues that declaring the set once turns a mismatch into a
-// build error. For the broker, proxy and scheduler it does, because they all
-// read the table. This component does not: it embeds manifests/*.json and
-// never imports engines, so adding an engine to the table without a manifest
-// (or the reverse) still compiles.
+// Managed engines require a manifest whose basename matches their shared Name.
+// Adopt-only engines require the opposite: bundling a managed manifest would
+// claim lifecycle authority PAIR does not hold. This component embeds
+// manifests/*.json, so the compiler cannot enforce either half of that contract.
 //
 // The failure that produces is the one the package comment describes — an
 // engine that discovers and advertises but never resolves a model owner —
@@ -34,6 +32,13 @@ func TestBundledManifestSetMatchesEngineTable(t *testing.T) {
 	}
 
 	for _, engine := range engines.All() {
+		if engine.AdoptOnly {
+			if have[engine.Name] {
+				t.Errorf("adopt-only engine %q must not bundle a managed manifest", engine.Name)
+				delete(have, engine.Name)
+			}
+			continue
+		}
 		if !have[engine.Name] {
 			t.Errorf("no manifests/%s.json for engine %q", engine.Name, engine.Name)
 		}

@@ -7,16 +7,27 @@ import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
+import { useVllmGroupStore, vllmGroupHoldsNode } from '@/ui/stores/vllm-group.store'
 import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
 import { isExternalRuntime } from '@/ui/utils/engine-ownership'
 import { Button, Flex, Switch, Text } from '@nvidia/foundations-react-core'
 import { Download } from '@/ui/components/icons'
 import { useCallback, useMemo } from 'react'
+import {
+    engineEnabled,
+    engineInstallAllowed,
+    engineLifecycleAllowed
+} from '@/ui/utils/engine-control-policy'
 
 export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
-    const isRemote = useConnectionStore(s => s.selfId !== nodeId)
+    const selfId = useConnectionStore(s => s.selfId)
+    const isRemote = selfId !== nodeId
     const isDisconnected = useNodesStore(s => isRemote && s.nodes.get(nodeId)?.status === 'offline')
+    // Shared target-aware hold, including an unsettled serving-group Start.
+    const vllmGroupBlocked = useVllmGroupStore(state =>
+        vllmGroupHoldsNode(state, nodeId, selfId, window.windowApi.platform === 'Linux')
+    )
     // Re-render when a lifecycle command for this node begins/clears; the
     // per-engine pending state is read below via getState().
     const lifecyclePendingFingerprint = usePendingActionsStore(state => {
@@ -53,6 +64,10 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                     type,
                     name: EngineDisplayNames[type],
                     status: backend.processStatus,
+                    enabled: engineEnabled({ type, ...backend }),
+                    managed: backend.managed,
+                    adopted: backend.adopted,
+                    installSupported: backend.installSupported,
                     // The same facts the engine row uses: a runtime PAIR only
                     // observes gets no lifecycle control, and an engine the
                     // node reports as not installable gets no Install button.
@@ -90,8 +105,35 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                     b.status === 'starting' ||
                     b.status === 'stopping'
 
+                const controlFacts = {
+                    type: b.type,
+                    processStatus: b.status,
+                    enabled: b.enabled,
+                    managed: b.managed,
+                    adopted: b.adopted,
+                    installSupported: b.installSupported
+                }
+                const lifecycleAllowed = engineLifecycleAllowed(controlFacts)
+                const installAllowed = engineInstallAllowed(controlFacts)
+                const groupBlocked = b.type === 'vllm' && vllmGroupBlocked
+
+                if (!lifecycleAllowed && b.status !== 'not-installed') {
+                    return (
+                        <Text key={b.name} kind="body/regular/sm" className="text-subtle-color">
+                            {b.name}
+                        </Text>
+                    )
+                }
+
                 if (b.status === 'not-installed' && !pending) {
                     if (!b.installable) return null
+                    if (!installAllowed) {
+                        return (
+                            <Text key={b.name} kind="body/regular/sm" className="text-subtle-color">
+                                {b.name}
+                            </Text>
+                        )
+                    }
                     return (
                         <Button
                             key={b.name}
@@ -103,7 +145,12 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                                 e.stopPropagation()
                                 handleInstall(b.type)
                             }}
-                            disabled={isRemote && isDisconnected}
+                            disabled={(isRemote && isDisconnected) || groupBlocked}
+                            title={
+                                groupBlocked
+                                    ? 'Serving-group ownership holds vLLM actions.'
+                                    : undefined
+                            }
                             aria-label={`Install ${b.name}`}
                         >
                             <Download style={{ fontSize: 14 }} />
@@ -114,6 +161,14 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                     )
                 }
 
+                const toggleHeld = groupBlocked || b.external
+                const toggleTitle = groupBlocked
+                    ? 'Serving-group ownership holds vLLM actions'
+                    : b.external
+                      ? `${b.name} is managed outside PAIR`
+                      : isRemote && isDisconnected
+                        ? 'Node is disconnected'
+                        : `${b.enabled ? 'Disable' : 'Enable'} ${b.name}`
                 return (
                     <Flex
                         key={b.name}
@@ -131,31 +186,19 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                             ) : (
                                 <Switch
                                     size="small"
-                                    checked={b.status === 'running'}
+                                    checked={b.enabled}
                                     onCheckedChange={() => handleToggle(b.type)}
-                                    disabled={(isRemote && isDisconnected) || b.external}
-                                    title={
-                                        b.external
-                                            ? `${b.name} is managed outside PAIR`
-                                            : isRemote && isDisconnected
-                                              ? 'Node is disconnected'
-                                              : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
-                                    }
-                                    aria-label={
-                                        b.external
-                                            ? `${b.name} is managed outside PAIR`
-                                            : isRemote && isDisconnected
-                                              ? 'Node is disconnected'
-                                              : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
-                                    }
+                                    disabled={(isRemote && isDisconnected) || toggleHeld}
+                                    title={toggleTitle}
+                                    aria-label={toggleTitle}
                                 />
                             )}
                         </Flex>
                         <Text
                             kind="body/regular/sm"
-                            className="cursor-pointer"
+                            className={toggleHeld ? 'text-subtle-color' : 'cursor-pointer'}
                             onClick={() =>
-                                !isTransitioning && !b.external ? handleToggle(b.type) : undefined
+                                !isTransitioning && !toggleHeld ? handleToggle(b.type) : undefined
                             }
                         >
                             {b.name}

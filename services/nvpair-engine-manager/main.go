@@ -31,9 +31,19 @@ import (
 var bundledManifests embed.FS
 
 func main() {
+	if handled, code := dispatchInternalDiagnosticRank(os.Args[1:], diagnosticRankMain); handled {
+		os.Exit(code)
+	}
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	httpPort := flag.Int("http-port", 0, "if >0, serve the LAN HTTP surface (/v1/models) on this port so peers can enrich this node's model list; 0 disables it")
 	controlPort := flag.Int("control-port", 0, "if >0 and this node is clustered, serve the cluster-scoped mTLS remote-control surface (ec: /v1/engines + remote install/pull/start/stop) on this port")
+	nodeID := flag.String("node-id", "", "local node identity supplied by the broker")
+	nodeInfoPort := flag.Int("node-info-port", 14318, "parent-owned loopback node-info port for passive cable port facts")
+	cableProbeOnce := flag.Bool("cable-probe-once", false, "internal finite cable worker for an explicitly approved privileged launch")
+	fabricAddressOnce := flag.Bool("fabric-address-once", false, "internal approved temporary fabric address worker")
+	fabricAddressCapabilities := flag.Bool("fabric-address-capabilities-json", false, "print the fixed fabric address capability")
+	cableCleanupOnce := flag.Bool("cable-cleanup-once", false, "internal approved cleanup inspector")
+	cableWorkerCapabilities := flag.Bool("cable-worker-capabilities-json", false, "print the finite cable worker contract")
 	reservedPort := flag.Int("reserved-port", 0, "local engine port reserved by the parent proxy; 0 disables the reservation")
 	clusterDir := flag.String("cluster-dir", "", "cluster identity/pin directory; when set and this node holds a cluster identity, the ec remote-control surface (--control-port) turns on with pin-based mTLS")
 	loadedPollSec := flag.Int("loaded-poll-interval", defaultLoadedPollSeconds, "seconds between loaded-model polls that drive engine:models-changed pushes; 0 disables the watcher")
@@ -44,6 +54,41 @@ func main() {
 	if *showVersion {
 		fmt.Println(Version)
 		os.Exit(0)
+	}
+	if *cableWorkerCapabilities {
+		fmt.Println(cableWorkerCapabilitiesJSON())
+		return
+	}
+	if *fabricAddressCapabilities {
+		fmt.Printf("{\"protocol\":%q,\"persistence\":\"until-reboot\",\"maxInterfaces\":2}\n", fabricWorkerProtocol)
+		return
+	}
+	if *cableCleanupOnce {
+		if *cableProbeOnce || *fabricAddressOnce {
+			os.Exit(2)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if err := runCableCleanupInspector(ctx, os.Stdin, os.Stdout); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	if *cableProbeOnce {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if err := runCableProbeOnce(ctx, os.Stdin, os.Stdout, *nodeID, *nodeInfoPort, *clusterDir); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	if *fabricAddressOnce {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if err := runFabricAddressOnce(ctx, os.Stdin, os.Stdout, *nodeID, *nodeInfoPort, *clusterDir); err != nil {
+			os.Exit(1)
+		}
+		return
 	}
 
 	applog.Init("nvpair-engine-manager", resolveLevel())
@@ -113,6 +158,11 @@ func main() {
 	mesh := clustertrust.Open(*clusterDir)
 	go mesh.Watch(ctx, nil)
 	mgr := NewManager(codec, exec, mesh)
+	exec.vllmNodeID = *nodeID
+	mgr.cableLocal = newCableLocalFacts(*nodeID, *nodeInfoPort)
+	mgr.cableLocal.profileDir = *clusterDir
+	mgr.cableLocal.controlPort = *controlPort
+	defer mgr.cableLocal.http.CloseIdleConnections()
 
 	// Optional LAN model-list surface (the em service, for peer discovery
 	// enrichment). Off unless the parent opts in with --http-port. A node's model
@@ -132,13 +182,23 @@ func main() {
 	// the process on a node that joins a cluster after engine-manager started —
 	// exactly the window in which the broker mints the identity.
 	if *controlPort > 0 {
-		go serveControl(ctx, *controlPort, exec, mesh)
+		go serveControl(ctx, *controlPort, exec, mgr, mesh)
 	}
 
 	if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("manager error: %v", err)
 	}
 	log.Print("shutdown complete")
+}
+
+func dispatchInternalDiagnosticRank(args []string, run func(string, string) int) (bool, int) {
+	if len(args) == 0 || args[0] != "--diagnostic-rank" {
+		return false, 0
+	}
+	if len(args) != 3 || run == nil || !diagnosticToken.MatchString(args[1]) || !diagnosticDigest.MatchString(args[2]+args[2]) {
+		return true, 2
+	}
+	return true, run(args[1], args[2])
 }
 
 // userPaths returns the per-user manifest-override directory and the

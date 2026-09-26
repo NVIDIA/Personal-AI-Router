@@ -6,7 +6,7 @@ import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import { OpenInNew } from '@/ui/components/icons'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { PlatformDisplayName } from '@/shared/types/platform'
-import { canAutoInstallBackendForOs } from '@/ui/utils/backend-target-os'
+import { canAutoInstallBackendForTarget } from '@/ui/utils/backend-target-os'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import { useDismissibleTooltipTrigger } from '@/ui/hooks/use-dismissible-tooltip-trigger'
 
@@ -18,7 +18,7 @@ export function InstallButton({
     onInstall
 }: {
     backend: BackendInfo
-    targetOs: PlatformDisplayName
+    targetOs?: PlatformDisplayName
     isLocalNode: boolean
     disabled: boolean
     onInstall: () => void
@@ -26,7 +26,11 @@ export function InstallButton({
     const autoInstall =
         backend.type === 'llamacpp'
             ? backend.installSupported === true
-            : canAutoInstallBackendForOs(backend.type, targetOs)
+            : canAutoInstallBackendForTarget(
+                  backend.type,
+                  targetOs,
+                  isLocalNode ? undefined : backend.installSupported
+              )
     const isNotInstalled = backend.processStatus === 'not-installed'
     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
     const prereqsMet = missingPrereqs.length === 0

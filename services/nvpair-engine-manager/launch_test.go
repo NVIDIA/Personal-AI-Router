@@ -101,7 +101,7 @@ func TestLaunchTextReachesChildLiterally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(proc.stop)
+	t.Cleanup(func() { _ = proc.stop(time.Second) })
 	select {
 	case <-proc.done:
 	case <-time.After(10 * time.Second):

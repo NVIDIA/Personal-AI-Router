@@ -1,0 +1,428 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# DGX Spark Cluster: From First Boot to First Inference
+
+Use this playbook to install NVIDIA Personal AI Router (PAIR) on one lead DGX
+Spark, provision up to two more Sparks from that lead, check the QSFP cabling,
+configure a temporary fast fabric, and run managed vLLM inference. The same
+ordinary managed vLLM journey works with one, two, or three Sparks. The fixed
+Qwen3.8 profile is a serving group for exactly two Sparks; it cannot run as a
+one-Spark engine, and a third Spark stays free for other models.
+
+PAIR owns the product operations in this guide. Do not replace a held operation
+with manual package copies, service kills, network changes, or rank cleanup.
+
+## Know Which Result You Are Proving
+
+PAIR exposes several checks because no single green state proves the whole
+cluster. Keep their meanings separate:
+
+| Result | What it proves | What it does not prove |
+| --- | --- | --- |
+| Cable check passed | The selected physical ports report the expected reciprocal direct or ring edges | Direct attachment, usable IP transport, RDMA, NCCL, bandwidth, or inference |
+| Fabric active | PAIR applied its reviewed temporary addresses and qualified certificate-pinned, peer-specific fast-control endpoints with RoCE v2 binding | RDMA or RoCE payload transfer, NCCL, bandwidth, or inference |
+| Management-Socket NCCL passed | The selected ranks completed the fixed collective-correctness recipe over the management network | ConnectX-7 payload traffic, RDMA, RoCE bandwidth, or model inference |
+| Pipeline group served inference | The proxy, vLLM coordinator, ranks, model, and request path worked as one serving group over the management network | Fast-fabric payload use |
+| Direct-fabric TP2 served inference | The exact two-rank tensor plan served a request while bound to the reviewed direct fabric | Nothing beyond that exact build, model, topology, and run |
+| Screenshot captured | The displayed state was visible at that moment | Backend acceptance, cleanup, performance, or human acceptance |
+
+Current hardware evidence covers one-Spark inference, two- and three-Spark
+pipeline inference over the management network, direct and ring fabric
+qualification and rollback, and three-rank failure/recovery. Final runtime
+`72afcf7a` also proves installed-TUI A/B direct-Socket TP2 review, participant
+check, masked one-use administrator access, HTTP 200 inference, exact rank
+cleanup, Desktop restoration and fabric rollback. The direct TP2 payload is
+NCCL Socket over one reviewed QSFP Ethernet lane with RDMA disabled. Three-node
+PP3 and the fixed NCCL correctness smoke still use management Socket; do not
+describe them as ring payload, RDMA, RoCE bandwidth or performance proof.
+
+## Before You Start
+
+- Complete the normal DGX Spark out-of-box setup on every Spark and connect each
+  one to the same trusted management network.
+- Confirm that the account you will use on each peer can use SSH and perform the
+  reviewed administrator actions. PAIR binds effects to the reviewed operation
+  and clears passwords and passphrases after each access attempt; key material
+  stays with the operating-system agent.
+- For a fast-fabric run with two Sparks, connect exactly one supported QSFP
+  cable between them. For a three-Spark ring, use three cables so every Spark
+  connects to the other two. Ordinary pipeline serving can use management
+  without a fast-fabric cable.
+- Keep the Sparks on compatible DGX OS, driver, PAIR, vLLM, and model revisions.
+  A version match is a prerequisite, not proof that the workload works.
+- If PAIR reports mixed or drifting provider closures, stop before serving and
+  use NVIDIA's [DGX Spark OS and component update guide](https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html).
+  PAIR detects and explains this drift; it does not run arbitrary package-manager
+  commands from the renderer.
+- Make sure the selected model fits on every serving-group participant. Pull one
+  exact public revision on the selected source, then use **Distribute to missing
+  selected nodes**. Each target reviews capacity and verifies the resumable
+  paired-mTLS transfer before PAIR exposes its retained receipt.
+
+The [DGX Spark ConnectX-7 guide](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
+lists the supported cable types, port correspondence, and physical handling
+guidance. Do not force a connector that is misaligned.
+
+### Platform truth
+
+| System | Managed vLLM status |
+| --- | --- |
+| DGX Spark / Linux arm64 | The primary hardware-accepted path for this playbook |
+| Linux amd64 with a supported NVIDIA GPU | Installation is offered; target-native acceptance remains separate |
+| Native Windows or macOS | Not installable as a managed vLLM host |
+| Windows with WSL2 | PAIR does not silently create or substitute a WSL child; WSL hosting remains unvalidated |
+| Windows without WSL2 | Can still be a PAIR client and call a Spark endpoint; it cannot host managed vLLM |
+
+## Record Time to First Magic
+
+Write down one timestamp at each checkpoint. `T7 - T0` is the honest
+time-to-first-inference measurement. Record model download time separately so a
+warm demo is not reported as a cold one.
+
+| Checkpoint | Stop the clock only when |
+| --- | --- |
+| T0 — start | The lead Spark is at its desktop after out-of-box setup |
+| T1 — lead ready | PAIR reports its local services ready on the lead |
+| T2 — peers ready | Every selected peer is paired, online, and on the intended PAIR build |
+| T3 — cables known | The cable check reports the selected topology and releases its worker cleanly |
+| T4 — fabric ready | Optional: the reviewed fabric operation is active and its exact endpoints are qualified |
+| T5 — model ready | Managed vLLM and the exact model revision are reported on every selected participant |
+| T6 — serving ready | The one-node engine or serving group is ready and `/v1/models` lists the model |
+| T7 — first magic | `/v1/chat/completions` returns a non-empty assistant response and Overview identifies the serving engine or group |
+
+For one Spark, mark T2–T4 **not applicable**. Do not invent peer, cable, or
+fabric timestamps for a local engine run.
+
+## 1. Install PAIR on the Lead Spark
+
+For a release, download the Linux arm64 Debian package from the
+[PAIR releases page](https://github.com/NVIDIA/Personal-AI-Router/releases).
+Install the downloaded package on the lead Spark from its directory:
+
+```bash
+sudo apt install ./NVPAIR-Setup-*.deb
+```
+
+If that directory contains multiple PAIR packages, use the exact downloaded
+filename. Launch PAIR, complete first-run setup, then wait for **Overview** and
+**Settings > Service** to report ready.
+
+This Spark is the setup controller, not a permanent cluster master. The serving
+plan still names an exact coordinator while the group is running.
+
+For a one-Spark run, skip Sections 2–4 and the managed NCCL smoke: there is no
+peer to provision, cable to check, or fabric operation to apply. Continue with
+an ordinary model in Section 5; the fixed Qwen3.8 profile requires a group.
+
+## 2. Discover and Provision the Other Sparks
+
+On the lead, open **Settings > Cluster > Set up a device**.
+
+PAIR discovers eligible LAN candidates automatically. Provisioning remains an
+explicit, host-key-bound review for each peer; automatic discovery is not
+automatic trust.
+
+1. Select a Spark under **Ready for SSH enrollment**. If it is missing, select
+   **Refresh devices** and confirm that it is powered on, on the same management
+   network, and reachable by SSH.
+2. Leave **Role** on **Auto** so Linux resolves to the headless product owner.
+   Use **Quick Connect** for the ordinary reviewed path.
+3. Enter the requested device-account access and accept only the SSH host
+   fingerprint shown for that Spark.
+4. Advance the product flow through **Prepare device**, **Verify bootstrap**,
+   **Authorize key**, and **Install or update PAIR**.
+5. Wait for the target-produced complete receipt and the paired node identity.
+   Repeat from the lead for the third Spark.
+
+An SSH-ready Spark does not need a second GUI installation. If PAIR classifies a
+device as **Observed / bootstrap required**, complete only the target bootstrap
+that PAIR describes, then refresh; do not invent a peer installation path.
+
+Pass this stage only when **Connected nodes** and **Overview** show the intended
+one-, two-, or three-Spark set with no version drift. Discovery alone grants no
+trust and is not pairing.
+
+The **Fleet compatibility** matrix keeps unknown facts explicit. The controller
+can report its exact PAIR and Engine Manager versions; a peer PAIR version
+appears after PAIR's typed installation inspection. The current peer
+installation receipt does not expose a separate Engine Manager component
+version, so the UI reports **Not reported** instead of inferring one. To align
+PAIR product builds, select up to four already enrolled peers, choose a verified
+PAIR package, then select **Update selected nodes** and approve the exact review.
+This operation updates PAIR only. It is not a DGX OS, driver, Docker, or package
+manager update. Updating four enrolled peers does not create a four-node
+serving group or fast-fabric topology.
+
+## 3. Check the Physical Topology
+
+Ordinary pipeline serving over management can skip Sections 3–4; that run
+earns no cable or fast-fabric qualification. A direct-fabric tensor group or
+Qwen3.8 group needs a reviewed direct cable between its two Sparks.
+
+Open the fabric setup card in **Settings > Cluster**. PAIR reads each selected,
+paired node's fresh physical-port inventory through the certificate-pinned
+Engine Manager control route. It prefers the strongest exact candidate it can
+prove: three-node ring, then two-node direct, then one-node ready state. The
+card prefills the node and physical-port identifiers and shows the expected
+wiring diagram. Manual node, switch, and port identifiers remain under
+**Advanced fallback**.
+
+Current cable and fabric review supports exactly a two-node direct link or a
+three-node ring. The displayed switch ID comes from device physical-port
+inventory; it is not evidence of an external Ethernet switch. **Advanced
+fallback** does not add a switch topology. Four-node or switch-fabric setup
+needs a separate product contract and qualification.
+
+PAIR proposes:
+
+- **Two-node direct** for one cable between two Sparks.
+- **Three-node ring** for three cables, one between every pair:
+
+  ```text
+      Spark A ----- Spark B
+         \           /
+          \         /
+            Spark C
+  ```
+
+Read any named missing, duplicate, or misplaced edge. A port inventory can
+identify eligible endpoints, but only the finite cable check proves reciprocal
+peer edges. Then:
+
+1. Select **Review cable check**.
+2. Read the finite effects and accept only the listed host keys.
+3. Approve the reviewed administrator cable check.
+4. Wait for the cable result and cleanup confirmation.
+
+### If the topology is wrong
+
+- **Missing edge:** fully seat the cable between the named pair, then rerun the
+  check.
+- **Unexpected or duplicate edge:** for a direct pair, leave exactly one cable;
+  for a ring, make sure each Spark connects to each of the other two exactly
+  once.
+- **Link down or wrong speed:** use a supported Ethernet-mode QSFP cable, check
+  connector orientation, and reboot the Sparks with the cables connected if a
+  freshly corrected topology is still not detected.
+- **Cleanup hold:** select **Review exact cleanup recovery**, approve only that
+  retained run, and wait until PAIR says the hold is released before trying
+  another cable or fabric operation.
+
+Do not guess that left and right ports map to a particular Linux interface.
+PAIR's current observation and the official port correspondence table are the
+authority for that device.
+
+## 4. Review and Apply the Fast Fabric
+
+For a fabric-bound workload, select **Review fabric setup** after a passing
+cable result. An ordinary pipeline group can serve over management without an
+active fast-fabric operation.
+
+1. Read the exact temporary addresses, selected ports, and rollback effects.
+2. If PAIR requests inspection, select **Inspect selected profiles** and review
+   the result.
+3. Approve a selected-port interruption only when the review explicitly lists
+   it.
+4. Select **Approve fabric setup** and wait for **Fabric operation: active**.
+
+An active result means the reviewed temporary address plan and fast-control
+qualification succeeded. It is not an RDMA, NCCL, bandwidth, or inference
+result. Leave the operation active only while a fabric-bound workload needs it.
+
+## Optional: Managed NCCL Socket Correctness Smoke
+
+When PAIR shows a registered NCCL build for the exact two or three selected
+nodes, open **Managed NCCL correctness smoke** in **Settings > Cluster**. This
+checks a small collective recipe; it is separate from model inference.
+
+1. Select the **Registered NCCL build** and exactly two or three current nodes
+   covered by that build. Registration alone is not a passing test.
+2. Select **Review NCCL smoke**. Confirm the reviewed node set, interfaces,
+   management IPv4 addresses, owner, and finite test window.
+3. Check the approval box for those exact nodes, then select **Start NCCL
+   smoke** once. If its reply is uncertain, use **Recover retained run** rather
+   than sending Start again.
+4. Refresh the retained operation until it reports **passed**, all 14
+   correctness samples have zero wrong results, and owned cleanup is confirmed.
+   Inspect the cause of a clean terminal failure before a new review. Recover
+   the exact retained run only if Start's outcome is uncertain or cleanup is
+   held or unconfirmed.
+
+This smoke uses NCCL Socket on the management network. It does not exercise
+the QSFP fast-fabric payload, prove RDMA/RoCE traffic, qualify bandwidth, or
+serve the selected model.
+
+## 5. Prepare Managed vLLM
+
+### Ordinary one-, two-, or three-Spark serving
+
+For one Spark, open that node's **Engine settings**, install managed vLLM, add
+an ordinary model, and start the vLLM switch. Copy the endpoint after it
+reports ready. The fixed Qwen3.8 profile cannot use this standalone path.
+
+For an ordinary group, install managed vLLM on the selected Sparks. Open
+**Setup & inference readiness**. Choose one source, pull one exact public model
+revision, and distribute it to missing selected nodes; the fixed Qwen runtime
+preparation action does not apply to other models. Once every participant
+reports that revision, use the **Serving group** card:
+
+1. Select the exact participants and one model revision present on all of them.
+2. Choose parallelism for this ordinary model:
+   - With two Sparks and one active, freshly qualified direct fabric, select
+     **Tensor parallel — split each layer**. The review must say
+     `qualified-direct-socket`: only NCCL Socket uses one reviewed QSFP
+     Ethernet lane; rendezvous, Gloo, control, and SSH stay on management.
+   - Without that direct fabric, choose **Pipeline parallel — split layers**.
+     Two- and three-Spark pipeline groups use the management network, even when
+     a ring fabric operation is active.
+3. Select **Review group** and read the coordinator, ranks, runtime, TP/PP/DP
+   plan, and transport.
+4. Select **Check participants**. Readiness is not a start.
+5. Provide fresh administrator access only for the participants named by the
+   review, then select **Start group**.
+6. Wait for the retained operation to report **ready**. PAIR withholds ready
+   until the proxy lists the coordinator for the selected model; confirm that
+   same model through `/v1/models` before sending inference.
+
+The ordinary direct-Socket TP2 path proves Ethernet Socket payload over the
+reviewed interconnect only when its exact run returns inference and cleanup
+receipts. It does not prove RDMA, host-buffer RoCE, or bandwidth.
+
+### Fixed Qwen3.8 group on the direct fabric
+
+Qwen3.8 has its own pinned runtime, model snapshot, and group layout. Do not
+choose the ordinary **Tensor parallel** or **Pipeline parallel** option for
+this model: the Qwen parallelism control is disabled because PAIR reviews one
+fixed layout, `TP2+EP2` on exactly two Sparks joined by an exact direct fabric.
+Review refuses a third Spark with the reason: the model's two key-value heads
+cannot split three ways, a full copy of its shared weights on each of three
+ranks does not fit in Spark memory, and its pinned runtime cannot run it as
+pipeline stages.
+
+1. Check the exact direct cable between the two Sparks and apply its reviewed
+   direct fabric operation. Leave it active for the serving group. **Fabric
+   operation: active** proves temporary address and RoCE-v2 control
+   qualification, not model payload.
+2. In **Setup & inference readiness**, select those same two Sparks and
+   **Use fixed Qwen3.8**. Select **Prepare exact runtime on selected nodes**
+   and wait until every selected runtime is ready with one qualified provider
+   closure. Do not pull on the source while its runtime preparation still owns
+   that node's Engine Manager operation lock.
+3. Choose one selected source and **Pull on source**. Wait for its exact
+   immutable model receipt, then select **Distribute to missing selected
+   nodes**. PAIR transfers verified chunks directly between paired Engine
+   Managers; the renderer handles neither model bytes nor credentials. Apply
+   the fabric first: with it active, each copy runs over the fabric lane
+   between the two Sparks and the row reads **over the fabric**; without it the
+   copy uses the management network, which can take hours for a large model.
+   Wait for every selected node to report that same model revision and digest.
+4. In **Serving group**, select the same participants and fixed model. Leave
+   **Parallelism** on its disabled setting labeled
+   `Fixed Qwen profile (exactly 2 nodes: TP2+EP2)`.
+   Select **Review group** and verify TP 2, PP 1, and EP 2.
+   Confirm **host-buffer RoCE, merged NICs on, socket payload fallback off** in
+   the reviewed plan and the exact active direct operation on the fabric card. PAIR
+   checks the RoCE lanes in the fixed plan; a missing model, provider match,
+   lane, or lease is a hold, not a reason to override it.
+5. Select **Check participants**, supply fresh administrator access only for
+   the reviewed ranks, then select **Start group** once. Wait for **ready**,
+   confirm the exact model in `/v1/models`, and send the bounded chat request
+   in Section 6. Confirm the same run and job in **Overview**.
+6. Select **Stop group** and wait for every rank's cleanup confirmation before
+   rolling back the exact direct fabric. If PAIR reports
+   **cleanup-required**,
+   reconcile that retained group first. A fabric lease is not released by a
+   successful request or process absence alone.
+
+The Qwen review's `host-buffer-roce` policy is distinct from the ordinary
+direct-Socket TP2 path and the management-Socket NCCL smoke. A passing fabric
+check or reviewed transport label alone does not prove payload traffic. Keep
+inference, same-run transport observations, and any bandwidth measurement as
+separate evidence; do not infer measured RDMA throughput from a chat response.
+
+## 6. Run the First Inference
+
+Use the vLLM endpoint shown by PAIR; do not call a worker rank directly.
+
+```bash
+curl '<PAIR_BASE_URL>/v1/models'
+
+curl '<PAIR_BASE_URL>/v1/chat/completions' \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "<MODEL_NAME>",
+    "messages": [{"role": "user", "content": "Reply with: PAIR is ready"}],
+    "temperature": 0,
+    "max_tokens": 32
+  }'
+```
+
+First magic requires both a non-empty response and current product state:
+
+1. Confirm the exact model appeared in `/v1/models`.
+2. Confirm the chat request returned successfully.
+3. Open **Overview** and confirm the ready serving group and its job.
+4. Record T7 and whether the run was cold or warm.
+
+## 7. Recover a Failed Group
+
+If a rank exits or PAIR reports **cleanup-required**, stop sending requests.
+
+1. Select **Reconcile** on that exact retained group.
+2. Provide fresh administrator access only for unresolved participants.
+3. Wait for every rank to report cleanup confirmed and for the group hold to be
+   released.
+4. Start a new **Review group** flow. Never reuse the consumed review.
+
+Process absence, a successful reconcile request, or a screenshot is not cleanup
+proof. Do not manually delete units or kill ranks; that breaks PAIR's ownership
+record and can leave the next group held.
+
+## 8. Stop and Roll Back
+
+1. Select **Stop group** and wait for exact rank cleanup confirmation. For a
+   one-Spark run, stop the managed vLLM switch.
+2. If you applied a fabric operation, select **Rollback owned fabric
+   addresses** on its card.
+3. For an applied fabric, wait until that exact operation reports cancelled
+   with cleanup confirmed. If it reports recovery required, select **Recover
+   exact owned cleanup**.
+4. Confirm no serving-group or cable hold remains.
+
+Stopping the group does not delete model weights or uninstall vLLM. Remove
+those separately only when that is the intended lifecycle action.
+
+## Acceptance Checklist
+
+- [ ] The lead installation is ready; any selected SSH-ready peers were
+      provisioned and paired. A one-Spark run needs no peers.
+- [ ] The fleet matrix shows the intended PAIR, vLLM, provider, and model
+      revisions; unsupported peer component facts remain explicitly unknown.
+- [ ] If direct or ring fabric was used, the cable check matched its exact
+      edges and cleaned up; one-Spark and management-only PP paths skip it.
+- [ ] If fabric was applied, its active result is described only as
+      fast-control/RoCE binding unless separate payload evidence exists.
+- [ ] The exact model and runtime were reported on every selected participant.
+- [ ] `/v1/models`, chat inference, and the Overview job agree on the same run.
+- [ ] A failure test, if run, ended with exact reconcile and cleanup receipts.
+- [ ] Serving stopped with no retained group hold; if fabric was applied, its
+      exact rollback completed with no retained fabric or cable hold.
+- [ ] The T0–T7 record marks skipped peer, cable, or fabric checkpoints not
+      applicable and says whether model acquisition was cold or warm.
+- [ ] A human reviewed the final UI separately from the automated receipts.
+
+## NVIDIA References
+
+- [DGX Spark ConnectX-7 networking](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
+- [NVIDIA Sync Cluster Assistant](https://docs.nvidia.com/sync/latest/cluster-assistant.html)
+- [Inspect and verify a ConnectX-7 cluster network plan](https://docs.nvidia.com/sync/latest/cluster-network-inspection.html)
+- [Serve LLMs with vLLM on DGX Spark](https://build.nvidia.com/spark/vllm/over)
+- [NCCL documentation](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/)
+- [NCCL diagnostics](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/diagnostics.html)
+
+NVIDIA Sync is useful reference material for the same hardware and topology,
+but its Cluster Assistant configures the network only. This PAIR playbook owns
+PAIR provisioning, serving-group lifecycle, inference, and cleanup.

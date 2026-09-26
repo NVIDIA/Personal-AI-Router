@@ -11,7 +11,7 @@ import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
-
+import { useVllmGroupStore, vllmGroupHoldsNode } from '@/ui/stores/vllm-group.store'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import type { EngineCommandType } from '@/shared/types/engine-api'
@@ -21,6 +21,8 @@ import { ModelSection } from '@/ui/components/ModelManager/ModelSection'
 import { BackendHeader } from './BackendHeader'
 import { BackendFooter } from './BackendFooter'
 import { BackendUpdateBanner } from './BackendUpdateBanner'
+import { engineLifecycleAllowed, engineUpdateTargetAllowed } from '@/ui/utils/engine-control-policy'
+import { VllmModelSelector } from './VllmModelSelector'
 
 import { EngineSettingsSection } from './EngineSettingsSection'
 import { isExternalRuntime } from '@/ui/utils/engine-ownership'
@@ -108,6 +110,10 @@ export function BackendRow({
     }, [installProgress, backend, lifecyclePending])
 
     const selfId = useConnectionStore(state => state.selfId)
+    // Shared target-aware hold, including an unsettled serving-group Start.
+    const vllmGroupBlocked = useVllmGroupStore(state =>
+        vllmGroupHoldsNode(state, nodeId, selfId, window.windowApi.platform === 'Linux')
+    )
     const isLocalNode = nodeId === selfId
 
     // Remote peers may not have polled engine facts yet; refresh status when the
@@ -146,7 +152,7 @@ export function BackendRow({
     }, [displayBackend.processStatus, isUnavailable])
 
     const nodeOs = useNodesStore(state => state.nodes.get(nodeId)?.os)
-    const targetOs = nodeOs ?? window.windowApi.platform
+    const targetOs = isLocalNode ? (nodeOs ?? window.windowApi.platform) : nodeOs
 
     const handleToggle = useCallback(() => {
         window.pairApi.engines.toggle(backend.type, nodeId)
@@ -173,12 +179,19 @@ export function BackendRow({
         setExpanded(prev => !prev)
     }, [isUnavailable])
 
-    // Install/start/stop, model pull, and the settings editor work on clustered
-    // peers; uninstall, update, and model load/delete remain local-only. A
-    // llama.cpp runtime PAIR detected but does not manage is observe-only: its
-    // owner keeps lifecycle, settings, and model changes.
+    // Install/start/stop, managed vLLM update, model pull, and the settings
+    // editor work on clustered peers; uninstall and every other engine's update
+    // remain local-only. A runtime PAIR detected but does not manage is
+    // observe-only: its owner keeps lifecycle, settings, and model changes.
+    const lifecycleAllowed = engineLifecycleAllowed(displayBackend)
     const externalLlama = isExternalRuntime(backend.type, backend.processStatus, backend.managed)
-    const controlsDisabled = isTransitioning || externalLlama
+    const updateTargetAllowed = engineUpdateTargetAllowed(displayBackend, isLocalNode)
+    const vllmHeld = displayBackend.type === 'vllm' && vllmGroupBlocked
+    const controlsDisabled =
+        isTransitioning ||
+        externalLlama ||
+        vllmHeld ||
+        (displayBackend.processStatus !== 'not-installed' && !lifecycleAllowed)
 
     const content = expanded ? (
         <Stack gap="4" className="max-w-full overflow-hidden pt-4">
@@ -188,14 +201,28 @@ export function BackendRow({
                     with its owner.
                 </Text>
             )}
-            <BackendUpdateBanner
-                backend={displayBackend}
-                disabled={controlsDisabled || !isLocalNode}
-                onUpdate={handleUpdate}
-            />
+            {lifecycleAllowed && (displayBackend.type !== 'vllm' || updateTargetAllowed) && (
+                <BackendUpdateBanner
+                    backend={displayBackend}
+                    disabled={controlsDisabled || !updateTargetAllowed}
+                    onUpdate={handleUpdate}
+                />
+            )}
 
-            {canShowAccordions && (
-                <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
+            {canShowAccordions && (displayBackend.type !== 'vllm' || lifecycleAllowed) && (
+                <ModelSection
+                    backend={displayBackend}
+                    nodeId={nodeId}
+                    disabled={isTransitioning || vllmHeld}
+                />
+            )}
+
+            {canShowAccordions && lifecycleAllowed && displayBackend.type === 'vllm' && (
+                <VllmModelSelector
+                    nodeId={nodeId}
+                    backend={displayBackend}
+                    disabled={isTransitioning}
+                />
             )}
 
             {canShowAccordions && !externalLlama && (
@@ -203,14 +230,14 @@ export function BackendRow({
                     key={`${nodeId}:${backend.type}`}
                     nodeId={nodeId}
                     engineType={backend.type}
-                    disabled={isTransitioning}
+                    disabled={isTransitioning || vllmHeld}
                 />
             )}
 
             <BackendFooter
                 backend={displayBackend}
                 targetOs={targetOs}
-                showUninstall={isLocalNode && !externalLlama}
+                showUninstall={isLocalNode && lifecycleAllowed && !externalLlama}
                 disabled={controlsDisabled}
                 onUninstall={requestUninstall}
             />

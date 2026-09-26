@@ -47,6 +47,7 @@ func TestEngineHealthProbePaths(t *testing.T) {
 		{"ollama", "/"},
 		{"lmstudio", "/v1/models"},
 		{"llamacpp", "/v1/models"},
+		{"vllm", "/v1/models"},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -107,6 +108,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 		{"ollama", adoptedEngine},
 		{"lmstudio", managedEngine},
 		{"llamacpp", managedEngine},
+		{"vllm", adoptedEngine},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -173,14 +175,15 @@ func TestParseProxyEngines(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{name: "default is every engine", csv: "ollama,lmstudio", want: []string{"ollama", "lmstudio"}},
+		{name: "default is every engine", csv: "ollama,lmstudio,vllm", want: []string{"ollama", "lmstudio", "vllm"}},
 		{name: "single engine", csv: "lmstudio", want: []string{"lmstudio"}},
-		{name: "whitespace and blanks are tolerated", csv: " ollama , , lmstudio ", want: []string{"ollama", "lmstudio"}},
+		{name: "single adopted engine", csv: "vllm", want: []string{"vllm"}},
+		{name: "whitespace and blanks are tolerated", csv: " ollama , , lmstudio , vllm ", want: []string{"ollama", "lmstudio", "vllm"}},
 		{name: "duplicates collapse", csv: "ollama,ollama", want: []string{"ollama"}},
 		{name: "empty selects nothing", csv: "", want: nil},
 		// Silently fronting the engines it did recognize would look like the
 		// flag worked.
-		{name: "unknown engine fails", csv: "ollama,vllm", wantErr: true},
+		{name: "unknown engine fails", csv: "ollama,nope", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := parseProxyEngines(tc.csv)

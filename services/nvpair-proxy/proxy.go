@@ -80,6 +80,16 @@ type SelectedResult struct {
 	ID string `json:"id"`
 }
 
+// ModelOwnersParams / ModelOwnersResult are the node/model-owners query: the
+// ordered node IDs a model-bearing inference request for Model would try.
+type ModelOwnersParams struct {
+	Model string `json:"model"`
+}
+
+type ModelOwnersResult struct {
+	Nodes []string `json:"nodes"`
+}
+
 // Request events are facade-scoped: they name an engine's method, path and
 // target, so they go out addressed like every other facade notification. They
 // were unaddressed until the process began hosting several facades, at which
@@ -2737,6 +2747,25 @@ func (p *Proxy) handleMessage(msg *Message) {
 		}
 		if err := p.codec.Respond(msg.ID, SelectedResult{ID: f.SelectedID()}); err != nil {
 			log.Printf("failed to respond to node/selected: %v", err)
+		}
+
+	case "node/model-owners":
+		// Read-only: the nodes a model-bearing inference request would try now.
+		f, ok := p.requireFacade(msg, engine)
+		if !ok {
+			return
+		}
+		var params ModelOwnersParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil || params.Model == "" {
+			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"model\"}")
+			return
+		}
+		owners := ModelOwnersResult{Nodes: []string{}}
+		for _, c := range f.resolveCandidates(params.Model) {
+			owners.Nodes = append(owners.Nodes, c.id)
+		}
+		if err := p.codec.Respond(msg.ID, owners); err != nil {
+			log.Printf("failed to respond to node/model-owners: %v", err)
 		}
 
 	case "node/set-priority":

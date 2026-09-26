@@ -52,11 +52,20 @@ The canonical runtime inventory is
 | `nvpair-engine-manager`   | Broker, optional | Engine lifecycle and model operations       |
 | `nvpair-errors`           | Broker, optional | Error registry and peer synchronization     |
 | `nvpair-job-scheduler`    | Broker, optional | Node-wide routing priority                  |
+| `nvpair-tui`              | Standalone       | Terminal parent for its own broker tree     |
+| `nvpair-host-bootstrap`   | Target package   | Target-local owned setup transaction        |
+| `nvpair-host-helper`      | Target OS        | Fixed local bootstrap and repair actions    |
 
 `nvpair-tui` is bundled as a standalone terminal client; it is not supervised by
 Electron or the broker. It spawns and owns its own `nvpair-ui-broker`, so it runs
 over SSH with no display. It is what the `nvpair` command on PATH resolves to on
 every platform — see [Terminal use](#terminal-use).
+
+`nvpair-host-bootstrap` and `nvpair-host-helper` are bundled but are not
+standalone broker clients. The bootstrap runs on the target through its native
+administrator flow. The helper listens only on a local ACL-protected pipe or
+socket and accepts a fixed set of owned actions. Neither binary is a broker
+worker, a shell, or a network listener.
 
 ## Communication boundaries
 
@@ -100,6 +109,67 @@ launches the GUI directly from `/opt` and does not go through the wrapper.
 
 Because the TUI starts its own broker, do not run it alongside the desktop app —
 the two process trees compete for the same engines and proxy ports.
+
+The TUI setup view uses the same bootstrap lanes as the desktop app. A device
+that already has SSH is ready for enrollment. A device that still needs the
+signed target bootstrap stays in the bootstrap lane. Temporary SSH access may
+use a password or an existing key, but the TUI and backend do not persist the
+password, passphrase, elevation password, or private key.
+
+### Device bootstrap
+
+Desktop **Set up a device** and the TUI **Setup** tab call the same
+`engine:onboarding-bootstrap-*` methods on `nvpair-engine-manager`. Quick
+Connect is the operator-reviewed lane and Zero Touch is the enterprise lane.
+The lane is bound into the operation, while the target execution and safety
+policy are identical.
+
+The catalog and native bootstrap accept exactly:
+
+- Windows amd64;
+- Windows arm64;
+- macOS amd64;
+- macOS arm64;
+- Linux amd64 on Debian or Ubuntu;
+- Linux arm64 on Debian or Ubuntu.
+
+The Go target enum contains six OS/architecture combinations; the target-local
+Linux adapter additionally admits only Debian and Ubuntu. Unsupported targets
+fail closed.
+
+Each operation resolves one runtime owner. Auto resolves to Desktop on Windows
+and macOS and Headless on Linux. An explicit Desktop or Headless role must match
+the resolved owner. Desktop leaves the app-owned broker tree as the sole owner.
+Headless installs one fixed owner: the Windows helper's `headless-service`
+wrapper, a macOS system launchd job, or a Linux system service. A live desktop
+broker tree prevents a headless transition.
+
+The target is authoritative for setup state. The helper accepts only an
+operation ID and one fixed action, loads the target-local operation, invokes the
+fixed bootstrap path, and returns target-produced status or receipt. Neither the
+renderer nor Electron can supply observations or forge completion. The legal
+path is inspect, review, apply, verify, then a complete receipt; a no-op skips
+apply. The renderer keeps only view state.
+
+Recovery resumes the exact journaled effect. Repair is permitted only when the
+complete receipt and ownership markers authorize every affected resource;
+foreign resources are refused. Target-local uninstall requires the original
+request and receipt, validates every removal before mutation, removes
+proven-owned resources in reverse order, verifies absence after each effect,
+and records an uninstall tombstone.
+
+Bootstrap persists the target account, endpoint, artifact identities, and
+controller public-key identity. It does not persist passwords or private keys.
+After bootstrap, engine-manager observes the current SSH host key and requires
+the user to accept that fingerprint before authentication; completion never
+grants automatic host-key trust.
+
+The packaged catalog binds bootstrap, helper, product, and combination identity
+for all six targets. Official provenance requires complete signature metadata,
+detached release material where required, and macOS notarization records.
+Catalog loading and official packaging fail closed when those inputs or the
+catalog checksum are unavailable or inconsistent. Public packaging emits
+explicitly unsigned engineering artifacts, which are not official releases.
 
 ### Electron to backend
 
@@ -338,6 +408,13 @@ Electron Builder produces:
 `npm run build:tools` compiles the `inference-dispatcher` client into `tools/`,
 which is packaged as a separate `extraResources` directory with its own manifest
 and packaging assertion.
+
+`scripts/package-bootstrap.ts` builds and verifies the exact six-target
+bootstrap matrix. It reopens each combination and product archive and checks
+the catalog, payload identities, file inventory, modes, sizes, and digests.
+Engineering output is unsigned. Official packaging consumes separately attested
+final signed inputs; the public packager never upgrades unsigned bytes to
+official provenance.
 
 The macOS build also compiles the `SMAppService` privileged helper used to
 configure Application Firewall rules. Firewall membership comes from

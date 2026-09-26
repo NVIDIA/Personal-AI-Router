@@ -1,0 +1,334 @@
+{
+    "request": {
+        "schemaVersion": 1,
+        "operationId": "abababababababababababababababab",
+        "binding": {
+            "target": {
+                "platform": "linux",
+                "architecture": "arm64"
+            },
+            "lane": "quick-connect",
+            "role": "auto",
+            "runtimeOwner": "headless",
+            "account": {
+                "name": "pairuser",
+                "homePath": "/home/pairuser",
+                "authorizedKeysPath": "/home/pairuser/.ssh/authorized_keys"
+            },
+            "controllerKey": {
+                "algorithm": "ssh-ed25519",
+                "material": "AAAAC3NzaC1lZDI1NTE5AAAAIBMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEy",
+                "fingerprintSha256": "0b66a4d4300d4b132e6b893e97f345fbc3a3bfdf13c94b707d47773b79d162f5"
+            },
+            "endpoint": {
+                "address": "192.0.2.10",
+                "port": 22
+            },
+            "product": {
+                "id": "nvpair",
+                "version": "1.2.3",
+                "sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+                "path": "/opt/nvpair/nvpair"
+            },
+            "helper": {
+                "id": "nvpair-host-helper",
+                "version": "1.2.3",
+                "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+                "path": "/usr/libexec/nvpair-host-helper"
+            }
+        }
+    },
+    "status": {
+        "schemaVersion": 1,
+        "operationId": "abababababababababababababababab",
+        "phase": "inspect",
+        "binding": {
+            "target": {
+                "platform": "linux",
+                "architecture": "arm64"
+            },
+            "lane": "quick-connect",
+            "role": "auto",
+            "runtimeOwner": "headless",
+            "account": {
+                "name": "pairuser",
+                "homePath": "/home/pairuser",
+                "authorizedKeysPath": "/home/pairuser/.ssh/authorized_keys"
+            },
+            "controllerKey": {
+                "algorithm": "ssh-ed25519",
+                "material": "AAAAC3NzaC1lZDI1NTE5AAAAIBMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEy",
+                "fingerprintSha256": "0b66a4d4300d4b132e6b893e97f345fbc3a3bfdf13c94b707d47773b79d162f5"
+            },
+            "endpoint": {
+                "address": "192.0.2.10",
+                "port": 22
+            },
+            "product": {
+                "id": "nvpair",
+                "version": "1.2.3",
+                "sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+                "path": "/opt/nvpair/nvpair"
+            },
+            "helper": {
+                "id": "nvpair-host-helper",
+                "version": "1.2.3",
+                "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+                "path": "/usr/libexec/nvpair-host-helper"
+            }
+        },
+        "observed": {
+            "sshService": {
+                "ownership": "absent",
+                "endpoint": null
+            },
+            "firewall": {
+                "ownership": "absent",
+                "endpoint": null
+            },
+            "authorizedKey": {
+                "ownership": "absent",
+                "identity": null
+            },
+            "helper": {
+                "ownership": "absent",
+                "identity": null
+            },
+            "product": {
+                "ownership": "absent",
+                "identity": null
+            },
+            "runtimeOwners": []
+        }
+    },
+    "plan": {
+        "schemaVersion": 1,
+        "operationId": "abababababababababababababababab",
+        "phase": "review",
+        "decision": "apply",
+        "binding": {
+            "target": {
+                "platform": "linux",
+                "architecture": "arm64"
+            },
+            "lane": "quick-connect",
+            "role": "auto",
+            "runtimeOwner": "headless",
+            "account": {
+                "name": "pairuser",
+                "homePath": "/home/pairuser",
+                "authorizedKeysPath": "/home/pairuser/.ssh/authorized_keys"
+            },
+            "controllerKey": {
+                "algorithm": "ssh-ed25519",
+                "material": "AAAAC3NzaC1lZDI1NTE5AAAAIBMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEy",
+                "fingerprintSha256": "0b66a4d4300d4b132e6b893e97f345fbc3a3bfdf13c94b707d47773b79d162f5"
+            },
+            "endpoint": {
+                "address": "192.0.2.10",
+                "port": 22
+            },
+            "product": {
+                "id": "nvpair",
+                "version": "1.2.3",
+                "sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+                "path": "/opt/nvpair/nvpair"
+            },
+            "helper": {
+                "id": "nvpair-host-helper",
+                "version": "1.2.3",
+                "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+                "path": "/usr/libexec/nvpair-host-helper"
+            }
+        },
+        "observed": {
+            "sshService": {
+                "ownership": "absent",
+                "endpoint": null
+            },
+            "firewall": {
+                "ownership": "absent",
+                "endpoint": null
+            },
+            "authorizedKey": {
+                "ownership": "absent",
+                "identity": null
+            },
+            "helper": {
+                "ownership": "absent",
+                "identity": null
+            },
+            "product": {
+                "ownership": "absent",
+                "identity": null
+            },
+            "runtimeOwners": []
+        },
+        "actions": [
+            "ssh-service",
+            "firewall",
+            "authorized-key",
+            "helper",
+            "pair-artifact",
+            "active-role"
+        ]
+    },
+    "receipt": {
+        "schemaVersion": 1,
+        "operationId": "abababababababababababababababab",
+        "phase": "complete",
+        "decision": "apply",
+        "binding": {
+            "target": {
+                "platform": "linux",
+                "architecture": "arm64"
+            },
+            "lane": "quick-connect",
+            "role": "auto",
+            "runtimeOwner": "headless",
+            "account": {
+                "name": "pairuser",
+                "homePath": "/home/pairuser",
+                "authorizedKeysPath": "/home/pairuser/.ssh/authorized_keys"
+            },
+            "controllerKey": {
+                "algorithm": "ssh-ed25519",
+                "material": "AAAAC3NzaC1lZDI1NTE5AAAAIBMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEy",
+                "fingerprintSha256": "0b66a4d4300d4b132e6b893e97f345fbc3a3bfdf13c94b707d47773b79d162f5"
+            },
+            "endpoint": {
+                "address": "192.0.2.10",
+                "port": 22
+            },
+            "product": {
+                "id": "nvpair",
+                "version": "1.2.3",
+                "sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+                "path": "/opt/nvpair/nvpair"
+            },
+            "helper": {
+                "id": "nvpair-host-helper",
+                "version": "1.2.3",
+                "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+                "path": "/usr/libexec/nvpair-host-helper"
+            }
+        },
+        "verified": {
+            "sshService": {
+                "ownership": "owned",
+                "endpoint": {
+                    "address": "192.0.2.10",
+                    "port": 22
+                }
+            },
+            "firewall": {
+                "ownership": "owned",
+                "endpoint": {
+                    "address": "192.0.2.10",
+                    "port": 22
+                }
+            },
+            "authorizedKey": {
+                "ownership": "owned",
+                "identity": {
+                    "accountName": "pairuser",
+                    "path": "/home/pairuser/.ssh/authorized_keys",
+                    "fingerprintSha256": "0b66a4d4300d4b132e6b893e97f345fbc3a3bfdf13c94b707d47773b79d162f5"
+                }
+            },
+            "helper": {
+                "ownership": "owned",
+                "identity": {
+                    "id": "nvpair-host-helper",
+                    "version": "1.2.3",
+                    "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+                    "path": "/usr/libexec/nvpair-host-helper"
+                }
+            },
+            "product": {
+                "ownership": "owned",
+                "identity": {
+                    "id": "nvpair",
+                    "version": "1.2.3",
+                    "sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+                    "path": "/opt/nvpair/nvpair"
+                }
+            },
+            "runtimeOwners": [
+                {
+                    "ownership": "owned",
+                    "owner": "headless"
+                }
+            ]
+        }
+    },
+    "helperResponse": {
+        "schemaVersion": 1,
+        "operationId": "abababababababababababababababab",
+        "action": "inspect",
+        "accepted": true,
+        "status": {
+            "schemaVersion": 1,
+            "operationId": "abababababababababababababababab",
+            "phase": "inspect",
+            "binding": {
+                "target": {
+                    "platform": "linux",
+                    "architecture": "arm64"
+                },
+                "lane": "quick-connect",
+                "role": "auto",
+                "runtimeOwner": "headless",
+                "account": {
+                    "name": "pairuser",
+                    "homePath": "/home/pairuser",
+                    "authorizedKeysPath": "/home/pairuser/.ssh/authorized_keys"
+                },
+                "controllerKey": {
+                    "algorithm": "ssh-ed25519",
+                    "material": "AAAAC3NzaC1lZDI1NTE5AAAAIBMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEy",
+                    "fingerprintSha256": "0b66a4d4300d4b132e6b893e97f345fbc3a3bfdf13c94b707d47773b79d162f5"
+                },
+                "endpoint": {
+                    "address": "192.0.2.10",
+                    "port": 22
+                },
+                "product": {
+                    "id": "nvpair",
+                    "version": "1.2.3",
+                    "sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+                    "path": "/opt/nvpair/nvpair"
+                },
+                "helper": {
+                    "id": "nvpair-host-helper",
+                    "version": "1.2.3",
+                    "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+                    "path": "/usr/libexec/nvpair-host-helper"
+                }
+            },
+            "observed": {
+                "sshService": {
+                    "ownership": "absent",
+                    "endpoint": null
+                },
+                "firewall": {
+                    "ownership": "absent",
+                    "endpoint": null
+                },
+                "authorizedKey": {
+                    "ownership": "absent",
+                    "identity": null
+                },
+                "helper": {
+                    "ownership": "absent",
+                    "identity": null
+                },
+                "product": {
+                    "ownership": "absent",
+                    "identity": null
+                },
+                "runtimeOwners": []
+            }
+        }
+    }
+}

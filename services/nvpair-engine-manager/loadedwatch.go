@@ -33,9 +33,12 @@ type modelsChangedParams struct {
 // here — load_model/unload_model/run_model/pull_model/delete_model, and chat,
 // which can JIT-load a model — is treated as potentially residency-affecting.
 var residencyNeutralActions = map[string]bool{
-	"list_models":     true,
-	"list_downloaded": true,
-	"loaded_models":   true,
+	"list_models":           true,
+	"list_downloaded":       true,
+	"loaded_models":         true,
+	"get_version":           true,
+	"get_resource_settings": true,
+	"cancel_pull":           true,
 }
 
 // watchLoaded polls the loaded-model set of every running engine and emits

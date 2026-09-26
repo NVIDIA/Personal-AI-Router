@@ -27,6 +27,7 @@ import type {
     EngineCommandPayload,
     EngineHubSearchResponse,
     EngineInitialState,
+    EngineLogSnapshot,
     EngineStatePatch
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
@@ -42,12 +43,92 @@ import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload, WorkloadRemoval } from '@/shared/types/workloads'
+import type { OnboardingHistorySummary } from '@/shared/types/onboarding-history'
+import type {
+    OnboardingAccessRequest,
+    OnboardingAccessResult,
+    OnboardingArtifact,
+    OnboardingCandidate,
+    OnboardingCandidates,
+    OnboardingDiscoverRequest,
+    OnboardingOperation,
+    OnboardingOperationRequest,
+    OnboardingReview,
+    OnboardingReviewRequest,
+    OnboardingScopes,
+    BootstrapCatalog,
+    BootstrapControllerKeys,
+    BootstrapOperationInvoke,
+    BootstrapPlan,
+    BootstrapPlanInvoke,
+    BootstrapReceipt,
+    BootstrapRequestInvoke,
+    BootstrapStatus
+} from '@/shared/types/onboarding-live'
+import type { VllmGroupRunStatus, VllmGroupStatus } from '@/shared/types/vllm-group-status'
+import type {
+    VllmGroupCheck,
+    VllmGroupOperation,
+    VllmGroupReconcileRequest,
+    VllmGroupReview,
+    VllmGroupReviewRequest,
+    VllmGroupSelection,
+    VllmGroupStartRequest
+} from '@/shared/types/vllm-group'
+import type { VllmGroupCleanupRequest } from '@/shared/types/vllm-group-cleanup'
+import type {
+    VllmDistributionRequest,
+    VllmExactModelRequest,
+    VllmModelReceipt,
+    VllmOperationCancelResult,
+    VllmRuntimePrepareRequest,
+    VllmRuntimePrepareResult
+} from '@/shared/types/vllm-model-journey'
+import type {
+    CableCleanupReview,
+    CableCleanupVerifyResult,
+    CableRetainedRuns,
+    CableReview,
+    CableRun,
+    CableStartResponse,
+    FabricOperation,
+    FabricInventorySnapshot,
+    FabricRetainedOperations,
+    FabricReview,
+    FabricSelection
+} from '@/shared/types/fabric'
+import type {
+    VllmModelSelectionRequest,
+    VllmModelSelectionResult
+} from '@/shared/types/vllm-model-selection'
 import type {
     AvailableNode,
     ClusterIdentityPayload,
     ClusterNode,
     Invite
 } from '@/shared/types/cluster'
+import type {
+    DiagnosticMPIReconcileRequest,
+    DiagnosticMPIReconcileResult
+} from '@/shared/types/diagnostic-mpi-reconcile'
+import type {
+    DiagnosticMPIApproveRequest,
+    DiagnosticMPIManagedInventory,
+    DiagnosticMPIOperation,
+    DiagnosticMPIOperationBinding,
+    DiagnosticMPIRecovery,
+    DiagnosticMPIRecoveryReference,
+    DiagnosticMPIReview,
+    DiagnosticMPIReviewClosure,
+    DiagnosticMPISelection
+} from '@/shared/types/diagnostic-mpi'
+import type {
+    NCCLReplacementAdoption,
+    NCCLReplacementOperation,
+    NCCLReplacementReview,
+    NCCLReplacementSelector,
+    NCCLReplacementStatus
+} from '@/shared/types/diagnostic-runtime-replacement'
 
 // -----------------------------------------------------------------------------
 // Invoke channels — (request, response) pairs
@@ -98,11 +179,238 @@ export interface WsInvokeChannelMap {
 
     // Engines
     'engines:get-initial': { request: void; response: EngineInitialState }
+    'engine:logs': { request: { engineType: EngineType }; response: EngineLogSnapshot }
     'engines:get-settings': { request: EngineSettingsTarget; response: EngineSettingsSnapshot }
     'engines:preview-settings': { request: EngineSettingsRequest; response: EngineSettingsPreview }
     'engines:apply-settings': { request: EngineSettingsRequest; response: EngineSettingsReceipt }
     'engine:command': { request: EngineCommandPayload; response: null }
     'engine:search-hub': { request: { engineType: EngineType }; response: EngineHubSearchResponse }
+    // Managed vLLM serving group. Review and check are proposals; start, stop,
+    // reconcile and cleanup are exact typed operations that PAIR may refuse.
+    // Status is the only hold-truth authority for the renderer and bridge fences.
+    'engine:vllm-group-review': {
+        request: { selection: VllmGroupSelection }
+        response: VllmGroupReview
+    }
+    'engine:vllm-group-check': { request: VllmGroupReviewRequest; response: VllmGroupCheck }
+    'engine:vllm-group-start': { request: VllmGroupStartRequest; response: VllmGroupRunStatus }
+    'engine:vllm-group-status': { request: void; response: VllmGroupStatus }
+    'engine:vllm-group-stop': { request: VllmGroupOperation; response: VllmGroupStatus }
+    'engine:vllm-group-reconcile': {
+        request: VllmGroupReconcileRequest
+        response: VllmGroupStatus
+    }
+    // Cleanup runs PAIR's own noninteractive fixed-helper reconcile and closure
+    // and answers with the refreshed managed group status; unresolved ranks are
+    // an error and the group stays held.
+    'engine:vllm-group-cleanup': { request: VllmGroupCleanupRequest; response: VllmGroupStatus }
+    // Retained model selection for a stopped, PAIR-managed vLLM on this
+    // controller. The model must already be in PAIR's downloaded library.
+    'engine:vllm-select-model': {
+        request: VllmModelSelectionRequest
+        response: VllmModelSelectionResult
+    }
+    // Product-owned immutable model/runtime preparation. Renderer requests are
+    // identity-only: no credentials, commands, URLs, or filesystem paths.
+    'engine:vllm-pull-exact': {
+        request: VllmExactModelRequest
+        response: VllmModelReceipt
+    }
+    'engine:vllm-cancel-pull': {
+        request: VllmExactModelRequest
+        response: VllmOperationCancelResult
+    }
+    'engine:vllm-prepare-runtime': {
+        request: VllmRuntimePrepareRequest
+        response: VllmRuntimePrepareResult
+    }
+    'engine:vllm-cancel-prepare': {
+        request: VllmRuntimePrepareRequest
+        response: VllmOperationCancelResult
+    }
+    'engine:vllm-distribute-model': {
+        request: VllmDistributionRequest
+        response: VllmModelReceipt
+    }
+    'engine:vllm-cancel-distribution': {
+        request: VllmDistributionRequest
+        response: VllmOperationCancelResult
+    }
+
+    // Physical-cable evidence and temporary fabric setup. The renderer supplies
+    // only identities/ports and server-issued operation ids; Electron injects
+    // the fixed approval booleans at the broker boundary.
+    'engine:cable-review': { request: FabricSelection; response: CableReview }
+    'engine:cable-start': { request: { reviewId: string }; response: CableStartResponse }
+    'engine:cable-status': {
+        request: { runId?: string; reviewId?: string }
+        response: CableRun
+    }
+    'engine:cable-cancel': { request: { runId: string }; response: CableRun }
+    'engine:cable-retained-runs': { request: void; response: CableRetainedRuns }
+    'engine:cable-cleanup-review': {
+        request: { runId: string; acceptedHostKeys?: FabricSelection['acceptedHostKeys'] }
+        response: CableCleanupReview
+    }
+    'engine:cable-cleanup-verify': {
+        request: { runId: string; reviewId: string }
+        response: CableCleanupVerifyResult
+    }
+    'engine:cable-cleanup-cancel': { request: { runId: string }; response: CableRun }
+    'engine:fabric-inventory': {
+        request: { nodeIds: string[] }
+        response: FabricInventorySnapshot
+    }
+    'engine:fabric-review': {
+        request: { selection: FabricSelection; inspectSelectedProfiles?: boolean }
+        response: FabricReview
+    }
+    'engine:fabric-approve': {
+        request: { reviewId: string; selectedPortPauseApproved: boolean }
+        response: FabricOperation
+    }
+    'engine:fabric-status': { request: { operationId: string }; response: FabricOperation }
+    'engine:fabric-cancel': { request: { operationId: string }; response: FabricOperation }
+    'engine:fabric-recover': { request: { operationId: string }; response: FabricOperation }
+    'engine:fabric-retained-operations': { request: void; response: FabricRetainedOperations }
+
+    // Read-only retained setup compatibility and recovery state.
+    'setup:get-history': { request: void; response: OnboardingHistorySummary }
+    'engine:diagnostic-mpi-reconcile': {
+        request: DiagnosticMPIReconcileRequest
+        response: DiagnosticMPIReconcileResult
+    }
+    // Managed NCCL correctness smoke. The renderer supplies only exact current
+    // node/build or PAIR-issued operation identities; Electron injects the
+    // fixed management-network Socket test window at the backend boundary.
+    'engine:diagnostic-managed-runtimes': {
+        request: void
+        response: DiagnosticMPIManagedInventory
+    }
+    'engine:diagnostic-nccl-replacement-review': {
+        request: { buildOperationId: string }
+        response: NCCLReplacementReview
+    }
+    'engine:diagnostic-nccl-replacement-approve': {
+        request: NCCLReplacementSelector
+        response: NCCLReplacementOperation
+    }
+    'engine:diagnostic-nccl-replacement-status': {
+        request: NCCLReplacementSelector
+        response: NCCLReplacementStatus
+    }
+    'engine:diagnostic-nccl-replacement-close': {
+        request: NCCLReplacementSelector
+        response: NCCLReplacementStatus
+    }
+    'engine:diagnostic-nccl-replacement-cancel': {
+        request: NCCLReplacementSelector
+        response: NCCLReplacementOperation
+    }
+    'engine:diagnostic-nccl-replacement-retry': {
+        request: NCCLReplacementSelector & { expectedRevision: number }
+        response: NCCLReplacementOperation
+    }
+    'engine:diagnostic-nccl-replacement-adopt': {
+        request: NCCLReplacementSelector & { expectedRevision: number }
+        response: NCCLReplacementAdoption
+    }
+    'engine:diagnostic-mpi-review': {
+        request: DiagnosticMPISelection
+        response: DiagnosticMPIReview
+    }
+    'engine:diagnostic-mpi-approve': {
+        request: DiagnosticMPIApproveRequest
+        response: DiagnosticMPIOperation
+    }
+    'engine:diagnostic-mpi-status': {
+        request: DiagnosticMPIOperationBinding
+        response: DiagnosticMPIOperation
+    }
+    'engine:diagnostic-mpi-cancel': {
+        request: DiagnosticMPIOperationBinding
+        response: DiagnosticMPIOperation
+    }
+    'engine:diagnostic-mpi-recover': {
+        request: DiagnosticMPISelection
+        response: DiagnosticMPIRecovery
+    }
+    // Logical renderer channel over the backend's typed MPI status recovery
+    // selector. It can only close one exact, recovered unstarted review.
+    'engine:diagnostic-mpi-close-review': {
+        request: DiagnosticMPIRecoveryReference
+        response: DiagnosticMPIReviewClosure
+    }
+    'engine:onboarding-candidates': { request: void; response: OnboardingCandidates }
+    'engine:onboarding-add-target': {
+        request: { address: string; port: number; label?: string }
+        response: OnboardingCandidate
+    }
+    'engine:onboarding-access': {
+        request: OnboardingAccessRequest
+        response: OnboardingAccessResult
+    }
+    'engine:onboarding-inspect': {
+        request: OnboardingReviewRequest
+        response: OnboardingReview
+    }
+    'engine:onboarding-approve': {
+        request: { reviewId: string }
+        response: OnboardingOperation
+    }
+    'engine:onboarding-status': {
+        request: OnboardingOperationRequest
+        response: OnboardingOperation
+    }
+    'engine:onboarding-cancel': {
+        request: OnboardingOperationRequest
+        response: OnboardingOperation
+    }
+    'engine:onboarding-retry': {
+        request: OnboardingOperationRequest
+        response: OnboardingOperation
+    }
+    'engine:onboarding-scopes': { request: void; response: OnboardingScopes }
+    'engine:onboarding-discover': {
+        request: OnboardingDiscoverRequest
+        response: OnboardingCandidates
+    }
+    'engine:onboarding-import-artifact': {
+        request: { file: string }
+        response: OnboardingArtifact
+    }
+    'engine:onboarding-bootstrap-catalog': {
+        request: void
+        response: BootstrapCatalog
+    }
+    'engine:onboarding-bootstrap-controller-keys': {
+        request: void
+        response: BootstrapControllerKeys
+    }
+    'engine:onboarding-bootstrap-inspect': {
+        request: BootstrapRequestInvoke
+        response: BootstrapStatus
+    }
+    'engine:onboarding-bootstrap-review': {
+        request: BootstrapRequestInvoke
+        response: BootstrapPlan
+    }
+    'engine:onboarding-bootstrap-apply': {
+        request: BootstrapPlanInvoke
+        response: BootstrapStatus
+    }
+    'engine:onboarding-bootstrap-status': {
+        request: BootstrapOperationInvoke
+        response: BootstrapStatus
+    }
+    'engine:onboarding-bootstrap-recover': {
+        request: BootstrapOperationInvoke
+        response: BootstrapStatus
+    }
+    'engine:onboarding-bootstrap-verify': {
+        request: BootstrapPlanInvoke
+        response: BootstrapReceipt
+    }
 
     // Errors
     'errors:get-initial': { request: void; response: ServiceError[] }

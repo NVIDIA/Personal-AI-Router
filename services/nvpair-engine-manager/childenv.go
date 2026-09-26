@@ -18,6 +18,7 @@ func childEnv(st *engineState, overrides ...map[string]string) (map[string]strin
 	st.mu.Lock()
 	vars := map[string]string{"install_dir": st.installDir, "port": strconv.Itoa(st.port), "bin": st.binPath, "host": st.plat.Runtime.Bind}
 	vars["model_dir"] = llamaModelDir(st)
+	vars["models_dir"] = st.modelDir
 	st.mu.Unlock()
 	for _, values := range overrides {
 		for key, value := range values {

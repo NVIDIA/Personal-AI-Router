@@ -67,7 +67,7 @@ describe('local model load command', () => {
         expect(mocks.supervisor.sendProcess).not.toHaveBeenCalled()
         expect(mocks.supervisor.callProcess).not.toHaveBeenCalled()
         expect(mocks.supervisor.reportError).toHaveBeenCalledExactlyOnceWith(
-            'update is only available on the local node — remote uninstall/update is not supported yet.',
+            'Remote update is only available for PAIR-managed vLLM.',
             'warning',
             'engine-cmd:remote:update'
         )

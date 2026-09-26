@@ -6,10 +6,10 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. That includes Ollama, LM Studio and llama.cpp on a given machine. PAIR can
-install and run those engines for you, or work with a copy you already have.
-This page explains what you can expect when you install, start, stop, update, or
-remove an engine.
+run models. That includes Ollama, LM Studio, llama.cpp, and managed vLLM on a
+qualified Linux host. PAIR can install and run an engine for you, or work with a
+copy you already have when that engine supports adoption. This page explains
+what you can expect when you install, start, stop, update, or remove an engine.
 
 For first-time setup, refer to [Getting started](getting-started.mdx). To change
 an engine's ports or launch command, refer to
@@ -140,11 +140,16 @@ When you install an engine, consider the following:
 
 - Choosing install makes it an **NVPAIR-installed** engine. PAIR downloads it,
   configures it, and owns it from then on.
-- A successful install **starts the engine** as part of the same flow, so you
-  normally do not need a separate start step right after install.
+- A successful Ollama or LM Studio install **starts the engine** as part of the
+  same flow, so you normally do not need a separate start step right after
+  install. Managed vLLM installation completes stopped; start it explicitly as
+  a standalone engine or through a reviewed serving group.
 - If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
   that install instead of downloading another copy. Adoption helps when the
   usual engine port is already in use.
+
+For one-, two-, or three-Spark vLLM setup, use the
+[DGX Spark cluster playbook](dgx-spark-playbook.mdx).
 
 To download models:
 

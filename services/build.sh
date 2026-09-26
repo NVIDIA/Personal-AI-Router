@@ -4,7 +4,7 @@
 
 # build.sh — NVIDIA Personal AI Router build script for Linux and macOS.
 #
-# Mirrors build.bat. Reads versions.json with jq, builds the twelve worker
+# Mirrors build.bat. Reads versions.json with jq, builds the fourteen worker
 # binaries with -X main.Version=... ldflags, then copies them into the
 # repo-root staging bundle at:
 #
@@ -67,6 +67,8 @@ V_BROKER=$( jq -r --arg k 'nvpair-ui-broker'    '.components[$k]' "$VERSIONS_FIL
 V_CLUMGR=$( jq -r --arg k 'nvpair-cluster-manager' '.components[$k]' "$VERSIONS_FILE")
 V_SCHED=$(  jq -r --arg k 'nvpair-job-scheduler' '.components[$k]' "$VERSIONS_FILE")
 V_TUI=$(    jq -r --arg k 'nvpair-tui'          '.components[$k]' "$VERSIONS_FILE")
+V_BOOT=$(   jq -r --arg k 'nvpair-host-bootstrap' '.components[$k]' "$VERSIONS_FILE")
+V_HELPER=$( jq -r --arg k 'nvpair-host-helper' '.components[$k]' "$VERSIONS_FILE")
 
 if [[ -z "$V_SERVICES" || "$V_SERVICES" == "null" ]]; then
     echo "ERROR: failed to parse versions.json" >&2
@@ -86,6 +88,8 @@ printf '  nvpair-ui-broker     = %s\n' "$V_BROKER"
 printf '  nvpair-cluster-mgr   = %s\n' "$V_CLUMGR"
 printf '  nvpair-job-scheduler = %s\n' "$V_SCHED"
 printf '  nvpair-tui           = %s\n' "$V_TUI"
+printf '  nvpair-host-bootstrap= %s\n' "$V_BOOT"
+printf '  nvpair-host-helper   = %s\n' "$V_HELPER"
 echo
 
 echo "========================================"
@@ -95,8 +99,13 @@ echo
 
 build_subbinary() {
     local idx="$1" name="$2" version="$3"
-    echo "[$idx/12] Building $name (v$version)..."
-    (cd "$ROOT/$name" && go build -ldflags "-X main.Version=$version" -o "$name" .)
+    echo "[$idx/14] Building $name (v$version)..."
+    (
+        cd "$ROOT/$name"
+        CGO_ENABLED=0 GOFLAGS=-buildvcs=false \
+            go build -buildvcs=false -trimpath \
+                -ldflags "-X main.Version=$version" -o "$name" .
+    )
     echo "      OK"
 }
 build_subbinary 1 nvpair-proxy       "$V_PROXY"
@@ -111,6 +120,8 @@ build_subbinary 9 nvpair-ui-broker     "$V_BROKER"
 build_subbinary 10 nvpair-cluster-manager "$V_CLUMGR"
 build_subbinary 11 nvpair-job-scheduler   "$V_SCHED"
 build_subbinary 12 nvpair-tui            "$V_TUI"
+build_subbinary 13 nvpair-host-bootstrap  "$V_BOOT"
+build_subbinary 14 nvpair-host-helper     "$V_HELPER"
 
 BIN_OUT="$ROOT/build/bin"
 
@@ -139,6 +150,8 @@ cp "$ROOT/nvpair-ui-broker/nvpair-ui-broker"       "$BIN_OUT/nvpair-ui-broker"
 cp "$ROOT/nvpair-cluster-manager/nvpair-cluster-manager" "$BIN_OUT/nvpair-cluster-manager"
 cp "$ROOT/nvpair-job-scheduler/nvpair-job-scheduler" "$BIN_OUT/nvpair-job-scheduler"
 cp "$ROOT/nvpair-tui/nvpair-tui"                   "$BIN_OUT/nvpair-tui"
+cp "$ROOT/nvpair-host-bootstrap/nvpair-host-bootstrap" "$BIN_OUT/nvpair-host-bootstrap"
+cp "$ROOT/nvpair-host-helper/nvpair-host-helper"   "$BIN_OUT/nvpair-host-helper"
 
 echo
 echo "========================================"
@@ -157,4 +170,6 @@ printf '  UI Broker:    %s\n' "$BIN_OUT/nvpair-ui-broker"
 printf '  Cluster Mgr:  %s\n' "$BIN_OUT/nvpair-cluster-manager"
 printf '  Job Scheduler:%s\n' " $BIN_OUT/nvpair-job-scheduler"
 printf '  TUI:          %s\n' "$BIN_OUT/nvpair-tui"
+printf '  Bootstrap:    %s\n' "$BIN_OUT/nvpair-host-bootstrap"
+printf '  Host helper:  %s\n' "$BIN_OUT/nvpair-host-helper"
 echo

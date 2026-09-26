@@ -55,5 +55,23 @@ export default function EngineIcon({ type, size = 32 }: { type: EngineType; size
                     </span>
                 </div>
             )
+        case 'vllm':
+            return (
+                <div
+                    aria-label="vLLM"
+                    style={{
+                        ...containerStyle,
+                        alignItems: 'center',
+                        backgroundColor: '#111',
+                        color: '#76b900',
+                        display: 'flex',
+                        fontSize: `${Math.max(9, Math.round(size * 0.34))}px`,
+                        fontWeight: 700,
+                        justifyContent: 'center'
+                    }}
+                >
+                    vLLM
+                </div>
+            )
     }
 }

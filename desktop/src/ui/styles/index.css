@@ -563,6 +563,65 @@ body .os-scrollbar {
     @apply p-4;
 }
 
+.vllm-serving-group {
+    position: relative;
+    padding: 10px;
+    border: 1px solid rgb(118 185 0 / 75%);
+    border-radius: 8px;
+    box-shadow:
+        0 0 0 1px rgb(118 185 0 / 18%),
+        0 0 12px rgb(118 185 0 / 16%);
+}
+
+.vllm-serving-group::after {
+    position: absolute;
+    inset: -2px;
+    pointer-events: none;
+    content: '';
+    border: 1px solid #a5de15;
+    border-radius: 9px;
+    opacity: 0;
+    animation: vllm-serving-group-electric 1s ease-out 1;
+}
+
+.vllm-serving-group-label {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 2px 8px;
+    color: var(--color-green-400);
+    font-size: var(--text-12);
+    font-weight: 600;
+}
+
+@keyframes vllm-serving-group-electric {
+    0% {
+        opacity: 0;
+        box-shadow: 0 0 0 rgb(165 222 21 / 0%);
+    }
+    18% {
+        opacity: 1;
+        box-shadow: 0 0 16px 2px rgb(165 222 21 / 75%);
+    }
+    38% {
+        opacity: 0.35;
+    }
+    58% {
+        opacity: 1;
+        box-shadow: 0 0 10px 1px rgb(165 222 21 / 55%);
+    }
+    100% {
+        opacity: 0;
+        box-shadow: 0 0 6px rgb(165 222 21 / 0%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .vllm-serving-group::after {
+        animation: none;
+    }
+}
+
 .pair-engines-inline
     .nv-switch-input:is(:disabled, [data-disabled]):is(:checked, [data-state='checked']):after {
     background-color: var(--background-color-interaction-primary-base);

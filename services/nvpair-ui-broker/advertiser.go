@@ -29,6 +29,7 @@ var (
 	defaultLMStudioPort      = lmstudioProxyProfile.FacadePort
 	defaultLlamaCppPort      = llamacppProxyProfile.EnginePortBase
 	defaultLlamaCppProxyPort = llamacppProxyProfile.FacadePort
+	defaultVLLMPort          = vllmProxyProfile.FacadePort
 )
 
 const (
@@ -198,8 +199,8 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 // it polls the local llama-server and reconciles this node's lc service
 // registration against it.
 //
-// The three advertise loops are still one per engine even though one process
-// now hosts every facade. Only the health probe and the listen-port lookup are
+// The advertise loops are still one per engine even though one process now
+// hosts every facade. Only the health probe and the listen-port lookup are
 // table-driven so far; folding the loops themselves into the engine table is
 // deliberately left as follow-up rather than done alongside adding an engine.
 func (b *Broker) runAutoAdvertiseLlamaCpp(ctx context.Context) {
@@ -256,6 +257,87 @@ func (b *Broker) reconcileAdvertiseLlamaCpp(client *http.Client) {
 	}
 }
 
+func (b *Broker) runAutoAdvertiseVLLM(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+	b.reconcileAdvertiseVLLM(client)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseVLLM(client)
+		}
+	}
+}
+
+// reconcileAdvertiseVLLM publishes a healthy vLLM that is either explicitly
+// enabled for standalone use or the ready coordinator of a serving group.
+// An adopted external server can participate after explicit Start intent
+// without transferring process or model authority.
+func (b *Broker) reconcileAdvertiseVLLM(client *http.Client) {
+	b.vllmAdvertiseMu.Lock()
+	defer b.vllmAdvertiseMu.Unlock()
+	enginePort, probe := b.localRoutableEnginePort(vllmProxyProfile.Name)
+	proxy := b.engineProxyHandle(vllmProxyProfile)
+	proxyPort := 0
+	if proxy != nil {
+		if ready, port := proxy.Status(vllmProxyProfile.Name); ready {
+			proxyPort = port
+		}
+	}
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkEngineHealth(vllmProxyProfile, client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceVLLM, Port: proxyPort})
+		b.setProxyLocalBackend(proxy, vllmProxyProfile.Name, enginePort, true)
+		return
+	}
+	b.unregisterService(noderec.ServiceVLLM)
+	b.setProxyLocalBackend(proxy, vllmProxyProfile.Name, enginePort, false)
+}
+
+func (b *Broker) localRoutableEnginePort(engine string) (int, bool) {
+	em := b.getEngineMgr()
+	if em == nil {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	params, _ := json.Marshal(map[string]string{"engine": engine})
+	result, rpcErr, err := em.Call(ctx, "engine:status", params)
+	if err != nil || rpcErr != nil || b.getEngineMgr() != em {
+		return 0, false
+	}
+	return routableEnginePort(result, engine)
+}
+
+func routableEnginePort(result json.RawMessage, engine string) (int, bool) {
+	var st struct {
+		Engine       string `json:"engine"`
+		Running      bool   `json:"running"`
+		Healthy      bool   `json:"healthy"`
+		Routable     bool   `json:"routable"`
+		Port         int    `json:"port"`
+		ServingGroup *struct {
+			Role    string `json:"role"`
+			State   string `json:"state"`
+			Routing bool   `json:"routing"`
+		} `json:"serving_group"`
+	}
+	if json.Unmarshal(result, &st) != nil {
+		return 0, false
+	}
+	// A collectively ready coordinator reports routing before it publishes
+	// ready, so the proxy route exists by the time any client sees ready.
+	groupRoutable := engine == vllmProxyProfile.Name && st.ServingGroup != nil && st.ServingGroup.Role == "coordinator" &&
+		(st.ServingGroup.State == "ready" || st.ServingGroup.State == "starting" && st.ServingGroup.Routing)
+	if st.Engine != engine || !st.Running || !st.Healthy || (!st.Routable && !groupRoutable) || st.Port <= 0 {
+		return 0, false
+	}
+	return st.Port, true
+}
+
 // proxyLocalBackend is the node/set-local-backend payload: the loopback engine
 // the proxy's cluster mTLS ingress forwards to, and the proxy's own self
 // candidate on the local routing path.
@@ -303,10 +385,11 @@ func (b *Broker) localEnginePort(engine string, fallback int) (int, bool) {
 
 func runningEnginePort(result json.RawMessage) (int, bool) {
 	var st struct {
-		Running bool `json:"running"`
-		Port    int  `json:"port"`
+		Running  bool  `json:"running"`
+		Routable *bool `json:"routable"`
+		Port     int   `json:"port"`
 	}
-	if json.Unmarshal(result, &st) != nil || !st.Running || st.Port <= 0 {
+	if json.Unmarshal(result, &st) != nil || !st.Running || st.Port <= 0 || (st.Routable != nil && !*st.Routable) {
 		return 0, false
 	}
 	return st.Port, true

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Inert package input. nvpair-host-bootstrap replaces TARGET_* only after a
+# reviewed request, then writes the rendered unit to /etc/systemd/system.
+[Unit]
+Description=NVIDIA PAIR Host Helper
+Requires=nvpair-host-helper.socket
+After=nvpair-host-helper.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/nvpair-host-helper service
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadOnlyPaths=/home /root /usr/libexec/nvpair-host-bootstrap /usr/libexec/payload
+ReadWritePaths=/var/lib/nvpair/host-bootstrap /opt/nvpair /etc/ssh /etc/ufw /var/lib/ufw -/etc/systemd/system/nvpair-host-helper.service -/etc/systemd/system/nvpair-host-helper.socket -/etc/systemd/system/nvidia-pair-headless.service -TARGET_PRODUCT -TARGET_HELPER -TARGET_HOME/.ssh -TARGET_AUTHORIZED_KEYS_DIR -TARGET_AUTHORIZED_KEYS

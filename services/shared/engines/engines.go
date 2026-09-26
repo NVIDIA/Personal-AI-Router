@@ -9,7 +9,8 @@
 // carried in every engine-manager JSON-RPC call, in the per-engine model
 // attribution on a discovery record, on a workload's Engine field, and as the
 // basename of the engine-manager manifest that describes how to install and run
-// the engine. A mismatch between any two of those does not fail to compile in a
+// the engine when PAIR manages its lifecycle. Adopt-only engines deliberately
+// have no managed manifest. A mismatch between any two of those does not fail to compile in a
 // world where each component spells the id itself — it produces an engine that
 // discovers, advertises, and never resolves a model owner. Declaring the set
 // once, here, is what turns that class of bug into a build error.
@@ -111,6 +112,14 @@ type Engine struct {
 	// broker reads it when reserving ports away from the OLLAMA_HOST alias,
 	// so the two must agree — which is why it lives here.
 	PortFile string
+
+	// AdoptOnly means PAIR may front an existing engine endpoint but must not
+	// claim installation, launch, stop, or model-mutation authority over it.
+	AdoptOnly bool
+
+	// EnabledByDefault engines start and route without an explicit choice.
+	// The others stay off until the operator records explicit ON intent.
+	EnabledByDefault bool
 }
 
 // ProxyComponent is the proxy *process* identity, as distinct from the
@@ -141,6 +150,7 @@ var all = []Engine{
 		FacadePort:       11434,
 		EnginePortBase:   11435,
 		PortFile:         "proxy-port.json",
+		EnabledByDefault: true,
 	},
 	{
 		Name:             "lmstudio",
@@ -149,6 +159,7 @@ var all = []Engine{
 		FacadePort:       1234,
 		EnginePortBase:   1235,
 		PortFile:         "lmstudio-proxy-port.json",
+		EnabledByDefault: true,
 	},
 	{
 		// 8080 is llama.cpp's own default: common/common.h declares
@@ -166,6 +177,15 @@ var all = []Engine{
 		FacadePort:       8080,
 		EnginePortBase:   8081,
 		PortFile:         "llamacpp-proxy-port.json",
+		EnabledByDefault: true,
+	},
+	{
+		Name:             "vllm",
+		DisplayName:      "vLLM",
+		DiscoveryService: noderec.ServiceVLLM,
+		FacadePort:       8000,
+		EnginePortBase:   8001,
+		PortFile:         "vllm-proxy-port.json",
 	},
 }
 
@@ -182,6 +202,19 @@ func Names() []string {
 	out := make([]string, len(all))
 	for i, e := range all {
 		out[i] = e.Name
+	}
+	return out
+}
+
+// DefaultNames returns only engines whose proxy participation predates an
+// explicit enablement choice. Catalog membership alone must not make a new
+// engine routable.
+func DefaultNames() []string {
+	var out []string
+	for _, e := range all {
+		if e.EnabledByDefault {
+			out = append(out, e.Name)
+		}
 	}
 	return out
 }

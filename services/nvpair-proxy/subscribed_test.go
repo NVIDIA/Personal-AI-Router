@@ -156,6 +156,9 @@ func TestSubscribedToNode(t *testing.T) {
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 				tc.profile.DiscoveryService: {Port: tc.profile.FacadePort},
 			},
+			RetainedByEngine: map[string][]string{
+				tc.profile.Name: {"mine", "retained-only"},
+			},
 		}
 		advertiseEngine(&dual, tc.profile, "mine")
 		advertiseEngine(&dual, other, "theirs")

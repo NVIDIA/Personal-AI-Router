@@ -96,6 +96,24 @@ func (s *desiredStateStore) save(state desiredStateFile) error {
 }
 
 func (e *Executor) setDesiredEnabled(engine string, enabled bool) error {
+	if enabled {
+		e.mu.Lock()
+		st := e.engines[engine]
+		e.mu.Unlock()
+		admitted := false
+		if st != nil {
+			st.mu.Lock()
+			admitted = st.diagnosticAdmitted
+			st.mu.Unlock()
+		}
+		if !admitted {
+			release, err := e.admitDiagnosticMutation("enabling managed engines")
+			if err != nil {
+				return err
+			}
+			defer release()
+		}
+	}
 	if err := e.desired.set(engine, enabled); err != nil {
 		return fmt.Errorf("persist %s desired state: %w", engine, err)
 	}

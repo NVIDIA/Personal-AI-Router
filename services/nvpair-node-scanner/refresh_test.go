@@ -91,14 +91,15 @@ func portFromURL(t *testing.T, raw string) int {
 // TestRefreshSelfDialsLoopback).
 func newRefreshTestDaemon() *daemon {
 	return &daemon{
-		reg:                newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
-		dir:                newDirectory(),
-		modelsHTTP:         &http.Client{Timeout: modelsFetchTimeout},
-		lastInfo:           make(map[string]NodeInfoResponse),
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
+		reg:                  newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
+		dir:                  newDirectory(),
+		modelsHTTP:           &http.Client{Timeout: modelsFetchTimeout},
+		lastInfo:             make(map[string]NodeInfoResponse),
+		lastInfoAt:           make(map[string]time.Time),
+		lastModels:           make(map[string][]string),
+		lastModelsByEngine:   make(map[string]map[string][]string),
+		lastRetainedByEngine: make(map[string]map[string][]string),
+		lastLoadedByEngine:   make(map[string]map[string][]string),
 	}
 }
 
@@ -366,6 +367,96 @@ func TestRefreshPopulatesLoadedByEngine(t *testing.T) {
 	}
 }
 
+func TestRefreshKeepsRetainedCatalogSeparateAndClearsItWhenOmitted(t *testing.T) {
+	d := newRefreshTestDaemon()
+	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
+		"models":           []string{"model-b"},
+		"modelsByEngine":   map[string][]string{"vllm": {"model-b"}},
+		"loadedByEngine":   map[string][]string{"vllm": {"model-b"}},
+		"retainedByEngine": map[string][]string{"vllm": {"model-a", "model-b"}},
+	})
+	seedEMNode(d, "peer-retained", "127.0.0.1", port)
+	if !d.refreshNodeModels("peer-retained", "127.0.0.1", port, "") {
+		t.Fatal("initial retained catalog did not report a change")
+	}
+	got, _ := d.dir.get("peer-retained")
+	if want := []string{"model-b"}; !reflect.DeepEqual(got.EngineModels("vllm"), want) {
+		t.Fatalf("served vLLM models = %v, want %v", got.EngineModels("vllm"), want)
+	}
+	if want := map[string][]string{"vllm": {"model-a", "model-b"}}; !reflect.DeepEqual(got.RetainedByEngine, want) {
+		t.Fatalf("retained catalog = %v, want %v", got.RetainedByEngine, want)
+	}
+
+	// A retained-only change is independently observable.
+	stub.set(http.StatusOK, map[string]any{
+		"models":           []string{"model-b"},
+		"modelsByEngine":   map[string][]string{"vllm": {"model-b"}},
+		"loadedByEngine":   map[string][]string{"vllm": {"model-b"}},
+		"retainedByEngine": map[string][]string{"vllm": {"model-b"}},
+	})
+	if !d.refreshNodeModels("peer-retained", "127.0.0.1", port, "") {
+		t.Fatal("retained-only change was not published")
+	}
+
+	// A successful mixed-version response that omits the additive field is
+	// authoritative unknown, not permission to preserve a stale catalog.
+	stub.set(http.StatusOK, map[string]any{
+		"models":         []string{"model-b"},
+		"modelsByEngine": map[string][]string{"vllm": {"model-b"}},
+		"loadedByEngine": map[string][]string{"vllm": {"model-b"}},
+	})
+	if !d.refreshNodeModels("peer-retained", "127.0.0.1", port, "") {
+		t.Fatal("omitted retained field did not clear stale catalog")
+	}
+	got, _ = d.dir.get("peer-retained")
+	if got.RetainedByEngine != nil {
+		t.Fatalf("omitted retained field preserved stale catalog: %v", got.RetainedByEngine)
+	}
+}
+
+func TestRefreshFailureRetainsLastGoodRetainedCatalog(t *testing.T) {
+	d := newRefreshTestDaemon()
+	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
+		"retainedByEngine": map[string][]string{"vllm": {"keep-me"}},
+	})
+	seedEMNode(d, "peer-retained-failure", "127.0.0.1", port)
+	if !d.refreshNodeModels("peer-retained-failure", "127.0.0.1", port, "") {
+		t.Fatal("initial retained catalog did not report a change")
+	}
+	stub.set(http.StatusInternalServerError, nil)
+	if d.refreshNodeModels("peer-retained-failure", "127.0.0.1", port, "") {
+		t.Fatal("failed fetch reported a retained catalog change")
+	}
+	got, _ := d.dir.get("peer-retained-failure")
+	want := map[string][]string{"vllm": {"keep-me"}}
+	if !reflect.DeepEqual(got.RetainedByEngine, want) {
+		t.Fatalf("retained catalog after fetch failure = %v, want %v", got.RetainedByEngine, want)
+	}
+	d.infoMu.Lock()
+	cached := d.lastRetainedByEngine["peer-retained-failure"]
+	d.infoMu.Unlock()
+	if !reflect.DeepEqual(cached, want) {
+		t.Fatalf("cached retained catalog = %v, want %v", cached, want)
+	}
+}
+
+func TestRetainedCatalogCacheMovesWithIdentityAndClearsOnForget(t *testing.T) {
+	d := newRefreshTestDaemon()
+	d.lastRetainedByEngine["old-id"] = map[string][]string{"vllm": {"model-a"}}
+	d.dir.upsert(noderec.DirectoryNode{HostUUID: "old-id", Name: "host"})
+	d.dropSelf("old-id", "new-id")
+	if got := d.lastRetainedByEngine["new-id"]; !reflect.DeepEqual(got, map[string][]string{"vllm": {"model-a"}}) {
+		t.Fatalf("migrated retained catalog = %v", got)
+	}
+	if _, exists := d.lastRetainedByEngine["old-id"]; exists {
+		t.Fatal("old retained catalog cache survived identity migration")
+	}
+	d.forget("new-id")
+	if _, exists := d.lastRetainedByEngine["new-id"]; exists {
+		t.Fatal("retained catalog cache survived node eviction")
+	}
+}
+
 // TestRefreshLoadedOnlyChangeReportsChange covers the loaded-set reconcile: when
 // only loadedByEngine changes (a JIT load / TTL eviction with the same installed
 // list), the refresh reports a change and updates the field so remote cards stay
@@ -445,7 +536,7 @@ func TestApplyModelsGuard(t *testing.T) {
 	d := newDirectory()
 
 	// Removed mid-sweep: node absent -> not resurrected.
-	if _, changed, ok := d.applyModels("ghost", "127.0.0.1", 14322, []string{"a"}, nil, nil); ok || changed {
+	if _, changed, ok := d.applyModels("ghost", "127.0.0.1", 14322, []string{"a"}, nil, nil, nil); ok || changed {
 		t.Errorf("applyModels on an absent node = (changed %v, ok %v), want (false, false)", changed, ok)
 	}
 	if _, present := d.get("ghost"); present {
@@ -459,11 +550,11 @@ func TestApplyModelsGuard(t *testing.T) {
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14322}},
 		Models:   []string{"old"},
 	})
-	if _, changed, ok := d.applyModels("peer-E", "127.0.0.1", 14322, []string{"new"}, nil, nil); ok || changed {
+	if _, changed, ok := d.applyModels("peer-E", "127.0.0.1", 14322, []string{"new"}, nil, nil, nil); ok || changed {
 		t.Errorf("applyModels with a stale IP = (changed %v, ok %v), want (false, false)", changed, ok)
 	}
 	// em port changed -> also discarded.
-	if _, changed, ok := d.applyModels("peer-E", "10.0.0.9", 99999, []string{"new"}, nil, nil); ok || changed {
+	if _, changed, ok := d.applyModels("peer-E", "10.0.0.9", 99999, []string{"new"}, nil, nil, nil); ok || changed {
 		t.Errorf("applyModels with a stale em port = (changed %v, ok %v), want (false, false)", changed, ok)
 	}
 	got, _ := d.get("peer-E")

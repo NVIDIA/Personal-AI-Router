@@ -68,7 +68,7 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 // handler the table maps the profile to without naming it.
 func forwardFacadeNotification(b *Broker, profile engineProxyProfile, method string, params json.RawMessage) {
 	b.forwardProxyProcessNotification(b.currentOllamaProxyGeneration(), b.lmstudioProxyGeneration.Load(),
-		b.llamaCppProxyGeneration.Load(), profile.addressed(method), params)
+		b.llamaCppProxyGeneration.Load(), b.vllmProxyGeneration.Load(), profile.addressed(method), params)
 }
 
 func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {

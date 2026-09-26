@@ -22,6 +22,14 @@ import (
 // Action runs a manifest-declared action against the engine and, when the
 // action declares restart_after, restarts the engine on success.
 func (e *Executor) Action(ctx context.Context, engine, action string, params json.RawMessage) (json.RawMessage, error) {
+	// Retained serving-group ownership wins before registry/action lookup, so an
+	// older or malformed mutating caller cannot learn or reach a later path while
+	// vLLM is held. Read-only inventory and exact cancellation remain available.
+	if !residencyNeutralActions[action] {
+		if err := e.rejectVLLMGroupMutation(engine, action); err != nil {
+			return nil, err
+		}
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return nil, err
@@ -29,6 +37,22 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	act, ok := st.manifest.Actions[action]
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, action)
+	}
+	// Managed vLLM acquisition owns its opMu -> diagnostic admission ordering.
+	// Cancellation and downloaded inventory remain available while that owner is
+	// active, so they must not queue behind the mutation they control/read.
+	if engine == "vllm" && act.Builtin == "vllm" && isVLLMAcquisitionAction(action) {
+		return e.vllmAcquisitionAction(ctx, st, action, params)
+	}
+	if !residencyNeutralActions[action] {
+		release, admissionErr := e.admitDiagnosticMutation("engine actions")
+		if admissionErr != nil {
+			return nil, admissionErr
+		}
+		defer release()
+		if err := adoptedVLLMMutationError(st, action); err != nil {
+			return nil, err
+		}
 	}
 	if engine == "llamacpp" {
 		return e.actionLlama(ctx, st, action, act, params)
@@ -88,6 +112,28 @@ func (e *Executor) restartAfterAction(ctx context.Context, st *engineState, engi
 // command, or an HTTP call against the engine's loopback control API with the
 // caller's params as the body.
 func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, action string, act Action, params json.RawMessage) (json.RawMessage, error) {
+	if action == "cancel_pull" && act.Builtin == "vllm" {
+		st.mu.Lock()
+		cancel := st.pullCancel
+		st.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return json.RawMessage(`{"cancelled":true}`), nil
+	}
+	if act.Builtin == "vllm" && action == "get_resource_settings" {
+		settings, err := readVLLMResourceSettings(st)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(settings)
+	}
+	if act.Builtin == "vllm" && action == "get_version" {
+		st.mu.Lock()
+		version := st.version
+		st.mu.Unlock()
+		return json.Marshal(map[string]string{"version": version})
+	}
 	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
 	defer cancel()
 	st.mu.Lock()
@@ -149,6 +195,10 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	}
 	wrapped, _ := json.Marshal(string(data))
 	return wrapped, nil
+}
+
+func (e *Executor) dispatchActionAdmitted(ctx context.Context, st *engineState, engine, action string, act Action, params json.RawMessage) (json.RawMessage, error) {
+	return e.dispatchAction(ctx, st, engine, action, act, params)
 }
 
 // runRemovePathAction resolves templated path/root placeholders and deletes

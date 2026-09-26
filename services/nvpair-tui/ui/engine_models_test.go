@@ -89,7 +89,8 @@ func TestModelInventoryRPCShapes(t *testing.T) {
 			}()
 			v := newEnginesView(client)
 			v.SetSize(90, 20)
-			v.merge(engineStatus{Engine: tc.engine, Installed: true, Managed: tc.managed})
+			managed := tc.managed
+			v.merge(engineStatus{Engine: tc.engine, Installed: true, Managed: &managed})
 			cmd := v.loadModelsCmd()
 			if cmd == nil {
 				t.Fatal("selected engine has no model inventory command")

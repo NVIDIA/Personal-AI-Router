@@ -79,9 +79,8 @@ func processIOBytes(pid int) (int64, bool) {
 	return int64(c.ReadTransferCount + c.WriteTransferCount + c.OtherTransferCount), true
 }
 
-// gracefulSignal stops the process tree and is the only stop signal
-// engine-manager sends: stop() sends this once and waits for the engine to
-// exit. Windows has no SIGTERM, and the engines we spawn run windowless
+// gracefulSignal stops the process tree for the first bounded stop attempt.
+// Windows has no SIGTERM, and the engines we spawn run windowless
 // (CREATE_NO_WINDOW), so a non-/F taskkill only posts WM_CLOSE — which a
 // windowless process can't receive ("can only be terminated forcefully"), i.e.
 // it does nothing. Never force-killing such a process would leave the engine

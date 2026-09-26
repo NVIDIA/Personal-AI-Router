@@ -32,9 +32,19 @@ NVIDIA-Personal-AI-Router-<version>/
 │   ├── nvpair-engine-manager
 │   ├── nvpair-node-settings
 │   ├── nvpair-cluster-manager
-│   └── nvpair-job-scheduler
+│   ├── nvpair-job-scheduler
+│   ├── nvpair-tui
+│   ├── nvpair-host-bootstrap
+│   └── nvpair-host-helper
+├── installer-inputs/
+│   ├── nvpair-host-helper.service
+│   └── nvpair-host-helper.socket
 └── INSTALL.md                     # this file
 ```
+
+The helper unit/socket files are inert templates. Only the signed bootstrap may
+render the reviewed account-bound values and install them under
+`/etc/systemd/system`; extracting this archive never registers a service.
 
 ## 2. Run
 
@@ -66,7 +76,7 @@ that directory too if you want a fully clean slate.
 
 ## Requirements
 
-- 64-bit Linux on `x86_64`. ARM builds are not produced yet.
+- Debian or Ubuntu on 64-bit `x86_64`/`amd64` or `aarch64`/`arm64`.
 - mDNS on UDP 5353. The workers run their own — a custom per-interface responder
   (`nvpair-shared/mdns`) plus a `grandcat/zeroconf` browser (`nvpair-shared/discovery`),
   bound with `SO_REUSEADDR` — and coexist fine with a system responder like

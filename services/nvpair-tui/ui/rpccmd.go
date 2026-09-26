@@ -62,11 +62,13 @@ func waitForNotification(client *rpc.Client) tea.Cmd {
 // call issues a broker request on a background goroutine and feeds the
 // outcome back into the update loop via decode, which maps the response
 // (or error) to a view-specific message.
-func call(client *rpc.Client, method string, params any, decode func(*rpc.Message, error) tea.Msg, budget ...time.Duration) tea.Cmd {
-	timeout := callTimeout
-	if len(budget) > 0 {
-		timeout = budget[0]
-	}
+func call(client *rpc.Client, method string, params any, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
+	return callWithTimeout(client, callTimeout, method, params, decode)
+}
+
+// callWithTimeout keeps unusually long, backend-owned operations bounded by
+// their own contract without weakening the ordinary 35-second RPC ceiling.
+func callWithTimeout(client *rpc.Client, timeout time.Duration, method string, params any, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()

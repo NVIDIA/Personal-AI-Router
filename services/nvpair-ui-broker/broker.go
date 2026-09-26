@@ -108,6 +108,9 @@ type AvailableNode struct {
 	// remote node's models under the correct engine (the UI's engine card).
 	// Omitted when no engine reports models.
 	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
+	// RetainedByEngine is downloaded/catalog inventory and never proxy routing
+	// truth. It is carried for UI operations such as stopped vLLM selection.
+	RetainedByEngine map[string][]string `json:"retainedByEngine,omitempty"`
 	// LoadedByEngine names the models currently resident in memory per engine
 	// (normally a subset of ModelsByEngine), enriched by the daemon from the
 	// peer's engine-manager /v1/models loadedByEngine field. Lets a per-engine
@@ -200,6 +203,7 @@ type Broker struct {
 	ollamaPortReadyOnce              sync.Once
 	lmstudioProxyGeneration          atomic.Uint64
 	lmstudioProxyPublishedGeneration atomic.Uint64
+	vllmProxyGeneration              atomic.Uint64
 	lmstudioPortReady                chan struct{}
 	lmstudioPortReadyOnce            sync.Once
 	lmstudioReadyMu                  sync.Mutex
@@ -295,6 +299,10 @@ type Broker struct {
 	// are applied to the store, even when the node-loss sweep (a separate
 	// goroutine) races a relayed event for the same workload.
 	workloadEmitMu sync.Mutex
+
+	// vllmAdvertiseMu serializes the vLLM advertisement reconcile between its
+	// ticker and the serving-group route check.
+	vllmAdvertiseMu sync.Mutex
 
 	// workloads is the broker's authoritative index of cluster workloads
 	// (current + historic), keyed by (originatedFrom, id). It applies an
@@ -549,16 +557,18 @@ func (b *Broker) restoreEnabledEnginesAfterPortGate(ctx context.Context) bool {
 // rest get their own, so the caller is not left holding a goroutine per engine.
 func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
-	runOllama func(context.Context),
-	runLMStudio func(context.Context),
-	runLlamaCpp func(context.Context),
+	runs ...func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
-	go runOllama(ctx)
-	go runLlamaCpp(ctx)
-	runLMStudio(ctx)
+	for i, run := range runs {
+		if i == len(runs)-1 {
+			run(ctx)
+			continue
+		}
+		go run(ctx)
+	}
 	return true
 }
 
@@ -776,6 +786,10 @@ func (b *Broker) enableEngineFacade(
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.lmstudioFacadeSpec(), b.lmstudioFallbackPort)
 	case llamacppProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.llamacppFacadeSpec(), b.llamacppFallbackPort)
+	case vllmProxyProfile.Name:
+		// vLLM's facade is adopt-only: the proxy restores its persisted port and
+		// the broker never relocates the engine, so there is no fallback to plan.
+		return b.enableProxyFacade(ctx, pp, enableFacadeRequest{Engine: vllmProxyProfile.Name})
 	default:
 		return fmt.Errorf("no facade spec for engine %q", profile.Name)
 	}
@@ -891,12 +905,12 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 	// could even start. The generation itself is atomic, and
 	// lmstudioProxyGenerationIsCurrent is what drops the stale run.
 	lmstudioGeneration := b.lmstudioProxyGeneration.Add(1)
-
 	llamacppGeneration := b.llamaCppProxyGeneration.Add(1)
+	vllmGeneration := b.vllmProxyGeneration.Add(1)
 
 	pp, err := startProxy(engines.ProxyComponent, b.proxyPath, applog.LevelString(), b.relayDir,
 		func(method string, params json.RawMessage) {
-			b.forwardProxyProcessNotification(ollamaGeneration, lmstudioGeneration, llamacppGeneration, method, params)
+			b.forwardProxyProcessNotification(ollamaGeneration, lmstudioGeneration, llamacppGeneration, vllmGeneration, method, params)
 		}, b.proxyArgs()...)
 	if err != nil {
 		return nil, err
@@ -996,7 +1010,8 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 // and must be handled exactly once, not once per engine — routing a workload
 // record through both handlers would record every job twice.
 func (b *Broker) forwardProxyProcessNotification(
-	ollamaGeneration, lmstudioGeneration, llamacppGeneration uint64, method string, params json.RawMessage,
+	ollamaGeneration, lmstudioGeneration, llamacppGeneration, vllmGeneration uint64,
+	method string, params json.RawMessage,
 ) {
 	engine, bare := engines.SplitAddressedMethod(method)
 	switch engine {
@@ -1006,6 +1021,8 @@ func (b *Broker) forwardProxyProcessNotification(
 		b.forwardLMStudioProxyNotificationForGeneration(lmstudioGeneration, method, params)
 	case llamacppProxyProfile.Name:
 		b.forwardLlamaCppProxyNotificationForGeneration(llamacppGeneration, method, params)
+	case vllmProxyProfile.Name:
+		b.forwardVLLMProxyNotificationForGeneration(vllmGeneration, method, params)
 	case "":
 		if !b.routeProcessScopedProxyNotification(bare, params) {
 			slog.Debug("ignoring unaddressed proxy notification", "method", bare)
@@ -1133,17 +1150,29 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 	// identity is resolved per handshake from the live cluster dir), so a join or
 	// leave needs no restart here.
 	args := append(b.logLevelArgs(),
+		"--node-id", b.nodeID,
 		"--http-port", fmt.Sprintf("%d", engineManagerHTTPPort),
-		"--control-port", fmt.Sprintf("%d", engineControlPort))
+		"--control-port", fmt.Sprintf("%d", engineControlPort),
+		"--node-info-port", fmt.Sprintf("%d", nodeInfoHTTPPort))
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		args = append(args, "--reserved-port", fmt.Sprintf("%d", aliasPort))
 	}
 	args = append(args, b.clusterDirArgs()...)
-	w, err := startRPCWorker("engine-manager", b.engineMgrPath, args, b.forwardEngineNotification)
+	// Bind internal request/reply notifications to the exact child that emitted
+	// them. A replacement Engine Manager must never receive an old pairing PIN
+	// or an admitted cluster-call result.
+	var origin *rpcWorker
+	admitted := make(chan struct{})
+	w, err := startRPCWorker("engine-manager", b.engineMgrPath, args, func(method string, params json.RawMessage) {
+		<-admitted
+		b.forwardEngineNotificationFrom(origin, method, params)
+	})
 	if err != nil {
 		return nil, err
 	}
 	b.setEngineMgr(w)
+	origin = w
+	close(admitted)
 	// Re-push the alias reservation before anything can drive this worker: a
 	// respawned engine-manager starts with an empty reservation and must not
 	// adopt or start a backend on the port the proxy alias owns.
@@ -1495,6 +1524,22 @@ func (b *Broker) pushClusterIdentityToNodeInfo() {
 // pipeline; the rest of each worker's notification stream is logged and
 // dropped until its control-plane relay is wired in.
 func (b *Broker) forwardEngineNotification(method string, params json.RawMessage) {
+	b.forwardEngineNotificationFrom(b.getEngineMgr(), method, params)
+}
+
+func (b *Broker) forwardEngineNotificationFrom(origin *rpcWorker, method string, params json.RawMessage) {
+	if method == "engine:diagnostic-workload-check" {
+		b.replyDiagnosticWorkloads(origin, params)
+		return
+	}
+	if method == "engine:vllm-group-route-check" {
+		go b.replyVLLMGroupRoute(origin, params)
+		return
+	}
+	if method == "engine:onboarding-cluster-call" {
+		go b.replyOnboardingCluster(origin, params)
+		return
+	}
 	if method == "engine:settings-request" {
 		b.handleSettingsRelay(params)
 		return
@@ -2238,7 +2283,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseLlamaCpp)
+	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseLlamaCpp, b.runAutoAdvertiseVLLM)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events

@@ -223,7 +223,12 @@ func TestLlamaCppGateOpensWhenEngineManagerReadiesAfterTheFacade(t *testing.T) {
 // timeout and answers "retry" forever. That is what a broker running without a
 // resolvable proxy binary does, and it is not a test-only condition.
 func TestEveryEngineHasAStartupGateFinisher(t *testing.T) {
+	// vLLM is adopt-only and gates no requests; see finishEngineProxyStartup.
+	ungated := map[string]bool{vllmProxyProfile.Name: true}
 	for _, profile := range engineProxyProfiles {
+		if ungated[profile.Name] {
+			continue
+		}
 		t.Run(profile.Name, func(t *testing.T) {
 			b := &Broker{
 				ollamaPortReady:   make(chan struct{}),

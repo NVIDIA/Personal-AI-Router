@@ -39,14 +39,15 @@ import (
 // availableNode mirrors the broker's external camelCase wire shape (see
 // AvailableNode in nvpair-ui-broker).
 type availableNode struct {
-	ID             string              `json:"id"`
-	Name           string              `json:"name"`
-	IPAddress      string              `json:"ipAddress"`
-	Port           int                 `json:"port"`
-	LastSeen       int64               `json:"lastSeen"`
-	Models         []string            `json:"models,omitempty"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	IPAddress        string              `json:"ipAddress"`
+	Port             int                 `json:"port"`
+	LastSeen         int64               `json:"lastSeen"`
+	Models           []string            `json:"models,omitempty"`
+	ModelsByEngine   map[string][]string `json:"modelsByEngine,omitempty"`
+	LoadedByEngine   map[string][]string `json:"loadedByEngine,omitempty"`
+	RetainedByEngine map[string][]string `json:"retainedByEngine,omitempty"`
 }
 
 type availableNodesResult struct {

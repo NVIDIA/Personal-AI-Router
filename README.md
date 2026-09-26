@@ -19,9 +19,11 @@ PAIR is useful for concurrent local workloads such as multi-agent applications.
 Prompts and responses are intended to remain on the local network when every
 configured client, model source, engine, and node is local.
 
-> PAIR routes each independent request to one node. It does **not** pool GPU
-> memory, combine GPUs into a larger logical GPU, shard one model across
-> machines, or split an in-flight inference request between nodes.
+> PAIR routes each ordinary independent request to one node. A managed vLLM
+> serving group is an explicit exception on supported Linux nodes; it uses one
+> reviewed coordinator and rank plan rather than turning arbitrary paired nodes
+> into a generic pooled GPU. See the
+> [DGX Spark cluster playbook](docs/dgx-spark-playbook.mdx).
 
 ![Two paired machines in PAIR's Overview. Requests arrive on one and are routed
 across both, with each node reporting live GPU and memory use.](assets/pair-demo.gif)
@@ -38,7 +40,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama, LM Studio and managed llama.cpp |
+| **Inference engines** | Ollama, LM Studio, managed llama.cpp, and managed vLLM on qualified Linux hosts |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -92,6 +94,28 @@ sudo apt install ./NVPAIR-Setup-*.deb
 If you have kept more than one PAIR package in that directory, install the one
 you want by its full filename instead.
 
+### Set up another device
+
+**Settings → Cluster → Set up a device** prepares a machine that is not yet
+running PAIR. **Quick Connect** is the operator-reviewed copy-and-run lane;
+**Zero Touch** records the enterprise deployment lane. Both use the same signed
+target-local package and the same inspect, review, apply, verify, and complete
+transaction. The desktop application and terminal interface drive the same
+backend contract.
+
+The six catalog targets are Windows x64, Windows arm64, macOS x64, macOS arm64,
+Linux x64, and Linux arm64. The Linux targets admit Debian and Ubuntu only;
+other distributions are rejected. **Auto** selects the desktop owner on Windows
+and macOS and the headless owner on Linux; an explicit **Desktop** or
+**Headless** choice must match that one active owner.
+
+Official mode fails closed when its catalog or required signature material is
+missing or inconsistent. Packages built from this source tree without release
+signing are explicitly unsigned engineering artifacts, not official packages.
+Bootstrap state and receipts contain public-key identities, not stored
+passwords or private keys. After the target bootstrap finishes, PAIR still
+requires you to review the target's SSH host-key fingerprint before enrollment.
+
 ### Run it
 
 - **Open PAIR** the way you would any application — the Start menu on Windows,
@@ -105,9 +129,11 @@ you want by its full filename instead.
   status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
-  select **Install** next to Ollama or LM Studio. PAIR downloads and sets the
-  engine up for you, so nothing needs to be in place beforehand. If PAIR already
-  found an engine you installed yourself, start that one instead.
+  select **Install** next to a supported engine. This quick start uses Ollama or
+  LM Studio; managed vLLM on DGX Spark follows the
+  [cluster playbook](docs/dgx-spark-playbook.mdx). If PAIR already found an
+  engine you installed yourself, start that one when the engine supports
+  adoption.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
@@ -161,6 +187,10 @@ That is a single machine working. To route across machines, pair a second one
 from **Settings → Cluster** and repeat the engine and model steps there. The
 inviting machine shows a six-digit PIN, and you enter that PIN on the machine you
 invited.
+
+An SSH-ready headless peer can instead be provisioned and paired from the first
+machine through **Settings → Cluster → Set up a device**. The DGX Spark playbook
+uses that path so a second GUI installation is unnecessary.
 
 ![The six-digit pairing PIN on the inviting machine beside the Cluster invitation modal on the machine being invited.](docs/assets/onboarding/getting-started/04-pairing-pin.png)
 
@@ -223,8 +253,11 @@ Each entry assumes the ones before it.
    together. Start here so the vocabulary in every other document makes sense.
 2. **[Getting started](docs/getting-started.mdx)** — install it, pair two
    machines, prepare a model, and send a first request. This is the only document
-   most users need.
-3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
+   most users need for ordinary routed inference.
+3. **[DGX Spark cluster playbook](docs/dgx-spark-playbook.mdx)** — provision one,
+   two, or three Sparks and run managed vLLM without confusing cable, fabric,
+   NCCL, and inference evidence.
+4. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
    update, and uninstall engines; what PAIR restores after you quit or relaunch.
 4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and
    its launch command, on this machine or a paired one, and give a browser access

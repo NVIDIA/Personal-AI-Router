@@ -19,7 +19,14 @@ cd NVIDIA-Personal-AI-Router-<version>
 ```
 
 You should end up with a top-level directory containing `bin/` (the worker
-binaries) and this `INSTALL.md`.
+binaries), `installer-inputs/com.nvidia.nvpair.host-helper.plist`, and this
+`INSTALL.md`. The fourteen binaries include the unsupervised
+`nvpair-host-bootstrap`, `nvpair-host-helper`, and `nvpair-tui` tools in
+addition to the broker and its workers.
+
+The LaunchDaemon file is an inert package input. Extracting this archive never
+loads it; only the signed bootstrap installs the fixed definition after a
+reviewed request.
 
 ## 2. Run
 

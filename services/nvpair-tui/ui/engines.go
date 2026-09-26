@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"nvpair-tui/rpc"
 
@@ -18,6 +19,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+const vllmModelSelectionTimeout = 10 * time.Minute
+
 // engineStatus mirrors nvpair-engine-manager's EngineStatus snapshot, the
 // element of engine:get-installed and the engine:state-changed payload.
 type engineStatus struct {
@@ -26,12 +29,79 @@ type engineStatus struct {
 	Installed        bool     `json:"installed"`
 	Running          bool     `json:"running"`
 	Healthy          bool     `json:"healthy"`
-	Port             int      `json:"port"`
-	InstallSupported bool     `json:"install_supported"`
+	Enabled          *bool    `json:"enabled"`
+	Managed          *bool    `json:"managed"`
+	Adopted          *bool    `json:"adopted"`
+	Routable         *bool    `json:"routable"`
+	InstallSupported *bool    `json:"install_supported"`
 	InstallReason    string   `json:"install_reason"`
 	Acceleration     string   `json:"acceleration"`
 	Devices          []string `json:"devices"`
-	Managed          bool     `json:"managed"`
+	Version          string   `json:"version"`
+	SelectedModel    string   `json:"selected_model"`
+	Port             int      `json:"port"`
+}
+
+func (e engineStatus) enabled() bool {
+	if e.Engine == "vllm" {
+		return e.Enabled != nil && *e.Enabled
+	}
+	if e.Enabled != nil {
+		return *e.Enabled
+	}
+	return e.Running
+}
+
+func (e engineStatus) routable() bool {
+	if e.Routable != nil {
+		return *e.Routable
+	}
+	return e.Running && e.Healthy
+}
+
+func (e engineStatus) managed() bool {
+	if e.Engine == "vllm" {
+		return e.Managed != nil && *e.Managed
+	}
+	if e.Managed != nil {
+		return *e.Managed
+	}
+	return e.Adopted == nil || !*e.Adopted
+}
+
+func (e engineStatus) installSupported() bool {
+	return e.InstallSupported != nil && *e.InstallSupported
+}
+
+func (e engineStatus) installAllowed() bool {
+	return !e.Installed && e.installSupported() && e.Adopted != nil && !*e.Adopted
+}
+
+func engineActionBlock(status engineStatus, what string) string {
+	if status.Engine != "vllm" {
+		if what == "update" {
+			return "update is unavailable for this engine"
+		}
+		return ""
+	}
+	switch what {
+	case "install":
+		if !status.installAllowed() {
+			if status.InstallReason != "" {
+				return "install is unavailable for vllm: " + status.InstallReason
+			}
+			return "install is unavailable for vllm on this host or ownership state"
+		}
+	case "uninstall":
+		if !status.managed() {
+			return "uninstall is unavailable for externally managed vllm"
+		}
+	case "start", "stop", "restart", "update":
+		if !status.managed() {
+			return what + " is unavailable for externally managed vllm"
+		}
+	}
+	return ""
 }
 
 // enginesView manages local inference engines via the engine-manager
@@ -47,6 +117,7 @@ type enginesView struct {
 	status            string
 	input             textinput.Model
 	pulling           bool
+	selecting         bool
 	pullEngine        string
 	modelAction       string
 	models            table.Model
@@ -54,6 +125,12 @@ type enginesView struct {
 	modelNames        []string
 	pendingLoadEngine string
 	pendingLoadModel  string
+	pullActive        bool
+	pullModel         string
+	pullOpID          string
+	groupKnown        bool
+	groupHeld         bool
+	groupReason       string
 
 	width, height int
 }
@@ -82,6 +159,7 @@ var (
 	engRestartKey   = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restart"))
 	engInstallKey   = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "install"))
 	engUninstallKey = key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "uninstall"))
+	engUpdateKey    = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update"))
 	engPullKey      = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pull model"))
 	engLoadKey      = key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "load model"))
 	engUnloadKey    = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "unload model"))
@@ -89,6 +167,7 @@ var (
 	engCancelKey    = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel model pull"))
 	engModelsKey    = key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "models / refresh"))
 	engImportKey    = key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "import GGUF path"))
+	engSelectKey    = key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "select served model"))
 )
 
 func newEnginesView(client *rpc.Client) *enginesView {
@@ -106,6 +185,7 @@ func (v *enginesView) Init() tea.Cmd {
 	return tea.Batch(
 		call(v.client, "engine:subscribe", nil, func(_ *rpc.Message, _ error) tea.Msg { return nil }),
 		v.loadCmd(),
+		servingGroupStatusCmd(v.client),
 	)
 }
 
@@ -124,13 +204,15 @@ func (v *enginesView) loadCmd() tea.Cmd {
 
 func (v *enginesView) SetSize(w, h int) {
 	v.width, v.height = w, h
-	const inst, run, heal, port = 10, 8, 8, 7
-	name := clampWidth(w-inst-run-heal-port-2, 10)
+	const enabled, run, route, owner, version, port = 8, 8, 9, 9, 12, 7
+	name := clampWidth(w-enabled-run-route-owner-version-port-2, 10)
 	v.table.SetColumns([]table.Column{
 		{Title: "ENGINE", Width: name},
-		{Title: "INSTALLED", Width: inst},
+		{Title: "ENABLED", Width: enabled},
 		{Title: "RUNNING", Width: run},
-		{Title: "HEALTHY", Width: heal},
+		{Title: "ROUTABLE", Width: route},
+		{Title: "OWNER", Width: owner},
+		{Title: "VERSION", Width: version},
 		{Title: "PORT", Width: port},
 	})
 	v.table.SetWidth(w)
@@ -155,7 +237,7 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		rows := make([]table.Row, 0, len(msg.names))
 		for _, name := range msg.names {
 			state := "downloaded"
-			if v.selectedEngine() == "llamacpp" && !v.byName[v.selectedEngine()].Managed {
+			if v.selectedEngine() == "llamacpp" && !v.byName[v.selectedEngine()].managed() {
 				state = "catalogue"
 			}
 			if msg.loaded[name] {
@@ -200,8 +282,20 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		} else {
 			v.status = fmt.Sprintf("%s %s ok", msg.what, msg.engine)
 		}
+		if msg.what == "select model" && msg.err == nil {
+			return v.loadCmd()
+		}
 		if v.showModels && msg.engine == v.selectedEngine() {
 			return v.loadModelsCmd()
+		}
+		return nil
+
+	case servingGroupMsg:
+		v.groupKnown = msg.err == nil
+		v.groupHeld = msg.err != nil || msg.status.Reserved == nil || *msg.status.Reserved || (msg.status.Run != nil && !msg.status.Run.CleanupConfirmed)
+		v.groupReason = msg.status.Reason
+		if msg.err != nil {
+			v.groupReason = msg.err.Error()
 		}
 		return nil
 
@@ -243,12 +337,19 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			}
 		case "engine:pull-progress":
 			var p struct {
-				Engine  string `json:"engine"`
-				Stage   string `json:"stage"`
-				Percent int    `json:"percent"`
-				Message string `json:"message"`
+				Engine      string `json:"engine"`
+				Stage       string `json:"stage"`
+				Percent     int    `json:"percent"`
+				Message     string `json:"message"`
+				OperationID string `json:"operationId"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
+			if p.Engine == "vllm" && p.OperationID != "" {
+				v.pullActive, v.pullOpID = true, p.OperationID
+				if p.Message != "" && p.Stage != "canceled" {
+					v.pullModel = p.Message
+				}
+			}
 			// Terminal stages carry no meaningful percent (success is implicitly
 			// 100%; error uses -1), so render them as outcomes rather than a
 			// misleading "success (0%)". A late failure that arrives after the
@@ -256,12 +357,21 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			switch p.Stage {
 			case "success":
 				v.status = fmt.Sprintf("pull %s: done", p.Engine)
-			case "error":
+				if p.Message != "" {
+					v.status += " · " + p.Message
+				}
+				if p.Engine == "vllm" {
+					v.pullActive, v.pullModel, v.pullOpID = false, "", ""
+				}
+			case "error", "canceled":
 				detail := p.Message
 				if detail == "" {
-					detail = "failed"
+					detail = p.Stage
 				}
-				v.status = fmt.Sprintf("pull %s failed: %s", p.Engine, detail)
+				v.status = fmt.Sprintf("pull %s %s: %s", p.Engine, p.Stage, detail)
+				if p.Engine == "vllm" {
+					v.pullActive, v.pullModel, v.pullOpID = false, "", ""
+				}
 			default:
 				v.status = fmt.Sprintf("pull %s: %s", p.Engine, p.Stage)
 				if p.Percent >= 0 && p.Percent <= 100 {
@@ -277,15 +387,18 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (v *enginesView) CapturingInput() bool { return v.pulling }
+func (v *enginesView) CapturingInput() bool { return v.pulling || v.selecting }
 
 func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
-	if v.pulling {
+	if v.pulling || v.selecting {
 		switch msg.String() {
 		case "enter":
+			if v.selecting {
+				return v.submitVLLMSelection()
+			}
 			return v.submitPull()
 		case "esc":
-			v.pulling = false
+			v.pulling, v.selecting = false, false
 			v.input.Blur()
 			return nil
 		}
@@ -299,6 +412,9 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if key.Matches(msg, engModelsKey) {
 		return v.loadModelsCmd()
+	}
+	if key.Matches(msg, engSelectKey) {
+		return v.beginVLLMSelection()
 	}
 	var action string
 	switch {
@@ -316,26 +432,7 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		action = "import_model"
 	}
 	if action != "" {
-		engine := v.selectedEngine()
-		if engine == "" {
-			return nil
-		}
-		if engine == "llamacpp" && !v.byName[engine].Managed {
-			v.status = "Model actions require a PAIR-managed llama app."
-			return nil
-		}
-		v.pullEngine = engine
-		if action == "load_model" && engine == "ollama" {
-			action = "run_model"
-		}
-		v.modelAction = action
-		v.pulling = true
-		v.input.SetValue("")
-		if v.showModels && v.models.Cursor() >= 0 && v.models.Cursor() < len(v.modelNames) {
-			v.input.SetValue(v.modelNames[v.models.Cursor()])
-		}
-		v.input.Focus()
-		return textinput.Blink
+		return v.beginModelAction(action)
 	}
 	if cmd, handled := v.handleAction(msg); handled {
 		return cmd
@@ -349,13 +446,91 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
+// beginModelAction opens the model-ID prompt for a model action on the
+// selected engine. vLLM acquires exact immutable Hub revisions only, and its
+// cancel is bound to the operation the backend reported.
+func (v *enginesView) beginModelAction(action string) tea.Cmd {
+	engine := v.selectedEngine()
+	if engine == "" {
+		return nil
+	}
+	status := v.byName[engine]
+	if engine == "vllm" {
+		if v.vllmGroupBlocked() {
+			v.status = "vllm action held: " + v.vllmGroupBlockReason()
+			return nil
+		}
+		switch action {
+		case "cancel_pull":
+			return v.cancelVLLMPull()
+		case "pull_model":
+		default:
+			v.status = "vllm supports pull and cancel; select the served model with M"
+			return nil
+		}
+		if !status.Installed || !status.managed() {
+			v.status = "vllm model acquisition requires an installed PAIR-managed runtime"
+			return nil
+		}
+		if v.pullActive {
+			v.status = "vllm already has an active model acquisition; cancel or wait for it"
+			return nil
+		}
+	}
+	if engine == "llamacpp" && !status.managed() {
+		v.status = "Model actions require a PAIR-managed llama app."
+		return nil
+	}
+	v.pullEngine = engine
+	if action == "load_model" && engine == "ollama" {
+		action = "run_model"
+	}
+	v.modelAction = action
+	v.pulling = true
+	v.input.SetValue("")
+	if engine == "vllm" {
+		v.input.Placeholder = "owner/repository@40-character-commit"
+	} else {
+		v.input.Placeholder = "model name (e.g. llama3.2)"
+	}
+	if v.showModels && v.models.Cursor() >= 0 && v.models.Cursor() < len(v.modelNames) {
+		v.input.SetValue(v.modelNames[v.models.Cursor()])
+	}
+	v.input.Focus()
+	return textinput.Blink
+}
+
+func (v *enginesView) beginVLLMSelection() tea.Cmd {
+	engine := v.selectedEngine()
+	status := v.byName[engine]
+	if engine != "vllm" {
+		return nil
+	}
+	if v.vllmGroupBlocked() {
+		v.status = "vllm action held: " + v.vllmGroupBlockReason()
+		return nil
+	}
+	if !status.Installed || !status.managed() || status.Running {
+		v.status = "model selection requires stopped PAIR-managed vllm"
+		return nil
+	}
+	v.selecting = true
+	v.input.SetValue("")
+	v.input.Placeholder = "exact retained model ID"
+	if v.showModels && v.models.Cursor() >= 0 && v.models.Cursor() < len(v.modelNames) {
+		v.input.SetValue(v.modelNames[v.models.Cursor()])
+	}
+	v.input.Focus()
+	return textinput.Blink
+}
+
 func (v *enginesView) loadModelsCmd() tea.Cmd {
 	engine := v.selectedEngine()
 	if engine == "" {
 		return nil
 	}
 	action := "list_models"
-	if engine == "llamacpp" && v.byName[engine].Managed {
+	if (engine == "llamacpp" || engine == "vllm") && v.byName[engine].managed() {
 		action = "list_downloaded"
 	}
 	return func() tea.Msg {
@@ -431,12 +606,16 @@ func (v *enginesView) submitPull() tea.Cmd {
 	v.pulling = false
 	v.input.Blur()
 	model := strings.TrimSpace(v.input.Value())
+	v.input.SetValue("")
 	engine := v.pullEngine
 	if model == "" || engine == "" {
 		v.status = "model name required"
 		return nil
 	}
-	v.status = fmt.Sprintf("pull %s: %s...", engine, model)
+	if engine == "vllm" && !validVLLMHubModel(model) {
+		v.status = "vllm requires owner/repository@40-character-commit"
+		return nil
+	}
 	params := pullParams(engine, model)
 	action := v.modelAction
 	if action == "" {
@@ -450,7 +629,7 @@ func (v *enginesView) submitPull() tea.Cmd {
 		params["params"] = map[string]string{"path": model}
 	}
 	v.status = fmt.Sprintf("%s %s: %s...", action, engine, model)
-	return call(v.client, "engine:action", params, func(_ *rpc.Message, err error) tea.Msg {
+	return callWithTimeout(v.client, engineOperationTimeout, "engine:action", params, func(_ *rpc.Message, err error) tea.Msg {
 		if action != "pull_model" {
 			return engineOpMsg{what: action + " " + model, engine: engine, err: err}
 		}
@@ -458,7 +637,75 @@ func (v *enginesView) submitPull() tea.Cmd {
 			return engineOpMsg{what: "pull " + model, engine: engine, err: err}
 		}
 		return nil
-	}, engineOperationTimeout)
+	})
+}
+
+func validVLLMHubModel(value string) bool {
+	parts := strings.Split(value, "@")
+	if len(parts) != 2 || len(parts[1]) != 40 || strings.Count(parts[0], "/") != 1 {
+		return false
+	}
+	for _, part := range strings.Split(parts[0], "/") {
+		if part == "" || strings.ContainsFunc(part, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+		}) {
+			return false
+		}
+	}
+	return !strings.ContainsFunc(parts[1], func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') })
+}
+
+func (v *enginesView) cancelVLLMPull() tea.Cmd {
+	if !v.pullActive || v.pullModel == "" || v.pullOpID == "" {
+		v.status = "no active vllm model acquisition to cancel"
+		return nil
+	}
+	model, operationID := v.pullModel, v.pullOpID
+	v.status = "canceling vllm model acquisition..."
+	params := map[string]any{"engine": "vllm", "action": "cancel_pull", "params": map[string]string{"model": model, "operationId": operationID}}
+	return call(v.client, "engine:action", params, func(msg *rpc.Message, err error) tea.Msg {
+		if err == nil {
+			var result struct {
+				Accepted bool `json:"accepted"`
+			}
+			if decodeErr := decodeParams(msg.Result, &result); decodeErr != nil {
+				err = decodeErr
+			} else if !result.Accepted {
+				err = errors.New("the acquisition already settled or was replaced")
+			}
+		}
+		return engineOpMsg{what: "cancel pull", engine: "vllm", err: err}
+	})
+}
+
+func (v *enginesView) submitVLLMSelection() tea.Cmd {
+	v.selecting = false
+	v.input.Blur()
+	model := strings.TrimSpace(v.input.Value())
+	v.input.SetValue("")
+	if !validServingGroupModel(model) {
+		v.status = "exact retained model ID required"
+		return nil
+	}
+	v.status = "selecting vllm model " + model + "..."
+	return callWithTimeout(v.client, vllmModelSelectionTimeout, "engine:vllm-select-model", map[string]string{"model": model}, func(msg *rpc.Message, err error) tea.Msg {
+		if err != nil {
+			return engineOpMsg{what: "select model", engine: "vllm", err: err}
+		}
+		var result struct {
+			Engine   string       `json:"engine"`
+			Model    string       `json:"model"`
+			Selected bool         `json:"selected"`
+			Status   engineStatus `json:"status"`
+		}
+		if err := decodeParams(msg.Result, &result); err != nil {
+			return engineOpMsg{what: "select model", engine: "vllm", err: err}
+		}
+		if result.Engine != "vllm" || result.Model != model || !result.Selected || result.Status.Engine != "vllm" || result.Status.SelectedModel != model {
+			return engineOpMsg{what: "select model", engine: "vllm", err: fmt.Errorf("PAIR returned a different model selection")}
+		}
+		return engineOpMsg{what: "select model", engine: "vllm"}
+	})
 }
 
 func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -474,6 +721,12 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 		method, what = "engine:install", "install"
 	case key.Matches(msg, engUninstallKey):
 		method, what = "engine:uninstall", "uninstall"
+	case key.Matches(msg, engUpdateKey):
+		// Only managed vLLM has an update; for other engines the key is unbound.
+		if v.selectedEngine() != "vllm" {
+			return nil, false
+		}
+		method, what = "engine:update", "update"
 	default:
 		return nil, false
 	}
@@ -481,18 +734,27 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if engine == "" {
 		return nil, true
 	}
-	if what == "install" && engine == "llamacpp" && !v.byName[engine].InstallSupported {
-		v.status = "Install unavailable: " + v.byName[engine].InstallReason
+	status := v.byName[engine]
+	if status.Engine == "vllm" && v.vllmGroupBlocked() {
+		v.status = "vllm action held: " + v.vllmGroupBlockReason()
 		return nil, true
 	}
-	if engine == "llamacpp" && v.byName[engine].Installed && !v.byName[engine].Managed {
+	if blocked := engineActionBlock(status, what); blocked != "" {
+		v.status = blocked
+		return nil, true
+	}
+	if what == "install" && engine == "llamacpp" && !status.installSupported() {
+		v.status = "Install unavailable: " + status.InstallReason
+		return nil, true
+	}
+	if engine == "llamacpp" && status.Installed && !status.managed() {
 		v.status = "External llama.cpp runtime: lifecycle remains with its owner."
 		return nil, true
 	}
 	v.status = what + " " + engine + "..."
-	return call(v.client, method, map[string]string{"engine": engine}, func(_ *rpc.Message, err error) tea.Msg {
+	return callWithTimeout(v.client, engineOperationTimeout, method, map[string]string{"engine": engine}, func(_ *rpc.Message, err error) tea.Msg {
 		return engineOpMsg{what: what, engine: engine, err: err}
-	}, engineOperationTimeout), true
+	}), true
 }
 
 func (v *enginesView) selectedEngine() string {
@@ -526,11 +788,21 @@ func (v *enginesView) refreshRows() {
 		if e.Port != 0 {
 			port = strconv.Itoa(e.Port)
 		}
+		owner := "external"
+		if e.managed() {
+			owner = "PAIR"
+		}
+		version := e.Version
+		if version == "" {
+			version = "-"
+		}
 		rows = append(rows, table.Row{
 			label,
-			yesNo(e.Installed),
+			yesNo(e.enabled()),
 			yesNo(e.Running),
-			yesNo(e.Healthy),
+			yesNo(e.routable()),
+			owner,
+			version,
 			port,
 		})
 	}
@@ -551,6 +823,15 @@ func (v *enginesView) View() string {
 	if v.pulling {
 		out += "\n" + v.modelAction + " (enter model ID; Esc cancels input): " + v.input.View()
 	}
+	if v.selecting {
+		out += "\nselect retained vllm model: " + v.input.View()
+	}
+	if status, ok := v.byName[v.selectedEngine()]; ok && status.Engine == "vllm" && status.SelectedModel != "" {
+		out += "\nselected model: " + truncate(status.SelectedModel, clampWidth(v.width-16, 16))
+	}
+	if status, ok := v.byName[v.selectedEngine()]; ok && status.Engine == "vllm" && !status.Installed && status.InstallSupported != nil && !*status.InstallSupported && status.InstallReason != "" {
+		out += "\n" + footerStyle.Render("managed vllm prerequisite: "+status.InstallReason)
+	}
 	if v.status != "" {
 		out += "\n" + footerStyle.Render(v.status)
 	}
@@ -558,7 +839,40 @@ func (v *enginesView) View() string {
 }
 
 func (v *enginesView) Help() []key.Binding {
+	if status, ok := v.byName[v.selectedEngine()]; ok && status.Engine == "vllm" {
+		if v.vllmGroupBlocked() {
+			return nil
+		}
+		var out []key.Binding
+		if status.installAllowed() {
+			out = append(out, engInstallKey)
+		}
+		if status.managed() {
+			out = append(out, engStartKey, engStopKey, engRestartKey, engUpdateKey, engUninstallKey)
+			if status.Installed {
+				out = append(out, engModelsKey)
+				if v.pullActive {
+					out = append(out, engCancelKey)
+				} else {
+					out = append(out, engPullKey)
+				}
+			}
+			if status.Installed && !status.Running {
+				out = append(out, engSelectKey)
+			}
+		}
+		return out
+	}
 	return []key.Binding{engStartKey, engStopKey, engRestartKey, engInstallKey, engUninstallKey, engModelsKey, engPullKey, engLoadKey, engUnloadKey, engDeleteKey, engCancelKey, engImportKey}
+}
+
+func (v *enginesView) vllmGroupBlocked() bool { return !v.groupKnown || v.groupHeld }
+
+func (v *enginesView) vllmGroupBlockReason() string {
+	if v.groupReason != "" {
+		return v.groupReason
+	}
+	return "serving-group ownership is not known"
 }
 
 func yesNo(b bool) string {

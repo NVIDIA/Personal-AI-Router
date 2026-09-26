@@ -121,6 +121,7 @@ describe('UUID node keying', () => {
         // not be attributed to this node.
         state.mergeNodeInfoResponse('uuid-ni-1', {
             hostUuid: 'uuid-someone-else',
+            os: 'windows',
             GPUs: [
                 { name: 'NVIDIA A', vram_bytes: 1000, vram_used_bytes: 10, utilization_percent: 5 }
             ],
@@ -128,10 +129,12 @@ describe('UUID node keying', () => {
         })
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.gpus).toHaveLength(0)
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.cpu.model).toBe('')
+        expect(state.getNodesInitial().nodes['uuid-ni-1'].os).toBeUndefined()
 
         // A matching hostUuid is attributed normally.
         state.mergeNodeInfoResponse('uuid-ni-1', {
             hostUuid: 'uuid-ni-1',
+            os: 'linux',
             GPUs: [
                 { name: 'NVIDIA A', vram_bytes: 1000, vram_used_bytes: 10, utilization_percent: 5 }
             ],
@@ -139,6 +142,67 @@ describe('UUID node keying', () => {
         })
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.gpus).toHaveLength(1)
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.cpu.model).toBe('CPU-A')
+        expect(state.getNodesInitial().nodes['uuid-ni-1'].os).toBe('Linux')
+    })
+
+    it('retains identity-matched OS across broker and proxy refreshes', () => {
+        const state = getModularBridgeState()
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: 'uuid-os-persist',
+                        name: 'linux-peer',
+                        ipAddress: '192.0.2.51',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+
+        // A legacy-shaped response can still refresh telemetry, but cannot bind
+        // a platform claim without proving which host answered.
+        state.mergeNodeInfoResponse('uuid-os-persist', {
+            os: 'windows',
+            GPUs: []
+        })
+        expect(state.getNodesInitial().nodes['uuid-os-persist'].os).toBeUndefined()
+
+        state.mergeNodeInfoResponse('uuid-os-persist', {
+            hostUuid: 'uuid-os-persist',
+            os: 'linux',
+            GPUs: []
+        })
+        expect(state.getNodesInitial().nodes['uuid-os-persist'].os).toBe('Linux')
+
+        state.handleNotification({
+            source: 'vllm-proxy',
+            method: 'node/discovered',
+            params: {
+                id: 'uuid-os-persist',
+                host: 'linux-peer',
+                port: 8000,
+                addresses: ['192.0.2.51'],
+                ip: '192.0.2.51'
+            }
+        })
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: 'uuid-os-persist',
+                        name: 'linux-peer',
+                        ipAddress: '192.0.2.51',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+        expect(state.getNodesInitial().nodes['uuid-os-persist'].os).toBe('Linux')
     })
 
     it('gives the node-info poller every published address in ranked order', () => {

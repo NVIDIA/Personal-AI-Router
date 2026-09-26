@@ -36,7 +36,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
         const parts: string[] = []
         for (const [type, s] of nodeStatuses) {
             parts.push(
-                `${type}:${s.processStatus}:${s.enginePort ?? ''}:${s.proxyPort ?? ''}:${s.installedVersion ?? ''}:${s.installSupported ?? ''}:${s.installReason ?? ''}:${s.acceleration ?? ''}:${s.devices?.join(',') ?? ''}:${s.managed ?? ''}`
+                `${type}:${s.processStatus}:${s.enginePort ?? ''}:${s.proxyPort ?? ''}:${s.installedVersion ?? ''}:${s.enabled ?? ''}:${s.managed ?? ''}:${s.adopted ?? ''}:${s.routable ?? ''}:${s.installSupported ?? ''}:${s.installReason ?? ''}:${s.acceleration ?? ''}:${s.devices?.join(',') ?? ''}:${s.selectedModel ?? ''}`
             )
         }
         return parts.join('|')
@@ -98,11 +98,30 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                     docsUrl: EngineDefaultLinks[type]?.docsUrl,
                     installUrl: EngineDefaultLinks[type]?.installUrl,
                     installedVersion: status.installedVersion,
+                    enabled: status.enabled,
+                    managed: status.managed,
+                    adopted: status.adopted,
+                    routable: status.routable,
                     installSupported: status.installSupported,
                     installReason: status.installReason,
                     acceleration: status.acceleration,
                     devices: status.devices,
-                    managed: status.managed,
+                    selectedModel: status.selectedModel,
+                    // Engine Manager refuses a one-node vLLM start without a selected
+                    // retained model; surface that as the Start prerequisite it is.
+                    prerequisites:
+                        type === 'vllm' &&
+                        status.managed === true &&
+                        status.processStatus === 'stopped' &&
+                        !status.selectedModel
+                            ? [
+                                  {
+                                      name: 'A selected retained model (Model selection below)',
+                                      installed: false,
+                                      installUrl: ''
+                                  }
+                              ]
+                            : undefined,
                     updateAvailable
                 },
                 statusKnown

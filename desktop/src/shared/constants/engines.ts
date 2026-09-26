@@ -9,11 +9,11 @@ import { EngineType, ModelExpiry } from '@/shared/types/engines'
 // placeholders; they were removed with the chat window, which was their only
 // in-app consumer. Adding an engine back means shipping its manifest first --
 // an engine row without one renders commands that fail with `-32000`.
-export const EngineTypes = ['ollama', 'lm-studio', 'llamacpp'] as const
+export const EngineTypes = ['ollama', 'lm-studio', 'llamacpp', 'vllm'] as const
 
 // Kept as a distinct export so a future engine can ship behind it rather than
 // appearing the moment its type exists.
-export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llamacpp'] as const
+export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llamacpp', 'vllm'] as const
 
 /**
  * How `nvpair-engine-manager` spells each engine on the wire. Only LM Studio
@@ -24,7 +24,8 @@ export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llamacp
 export const EngineManagerNames = {
     ollama: 'ollama',
     'lm-studio': 'lmstudio',
-    llamacpp: 'llamacpp'
+    llamacpp: 'llamacpp',
+    vllm: 'vllm'
 } as const satisfies Record<EngineType, string>
 
 export const EngineSources = ['bundled', 'detected', 'installed'] as const
@@ -32,7 +33,8 @@ export const EngineSources = ['bundled', 'detected', 'installed'] as const
 export const EngineDisplayNames: Record<EngineType, string> = {
     ollama: 'Ollama',
     'lm-studio': 'LM Studio',
-    llamacpp: 'llama.cpp'
+    llamacpp: 'llama.cpp',
+    vllm: 'vLLM'
 } as const
 
 /** Default docs/install URLs for built-in backends. Single source of truth for UI and adapter buildInfo(). */
@@ -42,6 +44,10 @@ export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUr
     llamacpp: {
         docsUrl: 'https://github.com/ggml-org/llama.cpp',
         installUrl: 'https://github.com/ggml-org/llama.cpp'
+    },
+    vllm: {
+        docsUrl: 'https://docs.vllm.ai/',
+        installUrl: 'https://docs.vllm.ai/en/stable/getting_started/installation/gpu/'
     }
 } as const
 
@@ -79,6 +85,8 @@ export const EngineOperationTypes = [
     'install',
     'uninstall',
     'pull',
+    'prepare',
+    'distribute',
     'load',
     'unload',
     'delete'

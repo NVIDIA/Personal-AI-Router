@@ -1,0 +1,25 @@
+{
+  "packages": [
+    {
+      "name": "libexpat1-dev",
+      "version": "2.6.1-2ubuntu0.4",
+      "license": "MIT",
+      "repository": "https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/e/expat/libexpat1-dev_2.6.1-2ubuntu0.4_arm64.deb",
+      "licenseFile": "expat-copyright.txt"
+    },
+    {
+      "name": "libpython3.12-dev",
+      "version": "3.12.3-1ubuntu0.16",
+      "license": "Python-2.0 and others",
+      "repository": "https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/p/python3.12/libpython3.12-dev_3.12.3-1ubuntu0.16_arm64.deb",
+      "licenseFile": "python3.12-copyright.txt"
+    },
+    {
+      "name": "python3.12-dev",
+      "version": "3.12.3-1ubuntu0.16",
+      "license": "Python-2.0 and others",
+      "repository": "https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/p/python3.12/python3.12-dev_3.12.3-1ubuntu0.16_arm64.deb",
+      "licenseFile": "python3.12-copyright.txt"
+    }
+  ]
+}

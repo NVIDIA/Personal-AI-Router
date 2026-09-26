@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"nvpair-shared/noderec"
@@ -45,4 +46,16 @@ func TestRunRemoteNotClustered(t *testing.T) {
 	m.runRemote(context.Background(), &Message{JSONRPC: "2.0", ID: &id,
 		Method: "engine:remote-install", Params: json.RawMessage(`{"node":"uuid-b","engine":"ollama"}`)})
 	mustContain(t, out.String(), "not clustered")
+}
+
+func TestRemoteProgressPreservesExactFrameOperation(t *testing.T) {
+	var out bytes.Buffer
+	m := &Manager{codec: NewCodec(&out)}
+	fallback := strings.Repeat("a", 32)
+	exact := strings.Repeat("b", 32)
+	m.remoteProgressFn(fallback, "node-b")(streamFrame{Type: "progress", OpID: exact, Engine: "vllm", Op: "distribute", Stage: "receiving", Percent: 12})
+	mustContain(t, out.String(), `"opId":"`+exact+`"`)
+	if strings.Contains(out.String(), `"opId":"`+fallback+`"`) {
+		t.Fatal("remote progress replaced the exact frame operation with transport correlation")
+	}
 }

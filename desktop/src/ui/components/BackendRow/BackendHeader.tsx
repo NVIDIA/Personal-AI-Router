@@ -11,6 +11,12 @@ import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/Dismissib
 import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { statusLabel } from '@/ui/utils/status'
+import {
+    engineEnabled,
+    engineInstallAllowed,
+    engineInstallUnavailableReason,
+    engineLifecycleAllowed
+} from '@/ui/utils/engine-control-policy'
 import { roundedProgressPercent } from '@/shared/utils/engine-progress'
 
 /** Install/uninstall lines include asset names + percentages — allow more room than generic status. */
@@ -41,10 +47,13 @@ export function BackendHeader({
     onExpand: () => void
     expanded: boolean
     isLocalNode: boolean
-    targetOs: PlatformDisplayName
+    targetOs?: PlatformDisplayName
     onInstall: () => void
 }) {
     const caps = EngineCapabilities[backend.type]
+    const enabled = engineEnabled(backend)
+    const lifecycleAllowed = engineLifecycleAllowed(backend)
+    const installUnavailableReason = engineInstallUnavailableReason(backend)
     // The proxy URL / web UI live on this machine's 127.0.0.1 — meaningless for a
     // remote node's engine, so only offer them on the local node.
     const showWebUI =
@@ -181,6 +190,16 @@ export function BackendHeader({
                 </DismissibleTooltip>
             )}
 
+            {!isUnavailable && !isTransitioning && installUnavailableReason && (
+                <DismissibleTooltip slotContent={installUnavailableReason}>
+                    <Flex align="center" className="ml-2" style={{ minHeight: 32 }}>
+                        <Text kind="body/regular/sm" className="text-subtle-color">
+                            Prerequisite
+                        </Text>
+                    </Flex>
+                </DismissibleTooltip>
+            )}
+
             {isTransitioning &&
                 (() => {
                     const baseStatus =
@@ -231,6 +250,7 @@ export function BackendHeader({
 
             {!isUnavailable &&
                 !isTransitioning &&
+                lifecycleAllowed &&
                 backend.processStatus !== 'not-installed' &&
                 (() => {
                     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
@@ -241,11 +261,11 @@ export function BackendHeader({
                         <Flex align="center" justify="center" className="h-7 w-7 shrink-0">
                             <Switch
                                 size="small"
-                                checked={backend.processStatus === 'running'}
+                                checked={enabled}
                                 onCheckedChange={onToggle}
                                 onClick={e => e.stopPropagation()}
                                 disabled={disabled || isStartDisabled}
-                                aria-label={`${backend.processStatus === 'running' ? 'Stop' : 'Start'} ${backend.displayName}`}
+                                aria-label={`${enabled ? 'Disable' : 'Enable'} ${backend.displayName}`}
                             />
                         </Flex>
                     )
@@ -275,15 +295,18 @@ export function BackendHeader({
                     return toggle
                 })()}
 
-            {!isUnavailable && !isTransitioning && backend.processStatus === 'not-installed' && (
-                <InstallButton
-                    backend={backend}
-                    targetOs={targetOs}
-                    isLocalNode={isLocalNode}
-                    disabled={disabled}
-                    onInstall={onInstall}
-                />
-            )}
+            {!isUnavailable &&
+                !isTransitioning &&
+                backend.processStatus === 'not-installed' &&
+                engineInstallAllowed(backend) && (
+                    <InstallButton
+                        backend={backend}
+                        targetOs={targetOs}
+                        isLocalNode={isLocalNode}
+                        disabled={disabled}
+                        onInstall={onInstall}
+                    />
+                )}
         </Flex>
     )
 }

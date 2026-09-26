@@ -276,6 +276,12 @@
   ${ifNot} ${FileExists} "$INSTDIR\resources\cli-bin\nvpair-ui-broker.exe"
     StrCpy $9 "$9$\n$INSTDIR\resources\cli-bin\nvpair-ui-broker.exe"
   ${endif}
+  ${ifNot} ${FileExists} "$INSTDIR\resources\cli-bin\nvpair-host-bootstrap.exe"
+    StrCpy $9 "$9$\n$INSTDIR\resources\cli-bin\nvpair-host-bootstrap.exe"
+  ${endif}
+  ${ifNot} ${FileExists} "$INSTDIR\resources\cli-bin\nvpair-host-helper.exe"
+    StrCpy $9 "$9$\n$INSTDIR\resources\cli-bin\nvpair-host-helper.exe"
+  ${endif}
   ${if} $9 != ""
     DetailPrint "Installation incomplete: executables missing from $INSTDIR"
     Delete "$newDesktopLink"
@@ -287,8 +293,48 @@
   ${endif}
 !macroend
 
+; Stage fixed target-local bootstrap inputs without registering another runtime
+; owner. An existing helper may be marker-owned by a prior bootstrap operation,
+; so upgrades preserve it; the signed bootstrap performs the reviewed update.
+!macro pairInstallBootstrapInputs
+  DetailPrint "Staging Personal AI Router host bootstrap inputs..."
+  CreateDirectory "$PROGRAMFILES64\NVIDIA Corporation\PAIR"
+  CreateDirectory "$PROGRAMFILES64\NVIDIA Corporation\PAIR\installer-inputs"
+  ClearErrors
+  CopyFiles /SILENT \
+    "$INSTDIR\resources\cli-bin\nvpair-host-bootstrap.exe" \
+    "$PROGRAMFILES64\NVIDIA Corporation\PAIR"
+  ${ifNot} ${FileExists} "$PROGRAMFILES64\NVIDIA Corporation\PAIR\nvpair-host-helper.exe"
+    CopyFiles /SILENT \
+      "$INSTDIR\resources\cli-bin\nvpair-host-helper.exe" \
+      "$PROGRAMFILES64\NVIDIA Corporation\PAIR"
+  ${endif}
+  CopyFiles /SILENT \
+    "$INSTDIR\resources\onboarding-bootstrap\installer-inputs\windows\nvpair-host-helper.service.ini" \
+    "$PROGRAMFILES64\NVIDIA Corporation\PAIR\installer-inputs"
+  ${if} ${Errors}
+    MessageBox MB_OK|MB_ICONSTOP "Personal AI Router could not stage its host bootstrap inputs." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${endif}
+!macroend
+
+!macro pairRemoveBootstrapInputs
+  Delete "$PROGRAMFILES64\NVIDIA Corporation\PAIR\nvpair-host-bootstrap.exe"
+  Delete "$PROGRAMFILES64\NVIDIA Corporation\PAIR\installer-inputs\nvpair-host-helper.service.ini"
+  RMDir "$PROGRAMFILES64\NVIDIA Corporation\PAIR\installer-inputs"
+  ; Only remove an inert package-staged helper. operation.json proves the helper
+  ; belongs to bootstrap state and must be removed by marker-bound uninstall.
+  ${ifNot} ${FileExists} "$PROGRAMDATA\NVIDIA Corporation\Personal AI Router\host-bootstrap\operation.json"
+    Delete "$PROGRAMFILES64\NVIDIA Corporation\PAIR\nvpair-host-helper.exe"
+  ${endif}
+  RMDir "$PROGRAMFILES64\NVIDIA Corporation\PAIR"
+  RMDir "$PROGRAMFILES64\NVIDIA Corporation"
+!macroend
+
 !macro customInstall
   !insertmacro pairAssertPayloadInstalled
+  !insertmacro pairInstallBootstrapInputs
   !insertmacro pairAddFirewallRules
 !macroend
 
@@ -315,6 +361,7 @@
 !macro customUnInstall
   !insertmacro pairCloseRunningProcesses
   !insertmacro pairRemoveFirewallRules
+  !insertmacro pairRemoveBootstrapInputs
 
   ; Skip all data handling during an auto-update reinstall.
   ${ifNot} ${isUpdated}

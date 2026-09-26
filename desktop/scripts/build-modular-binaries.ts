@@ -373,14 +373,24 @@ function buildBinary(
     const outFile = path.join(CLI_BIN_DIR, fileName)
     const res = spawnSync(
         'go',
-        ['build', '-trimpath', '-ldflags', `-s -w -X main.Version=${version}`, '-o', outFile, '.'],
+        [
+            'build',
+            '-buildvcs=false',
+            '-trimpath',
+            '-ldflags',
+            `-s -w -X main.Version=${version}`,
+            '-o',
+            outFile,
+            '.'
+        ],
         {
             cwd: componentDir,
             env: {
                 ...process.env,
                 CGO_ENABLED: '0',
                 GOOS: goos(options.platform),
-                GOARCH: goarch(options.arch)
+                GOARCH: goarch(options.arch),
+                GOFLAGS: '-buildvcs=false'
             },
             stdio: 'inherit'
         }

@@ -40,7 +40,18 @@ Broker-owned workers:
 - `nvpair-errors`;
 - `nvpair-job-scheduler`.
 
-`nvpair-tui` is bundled but not supervised by Electron or the broker.
+`MODULAR_BUNDLED_BINARIES` contains tools that ship in `cli-bin` but are not
+runtime children:
+
+- `nvpair-tui` launches and owns its own broker tree;
+- the target runs `nvpair-host-bootstrap` through its native administrator
+  flow;
+- the target operating system owns `nvpair-host-helper`, which accepts only
+  fixed local actions over an ACL-protected named pipe or Unix socket.
+
+The bootstrap and helper are neither broker clients nor workers. They expose no
+shell and no network listener. Electron, the desktop broker, and the TUI broker
+must never launch or supervise them.
 
 Never launch one worker from both Electron and the broker. There is no
 broker-absent fallback.
@@ -88,6 +99,10 @@ tree. Electron generates that launcher on packaged builds
 (`src/electron/nvpair-command.ts`); the Debian package installs the equivalent
 wrapper at `/usr/bin/nvpair`. Do not add a TypeScript command surface, control
 socket, or local control server.
+
+Desktop **Set up a device** and the TUI **Setup** tab are peers over the same
+`engine:onboarding-bootstrap-*` engine-manager contract. Do not implement a
+second renderer-owned bootstrap state machine or weaken the TUI path.
 
 ### Node telemetry
 
@@ -210,6 +225,86 @@ The model hub is Electron-main functionality under `src/electron/model-hub/`.
 It provides curated Ollama and LM Studio catalogs; model operations still go
 through the engine manager.
 
+## Device bootstrap
+
+The canonical bootstrap contract lives in `services/shared/hostbootstrap`.
+`nvpair-engine-manager` is the controller-side relay;
+`nvpair-host-bootstrap` and `nvpair-host-helper` own target mutation and
+authority.
+
+### Targets and lanes
+
+The target matrix is closed and ordered:
+
+- Windows amd64 and arm64;
+- macOS amd64 and arm64;
+- Linux amd64 and arm64.
+
+The Linux native adapter additionally accepts only Debian and Ubuntu from the
+canonical os-release identity. Other distributions fail closed.
+
+`quick-connect` is the operator-reviewed lane and `zero-touch` is the enterprise
+lane. The lane is part of the immutable binding; both lanes use the same target
+transaction and safety policy.
+
+### Owner semantics
+
+Every request carries `role` (`auto|desktop|headless`) and a resolved
+`runtimeOwner` (`desktop|headless`). Explicit roles must match the owner.
+Desktop and TUI resolve Auto to Desktop on Windows/macOS and Headless on Linux.
+
+- Desktop records the desktop broker tree as the sole owner and requires the
+  fixed headless owner to be absent.
+- Windows Headless uses `nvpair-host-helper.exe headless-service`, a fixed SCM
+  wrapper that starts only the installed broker path.
+- macOS Headless uses the exact target-installed system launchd definition.
+- Linux Headless uses the exact target-installed system systemd definition.
+
+A live Desktop broker tree blocks a Headless transition. Never introduce
+simultaneous owner trees or a generic configurable owner command.
+
+### Authority and state
+
+The legal phase progression is inspect → review → apply → verify → complete. A
+no-op review skips apply; foreign ownership blocks mutation. Plans derive
+deterministically from target-produced observations.
+
+The helper wire contains only schema, operation ID, and a fixed
+`inspect|apply|verify|rank-reconcile` action. It loads target-local request,
+plan, receipt, and ownership markers and invokes the fixed bootstrap executable.
+Renderer/Electron code must not author observations, repair actions, or a
+receipt. Electron may cache an exact reviewed plan in memory only to bind
+apply/verify; recovery authority remains on the target.
+
+Repair is limited to drift authorized by the complete receipt and current
+ownership markers. Missing or foreign authority requires rerunning the signed
+bootstrap. Target-local uninstall requires the original request and immutable
+receipt, preflights every removal, removes only proven-owned resources in
+reverse dependency order, verifies each absence, and records a tombstone.
+
+### Credentials and SSH trust
+
+Bootstrap documents and target state contain the controller public-key identity,
+never passwords, passphrases, elevation passwords, or private keys. Ordinary
+SSH access material is transient, cleared/expired, and must not enter renderer
+stores, journals, logs, or receipts.
+
+Bootstrap completion does not trust SSH. Engine-manager must observe the current
+host key and require explicit approval of that exact fingerprint before
+authentication. Never infer host-key trust from a bootstrap receipt.
+
+### Catalog and provenance
+
+The packaged catalog binds all six targets and each target's bootstrap, helper,
+product, and combination identities. Official provenance fails closed on
+missing or inconsistent catalog/checksum/signature metadata, required detached
+signature material, or required macOS notarization records. Public packaging
+emits explicitly unsigned engineering artifacts; never call them official.
+
+Contract tests, cross-compilation, deterministic packaging, and simulated
+platform tests are not native six-target acceptance and do not prove official
+signed artifacts exist.
+
 ## Pairing and security
 
 `nvpair-cluster-manager` and the other backend workers own cluster identity,
@@ -226,6 +321,11 @@ The PIN is a convenience pairing code, not a strong authenticator. See
 `npm run build:modular-binaries` builds the backend for the target platform and
 writes `cli-bin/manifest.json`. Packaging rejects stale or unexpected `cli-bin`
 files.
+
+`scripts/package-bootstrap.ts` builds and reopens the exact six-target
+engineering matrix. Official packaging consumes separately attested final
+signed inputs and must preserve final-byte identities; it must never relabel
+unsigned engineering bytes.
 
 The macOS privileged helper firewall list is derived from
 `needsFirewallAccess` in `MODULAR_RUNTIME_BINARIES`.

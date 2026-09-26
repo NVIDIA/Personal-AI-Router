@@ -28,6 +28,9 @@ navigation:
       - page: Getting Started
         path: ../docs/getting-started.mdx
         slug: getting-started
+      - page: DGX Spark Cluster Playbook
+        path: ../docs/dgx-spark-playbook.mdx
+        slug: dgx-spark-playbook
       - page: Managing Engines
         path: ../docs/engine-lifecycle.mdx
         slug: engine-lifecycle

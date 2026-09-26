@@ -184,6 +184,9 @@ func (b *Broker) finishEngineProxyStartup(profile engineProxyProfile) {
 		b.finishLMStudioProxyTerminal()
 	case llamacppProxyProfile.Name:
 		b.finishLlamaCppProxyTerminal()
+	case vllmProxyProfile.Name:
+		// vLLM is adopt-only: the broker never repositions it, so it has no
+		// port-ownership gate and no request ever waits on one.
 	default:
 		// Reaching this leaves that engine's gate shut for the life of the
 		// process, so every gated client request waits out its call timeout

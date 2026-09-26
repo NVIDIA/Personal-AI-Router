@@ -23,7 +23,7 @@ func TestOllamaIsPreparedFirst(t *testing.T) {
 
 func TestNames(t *testing.T) {
 	got := Names()
-	want := []string{"ollama", "lmstudio", "llamacpp"}
+	want := []string{"ollama", "lmstudio", "llamacpp", "vllm"}
 	if len(got) != len(want) {
 		t.Fatalf("Names() = %v, want %v", got, want)
 	}
@@ -31,6 +31,14 @@ func TestNames(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("Names() = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestDefaultNamesKeepVLLMDisabled(t *testing.T) {
+	got := DefaultNames()
+	want := []string{"ollama", "lmstudio", "llamacpp"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("DefaultNames() = %v, want %v", got, want)
 	}
 }
 
@@ -108,6 +116,7 @@ func TestIdentitiesAreUnique(t *testing.T) {
 	components := map[string]bool{}
 	services := map[noderec.ServiceKey]bool{}
 	facades := map[int]bool{}
+	portFiles := map[string]bool{}
 
 	for _, e := range All() {
 		if e.Name == "" || e.DisplayName == "" || e.PortFile == "" || e.DiscoveryService == "" {
@@ -125,10 +134,14 @@ func TestIdentitiesAreUnique(t *testing.T) {
 		if facades[e.FacadePort] {
 			t.Errorf("duplicate FacadePort %d", e.FacadePort)
 		}
+		if portFiles[e.PortFile] {
+			t.Errorf("duplicate PortFile %q", e.PortFile)
+		}
 		names[e.Name] = true
 		components[e.ComponentName()] = true
 		services[e.DiscoveryService] = true
 		facades[e.FacadePort] = true
+		portFiles[e.PortFile] = true
 	}
 }
 
@@ -154,8 +167,17 @@ func TestLookups(t *testing.T) {
 		}
 	}
 
-	if _, ok := ByName("vllm"); ok {
+	if _, ok := ByName("unknown"); ok {
 		t.Error("ByName should report ok=false for an unknown engine")
+	}
+	vllm, ok := ByName("vllm")
+	if !ok || vllm.DisplayName != "vLLM" || vllm.DiscoveryService != noderec.ServiceVLLM ||
+		vllm.FacadePort != 8000 || vllm.EnginePortBase != 8001 || vllm.PortFile != "vllm-proxy-port.json" ||
+		vllm.AdoptOnly || vllm.EnabledByDefault {
+		t.Fatalf("ByName(\"vllm\") = %+v, %v", vllm, ok)
+	}
+	if noderec.ServiceVLLM != "vl" {
+		t.Errorf("ServiceVLLM = %q, want compact key %q", noderec.ServiceVLLM, "vl")
 	}
 }
 

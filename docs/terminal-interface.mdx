@@ -13,9 +13,11 @@ desktop environment, or over SSH, where the desktop application cannot run. If a
 desktop is available, use the desktop application.
 
 **It has known limitations.** It is an operations tool, not a full replacement.
-It cannot change an engine's port, update an engine, or control engines on
-other nodes. Managed llama supports model inventory and actions. The full
-list is in
+It cannot change an engine's port, update an engine other than managed vLLM,
+control engines on other nodes, or show which node served a workload. Managed
+llama supports model inventory and actions. Device bootstrap is an exception:
+the **Setup** tab uses the same backend contract and authority model as the
+desktop application. The full list is in
 [What the Terminal Interface Cannot Do](#what-the-terminal-interface-cannot-do),
 and it is worth reading before you depend on it.
 
@@ -133,10 +135,57 @@ Tab switching and `q` do not work until you do.
 | 4 | **Proxies** | Ollama, LM Studio and llama.cpp proxies: listening port, discovered upstreams, and which node is selected |
 | 5 | **Workloads** | Live inference workloads: ID, model, engine, state, and age |
 | 6 | **Engines** | Local engines: installed, running, healthy, and port |
-| 7 | **Cluster** | This node's identity, cluster membership, and pairing |
-| 8 | **Manual** | Nodes you added by address, with reachability |
-| 9 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
-| 10 | **Logs** | Service log output, with live log-level control |
+| 7 | **Serving** | Reviewed managed vLLM groups and their retained state |
+| 8 | **Setup** | Device bootstrap, SSH enrollment, recovery, and related setup workflows |
+| 9 | **Setup history** | Read-only retained setup journal inventory |
+| 10 | **Cluster** | This node's identity, cluster membership, and pairing |
+| 11 | **Manual** | Nodes you added by address, with reachability |
+| 12 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
+| 13 | **Logs** | Service log output, with live log-level control |
+
+## Set Up Another Device
+
+The **Setup** tab (8) has the same bootstrap catalog, public-key identities,
+target-produced status, reviewed plan, recovery call, and complete receipt as
+**Settings > Cluster > Set up a device** in the desktop application. Both
+surfaces distinguish devices that are ready for SSH enrollment from devices
+that still need the target-local package.
+
+The six accepted targets are Windows x64, Windows arm64, macOS x64, macOS
+arm64, Linux x64, and Linux arm64. Linux admits Debian and Ubuntu only; other
+distributions fail closed. `Z` switches between the operator-reviewed
+**Quick Connect** lane and enterprise **Zero Touch**; both lanes execute the
+same closed target transaction. `G` cycles **Auto**, **Desktop**, and
+**Headless**. Auto resolves to Desktop on Windows and macOS and Headless on
+Linux.
+
+Essential setup keys are:
+
+- `D` discovers on the next backend-reported eligible network scope; `a` adds
+  an exact target address.
+- `space` selects one device; `T` cycles an explicit matrix target when
+  discovery cannot report one.
+- `P` selects a controller public-key identity. PAIR reads public identities
+  from the operating-system agent and configured `.pub` files; bootstrap state
+  stores no password or private key.
+- `b` advances inspect, review, apply, verify, and the target-produced complete
+  receipt.
+- `t` accepts the exact displayed SSH host-key fingerprint. This review remains
+  mandatory after the target package completes.
+- `R` recovers the exact journaled operation. Recovery and later repair can
+  change only resources proven PAIR-owned; foreign ownership blocks apply.
+
+For a bootstrap-required target, the tab identifies the exact catalog package
+to transfer and run on that target through its native administrator flow. The
+catalog and signature policy—not a manual comparison of the displayed
+SHA-256—decides whether an official package is acceptable. Unsigned engineering
+packages remain explicitly non-official.
+
+The helper behind this flow exposes only fixed local actions over an
+access-controlled pipe or socket. It is not a shell or network listener, and
+neither the TUI's broker nor Electron supervises it. Target-local uninstall is
+also ownership-bound: it requires the original request and complete receipt and
+removes only proven-owned resources.
 
 ## Pair This Machine with Another
 
@@ -151,7 +200,7 @@ Pairing is the same six-digit PIN exchange the desktop application uses.
 This is the easier path, because there is no address to type. Prefer it whenever
 PAIR has already discovered the machine you want.
 
-**To invite a machine by address**, from the **Cluster** tab (7):
+**To invite a machine by address**, from the **Cluster** tab (10):
 
 1. Press `i`.
 2. Type the other machine's host, or `host:port` if it is not on the default
@@ -215,6 +264,50 @@ A node can serve a request only when it is online, a compatible engine is
 running, and the requested model is present on that node. To route across several
 machines, download the same model on each.
 
+## Run a Managed vLLM Serving Group
+
+The **Serving** tab (7) drives the same retained Engine Manager group owner as
+the desktop application. It does not run SSH commands or construct a launch
+plan in the TUI.
+
+1. Press `v`. Enter two or three paired node IDs separated by commas, with the
+   coordinator first. Enter one exact retained model ID, then enter `tensor`,
+   `pipeline`, or leave parallelism blank for PAIR's current default.
+2. Read the expiring review: coordinator, participant count, runtime, model,
+   and TP/PP/DP layout. Press `c` to check every participant. A check has no
+   effects and never asks for administrator access.
+3. When both the review and participant check say **activation available**,
+   press `s`. The interface asks for one-use administrator access for each
+   reviewed participant, in order. Input is masked. Press `enter` on a blank
+   prompt only when that participant has the reviewed passwordless-sudo route.
+4. Press `r` to refresh the retained run. PAIR does not mark the group ready
+   until the existing vLLM proxy confirms the coordinator/model route. Use the
+   OpenAI-compatible proxy endpoint for inference; do not call a worker rank.
+5. Press `x` to stop the exact run. If any attempted rank lacks cleanup proof,
+   press `R`; the interface prompts again only for those unresolved
+   participants. Press `u` to request the backend's exact cleanup-only route.
+
+The prompt value is masked. On submission its bytes enter a mutable buffer for
+one Start or Reconcile request; the TUI clears that buffer after success,
+failure, cancellation, or a state change and never renders or retains the
+secret value. If a review expires, a run generation changes, or a Start reply
+is lost, PAIR refreshes retained status instead of resending the effect.
+
+Transport labels are intentionally literal:
+
+- A two-node tensor review using `qualified-direct-socket` runs NCCL Socket on
+  one reviewed QSFP Ethernet lane. Rendezvous, Gloo, SSH, and control stay on
+  the management network, and RDMA is disabled.
+- An ordinary two- or three-node pipeline review uses the management network,
+  even when a direct or ring fabric operation is active.
+- The fixed Qwen3.8 `host-buffer-roce` profile is a separate reviewed contract.
+  Cabling, a passing cable check, or an active ring alone does not prove RDMA,
+  model payload on the ring, bandwidth, or inference.
+
+These controls describe the product workflow, not target acceptance evidence.
+The completion checklist tracks live TUI-driven hardware proof separately from
+source tests and terminal captures.
+
 ## Check Routing and Health
 
 The **Workloads** tab (5) lists inference work as it runs, with its model,
@@ -236,13 +329,13 @@ best-effort. `DOWN` means a worker reported a crash.
 
 On **Errors** (2), press `c` to clear the selected entry.
 
-On **Logs** (10), scroll with `j` / `k` and the page keys. Set the log level for
+On **Logs** (13), scroll with `j` / `k` and the page keys. Set the log level for
 the whole service fleet with `d` (debug), `i` (info), `w` (warn), or `e` (error).
 This is the first place to look when something has not started.
 
 ## Change Settings
 
-On **Settings** (9), move with `j` / `k` and press `enter`. Booleans toggle
+On **Settings** (12), move with `j` / `k` and press `enter`. Booleans toggle
 immediately. Text fields open for editing, with `enter` to save and `esc` to
 cancel.
 
@@ -256,12 +349,20 @@ It is an operations tool, not a full replacement for the desktop application:
 
 - It cannot change an engine's port. The port column is read-only. Use the
   desktop application to change it.
-- It cannot update an engine or control engines on other cluster nodes. Managed
-  llama has no update action anywhere in PAIR; uninstall and reinstall are
-  separate, explicit steps and are never run on your behalf as a substitute.
+- It cannot run ordinary install/start/stop/model actions on another cluster
+  node. The reviewed **Serving** workflow is the narrow exception: Engine
+  Manager coordinates the exact multi-node vLLM group through its fixed
+  participant owners.
+- It can update only managed vLLM. Managed llama has no update action anywhere
+  in PAIR; uninstall and reinstall are separate, explicit steps and are never
+  run on your behalf as a substitute.
+- It does not show which node served a particular workload.
 - It has no built-in way to send an inference request. Use `curl` or another
   client against the proxy port, as in
   [Getting Started](getting-started.mdx#6-run-your-first-inference).
+
+These limitations do not apply to device bootstrap: Desktop and TUI use the
+same `engine:onboarding-bootstrap-*` methods and target authority.
 
 ## See Also
 

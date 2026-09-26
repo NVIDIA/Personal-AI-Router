@@ -6,8 +6,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"time"
+
+	"nvpair-shared/engines"
 )
 
 const presenceRefusalWindow = 500 * time.Millisecond
@@ -27,6 +30,9 @@ func (e *Executor) Detect(engine string) (bool, error) {
 	st, err := e.state(engine)
 	if err != nil {
 		return false, err
+	}
+	if engine == "vllm" {
+		return detectManagedVLLM(st)
 	}
 	installed := false
 	binPath := ""
@@ -82,19 +88,129 @@ func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, err
 		st.opMu.Lock()
 	}
 	defer st.opMu.Unlock()
-	pathInstalled, _ := e.Detect(engine)
+	if engine == "vllm" && probePort == 0 {
+		return e.refreshVLLMStatusLocked(context.Background(), st), nil
+	}
+	return e.statusAtPortLocked(context.Background(), engine, st, probePort), nil
+}
+
+type vllmStatusRefresh struct {
+	done   chan struct{}
+	status EngineStatus
+	ok     bool
+}
+
+// refreshVLLMStatusLocked runs the full vLLM status reconciliation and
+// publishes it while it holds opMu. The caller holds opMu.
+func (e *Executor) refreshVLLMStatusLocked(ctx context.Context, st *engineState) EngineStatus {
+	refresh := &vllmStatusRefresh{done: make(chan struct{})}
+	st.mu.Lock()
+	st.statusRefresh = refresh
+	st.mu.Unlock()
+	defer func() {
+		st.mu.Lock()
+		if st.statusRefresh == refresh {
+			st.statusRefresh = nil
+		}
+		st.mu.Unlock()
+		close(refresh.done)
+	}()
+	refresh.status = e.statusAtPortLocked(ctx, "vllm", st, 0)
+	refresh.ok = ctx.Err() == nil
+	return refresh.status
+}
+
+// statusAtPortLocked retains the full lifecycle/status reconciliation for
+// callers that already own opMu. Inventory readers use a separate bounded
+// wait so a long operation cannot queue every peer model/status request.
+func (e *Executor) statusAtPortLocked(ctx context.Context, engine string, st *engineState, probePort int) EngineStatus {
+	if engine == "vllm" {
+		if err := e.reconcileManagedVLLMActivation(ctx, st); err != nil {
+			return e.managedStateErrorStatus(engine, st, err)
+		}
+	}
+	pathInstalled, detectErr := e.Detect(engine)
+	if detectErr != nil {
+		return e.managedStateErrorStatus(engine, st, detectErr)
+	}
 	st.mu.Lock()
 	port := st.port
 	st.mu.Unlock()
 	if probePort > 0 {
 		port = probePort
 	}
-	e.reconcilePresence(context.Background(), engine, st, pathInstalled, port, false)
-	return e.snapshot(engine, st), nil
+	if engine == "vllm" && pathInstalled {
+		if _, _, observeErr := e.observeManagedVLLMListener(ctx, st, activeVLLMRuntimeID(st)); observeErr != nil {
+			return e.managedStateErrorStatus(engine, st, observeErr)
+		}
+	}
+	e.reconcilePresence(ctx, engine, st, pathInstalled, port, false)
+	return e.snapshot(engine, st)
+}
+
+// vllmStatusForRead never queues behind a vLLM lifecycle operation. Its one
+// in-flight validation keeps ownership checks on the served-model path. When
+// another status refresh holds the lock it shares that refresh's result, so
+// routine status traffic cannot withdraw a served model; a lifecycle operation
+// or a slow validation leaves read-only callers with cached state instead.
+func (e *Executor) vllmStatusForRead(ctx context.Context, st *engineState) (EngineStatus, bool) {
+	if ctx.Err() != nil {
+		return e.cachedVLLMStatus(st), false
+	}
+	if !st.opMu.TryLock() {
+		return e.sharedVLLMStatus(ctx, st)
+	}
+	result := make(chan EngineStatus, 1)
+	go func() {
+		defer st.opMu.Unlock()
+		if ctx.Err() != nil {
+			return
+		}
+		result <- e.refreshVLLMStatusLocked(ctx, st)
+	}()
+	select {
+	case status := <-result:
+		if ctx.Err() != nil {
+			return e.cachedVLLMStatus(st), false
+		}
+		return status, true
+	case <-ctx.Done():
+		return e.cachedVLLMStatus(st), false
+	}
+}
+
+func (e *Executor) sharedVLLMStatus(ctx context.Context, st *engineState) (EngineStatus, bool) {
+	st.mu.Lock()
+	refresh := st.statusRefresh
+	st.mu.Unlock()
+	if refresh == nil {
+		return e.cachedVLLMStatus(st), false
+	}
+	select {
+	case <-refresh.done:
+		if refresh.ok {
+			return refresh.status, true
+		}
+	case <-ctx.Done():
+	}
+	return e.cachedVLLMStatus(st), false
+}
+
+func (e *Executor) cachedVLLMStatus(st *engineState) EngineStatus {
+	return e.snapshotWithSupport("vllm", st, false)
 }
 
 // GetInstalled lists every known engine with its current status.
 func (e *Executor) GetInstalled() []EngineStatus {
+	return e.GetInstalledContext(context.Background())
+}
+
+// GetInstalledContext bounds vLLM's inventory read while retaining the full
+// status path for other engines. A busy vLLM reports its last in-memory state;
+// mutating operations still take opMu and revalidate ownership themselves.
+func (e *Executor) GetInstalledContext(parent context.Context) []EngineStatus {
+	ctx, cancel := context.WithTimeout(parent, modelsTimeout)
+	defer cancel()
 	var out []EngineStatus
 	for _, name := range e.reg.Names() {
 		st, err := e.state(name)
@@ -116,6 +232,11 @@ func (e *Executor) GetInstalled() []EngineStatus {
 			out = append(out, status)
 			continue
 		}
+		if name == "vllm" {
+			status, _ := e.vllmStatusForRead(ctx, st)
+			out = append(out, status)
+			continue
+		}
 		if name == "llamacpp" {
 			if !st.opMu.TryLock() {
 				out = append(out, e.snapshot(name, st))
@@ -124,7 +245,12 @@ func (e *Executor) GetInstalled() []EngineStatus {
 		} else {
 			st.opMu.Lock()
 		}
-		pathInstalled, _ := e.Detect(name)
+		pathInstalled, detectErr := e.Detect(name)
+		if detectErr != nil {
+			out = append(out, e.managedStateErrorStatus(name, st, detectErr))
+			st.opMu.Unlock()
+			continue
+		}
 		st.mu.Lock()
 		port := st.port
 		st.mu.Unlock()
@@ -133,6 +259,16 @@ func (e *Executor) GetInstalled() []EngineStatus {
 		st.opMu.Unlock()
 	}
 	return out
+}
+
+func (e *Executor) managedStateErrorStatus(engine string, st *engineState, stateErr error) EngineStatus {
+	status := e.snapshot(engine, st)
+	unsupported := false
+	status.Installed, status.Running, status.Healthy, status.Managed, status.Routable = false, false, false, false, false
+	status.InstallSupported = &unsupported
+	status.InstallReason = "Managed state unavailable: " + stateErr.Error()
+	status.Version = ""
+	return status
 }
 
 // Logs returns the engine's captured-output ring.
@@ -149,43 +285,108 @@ func (e *Executor) Errors() []serviceError {
 	return e.reporter.snapshot()
 }
 
-func unavailableEngineStatus(engine, displayName string) EngineStatus {
-	status := EngineStatus{Engine: engine, DisplayName: displayName}
-	if engine == "llamacpp" {
-		status.InstallReason = "No llama installer recipe is available for this operating system and architecture."
-		if supported, reason := llamaInstallSupport(runtime.GOOS, runtime.GOARCH); !supported {
-			status.InstallReason = reason
-		}
-	}
-	return status
+func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
+	return e.snapshotWithSupport(engine, st, true)
 }
 
-func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	supported := st.plat.Install != nil
-	reason := ""
-	if engine == "llamacpp" {
-		supported, reason = llamaInstallSupport(runtime.GOOS, runtime.GOARCH)
-		if missing := llamaPrerequisite(); supported && missing != "" {
-			supported, reason = false, missing
+func (e *Executor) snapshotWithSupport(engine string, st *engineState, probeSupport bool) EngineStatus {
+	enabled, known, err := e.desired.get(engine)
+	if err != nil || !known {
+		if catalog, ok := engines.ByName(engine); ok {
+			enabled = catalog.EnabledByDefault
+		} else {
+			enabled = false
 		}
 	}
+	var installSupported *bool
+	installReason := ""
+	if probeSupport {
+		supported, reason := installSupport(engine, st.plat)
+		installSupported, installReason = &supported, reason
+	}
+	st.mu.Lock()
+	managed := !st.adopted && st.installed && isManagedInstallPath(st.binPath, st.installDir)
+	group, rank := st.vllmGroup, st.vllmRank
+	installDir := st.installDir
 	status := EngineStatus{
-		InstallSupported: supported,
-		InstallReason:    reason,
-		Managed:          st.installed && !st.adopted && isManagedInstallPath(st.binPath, st.installDir),
 		Engine:           engine,
 		DisplayName:      st.manifest.DisplayName,
 		Installed:        st.installed,
 		Running:          st.running,
 		Healthy:          st.healthy,
+		Enabled:          enabled,
+		Managed:          managed,
+		Adopted:          st.adopted,
+		Routable:         enabled && st.running && st.healthy,
+		InstallSupported: installSupported,
+		InstallReason:    installReason,
+		Version:          st.version,
 		Port:             st.port,
 	}
+	st.mu.Unlock()
 	if engine == "llamacpp" && status.Managed {
-		status.Acceleration, status.Devices = llamaReceiptAcceleration(st.installDir)
+		status.Acceleration, status.Devices = llamaReceiptAcceleration(installDir)
+	}
+	if engine == "vllm" {
+		status.SelectedModel, _ = selectedVLLMModel(st)
+		if rank != nil && rank.reserved() {
+			return rank.routeStatus(status)
+		}
+		if group != nil {
+			return group.routeStatus(e.vllmNodeID, status)
+		}
 	}
 	return status
+}
+
+func unavailableEngineStatus(engine, displayName string) EngineStatus {
+	supported := false
+	return EngineStatus{
+		Engine: engine, DisplayName: displayName,
+		InstallSupported: &supported, InstallReason: unavailablePlatformInstallReason(engine),
+	}
+}
+
+func unavailablePlatformInstallReason(engine string) string {
+	switch engine {
+	case "vllm":
+		return vllmUnsupportedPlatformReason(runtime.GOOS, runtime.GOARCH)
+	case "llamacpp":
+		if supported, reason := llamaInstallSupport(runtime.GOOS, runtime.GOARCH); !supported {
+			return reason
+		}
+		return "No llama installer recipe is available for this operating system and architecture."
+	}
+	return "No managed recipe for this platform"
+}
+
+func installSupportReason(supported bool) string {
+	if supported {
+		return ""
+	}
+	return "Installation is not available for this engine on this platform"
+}
+
+func installSupport(engine string, platform *Platform) (bool, string) {
+	if engine == "llamacpp" {
+		supported, reason := llamaInstallSupport(runtime.GOOS, runtime.GOARCH)
+		if missing := llamaPrerequisite(); supported && missing != "" {
+			return false, missing
+		}
+		return supported, reason
+	}
+	if platform == nil || platform.Install == nil {
+		return false, installSupportReason(false)
+	}
+	for _, command := range platform.Install.Requires {
+		if _, err := exec.LookPath(command); err != nil {
+			return false, fmt.Sprintf("Required command %s is not available", command)
+		}
+	}
+	if engine == "vllm" {
+		return probeVLLMInstallSupport(context.Background())
+	}
+	return true, ""
 }
 
 // reconcilePresence reconciles filesystem detection with a fixed-port engine

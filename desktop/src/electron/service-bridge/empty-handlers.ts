@@ -5,13 +5,14 @@ import type { WsInvokeChannel, WsInvokeRequest, WsInvokeResponse } from '@/share
 import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
+import type { EngineLogSnapshot } from '@/shared/types/engine-api'
 import type { ServiceError } from '@/shared/types/errors'
 import {
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
-import { engineManagerName } from '@/shared/utils/engines'
+import { engineManagerName, isEngineType } from '@/shared/utils/engines'
 import { getEngineHubModels } from '@/electron/model-hub'
 import { getModularSupervisor } from './modular-supervisor'
 import {
@@ -29,6 +30,14 @@ import {
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
 import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { removeManualNodeEntry, resolveManualNodeKey } from './manual-nodes-store'
+import { parseOnboardingHistory } from '@/shared/utils/onboarding-history'
+import { vllmGroupHandlers } from './vllm-group-handlers'
+import { vllmModelJourneyHandlers } from './vllm-model-journey-handlers'
+import { onboardingHandlers } from './onboarding-handlers'
+import { fabricHandlers } from './fabric-handlers'
+import { diagnosticMPIReconcileHandlers } from './diagnostic-mpi-reconcile-handlers'
+import { diagnosticMPIHandlers } from './diagnostic-mpi-handlers'
+import { diagnosticRuntimeReplacementHandlers } from './diagnostic-runtime-replacement-handlers'
 
 type BridgeHandler<C extends WsInvokeChannel> = (
     payload?: WsInvokeRequest<C>
@@ -56,6 +65,57 @@ function stringValue(value: JsonValue | undefined): string {
 
 function booleanValue(value: JsonValue | undefined): boolean {
     return typeof value === 'boolean' ? value : false
+}
+
+const ENGINE_LOG_TIME = /^\d{2}:\d{2}:\d{2}\.\d{3}$/
+// Keep these wire limits aligned with services/shared/enginelogs.
+const MAX_ENGINE_LOG_LINES = 2_000
+const MAX_ENGINE_LOG_LINE_BYTES = 256 * 1024
+const MAX_ENGINE_LOG_SNAPSHOT_TEXT_BYTES = 1024 * 1024
+
+function parseEngineLogs(value: JsonValue | undefined): EngineLogSnapshot {
+    const raw = objectValue(value)?.lines
+    if (!Array.isArray(raw) || raw.length > MAX_ENGINE_LOG_LINES) {
+        throw new Error('Engine Manager returned an invalid log snapshot')
+    }
+    const snapshot: EngineLogSnapshot = {
+        lines: raw.map(line => {
+            const row = objectValue(line)
+            const time = stringValue(row?.time)
+            const stream = stringValue(row?.stream)
+            const text = stringValue(row?.text)
+            if (
+                !ENGINE_LOG_TIME.test(time) ||
+                (stream !== 'stdout' && stream !== 'stderr') ||
+                typeof row?.text !== 'string' ||
+                Buffer.byteLength(text, 'utf8') > MAX_ENGINE_LOG_LINE_BYTES
+            ) {
+                throw new Error('Engine Manager returned an invalid log line')
+            }
+            return { time, stream, text }
+        })
+    }
+    const textBytes = snapshot.lines.reduce(
+        (total, line) => total + Buffer.byteLength(line.text, 'utf8'),
+        0
+    )
+    if (textBytes > MAX_ENGINE_LOG_SNAPSHOT_TEXT_BYTES) {
+        throw new Error('Engine Manager returned an invalid log snapshot')
+    }
+    return snapshot
+}
+
+async function handleEngineLogs(
+    payload: WsInvokeRequest<'engine:logs'> | undefined
+): Promise<EngineLogSnapshot> {
+    if (!payload || !isEngineType(payload.engineType)) {
+        throw new Error('A known engine type is required for local logs')
+    }
+    return parseEngineLogs(
+        await getModularSupervisor().callProcess('broker', 'engine:logs', {
+            engine: engineManagerName(payload.engineType)
+        })
+    )
 }
 
 /** Relay a `cluster:*` / `nodes:*` request to nvpair-cluster-manager via the broker. */
@@ -125,26 +185,35 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
         // observes its eventual response because an ownership rejection has no
         // resolving `engine:state-changed`; start keeps its existing push path.
         const status = await supervisor.callProcess('broker', 'engine:status', { engine })
-        const running = booleanValue(objectValue(status)?.running)
+        const statusObject = objectValue(status)
+        const running = booleanValue(statusObject?.running)
+        const enabled =
+            engineType === 'vllm'
+                ? booleanValue(statusObject?.enabled)
+                : typeof statusObject?.enabled === 'boolean'
+                  ? booleanValue(statusObject.enabled)
+                  : running
+        const verb =
+            engineType === 'vllm' ? (enabled ? 'disable' : 'enable') : enabled ? 'stop' : 'start'
         // Synthesize the transitional status the engine-manager never emits, so
         // the UI shows a spinner immediately instead of sitting idle until the
         // terminal engine:state-changed lands.
-        getModularBridgeState().beginLocalEngineOp(engineType, running ? 'stopping' : 'starting')
+        getModularBridgeState().beginLocalEngineOp(engineType, enabled ? 'stopping' : 'starting')
         supervisor.sendProcess(
             'broker',
-            running ? 'engine:stop' : 'engine:start',
+            enabled ? 'engine:stop' : 'engine:start',
             { engine },
             error => {
                 // A send failure or rejected stop has no resolving
                 // engine:state-changed — clear the optimistic spinner and report.
                 getModularBridgeState().clearPendingEngineOp(engineType)
                 supervisor.reportError(
-                    `Failed to ${running ? 'stop' : 'start'} ${engine}: ${error}`,
+                    `Failed to ${verb} ${engine}: ${error}`,
                     'error',
                     `engine-cmd:toggle:${engine}`
                 )
             },
-            running
+            enabled
         )
     } catch (err) {
         supervisor.reportError(
@@ -171,7 +240,7 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
     // Use the engine-manager's stable error key. If the manager already reported
     // the operation failure, nvpair-errors upserts this fallback instead of showing
     // a duplicate; admission/transport failures still get a visible error.
-    const failPendingOp = (action: string, operation: 'install' | 'uninstall') => {
+    const failPendingOp = (action: string, operation: 'install' | 'uninstall' | 'update') => {
         return (error: string): void => {
             state.clearPendingEngineOp(payload.engineType)
             supervisor.reportError(`Failed to ${action} ${engine}: ${error}`, 'error', undefined, {
@@ -198,12 +267,12 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
         case 'install':
         case 'installAll':
             state.beginLocalEngineOp(payload.engineType, 'installing')
-            // Start the engine as soon as the install succeeds. The backend
-            // performs install-then-start atomically and persists desired-enabled.
+            // Existing engines retain install-and-start. vLLM stays stopped until
+            // the user explicitly selects a model and starts it.
             supervisor.sendProcess(
                 'broker',
                 'engine:install',
-                { engine, start: true },
+                { engine, start: payload.engineType !== 'vllm' },
                 failPendingOp('install', 'install'),
                 true
             )
@@ -219,6 +288,17 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             )
             break
         case 'update':
+            if (payload.engineType === 'vllm') {
+                state.beginLocalEngineOp(payload.engineType, 'installing')
+                supervisor.sendProcess(
+                    'broker',
+                    'engine:update',
+                    { engine },
+                    failPendingOp('update', 'update'),
+                    true
+                )
+                break
+            }
             if (engine === 'llamacpp') {
                 // llama.cpp has no managed update, and the generic
                 // uninstall-then-install pair below must not stand in for one.
@@ -383,16 +463,17 @@ async function toggleRemoteEngine(
     engineType: EngineType
 ): Promise<void> {
     const supervisor = getModularSupervisor()
-    const running = getModularBridgeState().isRemoteEngineRunning(nodeId, engineType)
-    await supervisor.toggleEngineRemote(nodeId, engine, engineType, running)
+    const enabled = getModularBridgeState().isRemoteEngineEnabled(nodeId, engineType)
+    await supervisor.toggleEngineRemote(nodeId, engine, engineType, enabled)
 }
 
 /**
  * Dispatch a UI engine command to a remote peer via `nvpair-engine-manager`'s
  * `engine:remote-*` client methods (cluster-scoped mTLS `ec` surface). Install,
- * start/stop, pull, and model load/unload/delete are supported remotely;
- * uninstall and update remain local-only. Ports are not commands at all — they
- * travel the settings channels, which do reach a peer.
+ * managed vLLM update, start/stop, pull, and model load/unload/delete are
+ * supported remotely; uninstall and every other engine's update remain
+ * local-only. Ports are not commands at all — they travel the settings
+ * channels, which do reach a peer.
  * (optimistic status, awaited completion, authoritative refresh) lives on the
  * supervisor because the backend settles these ops only via the RPC reply, never
  * a terminal notification.
@@ -409,7 +490,12 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
     switch (payload.command) {
         case 'install':
         case 'installAll':
-            void supervisor.installEngineRemote(nodeId, engine, payload.engineType, true)
+            void supervisor.installEngineRemote(
+                nodeId,
+                engine,
+                payload.engineType,
+                payload.engineType !== 'vllm'
+            )
             break
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
@@ -419,11 +505,15 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
                 void supervisor.pullModelRemote(nodeId, engine, payload.engineType, payload.model)
             }
             break
-        case 'uninstall':
         case 'update':
-            refuseRemote(
-                `${payload.command} is only available on the local node — remote uninstall/update is not supported yet.`
-            )
+            if (payload.engineType !== 'vllm') {
+                refuseRemote('Remote update is only available for PAIR-managed vLLM.')
+                break
+            }
+            void supervisor.updateEngineRemote(nodeId, engine, payload.engineType)
+            break
+        case 'uninstall':
+            refuseRemote('uninstall is only available on the local node.')
             break
         case 'cancelPull':
             if (payload.model && engine === 'llamacpp') {
@@ -465,6 +555,24 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
 async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>): Promise<null> {
     if (!payload) return null
     const supervisor = getModularSupervisor()
+    const state = getModularBridgeState()
+
+    if (
+        payload.engineType === 'vllm' &&
+        !state.isEngineCommandAllowed(payload.nodeId, payload.engineType, payload.command)
+    ) {
+        supervisor.reportError(
+            `${payload.command} is unavailable for this vLLM host or ownership state.`,
+            'warning',
+            `engine-cmd:authority:${payload.command}`,
+            {
+                nodeId: payload.nodeId,
+                engineType: payload.engineType,
+                modelName: payload.model
+            }
+        )
+        return null
+    }
 
     // "Load" loads a model into the engine's memory/VRAM — never proxy routing.
     // Proxy node selection is owned by the backend nvpair-job-scheduler (it drives
@@ -475,8 +583,8 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
 
     // Remote peers: `nvpair-engine-manager` exposes `engine:remote-*` client methods
     // (cluster mTLS `ec` surface) for install/start/stop/pull and model ops.
-    // Local-only ops are refused in {@link routeRemoteEngineCommand}.
-    const selfId = getModularBridgeState().getSelfId()
+    // Unsupported remote ops are refused in {@link routeRemoteEngineCommand}.
+    const selfId = state.getSelfId()
     if (selfId && payload.nodeId && payload.nodeId !== selfId) {
         if (supervisor.hasProcess('broker')) {
             routeRemoteEngineCommand(payload)
@@ -755,6 +863,7 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'cluster:abandon-if-solo': () => handleClusterAbandonIfSolo(),
 
     'engines:get-initial': () => getModularBridgeState().getEngineInitialState(),
+    'engine:logs': payload => handleEngineLogs(payload),
     'engines:get-settings': async payload =>
         parseEngineSettings(
             await getModularSupervisor().callProcess(
@@ -783,6 +892,18 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'engine:command': payload => handleEngineCommand(payload),
     'engine:search-hub': payload =>
         payload ? getEngineHubModels(payload.engineType) : { models: [] },
+    ...vllmGroupHandlers,
+    ...vllmModelJourneyHandlers,
+    ...onboardingHandlers,
+    ...fabricHandlers,
+    ...diagnosticMPIHandlers,
+    ...diagnosticRuntimeReplacementHandlers,
+    ...diagnosticMPIReconcileHandlers,
+
+    'setup:get-history': async () =>
+        parseOnboardingHistory(
+            await getModularSupervisor().callProcess('broker', 'engine:onboarding-history')
+        ),
 
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),

@@ -2,7 +2,7 @@
 
 The NVIDIA Personal AI Router is distributed under the Apache License 2.0 (see `LICENSE`). It incorporates the third-party open-source software listed below. Each component is the property of its respective copyright holders and is distributed under its own license; the full license text for each component is reproduced in this file.
 
-Scope: dependencies linked into the twelve shipped binaries (`nvpair-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-cluster-manager`, `nvpair-job-scheduler`, `nvpair-tui`) across Windows, Linux, and macOS builds. First-party modules (`nvpair-shared`, `eapnoob`) are excluded.
+Scope: dependencies linked into the fourteen shipped binaries (`nvpair-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-cluster-manager`, `nvpair-job-scheduler`, `nvpair-tui`, `nvpair-host-bootstrap`, `nvpair-host-helper`) across Windows, Linux, and macOS builds. First-party modules (`nvpair-shared`, `eapnoob`) are excluded.
 
 ## Components
 
@@ -38,6 +38,7 @@ Scope: dependencies linked into the twelve shipped binaries (`nvpair-proxy`, `nv
 | `github.com/rivo/uniseg` | v0.4.7 | MIT |
 | `github.com/xo/terminfo` | v0.0.0-20220910002029-abceb7e1c41e | MIT |
 | `github.com/yusufpapurcu/wmi` | v1.2.4 | MIT |
+| `golang.org/x/crypto` | v0.43.0 | BSD-3-Clause |
 | `golang.org/x/net` | v0.58.0 | BSD-3-Clause |
 | `golang.org/x/sys` | v0.47.0 | BSD-3-Clause |
 | `golang.org/x/text` | v0.3.8 | BSD-3-Clause |
@@ -1238,6 +1239,41 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## golang.org/x/crypto
+
+- Version: `v0.43.0`
+- License: BSD-3-Clause
+
+```
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ## golang.org/x/net

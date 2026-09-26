@@ -224,7 +224,7 @@ func TestAddressedRequestReachesOnlyItsOwnFacade(t *testing.T) {
 	}
 
 	// An engine with no facade resolves to nothing rather than to a sibling.
-	if f := p.facadeFor("vllm"); f != nil {
+	if f := p.facadeFor("not-registered"); f != nil {
 		t.Errorf("unknown engine resolved to the %s facade", f.profile.Name)
 	}
 	if f := p.facadeFor(""); f != nil {

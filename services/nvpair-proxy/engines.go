@@ -141,6 +141,12 @@ var llamaCppBaseRoutes = []route{
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
 
+// vllmBaseRoutes is the engine-specific surface that vLLM's OpenAI-compatible
+// server exposes before the shared OpenAI inference routes are added.
+var vllmBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -159,9 +165,11 @@ func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
 	llamacpp, _ := engines.ByName("llamacpp")
+	vllm, _ := engines.ByName("vllm")
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	llamaCppRoutes := slices.Concat(llamaCppBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
+	vllmRoutes := slices.Concat(vllmBaseRoutes, openAIInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -190,6 +198,13 @@ func buildProfiles() []engineProfile {
 			// 8081 is where engine-manager relocates a managed llama.cpp, so a
 			// proxy that restored it would sit on the engine's own port.
 			ReservedPersistedPort: llamacpp.EnginePortBase,
+		},
+		{
+			Engine:                vllm,
+			StandalonePort:        vllm.FacadePort,
+			Routes:                vllmRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: vllm.EnginePortBase,
 		},
 	}
 }

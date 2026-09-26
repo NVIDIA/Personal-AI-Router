@@ -13,6 +13,7 @@ interface WelcomeEnginesStepProps {
     installing: boolean
     onEngineToggle: (engineType: EngineType, checked: boolean) => void
     isEngineInstalled: (engineType: EngineType) => boolean
+    isEngineDisabled: (engineType: EngineType) => boolean
 }
 
 export function WelcomeEnginesStep({
@@ -21,7 +22,8 @@ export function WelcomeEnginesStep({
     engineSelections,
     installing,
     onEngineToggle,
-    isEngineInstalled
+    isEngineInstalled,
+    isEngineDisabled
 }: WelcomeEnginesStepProps) {
     return (
         <>
@@ -42,6 +44,11 @@ export function WelcomeEnginesStep({
                             }
                             installing={installing}
                             alreadyInstalled={isEngineInstalled(t)}
+                            disabledReason={
+                                isEngineDisabled(t)
+                                    ? 'Serving-group ownership holds vLLM installation.'
+                                    : undefined
+                            }
                             onCheckedChange={v => onEngineToggle(t, v)}
                         />
                     </Fragment>

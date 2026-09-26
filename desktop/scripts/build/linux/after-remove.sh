@@ -84,4 +84,20 @@ case "${1:-}" in
     ;;
 esac
 
+# 5. Remove package-owned bootstrap inputs on a real removal, never during an
+# upgrade. A helper with operation.json is target-bootstrap-owned and must be
+# removed through the marker-bound bootstrap uninstall instead of by dpkg.
+case "${1:-}" in
+  remove|purge)
+    rm -f /usr/libexec/nvpair-host-bootstrap
+    if [ ! -e /var/lib/nvpair/host-bootstrap/operation.json ]; then
+      rm -f /usr/libexec/nvpair-host-helper
+      rmdir /var/lib/nvpair/host-bootstrap 2>/dev/null || true
+      rmdir /var/lib/nvpair 2>/dev/null || true
+    fi
+    rm -rf /usr/share/nvpair/host-bootstrap
+    rmdir /usr/share/nvpair 2>/dev/null || true
+    ;;
+esac
+
 exit 0

@@ -50,7 +50,7 @@ export function isEngineTypeRunningClusterWide(
 ): boolean {
     for (const inner of statusByNode.values()) {
         const s = inner.get(engineType)
-        if (s?.processStatus === 'running') return true
+        if (s && (s.routable ?? s.processStatus === 'running')) return true
     }
     return false
 }

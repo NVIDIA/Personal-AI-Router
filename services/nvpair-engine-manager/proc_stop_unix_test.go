@@ -17,9 +17,6 @@ func TestStopEscalatesToSIGKILL(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("needs a POSIX shell")
 	}
-	restore := stopEscalateAfter
-	stopEscalateAfter = 300 * time.Millisecond
-	t.Cleanup(func() { stopEscalateAfter = restore })
 	// The parent traps TERM and spawns a child in the same process group that
 	// also traps it; only SIGKILL to the group ends both.
 	mp, err := startManagedProc("sh", []string{"-c", `trap "" TERM; sh -c 'trap "" TERM; sleep 60' & wait`}, nil, nil)
@@ -27,10 +24,13 @@ func TestStopEscalatesToSIGKILL(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := mp.cmd.Process.Pid
-	done := make(chan struct{})
-	go func() { mp.stop(); close(done) }()
+	done := make(chan error, 1)
+	go func() { done <- mp.stop(300 * time.Millisecond) }()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stop: %v", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("stop did not escalate past an ignored SIGTERM")
 	}

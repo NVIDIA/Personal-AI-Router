@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { EngineInitialState } from '@/shared/types/engine-api'
+import type { EngineCommandType, EngineInitialState } from '@/shared/types/engine-api'
 import type {
     EngineModels,
+    EngineOperationType,
     EngineProcessStatus,
     EngineProgress,
     EngineStatusData,
@@ -13,9 +14,11 @@ import type {
 import type { LogEntry, LogPage } from '@/shared/types/log'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
+import type { PlatformDisplayName } from '@/shared/types/platform'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
+import type { VllmGroupStatus, VllmServingGroupRoute } from '@/shared/types/vllm-group-status'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import {
     MODULAR_NODE_INFO_SELF_HOST,
@@ -28,6 +31,8 @@ import {
     engineTypeFromManagerName,
     isEngineType
 } from '@/shared/utils/engines'
+import { vllmGroupHoldsTarget } from '@/shared/utils/vllm-group-cleanup'
+import { parseVllmServingGroupRoute } from '@/shared/utils/vllm-group-status'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
@@ -38,7 +43,7 @@ import { serviceLogLevel } from './service-log-level'
 // Live node sources are the reverse proxies, relayed through the broker,
 // and the broker's consolidated discovery snapshot. Electron does not consume
 // worker discovery protocols directly.
-type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy' | 'llamacpp-proxy'
+type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy' | 'llamacpp-proxy' | 'vllm-proxy'
 type BrokerNodeSource = ProxyNodeSource | 'broker'
 
 /**
@@ -50,27 +55,27 @@ type BrokerNodeSource = ProxyNodeSource | 'broker'
 export const PROXY_NODE_SOURCES: readonly ProxyNodeSource[] = [
     'ollama-proxy',
     'lmstudio-proxy',
-    'llamacpp-proxy'
+    'llamacpp-proxy',
+    'vllm-proxy'
 ]
 
 /**
  * Engines surfaced by the broker's proxy plane. Other engine-manager engines
  * are not currently routed across nodes.
  */
-export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'llamacpp'>
-export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'llamacpp']
+export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'llamacpp' | 'vllm'>
+export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'llamacpp', 'vllm']
 
 /** Map a proxy node source onto the engine it describes. */
 const PROXY_SOURCE_ENGINE: Record<ProxyNodeSource, ProxyEngine> = {
     'ollama-proxy': 'ollama',
     'lmstudio-proxy': 'lm-studio',
-    'llamacpp-proxy': 'llamacpp'
+    'llamacpp-proxy': 'llamacpp',
+    'vllm-proxy': 'vllm'
 }
 
-function proxySourceForEngine(engine: EngineType): ProxyNodeSource {
-    if (engine === 'ollama') return 'ollama-proxy'
-    if (engine === 'lm-studio') return 'lmstudio-proxy'
-    return 'llamacpp-proxy'
+function proxyNodeSource(engine: ProxyEngine): ProxyNodeSource {
+    return engine === 'lm-studio' ? 'lmstudio-proxy' : `${engine}-proxy`
 }
 
 /** Per-engine presence on a node — each proxy reports its own engine. */
@@ -103,11 +108,18 @@ interface RemoteEngineFacts {
     running: boolean
     healthy: boolean
     port: number
+    enabled?: boolean
+    managed?: boolean
+    adopted?: boolean
+    routable?: boolean
     installSupported?: boolean
     installReason?: string
     acceleration?: string
     devices?: string[]
-    managed?: boolean
+    version?: string
+    /** Engine Manager's retained model selection for the next owned start (vLLM). */
+    selectedModel?: string
+    servingGroup?: VllmServingGroupRoute
 }
 
 interface ModularNode {
@@ -155,6 +167,9 @@ interface ModularNode {
     gpus: ModularGpu[]
     cpu: ModularCpu | null
     memory: ModularMemory | null
+    // Learned from this node's identity-matched `/v1/node-info` response.
+    // Absent for peers that predate the OS field or have not answered yet.
+    os?: PlatformDisplayName
     // Node-level list of inference-ready hardware ids from /v1/node-info, mapped
     // straight to SystemTopology.inferenceHardwareIds. undefined = the backend
     // does not report readiness yet (UI shows all GPUs). See the routing
@@ -176,6 +191,10 @@ interface ModularNode {
     // per-engine attribution) and falls back to {@link models}. Mirrors
     // noderec.DirectoryNode.EngineModels.
     modelsByEngine: Record<string, string[]>
+    // Downloaded/catalog models are distinct from served routing truth. Today
+    // vLLM reports PAIR-owned retained receipts here so a stopped managed engine
+    // can select one without making it a proxy candidate.
+    retainedByEngine: Record<string, string[]>
     // Per-engine set of models currently loaded in memory, keyed by
     // engine-manager engine name ("ollama", "lmstudio"), carried on
     // `AvailableNode.loadedByEngine`. Normally a subset of
@@ -193,7 +212,12 @@ function emptyPresence(): EnginePresence {
 }
 
 function emptyEngines(): Record<ProxyEngine, EnginePresence> {
-    return { ollama: emptyPresence(), 'lm-studio': emptyPresence(), llamacpp: emptyPresence() }
+    return {
+        ollama: emptyPresence(),
+        'lm-studio': emptyPresence(),
+        llamacpp: emptyPresence(),
+        vllm: emptyPresence()
+    }
 }
 
 /** Immutably set one engine's presence, preserving the others. */
@@ -260,9 +284,29 @@ function booleanValue(value: JsonValue | undefined): boolean {
     return typeof value === 'boolean' ? value : false
 }
 
+function optionalBooleanValue(value: JsonValue | undefined): boolean | undefined {
+    return typeof value === 'boolean' ? value : undefined
+}
+
+function servingGroupValue(value: JsonValue | undefined): VllmServingGroupRoute | undefined {
+    return value === undefined || value === null ? undefined : parseVllmServingGroupRoute(value)
+}
+
+/** Map Go's canonical runtime.GOOS values onto the renderer's display type. */
+function nodeInfoOsValue(value: JsonValue | undefined): PlatformDisplayName | undefined {
+    if (value === 'windows') return 'Windows'
+    if (value === 'linux') return 'Linux'
+    if (value === 'darwin') return 'MacOS'
+    return undefined
+}
+
 function stringArrayValue(value: JsonValue | undefined): string[] {
     if (!Array.isArray(value)) return []
     return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
+function copyNetworkValue(value: JsonValue | undefined): EngineProgress['network'] {
+    return value === 'fabric' || value === 'management' ? value : undefined
 }
 
 /**
@@ -417,7 +461,9 @@ export function parseWorkloadsInitial(value: JsonValue | undefined): Workload[] 
 
 /** True for an engine fronted by a broker-supervised reverse proxy. */
 export function isProxyEngine(engine: EngineType): engine is ProxyEngine {
-    return engine === 'ollama' || engine === 'lm-studio' || engine === 'llamacpp'
+    return (
+        engine === 'ollama' || engine === 'lm-studio' || engine === 'llamacpp' || engine === 'vllm'
+    )
 }
 
 const PENDING_OP_IDLE_TIMEOUT_MS = 90_000
@@ -651,11 +697,10 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
             storage: [],
             inferenceHardwareIds: node.inferenceHardwareIds
         },
-        // The local node's OS is known from the running process; the backend's
-        // discovery/node-info plane reports no OS for remote nodes, so they fall
-        // back to a placeholder. Remote OS is not reported by the current
-        // discovery/node-info contract.
-        os: node.id === selfId ? platformDisplayName(currentPlatform()) : 'Windows'
+        // Local platform comes from Electron; remote platform is target-observed
+        // node-info data. Legacy/offline peers stay unknown rather than silently
+        // masquerading as Windows.
+        os: node.id === selfId ? platformDisplayName(currentPlatform()) : node.os
     }
 }
 
@@ -735,7 +780,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
     }
     return {
         id,
-        sources: [proxySourceForEngine(engine)],
+        sources: [proxyNodeSource(engine)],
         // `Node.Host` is the hostname; empty for the self-bridge manual node,
         // in which case the broker discovery entry supplies the display name on
         // merge (see mergeNode). Never fall back to the UUID id here.
@@ -750,6 +795,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         // proxy-sourced node contributes engine presence only, never models.
         models: [],
         modelsByEngine: {},
+        retainedByEngine: {},
         // A proxy `node/*` event carries no loaded-model state either; the
         // broker-enriched value is preserved across the proxy merge (see mergeNode).
         loadedByEngine: {},
@@ -819,6 +865,9 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         // peer that predates per-engine attribution) drives the
         // {@link modelsForEngine} fallback to the flat union.
         modelsByEngine: parseModelsByEngine(obj.modelsByEngine),
+        // Catalog inventory never feeds `models` or `modelsByEngine`; it is used
+        // only by stopped managed-engine workflows such as vLLM selection.
+        retainedByEngine: parseModelsByEngine(obj.retainedByEngine),
         // Broker `AvailableNode.loadedByEngine`: the per-engine set of models
         // loaded in memory, enriched from the peer's engine-manager
         // `/v1/models`. `omitempty` on the wire — absent for a peer that reports
@@ -865,6 +914,7 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         left.reachableAddress === right.reachableAddress &&
         left.nodeInfoPort === right.nodeInfoPort &&
         left.nodeInfoUp === right.nodeInfoUp &&
+        left.os === right.os &&
         // Order matters for the broker's list and only for it: that order is the
         // node's own ranking of where to reach it, and it drives the poll order.
         sameStringList(left.brokerAddresses, right.brokerAddresses) &&
@@ -872,6 +922,7 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         sameTelemetry(left, right.gpus, right.cpu, right.memory, right.inferenceHardwareIds) &&
         sameStringList(left.models, right.models) &&
         sameModelsByEngine(left.modelsByEngine, right.modelsByEngine) &&
+        sameModelsByEngine(left.retainedByEngine, right.retainedByEngine) &&
         // A residency-only change (a model loaded/evicted with the installed set
         // unchanged) must still count as a node change so the loaded dot updates.
         sameModelsByEngine(left.loadedByEngine, right.loadedByEngine) &&
@@ -907,28 +958,23 @@ class ModularBridgeState {
     // Per-engine bound proxy port reported by the broker. 0 = not reported yet;
     // we never fabricate a default — an unknown port surfaces as null, not a
     // guess. `ollama` is the `ollama-proxy`, `lm-studio` is the `lmstudio-proxy`,
-    // `llamacpp` is the `llamacpp-proxy`.
-    private proxyPorts: Record<ProxyEngine, number> = { ollama: 0, 'lm-studio': 0, llamacpp: 0 }
+    // `llamacpp` is the `llamacpp-proxy`, `vllm` is the `vllm-proxy`.
+    private proxyPorts: Record<ProxyEngine, number> = {
+        ollama: 0,
+        'lm-studio': 0,
+        llamacpp: 0,
+        vllm: 0
+    }
     private selfId: string | null = null
+    private vllmGroupKnown = false
+    private vllmGroupStatus: VllmGroupStatus | null = null
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
      * engine type. Stored independent of `selfId` because engine-manager
      * reports before the self node is discovered, then resolved against
      * `selfId` at emit time.
      */
-    private engineManagerFacts = new Map<
-        EngineType,
-        {
-            installed: boolean
-            running: boolean
-            port: number
-            installSupported?: boolean
-            installReason?: string
-            acceleration?: string
-            devices?: string[]
-            managed?: boolean
-        }
-    >()
+    private engineManagerFacts = new Map<EngineType, RemoteEngineFacts>()
     /**
      * Local model lists pulled from `nvpair-engine-manager`'s `list_models` action by
      * the supervisor. Cached so `engines:get-initial` can include them and survive
@@ -1005,6 +1051,11 @@ class ModularBridgeState {
      * {@link finishModelPull}.
      */
     private localPullModels = new Map<EngineType, string>()
+    /** Exact model/operation bindings for typed prepare and distribution work. */
+    private vllmJourneys = new Map<
+        string,
+        { operation: 'prepare' | 'distribute'; operationId: string; model?: string }
+    >()
     /**
      * The authoritative set of live inbound invites awaiting the local user's PIN
      * entry, keyed by `inviteId`. The cluster-manager pushes `cluster:invite-received`
@@ -1166,7 +1217,7 @@ class ModularBridgeState {
             for (const engine of PROXY_ENGINES) {
                 const status = this.resolveRemoteEngineStatus(node.id, engine)
                 if (status) statuses.push(status)
-                models.push(this.toEngineModels(node, engine))
+                models.push(this.discoveryModelsForNode(node, engine, node.id))
             }
         }
 
@@ -1245,7 +1296,15 @@ class ModularBridgeState {
         const cpu = cpuValue(obj.cpu)
         const memory = memoryValue(obj.memory)
         const inferenceHardwareIds = optionalStringArrayValue(obj.inference_hardware_ids)
-        if (node.nodeInfoUp && sameTelemetry(node, gpus, cpu, memory, inferenceHardwareIds)) {
+        // OS is trusted only when this response proves it belongs to the node we
+        // polled. Legacy responses without hostUuid may still refresh telemetry,
+        // but cannot introduce an identity-bound platform claim.
+        const os = (reportedUuid === nodeId ? nodeInfoOsValue(obj.os) : undefined) ?? node.os
+        if (
+            node.nodeInfoUp &&
+            node.os === os &&
+            sameTelemetry(node, gpus, cpu, memory, inferenceHardwareIds)
+        ) {
             emitBridgePush('metrics:update', toMetrics(node))
             return
         }
@@ -1255,6 +1314,7 @@ class ModularBridgeState {
             gpus,
             cpu,
             memory,
+            os,
             inferenceHardwareIds,
             nodeInfoUp: true
         })
@@ -1412,13 +1472,19 @@ class ModularBridgeState {
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
-            port: numberValue(obj.port),
-            installSupported:
-                typeof obj.install_supported === 'boolean' ? obj.install_supported : undefined,
-            installReason: stringValue(obj.install_reason),
+            healthy: booleanValue(obj.healthy),
+            enabled: optionalBooleanValue(obj.enabled),
+            managed: optionalBooleanValue(obj.managed),
+            adopted: optionalBooleanValue(obj.adopted),
+            routable: optionalBooleanValue(obj.routable),
+            installSupported: optionalBooleanValue(obj.install_supported),
+            installReason: stringValue(obj.install_reason) || undefined,
             acceleration: stringValue(obj.acceleration) || undefined,
             devices: optionalStringArrayValue(obj.devices),
-            managed: typeof obj.managed === 'boolean' ? obj.managed : undefined
+            version: stringValue(obj.version) || undefined,
+            selectedModel: stringValue(obj.selected_model) || undefined,
+            servingGroup: servingGroupValue(obj.serving_group),
+            port: numberValue(obj.port)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -1445,12 +1511,19 @@ class ModularBridgeState {
     /**
      * Clear a pending op when its lifecycle operation fails with an
      * `errors:report` that carries no `engine:state-changed` (LM Studio
-     * start-command failure, uninstall failure, install failure). Called by the
+     * start-command failure, uninstall failure, install/update failure). Called by the
      * supervisor's error demux. `operation` is the engine-manager error's
-     * `operation` field (`start` | `install` | `uninstall`).
+     * `operation` field (`start` | `install` | `update` | `uninstall`).
      */
     failLocalEngineOp(engineManagerEngine: string, operation: string): void {
-        if (operation !== 'start' && operation !== 'install' && operation !== 'uninstall') return
+        if (
+            operation !== 'start' &&
+            operation !== 'install' &&
+            operation !== 'update' &&
+            operation !== 'uninstall'
+        ) {
+            return
+        }
         const engineType =
             engineTypeFromManagerName(engineManagerEngine) ??
             (isEngineType(engineManagerEngine) ? engineManagerEngine : null)
@@ -1512,13 +1585,71 @@ class ModularBridgeState {
      * (`up`/`down`) is the fallback only for a peer with no facts, so the toggle
      * decision matches the displayed status.
      */
-    isRemoteEngineRunning(nodeId: string, engineType: EngineType): boolean {
+    isRemoteEngineEnabled(nodeId: string, engineType: EngineType): boolean {
         if (!isProxyEngine(engineType)) return false
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engineType))
-        if (facts) return facts.running
+        if (facts) {
+            return engineType === 'vllm' ? facts.enabled === true : (facts.enabled ?? facts.running)
+        }
+        if (engineType === 'vllm') return false
         const node = this.nodes.get(nodeId)
         if (!node || node.clustered || node.trusted) return false
         return node.engines[engineType].up
+    }
+
+    // Backward-compatible query used by existing tests and callers; legacy
+    // peers without an enabled field still fall back to running/presence.
+    isRemoteEngineRunning(nodeId: string, engineType: EngineType): boolean {
+        return this.isRemoteEngineEnabled(nodeId, engineType)
+    }
+
+    isEngineManaged(nodeId: string, engineType: EngineType): boolean {
+        if (engineType !== 'vllm') return true
+        if (nodeId === this.selfId) return this.engineManagerFacts.get(engineType)?.managed === true
+        return this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engineType))?.managed === true
+    }
+
+    setVllmGroupStatus(status: VllmGroupStatus): void {
+        this.vllmGroupKnown = true
+        this.vllmGroupStatus = status
+    }
+
+    holdVllmGroupStatus(): void {
+        this.vllmGroupKnown = false
+        this.vllmGroupStatus = null
+    }
+
+    isEngineCommandAllowed(
+        nodeId: string,
+        engineType: EngineType,
+        command: EngineCommandType
+    ): boolean {
+        if (engineType !== 'vllm') return true
+        if (
+            vllmGroupHoldsTarget(
+                {
+                    known: this.vllmGroupKnown,
+                    status: this.vllmGroupStatus,
+                    localVllmSupported: currentPlatform() === 'linux'
+                },
+                nodeId,
+                this.selfId
+            )
+        )
+            return false
+        const facts =
+            nodeId === this.selfId
+                ? this.engineManagerFacts.get(engineType)
+                : this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engineType))
+        if (command === 'install' || command === 'installAll') {
+            return (
+                facts?.installed === false &&
+                facts.adopted === false &&
+                facts.installSupported === true
+            )
+        }
+        if (command === 'update') return facts?.installed === true && facts.managed === true
+        return facts?.managed === true
     }
 
     beginRemoteEngineOp(nodeId: string, engineType: EngineType, status: EngineProcessStatus): void {
@@ -1530,6 +1661,49 @@ class ModularBridgeState {
 
     clearPendingRemoteEngineOp(nodeId: string, engineType: EngineType): void {
         this.clearRemoteEngineOp(nodeId, engineType)
+    }
+
+    private vllmJourneyKey(nodeId: string, operation: 'prepare' | 'distribute'): string {
+        return `${nodeId}:${operation}`
+    }
+
+    beginVllmJourney(
+        nodeId: string,
+        operation: 'prepare' | 'distribute',
+        operationId: string,
+        model?: string
+    ): void {
+        const node = this.nodes.get(nodeId)
+        const progress: EngineProgress = {
+            engineType: 'vllm',
+            nodeId,
+            nodeName: node?.name ?? nodeId,
+            operation,
+            operationId,
+            model,
+            status: operation === 'prepare' ? 'preparing' : 'receiving'
+        }
+        this.vllmJourneys.set(this.vllmJourneyKey(nodeId, operation), {
+            operation,
+            operationId,
+            model
+        })
+        this.activePulls.set(engineProgressKey(progress), progress)
+        emitBridgePush('engines:progress-changed', progress)
+    }
+
+    finishVllmJourney(nodeId: string, operation: 'prepare' | 'distribute'): void {
+        const binding = this.vllmJourneys.get(this.vllmJourneyKey(nodeId, operation))
+        if (!binding) return
+        this.vllmJourneys.delete(this.vllmJourneyKey(nodeId, operation))
+        const key = engineProgressKey({
+            nodeId,
+            engineType: 'vllm',
+            operation,
+            model: binding.model
+        })
+        this.activePulls.delete(key)
+        emitBridgePush('engines:progress-cleared', { key })
     }
 
     beginRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
@@ -1579,16 +1753,27 @@ class ModularBridgeState {
         if (!nodeId || !engineType) return
 
         const op = stringValue(obj.op)
-        const operation = op === 'pull' || op === 'pull_model' ? 'pull' : 'install'
+        const operation: EngineOperationType =
+            op === 'pull' || op === 'pull_model'
+                ? 'pull'
+                : op === 'distribute'
+                  ? 'distribute'
+                  : op === 'qwen38-prepare'
+                    ? 'prepare'
+                    : 'install'
         const stage = stringValue(obj.stage) || 'working'
         // `engine:remote-progress` carries no `model`, so for a pull we backfill
         // the model captured at dispatch — otherwise the frame would emit under a
         // different key than the optimistic entry and never update/clear it.
+        const journey =
+            operation === 'prepare' || operation === 'distribute'
+                ? this.vllmJourneys.get(this.vllmJourneyKey(nodeId, operation))
+                : undefined
         const model =
             stringValue(obj.model) ||
             (operation === 'pull'
                 ? (this.remotePullModels.get(this.remoteOpKey(nodeId, engineType)) ?? '')
-                : '')
+                : (journey?.model ?? ''))
 
         if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
             const progressKey =
@@ -1626,15 +1811,16 @@ class ModularBridgeState {
 
         const node = this.nodes.get(nodeId)
         const pullKey =
-            operation === 'pull' && model
-                ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+            (operation === 'pull' || operation === 'distribute') && model
+                ? engineProgressKey({ nodeId, engineType, operation, model })
                 : ''
         const existingPull = pullKey ? this.activePulls.get(pullKey) : undefined
         const framePercent = numberValue(obj.percent)
         const percent =
-            operation === 'pull'
+            operation === 'pull' || operation === 'distribute'
                 ? mergePullProgressPercent(framePercent, existingPull?.percent)
                 : framePercent
+        const network = operation === 'distribute' ? copyNetworkValue(obj.network) : undefined
         const progress: EngineProgress = {
             engineType,
             nodeId,
@@ -1642,9 +1828,14 @@ class ModularBridgeState {
             operation,
             status: stage,
             percent,
-            model: model || undefined
+            model: model || undefined,
+            operationId: journey?.operationId ?? stringValue(obj.opId) ?? undefined,
+            ...(network ? { network } : {})
         }
-        if (operation === 'pull' && model) {
+        if (
+            ((operation === 'pull' || operation === 'distribute') && model) ||
+            (operation === 'prepare' && journey)
+        ) {
             this.activePulls.set(engineProgressKey(progress), progress)
         }
         emitBridgePush('engines:progress-changed', progress)
@@ -1775,11 +1966,8 @@ class ModularBridgeState {
             base = {
                 engineType: engine,
                 nodeId,
-                installSupported: facts.installSupported,
-                installReason: facts.installReason,
                 acceleration: facts.acceleration,
                 devices: facts.devices,
-                managed: facts.managed,
                 processStatus: facts.running
                     ? 'running'
                     : facts.installed
@@ -1790,7 +1978,16 @@ class ModularBridgeState {
                 // it for the engine port.
                 enginePort: facts.installed && facts.port > 0 ? facts.port : null,
                 // The peer's promoted proxy port, when its engine is advertised.
-                proxyPort: presence?.up && presence.port > 0 ? presence.port : null
+                proxyPort: presence?.up && presence.port > 0 ? presence.port : null,
+                enabled: facts.enabled,
+                managed: facts.managed,
+                adopted: facts.adopted,
+                routable: facts.routable,
+                installSupported: facts.installSupported,
+                installReason: facts.installReason,
+                installedVersion: facts.version,
+                selectedModel: facts.selectedModel,
+                servingGroup: facts.servingGroup
             }
         } else if (node && presence?.up && !node.clustered && !node.trusted) {
             // A live advertisement means the engine is reachable and serving, so
@@ -1837,15 +2034,18 @@ class ModularBridgeState {
                 installed: booleanValue(engineObj.installed),
                 running: booleanValue(engineObj.running),
                 healthy: booleanValue(engineObj.healthy),
-                port: numberValue(engineObj.port),
-                installSupported:
-                    typeof engineObj.install_supported === 'boolean'
-                        ? engineObj.install_supported
-                        : undefined,
-                installReason: stringValue(engineObj.install_reason),
+                enabled: optionalBooleanValue(engineObj.enabled),
+                managed: optionalBooleanValue(engineObj.managed),
+                adopted: optionalBooleanValue(engineObj.adopted),
+                routable: optionalBooleanValue(engineObj.routable),
+                installSupported: optionalBooleanValue(engineObj.install_supported),
+                installReason: stringValue(engineObj.install_reason) || undefined,
                 acceleration: stringValue(engineObj.acceleration) || undefined,
                 devices: optionalStringArrayValue(engineObj.devices),
-                managed: typeof engineObj.managed === 'boolean' ? engineObj.managed : undefined
+                version: stringValue(engineObj.version) || undefined,
+                selectedModel: stringValue(engineObj.selected_model) || undefined,
+                servingGroup: servingGroupValue(engineObj.serving_group),
+                port: numberValue(engineObj.port)
             })
             seen.add(engineType)
         }
@@ -1874,13 +2074,18 @@ class ModularBridgeState {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
             healthy: booleanValue(obj.healthy),
-            port: numberValue(obj.port),
-            installSupported:
-                typeof obj.install_supported === 'boolean' ? obj.install_supported : undefined,
-            installReason: stringValue(obj.install_reason),
+            enabled: optionalBooleanValue(obj.enabled),
+            managed: optionalBooleanValue(obj.managed),
+            adopted: optionalBooleanValue(obj.adopted),
+            routable: optionalBooleanValue(obj.routable),
+            installSupported: optionalBooleanValue(obj.install_supported),
+            installReason: stringValue(obj.install_reason) || undefined,
             acceleration: stringValue(obj.acceleration) || undefined,
             devices: optionalStringArrayValue(obj.devices),
-            managed: typeof obj.managed === 'boolean' ? obj.managed : undefined
+            version: stringValue(obj.version) || undefined,
+            selectedModel: stringValue(obj.selected_model) || undefined,
+            servingGroup: servingGroupValue(obj.serving_group),
+            port: numberValue(obj.port)
         })
         this.emitRemoteEngineStatus(nodeId, engineType)
     }
@@ -1986,8 +2191,9 @@ class ModularBridgeState {
      * engine and re-publish the discovery-derived list. Used when engine-manager
      * cannot supply an initial `list_models` inventory (for example an external
      * engine it has not adopted), or when a stopped-state empty sentinel must be
-     * released after restart. Clearing the override lets discovery be the source
-     * of truth rather than blanking the UI with an empty list.
+     * released after restart, or when stopped managed vLLM must expose its
+     * separately reported retained catalog. Clearing the override lets discovery
+     * provide the correctly scoped served/catalog truth instead of a stale cache.
      */
     fallbackLocalEngineModelsToDiscovery(engine: ProxyEngine): void {
         this.localManagerModels.delete(engine)
@@ -2120,6 +2326,22 @@ class ModularBridgeState {
                 }
             }
         }
+        const facts =
+            nodeId === this.selfId
+                ? this.engineManagerFacts.get(engine)
+                : this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engine))
+        if (
+            engine === 'vllm' &&
+            facts?.installed === true &&
+            facts.managed === true &&
+            !facts.running
+        ) {
+            return {
+                engineType: engine,
+                nodeId,
+                models: (node?.retainedByEngine.vllm ?? []).map(name => modelItem(name, false))
+            }
+        }
         if (!node) return { engineType: engine, nodeId, models: [] }
         return this.toEngineModels(node, engine)
     }
@@ -2151,14 +2373,20 @@ class ModularBridgeState {
             return {
                 engineType,
                 nodeId,
-                installSupported: facts?.installSupported,
-                installReason: facts?.installReason,
                 acceleration: facts?.acceleration,
                 devices: facts?.devices,
-                managed: facts?.managed,
                 processStatus: pending,
                 enginePort: facts && facts.running && facts.port > 0 ? facts.port : null,
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                enabled: facts?.enabled,
+                managed: facts?.managed,
+                adopted: facts?.adopted,
+                routable: facts?.routable,
+                installSupported: facts?.installSupported,
+                installReason: facts?.installReason,
+                installedVersion: facts?.version,
+                selectedModel: facts?.selectedModel,
+                servingGroup: facts?.servingGroup
             }
         }
 
@@ -2166,11 +2394,8 @@ class ModularBridgeState {
             return {
                 engineType,
                 nodeId,
-                installSupported: facts.installSupported,
-                installReason: facts.installReason,
                 acceleration: facts.acceleration,
                 devices: facts.devices,
-                managed: facts.managed,
                 processStatus: facts.running
                     ? 'running'
                     : facts.installed
@@ -2186,7 +2411,16 @@ class ModularBridgeState {
                 // Each proxy-fronted engine has its own broker proxy
                 // (`ollama-proxy` / `lmstudio-proxy`); report that engine's bound
                 // proxy port. Loopback-only engines get null.
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                enabled: facts.enabled,
+                managed: facts.managed,
+                adopted: facts.adopted,
+                routable: facts.routable,
+                installSupported: facts.installSupported,
+                installReason: facts.installReason,
+                installedVersion: facts.version,
+                selectedModel: facts.selectedModel,
+                servingGroup: facts.servingGroup
             }
         }
 
@@ -2301,20 +2535,53 @@ class ModularBridgeState {
         const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
-        const model = this.localPullModels.get(engineType)
+        const op = stringValue(obj.op)
+        const operation: 'pull' | 'distribute' = op === 'distribute' ? 'distribute' : 'pull'
+        const journey =
+            operation === 'distribute'
+                ? this.vllmJourneys.get(this.vllmJourneyKey(nodeId, 'distribute'))
+                : undefined
+        const model =
+            operation === 'distribute' ? journey?.model : this.localPullModels.get(engineType)
         if (!model) return
-        const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        const key = engineProgressKey({ nodeId, engineType, operation, model })
         const existing = this.activePulls.get(key)
         if (!existing) return
 
         const percent = numberValue(obj.percent)
+        const network = operation === 'distribute' ? copyNetworkValue(obj.network) : undefined
         const progress: EngineProgress = {
             ...existing,
             status: stringValue(obj.stage) || existing.status,
-            percent: mergePullProgressPercent(percent, existing.percent)
+            percent: mergePullProgressPercent(percent, existing.percent),
+            operationId: journey?.operationId ?? existing.operationId,
+            ...(network ? { network } : {})
         }
         this.activePulls.set(key, progress)
         emitBridgePush('engines:progress-changed', progress)
+    }
+
+    applyLocalVllmPrepareProgress(params: JsonValue | undefined): boolean {
+        const nodeId = this.selfId
+        const obj = objectValue(params)
+        const stage = stringValue(obj?.stage)
+        if (!nodeId || !stage.includes('qwen38')) return false
+        const journey = this.vllmJourneys.get(this.vllmJourneyKey(nodeId, 'prepare'))
+        if (!journey) return false
+        const key = engineProgressKey({ nodeId, engineType: 'vllm', operation: 'prepare' })
+        const existing = this.activePulls.get(key)
+        const progress: EngineProgress = {
+            engineType: 'vllm',
+            nodeId,
+            nodeName: this.nodes.get(nodeId)?.name ?? nodeId,
+            operation: 'prepare',
+            operationId: journey.operationId,
+            status: stage,
+            percent: numberValue(obj?.percent) ?? existing?.percent
+        }
+        this.activePulls.set(key, progress)
+        emitBridgePush('engines:progress-changed', progress)
+        return true
     }
 
     /** Whether an optimistic pull entry for this model is still in flight. */
@@ -2381,6 +2648,10 @@ class ModularBridgeState {
             this.handleProxyNotification(notification, 'llamacpp')
             return
         }
+        if (notification.source === 'vllm-proxy') {
+            this.handleProxyNotification(notification, 'vllm')
+            return
+        }
         if (notification.source === 'broker') {
             this.handleBrokerNotification(notification)
         }
@@ -2426,7 +2697,7 @@ class ModularBridgeState {
         if (notification.method === 'node/discovered' || notification.method === 'node/updated') {
             const node = parseProxyNode(notification.params, engine)
             if (!node) return
-            this.upsertNode(node, proxySourceForEngine(engine))
+            this.upsertNode(node, proxyNodeSource(engine))
         }
     }
 
@@ -2438,7 +2709,7 @@ class ModularBridgeState {
     private clearNodeEngine(nodeId: string, engine: ProxyEngine): void {
         const existing = this.nodes.get(nodeId)
         if (!existing) return
-        const source: BrokerNodeSource = proxySourceForEngine(engine)
+        const source: BrokerNodeSource = proxyNodeSource(engine)
         const sources = removeSource(existing.sources, source)
         if (sources.length === 0 && !existing.nodeInfoUp) {
             this.removeNodeEntry(nodeId)
@@ -2681,6 +2952,7 @@ class ModularBridgeState {
                 gpus: existing.gpus,
                 cpu: existing.cpu,
                 memory: existing.memory,
+                os: existing.os,
                 inferenceHardwareIds: existing.inferenceHardwareIds,
                 engines: existing.engines
             }
@@ -2710,12 +2982,14 @@ class ModularBridgeState {
             gpus: existing.gpus,
             cpu: existing.cpu,
             memory: existing.memory,
+            os: existing.os,
             inferenceHardwareIds: existing.inferenceHardwareIds,
             // A proxy event carries no model list (models-http); keep the
             // broker-enriched `AvailableNode.models` (+ per-engine attribution and
             // loaded set) we already merged.
             models: existing.models,
             modelsByEngine: existing.modelsByEngine,
+            retainedByEngine: existing.retainedByEngine,
             loadedByEngine: existing.loadedByEngine,
             engines: setEngine(existing.engines, engine, next.engines[engine]),
             lastSeen: Math.max(existing.lastSeen, next.lastSeen)

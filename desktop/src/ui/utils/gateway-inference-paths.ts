@@ -15,6 +15,7 @@ export function gatewayEndpointDisplayUrl(
             return base
         case 'lm-studio':
         case 'llamacpp':
+        case 'vllm':
             return `${base}/v1`
     }
 }

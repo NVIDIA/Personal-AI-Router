@@ -19,10 +19,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -233,6 +235,10 @@ func main() {
 		case "noserve": // run but never bind — used to test readiness timeout
 			time.Sleep(time.Hour)
 			return
+		case "ignoreterm": // prove managed stop escalates instead of wedging opMu
+			signal.Ignore(syscall.Signal(15))
+			time.Sleep(time.Hour)
+			return
 		case "failmark": // append a byte then exit non-zero — for uninstall-retry tests
 			if len(os.Args) > 2 {
 				if f, err := os.OpenFile(os.Args[2], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
@@ -380,10 +386,21 @@ func main() {
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		data := make([]map[string]string, 0)
 		for _, n := range modelNames() {
-			data = append(data, map[string]string{"id": n, "object": "model"})
+			model := map[string]string{"id": n, "object": "model"}
+			if os.Getenv("FAKE_VLLM") == "1" {
+				model["owned_by"] = "vllm"
+			}
+			data = append(data, model)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	})
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("FAKE_VLLM") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": "0.29.0"})
 	})
 	// LM Studio native REST v1 models API: /api/v1/models lists every model with
 	// a loaded_instances array, so the loaded_models nonempty-array row filter

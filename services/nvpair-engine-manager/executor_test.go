@@ -59,6 +59,26 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
 }
 
+func TestEngineModelDirUsesPersistentVLLMSiblingOnly(t *testing.T) {
+	vendorRoot := filepath.Join(t.TempDir(), "Nvidia Corporation")
+	installBase := filepath.Join(vendorRoot, "Personal AI Router", "engine-bin")
+	if got, want := engineModelDir(installBase, "vllm"), filepath.Join(vendorRoot, "Personal AI Router Models", "vllm"); got != want {
+		t.Fatalf("vLLM model root = %q, want canonical sibling %q", got, want)
+	}
+	if got, want := engineModelDir(installBase+string(os.PathSeparator), "vllm"), filepath.Join(vendorRoot, "Personal AI Router Models", "vllm"); got != want {
+		t.Fatalf("vLLM model root with trailing separator = %q, want %q", got, want)
+	}
+	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
+		if got, want := engineModelDir(installBase, engine), filepath.Join(installBase, engine, "models"); got != want {
+			t.Fatalf("%s model root = %q, want existing layout %q", engine, got, want)
+		}
+	}
+	isolated := t.TempDir()
+	if got, want := engineModelDir(isolated, "vllm"), filepath.Join(isolated, "vllm", "models"); got != want {
+		t.Fatalf("non-product fixture root = %q, want isolated fallback %q", got, want)
+	}
+}
+
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 	t.Helper()
 	transport, ok := client.Transport.(*http.Transport)

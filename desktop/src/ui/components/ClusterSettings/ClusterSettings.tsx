@@ -13,6 +13,9 @@ import ActiveNode from './ActiveNode'
 import AvailableNode from './AvailableNode'
 import PendingInviteCard from './PendingInviteCard'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
+import SetupServingCard from './SetupServingCard'
+import FabricSetupCard from './FabricSetupCard'
+import ManagedNCCLCard from './ManagedNCCLCard'
 
 export default function ClusterSettings() {
     const { connected, selfId, clusterId } = useConnectionStore()
@@ -106,6 +109,12 @@ export default function ClusterSettings() {
                     </div>
                 )}
             </Flex>
+
+            <FabricSetupCard />
+
+            <ManagedNCCLCard />
+
+            <SetupServingCard />
 
             {pendingInvites.length > 0 && (
                 <Stack gap="2">

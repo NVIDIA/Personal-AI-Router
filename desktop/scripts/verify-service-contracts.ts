@@ -151,6 +151,16 @@ function extractSurface(dir: string): BinarySurface {
     for (const file of files) {
         const rel = path.basename(file)
         const lines = readFileSync(file, 'utf8').split('\n')
+        let caseBlock = ''
+        const recordHandledCase = (source: string): void => {
+            for (const match of source.matchAll(QUOTED_RE)) {
+                if (isMethodish(match[1])) surface.handles.add(match[1])
+            }
+            for (const match of source.matchAll(IDENT_RE)) {
+                const resolved = constMap.get(match[1])
+                if (resolved) surface.handles.add(resolved)
+            }
+        }
         lines.forEach((line, idx) => {
             const lineNo = idx + 1
             if (!line.includes('signal.Notify')) {
@@ -168,13 +178,11 @@ function extractSurface(dir: string): BinarySurface {
                     }
                 }
             }
-            if (/^\s*case\s+/.test(line)) {
-                for (const m of line.matchAll(QUOTED_RE)) {
-                    if (isMethodish(m[1])) surface.handles.add(m[1])
-                }
-                for (const m of line.matchAll(IDENT_RE)) {
-                    const resolved = constMap.get(m[1])
-                    if (resolved) surface.handles.add(resolved)
+            if (caseBlock || /^\s*case\s+/.test(line)) {
+                caseBlock += `${caseBlock ? '\n' : ''}${line}`
+                if (line.trimEnd().endsWith(':')) {
+                    recordHandledCase(caseBlock)
+                    caseBlock = ''
                 }
             }
         })
@@ -205,6 +213,11 @@ function loadUiText(): string {
         for (const file of listTsFiles(target)) parts.push(readFileSync(file, 'utf8'))
     }
     return parts.join('\n')
+}
+
+/** Match one complete string literal, not a prefix of a different RPC method. */
+function uiReferencesMethod(text: string, method: string): boolean {
+    return [`'${method}'`, `"${method}"`, `\`${method}\``].some(literal => text.includes(literal))
 }
 
 interface MethodRow {
@@ -271,14 +284,14 @@ function buildReports(
         const surface = extractSurface(abs)
         const rows: MethodRow[] = []
         for (const method of [...surface.emits].sort()) {
-            const referenced = uiText.includes(method)
+            const referenced = uiReferencesMethod(uiText, method)
             const isIgnored = method in ignored
             rows.push({ method, direction: 'notification', referenced, ignored: isIgnored })
             if (!referenced && !isIgnored) drift.missingNotifications.push(`${dir} → ${method}`)
         }
         for (const method of [...surface.handles].sort()) {
             if (surface.emits.has(method)) continue
-            const referenced = uiText.includes(method)
+            const referenced = uiReferencesMethod(uiText, method)
             const isIgnored = method in ignored
             rows.push({ method, direction: 'request', referenced, ignored: isIgnored })
             if (!referenced && !isIgnored) drift.unusedRequests.push(`${dir} → ${method}`)

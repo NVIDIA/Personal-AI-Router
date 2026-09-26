@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
         applyEngineManagerStatus: vi.fn(),
         modelPullTarget: vi.fn(() => null),
         getSelfId: vi.fn(() => null),
-        getProxyPort: vi.fn(() => null)
+        getProxyPort: vi.fn(() => null),
+        holdVllmGroupStatus: vi.fn()
     },
     emitBridgePush: vi.fn()
 }))
@@ -205,7 +206,7 @@ describe('modular supervisor readiness', () => {
         expect(supervisor.ready).toBe(true)
     })
 
-    it.each(['llamacpp', 'ollama', 'lmstudio'])(
+    it.each(['llamacpp', 'ollama', 'lmstudio', 'vllm'])(
         'keeps newer %s pushes when the initial engine snapshot arrives late',
         async engine => {
             supervisor.processes.set('broker', new JsonRpcSubprocess('broker', 'unused'))

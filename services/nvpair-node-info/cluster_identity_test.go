@@ -97,7 +97,7 @@ func TestBuildResponseClusterUUIDWireStates(t *testing.T) {
 	raw := func(clusterUUID *string) map[string]any {
 		t.Helper()
 		var out map[string]any
-		if err := json.Unmarshal(buildResponse(nil, nil, 0, statsSnapshot{}, "host", clusterUUID), &out); err != nil {
+		if err := json.Unmarshal(buildResponse(nil, nil, 0, statsSnapshot{}, "host", clusterUUID, nil), &out); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
 		return out

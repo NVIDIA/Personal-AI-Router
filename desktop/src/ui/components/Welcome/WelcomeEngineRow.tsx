@@ -17,6 +17,7 @@ interface WelcomeEngineRowProps {
     installing: boolean
     /** When true, switch is off and disabled with a tooltip (engine already on disk). */
     alreadyInstalled: boolean
+    disabledReason?: string
     onCheckedChange: (checked: boolean) => void
 }
 
@@ -26,6 +27,7 @@ export function WelcomeEngineRow({
     checked,
     installing,
     alreadyInstalled,
+    disabledReason,
     onCheckedChange
 }: WelcomeEngineRowProps) {
     const status = useEngineStatusStore(s => s.statusByNode.get(nodeId)?.get(engineType))
@@ -68,14 +70,22 @@ export function WelcomeEngineRow({
                     </Flex>
                 ) : null}
             </Stack>
-            {alreadyInstalled ? (
-                <DismissibleTooltip slotContent="This engine is already installed on this machine.">
+            {alreadyInstalled || disabledReason ? (
+                <DismissibleTooltip
+                    slotContent={
+                        disabledReason || 'This engine is already installed on this machine.'
+                    }
+                >
                     <span className="inline-flex shrink-0">
                         <Switch
                             checked={checked}
                             disabled
                             size="small"
-                            aria-label={`${label} already installed`}
+                            aria-label={
+                                disabledReason
+                                    ? `${label} action held`
+                                    : `${label} already installed`
+                            }
                         />
                     </span>
                 </DismissibleTooltip>

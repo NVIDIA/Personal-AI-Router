@@ -66,6 +66,9 @@ type EnrichedNode struct {
 	// the flat Models union; carried through to AvailableNode for per-engine
 	// consumers.
 	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
+	// RetainedByEngine carries downloaded/catalog models separately from the
+	// served ModelsByEngine routing inventory.
+	RetainedByEngine map[string][]string `json:"retainedByEngine,omitempty"`
 	// LoadedByEngine names the models currently resident in memory per engine
 	// (normally a subset of ModelsByEngine), enriched by the daemon from the
 	// peer's engine-manager /v1/models loadedByEngine field. Carried through to
@@ -95,20 +98,21 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		port = ni.Port
 	}
 	return EnrichedNode{
-		ID:             n.Name,
-		HostUUID:       n.HostUUID,
-		Host:           n.Name,
-		Port:           port,
-		Addresses:      addrs,
-		TXT:            txt,
-		GPUs:           n.GPUs,
-		CPU:            n.CPU,
-		Memory:         n.Memory,
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered(),
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
+		ID:               n.Name,
+		HostUUID:         n.HostUUID,
+		Host:             n.Name,
+		Port:             port,
+		Addresses:        addrs,
+		TXT:              txt,
+		GPUs:             n.GPUs,
+		CPU:              n.CPU,
+		Memory:           n.Memory,
+		Trusted:          n.Trusted,
+		Clustered:        n.Clustered(),
+		Models:           n.Models,
+		ModelsByEngine:   n.ModelsByEngine,
+		RetainedByEngine: n.RetainedByEngine,
+		LoadedByEngine:   n.LoadedByEngine,
 	}
 }
 
@@ -311,18 +315,19 @@ func (sn storedNode) toAvailable() AvailableNode {
 		candidates = nil
 	}
 	return AvailableNode{
-		ID:             n.ID,
-		Name:           n.ID,
-		HostUUID:       n.HostUUID,
-		IPAddress:      primary,
-		IPAddresses:    candidates,
-		Port:           n.Port,
-		LastSeen:       sn.lastSeen.Unix(),
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered,
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
+		ID:               n.ID,
+		Name:             n.ID,
+		HostUUID:         n.HostUUID,
+		IPAddress:        primary,
+		IPAddresses:      candidates,
+		Port:             n.Port,
+		LastSeen:         sn.lastSeen.Unix(),
+		Trusted:          n.Trusted,
+		Clustered:        n.Clustered,
+		Models:           n.Models,
+		ModelsByEngine:   n.ModelsByEngine,
+		RetainedByEngine: n.RetainedByEngine,
+		LoadedByEngine:   n.LoadedByEngine,
 	}
 }
 

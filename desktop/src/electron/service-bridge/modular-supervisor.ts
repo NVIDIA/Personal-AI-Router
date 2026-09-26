@@ -301,16 +301,11 @@ function proxyEngineFromManagerId(id: string): ProxyEngine | null {
 
 /** The broker relay namespace fronting an engine's reverse proxy. */
 function proxyRelayPrefix(engine: ProxyEngine): string {
-    if (engine === 'ollama') return 'ollama-proxy'
-    if (engine === 'lm-studio') return 'lmstudio-proxy'
-    return 'llamacpp-proxy'
+    return engine === 'lm-studio' ? 'lmstudio-proxy' : `${engine}-proxy`
 }
 
 function proxyEngineFromRelaySource(source: string): ProxyEngine | null {
-    if (source === 'ollama-proxy') return 'ollama'
-    if (source === 'lmstudio-proxy') return 'lm-studio'
-    if (source === 'llamacpp-proxy') return 'llamacpp'
-    return null
+    return PROXY_ENGINES.find(engine => proxyRelayPrefix(engine) === source) ?? null
 }
 
 /**
@@ -475,6 +470,7 @@ class ModularSupervisor {
         this.brokerReady = false
         this.brokerHydrationDone = false
         this.readinessReported = false
+        getModularBridgeState().holdVllmGroupStatus()
 
         // Clear any workloads carried over from a previous run so stale entries
         // from before a restart/crash never linger. `onBrokerReady` then re-seeds
@@ -565,6 +561,7 @@ class ModularSupervisor {
         this.discoveryModelRetryAttempts.clear()
         this.clusterPeerIds.clear()
         this.brokerHydrationDone = false
+        getModularBridgeState().holdVllmGroupStatus()
 
         // Teardown is timed phase by phase because a slow quit is otherwise
         // indistinguishable from a blocked one: the process tree logs through this
@@ -789,6 +786,7 @@ class ModularSupervisor {
             if (child.name === 'broker') {
                 this.brokerReady = false
                 this.brokerHydrationDone = false
+                getModularBridgeState().holdVllmGroupStatus()
                 this.isReady = false
                 this.readinessReported = false
                 this.rejectReadinessWaiters(
@@ -886,9 +884,9 @@ class ModularSupervisor {
             }
         }
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
-        await subscribe('ollama-proxy:subscribe', 'subscribe to broker ollama-proxy relay')
-        await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
-        await subscribe('llamacpp-proxy:subscribe', 'subscribe to broker llamacpp-proxy relay')
+        for (const source of PROXY_NODE_SOURCES) {
+            await subscribe(`${source}:subscribe`, `subscribe to broker ${source} relay`)
+        }
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1167,6 +1165,7 @@ class ModularSupervisor {
 
         for (const status of state.getEngineInitialState().statuses) {
             if (status.nodeId !== selfId) continue
+            if (status.engineType === 'vllm') continue
             if (status.processStatus !== 'stopped' && status.processStatus !== 'running') continue
 
             const engine = engineManagerName(status.engineType)
@@ -1663,7 +1662,9 @@ class ModularSupervisor {
             return
         }
         if (notification.method === 'engine:install-progress') {
-            getModularBridgeState().applyEngineManagerProgress(notification.params)
+            const state = getModularBridgeState()
+            if (state.applyLocalVllmPrepareProgress(notification.params)) return
+            state.applyEngineManagerProgress(notification.params)
             return
         }
         if (notification.method === 'engine:pull-progress') {
@@ -1893,6 +1894,50 @@ class ModularSupervisor {
     }
 
     /**
+     * Update a PAIR-managed engine on a remote peer through the existing
+     * cluster-scoped mTLS Engine Manager route. The peer streams the same
+     * lifecycle progress as install and returns its authoritative EngineStatus
+     * in the terminal RPC reply.
+     */
+    async updateEngineRemote(
+        nodeId: string,
+        engine: string,
+        engineType: EngineType
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        state.beginRemoteEngineOp(nodeId, engineType, 'installing')
+        try {
+            const result = await this.callProcess(
+                'broker',
+                'engine:remote-update',
+                { node: nodeId, engine },
+                PULL_TIMEOUT_MS
+            )
+            const status = objectValue(result)?.status
+            if (status) {
+                state.applyRemoteEngineStatusResult(nodeId, engineType, status)
+            } else {
+                await this.refreshRemoteEngineStatus(nodeId)
+            }
+        } catch (err) {
+            this.reportError(
+                `Failed to update ${engine} on ${nodeId}: ${getErrorString(err)}`,
+                'error',
+                `engine-remote-update:${nodeId}:${engine}`,
+                {
+                    id: `engine-manager:update-failed:${engine}`,
+                    nodeId,
+                    engineType: engine,
+                    operation: 'update',
+                    action: 'retry'
+                }
+            )
+        } finally {
+            state.clearPendingRemoteEngineOp(nodeId, engineType)
+        }
+    }
+
+    /**
      * Start or stop an engine on a remote peer via `engine:remote-start` /
      * `engine:remote-stop`. These return the resulting `EngineStatus`, so we
      * apply it authoritatively the instant the RPC resolves instead of waiting
@@ -1996,7 +2041,7 @@ class ModularSupervisor {
      * it. Awaitable (so {@link pullModel} can land the new model in the list
      * before clearing its spinner) and never throws — a failed refresh just logs.
      */
-    private async refreshEngineModels(engine: string, engineType: EngineType): Promise<void> {
+    async refreshEngineModels(engine: string, engineType: EngineType): Promise<void> {
         if (this.stoppedModelEngines.has(engineType)) return
         const generation = this.beginModelRefresh(engineType)
         try {
@@ -2026,7 +2071,9 @@ class ModularSupervisor {
      * `setLocalEngineModels` scopes the result to the local node, so remote nodes
      * keep their discovery-derived lists. The action is an HTTP GET against the
      * engine's loopback API and only works while it is running, so we clear the
-     * list when the engine is stopped/uninstalled.
+     * list when the engine is stopped/uninstalled. Managed vLLM is the one
+     * exception: its stopped selector uses the separate retained catalog from
+     * discovery, never the served list_models cache.
      */
     refreshManagedEngineModels(params: JsonValue | undefined): void {
         const obj = objectValue(params)
@@ -2044,7 +2091,11 @@ class ModularSupervisor {
             if (isProxyEngine(engineType)) {
                 this.cancelDiscoveryModelRefreshRetry(engineType)
             }
-            getModularBridgeState().setLocalEngineModels(engineType, [])
+            if (engineType === 'vllm') {
+                getModularBridgeState().fallbackLocalEngineModelsToDiscovery(engineType)
+            } else {
+                getModularBridgeState().setLocalEngineModels(engineType, [])
+            }
             return
         }
 

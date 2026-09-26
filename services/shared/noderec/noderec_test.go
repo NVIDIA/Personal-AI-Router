@@ -40,6 +40,23 @@ func TestEngineModels(t *testing.T) {
 	}
 }
 
+func TestRetainedCatalogNeverBecomesServedRoutingTruth(t *testing.T) {
+	node := DirectoryNode{
+		Models:           []string{"model-b"},
+		ModelsByEngine:   map[string][]string{"vllm": {"model-b"}},
+		LoadedByEngine:   map[string][]string{"vllm": {"model-b"}},
+		RetainedByEngine: map[string][]string{"vllm": {"model-a", "model-b"}},
+	}
+	if got := node.EngineModels("vllm"); !reflect.DeepEqual(got, []string{"model-b"}) {
+		t.Fatalf("EngineModels(vllm) = %v, want only live model-b", got)
+	}
+	for _, served := range node.EngineModels("vllm") {
+		if served == "model-a" {
+			t.Fatal("retained-only model-a became a proxy routing candidate")
+		}
+	}
+}
+
 func TestServiceLlamaCppKey(t *testing.T) {
 	if ServiceLlamaCpp != "lc" {
 		t.Fatalf("ServiceLlamaCpp = %q, want lc", ServiceLlamaCpp)

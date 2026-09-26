@@ -59,10 +59,8 @@ func processIOBytes(int) (int64, bool) {
 }
 
 // gracefulSignal sends SIGTERM to the process group (falling back to the
-// process itself). It is the only stop signal engine-manager sends: stop()
-// sends this once and waits for the engine to exit, and never escalates to
-// SIGKILL. A well-behaved engine (Ollama, and the test fake, whose default
-// SIGTERM disposition is to exit) terminates on it.
+// process itself). managedProc.stop escalates through signalPID only after its
+// bounded grace expires.
 func gracefulSignal(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

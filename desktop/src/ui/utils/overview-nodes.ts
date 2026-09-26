@@ -15,8 +15,7 @@ function offlineMemberNode(member: ClusterNode): NodeItem {
         ipAddress: member.ipAddress,
         port: member.port,
         allIpAddresses: member.ipAddress ? [member.ipAddress] : [],
-        topology: { cpu: { model: '', cores: 0, threads: 0 }, gpus: [], ram: 0, storage: [] },
-        os: 'Windows'
+        topology: { cpu: { model: '', cores: 0, threads: 0 }, gpus: [], ram: 0, storage: [] }
     }
 }
 

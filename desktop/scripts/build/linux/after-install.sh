@@ -75,4 +75,27 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
 fi
 
+# 6. Stage the fixed target-local bootstrap and an inert exact helper binary.
+# The helper service/socket templates stay under /usr/share until the signed
+# bootstrap binds TARGET_GROUP and the reviewed paths; this maintainer script
+# never registers or starts a second runtime owner. Preserve an existing helper
+# because it may already be marker-owned by a prior bootstrap operation.
+install -d -o root -g root -m 0755 /usr/libexec || true
+install -m 0755 \
+    '/opt/${sanitizedProductName}/resources/cli-bin/nvpair-host-bootstrap' \
+    /usr/libexec/nvpair-host-bootstrap || true
+if [ ! -e /usr/libexec/nvpair-host-helper ]; then
+    install -m 0755 \
+        '/opt/${sanitizedProductName}/resources/cli-bin/nvpair-host-helper' \
+        /usr/libexec/nvpair-host-helper || true
+fi
+install -d -o root -g root -m 0700 /var/lib/nvpair/host-bootstrap || true
+install -d -o root -g root -m 0755 /usr/share/nvpair/host-bootstrap/systemd || true
+install -m 0644 \
+    '/opt/${sanitizedProductName}/resources/onboarding-bootstrap/installer-inputs/linux/nvpair-host-helper.service' \
+    /usr/share/nvpair/host-bootstrap/systemd/nvpair-host-helper.service || true
+install -m 0644 \
+    '/opt/${sanitizedProductName}/resources/onboarding-bootstrap/installer-inputs/linux/nvpair-host-helper.socket' \
+    /usr/share/nvpair/host-bootstrap/systemd/nvpair-host-helper.socket || true
+
 exit 0

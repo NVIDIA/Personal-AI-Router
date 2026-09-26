@@ -7,11 +7,14 @@ SPDX-License-Identifier: Apache-2.0
 
 NVIDIA Personal AI Router (PAIR) connects compatible systems on the same local
 network and routes independent inference requests to a node that can serve them.
-Install PAIR on each participating system, pair the systems, enable an inference
-engine, and then point compatible applications at PAIR's local endpoint.
+Install PAIR on one system, pair systems that already run it, or use **Set up a
+device** to provision an SSH-ready peer from that first system. Then enable an
+inference engine and point compatible applications at PAIR's local endpoint.
 
-> PAIR routes each request to one node. It does not pool GPU memory, combine
-> GPUs into a larger logical GPU, or split one model or request across systems.
+> Ordinary Ollama and LM Studio requests run whole on one selected node. A
+> managed vLLM serving group is different: PAIR can coordinate one model across
+> two or three supported Linux nodes. For the DGX Spark setup and its current
+> proof boundaries, use the [DGX Spark cluster playbook](dgx-spark-playbook.mdx).
 
 If a step does not go as described stop and check
 [Troubleshooting](troubleshooting.mdx). For example, nothing starts, no nodes appear, pairing
@@ -28,15 +31,19 @@ straight to the one you are seeing.
 ## Before You Begin
 
 All you need is a machine to install PAIR on. One machine is enough to run local
-inference; two or more on the same local network let you try pairing and routing.
+inference; two or more on the same local network let you try pairing and routing,
+or a supported managed vLLM serving group.
 
 Nothing else has to be in place first:
 
-- **Engines.** PAIR installs and starts Ollama or LM Studio for you in step 4. If
-  an engine is already installed, PAIR detects and uses it instead.
-- **Models.** PAIR downloads models for you in step 4. A request needs only one
-  eligible node, so a single node holding the model is enough. Prepare the same
-  model on additional nodes when you want any of them to be able to serve it.
+- **Engines.** PAIR installs and starts a supported engine for you in step 4.
+  Ollama and LM Studio cover ordinary routed inference; managed vLLM is offered
+  only on qualified Linux hosts. If an engine is already installed, PAIR detects
+  and uses it when that engine supports adoption.
+- **Models.** PAIR downloads models for you in step 4. An ordinary routed request
+  needs only one eligible node, so a single node holding the model is enough.
+  A managed vLLM serving group requires the exact model content on every selected
+  participant; PAIR verifies that content during group review.
 - **Firewall.** The Windows installer adds the rules PAIR needs, and typical
   Linux desktop configurations do not block local traffic. If you run a
   restrictive firewall, allow the ports listed in
@@ -115,9 +122,82 @@ be paired at any time.
 
 ![PAIR's Overview showing one node card for this machine, with its engine running.](assets/onboarding/getting-started/02-overview-single-node.png)
 
+### Optional: Prepare a New Device
+
+Open **Settings > Cluster > Set up a device** when another machine is not yet
+running PAIR. The setup view separates devices that are ready for SSH enrollment
+from devices that still require the target bootstrap.
+
+The bootstrap matrix is closed:
+
+- Windows x64;
+- Windows arm64;
+- macOS x64;
+- macOS arm64;
+- Linux x64, on Debian or Ubuntu only; and
+- Linux arm64, on Debian or Ubuntu only.
+
+Other Linux distributions and any other platform or architecture are rejected.
+This is the bootstrap matrix, not a claim that every engine supports every one
+of those targets.
+
+Choose **Quick Connect** for an operator-reviewed setup or **Zero Touch** for an
+enterprise deployment. The lane is recorded in the operation, but both lanes
+use the same signed target-local package and the same safety checks. For an
+SSH-ready device, provide the bounded access PAIR requests and let the product
+inspect, review, install or update, and verify the target. You do not need to
+open the target's GUI. If the device instead reports **bootstrap required**,
+PAIR shows the exact catalog entry to transfer through your approved channel.
+Run that package once through the target operating system's native administrator
+flow, then refresh the device list. A displayed SHA-256 is identity metadata; it
+is not a substitute for the catalog and signature checks.
+
+Official mode refuses a missing or inconsistent catalog, checksum, signing
+identity, detached signature, or required macOS notarization record. A package
+built from this repository without release signing is marked
+`engineering`/`unsigned` and is not an official package.
+
+Choose who will own the PAIR process tree:
+
+- **Auto** resolves to **Desktop** on Windows and macOS and **Headless** on
+  Linux.
+- **Desktop** reserves the desktop application as the one broker owner and
+  keeps the fixed headless owner absent.
+- **Headless** installs one fixed operating-system owner: the Windows helper
+  wrapper, a macOS system launchd job, or a Linux system service.
+
+Electron and `nvpair-ui-broker` never supervise the bootstrap or helper. The
+helper accepts only fixed local actions over an access-controlled named pipe or
+Unix socket; it has no shell mode and no network listener.
+
+After the target package finishes, PAIR observes the SSH host key and requires
+you to accept that exact fingerprint before it authenticates. This review is
+mandatory even when bootstrap completed successfully. Device-account
+passwords, key passphrases, elevation passwords, and private key bytes are
+transient access inputs and are not written into bootstrap state. The durable
+contract carries the controller's public-key identity only.
+
+Setup advances through **inspect**, **review**, **apply**, and **verify**. The
+target produces the observations and the final **complete** receipt; the
+desktop does not author either one. **Recover setup** resumes the exact
+target-journaled operation. Later repair is limited to resources the receipt and
+ownership markers prove PAIR owns, while foreign resources block the operation.
+The target-local uninstall path likewise requires the original request and
+complete receipt and removes only those proven-owned resources in reverse order.
+It is separate from uninstalling the controller application.
+
+The terminal interface's **Setup** tab drives this same catalog, public-key,
+host-key, phase, recovery, and receipt contract. It is not a less strict setup
+path.
+
 ## 3. Form a Cluster by Pairing Systems
 
-Start PAIR on each system and confirm they are on the same local network.
+Systems completed through **Set up a device** can finish headless enrollment and
+pairing in that product operation; do not repeat the installation or invitation
+on the peer. Use the manual invitation flow below when PAIR is already running
+independently on both systems.
+
+Confirm both systems are on the same local network.
 
 1. On the first system, select **Add node** in the top-right toolbar. You can
    also open **Settings > Cluster** and use **Available nodes to add**.
@@ -191,6 +271,7 @@ engine would normally listen on:
 
 - `11434` for Ollama.
 - `1234` for LM Studio.
+- `8000` for vLLM.
 
 Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
@@ -219,9 +300,10 @@ The engine therefore has to understand the style you send.
 | --- | --- | --- |
 | Ollama | Works | Works |
 | LM Studio | Works | Not available |
+| vLLM | Works | Not available |
 
-**If you are unsure, send the OpenAI-style request.** It works with either engine,
-and most tools and SDKs use it. Use the Ollama style
+**If you are unsure, send the OpenAI-style request.** It works with every engine
+listed above, and most tools and SDKs use it. Use the Ollama style
 only when something you already have is written against Ollama's `/api/...` API.
 
 The choice does not affect routing. Both styles are routed across your cluster the
@@ -269,9 +351,11 @@ the serving node.
 
 ![A job card under the Jobs filter naming the node that served the request.](assets/onboarding/getting-started/09-job-served-by-node.png)
 
-Send several independent requests to observe multi-node routing. One request
-always runs on one selected node. PAIR does not split an in-flight request
-between systems.
+Send several independent requests to observe multi-node routing. An ordinary
+Ollama or LM Studio request always runs on one selected node. A managed vLLM
+serving group appears behind one endpoint while its ranks split the model work;
+follow the [DGX Spark cluster playbook](dgx-spark-playbook.mdx) rather than using
+routing activity as proof of a distributed group.
 
 **If you would rather not assemble requests yourself,** PAIR can send them for
 you: **Test** on **Settings → Service** runs a burst of inference through the
@@ -290,11 +374,13 @@ free port.
 | --- | --- |
 | Ollama-compatible proxy | `11434` |
 | LM Studio / OpenAI-compatible proxy | `1234` |
+| vLLM / OpenAI-compatible proxy | `8000` |
 
 When PAIR takes one of those ports, the engine behind it moves:
 
 - Ollama moves to `11435` or higher.
 - LM Studio moves to `1235` or higher.
+- vLLM moves to `8001` or higher.
 
 **Endpoints** is the authoritative source for the URL to use.
 
@@ -555,16 +641,19 @@ downloading again.
 Updating keeps your settings, logs, cluster identity, and cluster membership, so
 a node stays paired across an update. Model weights are untouched as well,
 because they belong to the engine rather than to PAIR. Updating PAIR does not
-update Ollama or LM Studio — engines are updated separately from **Engine
-settings**, described in [Managing engines](engine-lifecycle.mdx).
+update its inference engines, including managed vLLM — engines are updated
+separately from **Engine settings**, described in
+[Managing engines](engine-lifecycle.mdx).
 
-You update each machine from that machine. PAIR never updates a peer for you,
-and it cannot be driven remotely, so a cluster is updated one node at a time.
+Desktop-owned nodes use their local application update flow. A headless node
+enrolled through **Set up a device** can be installed or updated from the lead
+through another reviewed product operation; PAIR preserves the peer identity and
+model files.
 
 **Update every node in a cluster to the same version.** A cluster whose nodes run
 different PAIR versions is untested and can misbehave, so treat one as
-unsupported rather than a configuration to run on purpose. Plan an update as a
-pass over every node instead of doing one now and the rest later.
+unsupported rather than a configuration to run on purpose. Verify the whole
+selected set after the update rather than trusting one successful node.
 
 To install a release by hand instead, apply the newer download over the old one:
 run the Windows installer, run `sudo apt install ./NVPAIR-Setup-*.deb` from the
@@ -584,6 +673,8 @@ endpoint, routing, and service-startup issues.
 
 Refer to these resources for related information:
 
+- [DGX Spark cluster playbook](dgx-spark-playbook.mdx) for one-, two-, and
+  three-Spark managed vLLM inference.
 - [Troubleshooting](troubleshooting.mdx)
 - [Project overview](overview.mdx)
 - [Architecture, data flow, and trust boundaries](architecture.mdx)

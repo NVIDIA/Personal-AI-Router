@@ -1,0 +1,86 @@
+{
+  "GPUs": [],
+  "connections": {
+    "source": "host-os",
+    "status": "observed",
+    "observedAt": 1800000000000,
+    "truncated": false,
+    "interfaces": [
+      {
+        "name": "enp2s0f0np0",
+        "index": 2,
+        "mac": "02:00:00:00:00:02",
+        "physical": true,
+        "up": true,
+        "carrier": true,
+        "speedMbps": 200000,
+        "addresses": [],
+        "physicalPort": {
+          "source": "linux-sysfs",
+          "switchId": "0011223344556677",
+          "portName": "p0"
+        },
+        "driver": "mlx5_core",
+        "rdmaDevices": ["roce2"],
+        "mtu": 1500
+      },
+      {
+        "name": "enp3s0f1np1",
+        "index": 3,
+        "mac": "02:00:00:00:00:03",
+        "physical": true,
+        "up": true,
+        "carrier": true,
+        "speedMbps": 200000,
+        "addresses": [],
+        "physicalPort": {
+          "source": "linux-sysfs",
+          "switchId": "0011223344556677",
+          "portName": "p1"
+        },
+        "driver": "mlx5_core",
+        "rdmaDevices": ["roce3"],
+        "mtu": 1500
+      },
+      {
+        "name": "enp10s0f0np0",
+        "index": 10,
+        "mac": "02:00:00:00:00:0a",
+        "physical": true,
+        "up": true,
+        "carrier": true,
+        "speedMbps": 200000,
+        "addresses": [],
+        "physicalPort": {
+          "source": "linux-sysfs",
+          "switchId": "0011223344556677",
+          "portName": "p0"
+        },
+        "driver": "mlx5_core",
+        "rdmaDevices": ["roce10"],
+        "mtu": 1500
+      },
+      {
+        "name": "enp11s0f1np1",
+        "index": 11,
+        "mac": "02:00:00:00:00:0b",
+        "physical": true,
+        "up": true,
+        "carrier": true,
+        "speedMbps": 200000,
+        "addresses": [],
+        "physicalPort": {
+          "source": "linux-sysfs",
+          "switchId": "0011223344556677",
+          "portName": "p1"
+        },
+        "driver": "mlx5_core",
+        "rdmaDevices": ["roce11"],
+        "mtu": 1500
+      }
+    ]
+  },
+  "telemetryValid": false,
+  "msSince": 0,
+  "hostUuid": "host-owner"
+}

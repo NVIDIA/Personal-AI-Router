@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Inert package input. nvpair-host-bootstrap replaces TARGET_GROUP only after a
+# reviewed request, then writes the rendered unit to /etc/systemd/system.
+[Unit]
+Description=NVIDIA PAIR Host Helper Socket
+
+[Socket]
+ListenStream=/run/nvpair-host-helper.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=TARGET_GROUP
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

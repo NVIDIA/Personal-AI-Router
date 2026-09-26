@@ -502,7 +502,7 @@ func TestLlamaInstallRegistersCancellationAndAdmission(t *testing.T) {
 
 func TestLlamaUnsupportedStatusExplainsWhy(t *testing.T) {
 	status := unavailableEngineStatus("llamacpp", "llama.cpp")
-	if status.InstallSupported || status.InstallReason == "" {
+	if status.InstallSupported == nil || *status.InstallSupported || status.InstallReason == "" {
 		t.Fatalf("unsupported engine lacks a reason: %+v", status)
 	}
 }

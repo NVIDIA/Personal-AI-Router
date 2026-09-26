@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"nvpair-shared/engines"
+	"nvpair-shared/errors"
 )
 
 // brokerWithRunningEngines answers one engine:get-installed with the given
@@ -90,6 +91,56 @@ func awaitErrorsNotification(t *testing.T, seen <-chan *Message, method string) 
 			t.Fatalf("no %s notification arrived", method)
 			return nil
 		}
+	}
+}
+
+func TestVLLMNotificationsAreGenerationFencedAndErrorsDispatched(t *testing.T) {
+	b := &Broker{nodeID: "local-node"}
+	seen := observeErrors(t, b)
+	b.vllmProxyGeneration.Store(2)
+
+	params, err := json.Marshal(errors.ServiceError{
+		ID:       "vllm-start-failed",
+		Message:  "vLLM failed to start",
+		Severity: "error",
+		Action:   "retry",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	method := vllmProxyProfile.addressed(methodErrorsReport)
+
+	b.forwardVLLMProxyNotificationForGeneration(1, method, params)
+	select {
+	case msg := <-seen:
+		t.Fatalf("stale vLLM notification reached errors: %+v", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	b.forwardVLLMProxyNotificationForGeneration(2, method, params)
+	msg := awaitErrorsNotification(t, seen, methodErrorsReport)
+	var reported errors.ServiceError
+	if err := json.Unmarshal(msg.Params, &reported); err != nil {
+		t.Fatal(err)
+	}
+	if reported.ID != "vllm-start-failed" || reported.NodeID != "local-node" || reported.Timestamp == 0 {
+		t.Fatalf("forwarded vLLM error = %+v", reported)
+	}
+
+	clearParams, err := json.Marshal(errors.ClearParams{ID: reported.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.forwardVLLMProxyNotificationForGeneration(
+		2, vllmProxyProfile.addressed(methodErrorsClear), clearParams,
+	)
+	clearMsg := awaitErrorsNotification(t, seen, methodErrorsClear)
+	var cleared errors.ClearParams
+	if err := json.Unmarshal(clearMsg.Params, &cleared); err != nil {
+		t.Fatal(err)
+	}
+	if cleared.ID != reported.ID {
+		t.Fatalf("cleared vLLM error id = %q, want %q", cleared.ID, reported.ID)
 	}
 }
 
@@ -310,6 +361,31 @@ func TestFacadeBindRaceRetriesInProcess(t *testing.T) {
 	}
 	if second.Engine != first.Engine {
 		t.Errorf("retry engine = %q, want %q", second.Engine, first.Engine)
+	}
+}
+
+func TestEnableVLLMFacadeUsesTheSharedProxyProcess(t *testing.T) {
+	proxyClient, proxyServer := net.Pipe()
+	t.Cleanup(func() {
+		_ = proxyClient.Close()
+		_ = proxyServer.Close()
+	})
+	proxy := &proxyProcess{peer: NewPeer(NewCodec(proxyClient))}
+	go proxy.peer.Serve(nil, nil)
+
+	attempts := make(chan enableFacadeRequest, 1)
+	serveFacadeEnable(t, proxyServer, nil, attempts)
+	b := &Broker{proxyPath: "test-nvpair-proxy", proxyEngines: []string{"vllm"}}
+	if err := b.enableEngineFacade(context.Background(), proxy, vllmProxyProfile, ollamaHostAlias{}); err != nil {
+		t.Fatalf("selected vLLM facade was not enabled: %v", err)
+	}
+	select {
+	case spec := <-attempts:
+		if spec.Engine != "vllm" || spec.Port != 0 || spec.IgnorePersistedPort {
+			t.Fatalf("vLLM facade spec = %+v, want default persisted-port-aware vllm", spec)
+		}
+	default:
+		t.Fatal("vLLM facade/enable was not issued")
 	}
 }
 

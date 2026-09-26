@@ -6,11 +6,15 @@ SPDX-License-Identifier: Apache-2.0
 # nvpair-engine-manager
 
 A config-driven control plane for local inference engines, including Ollama,
-LM Studio and llama.cpp. It manages everything about an engine **except serving
-inference**: detect, user-mode install, start/stop/restart, health, and
-config-declared actions. Manifests describe common operations; engine-specific
-backend drivers handle ownership or lifecycle behavior a command recipe cannot
-safely express. The desktop and TUI remain clients of this control plane.
+LM Studio, llama.cpp and managed vLLM, plus the narrow typed orchestrator for
+PAIR-managed vLLM serving groups and temporary Spark fabric. It manages
+everything about an engine **except serving inference**: detect, user-mode
+install, start/stop/restart, health, and config-declared actions. Manifests
+describe common operations; engine-specific backend drivers handle ownership or
+lifecycle behavior a command recipe cannot safely express. The explicit
+vLLM/fabric paths add cross-node review, fixed-helper effects, durable cleanup
+custody, and route readiness. The desktop and TUI remain clients of this
+control plane, and inference traffic remains `nvpair-proxy`'s job.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
@@ -43,10 +47,39 @@ Requests (caller → service):
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
+| `engine:vllm-group-review` | `{ selection: { nodeIds, model, parallelism? } }` | Expiring immutable review built from current participant facts |
+| `engine:vllm-group-check` | `{ reviewId }` | Capability result for every participant; no effects or administrator input |
+| `engine:vllm-group-start` | `{ reviewId, elevation? }` | Retained exact-generation run; ready is withheld until the proxy confirms the route |
+| `engine:vllm-group-status` | — | Activation/reservation state and retained run, if any |
+| `engine:vllm-group-stop` | `{ runId, generation }` | Status after ordinary exact-generation stop |
+| `engine:vllm-group-reconcile` | `{ runId, generation, elevation? }` | Status after exact unresolved-rank cleanup reconciliation |
+| `engine:vllm-group-cleanup` | `{ runId, generation, planDigest }` | Cleanup-only reconciliation for the exact retained owner |
+| `engine:vllm-qwen38-prepare` | `{ operationId, cancel? }` | Exact provider-gated 196-artifact runtime preparation result; `cancel:true` targets only the matching active operation, and retry resumes PAIR-owned partials |
+| `engine:vllm-distribute-model` | `{ engine:"vllm", operationId, sourceNode, model, cancel? }` | Exact local-target receive result; target pulls verified chunks from the paired source over the qualified fabric lane when one links them (otherwise the management network) and `cancel:true` removes only the matching checkpoint |
+| `engine:cable-review` / `engine:cable-start` | Exact 2-node direct or 3-node ring selection, then `{ reviewId }` | Reviewed bounded physical-cable check and retained run |
+| `engine:cable-status` / `engine:cable-cancel` | Exact review or run identity | Current cable result or exact-run cancellation/cleanup |
+| `engine:fabric-inventory` | `{ nodeIds }` (1-3 current paired nodes) | Bounded read-only eligible physical-port projection from fresh node-info facts; no routes, addresses, commands, credentials, or mutation authority |
+| `engine:fabric-review` | Cable selection plus optional `inspectSelectedProfiles` | Reviewed temporary address/port plan and blockers |
+| `engine:fabric-approve` | `{ reviewId, administratorApproved, selectedPortPauseApproved }` | Retained apply/qualification operation |
+| `engine:fabric-status` | `{ operationId }` | Current exact operation and cleanup/lease state |
+| `engine:fabric-cancel` / `engine:fabric-recover` | `{ operationId, administratorApproved }` | Exact owned rollback or recovery result |
+| `engine:fabric-retained-operations` | — | Bounded retained fabric inventory for UI reconciliation |
+| `engine:onboarding-history` | — | Read-only retained setup history: reconciled counts plus per-operation `history-only`, `current`, or `invalid` classification. Every row reports `mutation_allowed:false`; history-only records do not block discovery, while malformed or nonterminal records remain fail-closed. This method cannot create, retry, approve, cancel, clean up, or bind access to an onboarding operation. |
+| `engine:onboarding-bootstrap-catalog` | — | Strict six-target bootstrap artifact/signature catalog |
+| `engine:onboarding-bootstrap-controller-keys` | — | Canonical controller public-key identities from the OS agent and configured `.pub` files |
+| `engine:onboarding-bootstrap-inspect` | `{ candidateId, accessId, hostKeySha256, request }` | Target-produced `hostbootstrap.Status` in `inspect` |
+| `engine:onboarding-bootstrap-review` | same request envelope | Deterministic `hostbootstrap.Plan` derived from a fresh target inspection |
+| `engine:onboarding-bootstrap-apply` | `{ candidateId, accessId, hostKeySha256, plan }` | Target-produced apply/verify status for the exact reviewed plan |
+| `engine:onboarding-bootstrap-status` | target reference plus `{ operationId }` | Current target-produced operation status |
+| `engine:onboarding-bootstrap-recover` | target reference plus `{ operationId }` | Recovery status after the target resumes its journal |
+| `engine:onboarding-bootstrap-verify` | target reference plus reviewed `{ plan }` | Target-produced complete receipt |
+| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, retainedByEngine: { <engine>: [string] } }` — `models` and `modelsByEngine` are served/routing truth from running engines; `loadedByEngine` is current memory residency. `retainedByEngine` is a separate downloaded catalog (currently PAIR-owned vLLM receipts) and never makes a model routable. Each map preserves present-empty versus missing/unknown. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
+| `engine:remote-cancel-pull` | `{ node, engine:"vllm", model, operationId }` | `{ accepted }` from the exact remote acquisition owner |
+| `engine:remote-vllm-qwen38-prepare` | `{ node, operationId, cancel? }` | Typed Qwen3.8 preparation result from the pinned peer; live progress uses `engine:remote-progress` |
+| `engine:remote-distribute-model` | `{ node, engine:"vllm", operationId, sourceNode, model, cancel? }` | Exact remote-target receive result; the controller passes the target the source's fabric lane when one links them and holds that fabric until the copy ends; live progress uses `engine:remote-progress` with `network` |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
@@ -59,9 +92,9 @@ Notifications (service → caller): `engine:ready{version}`,
 `engine:models-changed{engine, models}` — pushed when an engine's set of
 loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
-`loadedByEngine`) so a consumer swaps its whole snapshot,
+`loadedByEngine` and `retainedByEngine`) so a consumer swaps its whole snapshot,
 `engine:install-progress{engine, stage, percent}`,
-`engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
+`engine:pull-progress{engine, op, stage, percent, message, operationId?}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
 stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
@@ -80,6 +113,29 @@ relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
 progress frame up as `engine:remote-progress`, and settles the request with the
 terminal result. They fail if this node isn't clustered or the target isn't a
 pinned cluster peer. See "Remote engine management" below.
+
+PAIR-managed vLLM also owns public Hugging Face model acquisition. A pull must
+name one immutable `owner/repository@40-character-commit`; mutable branches,
+URLs, gated repositories, and implicit Hub credentials are refused. Engine
+Manager resolves the exact public metadata and declared license, reviews
+account-available storage with a 32 GiB post-operation reserve, downloads into
+one same-filesystem resumable stage, verifies every selected file against its
+LFS SHA-256 or Git blob identity, and atomically promotes `pair-model.json`.
+Cancel requires the exact `operationId` emitted with progress and preserves the
+partial stage for a same-model retry. These retained receipts feed
+`list_downloaded` / `retainedByEngine`; they do not make a stopped model
+routable. Local acquisition and notice retention do not grant redistribution
+rights; the operator remains bound by the model's terms.
+
+Model reuse between paired nodes uses the `ec` mTLS surface end to end. The
+target fetches a receipt-bound export plan and bounded 32 MiB chunks directly
+from the selected source, verifies every chunk and full-file digest, journals a
+durable prefix hash for exact resume, repeats the target capacity review, and
+atomically promotes the same `pair-model.json`. The controller and renderer see
+only identities, progress, errors, and the final bounded receipt—never model
+payloads, credentials, or host paths. A deterministic source/target/model
+operation identity lets the UI resume or explicitly cancel/clean the same
+checkpoint after restart.
 
 `engine:install`, `engine:start`, `engine:stop`, `engine:restart`,
 `engine:set-port`, and `engine:action` run in their own goroutine on the
@@ -258,6 +314,96 @@ directory so the peer directory stays current. It does **not** restart
 engine-manager on `cluster:identity-changed` — the surface follows membership on
 its own.
 
+## Managed vLLM serving groups and temporary fabric
+
+These are typed product workflows, not generic manifest actions. A group review
+selects two or three paired Linux nodes, one exact retained model, and optional
+`tensor` or `pipeline` parallelism. Engine Manager re-reads each participant's
+model, runtime, GPU, pin, network, and current fabric facts, then returns an
+expiring immutable plan. `check` is effect-free. `start` consumes the review,
+binds every rank to the run ID, generation, plan digest, and rank number, and
+retains the group until every attempted rank has cleanup proof. A lost Start
+reply is reconciled from `status`; callers must not resend it blindly.
+
+The ordinary two-node tensor path requires an active qualified direct fabric.
+Its `qualified-direct-socket` plan uses NCCL Socket on the reviewed QSFP
+Ethernet lane while rendezvous, Gloo, control, and SSH stay on the management
+network; RDMA is disabled. Two- or three-node pipeline mode uses the management
+network. The separate fixed Qwen3.8 profile may admit its reviewed
+`host-buffer-roce` contract, but an active ring alone does not make an ordinary
+group use RDMA or the ring payload lanes.
+
+Fabric follows review → approve/apply → active → cancel/rollback, with explicit
+status and recovery. Records retain the exact targets, temporary addresses,
+qualification, ownership, and cleanup state across restart. A serving group
+that adopts an active fabric takes an exact consumer lease; fabric rollback is
+refused until that group generation is clean. "Active" proves the reviewed
+temporary configuration and qualification only—not RDMA payload, NCCL,
+bandwidth, or inference.
+
+Engine Manager itself stays unprivileged. Start and unresolved-rank reconcile
+may carry one-use administrator choices for the exact reviewed participants;
+those bytes are passed only to the fixed participant helper, cleared on every
+completion path, and never retained in the group or fabric journals.
+
+Runtime preparation installs the Python 3.12 development headers vLLM needs on
+a Linux arm64 target from three Ubuntu packages embedded in
+`diagnostic_python_archives_data.go`, so the target needs no archive access.
+Their Debian copyright files and notice manifest live in `third_party/ubuntu/`.
+Change them together with the archives, then run
+`npm --prefix desktop run licenses`.
+
+## Target-local device bootstrap
+
+Engine-manager is the controller-side relay, not the privileged executor. The
+target runs `nvpair-host-bootstrap`; the installed `nvpair-host-helper` exposes
+only fixed local actions. Electron and the broker supervise neither binary.
+
+The contract accepts Quick Connect and Zero Touch and exactly six ordered target
+combinations: Windows, macOS, and Linux on amd64 and arm64. The target-local
+Linux adapter then admits Debian and Ubuntu only. Auto resolves to Desktop on
+Windows/macOS and Headless on Linux; explicit Desktop or Headless requests must
+resolve to that same owner.
+
+Each call is bound to the current candidate ID, volatile access ID, reviewed SSH
+host-key fingerprint, target account and endpoint, controller public key, target
+role/owner, and catalog artifact identities. `validateBootstrapBinding` reloads
+the packaged catalog and rejects a missing target, mismatched helper/product, or
+unavailable owner.
+
+The relay never sends observations, a plan, or a receipt to the local helper.
+It sends only a bounded `HelperRequest` containing the operation ID and one of
+`inspect`, `apply`, or `verify`; status/recovery reuses those fixed actions. The
+helper loads the target-local request and reviewed plan, invokes the fixed
+bootstrap path, and returns target-produced typed state. Review derives its plan
+from a fresh helper inspection. Apply and verify reject a response whose
+operation, binding, or decision differs.
+
+The target transaction is inspect → review → apply → verify → complete. A no-op
+plan skips mutation; foreign ownership is refused. Recovery resumes the target
+journal. Receipt-authorized repair is limited to resources with matching
+ownership markers. Target-local uninstall is intentionally not a controller
+RPC: it requires the original request and immutable receipt and removes only
+proven-owned resources.
+
+Controller key discovery reads agent public keys and public files, including
+configured `IdentityFile` paths after adding `.pub`; it does not read the
+corresponding private-key file. Ordinary SSH access may transiently use a
+password, passphrase, elevation password, key path, or provider-backed signer.
+Those values remain in memory, expire, and are cleared on service shutdown; they
+are not written into bootstrap state or history. The durable bootstrap identity
+is public-key-only.
+
+Completing bootstrap does not trust SSH. Access authorization observes the
+current host key, blocks keys rejected by existing trust, and requires explicit
+approval of the exact fingerprint before authentication.
+
+The packaged catalog distinguishes `official-release` from `engineering`.
+Official metadata must be complete and consistently signed, with detached
+release material and macOS notarization where required. Missing catalog,
+checksum, or declared signature material fails closed. Unsigned engineering
+artifacts remain non-official.
+
 ## CLI flags
 
 | Flag | Default | Description |
@@ -277,7 +423,9 @@ reserved for JSON-RPC frames in stdio mode.
 ## Logging & errors
 
 Each managed engine's stdout/stderr is captured into a bounded ring
-(queryable via `engine:logs`). Operational failures (install/start/health)
+(queryable via `engine:logs`). The newest snapshot is capped at 2,000 lines,
+256 KiB per input line, and 1 MiB of aggregate UTF-8 child-output text; a line
+that cannot fit by itself is omitted. Operational failures (install/start/health)
 are recorded and surfaced as `errors:report` / `errors:clear`
 notifications using the `nvpair-shared/errors` wire shape. The broker
 (`nvpair-ui-broker`) forwards them to the `nvpair-errors` registry.
@@ -285,8 +433,9 @@ Ids follow `engine-manager:<class>:<engine>`.
 
 ## Security posture
 
-Runs **user mode only** — no admin/sudo at runtime (privilege escalation
-is reserved for NVPAIR's own install time). It has two optional LAN listeners, and
+Runs **user mode only** — no admin/sudo inside engine-manager at runtime.
+Target bootstrap privilege is isolated in the signed target package and fixed
+local helper. Engine-manager has two optional LAN listeners, and
 **both are pin-based cluster mutual TLS with a live membership check** — every
 caller is authorized against a per-peer pin, a non-member is refused with a `403`,
 and while this node belongs to no cluster it presents no leaf so no handshake
@@ -318,6 +467,13 @@ One binary compiles and runs on Windows, Linux, and macOS × amd64/arm64.
 Per-OS variance lives in the manifest first; OS primitives (process
 termination, console hiding) are the only build-tagged Go
 (`proc_windows.go` / `proc_unix.go`).
+
+Managed vLLM is narrower than the Engine Manager binary: its owned installer
+and runtime recipe exists only for Linux amd64 and arm64. Windows and macOS
+still receive a typed unavailable status. Windows names WSL2 plus an explicitly
+selected user-owned Linux distribution as prerequisites, while also stating
+that this build has no owned WSL child route; it never enables WSL or guesses a
+default distribution.
 
 ## Shutdown
 

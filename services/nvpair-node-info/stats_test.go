@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -215,6 +216,7 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 				},
 				"",
 				nil,
+				nil,
 				now,
 			)
 			var typed NodeInfoResponse
@@ -224,6 +226,9 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 			if typed.TelemetryValid != c.wantValid || typed.MSSince != c.wantAge {
 				t.Fatalf("telemetry = valid:%v age:%d, want valid:%v age:%d",
 					typed.TelemetryValid, typed.MSSince, c.wantValid, c.wantAge)
+			}
+			if typed.OS != runtime.GOOS {
+				t.Fatalf("os = %q, want %q", typed.OS, runtime.GOOS)
 			}
 
 			var raw map[string]any
@@ -236,6 +241,9 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 			if _, ok := raw["msSince"]; !ok {
 				t.Fatal("msSince missing from response")
 			}
+			if _, ok := raw["os"]; !ok {
+				t.Fatal("os missing from response")
+			}
 		})
 	}
 }
@@ -247,7 +255,7 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 // with no "cpu" key at all, not `"cpu":null`.
 func buildResponseDecode(t *testing.T, static []GPUInfo, cpu *CPUInfo, memTotal uint64, snap statsSnapshot) (NodeInfoResponse, map[string]any) {
 	t.Helper()
-	body := buildResponse(static, cpu, memTotal, snap, "", nil)
+	body := buildResponse(static, cpu, memTotal, snap, "", nil, nil)
 	var typed NodeInfoResponse
 	if err := json.Unmarshal(body, &typed); err != nil {
 		t.Fatalf("typed decode: %v", err)

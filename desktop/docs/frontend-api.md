@@ -137,29 +137,85 @@ Commands return no state. Renderer stores update from
 
 - `onUpdate(callback)` reports node CPU, memory, GPU, and VRAM metrics.
 
+### `pairApi.setup`
+
+- `getHistory()` returns retained setup history. `recoveryRequired` describes
+  malformed onboarding history; the separate `diagnosticRecoveryRequired` flag
+  reports an Engine Manager diagnostic-MPI cleanup hold.
+- `getCandidates()`, `addTarget()`, `getScopes()`, and `discover()` obtain
+  backend-reported setup candidates and network scopes.
+- `authorizeAccess()` sends one transient SSH access request. The Electron
+  handler clears its password, passphrase, elevation password, and private-key
+  byte fields immediately after dispatch; none is durable renderer state.
+- `inspect()`, `approve()`, `getOperation()`, `cancel()`, and `retry()` drive
+  ordinary SSH enrollment after explicit host-key review.
+- `getBootstrapCatalog()` returns the exact six-target artifact and signature
+  catalog. `getBootstrapControllerKeys()` returns public-key identities from
+  the operating-system agent and configured `.pub` files.
+- `inspectBootstrap()`, `reviewBootstrap()`, `applyBootstrap()`,
+  `getBootstrapStatus()`, `recoverBootstrap()`, and `verifyBootstrap()` drive
+  the target-local bootstrap state machine.
+- `reconcileDiagnosticMpi()` asks PAIR to recheck and close every exact retained
+  diagnostic lease. It takes no credentials and returns only bounded public
+  per-operation cleanup states. `engine:diagnostic-mpi-recover` remains read-only.
+
+Bootstrap calls are bound to the candidate ID, volatile access ID, and reviewed
+SSH host-key fingerprint. Electron keeps at most 32 exact target-reviewed plans
+in memory and accepts apply or verify only for an unchanged entry. The renderer
+cannot provide observations or a receipt: inspect/status/recover results and the
+complete receipt are parsed from the target path. A service restart discards
+the Electron plan cache; recovery comes from the target operation journal, not a
+client-authored replacement.
+
+`BootstrapRole` is `auto | desktop | headless`, while every request also carries
+the resolved `desktop | headless` runtime owner. Auto resolves in the UI to
+Desktop on Windows/macOS and Headless on Linux. `BootstrapLane` is
+`quick-connect | zero-touch`; both lanes share the same target contract.
+
 ## Logical invoke channels
 
-| Channel                     | Request                      | Response                  |
-| --------------------------- | ---------------------------- | ------------------------- |
-| `app:get-initial`           | `void`                       | `AppInitialSnapshot`      |
-| `nodes:get-initial`         | `void`                       | node map and fetch status |
-| `nodes:remove-member`       | `{ nodeId }`                 | `{ nodeId, removed }`     |
-| `discovery:get-nodes`       | `void`                       | `AvailableNode[]`         |
-| `cluster:get-initial`       | `void`                       | `ClusterInitialSnapshot`  |
-| `cluster:invite-node`       | `{ ipAddress }`              | `Invite`                  |
-| `cluster:invite-status`     | `{ inviteId }`               | `Invite`                  |
-| `cluster:respond-to-invite` | `{ inviteId, accept, pin? }` | `Invite`                  |
-| `cluster:cancel-invite`     | `{ inviteId }`               | `Invite`                  |
-| `cluster:abandon-if-solo`   | `void`                       | `null`                    |
-| `engines:get-initial`       | `void`                       | `EngineInitialState`      |
-| `engines:get-settings`      | `EngineSettingsTarget`       | `EngineSettingsSnapshot`  |
-| `engines:preview-settings`  | `EngineSettingsRequest`      | `EngineSettingsPreview`   |
-| `engines:apply-settings`    | `EngineSettingsRequest`      | `EngineSettingsReceipt`   |
-| `engine:command`            | `EngineCommandPayload`       | `null`                    |
-| `engine:search-hub`         | `{ engineType }`             | `EngineHubSearchResponse` |
-| `errors:get-initial`        | `void`                       | `ServiceError[]`          |
-| `errors:clear`              | error ID                     | `null`                    |
-| `workloads:get-initial`     | `void`                       | workload map              |
+| Channel                                       | Request                      | Response                       |
+| --------------------------------------------- | ---------------------------- | ------------------------------ |
+| `app:get-initial`                             | `void`                       | `AppInitialSnapshot`           |
+| `nodes:get-initial`                           | `void`                       | node map and fetch status      |
+| `nodes:remove-member`                         | `{ nodeId }`                 | `{ nodeId, removed }`          |
+| `discovery:get-nodes`                         | `void`                       | `AvailableNode[]`              |
+| `cluster:get-initial`                         | `void`                       | `ClusterInitialSnapshot`       |
+| `cluster:invite-node`                         | `{ ipAddress }`              | `Invite`                       |
+| `cluster:invite-status`                       | `{ inviteId }`               | `Invite`                       |
+| `cluster:respond-to-invite`                   | `{ inviteId, accept, pin? }` | `Invite`                       |
+| `cluster:cancel-invite`                       | `{ inviteId }`               | `Invite`                       |
+| `cluster:abandon-if-solo`                     | `void`                       | `null`                         |
+| `engines:get-initial`                         | `void`                       | `EngineInitialState`           |
+| `engines:get-settings`                        | `EngineSettingsTarget`       | `EngineSettingsSnapshot`       |
+| `engines:preview-settings`                    | `EngineSettingsRequest`      | `EngineSettingsPreview`        |
+| `engines:apply-settings`                      | `EngineSettingsRequest`      | `EngineSettingsReceipt`        |
+| `engine:command`                              | `EngineCommandPayload`       | `null`                         |
+| `engine:search-hub`                           | `{ engineType }`             | `EngineHubSearchResponse`      |
+| `setup:get-history`                           | `void`                       | `OnboardingHistorySummary`     |
+| `engine:onboarding-candidates`                | `void`                       | `OnboardingCandidates`         |
+| `engine:onboarding-add-target`                | `{ address, port, label? }`  | `OnboardingCandidate`          |
+| `engine:onboarding-access`                    | `OnboardingAccessRequest`    | `OnboardingAccessResult`       |
+| `engine:onboarding-inspect`                   | `OnboardingReviewRequest`    | `OnboardingReview`             |
+| `engine:onboarding-approve`                   | `{ reviewId }`               | `OnboardingOperation`          |
+| `engine:onboarding-status`                    | `OnboardingOperationRequest` | `OnboardingOperation`          |
+| `engine:onboarding-cancel`                    | `OnboardingOperationRequest` | `OnboardingOperation`          |
+| `engine:onboarding-retry`                     | `OnboardingOperationRequest` | `OnboardingOperation`          |
+| `engine:onboarding-scopes`                    | `void`                       | `OnboardingScopes`             |
+| `engine:onboarding-discover`                  | `OnboardingDiscoverRequest`  | `OnboardingCandidates`         |
+| `engine:onboarding-import-artifact`           | `{ file }`                   | `OnboardingArtifact`           |
+| `engine:onboarding-bootstrap-catalog`         | `void`                       | `BootstrapCatalog`             |
+| `engine:onboarding-bootstrap-controller-keys` | `void`                       | `BootstrapControllerKeys`      |
+| `engine:onboarding-bootstrap-inspect`         | `BootstrapRequestInvoke`     | `BootstrapStatus`              |
+| `engine:onboarding-bootstrap-review`          | `BootstrapRequestInvoke`     | `BootstrapPlan`                |
+| `engine:onboarding-bootstrap-apply`           | `BootstrapPlanInvoke`        | `BootstrapStatus`              |
+| `engine:onboarding-bootstrap-status`          | `BootstrapOperationInvoke`   | `BootstrapStatus`              |
+| `engine:onboarding-bootstrap-recover`         | `BootstrapOperationInvoke`   | `BootstrapStatus`              |
+| `engine:onboarding-bootstrap-verify`          | `BootstrapPlanInvoke`        | `BootstrapReceipt`             |
+| `engine:diagnostic-mpi-reconcile`             | `{}`                         | `DiagnosticMPIReconcileResult` |
+| `errors:get-initial`                          | `void`                       | `ServiceError[]`               |
+| `errors:clear`                                | error ID                     | `null`                         |
+| `workloads:get-initial`                       | `void`                       | workload map                   |
 
 ## Logical push channels
 

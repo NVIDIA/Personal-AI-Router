@@ -50,6 +50,8 @@ for /f "delims=" %%V in ('jq -r --arg k "nvpair-engine-manager"   ".components[$
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-cluster-manager"  ".components[$k]" "%VERSIONS_FILE%"')            do set "V_CLUMGR=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-job-scheduler"    ".components[$k]" "%VERSIONS_FILE%"')            do set "V_SCHED=%%V"
 for /f "delims=" %%V in ('jq -r --arg k "nvpair-tui"              ".components[$k]" "%VERSIONS_FILE%"')            do set "V_TUI=%%V"
+for /f "delims=" %%V in ('jq -r --arg k "nvpair-host-bootstrap"   ".components[$k]" "%VERSIONS_FILE%"')            do set "V_BOOT=%%V"
+for /f "delims=" %%V in ('jq -r --arg k "nvpair-host-helper"      ".components[$k]" "%VERSIONS_FILE%"')            do set "V_HELPER=%%V"
 
 if "%V_SERVICES%"=="" (
     echo  ERROR: failed to parse versions.json
@@ -70,6 +72,8 @@ echo  nvpair-engine-manager= %V_ENGMGR%
 echo  nvpair-cluster-mgr   = %V_CLUMGR%
 echo  nvpair-job-scheduler = %V_SCHED%
 echo  nvpair-tui           = %V_TUI%
+echo  nvpair-host-bootstrap= %V_BOOT%
+echo  nvpair-host-helper   = %V_HELPER%
 echo.
 
 echo ========================================
@@ -77,64 +81,77 @@ echo  Building all components
 echo ========================================
 echo.
 
-echo [1/12] Building nvpair-proxy (v%V_PROXY%)...
+set "CGO_ENABLED=0"
+set "GOFLAGS=-buildvcs=false"
+
+echo [1/14] Building nvpair-proxy (v%V_PROXY%)...
 cd /d "%ROOT%nvpair-proxy"
-go build -ldflags "-X main.Version=%V_PROXY%" -o nvpair-proxy.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_PROXY%" -o nvpair-proxy.exe . || goto :fail
 echo       OK
 
-echo [2/12] Building nvpair-node-info (v%V_NINFO%)...
+echo [2/14] Building nvpair-node-info (v%V_NINFO%)...
 cd /d "%ROOT%nvpair-node-info"
-go build -ldflags "-X main.Version=%V_NINFO%" -o nvpair-node-info.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_NINFO%" -o nvpair-node-info.exe . || goto :fail
 echo       OK
 
-echo [3/12] Building nvpair-node-scanner (v%V_NSCAN%)...
+echo [3/14] Building nvpair-node-scanner (v%V_NSCAN%)...
 cd /d "%ROOT%nvpair-node-scanner"
-go build -ldflags "-X main.Version=%V_NSCAN%" -o nvpair-node-scanner.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_NSCAN%" -o nvpair-node-scanner.exe . || goto :fail
 echo       OK
 
-echo [4/12] Building nvpair-manual-nodes (v%V_MNODES%)...
+echo [4/14] Building nvpair-manual-nodes (v%V_MNODES%)...
 cd /d "%ROOT%nvpair-manual-nodes"
-go build -ldflags "-X main.Version=%V_MNODES%" -o nvpair-manual-nodes.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_MNODES%" -o nvpair-manual-nodes.exe . || goto :fail
 echo       OK
 
-echo [5/12] Building nvpair-workload-manager (v%V_WLMGR%)...
+echo [5/14] Building nvpair-workload-manager (v%V_WLMGR%)...
 cd /d "%ROOT%nvpair-workload-manager"
-go build -ldflags "-X main.Version=%V_WLMGR%" -o nvpair-workload-manager.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_WLMGR%" -o nvpair-workload-manager.exe . || goto :fail
 echo       OK
 
-echo [6/12] Building nvpair-errors (v%V_ERRORS%)...
+echo [6/14] Building nvpair-errors (v%V_ERRORS%)...
 cd /d "%ROOT%nvpair-errors"
-go build -ldflags "-X main.Version=%V_ERRORS%" -o nvpair-errors.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_ERRORS%" -o nvpair-errors.exe . || goto :fail
 echo       OK
 
-echo [7/12] Building nvpair-engine-manager (v%V_ENGMGR%)...
+echo [7/14] Building nvpair-engine-manager (v%V_ENGMGR%)...
 cd /d "%ROOT%nvpair-engine-manager"
-go build -ldflags "-X main.Version=%V_ENGMGR%" -o nvpair-engine-manager.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_ENGMGR%" -o nvpair-engine-manager.exe . || goto :fail
 echo       OK
 
-echo [8/12] Building nvpair-node-settings (v%V_NSETTINGS%)...
+echo [8/14] Building nvpair-node-settings (v%V_NSETTINGS%)...
 cd /d "%ROOT%nvpair-node-settings"
-go build -ldflags "-X main.Version=%V_NSETTINGS%" -o nvpair-node-settings.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_NSETTINGS%" -o nvpair-node-settings.exe . || goto :fail
 echo       OK
 
-echo [9/12] Building nvpair-ui-broker (v%V_BROKER%)...
+echo [9/14] Building nvpair-ui-broker (v%V_BROKER%)...
 cd /d "%ROOT%nvpair-ui-broker"
-go build -ldflags "-X main.Version=%V_BROKER%" -o nvpair-ui-broker.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_BROKER%" -o nvpair-ui-broker.exe . || goto :fail
 echo       OK
 
-echo [10/12] Building nvpair-cluster-manager (v%V_CLUMGR%)...
+echo [10/14] Building nvpair-cluster-manager (v%V_CLUMGR%)...
 cd /d "%ROOT%nvpair-cluster-manager"
-go build -ldflags "-X main.Version=%V_CLUMGR%" -o nvpair-cluster-manager.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_CLUMGR%" -o nvpair-cluster-manager.exe . || goto :fail
 echo       OK
 
-echo [11/12] Building nvpair-job-scheduler (v%V_SCHED%)...
+echo [11/14] Building nvpair-job-scheduler (v%V_SCHED%)...
 cd /d "%ROOT%nvpair-job-scheduler"
-go build -ldflags "-X main.Version=%V_SCHED%" -o nvpair-job-scheduler.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_SCHED%" -o nvpair-job-scheduler.exe . || goto :fail
 echo       OK
 
-echo [12/12] Building nvpair-tui (v%V_TUI%)...
+echo [12/14] Building nvpair-tui (v%V_TUI%)...
 cd /d "%ROOT%nvpair-tui"
-go build -ldflags "-X main.Version=%V_TUI%" -o nvpair-tui.exe . || goto :fail
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_TUI%" -o nvpair-tui.exe . || goto :fail
+echo       OK
+
+echo [13/14] Building nvpair-host-bootstrap (v%V_BOOT%)...
+cd /d "%ROOT%nvpair-host-bootstrap"
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_BOOT%" -o nvpair-host-bootstrap.exe . || goto :fail
+echo       OK
+
+echo [14/14] Building nvpair-host-helper (v%V_HELPER%)...
+cd /d "%ROOT%nvpair-host-helper"
+go build -buildvcs=false -trimpath -ldflags "-X main.Version=%V_HELPER%" -o nvpair-host-helper.exe . || goto :fail
 echo       OK
 
 echo.
@@ -160,6 +177,8 @@ copy /y "%ROOT%nvpair-ui-broker\nvpair-ui-broker.exe" "%BIN_OUT%\nvpair-ui-broke
 copy /y "%ROOT%nvpair-cluster-manager\nvpair-cluster-manager.exe" "%BIN_OUT%\nvpair-cluster-manager.exe" >nul || goto :fail
 copy /y "%ROOT%nvpair-job-scheduler\nvpair-job-scheduler.exe" "%BIN_OUT%\nvpair-job-scheduler.exe" >nul || goto :fail
 copy /y "%ROOT%nvpair-tui\nvpair-tui.exe" "%BIN_OUT%\nvpair-tui.exe" >nul || goto :fail
+copy /y "%ROOT%nvpair-host-bootstrap\nvpair-host-bootstrap.exe" "%BIN_OUT%\nvpair-host-bootstrap.exe" >nul || goto :fail
+copy /y "%ROOT%nvpair-host-helper\nvpair-host-helper.exe" "%BIN_OUT%\nvpair-host-helper.exe" >nul || goto :fail
 
 echo.
 echo ========================================
@@ -178,6 +197,8 @@ echo  UI Broker:        %BIN_OUT%\nvpair-ui-broker.exe
 echo  Cluster Mgr:      %BIN_OUT%\nvpair-cluster-manager.exe
 echo  Job Scheduler:    %BIN_OUT%\nvpair-job-scheduler.exe
 echo  TUI:              %BIN_OUT%\nvpair-tui.exe
+echo  Bootstrap:        %BIN_OUT%\nvpair-host-bootstrap.exe
+echo  Host helper:      %BIN_OUT%\nvpair-host-helper.exe
 echo.
 
 REM Surface the services version to any caller (e.g. installer_build.bat) so
