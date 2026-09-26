@@ -223,10 +223,15 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 
 // startManager spawns the manager binary with env overrides and returns
 // a frame stream, its stdin, and a cleanup func. It logs every frame.
+//
+// These tests install real engines, so PATH publishing is switched off:
+// HKCU\Environment is machine state no temporary directory can contain, and a
+// live run that fails partway must not leave the developer's account pointing at
+// the temp directory it installed into. sandboxedEnv covers the dotfile half.
 func startManager(t *testing.T, env map[string]string) (chan frame, io.WriteCloser, func()) {
 	t.Helper()
-	cmd := exec.Command(managerBin)
-	cmd.Env = overrideEnv(env)
+	cmd := exec.Command(managerBin, "--user-path=false")
+	cmd.Env = sandboxedEnv(t, env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -270,20 +275,34 @@ func startManager(t *testing.T, env map[string]string) (chan frame, io.WriteClos
 	return frames, stdin, cleanup
 }
 
+// The vendor/product segments shared/appdir appends to the platform base
+// directory, which is where the manager looks for override manifests.
+const (
+	appOrgDir     = "Nvidia Corporation"
+	appProductDir = "Personal AI Router"
+)
+
 // startManagerWithManifest writes m into a temp config dir, then spawns
 // the manager pointed at it (so the override manifest shadows bundled).
 func startManagerWithManifest(t *testing.T, m Manifest) (chan frame, io.WriteCloser, func()) {
 	t.Helper()
-	cfg := t.TempDir()
-	engdir := filepath.Join(cfg, configSubdir, "engines")
-	if err := os.MkdirAll(engdir, 0o755); err != nil {
+	cfg, home := t.TempDir(), t.TempDir()
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.MarshalIndent(m, "", "  ")
-	if err := os.WriteFile(filepath.Join(engdir, m.Engine+".json"), data, 0o644); err != nil {
-		t.Fatal(err)
+	// appdir picks a different base per platform — %LocalAppData%, $XDG_CONFIG_HOME,
+	// or ~/Library/Application Support — so write to each rather than guess.
+	for _, base := range []string{cfg, filepath.Join(home, "Library", "Application Support")} {
+		engdir := filepath.Join(base, appOrgDir, appProductDir, "engines")
+		if err := os.MkdirAll(engdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(engdir, m.Engine+".json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	return startManager(t, map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
 }
 
 func sha256File(t *testing.T, path string) string {

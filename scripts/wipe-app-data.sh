@@ -125,6 +125,16 @@ RUNTIME_BASE="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
 RUNTIME_BASE="${RUNTIME_BASE%/}"
 CONTROL_DIR="$RUNTIME_BASE/nvpair-$SCOPE"
 
+# The engine PATH blocks in the user's shell profiles are deliberately NOT
+# listed. Wiping the data root deletes engine-manager's ownership records along
+# with the engines they describe, so nothing here could identify the blocks to
+# remove; the real uninstallers drain them first instead (desktop/scripts/build).
+# Recovery on the next install is partial, so prefer the real uninstallers. An
+# engine PAIR installed into its own directory is recognized by the executable's
+# location and re-adopts the block it finds already present. One whose vendor
+# owns its location — LM Studio writes ~/.lmstudio — has no such evidence once
+# the record is gone, so its block is left orphaned until the user removes it.
+#
 # Append-only target list (path|reason). Never remove entries — only append.
 TARGETS=()
 TARGETS+=("$CURRENT_ROOT|Current shared Electron + backend app data root")

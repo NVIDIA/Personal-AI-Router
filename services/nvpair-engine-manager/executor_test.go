@@ -56,7 +56,10 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	t.Helper()
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	// Lifecycle tests must not modify the developer's persistent PATH.
+	ex.addToPath = func(string, *pathReceipt, func() error) error { return nil }
+	return ex
 }
 
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
@@ -403,6 +406,7 @@ func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
 	reg.engines[m.Engine] = m
 	var methods []string
 	ex := NewExecutor(reg, NewReporter(nil), func(method string, _ any) { methods = append(methods, method) }, t.TempDir())
+	ex.addToPath = func(string, *pathReceipt, func() error) error { return nil }
 
 	if err := ex.Install(context.Background(), m.Engine); err != nil {
 		t.Fatalf("install should adopt the external service: %v", err)

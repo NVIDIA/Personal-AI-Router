@@ -33,11 +33,14 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - **The node's error list** — owned by `nvpair-errors`, which holds it as in-memory session state; this service only emits `errors:report` / `errors:clear`.
 
 ## 3. Key Use Cases
-- **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
+- **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects, then publishes the engine's CLI directory on this user's PATH.
+- **Publish the CLI on PATH**: the directory comes from `runtime.cli`, or from the detected executable when the manifest declares none and that executable is inside the directory PAIR installed into. Ownership is recorded before the change, under a cross-process lock, so uninstall removes exactly what PAIR added. A remote install from a cluster peer (`InstallForPeer`) skips this step: editing the login shell of whoever is sitting at the target node is not something a paired peer decides.
 - **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port.
 - **Run a declared action**: `engine:action {engine, action, params}` → the manifest-declared HTTP call to the engine's loopback control API (e.g. `127.0.0.1:{port}/api/pull`). (Methods, notifications, and UI events all use the colon form `engine:*`, matching the POC UI and the `errors:*` notifications.)
 - **Onboard a new engine (no code)**: a vendor adds `engines/<vendor>.json`; the generic runner exposes their lifecycle + actions immediately.
-- **Edge case — already installed**: detect short-circuits install (idempotent).
+- **Edge case — already installed**: detect short-circuits the download and the install command. The PATH step still runs, so an engine whose ownership record was lost — the data directory was wiped, or an earlier save failed — reacquires it instead of reporting success with nothing on PATH. Recovery does not depend on where the CLI lives: the record's `installed` flag survives the application uninstaller's release, and a wiped record is recovered from the executable's location only when that location is inside PAIR's install directory. It is idempotent: an entry PAIR already owns is left as it is. If the CLI has moved — a manifest update, or a vendor that relocated it — the recorded entry is released and the new directory claimed, so the stale one does not outlive the engine it pointed at.
+- **Edge case — PATH setup fails**: reported as a dismissible warning, never an install failure. The engine is installed and usable through its full path, and the caller's optional start step still runs.
+- **Edge case — engine already present before PAIR**: no PATH entry and no warning. Its own installer owns that location.
 - **Edge case — checksum mismatch**: install fails before `run`, is reported, and never executes an unverified payload.
 - **Edge case — readiness timeout / crash**: failed readiness returns to Stopped; a later crash flips health and is reported.
 
@@ -112,8 +115,8 @@ Requests (caller → service):
 | `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine }` | `EngineStatus` |
-| `engine:install` | `{ engine }` | `EngineStatus` (after install) |
-| `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
+| `engine:install` | `{ engine }` | `EngineStatus` (after install and PATH publication) |
+| `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal and PATH cleanup) |
 | `engine:start` | `{ engine }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
@@ -158,14 +161,15 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
 - **External**: engine vendors' download URLs (HTTPS; checksum-pinned when a `sha256` is set, else HTTPS-only with a warning); first-party `nvpair-shared/applog` (logging + `log/set-level`) and `nvpair-shared/clustertrust` (pin-based mTLS). The `nvpair-shared/errors` wire shape is mirrored locally with identical JSON tags. No third-party runtime services.
 
 ## 9. Data Ownership
-- **Owned**: the in-memory engine registry (parsed manifests + per-engine runtime state) and per-engine log/error ring buffers — transient only.
-- **Source of truth**: no — `nvpair-errors` owns the node's error list (in memory, for the session); model inventories belong to the engines; manifests on disk are authored elsewhere.
-- **Storage**: in-memory; manifests read from the per-user data dir's `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on macOS) plus bundled `manifests/*.json`. No database.
+- **Owned**: the in-memory engine registry (parsed manifests + per-engine runtime state) and per-engine log/error ring buffers — transient. Also the durable PATH ownership records under the per-user data dir's `engine-bin/engine-path/<engine>.json`, which are **not** transient: they are the only thing that can identify what PAIR added to the user's PATH, and they have to outlive both a restart and the engine's own files.
+- **Source of truth**: yes, for what PAIR published on this user's PATH — nothing else records it. Otherwise no: `nvpair-errors` owns the node's error list (in memory, for the session); model inventories belong to the engines; manifests on disk are authored elsewhere.
+- **Storage**: in-memory, plus the PATH records above. Manifests read from the per-user data dir's `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on macOS) plus bundled `manifests/*.json`. No database.
+- **PATH record lifecycle**: written before the PATH change, so a crash mid-update is retryable. An engine uninstall deletes the record. The application uninstaller (`--remove-user-path`) releases the entries but **keeps** each record's note that PAIR installed the engine, so a reinstall re-adopts it — an engine whose CLI lives outside PAIR's install directory has no other evidence distinguishing it from one the user installed. A record that exists but cannot be parsed is a failure for uninstall, not an absent claim; treating the two alike reported the entries released while stranding them.
 
 ## 10. Design Constraints
 - **Performance**: control plane, not inference; sub-second RPCs except install (network-bound) and start (bounded by the readiness timeout).
 - **Scalability**: a handful of engines per node; one managed instance per engine in v1.
-- **Reliability**: best-effort; readiness + health probes; automatic restart on crash is planned but **not yet implemented** (see §4); install is one-shot and idempotent (detect short-circuits).
+- **Reliability**: best-effort; readiness + health probes; automatic restart on crash is planned but **not yet implemented** (see §4); install is one-shot and idempotent — detect short-circuits the download, and the PATH step re-runs but changes nothing it already owns.
 - **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install time); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN (Ollama defaults to `0.0.0.0`, overridable per-call); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
 - **Compliance**: no PII; payloads carry engine/model identifiers and error messages only.
 
@@ -177,6 +181,9 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
 
 ## 12. Failure Modes and Mitigations
 - **Download / checksum failure on install**: engine stays NotInstalled. → Fail fast before `run`; `engine:install-progress` error + `errors:report` (`engine-manager:install-failed:<engine>`); never execute an unverified payload.
+- **PATH publication fails on install**: the engine is installed and usable, but not by name. → Never fails the install, so the caller's start step still runs; `errors:report` (`engine-manager:path-failed:<engine>`) as a dismissible **warning** naming the manual alternative, cleared by a later install or uninstall that succeeds. Reported text folds the home directory to `~`, because a remote install streams it to the initiator and `nvpair-errors` push-syncs it to peers.
+- **PATH cleanup fails on uninstall**: the executable is gone but the entry remains. → The receipt is kept and `errors:report` (`engine-manager:uninstall-failed:<engine>`) offers `retry`; a repeat `engine:uninstall` on an already-removed engine runs cleanup alone. Uninstalling the application drains every remaining receipt through `--remove-user-path`, since they live in the directory that uninstall deletes and the PATH entries do not.
+- **Corrupt or lost PATH ownership record**: neither install nor uninstall can wedge on it. → An unparseable receipt is logged and treated as no claim; a managed install with no receipt reacquires PATH rather than reporting a silent success.
 - **Engine fails its readiness probe**: start never reaches Running. → Bounded ready timeout → back to Stopped; structured error; no half-started state.
 - **Engine process crashes**: engine unavailable. → A watcher flips state, emits `engine:state-changed` + `errors:report` (`engine-manager:exited:<engine>`); the parent's supervisor reports if the *manager itself* dies. (Automatic restart is planned — see §4 — not yet implemented.)
 - **`nvpair-errors` unavailable**: failures absent from the node's error list. → The Broker no-ops the forward; local applog + ring buffers still hold everything.

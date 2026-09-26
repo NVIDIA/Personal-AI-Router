@@ -78,7 +78,9 @@ func (s *controlServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.streamOp(w, r, req.OpID, req.Engine, "install", func(ctx context.Context) (streamFrame, error) {
-		if err := s.exec.Install(ctx, req.Engine); err != nil {
+		// A pinned peer may install here; it may not rewrite this user's login
+		// shell configuration. See Executor.InstallForPeer.
+		if err := s.exec.InstallForPeer(ctx, req.Engine); err != nil {
 			return streamFrame{}, err
 		}
 		if req.Start {

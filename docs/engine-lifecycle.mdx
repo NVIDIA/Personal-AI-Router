@@ -70,6 +70,23 @@ Refer also to [Getting started](getting-started.mdx).
 You can install a supported engine during first-run setup or later from
 **Engine settings**.
 
+PAIR automatically adds the installed engine's command-line tools (`ollama` or
+`lms`) to your PATH. Open a new terminal after installation; on Windows, you may
+need to restart your terminal app.
+
+PATH setup only ever changes the account that asked for the install. Installing
+an engine on another node from this one leaves that node's PATH alone, and an
+engine that was already on the machine before PAIR keeps whatever its own
+installer set up.
+
+If PATH setup fails, PAIR reports it as a dismissible warning. The install still
+succeeds, the engine still starts, and it works normally through its full path.
+
+On uninstall, PAIR removes only the PATH entries it recorded adding for an
+engine it installed. Pre-existing entries and user-edited shell blocks are
+preserved. Installations without an ownership record are left unchanged.
+Uninstalling PAIR itself releases any entries its engines still own.
+
 When you install an engine, consider the following:
 
 - Choosing install makes it an **NVPAIR-installed** engine. PAIR downloads it,

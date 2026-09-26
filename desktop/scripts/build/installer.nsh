@@ -78,6 +78,45 @@
   ClearErrors
 !macroend
 
+; Release the PATH entries this user's engines own, before the data directory
+; that records them is deleted.
+;
+; Engine-manager writes its ownership receipts under the data root
+; (engine-bin\engine-path\), while the entries themselves live in
+; HKCU\Environment\Path — outside everything pairRemoveUserData touches. Deleting
+; the receipts first would strand those entries with no record left to remove
+; them by, pointing at engine directories this uninstall is about to delete.
+;
+; Runs the shipped binary rather than editing the registry here, so one
+; implementation owns the format and the ownership rules. It must run before the
+; template's RMDir /r $INSTDIR, which is why this lives in customUnInstall.
+; nsExec::ExecToLog never aborts the uninstaller.
+;
+; The exit code is kept in $7 because the caller has to act on it. A failed
+; release is not a no-op: the binary removes what it can and reports the rest,
+; so some entries may be gone and some may remain — and the records that could
+; still identify the remaining ones are inside the data root the caller is about
+; to delete.
+;
+; The child inherits this process's environment and user, so it resolves the
+; same profile pairRemoveUserData does. An elevated uninstall authenticated as a
+; different administrator targets that account instead — the same limitation the
+; data removal above already has.
+!macro pairReleaseEnginePathEntries
+  DetailPrint "Releasing engine PATH entries..."
+  nsExec::ExecToLog '"$INSTDIR\resources\cli-bin\nvpair-engine-manager.exe" --remove-user-path'
+  Pop $7
+!macroend
+
+; The release failed, so the ownership records are the only thing that can still
+; identify the entries it left behind. Deleting the data root would strand them
+; permanently — the outcome the whole ordering above exists to avoid — so the
+; data stays and the user is told why. A reinstall retries the cleanup.
+!macro pairWarnPathEntriesRemain
+  DetailPrint "Could not release every engine PATH entry; keeping user data so a reinstall can retry."
+  MessageBox MB_OK|MB_ICONEXCLAMATION "Personal AI Router could not remove every engine entry from your PATH.$\n$\nYour data has been kept so that reinstalling can finish the cleanup. If you delete it by hand, remove those PATH entries yourself as well — nothing else will be able to identify them." /SD IDOK
+!macroend
+
 ; Best-effort: when the user opts to remove data, stop any process whose
 ; executable lives UNDER one of the data roots (e.g. an engine like Ollama
 ; running from %LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\)
@@ -314,9 +353,14 @@
       pairDataDone:
     ${endif}
     ${if} $8 == "1"
-      !insertmacro pairKillProcessesInDataDirs
-      !insertmacro pairRemoveUserData
-      !insertmacro pairWarnIfDataRemains
+      !insertmacro pairReleaseEnginePathEntries
+      ${if} $7 == "0"
+        !insertmacro pairKillProcessesInDataDirs
+        !insertmacro pairRemoveUserData
+        !insertmacro pairWarnIfDataRemains
+      ${else}
+        !insertmacro pairWarnPathEntriesRemain
+      ${endif}
     ${endif}
   ${endif}
 !macroend
