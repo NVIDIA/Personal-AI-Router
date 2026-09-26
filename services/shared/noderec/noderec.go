@@ -514,7 +514,10 @@ type DirectoryNode struct {
 	// empty list means "running, nothing loaded"; a missing key means the peer
 	// didn't report loaded state for it. Omitted when the peer reports none.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
-	LastSeen       int64               `json:"lastSeen"` // Unix seconds
+	// LoadedVRAMByEngine reports last-observed GPU-resident bytes per engine/model.
+	// It is not a minimum requirement or an admission signal. Zero is known; absent is unknown.
+	LoadedVRAMByEngine map[string]map[string]uint64 `json:"loadedVramByEngine,omitempty"`
+	LastSeen           int64                        `json:"lastSeen"` // Unix seconds
 }
 
 // Clustered reports whether the node advertises a cluster identity.
