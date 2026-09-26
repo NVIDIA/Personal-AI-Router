@@ -60,6 +60,25 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 	}
 }
 
+var procGetProcessIoCounters = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessIoCounters")
+
+// processIOBytes returns the bytes a process has moved through I/O so far:
+// reads, writes and "other" transfers, which is where socket receives land. A
+// PowerShell installer buffers a whole download in memory before writing the
+// file, so nothing on disk grows while it transfers; its counters do.
+func processIOBytes(pid int) (int64, bool) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return 0, false
+	}
+	defer windows.CloseHandle(h)
+	var c windows.IO_COUNTERS
+	if r, _, _ := procGetProcessIoCounters.Call(uintptr(h), uintptr(unsafe.Pointer(&c))); r == 0 {
+		return 0, false
+	}
+	return int64(c.ReadTransferCount + c.WriteTransferCount + c.OtherTransferCount), true
+}
+
 // gracefulSignal stops the process tree and is the only stop signal
 // engine-manager sends: stop() sends this once and waits for the engine to
 // exit. Windows has no SIGTERM, and the engines we spawn run windowless

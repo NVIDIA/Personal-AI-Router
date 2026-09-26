@@ -270,7 +270,7 @@ func TestLlamaLinuxCUDAGate(t *testing.T) {
 				}
 			} else {
 				note, _ := receipt["cuda_not_used"].(string)
-				if !strings.Contains(note, tc.wantNote) || receipt["source"] != nil {
+				if !strings.Contains(note, tc.wantNote) || receipt["source"] != "official-installer" {
 					t.Fatalf("fallback receipt = %v", receipt)
 				}
 			}

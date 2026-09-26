@@ -51,6 +51,13 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+// processIOBytes is not available here: the Unix vendor tools (curl, zstd,
+// llama download) stream to disk, so growth of the staging tree or the model
+// cache is the progress signal. Reporting false disables the process watcher.
+func processIOBytes(int) (int64, bool) {
+	return 0, false
+}
+
 // gracefulSignal sends SIGTERM to the process group (falling back to the
 // process itself). It is the only stop signal engine-manager sends: stop()
 // sends this once and waits for the engine to exit, and never escalates to

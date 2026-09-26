@@ -263,6 +263,24 @@ func TestLlamaPullUsesVendorDownloadAndValidatesResult(t *testing.T) {
 	}
 }
 
+// A pull whose downloader says nothing on stderr but keeps growing the cache
+// file is progress, not a stall: a live run on a 30 KB/s link was cut off at
+// the idle budget because only stderr bytes counted.
+func TestLlamaPullSurvivesSilentDownloaderWhileCacheGrows(t *testing.T) {
+	e, st := installedLlamaFakeRuntime(t)
+	oldIdle, oldPoll := llamaStallIdle, stallPollEvery
+	llamaStallIdle, stallPollEvery = time.Second, 100*time.Millisecond
+	t.Cleanup(func() { llamaStallIdle, stallPollEvery = oldIdle, oldPoll })
+	llamaFixtureOptions(t, st, map[string]any{"download_chunks": 6, "download_chunk_delay_ms": 500})
+	params, _ := json.Marshal(map[string]string{"model": "owner/slowgrowth", "file": "fixture-Q4_0.gguf"})
+	if _, err := e.Action(context.Background(), "llamacpp", "pull_model", params); err != nil {
+		t.Fatalf("pull with a silent but progressing downloader failed: %v", err)
+	}
+	if ids := llamaDownloaded(t, e, st); !slices.Contains(ids, "owner/slowgrowth:Q4_0") {
+		t.Fatalf("downloaded = %v, want owner/slowgrowth:Q4_0", ids)
+	}
+}
+
 // cancel_pull terminates the vendor download and nothing partial is published.
 func TestLlamaCancelPullStopsTheVendorDownload(t *testing.T) {
 	e, st := installedLlamaFakeRuntime(t)

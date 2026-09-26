@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -256,9 +257,19 @@ func (e *Executor) llamaModelAction(ctx context.Context, st *engineState, action
 		if err := cmd.Start(); err != nil {
 			return nil, llamaDownloadError(err)
 		}
-		// The vendor redraws its progress in place, so bytes read (not lines) are
-		// the progress signal. Diagnostics keep the head and the tail of stderr:
-		// an HTTP status arrives early, a full disk late.
+		// The downloader is silent on stderr while it transfers (a live run on a
+		// 30 KB/s link was cut off as a stall), so the progress signals are the
+		// model cache growing under it and, where available, its own I/O
+		// counters; stderr bytes still count when they come. Each signal also
+		// keeps a waiting UI alive.
+		heartbeatEvent := func() {
+			e.emitPullProgress(ProgressEvent{Engine: st.manifest.Engine, Op: "pull", Stage: "pulling", Percent: -1, Message: p.Model})
+		}
+		watching := make(chan struct{})
+		go watchTreeGrowth(stall, cachePath, stallPollEvery, func(int64) { heartbeatEvent() }, watching)
+		go watchProcessIO(stall, cmd.Process.Pid, stallPollEvery, heartbeatEvent, watching)
+		// Diagnostics keep the head and the tail of stderr: an HTTP status
+		// arrives early, a full disk late.
 		detail := newBoundedCapture(16 * 1024)
 		buf := make([]byte, 32*1024)
 		heartbeat := time.Now()
@@ -277,6 +288,7 @@ func (e *Executor) llamaModelAction(ctx context.Context, st *engineState, action
 			}
 		}
 		err = cmd.Wait()
+		close(watching)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -286,7 +298,15 @@ func (e *Executor) llamaModelAction(ctx context.Context, st *engineState, action
 			}
 			var exit *exec.ExitError
 			if errors.As(err, &exit) {
-				exit.Stderr = detail.Bytes() // Output() would have filled this; the pipe consumed it instead.
+				diag := detail.Bytes()
+				if len(bytes.TrimSpace(diag)) == 0 { // the vendor reports some failures on stdout only
+					diag = tailBytes(stdout.Bytes(), 16*1024)
+				}
+				exit.Stderr = diag // Output() would have filled this; the pipe consumed it instead.
+				// The user-facing message stays classified (no vendor text, paths or
+				// URLs leave this process); the local log keeps a bounded excerpt so a
+				// failure that matched no class can still be diagnosed.
+				slog.Warn("llama download exited unsuccessfully", "model", p.Model, "exit", exit.ExitCode(), "output", string(tailBytes(bytes.TrimSpace(diag), 400)))
 			}
 			return nil, llamaDownloadError(err)
 		}

@@ -170,6 +170,11 @@ func main() {
 			var fixture struct {
 				DownloadPreset  bool `json:"download_preset"`
 				DownloadDelayMS int  `json:"download_delay_ms"`
+				// download_chunks / download_chunk_delay_ms grow the file
+				// progressively and silently, like the vendor's curl-backed
+				// download on a slow link (nothing on stderr while it transfers).
+				DownloadChunks       int `json:"download_chunks"`
+				DownloadChunkDelayMS int `json:"download_chunk_delay_ms"`
 			}
 			bin, _ := os.Executable()
 			data, _ := os.ReadFile(filepath.Join(filepath.Dir(bin), ".llama-fixture.json"))
@@ -213,6 +218,15 @@ func main() {
 			path := filepath.Join(snapshot, file)
 			if os.WriteFile(path, header, 0o600) != nil || os.WriteFile(filepath.Join(base, "refs", "main"), []byte(commit), 0o600) != nil {
 				os.Exit(1)
+			}
+			for i := 0; i < fixture.DownloadChunks; i++ {
+				time.Sleep(time.Duration(fixture.DownloadChunkDelayMS) * time.Millisecond)
+				f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+				if err != nil {
+					os.Exit(1)
+				}
+				_, _ = f.Write(make([]byte, 4096))
+				_ = f.Close()
 			}
 			fmt.Println(path)
 			return

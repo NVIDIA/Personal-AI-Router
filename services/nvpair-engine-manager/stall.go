@@ -184,3 +184,43 @@ func watchTreeGrowth(ctx context.Context, root string, every time.Duration, onGr
 		}
 	}
 }
+
+// watchProcessIO treats growth of a child's own I/O counters as transfer
+// progress (see processIOBytes). It returns at once where counters are not
+// available, and otherwise when ctx ends, stop is closed or the process is gone.
+func watchProcessIO(ctx context.Context, pid int, every time.Duration, onProgress func(), stop <-chan struct{}) {
+	last, ok := processIOBytes(pid)
+	if !ok {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-t.C:
+			n, ok := processIOBytes(pid)
+			if !ok {
+				return
+			}
+			if n != last {
+				last = n
+				touchStall(ctx)
+				if onProgress != nil {
+					onProgress()
+				}
+			}
+		}
+	}
+}
+
+// tailBytes returns the last n bytes of b.
+func tailBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[len(b)-n:]
+	}
+	return b
+}

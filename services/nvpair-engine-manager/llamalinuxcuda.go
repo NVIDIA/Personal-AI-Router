@@ -4,11 +4,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // llamaLinuxCUDAGate enables the Linux CUDA selection below. A var so the
@@ -94,5 +97,33 @@ func (e *Executor) runInstaller(ctx context.Context, script string, env map[stri
 	if e.runLlamaInstaller != nil {
 		return e.runLlamaInstaller(ctx, script, env)
 	}
-	return e.runCommand(ctx, llamaInstallerArgs(runtime.GOOS, script), env)
+	return e.runCommandWatched(ctx, llamaInstallerArgs(runtime.GOOS, script), env)
+}
+
+// runCommandWatched is runCommand with the child's own I/O counted as transfer
+// progress while it runs. The Windows installer downloads through PowerShell,
+// which buffers each file in memory, so the staging tree the caller watches
+// stays flat until a whole payload has arrived; on a slow link that looked like
+// a stall. Where counters are unavailable this is exactly runCommand.
+func (e *Executor) runCommandWatched(ctx context.Context, argv []string, env map[string]string) error {
+	if len(argv) == 0 {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = commandEnv(env)
+	configureSysProcAttr(cmd)
+	configureCommandCancel(cmd)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	stop := make(chan struct{})
+	go watchProcessIO(ctx, cmd.Process.Pid, stallPollEvery, nil, stop)
+	err := cmd.Wait()
+	close(stop)
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(out.String()))
+	}
+	return nil
 }

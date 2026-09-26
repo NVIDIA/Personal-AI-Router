@@ -198,9 +198,11 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 		}
 		provenance = map[string]any{"version": strings.TrimSpace(version), "binary_sha256": hex.EncodeToString(h.Sum(nil)), "platform": runtime.GOOS + "/" + runtime.GOARCH}
 		if len(st.plat.Install.Archives) > 0 {
+			provenance["source"] = "pinned-archives"
 			provenance["archives"] = st.plat.Install.Archives
 			provenance["recipe_sha256"] = llamaArchiveRecipeHash(st.plat.Install.Archives)
 		} else {
+			provenance["source"] = "official-installer"
 			provenance["installer_sha256"] = st.plat.Install.Fetch.SHA256
 			provenance["installer_url"] = st.plat.Install.Fetch.URL
 		}

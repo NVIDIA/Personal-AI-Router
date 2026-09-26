@@ -475,9 +475,11 @@ validation verifies the actual host.
 Downloads and the vendor installer are bounded by lack of progress rather than
 a fixed budget: an install or model pull fails when nothing has been transferred
 for ten minutes (or after six hours in total), with that reason in the error,
-instead of failing a slow but live link at thirty minutes. Progress heartbeats
-are emitted while the installer's staging tree grows and while the vendor
-downloader prints transfer output.
+instead of failing a slow but live link at thirty minutes. Progress is anything
+observable: the installer's staging tree or the model cache growing, bytes the
+vendor downloader writes to stderr, and on Windows the child's own I/O counters
+(PowerShell buffers each download in memory, so nothing on disk grows until a
+payload is complete). Each signal also emits a progress heartbeat.
 
 The per-user `engine-bin/llamacpp` directory contains `runtime` and `previous`.
 Models live outside removable application data, in the sibling
