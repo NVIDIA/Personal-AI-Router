@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,12 +193,17 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 // controlPort with the given cluster dir. It keeps stdin open (so the process
 // stays alive) and drains stdout. Returns stdin and a cleanup.
 func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) (io.WriteCloser, func()) {
+	return startEngineManagerServerBinary(t, engineMgrBin, clusterDir, controlPort)
+}
+
+func startEngineManagerServerBinary(t *testing.T, binary, clusterDir string, controlPort int) (io.WriteCloser, func()) {
 	t.Helper()
-	cmd := exec.Command(engineMgrBin,
+	cmd := exec.Command(binary,
 		"--control-port", fmt.Sprintf("%d", controlPort),
 		"--cluster-dir", clusterDir,
 		"--log-level", "warn",
 	)
+	cmd.Env = append(os.Environ(), "HOME="+clusterDir, "XDG_CONFIG_HOME="+clusterDir, "APPDATA="+clusterDir, "LOCALAPPDATA="+clusterDir)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -227,8 +233,13 @@ func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) 
 // startEngineManagerStdio launches an engine-manager as a JSON-RPC-over-stdio
 // client. Returns its stdin, a reader over its stdout frames, and a cleanup.
 func startEngineManagerStdio(t *testing.T, clusterDir string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
+	return startEngineManagerStdioBinary(t, engineMgrBin, clusterDir)
+}
+
+func startEngineManagerStdioBinary(t *testing.T, binary, clusterDir string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
-	cmd := exec.Command(engineMgrBin, "--cluster-dir", clusterDir, "--log-level", "warn")
+	cmd := exec.Command(binary, "--cluster-dir", clusterDir, "--log-level", "warn")
+	cmd.Env = append(os.Environ(), "HOME="+clusterDir, "XDG_CONFIG_HOME="+clusterDir, "APPDATA="+clusterDir, "LOCALAPPDATA="+clusterDir)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -252,5 +263,52 @@ func startEngineManagerStdio(t *testing.T, clusterDir string) (io.WriteCloser, <
 			_ = cmd.Process.Kill()
 			<-done
 		}
+	}
+}
+
+func TestRemoteLlamaControlsRefusedByOldPeer(t *testing.T) {
+	old := os.Getenv("NVPAIR_TEST_OLD_ENGINE_MANAGER")
+	if old == "" {
+		t.Skip("set NVPAIR_TEST_OLD_ENGINE_MANAGER to a pre-llama engine-manager binary")
+	}
+	dirA, dirB := t.TempDir(), t.TempDir()
+	const uuidA, uuidB = "new-manager", "old-manager"
+	certA, certB := mintClusterIdentity(t, dirA, uuidA), mintClusterIdentity(t, dirB, uuidB)
+	writePin(t, dirA, uuidB, certB)
+	writePin(t, dirB, uuidA, certA)
+	port := freePort(t)
+	_, stopB := startEngineManagerServerBinary(t, old, dirB, port)
+	t.Cleanup(stopB)
+	waitForPort(t, "127.0.0.1", port, 10*time.Second)
+	stdin, msgs, stopA := startEngineManagerStdio(t, dirA)
+	t.Cleanup(stopA)
+	waitForMethod(t, msgs, "engine:ready", 10*time.Second)
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[{"hostUuid":"old","name":"old","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,"services":{"ec":{"port":%d}}}]}}`, uuidB, port))
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"old"}}`)
+	listed := waitForResponse(t, msgs, 10*time.Second)
+	if listed.Error != nil || strings.Contains(string(listed.Result), `"llamacpp"`) {
+		t.Fatalf("old peer must explicitly omit unsupported llama: %s %+v", listed.Result, listed.Error)
+	}
+	for i, method := range []string{"engine:remote-load-model", "engine:remote-cancel-pull"} {
+		writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q,"params":{"node":"old","engine":"llamacpp","model":"unsupported-model"}}`, i+2, method))
+		resp := waitForResponse(t, msgs, 10*time.Second)
+		if resp.Error == nil || (!strings.Contains(resp.Error.Message, "404") && !strings.Contains(resp.Error.Message, "unknown engine")) {
+			t.Fatalf("%s must return the old peer's explicit capability refusal: %+v", method, resp)
+		}
+	}
+	// Reverse direction: the old client preserves the new inventory record
+	// verbatim; it must not relabel the unknown engine as a familiar one.
+	newPort := freePort(t)
+	_, stopNew := startEngineManagerServer(t, dirA, newPort)
+	t.Cleanup(stopNew)
+	waitForPort(t, "127.0.0.1", newPort, 10*time.Second)
+	oldIn, oldMsgs, stopOld := startEngineManagerStdioBinary(t, old, dirB)
+	t.Cleanup(stopOld)
+	waitForMethod(t, oldMsgs, "engine:ready", 10*time.Second)
+	writeRawFrame(t, oldIn, fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[{"hostUuid":"new","name":"new","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,"services":{"ec":{"port":%d}}}]}}`, uuidA, newPort))
+	writeRawFrame(t, oldIn, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"new"}}`)
+	reverse := waitForResponse(t, oldMsgs, 10*time.Second)
+	if reverse.Error != nil || !strings.Contains(string(reverse.Result), `"engine":"llamacpp"`) {
+		t.Fatalf("old client lost the new engine identity: %s %+v", reverse.Result, reverse.Error)
 	}
 }

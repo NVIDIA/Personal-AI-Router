@@ -5,11 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-engine-manager
 
-A config-driven control plane for local inference engines (Ollama today;
-Intel/others via a dropped-in manifest). It manages everything about an
-engine **except serving inference**: detect, user-mode install,
-start/stop/restart, health, and config-declared actions. Adding an engine
-is a JSON manifest, not code.
+A config-driven control plane for local inference engines, including Ollama,
+LM Studio and llama.cpp. It manages everything about an engine **except serving
+inference**: detect, user-mode install, start/stop/restart, health, and
+config-declared actions. Manifests describe common operations; engine-specific
+backend drivers handle ownership or lifecycle behavior a command recipe cannot
+safely express. The desktop and TUI remain clients of this control plane.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
@@ -128,11 +129,40 @@ unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
-reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+reports the failed start. Stop sends one graceful stop signal (SIGTERM to the
+process group on Unix; `taskkill /T /F` on Windows, where the windowless engines
+we spawn can't receive a graceful close) and waits for the engine to exit; if
+the engine, or a model child it spawned, is still alive fifteen seconds later
+the whole process group is force-killed, so a stop is complete only when
+nothing PAIR started is left running.
+
+### Managed install/uninstall contract
+
+This is the required recipe standard shared by Ollama, LM Studio and llama.cpp.
+It defines acceptance requirements, not a blanket certification of legacy
+recipes. Each engine must provide evidence for its actual platform and layout.
+
+| Operation or boundary | Required behavior |
+| --- | --- |
+| Install | Put the managed runtime in a PAIR-owned location using the supported vendor path. Do not overwrite a detected external installation or take ownership of its data. |
+| Detection/adoption | Finding an executable or serving endpoint does not grant uninstall authority. Keep existing engine-specific detection, start/stop and port behavior; prove ownership separately before removal. |
+| Uninstall | Stop the correct managed instance, then remove only its owned runtime. Refuse removal of external, shared or legacy installations when ownership cannot be established, including command-mode engines. |
+| Retention | Keep normal separate model libraries, settings and user data. Runtime removal is not profile reset or model cleanup. Persisting the user's Off intent is allowed; erasing their configuration is not. |
+| Reinstall | Reuse retained data without requiring models to be downloaded again. A vendor cache is not disposable merely because the runtime was removed. |
+| Failure | Return an actionable error and the observed state. A successful command exit alone does not prove runtime removal or data preservation. |
+
+Parity here is **install/uninstall ownership and retention**. It does not add a
+new detach interface, job-drain mechanism, profile-reset/model-cleanup feature,
+API-first rewrite or generic updater redesign. Update behavior remains
+engine-specific: Ollama and LM Studio keep their existing update paths, and
+managed llama has no update action. Uninstall-then-install is not a substitute
+for one and must not be wired up as such for superficial similarity.
+
+Minimum recipe evidence: managed install/detection, bounded start/stop, runtime
+removal with model/settings retention, reinstall using retained data, and
+external/shared-install refusal. A manifest or mock alone does not establish
+native vendor-package behavior. For llama, only `runtime` and `previous` are
+removable installation slots; model/cache and settings paths remain separate.
 
 ### Adoption — start may attach to an engine it didn't launch
 
@@ -294,3 +324,233 @@ termination, console hiding) are the only build-tagged Go
 Shuts down on stdin EOF (parent closed the pipe), `SIGINT`/`SIGTERM`, or a
 `shutdown` JSON-RPC request — stopping any running engines first so none
 are orphaned.
+
+## Managed llama app
+
+On Windows x64, the qualified b10826 / 73a43d1f6 Vulkan runtime automatically
+receives a B580 compatibility profile before a managed start when
+`llama cli --list-devices` actually enumerates Intel Arc B580. Automatic device
+selection and explicit device lists containing that B580 receive the profile;
+explicit CPU (including zero GPU layers), CUDA, or other Vulkan device selections retain their options.
+PAIR checks the existing managed install receipt, pinned installer identity,
+and exact qualified executable SHA-256 before enumeration. Unknown or adopted
+runtimes do not receive defaults. Windows on ARM with CUDA, Apple Silicon,
+other engines, and other Vulkan devices do not acquire this profile.
+
+The process-local defaults are `GGML_VK_DISABLE_COOPMAT=1`,
+`GGML_VK_DISABLE_COOPMAT2=1`, `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1`,
+`GGML_VK_DISABLE_F16=1`, `GGML_VK_DISABLE_BFLOAT16=1`, and
+`LLAMA_ARG_FLASH_ATTN=off`. No ASYNC override is added. These defaults also
+reach model-serving children of `llama serve`. They apply to fresh and older
+managed installations on their next start after a PAIR upgrade; no reinstall,
+model change, or receipt rewrite is needed. Install on an already-installed
+runtime stays a no-op, and saved Off stays Off. No global environment, registry, driver,
+upstream source, or safety/bounds check is changed.
+
+Existing runtime environment options override inherited environment options;
+explicit CLI options take precedence where the vendor supports them. Compatible
+explicit values are preserved. A conflicting flash-attention value, ambiguous
+Windows spelling of a value-bearing option, or a per-model preset that could override flash attention stops Start
+with an actionable retry error. Remove or correct the named override in the
+per-user engine manifest or inherited environment before retrying. Disable
+variables use presence semantics: any existing value, including empty or `0`,
+already disables that feature and is preserved. Missing disables receive `1`.
+The vendor's equivalent flash-attention-off values (`off`, `disabled`, `false`,
+and `0`) are accepted without rewriting the user's option.
+The profile ID `b10826-73a43d1f6-windows-vulkan-b580` and its effective options
+appear in the existing manager and engine logs without inference content.
+
+This is a bounded compatibility workaround based on repeated correct requests,
+not a uniquely isolated root cause, globally minimal option set, or broad
+numerical guarantee. Options affect the whole serving process, including other
+Vulkan adapters used together with B580. Maintainers must requalify or remove
+the profile when changing vendor identity; `llamacompat.go` pins the qualified
+executable so an unrelated future build cannot silently inherit the workaround.
+Automatic mixed-device inference still requires native runtime validation.
+
+`llamacpp` installs the official llama app. Windows x64, Linux and Apple Silicon
+use the checksum-pinned installer from ggml-org/llama-install.sh commit
+`27a82f3a6e0f259f88c2c31cd6b20d858a975f27`. Pins refer to raw repository
+bytes, before Windows checkout line-ending conversion. Their supported runtime
+is `b10826`. Install reports an already-installed managed runtime as
+`already-installed` and changes nothing; there is no update action that moves an
+older managed runtime to a newer build, and uninstall-then-install is not run as
+a substitute for one.
+
+NVIDIA Windows ARM64 Install stages the two checksum-pinned b10826 CUDA 13.4
+archives declared in `install.archives` directly and requires the CUDA device
+check below before promotion. The official installer's CUDA path needs a CUDA
+Toolkit on the host; without one it produced a CPU build that failed the check
+and fell back to these same archives after a wasted attempt, so that attempt is
+no longer the default. Setting `install.upstream_first` (restricted to this
+platform and driver, with the two pinned archives as fallback) opts back into
+trying the current official `ggml-org/llama-install.sh` PowerShell installer
+first: the fixed official version endpoint resolves one numeric build, which is
+passed to the installer; the whole attempt, including validation, is limited to
+three minutes; the version response is limited to 64 bytes and the script to
+1 MiB; builds older than the qualified fallback are refused; the installer gets
+CUDA enabled and Vulkan skipped.
+
+Before promotion, PAIR checks the exact selected build, nonempty vendor licenses,
+and an actual `CUDA0:` (or other numbered CUDA device) row from
+`llama cli --list-devices`. This check starts no server and loads no model.
+If acquisition, the installer, or validation fails or times out, PAIR uses the
+tested b10826 app ZIP plus CUDA 13.4 runtime ZIP declared in `install.archives`,
+in a separate clean stage. Parent cancellation stops the operation without
+starting a fallback. CUDA on this platform is an upstream preview and requires
+a compatible NVIDIA driver; PAIR installs no driver or toolkit.
+
+Each fallback archive is verified before bounded extraction into its owned stage.
+Unsafe paths, nonregular entries and file collisions are refused. Both bundles
+move together through the existing validation, promotion, rollback and runtime-only
+removal flow. Whichever source succeeds is what Install promotes; an installed
+managed runtime is never re-fetched or replaced by a later Install request.
+
+`runtime/pair-install.json` records the actual source, selected build, executable
+hash, CUDA validation, and any fallback reason/attempt metadata. The latest
+installer is pinned to an upstream commit and **verified against a prequalified
+SHA-256 before it is executed**, because it is a script PAIR runs rather than an
+artifact it only unpacks; an upstream change fails the download and the pinned
+CUDA archives take over. The build installed is still whatever the version
+endpoint resolves to, so pinning the installer does not pin the engine. The
+fallback retains its verified archive pins and recipe identity. Maintainers update those pins together
+and repeat platform/failure/retention checks when changing the fallback. Acquired
+runtime provenance and vendor license output remain with the managed installation;
+normal release signing/notarization belongs to CI/CD, not a local bypass.
+Security reports follow the repository's `SECURITY.md` process.
+
+Windows ARM policy is selected inside the install transaction from successful
+native CPU and PNP inventory. NVIDIA CPU/hardware identity or a retained verified
+CUDA receipt keeps the CUDA-required path above, including with an unbound or
+broken driver. Failed/incomplete inventory never selects CPU. Confirmed
+non-NVIDIA ARM uses `install.cpu_fetch`: the pinned b10826 official PowerShell
+installer with CUDA/Vulkan probes explicitly skipped. Its receipt records
+`source: official-pinned-cpu`, `acceleration_policy: cpu`, installer/binary hashes
+and `cuda_device_verified: false`.
+
+Intel macOS uses the checksum-pinned official b10826 x64 CPU unified-app tar
+archive. `install.archive_root` selects its fixed `llama-b10826` prefix. Bounded
+extraction rejects escaping/duplicate paths, hardlinks and special files;
+contained versioned dylib links become regular files, never filesystem symlinks.
+The existing version/license, candidate promotion/rollback and persistent model
+cache lifecycle apply. This artifact requires macOS 13.3 or newer and does not
+provide Radeon acceleration.
+
+On Windows x64 the official installer selects its CUDA build only when the CUDA
+Toolkit is installed; with just the NVIDIA driver it selects Vulkan. Install
+therefore reads one compute capability per GPU from `nvidia-smi` first. When
+every NVIDIA GPU reports 7.5 (Turing) or newer, PAIR stages the checksum-pinned
+b10826 CUDA 13.3 app ZIP plus CUDA runtime ZIP declared in
+`install.cuda_archives`, which need no toolkit, and requires the same `CUDA0:`
+device check before promotion. No NVIDIA GPU, an older or unreadable one, an
+unavailable archive or a failed device check runs the pinned installer below in
+a separate stage instead, and its receipt records the reason as
+`cuda_not_used`. Parent cancellation never starts that installer. A CUDA receipt
+records `source: pinned-cuda-archives`, `acceleration_policy: cuda`, the archive
+recipe and the reported compute capabilities.
+
+Linux applies the same gate with the same pinned installer. When every NVIDIA
+GPU reports 7.5 or newer, Install runs the installer restricted to its CUDA
+payload (`SKIP_VULKAN=1 SKIP_ROCM=1`; the script has no CPU skip, so a CPU
+landing is rejected by the device check) in a private stage, requires the `CUDA0:`
+device check before promotion, and retries the transfer once, because the
+unrestricted installer falls through to Vulkan or CPU without saying so when
+the CUDA payload download fails or no CUDA build exists for the GPU (Jetson
+Thor at b10826). If both attempts fail, the unrestricted installer runs in a
+separate stage and the receipt records the reason as `cuda_not_used`. A CUDA
+receipt records `source: official-installer-cuda`, `acceleration_policy: cuda`
+and the reported compute capabilities.
+
+Every install path records the accelerator the promoted runtime actually has:
+`pair-install.json` carries `acceleration_policy` (`cuda`, `vulkan`, `metal`,
+`cpu`, ...) and `devices`, the rows `llama cli --list-devices` printed, and
+`engine:status` exposes them as `acceleration` and `devices` for a managed
+runtime so a Vulkan or CPU landing is visible rather than silent. The Windows
+x64 installer path and Apple Silicon retain the vendor's accelerator selection.
+Selection is not automatic recovery from a GPU hang or incorrect model answer.
+`install_supported` and `install_reason` describe recipe availability and
+selection requirements, not proof of a GPU or a particular model. Native
+validation verifies the actual host.
+
+Downloads and the vendor installer are bounded by lack of progress rather than
+a fixed budget: an install or model pull fails when nothing has been transferred
+for ten minutes (or after six hours in total), with that reason in the error,
+instead of failing a slow but live link at thirty minutes. Progress is anything
+observable: the installer's staging tree or the model cache growing, bytes the
+vendor downloader writes to stderr, and on Windows the child's own I/O counters
+(PowerShell buffers each download in memory, so nothing on disk grows until a
+payload is complete). Each signal also emits a progress heartbeat.
+
+The per-user `engine-bin/llamacpp` directory contains `runtime` and `previous`.
+Models live outside removable application data, in the sibling
+`Nvidia Corporation/Personal AI Router Models/llamacpp` directory under the
+platform configuration base: LocalAppData on Windows, XDG_CONFIG_HOME (or
+`~/.config`) on Linux, and `~/Library/Application Support` on macOS.
+An old `engine-bin/llamacpp/models` cache is atomically migrated before use.
+Migration refuses existing-destination collisions, redirected/absolute/external
+links, and a live configured listener; it never merges or overwrites caches.
+Reset/uninstall preserve an unmigrated cache rather than deleting it.
+Script installer subprocesses receive a fresh private home,
+`SKIP_INSTALL=1`, and the selected vendor build, so user-global llama binaries and
+PATH are untouched. Version and bundled license output are checked before
+promotion; `runtime/pair-install.json` records installer and executable identity.
+On Windows script attempts, the acquired official installer runs
+with a process-scoped PowerShell execution-policy override; no saved execution
+policy is changed. The Windows ARM64 fallback stage extracts archives without
+executing another installer script.
+Install stages and verifies the candidate before promoting it: promotion moves
+any existing `runtime` slot to `previous` and the candidate into `runtime` with
+two renames. If the manager exits between those renames, the next manager
+restores the retained runtime when the current slot is absent. Saved Off
+remains Off. Uninstall removes
+the two runtime slots while retaining models and failed diagnostic stages.
+Redirected managed directories are refused rather than mutating external data.
+The first headless mutation detects the installed runtime and reconciles listener
+ownership itself; it does not require a preceding status request or UI poll.
+
+The foreground `llama serve` process binds loopback, uses the same `LLAMA_CACHE`
+and `HF_HUB_CACHE` as downloads, and runs with `--models-autoload`: a cached
+model loads on the first request that names it, and the router keeps up to four
+models resident (vendor `--models-max` default), evicting idle ones. Cached,
+unloaded, loading, and loaded are separate states. Readiness checks the llama.cpp
+server identity and router model-list shape. An externally started instance can
+be inspected but cannot be mutated; `managed` is false for an adopted listener.
+On Windows, both subprocess paths use the standard extended-length cache path
+form to support long Hugging Face filenames without changing OS settings.
+
+Launch settings follow the shared editable-launch contract: the fixed startup arguments are `serve --models-autoload`, the reviewed networking controls are `--port` ({server.port}) and `--host` ({server.host}, loopback only), no CORS switch is declared, and the owned model cache environment (`LLAMA_CACHE`, `HF_HUB_CACHE`) is injected on every launch rather than edited; the settings preview rejects assignments to those two names.
+
+These actions use the existing `engine:action` request with `engine: "llamacpp"`:
+
+| Action | Parameters and result |
+| --- | --- |
+| `list_models` | Current router `/models` response; `data[].id`, nested `status.value` |
+| `loaded_models` | Same response; residency extraction keeps only `status.value == loaded` |
+| `list_downloaded` | Managed cache IDs as `data[].id`; works while stopped or after uninstall |
+| `pull_model` | `{model: "owner/repository:TAG", file?: "file.gguf"}`; official CLI download |
+| `import_model` | `{path: "/absolute/model-Q4_K_M.gguf"}`; copies a single GGUF into managed cache |
+| `load_model`, `unload_model`, `delete_model` | `{model: "exact ID from inventory"}` |
+| `cancel_pull` | `{model: "same requested model"}`; acknowledges the cancellation request |
+| `get_version` | Vendor version string |
+
+There is no `update` action for `llamacpp`; a request for one is refused rather
+than translated into uninstall followed by install.
+
+Import preserves the source file and requires a single primary GGUF with a
+quantization suffix; split-file and auxiliary-only imports are refused. Pulls
+require returned owned GGUF files with a supported header and model tensors;
+preset/configuration-only results are explicitly unsupported even if the vendor
+downloader exits successfully. This format check is not full tensor validation.
+Downloads run as cancellable owned CLI processes. Their progress is indeterminate until
+completion because vendor CLI output does not provide a reliable percentage.
+Terminal completion/cancellation is distinct from a cancellation request.
+Load/unload responses wait for observed vendor state instead of treating the
+vendor's asynchronous acceptance response as completed work; failed loads surface
+their exit status and waiting honors cancellation.
+Downloads/imports/deletes refresh the router catalogue; deletion unloads an
+observed loaded model first and removes only matching cache artifacts.
+
+Paired control adds `engine:remote-cancel-pull {node, engine, model}` through
+the existing pinned-mTLS boundary at `POST /v1/models/cancel-pull`. Mixed-version
+peers that lack that route return an explicit error. This layer does not claim
+vendor acknowledgement of an inference cancellation or aggregate GPU memory.

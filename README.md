@@ -38,7 +38,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama and LM Studio |
+| **Inference engines** | Ollama, LM Studio and managed llama.cpp |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -48,6 +48,11 @@ between that engine and that machine, so check the engine's own documentation
 before assuming a node can serve a model. A node only becomes a candidate for a
 request once it is actually running a compatible engine, and PAIR prefers the
 nodes it already knows hold the model.
+
+Managed llama.cpp provides an official CPU app for Intel Macs and confirmed
+non-NVIDIA Windows ARM hardware. NVIDIA Windows ARM remains CUDA-required;
+a failed driver or hardware query does not silently select CPU. Apple Silicon
+uses the official Metal app. See the [managed engine requirements and policies](services/nvpair-engine-manager/README.md#managed-llama-app).
 
 ## Quick start
 

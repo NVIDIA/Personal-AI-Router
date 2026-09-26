@@ -389,6 +389,21 @@ const config: Configuration = {
         }
     },
     deb: {
+        // Explicit depends replace electron-builder defaults. Preserve its current
+        // runtime set, adding GBM and the ALSA SONAME on both pre/post-t64 distros.
+        depends: [
+            'libgtk-3-0',
+            'libnotify4',
+            'libnss3',
+            'libxss1',
+            'libxtst6',
+            'xdg-utils',
+            'libatspi2.0-0',
+            'libuuid1',
+            'libsecret-1-0',
+            'libgbm1',
+            'libasound2t64 | libasound2'
+        ],
         afterInstall: 'scripts/build/linux/after-install.sh',
         afterRemove: 'scripts/build/linux/after-remove.sh'
     },

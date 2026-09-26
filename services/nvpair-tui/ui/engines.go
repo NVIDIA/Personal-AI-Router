@@ -21,12 +21,17 @@ import (
 // engineStatus mirrors nvpair-engine-manager's EngineStatus snapshot, the
 // element of engine:get-installed and the engine:state-changed payload.
 type engineStatus struct {
-	Engine      string `json:"engine"`
-	DisplayName string `json:"display_name"`
-	Installed   bool   `json:"installed"`
-	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port"`
+	Engine           string   `json:"engine"`
+	DisplayName      string   `json:"display_name"`
+	Installed        bool     `json:"installed"`
+	Running          bool     `json:"running"`
+	Healthy          bool     `json:"healthy"`
+	Port             int      `json:"port"`
+	InstallSupported bool     `json:"install_supported"`
+	InstallReason    string   `json:"install_reason"`
+	Acceleration     string   `json:"acceleration"`
+	Devices          []string `json:"devices"`
+	Managed          bool     `json:"managed"`
 }
 
 // enginesView manages local inference engines via the engine-manager
@@ -35,14 +40,20 @@ type engineStatus struct {
 // It can also pull a model (engine:action{action:"pull_model"}), rendering
 // the live engine:pull-progress feed the way remote pulls already show.
 type enginesView struct {
-	client     *rpc.Client
-	table      table.Model
-	order      []string
-	byName     map[string]engineStatus
-	status     string
-	input      textinput.Model
-	pulling    bool
-	pullEngine string
+	client            *rpc.Client
+	table             table.Model
+	order             []string
+	byName            map[string]engineStatus
+	status            string
+	input             textinput.Model
+	pulling           bool
+	pullEngine        string
+	modelAction       string
+	models            table.Model
+	showModels        bool
+	modelNames        []string
+	pendingLoadEngine string
+	pendingLoadModel  string
 
 	width, height int
 }
@@ -50,6 +61,13 @@ type enginesView struct {
 type enginesLoadedMsg struct {
 	engines []engineStatus
 	err     error
+}
+
+type engineModelsMsg struct {
+	engine string
+	names  []string
+	loaded map[string]bool
+	err    error
 }
 
 type engineOpMsg struct {
@@ -65,6 +83,12 @@ var (
 	engInstallKey   = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "install"))
 	engUninstallKey = key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "uninstall"))
 	engPullKey      = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pull model"))
+	engLoadKey      = key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "load model"))
+	engUnloadKey    = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "unload model"))
+	engDeleteKey    = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete model"))
+	engCancelKey    = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel model pull"))
+	engModelsKey    = key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "models / refresh"))
+	engImportKey    = key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "import GGUF path"))
 )
 
 func newEnginesView(client *rpc.Client) *enginesView {
@@ -72,6 +96,7 @@ func newEnginesView(client *rpc.Client) *enginesView {
 	ti.Placeholder = "model name (e.g. llama3.2)"
 	v := &enginesView{client: client, byName: map[string]engineStatus{}, input: ti}
 	v.table = newTable(nil)
+	v.models = newTable(nil)
 	return v
 }
 
@@ -110,10 +135,41 @@ func (v *enginesView) SetSize(w, h int) {
 	})
 	v.table.SetWidth(w)
 	v.table.SetHeight(clampWidth(h-2, 1))
+	v.models.SetColumns([]table.Column{{Title: "MODEL ID", Width: clampWidth(w-18, 10)}, {Title: "STATE", Width: 14}})
+	v.models.SetWidth(w)
+	v.models.SetHeight(clampWidth(h-3, 1))
 }
 
 func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case engineModelsMsg:
+		if msg.engine != "" && msg.engine != v.selectedEngine() {
+			return nil
+		}
+		if msg.err != nil {
+			v.showModels = false
+			v.status = "Model inventory unavailable: " + msg.err.Error()
+			return nil
+		}
+		v.modelNames = msg.names
+		rows := make([]table.Row, 0, len(msg.names))
+		for _, name := range msg.names {
+			state := "downloaded"
+			if v.selectedEngine() == "llamacpp" && !v.byName[v.selectedEngine()].Managed {
+				state = "catalogue"
+			}
+			if msg.loaded[name] {
+				state = "loaded"
+			}
+			rows = append(rows, table.Row{name, state})
+		}
+		v.models.SetRows(rows)
+		v.showModels = true
+		if msg.engine == v.pendingLoadEngine && v.pendingLoadModel != "" && msg.loaded[v.pendingLoadModel] {
+			v.status = "Model loaded: " + v.pendingLoadModel
+			v.pendingLoadEngine, v.pendingLoadModel = "", ""
+		}
+		return nil
 	case enginesLoadedMsg:
 		if msg.err != nil {
 			v.status = "load engines failed: " + msg.err.Error()
@@ -125,15 +181,49 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case engineOpMsg:
-		if msg.err != nil {
+		if errors.Is(msg.err, context.DeadlineExceeded) {
+			// The RPC client dropped its waiter, not the backend operation.
+			// Preserve pending residency so a later authoritative load can settle.
+			loadedModel := strings.TrimPrefix(strings.TrimPrefix(msg.what, "load_model "), "run_model ")
+			if v.status != "Model loaded: "+loadedModel {
+				v.status = fmt.Sprintf("%s %s: no final response yet; outcome unknown. Refresh to observe completion.", msg.what, msg.engine)
+			}
+		} else if msg.err != nil {
 			v.status = fmt.Sprintf("%s %s failed: %s", msg.what, msg.engine, msg.err.Error())
+			if msg.engine == v.pendingLoadEngine {
+				v.pendingLoadEngine, v.pendingLoadModel = "", ""
+			}
+		} else if strings.HasPrefix(msg.what, "load_model ") || strings.HasPrefix(msg.what, "run_model ") {
+			if v.pendingLoadModel != "" {
+				v.status = "Load requested; waiting for observed model residency."
+			}
 		} else {
 			v.status = fmt.Sprintf("%s %s ok", msg.what, msg.engine)
+		}
+		if v.showModels && msg.engine == v.selectedEngine() {
+			return v.loadModelsCmd()
 		}
 		return nil
 
 	case NotificationMsg:
 		switch msg.Msg.Method {
+		case "engine:models-changed":
+			var snapshot struct {
+				Models struct {
+					Loaded map[string][]string `json:"loadedByEngine"`
+				} `json:"models"`
+			}
+			if decodeParams(msg.Msg.Params, &snapshot) == nil {
+				for _, name := range snapshot.Models.Loaded[v.pendingLoadEngine] {
+					if name == v.pendingLoadModel && name != "" {
+						v.status = "Model loaded: " + name
+						v.pendingLoadEngine, v.pendingLoadModel = "", ""
+					}
+				}
+			}
+			if v.showModels {
+				return v.loadModelsCmd()
+			}
 		case "engine:state-changed":
 			var e engineStatus
 			_ = decodeParams(msg.Msg.Params, &e)
@@ -147,7 +237,10 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 				Percent int    `json:"percent"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
-			v.status = fmt.Sprintf("install %s: %s (%d%%)", p.Engine, p.Stage, p.Percent)
+			v.status = fmt.Sprintf("install %s: %s", p.Engine, p.Stage)
+			if p.Percent >= 0 && p.Percent <= 100 {
+				v.status += fmt.Sprintf(" (%d%%)", p.Percent)
+			}
 		case "engine:pull-progress":
 			var p struct {
 				Engine  string `json:"engine"`
@@ -170,7 +263,10 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 				}
 				v.status = fmt.Sprintf("pull %s failed: %s", p.Engine, detail)
 			default:
-				v.status = fmt.Sprintf("pull %s: %s (%d%%)", p.Engine, p.Stage, p.Percent)
+				v.status = fmt.Sprintf("pull %s: %s", p.Engine, p.Stage)
+				if p.Percent >= 0 && p.Percent <= 100 {
+					v.status += fmt.Sprintf(" (%d%%)", p.Percent)
+				}
 			}
 		}
 		return nil
@@ -197,14 +293,47 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.input, cmd = v.input.Update(msg)
 		return cmd
 	}
-	if key.Matches(msg, engPullKey) {
+	if v.showModels && msg.String() == "esc" {
+		v.showModels = false
+		return nil
+	}
+	if key.Matches(msg, engModelsKey) {
+		return v.loadModelsCmd()
+	}
+	var action string
+	switch {
+	case key.Matches(msg, engPullKey):
+		action = "pull_model"
+	case key.Matches(msg, engLoadKey):
+		action = "load_model"
+	case key.Matches(msg, engUnloadKey):
+		action = "unload_model"
+	case key.Matches(msg, engDeleteKey):
+		action = "delete_model"
+	case key.Matches(msg, engCancelKey):
+		action = "cancel_pull"
+	case key.Matches(msg, engImportKey):
+		action = "import_model"
+	}
+	if action != "" {
 		engine := v.selectedEngine()
 		if engine == "" {
 			return nil
 		}
+		if engine == "llamacpp" && !v.byName[engine].Managed {
+			v.status = "Model actions require a PAIR-managed llama app."
+			return nil
+		}
 		v.pullEngine = engine
+		if action == "load_model" && engine == "ollama" {
+			action = "run_model"
+		}
+		v.modelAction = action
 		v.pulling = true
 		v.input.SetValue("")
+		if v.showModels && v.models.Cursor() >= 0 && v.models.Cursor() < len(v.modelNames) {
+			v.input.SetValue(v.modelNames[v.models.Cursor()])
+		}
 		v.input.Focus()
 		return textinput.Blink
 	}
@@ -212,8 +341,76 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	var cmd tea.Cmd
+	if v.showModels {
+		v.models, cmd = v.models.Update(msg)
+		return cmd
+	}
 	v.table, cmd = v.table.Update(msg)
 	return cmd
+}
+
+func (v *enginesView) loadModelsCmd() tea.Cmd {
+	engine := v.selectedEngine()
+	if engine == "" {
+		return nil
+	}
+	action := "list_models"
+	if engine == "llamacpp" && v.byName[engine].Managed {
+		action = "list_downloaded"
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		defer cancel()
+		msg, err := v.client.Call(ctx, "engine:action", map[string]string{"engine": engine, "action": action})
+		if err != nil {
+			return engineModelsMsg{err: err}
+		}
+		var inventory struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+			Models []struct {
+				Name  string `json:"name"`
+				Model string `json:"model"`
+				Key   string `json:"key"`
+			} `json:"models"`
+		}
+		if err := decodeParams(msg.Result, &inventory); err != nil {
+			return engineModelsMsg{err: err}
+		}
+		result := engineModelsMsg{engine: engine, loaded: map[string]bool{}}
+		for _, model := range inventory.Data {
+			if model.ID != "" {
+				result.names = append(result.names, model.ID)
+			}
+		}
+		for _, model := range inventory.Models {
+			name := model.Name
+			if name == "" {
+				name = model.Model
+			}
+			if name == "" {
+				name = model.Key
+			}
+			if name != "" {
+				result.names = append(result.names, name)
+			}
+		}
+		msg, err = v.client.Call(ctx, "engine:models", nil)
+		if err != nil {
+			return engineModelsMsg{err: err}
+		}
+		var snapshot struct {
+			Loaded map[string][]string `json:"loadedByEngine"`
+		}
+		if err := decodeParams(msg.Result, &snapshot); err != nil {
+			return engineModelsMsg{err: err}
+		}
+		for _, name := range snapshot.Loaded[engine] {
+			result.loaded[name] = true
+		}
+		return result
+	}
 }
 
 // pullParams builds the engine:action{action:"pull_model"} params for a pull.
@@ -228,9 +425,8 @@ func pullParams(engine, model string) map[string]any {
 
 // submitPull issues engine:action{action:"pull_model"} for the selected engine.
 // Live download progress and the terminal result arrive as engine:pull-progress
-// notifications; the synchronous response can outlast callTimeout for a large
-// model, so a deadline error here is expected and ignored (the progress feed is
-// the real signal).
+// notifications. Mutations share the backend's long-operation budget; a client
+// deadline still cannot establish that the backend operation failed.
 func (v *enginesView) submitPull() tea.Cmd {
 	v.pulling = false
 	v.input.Blur()
@@ -242,12 +438,27 @@ func (v *enginesView) submitPull() tea.Cmd {
 	}
 	v.status = fmt.Sprintf("pull %s: %s...", engine, model)
 	params := pullParams(engine, model)
+	action := v.modelAction
+	if action == "" {
+		action = "pull_model"
+	}
+	params["action"] = action
+	if action == "load_model" || action == "run_model" {
+		v.pendingLoadEngine, v.pendingLoadModel = engine, model
+	}
+	if action == "import_model" {
+		params["params"] = map[string]string{"path": model}
+	}
+	v.status = fmt.Sprintf("%s %s: %s...", action, engine, model)
 	return call(v.client, "engine:action", params, func(_ *rpc.Message, err error) tea.Msg {
+		if action != "pull_model" {
+			return engineOpMsg{what: action + " " + model, engine: engine, err: err}
+		}
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return engineOpMsg{what: "pull " + model, engine: engine, err: err}
 		}
 		return nil
-	})
+	}, engineOperationTimeout)
 }
 
 func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -270,10 +481,18 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if engine == "" {
 		return nil, true
 	}
+	if what == "install" && engine == "llamacpp" && !v.byName[engine].InstallSupported {
+		v.status = "Install unavailable: " + v.byName[engine].InstallReason
+		return nil, true
+	}
+	if engine == "llamacpp" && v.byName[engine].Installed && !v.byName[engine].Managed {
+		v.status = "External llama.cpp runtime: lifecycle remains with its owner."
+		return nil, true
+	}
 	v.status = what + " " + engine + "..."
 	return call(v.client, method, map[string]string{"engine": engine}, func(_ *rpc.Message, err error) tea.Msg {
 		return engineOpMsg{what: what, engine: engine, err: err}
-	}), true
+	}, engineOperationTimeout), true
 }
 
 func (v *enginesView) selectedEngine() string {
@@ -300,6 +519,9 @@ func (v *enginesView) refreshRows() {
 		if e.DisplayName != "" {
 			label = e.DisplayName
 		}
+		if e.Engine == "llamacpp" && e.Acceleration != "" {
+			label += " " + strings.ToUpper(e.Acceleration)
+		}
 		port := "-"
 		if e.Port != 0 {
 			port = strconv.Itoa(e.Port)
@@ -323,8 +545,11 @@ func (v *enginesView) View() string {
 		return footerStyle.Render("No engines known on this host.")
 	}
 	out := v.table.View()
+	if v.showModels {
+		out = v.models.View()
+	}
 	if v.pulling {
-		out += "\npull model: " + v.input.View()
+		out += "\n" + v.modelAction + " (enter model ID; Esc cancels input): " + v.input.View()
 	}
 	if v.status != "" {
 		out += "\n" + footerStyle.Render(v.status)
@@ -333,7 +558,7 @@ func (v *enginesView) View() string {
 }
 
 func (v *enginesView) Help() []key.Binding {
-	return []key.Binding{engStartKey, engStopKey, engRestartKey, engInstallKey, engUninstallKey, engPullKey}
+	return []key.Binding{engStartKey, engStopKey, engRestartKey, engInstallKey, engUninstallKey, engModelsKey, engPullKey, engLoadKey, engUnloadKey, engDeleteKey, engCancelKey, engImportKey}
 }
 
 func yesNo(b bool) string {

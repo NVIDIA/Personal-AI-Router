@@ -29,15 +29,25 @@ func redirectConfigDir(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", dir)
 }
 
-// freeTCPPort returns a port that was free a moment ago.
+// freeTCPPort asks the OS for a port that was unused a moment ago, on the
+// wildcard address, which is where a facade binds.
 //
-// A bind probe cannot be held open and handed over, so the port is genuinely
-// free when checked and may not be by the time a facade binds it. Callers that
-// can tolerate a retry should use one — see enableOnFreePort in
-// twofacade_test.go — because this helper cannot close that window.
+// Two separate things can go wrong here and only one of them is fixable in this
+// helper. Probing loopback would answer a different question altogether: a
+// facade just torn down can still be lingering on 0.0.0.0:P while the OS
+// happily hands out 127.0.0.1:P, and the caller's bind then fails as "address
+// already in use". Matching the address the caller binds closes that one.
+//
+// What it cannot close is the window itself. A bind probe cannot be held open
+// and handed over, so a port that really was free when checked may be taken by
+// the time a facade binds it. Callers that can tolerate a retry should use one
+// — see enableOnFreePort in twofacade_test.go.
+//
+// Both get likelier with each engine added, because every extra facade runs
+// another round of setup and teardown through the same ephemeral range.
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("reserve free port: %v", err)
 	}

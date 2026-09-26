@@ -71,8 +71,20 @@
   DetailPrint "Removing Personal AI Router user data..."
   ClearErrors
   ReadEnvStr $0 LOCALAPPDATA
-  RMDir /r "$0\Nvidia Corporation\Personal AI Router"
-  RMDir /r "$0\NVIDIA Corporation\PAIR"
+  ; Engine Manager migrates old caches outside app data. An uninstall before
+  ; first launch must preserve unmigrated weights, not recursively delete them.
+  IfFileExists "$0\Nvidia Corporation\Personal AI Router\engine-bin\llamacpp\models\*.*" pairKeepCurrentModels
+    RMDir /r "$0\Nvidia Corporation\Personal AI Router"
+    Goto pairCurrentDataDone
+  pairKeepCurrentModels:
+    DetailPrint "Preserving app data containing unmigrated llama models. Reinstall and open PAIR to migrate the library."
+  pairCurrentDataDone:
+  IfFileExists "$0\NVIDIA Corporation\PAIR\engine-bin\llamacpp\models\*.*" pairKeepLegacyModels
+    RMDir /r "$0\NVIDIA Corporation\PAIR"
+    Goto pairLegacyDataDone
+  pairKeepLegacyModels:
+    DetailPrint "Preserving legacy app data containing unmigrated llama models."
+  pairLegacyDataDone:
   RMDir "$0\NVIDIA Corporation"
   RMDir /r "$0\nvpair-updater"
   ClearErrors
@@ -108,7 +120,7 @@
   IfFileExists "$0\nvpair-updater\*.*" 0 +2
     StrCpy $9 "$9$\n$0\nvpair-updater"
   StrCmp $9 "" pairNoLeftover
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Some Personal AI Router data could not be removed because files were still in use (for example, a running engine such as Ollama).$\n$\nClose those programs, then delete these folders manually:$9"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Some Personal AI Router data was retained because it contains unmigrated llama models or files still in use.$\n$\nDo not delete model folders manually. Reinstall and open the updated app to migrate the library before removing app data.$\n$9"
   pairNoLeftover:
 !macroend
 
@@ -152,6 +164,7 @@
   ; leaves rules pointing at binaries this version no longer ships.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Ollama Proxy"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router LM Studio Proxy"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router llama.cpp Proxy"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Node Info"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Node Scanner"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Workload Manager"'
@@ -161,6 +174,7 @@
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS (UDP 5353)"'
   ; Pre-unification; see above.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS LM Studio Proxy (UDP 5353)"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS llama.cpp Proxy (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS Node Info (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS Node Scanner (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS Workload Manager (UDP 5353)"'

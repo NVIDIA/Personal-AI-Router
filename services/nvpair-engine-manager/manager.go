@@ -274,6 +274,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
+		"engine:remote-cancel-pull",
 		"engine:remote-start", "engine:remote-stop":
 		go m.runRemote(ctx, msg)
 
@@ -373,6 +374,11 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 		model := modelFromParams(p.Params)
 		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Op: "pull", Stage: "cancelled", Percent: -1, Message: model})
+				m.codec.RespondError(msg.ID, -32000, "model download cancelled")
+				return
+			}
 			// A pull can fail after the client's synchronous call has already
 			// timed out (long downloads), so the RPC error alone can't reach a
 			// UI that stopped waiting. Emit one terminal engine:pull-progress

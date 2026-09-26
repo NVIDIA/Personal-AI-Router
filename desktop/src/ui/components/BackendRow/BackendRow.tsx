@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Divider, Stack } from '@nvidia/foundations-react-core'
+import { Divider, Stack, Text } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { EngineProcessStatus } from '@/shared/types/engines'
 
@@ -23,6 +23,7 @@ import { BackendFooter } from './BackendFooter'
 import { BackendUpdateBanner } from './BackendUpdateBanner'
 
 import { EngineSettingsSection } from './EngineSettingsSection'
+import { isExternalRuntime } from '@/ui/utils/engine-ownership'
 
 /**
  * The transitional status to display while an optimistic lifecycle command is
@@ -173,11 +174,20 @@ export function BackendRow({
     }, [isUnavailable])
 
     // Install/start/stop, model pull, and the settings editor work on clustered
-    // peers; uninstall, update, and model load/delete remain local-only.
-    const controlsDisabled = isTransitioning
+    // peers; uninstall, update, and model load/delete remain local-only. A
+    // llama.cpp runtime PAIR detected but does not manage is observe-only: its
+    // owner keeps lifecycle, settings, and model changes.
+    const externalLlama = isExternalRuntime(backend.type, backend.processStatus, backend.managed)
+    const controlsDisabled = isTransitioning || externalLlama
 
     const content = expanded ? (
         <Stack gap="4" className="max-w-full overflow-hidden pt-4">
+            {externalLlama && (
+                <Text kind="body/regular/sm">
+                    External llama.cpp runtime. PAIR observes it; lifecycle and model changes remain
+                    with its owner.
+                </Text>
+            )}
             <BackendUpdateBanner
                 backend={displayBackend}
                 disabled={controlsDisabled || !isLocalNode}
@@ -188,7 +198,7 @@ export function BackendRow({
                 <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
             )}
 
-            {canShowAccordions && (
+            {canShowAccordions && !externalLlama && (
                 <EngineSettingsSection
                     key={`${nodeId}:${backend.type}`}
                     nodeId={nodeId}
@@ -200,7 +210,7 @@ export function BackendRow({
             <BackendFooter
                 backend={displayBackend}
                 targetOs={targetOs}
-                showUninstall={isLocalNode}
+                showUninstall={isLocalNode && !externalLlama}
                 disabled={controlsDisabled}
                 onUninstall={requestUninstall}
             />

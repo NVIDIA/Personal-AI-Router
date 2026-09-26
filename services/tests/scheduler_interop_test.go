@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-shared/engines"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/schedulerwire"
 )
@@ -85,14 +86,15 @@ func waitForPriorityPair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.D
 			if json.Unmarshal(msg.Params, &p) != nil {
 				continue
 			}
-			if p.Engine == "ollama" || p.Engine == "lmstudio" {
+			if _, ok := engines.ByName(p.Engine); ok {
 				got[p.Engine] = p
 			}
-			if len(got) == 2 {
+			if len(got) == len(engines.Names()) {
 				return got
 			}
 		case <-to:
-			t.Fatalf("timed out (%s) waiting for both schedule:priority outputs; got %v", timeout, got)
+			t.Fatalf("timed out (%s) waiting for a schedule:priority output per engine (%v); got %v",
+				timeout, engines.Names(), got)
 		}
 	}
 }
@@ -100,15 +102,16 @@ func waitForPriorityPair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.D
 func waitForSchedulePair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Duration) map[string][]string {
 	t.Helper()
 	priorities := waitForPriorityPair(t, ch, timeout)
-	return map[string][]string{
-		"ollama":   priorities["ollama"].Nodes,
-		"lmstudio": priorities["lmstudio"].Nodes,
+	out := make(map[string][]string, len(priorities))
+	for _, engine := range engines.Names() {
+		out[engine] = priorities[engine].Nodes
 	}
+	return out
 }
 
 func assertSchedulePair(t *testing.T, got map[string][]string, want []string) {
 	t.Helper()
-	for _, engine := range []string{"ollama", "lmstudio"} {
+	for _, engine := range engines.Names() {
 		assertScheduleOrder(t, engine, got[engine], want)
 	}
 }
@@ -216,7 +219,7 @@ func assertPriorityPair(
 	wantPressure map[string]int,
 ) {
 	t.Helper()
-	for _, engine := range []string{"ollama", "lmstudio"} {
+	for _, engine := range engines.Names() {
 		priority := got[engine]
 		assertScheduleOrder(t, engine, priority.Nodes, wantOrder)
 		if len(priority.Ranks) != len(wantPressure) {
@@ -251,10 +254,10 @@ func TestSchedulerSyntheticMixedEngineBurst(t *testing.T) {
 	current := initial
 	for i := 0; i < 50; i++ {
 		target := current[0]
-		engine := "ollama"
-		if i%2 == 1 {
-			engine = "lmstudio"
-		}
+		// Rotate through every engine: the ranking is node-global, so load
+		// attributed to one engine must move the others' order too.
+		names := engines.Names()
+		engine := names[i%len(names)]
 		depths[target]++
 		want := rankSyntheticDepths(depths)
 		writeRawFrame(t, stdin, fmt.Sprintf(

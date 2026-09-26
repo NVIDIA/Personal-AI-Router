@@ -29,12 +29,21 @@ const (
 // EngineStatus is the snapshot returned by engine:status and
 // engine:get-installed.
 type EngineStatus struct {
-	Engine      string `json:"engine"`
-	DisplayName string `json:"display_name"`
-	Installed   bool   `json:"installed"`
-	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port,omitempty"`
+	InstallSupported bool   `json:"install_supported"`
+	InstallReason    string `json:"install_reason,omitempty"`
+	Managed          bool   `json:"managed"`
+	// Acceleration and Devices are the backend the managed llama.cpp runtime
+	// verified at install ("cuda", "vulkan", "metal", "cpu", ...) and the device
+	// rows behind it, from runtime/pair-install.json. Absent for other engines,
+	// adopted runtimes and installs that predate the receipt fields.
+	Acceleration string   `json:"acceleration,omitempty"`
+	Devices      []string `json:"devices,omitempty"`
+	Engine       string   `json:"engine"`
+	DisplayName  string   `json:"display_name"`
+	Installed    bool     `json:"installed"`
+	Running      bool     `json:"running"`
+	Healthy      bool     `json:"healthy"`
+	Port         int      `json:"port,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -43,6 +52,7 @@ type engineState struct {
 	plat       *Platform
 	logs       *logBuffer
 	installDir string
+	modelDir   string
 
 	// opMu serializes lifecycle operations (install / start / stop /
 	// restart / uninstall) for this engine, so concurrent calls can't
@@ -63,7 +73,11 @@ type engineState struct {
 	proc       *managedProc
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
-	startCancel context.CancelFunc
+	startCancel    context.CancelFunc
+	pullCancel     context.CancelFunc
+	mutationCancel context.CancelFunc
+	stopPending    int
+	pullModel      string
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
@@ -77,12 +91,21 @@ type Executor struct {
 	reporter         *Reporter
 	emit             func(method string, params any)
 	client           *http.Client
-	ollamaLoadClient *http.Client
+	armHardwareQuery func(context.Context, map[string]string) (string, error) // nil uses the native inventory command
+	// nvidiaComputeQuery returns one compute capability per NVIDIA GPU; nil runs nvidia-smi.
+	nvidiaComputeQuery func(context.Context, map[string]string) (string, error)
+	// runLlamaInstaller runs an acquired, verified vendor installer script; nil
+	// runs it natively. Tests substitute installers that cannot run here.
+	runLlamaInstaller func(context.Context, string, map[string]string) error
+	ollamaLoadClient  *http.Client
 	// progress fans install/pull progress to transient subscribers (the ec
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
 	progress *progressHub
 	baseDir  string // user-scoped install base
+	// main injects appdir.ModelsDir; executor-only fixtures keep their cache
+	// beneath the explicitly supplied isolated install base.
+	modelBaseDir string
 	// desired persists explicit per-engine ON/OFF intent. Runtime state remains
 	// in-memory; shutdown cleanup must not rewrite this store.
 	desired *desiredStateStore
@@ -210,6 +233,18 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
 		installDir: filepath.Join(e.baseDir, engine),
+	}
+	st.modelDir = filepath.Join(st.installDir, "models")
+	if engine == "llamacpp" {
+		if e.modelBaseDir != "" {
+			st.modelDir = filepath.Join(e.modelBaseDir, "llamacpp")
+			if err := migrateLlamaCache(st); err != nil {
+				return nil, fmt.Errorf("preserve llama model cache: %w", err)
+			}
+		}
+		if err := recoverLlamaRuntime(st.installDir); err != nil {
+			return nil, fmt.Errorf("recover interrupted llama replacement: %w", err)
+		}
 	}
 	e.engines[engine] = st
 	return st, nil

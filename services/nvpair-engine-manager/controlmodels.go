@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	controlLoadPath   = "/v1/models/load"
-	controlUnloadPath = "/v1/models/unload"
-	controlDeletePath = "/v1/models/delete"
+	controlLoadPath       = "/v1/models/load"
+	controlUnloadPath     = "/v1/models/unload"
+	controlDeletePath     = "/v1/models/delete"
+	controlCancelPullPath = "/v1/models/cancel-pull"
 )
 
 func (s *controlServer) handleLoad(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +30,10 @@ func (s *controlServer) handleUnload(w http.ResponseWriter, r *http.Request) {
 
 func (s *controlServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 	s.handleModelAction(w, r, "delete")
+}
+
+func (s *controlServer) handleCancelPull(w http.ResponseWriter, r *http.Request) {
+	s.handleModelAction(w, r, "cancel-pull")
 }
 
 func (s *controlServer) handleModelAction(w http.ResponseWriter, r *http.Request, op string) {
@@ -61,6 +66,9 @@ func (s *controlServer) handleModelAction(w http.ResponseWriter, r *http.Request
 		res, err = s.exec.ModelUnload(r.Context(), req.Engine, req.Model)
 	case "delete":
 		res, err = s.exec.ModelDelete(r.Context(), req.Engine, req.Model)
+	case "cancel-pull":
+		params, _ := json.Marshal(map[string]string{"model": req.Model})
+		res, err = s.exec.Action(r.Context(), req.Engine, "cancel_pull", params)
 	default:
 		http.Error(w, "unknown model op", http.StatusInternalServerError)
 		return

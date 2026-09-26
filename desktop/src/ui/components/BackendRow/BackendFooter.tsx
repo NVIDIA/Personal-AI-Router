@@ -33,7 +33,10 @@ export function BackendFooter({
     disabled: boolean
     onUninstall: () => void
 }) {
-    const autoInstall = canAutoInstallBackendForOs(backend.type, targetOs)
+    const autoInstall =
+        backend.type === 'llamacpp'
+            ? backend.installSupported === true
+            : canAutoInstallBackendForOs(backend.type, targetOs)
     const isTransitioning =
         backend.processStatus === 'installing' || backend.processStatus === 'uninstalling'
     const isNotInstalled = backend.processStatus === 'not-installed'

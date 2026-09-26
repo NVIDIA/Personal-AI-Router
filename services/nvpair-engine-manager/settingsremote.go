@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 )
 
@@ -230,16 +231,28 @@ func (m *Manager) consumeSettingsStream(parent context.Context, peer ecPeer) {
 	scanner.Buffer(make([]byte, 4096), 256*1024)
 	for scanner.Scan() {
 		watchdog.Reset(15 * time.Second)
-		var snapshots []settings.Snapshot
-		if json.Unmarshal(scanner.Bytes(), &snapshots) != nil {
+		if !m.relayPeerSettings(peer.nodeID, scanner.Bytes()) {
 			return
 		}
-		for _, snapshot := range snapshots {
-			if snapshot.Engine != "ollama" && snapshot.Engine != "lmstudio" {
-				continue
-			}
-			snapshot.NodeID = peer.nodeID
-			m.exec.notify("engine:settings-changed", snapshot)
-		}
 	}
+}
+
+// relayPeerSettings re-emits one frame of a peer's settings stream as local
+// engine:settings-changed notifications stamped with the peer's node ID. Every
+// engine the shared table names is relayed, so a paired node's editor for any
+// bundled engine stays live; an engine PAIR does not know is dropped. A frame
+// that is not a snapshot list ends the stream (false).
+func (m *Manager) relayPeerSettings(nodeID string, frame []byte) bool {
+	var snapshots []settings.Snapshot
+	if json.Unmarshal(frame, &snapshots) != nil {
+		return false
+	}
+	for _, snapshot := range snapshots {
+		if _, known := engines.ByName(snapshot.Engine); !known {
+			continue
+		}
+		snapshot.NodeID = nodeID
+		m.exec.notify("engine:settings-changed", snapshot)
+	}
+	return true
 }

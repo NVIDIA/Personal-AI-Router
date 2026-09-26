@@ -399,6 +399,16 @@ type Proxy struct {
 	// exists because each facade's request counter restarts at 1, so without it
 	// a reused id after a restart would collide in the broker's store.
 	runID string
+
+	// interruptRead unblocks a pending control-plane read at shutdown, set by
+	// the entrypoint because the transport is its to own. Optional: a nil
+	// value just means the read loop waits for the read to return by itself.
+	//
+	// It interrupts the read side only, never the whole transport, so the
+	// terminal workload events emitted while facades drain still reach the
+	// broker. That distinction is why this is a callback rather than a Close
+	// on the codec.
+	interruptRead func()
 }
 
 // NewProxy builds a facade-less process host. Facades arrive via
@@ -1351,11 +1361,11 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// terminal event is otherwise emitted only after the stream copy returns;
 	// a client that disconnects mid-stream can leave the copy blocked, so we
 	// emit the terminal here the moment r.Context() is cancelled instead of
-	// waiting for the unwind. Cancelling r.Context() (client close, or our own
-	// shutdown) also propagates to the ReverseProxy's upstream request, so the
-	// engine stops generating. terminalOnce keeps this from double-emitting
-	// with the normal path. The half-open case (no FIN, r.Context() never
-	// fires) is caught instead by statusCapture's write deadline below.
+	// waiting for the unwind. Cancelling r.Context() (client close or our own
+	// shutdown) also propagates to the ReverseProxy's upstream request.
+	// terminalOnce keeps this from double-emitting with the normal path. The
+	// half-open case (no FIN, r.Context() never fires) is caught instead by
+	// statusCapture's write deadline below.
 	if wl != nil {
 		reqCtx := r.Context()
 		finished := make(chan struct{})
@@ -1368,6 +1378,15 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
+
+	// Backstop terminal. finalize below recovers the ErrAbortHandler panic a
+	// truncated upstream raises and classifies the outcome, so in the ordinary
+	// course this is a no-op behind terminalOnce: it is registered before
+	// finalize and therefore runs after it. It exists for the unwind finalize
+	// itself does not survive — a panic raised inside finalize before its own
+	// emitTerminal, say from the codec — so a workload never stays "running"
+	// for the life of the broker whatever path the handler leaves by.
+	defer emitTerminal("failed", "request handler exited before completion")
 
 	// committedSC is the statusCapture of the candidate we committed to
 	// streaming; its wroteErr tells us after the fact whether the client write
@@ -1445,14 +1464,14 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if wl != nil {
 			switch {
 			case r.Context().Err() != nil:
-				// The request was cancelled before it finished — either the
-				// client disconnected or, on shutdown, we cancelled it to stop
-				// the in-flight inference. A mid-stream cancel never reaches
-				// ErrorHandler (the 200 headers are already sent), so without
-				// this branch it would be misreported as completed. (The
-				// watcher above usually beats us to it; emitTerminal makes that
-				// a no-op.) Cancelled rather than failed: nothing went wrong
-				// here, the requester stopped waiting.
+				// The request was cancelled before it finished: the client
+				// disconnected or shutdown cancelled the in-flight inference. A
+				// mid-stream cancel never reaches ErrorHandler (the 200 headers
+				// are already sent), so without this branch it would be
+				// misreported as completed. (The watcher above usually beats us
+				// to it; emitTerminal makes that a no-op.) Cancelled rather
+				// than failed: nothing went wrong here, the requester stopped
+				// waiting.
 				emitTerminal("cancelled", "request cancelled before completion")
 			case committedSC != nil && committedSC.wroteErr != nil:
 				// The response committed but a write to (or flush toward) the
@@ -2538,16 +2557,28 @@ func subscribedToNode(p engineProfile, n noderec.DirectoryNode) (Node, bool) {
 		TXT:         n.AddressTXT(),
 		IP:          n.IP,
 		ClusterUUID: n.ClusterUUID,
-		// Filter on this node's Ollama models only, not the cross-engine union, so
-		// a model that a dual-engine node serves solely via LM Studio isn't
-		// accepted as an Ollama owner here (falls back to the union for a peer
-		// that sends no attribution — see DirectoryNode.EngineModels).
+		// Filter on this node's models for this engine only, never the
+		// cross-engine union, so a model a dual-engine node serves solely via
+		// another engine is not accepted as an owner here (falls back to the
+		// union for a peer that sends no attribution; see
+		// DirectoryNode.EngineModels).
 		Models: append([]string(nil), n.EngineModels(p.Name)...),
 	}, true
 }
 
+// readLoop serves the control plane until the transport ends or ctx is done.
+//
+// The context is checked per iteration, and interruptRead is armed to unblock a
+// read that is already parked, so teardown does not wait on a message that may
+// never arrive. On the stdio transport the parent closing the pipe is what ends
+// the read in practice, since Close there is deliberately a no-op; the
+// interrupt is what ends it on an IPC connection, whose read deadline can be
+// brought forward without disturbing the write side.
 func (p *Proxy) readLoop(ctx context.Context) error {
-	for {
+	if p.interruptRead != nil {
+		defer context.AfterFunc(ctx, p.interruptRead)()
+	}
+	for ctx.Err() == nil {
 		msg, err := p.codec.Read()
 		if err != nil {
 			if err == io.EOF || ctx.Err() != nil {
@@ -2558,6 +2589,7 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 		}
 		p.handleMessage(msg)
 	}
+	return nil
 }
 
 // handleMessage dispatches one control-plane message.

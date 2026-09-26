@@ -82,7 +82,7 @@ function WorkloadListView({ filter, setFilter }: WorkloadListViewProps) {
             .map(([_, value]) => `${value}`)
             .join('-')
         const workloadsKey = currentWorkloads
-            .map(w => workloadKey(w.originatedFrom, w.id))
+            .map(w => workloadKey(w.originatedFrom, w.id, w.engine, w.runId))
             .join('-')
         return `${filterKey}-${workloadsKey}`
     }, [filter, currentWorkloads])
@@ -128,7 +128,12 @@ function WorkloadListView({ filter, setFilter }: WorkloadListViewProps) {
                                 data-workload-list-content
                             >
                                 {currentWorkloads.map(workload => {
-                                    const key = workloadKey(workload.originatedFrom, workload.id)
+                                    const key = workloadKey(
+                                        workload.originatedFrom,
+                                        workload.id,
+                                        workload.engine,
+                                        workload.runId
+                                    )
                                     return (
                                         <Flipped key={key} flipId={key}>
                                             <div>

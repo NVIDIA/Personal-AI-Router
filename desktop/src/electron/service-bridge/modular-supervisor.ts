@@ -163,13 +163,14 @@ export function parseListModelNames(result: JsonValue | undefined): string[] {
     const obj = objectValue(result)
     if (!obj) throw new Error('list_models returned a non-object response')
     const names: string[] = []
-    if (Array.isArray(obj.models)) {
-        for (const entry of obj.models) {
+    const rows = Array.isArray(obj.models) ? obj.models : Array.isArray(obj.data) ? obj.data : null
+    if (rows) {
+        for (const entry of rows) {
             const row = objectValue(entry)
-            const name = stringValue(row?.name) || stringValue(row?.key)
+            const name = stringValue(row?.name) || stringValue(row?.key) || stringValue(row?.id)
             if (name) names.push(name)
         }
-        if (obj.models.length > 0 && names.length === 0) {
+        if (rows.length > 0 && names.length === 0) {
             throw new Error('list_models returned no usable model names')
         }
         return names
@@ -300,7 +301,16 @@ function proxyEngineFromManagerId(id: string): ProxyEngine | null {
 
 /** The broker relay namespace fronting an engine's reverse proxy. */
 function proxyRelayPrefix(engine: ProxyEngine): string {
-    return engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'
+    if (engine === 'ollama') return 'ollama-proxy'
+    if (engine === 'lm-studio') return 'lmstudio-proxy'
+    return 'llamacpp-proxy'
+}
+
+function proxyEngineFromRelaySource(source: string): ProxyEngine | null {
+    if (source === 'ollama-proxy') return 'ollama'
+    if (source === 'lmstudio-proxy') return 'lm-studio'
+    if (source === 'llamacpp-proxy') return 'llamacpp'
+    return null
 }
 
 /**
@@ -310,12 +320,13 @@ function proxyRelayPrefix(engine: ProxyEngine): string {
  * `docs/services-backend.md`):
  *
  * - The `nvpair-ui-broker` is the **only** Electron-spawned binary and is itself the
- *   parent of every broker-owned worker (`ollama-proxy`, `lmstudio-proxy`,
+ *   parent of every broker-owned worker (`nvpair-proxy`, which hosts a facade
+ *   per engine rather than shipping one binary each,
  *   `nvpair-node-scanner`, `nvpair-node-info`, `nvpair-workload-manager`,
  *   `nvpair-cluster-manager`, `nvpair-node-settings`, `nvpair-manual-nodes`,
  *   `nvpair-engine-manager`, `nvpair-errors`, `nvpair-job-scheduler`). Electron passes their resolved paths to
  *   the broker (see `brokerStartupArgs`) and reaches each through a broker relay:
- *   `ollama-proxy:` / `lmstudio-proxy:` for the two engine proxies, `engine:` for the
+ *   `ollama-proxy:` / `lmstudio-proxy:` / `llamacpp-proxy:` for the engine facades, `engine:` for the
  *   engine-manager, `errors:` for the error pipeline, `node/*` for manual nodes,
  *   `settings/*` and `cluster:` for the rest. Local inference jobs arrive on the
  *   broker's `workloads:subscribe` stream.
@@ -324,6 +335,7 @@ function proxyRelayPrefix(engine: ProxyEngine): string {
  */
 class ModularSupervisor {
     private processes = new Map<ModularProcessName, JsonRpcSubprocess>()
+    private engineEventRevisions = new Map<EngineType, number>()
     private readinessWaiters = new Map<number, ReadinessWaiter>()
     private nextReadinessWaiterId = 0
     private readinessReported = false
@@ -338,6 +350,7 @@ class ModularSupervisor {
     // last-known-good result (including an authoritative empty list).
     private stoppedModelSentinels = new Set<EngineType>()
     private stoppedModelEngines = new Set<EngineType>()
+    private managedLlama = false
     private successfulModelInventories = new Set<EngineType>()
     private modelRefreshGenerations = new Map<EngineType, number>()
     private discoveryModelRetryTimers = new Map<ProxyEngine, ReturnType<typeof setTimeout>>()
@@ -875,6 +888,7 @@ class ModularSupervisor {
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
         await subscribe('ollama-proxy:subscribe', 'subscribe to broker ollama-proxy relay')
         await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
+        await subscribe('llamacpp-proxy:subscribe', 'subscribe to broker llamacpp-proxy relay')
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1076,7 +1090,7 @@ class ModularSupervisor {
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
+                    source: proxyRelayPrefix(engine),
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1097,7 +1111,7 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
+                    source: proxyRelayPrefix(engine),
                     method: 'node/discovered',
                     params: node
                 })
@@ -1113,10 +1127,14 @@ class ModularSupervisor {
     private async hydrateEngineManager(): Promise<void> {
         if (!this.processes.has('broker')) return
         try {
+            // A push received while this snapshot is in flight wins for its engine.
+            const atStart = new Map(this.engineEventRevisions)
             const result = await this.callProcess('broker', 'engine:get-installed')
             const obj = objectValue(result)
             if (!obj || !Array.isArray(obj.engines)) return
             for (const engine of obj.engines) {
+                const type = engineTypeFromManagerName(stringValue(objectValue(engine)?.engine))
+                if (!type || this.engineEventRevisions.get(type) !== atStart.get(type)) continue
                 getModularBridgeState().applyEngineManagerStatus(engine)
                 this.refreshManagedEngineModels(engine)
             }
@@ -1263,12 +1281,7 @@ class ModularSupervisor {
             this.scheduleRemoteEngineStatusRefresh()
         }
 
-        const proxyEngine: ProxyEngine | null =
-            event.source === 'ollama-proxy'
-                ? 'ollama'
-                : event.source === 'lmstudio-proxy'
-                  ? 'lm-studio'
-                  : null
+        const proxyEngine = proxyEngineFromRelaySource(event.source)
         if (proxyEngine && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
@@ -1629,6 +1642,12 @@ class ModularSupervisor {
             return
         }
         if (notification.method === 'engine:state-changed') {
+            const type = engineTypeFromManagerName(
+                stringValue(objectValue(notification.params)?.engine)
+            )
+            if (type) {
+                this.engineEventRevisions.set(type, (this.engineEventRevisions.get(type) ?? 0) + 1)
+            }
             getModularBridgeState().applyEngineManagerStatus(notification.params)
             this.refreshManagedEngineModels(notification.params)
             this.updateLocalNodeBridgeFromEngineState(notification.params)
@@ -1906,6 +1925,24 @@ class ModularSupervisor {
         }
     }
 
+    async importLlamaModel(path: string): Promise<void> {
+        try {
+            await this.callProcess(
+                'broker',
+                'engine:action',
+                { engine: 'llamacpp', action: 'import_model', params: { path } },
+                PULL_TIMEOUT_MS
+            )
+            await this.refreshEngineModels('llamacpp', 'llamacpp')
+        } catch (err) {
+            this.reportError(
+                `Model import failed: ${getErrorString(err)}`,
+                'error',
+                'llamacpp-import'
+            )
+        }
+    }
+
     /**
      * Load, unload (eject), or delete a model on a remote peer via the ec surface.
      *
@@ -1965,7 +2002,10 @@ class ModularSupervisor {
         try {
             const result = await this.callProcess('broker', 'engine:action', {
                 engine,
-                action: 'list_models'
+                action:
+                    engineType === 'llamacpp' && this.managedLlama
+                        ? 'list_downloaded'
+                        : 'list_models'
             })
             const models = parseListModelNames(result)
             this.commitModelInventory(engineType, models, generation)
@@ -1994,8 +2034,9 @@ class ModularSupervisor {
         const engine = stringValue(obj.engine)
         const engineType = getModularBridgeState().modelPullTarget(engine)
         if (!engineType) return
+        if (engineType === 'llamacpp') this.managedLlama = booleanValue(obj.managed)
 
-        if (!booleanValue(obj.running)) {
+        if (!booleanValue(obj.running) && !(engineType === 'llamacpp' && this.managedLlama)) {
             this.beginModelRefresh(engineType)
             this.stoppedModelEngines.add(engineType)
             this.stoppedModelSentinels.add(engineType)
@@ -2016,7 +2057,8 @@ class ModularSupervisor {
         const generation = this.beginModelRefresh(engineType)
         this.callProcess('broker', 'engine:action', {
             engine,
-            action: 'list_models'
+            action:
+                engineType === 'llamacpp' && this.managedLlama ? 'list_downloaded' : 'list_models'
         })
             .then(result => {
                 const models = parseListModelNames(result)
@@ -2050,7 +2092,7 @@ class ModularSupervisor {
         const generation = this.beginModelRefresh(engine)
         this.callProcess('broker', 'engine:action', {
             engine: engineManagerName(engine),
-            action: 'list_models'
+            action: engine === 'llamacpp' && this.managedLlama ? 'list_downloaded' : 'list_models'
         })
             .then(result => {
                 const models = parseListModelNames(result)
@@ -2077,7 +2119,11 @@ class ModularSupervisor {
         if (isProxyEngine(engine)) {
             this.cancelDiscoveryModelRefreshRetry(engine)
         }
-        getModularBridgeState().setLocalEngineModels(engine, models)
+        getModularBridgeState().setLocalEngineModels(
+            engine,
+            models,
+            engine !== 'llamacpp' || this.managedLlama
+        )
     }
 
     private scheduleDiscoveryModelRefreshRetry(engine: ProxyEngine): void {

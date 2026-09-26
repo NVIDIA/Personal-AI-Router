@@ -211,6 +211,11 @@ function listFingerprintFiles(repo: string): string[] {
                 out.push(full)
             } else if (entry === 'go.mod' || entry === 'go.sum') {
                 out.push(full)
+            } else if (entry.endsWith('.json') && path.basename(dir) === 'manifests') {
+                // Engine manifests are compiled into nvpair-engine-manager
+                // (`//go:embed manifests/*.json`), so a manifest-only change
+                // produces a different binary and must miss the cache.
+                out.push(full)
             }
         }
     }
@@ -218,7 +223,7 @@ function listFingerprintFiles(repo: string): string[] {
     return out.sort()
 }
 
-/** Content hash of services Go sources + module files — not monorepo git HEAD. */
+/** Content hash of services Go sources, module files and embedded engine manifests — not monorepo git HEAD. */
 function servicesSourceFingerprint(repo: string): string {
     const hash = createHash('sha256')
     for (const file of listFingerprintFiles(repo)) {

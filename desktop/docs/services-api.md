@@ -47,6 +47,9 @@
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
+- ⚠️ nvpair-ui-broker → llamacpp-proxy:get-status
+- ⚠️ nvpair-ui-broker → llamacpp-proxy:set-port
+- ⚠️ nvpair-ui-broker → llamacpp-proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → lmstudio-proxy:get-status
 - ⚠️ nvpair-ui-broker → lmstudio-proxy:set-port
 - ⚠️ nvpair-ui-broker → lmstudio-proxy:unsubscribe
@@ -109,6 +112,7 @@
 | `engine:prepare-shutdown` | request (we call) | ✅ yes |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
+| `engine:remote-cancel-pull` | request (we call) | ✅ yes |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
 | `engine:remote-get-settings` | request (we call) | ⚠️ not called |
@@ -233,6 +237,7 @@
 | `cluster:identity-changed` | request (we call) | ✅ yes |
 | `cluster:invite-received` | request (we call) | ✅ yes |
 | `engine:install-progress` | request (we call) | ✅ yes |
+| `engine:models-changed` | request (we call) | ✅ yes |
 | `engine:pull-progress` | request (we call) | ✅ yes |
 | `engine:state-changed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
@@ -253,6 +258,7 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
+| `llamacpp-proxy:ready` | notification (we consume) | ➖ ignored |
 | `lmstudio-proxy:ready` | notification (we consume) | ➖ ignored |
 | `ollama-proxy:ready` | notification (we consume) | ➖ ignored |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
@@ -273,6 +279,10 @@
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
+| `llamacpp-proxy:get-status` | request (we call) | ⚠️ not called |
+| `llamacpp-proxy:set-port` | request (we call) | ⚠️ not called |
+| `llamacpp-proxy:subscribe` | request (we call) | ✅ yes |
+| `llamacpp-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `lmstudio-proxy:get-status` | request (we call) | ⚠️ not called |
 | `lmstudio-proxy:set-port` | request (we call) | ⚠️ not called |
 | `lmstudio-proxy:subscribe` | request (we call) | ✅ yes |

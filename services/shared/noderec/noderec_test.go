@@ -40,6 +40,25 @@ func TestEngineModels(t *testing.T) {
 	}
 }
 
+func TestServiceLlamaCppKey(t *testing.T) {
+	if ServiceLlamaCpp != "lc" {
+		t.Fatalf("ServiceLlamaCpp = %q, want lc", ServiceLlamaCpp)
+	}
+	found := false
+	for _, k := range serviceKeyOrder {
+		if k == ServiceLlamaCpp {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("ServiceLlamaCpp missing from serviceKeyOrder")
+	}
+	if ServiceLlamaCpp.Transport() != TransportPlain {
+		t.Fatal("lc transport must be TransportPlain (same as ol/lm)")
+	}
+}
+
 func TestParseTXT(t *testing.T) {
 	txt := []string{
 		"v=1", "uuid=host-abc", "cluster-uuid=clu-xyz", "ip=192.168.1.10",

@@ -8,6 +8,7 @@ import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
+import { isExternalRuntime } from '@/ui/utils/engine-ownership'
 import { Button, Flex, Switch, Text } from '@nvidia/foundations-react-core'
 import { Download } from '@/ui/components/icons'
 import { useCallback, useMemo } from 'react'
@@ -51,7 +52,12 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                 {
                     type,
                     name: EngineDisplayNames[type],
-                    status: backend.processStatus
+                    status: backend.processStatus,
+                    // The same facts the engine row uses: a runtime PAIR only
+                    // observes gets no lifecycle control, and an engine the
+                    // node reports as not installable gets no Install button.
+                    external: isExternalRuntime(type, backend.processStatus, backend.managed),
+                    installable: type !== 'llamacpp' || backend.installSupported === true
                 }
             ]
         })
@@ -85,6 +91,7 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                     b.status === 'stopping'
 
                 if (b.status === 'not-installed' && !pending) {
+                    if (!b.installable) return null
                     return (
                         <Button
                             key={b.name}
@@ -126,16 +133,20 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                                     size="small"
                                     checked={b.status === 'running'}
                                     onCheckedChange={() => handleToggle(b.type)}
-                                    disabled={isRemote && isDisconnected}
+                                    disabled={(isRemote && isDisconnected) || b.external}
                                     title={
-                                        isRemote && isDisconnected
-                                            ? 'Node is disconnected'
-                                            : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
+                                        b.external
+                                            ? `${b.name} is managed outside PAIR`
+                                            : isRemote && isDisconnected
+                                              ? 'Node is disconnected'
+                                              : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
                                     }
                                     aria-label={
-                                        isRemote && isDisconnected
-                                            ? 'Node is disconnected'
-                                            : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
+                                        b.external
+                                            ? `${b.name} is managed outside PAIR`
+                                            : isRemote && isDisconnected
+                                              ? 'Node is disconnected'
+                                              : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
                                     }
                                 />
                             )}
@@ -143,7 +154,9 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                         <Text
                             kind="body/regular/sm"
                             className="cursor-pointer"
-                            onClick={() => (!isTransitioning ? handleToggle(b.type) : undefined)}
+                            onClick={() =>
+                                !isTransitioning && !b.external ? handleToggle(b.type) : undefined
+                            }
                         >
                             {b.name}
                         </Text>

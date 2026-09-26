@@ -12,7 +12,7 @@ import type {
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadRemoval } from '@/shared/types/workloads'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 
 // ---------------------------------------------------------------------------
@@ -85,9 +85,7 @@ export interface IWorkloadsApi {
     /** A workload was created or updated. */
     onUpsert(callback: (workload: Workload) => void): () => void
     /** A workload was completed and removed. */
-    onRemove(
-        callback: (removal: { workloadId: string; originatedFrom: string | null }) => void
-    ): () => void
+    onRemove(callback: (removal: WorkloadRemoval) => void): () => void
 }
 
 export interface IErrorsApi {

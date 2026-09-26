@@ -5,6 +5,8 @@
  * Utility functions for formatting data
  */
 
+import { roundedProgressPercent } from '@/shared/utils/engine-progress'
+
 /**
  * Format a timestamp as a relative time distance (e.g., "2 minutes ago")
  */
@@ -87,9 +89,8 @@ type PullProgressFields = {
  * Percent or byte-derived percent for file-style model pulls (Whisper, Piper, Stable-Diffusion, etc.).
  */
 function formatPullProgressDetail(p: PullProgressFields): string {
-    if (p.percent != null && Number.isFinite(p.percent)) {
-        return `${Math.round(Math.min(100, Math.max(0, p.percent)))}%`
-    }
+    const percent = roundedProgressPercent(p.percent)
+    if (percent !== null) return percent + '%'
 
     return ''
 }

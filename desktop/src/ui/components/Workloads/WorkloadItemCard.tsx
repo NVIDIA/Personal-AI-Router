@@ -123,6 +123,8 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
             style={{ direction: 'ltr' }}
             data-workload-id={workload.id}
             data-workload-origin={workload.originatedFrom ?? ''}
+            data-workload-engine={workload.engine}
+            data-workload-run={workload.runId ?? ''}
             attributes={{ CardContent: { className: 'workload-card-content' } }}
         >
             <div className="workload-badge hidden" style={{ backgroundColor: barColor }}></div>

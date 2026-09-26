@@ -54,6 +54,8 @@ export interface IEngineApi {
     uninstall(engineType: EngineType, nodeId: string): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
+    cancelPull(engineType: EngineType, nodeId: string, model: string): void
+    importModel(engineType: EngineType, nodeId: string, path: string): void
     /** Load a model into memory on a node. */
     loadModel(engineType: EngineType, nodeId: string, model: string): void
     /** Unload a model from memory on a node. */
@@ -100,6 +102,10 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
             fireCommand(transport, { command: 'uninstall', engineType, nodeId }),
         pullModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
+        cancelPull: (engineType, nodeId, model) =>
+            fireCommand(transport, { command: 'cancelPull', engineType, nodeId, model }),
+        importModel: (engineType, nodeId, path) =>
+            fireCommand(transport, { command: 'importModel', engineType, nodeId, model: path }),
         loadModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'loadModel', engineType, nodeId, model }),
         unloadModel: (engineType, nodeId, model) =>

@@ -33,6 +33,16 @@ func Dir() (string, error) {
 	return filepath.Join(base, orgDir, appDir), nil
 }
 
+// ModelsDir is persistent user content, deliberately outside the application
+// directory removed by reset and uninstall.
+func ModelsDir() (string, error) {
+	base, err := baseDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, orgDir, "Personal AI Router Models"), nil
+}
+
 // Path joins elems onto Dir().
 func Path(elems ...string) (string, error) {
 	d, err := Dir()

@@ -89,6 +89,8 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
 
     const isEngineInstallable = useCallback(
         (t: EngineType) => {
+            if (t === 'llamacpp' && statusByNode.get(selfId)?.get(t)?.installSupported !== true)
+                return false
             const status = statusByNode.get(selfId)?.get(t)?.processStatus
             return isWelcomeEngineInstallable(status)
         },

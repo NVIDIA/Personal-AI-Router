@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 )
 
@@ -61,6 +62,44 @@ func settingsPin(t *testing.T, dir, id string, cert []byte) {
 	data, _ := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(cert)})
 	if err := os.WriteFile(filepath.Join(path, id+".json"), data, 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A paired node's llama.cpp editor depends on the same live relay as the other
+// engines: every shared-table engine's snapshot is re-emitted with the peer's
+// node ID, an engine PAIR does not know is dropped, and a frame that is not a
+// snapshot list ends the stream.
+func TestPeerSettingsRelayCoversEveryBundledEngine(t *testing.T) {
+	var emitted []settings.Snapshot
+	m := &Manager{exec: &Executor{emit: func(method string, params any) {
+		if method != "engine:settings-changed" {
+			t.Fatalf("unexpected notification %s", method)
+		}
+		snapshot, ok := params.(settings.Snapshot)
+		if !ok {
+			t.Fatalf("unexpected payload %T", params)
+		}
+		emitted = append(emitted, snapshot)
+	}}}
+	names := engines.Names()
+	for _, name := range names {
+		if !m.relayPeerSettings("peer-host", []byte(`[{"engine":"`+name+`","revision":3}]`)) {
+			t.Fatalf("a valid %s frame ended the stream", name)
+		}
+	}
+	if !m.relayPeerSettings("peer-host", []byte(`[{"engine":"not-an-engine","revision":9}]`)) {
+		t.Fatal("an unknown engine ended the stream instead of being dropped")
+	}
+	if m.relayPeerSettings("peer-host", []byte(`not a snapshot list`)) {
+		t.Fatal("a malformed frame kept the stream open")
+	}
+	if len(emitted) != len(names) {
+		t.Fatalf("relayed %d snapshots, want one per bundled engine (%d)", len(emitted), len(names))
+	}
+	for i, snapshot := range emitted {
+		if snapshot.Engine != names[i] || snapshot.NodeID != "peer-host" || snapshot.Revision != 3 {
+			t.Fatalf("snapshot %d = %+v, want engine %s from peer-host", i, snapshot, names[i])
+		}
 	}
 }
 

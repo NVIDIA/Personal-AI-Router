@@ -167,7 +167,10 @@ function renderMarkdown(entries: Entry[]): string {
         parts.push('```text', e.licenseText, '```', '')
     }
 
-    return `${parts.join('\n').trimEnd()}\n`
+    return `${parts
+        .join('\n')
+        .replace(/[\t ]+$/gm, '')
+        .trimEnd()}\n`
 }
 
 async function serviceComponentNames(): Promise<string[]> {

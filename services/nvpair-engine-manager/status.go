@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"runtime"
 	"time"
 )
 
@@ -63,11 +65,22 @@ func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, err
 		// (matching get-installed) rather than erroring, so status is
 		// consistent for the same engine across methods.
 		if m, ok := e.reg.Get(engine); ok {
-			return EngineStatus{Engine: engine, DisplayName: m.DisplayName}, nil
+			if _, supported := m.HostPlatform(); !supported {
+				return unavailableEngineStatus(engine, m.DisplayName), nil
+			}
 		}
 		return EngineStatus{}, err
 	}
-	st.opMu.Lock()
+	if engine == "llamacpp" {
+		if !st.opMu.TryLock() {
+			if probePort > 0 {
+				return EngineStatus{}, fmt.Errorf("llama lifecycle is busy; cannot probe an alternate port")
+			}
+			return e.snapshot(engine, st), nil
+		}
+	} else {
+		st.opMu.Lock()
+	}
 	defer st.opMu.Unlock()
 	pathInstalled, _ := e.Detect(engine)
 	st.mu.Lock()
@@ -89,13 +102,28 @@ func (e *Executor) GetInstalled() []EngineStatus {
 			// Known engine with no block for this host: surface a shell
 			// status so the UI can still list it as unavailable here.
 			dn := name
+			reason := ""
 			if m, ok := e.reg.Get(name); ok {
 				dn = m.DisplayName
+				if _, supported := m.HostPlatform(); supported {
+					reason = err.Error()
+				}
 			}
-			out = append(out, EngineStatus{Engine: name, DisplayName: dn})
+			status := unavailableEngineStatus(name, dn)
+			if reason != "" {
+				status.InstallReason = reason
+			}
+			out = append(out, status)
 			continue
 		}
-		st.opMu.Lock()
+		if name == "llamacpp" {
+			if !st.opMu.TryLock() {
+				out = append(out, e.snapshot(name, st))
+				continue
+			}
+		} else {
+			st.opMu.Lock()
+		}
 		pathInstalled, _ := e.Detect(name)
 		st.mu.Lock()
 		port := st.port
@@ -121,17 +149,43 @@ func (e *Executor) Errors() []serviceError {
 	return e.reporter.snapshot()
 }
 
+func unavailableEngineStatus(engine, displayName string) EngineStatus {
+	status := EngineStatus{Engine: engine, DisplayName: displayName}
+	if engine == "llamacpp" {
+		status.InstallReason = "No llama installer recipe is available for this operating system and architecture."
+		if supported, reason := llamaInstallSupport(runtime.GOOS, runtime.GOARCH); !supported {
+			status.InstallReason = reason
+		}
+	}
+	return status
+}
+
 func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return EngineStatus{
-		Engine:      engine,
-		DisplayName: st.manifest.DisplayName,
-		Installed:   st.installed,
-		Running:     st.running,
-		Healthy:     st.healthy,
-		Port:        st.port,
+	supported := st.plat.Install != nil
+	reason := ""
+	if engine == "llamacpp" {
+		supported, reason = llamaInstallSupport(runtime.GOOS, runtime.GOARCH)
+		if missing := llamaPrerequisite(); supported && missing != "" {
+			supported, reason = false, missing
+		}
 	}
+	status := EngineStatus{
+		InstallSupported: supported,
+		InstallReason:    reason,
+		Managed:          st.installed && !st.adopted && isManagedInstallPath(st.binPath, st.installDir),
+		Engine:           engine,
+		DisplayName:      st.manifest.DisplayName,
+		Installed:        st.installed,
+		Running:          st.running,
+		Healthy:          st.healthy,
+		Port:             st.port,
+	}
+	if engine == "llamacpp" && status.Managed {
+		status.Acceleration, status.Devices = llamaReceiptAcceleration(st.installDir)
+	}
+	return status
 }
 
 // reconcilePresence reconciles filesystem detection with a fixed-port engine

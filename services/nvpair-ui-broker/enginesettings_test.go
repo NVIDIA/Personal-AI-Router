@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
@@ -36,9 +37,15 @@ type settingsHarness struct {
 	launchMu sync.Mutex
 }
 
+// newSettingsHarness stands up a broker with a fixture engine manager and one
+// fixture proxy process hosting a ready facade for every engine in the table,
+// as production does. The fixture engine manager serves a single launch state
+// for whichever engine is asked about.
 func newSettingsHarness(t *testing.T) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 3)
+	// One ephemeral port for the fixture engine's server, then one facade port
+	// per engine.
+	ports := make([]int, 1+len(engineProxyProfiles))
 	listeners := []net.Listener{}
 	for i := range ports {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -55,12 +62,11 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 	worker, codec := newTestRPCWorkerPipe(t)
 	h.b.setEngineMgr(worker)
 	proxyWorker, proxyCodec := newTestRPCWorkerPipe(t)
-	proxy := &proxyProcess{peer: proxyWorker.peer, facadeState: map[string]proxyFacadeState{
-		"ollama":   {ready: true, port: ports[1]},
-		"lmstudio": {ready: true, port: ports[2]},
-	}}
-	h.b.setProxy(proxy)
-	h.b.setLMStudioProxy(proxy)
+	proxy := &proxyProcess{peer: proxyWorker.peer, facadeState: make(map[string]proxyFacadeState, len(engineProxyProfiles))}
+	for i, profile := range engineProxyProfiles {
+		proxy.facadeState[profile.Name] = proxyFacadeState{ready: true, port: ports[1+i]}
+		h.b.setEngineProxyHandle(profile, proxy)
+	}
 	go func() {
 		for {
 			msg, err := proxyCodec.Read()
@@ -70,7 +76,10 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 			if !msg.IsRequest() {
 				continue
 			}
-			if msg.Method != "ollama:set-port" && msg.Method != "lmstudio:set-port" {
+			// Only a facade-addressed set-port changes fixture state; every
+			// other request (node/set-local-backend and the like) is acknowledged.
+			engine, bare := engines.SplitAddressedMethod(msg.Method)
+			if engine == "" || bare != "set-port" {
 				_ = proxyCodec.Respond(msg.ID, map[string]bool{"ok": true})
 				continue
 			}
@@ -79,16 +88,12 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 			}
 			_ = json.Unmarshal(msg.Params, &p)
 			proxy.readyMu.Lock()
-			engine := "ollama"
-			if msg.Method == "lmstudio:set-port" {
-				engine = "lmstudio"
-			}
 			proxy.facadeState[engine] = proxyFacadeState{ready: true, port: p.Port}
 			proxy.readyMu.Unlock()
 			_ = proxyCodec.Respond(msg.ID, map[string]int{"port": p.Port})
 		}
 	}()
-	launch := settings.LaunchState{Engine: "ollama", ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
+	launch := settings.LaunchState{ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
 	go func() {
 		for {
 			msg, err := codec.Read()
@@ -100,12 +105,22 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 			}
 			switch msg.Method {
 			case "engine:get-launch":
+				var p settings.Request
+				_ = json.Unmarshal(msg.Params, &p)
 				h.launchMu.Lock()
 				current := launch
 				h.launchMu.Unlock()
+				current.Engine = p.Engine
 				_ = codec.Respond(msg.ID, current)
 			case "engine:configured-ports":
-				_ = codec.Respond(msg.ID, map[string]any{"engines": []any{map[string]any{"engine": "lmstudio", "port": h.otherEnginePort.Load()}}})
+				// Every engine reports the fixture's "other engine" port; the
+				// broker skips the entry for the engine being configured, so
+				// whichever engine a test targets, its siblings hold this port.
+				configured := make([]any, 0, len(engineProxyProfiles))
+				for _, profile := range engineProxyProfiles {
+					configured = append(configured, map[string]any{"engine": profile.Name, "port": h.otherEnginePort.Load()})
+				}
+				_ = codec.Respond(msg.ID, map[string]any{"engines": configured})
 			case "engine:preview-launch":
 				var p settings.Request
 				_ = json.Unmarshal(msg.Params, &p)
@@ -123,6 +138,8 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 				// exactly what the broker's lock split makes possible.
 				go func(msg *Message) {
 					h.applies.Add(1)
+					var p settings.Configure
+					_ = json.Unmarshal(msg.Params, &p)
 					if h.entered != nil {
 						h.entered <- struct{}{}
 						<-h.release
@@ -130,16 +147,14 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 					if h.failBeforeStop.Load() {
 						if h.loseProxyOnStop.Load() {
 							proxy.readyMu.Lock()
-							state := proxy.facadeState["ollama"]
+							state := proxy.facadeState[p.Engine]
 							state.ready = false
-							proxy.facadeState["ollama"] = state
+							proxy.facadeState[p.Engine] = state
 							proxy.readyMu.Unlock()
 						}
 						_ = codec.RespondError(msg.ID, -32000, "stop failure")
 						return
 					}
-					var p settings.Configure
-					_ = json.Unmarshal(msg.Params, &p)
 					h.launchMu.Lock()
 					launch.ServerPort = p.Settings.ServerPort
 					launch.LaunchText = p.Settings.LaunchText
@@ -158,6 +173,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 					launch.Running = p.Resume
 					current := launch
 					h.launchMu.Unlock()
+					current.Engine = p.Engine
 					if h.failResultSave.Load() {
 						journal, _ := h.b.engineSettingsPath()
 						if err := os.Remove(journal); err != nil {
@@ -422,18 +438,148 @@ func TestSettingsPortValidationIncludesStoppedEnginesAndAliases(t *testing.T) {
 	}
 }
 
+// Every engine's proxy keeps a saved-port store under its own file name; a valid
+// choice in any of them survives as an explicit setting and disarms automatic
+// takeover for that engine alone.
 func TestSettingsMigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {
 	h := newSettingsHarness(t)
 	path, _ := h.b.engineSettingsPath()
-	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), []byte(`{"port":26080}`), 0600); err != nil {
+	saved := make(map[string]int, len(engineProxyProfiles))
+	for i, profile := range engineProxyProfiles {
+		saved[profile.Name] = 26080 + i
+		data, err := json.Marshal(map[string]int{"port": saved[profile.Name]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(filepath.Dir(path), profile.PortFile), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.b.migrateLegacyEngineSettings()
+	for _, profile := range engineProxyProfiles {
+		config, ok := h.b.explicitEngineSettings(profile.Name)
+		if !ok || config.ProxyPort != saved[profile.Name] {
+			t.Fatalf("%s legacy choice lost: %+v %v", profile.Name, config, ok)
+		}
+		rt := h.b.engineProxy(profile)
+		if !h.b.prepareExplicitEngineSettings(profile.Name) || int(rt.startupPort.Load()) != saved[profile.Name] || rt.managedFacade.Load() || !rt.explicitSettings.Load() {
+			t.Fatalf("%s: automatic startup overrode saved proxy choice", profile.Name)
+		}
+	}
+}
+
+// LM Studio's standalone proxy once wrote 1235 as its own default; that value
+// carries no choice and must not become an explicit setting. The rule is LM
+// Studio's alone.
+func TestSettingsMigrationSkipsLMStudioObsoleteDefault(t *testing.T) {
+	h := newSettingsHarness(t)
+	path, _ := h.b.engineSettingsPath()
+	data, err := json.Marshal(map[string]int{"port": managedLMStudioBackendStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), lmstudioProxyProfile.PortFile), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	h.b.migrateLegacyEngineSettings()
-	config, ok := h.b.explicitEngineSettings("ollama")
-	if !ok || config.ProxyPort != 26080 {
-		t.Fatalf("legacy choice lost: %+v %v", config, ok)
+	if _, explicit := h.b.explicitEngineSettings(lmstudioProxyProfile.Name); explicit {
+		t.Fatal("LM Studio's obsolete 1235 proxy default became an explicit setting")
 	}
-	if !h.b.prepareExplicitEngineSettings("ollama") || h.b.ollamaState().startupPort.Load() != 26080 || h.b.ollamaState().managedFacade.Load() {
-		t.Fatal("automatic startup overrode saved proxy choice")
+}
+
+// lastResponse returns the final id-bearing response the broker wrote to its
+// client codec, skipping the engine:settings-changed notifications a settings
+// operation publishes on the way.
+func lastResponse(t *testing.T, output *bytes.Buffer) Message {
+	t.Helper()
+	var last *Message
+	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var msg Message
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			t.Fatalf("unparseable frame %q: %v", line, err)
+		}
+		if msg.IsResponse() {
+			last = &msg
+		}
+	}
+	if last == nil {
+		t.Fatalf("no response written: %q", output.String())
+	}
+	return *last
+}
+
+// Every engine's <engine>-proxy:set-port is the same intercepted settings
+// operation: refused without an engine manager to vouch for port ownership,
+// refused for a port another configured engine holds, and otherwise moving only
+// the addressed facade while recording the port as an explicit choice.
+func TestSettingsPortRPCServesEveryEngineProxy(t *testing.T) {
+	for _, profile := range engineProxyProfiles {
+		t.Run(profile.Name, func(t *testing.T) {
+			method := profile.ComponentName() + ":set-port"
+			id := json.RawMessage(`1`)
+			var output bytes.Buffer
+			bare := &Broker{codec: NewCodec(readWriter{Reader: bytes.NewReader(nil), Writer: &output}), clusterDir: filepath.Join(t.TempDir(), "cluster")}
+			bare.handleSettingsPortRPC(&Message{ID: &id, Method: method, Params: settingsJSON(map[string]int{"port": 8082})}, profile.Name)
+			if response := lastResponse(t, &output); response.Error == nil {
+				t.Fatalf("port moved without an engine manager to vouch for ownership: %s", output.String())
+			}
+
+			h := newSettingsHarness(t)
+			h.b.codec = NewCodec(readWriter{Reader: bytes.NewReader(nil), Writer: &output})
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			port := ln.Addr().(*net.TCPAddr).Port
+			_ = ln.Close()
+			request := &Message{ID: &id, Method: method, Params: settingsJSON(map[string]int{"port": port})}
+
+			output.Reset()
+			h.otherEnginePort.Store(int32(port))
+			h.b.handleSettingsPortRPC(request, profile.Name)
+			if response := lastResponse(t, &output); response.Error == nil {
+				t.Fatalf("took a port configured for another engine: %s", output.String())
+			}
+
+			h.otherEnginePort.Store(0)
+			output.Reset()
+			p := h.b.settingsProxy(profile.Name)
+			if p == nil {
+				t.Fatal("settings proxy unavailable")
+			}
+			before := make(map[string]int, len(engineProxyProfiles))
+			for _, other := range engineProxyProfiles {
+				_, before[other.Name] = p.Status(other.Name)
+			}
+			h.b.handleSettingsPortRPC(request, profile.Name)
+			response := lastResponse(t, &output)
+			if response.Error != nil {
+				t.Fatalf("port move refused: %s", response.Error.Message)
+			}
+			var moved struct {
+				Port int `json:"port"`
+			}
+			if json.Unmarshal(response.Result, &moved) != nil || moved.Port != port {
+				t.Fatalf("response %s, want port %d", response.Result, port)
+			}
+			for _, other := range engineProxyProfiles {
+				want := before[other.Name]
+				if other.Name == profile.Name {
+					want = port
+				}
+				if ready, got := p.Status(other.Name); !ready || got != want {
+					t.Fatalf("%s ready=%v port=%d, want %d", other.Name, ready, got, want)
+				}
+			}
+			if s := h.b.engineSettings[profile.Name].Snapshot; s.Settings.ProxyPort != port || s.Phase != "succeeded" {
+				t.Fatalf("journal did not record the move: %+v", s)
+			}
+			if rt := h.b.engineProxy(profile); !rt.explicitSettings.Load() || rt.managedFacade.Load() {
+				t.Fatal("a port set from the terminal was not recorded as an explicit choice")
+			}
+		})
 	}
 }

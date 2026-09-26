@@ -23,6 +23,11 @@ const (
 	// PAIR's managed LM Studio backend is moved behind it starting at 1235;
 	// pass --port explicitly to reach that directly, which bypasses routing.
 	defaultLMStudioPort = 1234
+	// llama.cpp's own default, which is also the port PAIR's llama.cpp proxy
+	// facade claims (the FacadePort in services/shared/engines).
+	// PAIR's managed llama.cpp backend is moved behind it starting at 8081;
+	// pass --port explicitly to reach that directly, which bypasses routing.
+	defaultLlamaCppPort = 8080
 	defaultErrorLog     = "inference_errors.txt"
 	maxPromptsPerBatch  = 100
 )
@@ -289,7 +294,7 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	fs.SetOutput(stderr)
 	var parsedConfigPath string
 	fs.StringVar(&parsedConfigPath, "config", configPath, "JSON configuration file")
-	fs.StringVar(&cfg.Backend, "backend", cfg.Backend, "backend: ollama or lmstudio")
+	fs.StringVar(&cfg.Backend, "backend", cfg.Backend, "backend: ollama, lmstudio, or llamacpp")
 	fs.StringVar(&cfg.Backend, "provider", cfg.Backend, "alias for --backend")
 	fs.IntVar(&cfg.Port, "port", cfg.Port, "server port (backend default when omitted)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name; omitted or auto selects an available model")
@@ -356,8 +361,8 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 }
 
 func validateConfig(cfg Config) error {
-	if cfg.Backend != "ollama" && cfg.Backend != "lmstudio" {
-		return errors.New("--backend must be ollama or lmstudio")
+	if cfg.Backend != "ollama" && cfg.Backend != "lmstudio" && cfg.Backend != "llamacpp" {
+		return errors.New("--backend must be ollama, lmstudio, or llamacpp")
 	}
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return errors.New("--port must be between 1 and 65535")
@@ -416,6 +421,9 @@ func effectivePort(cfg Config) int {
 	}
 	if cfg.Backend == "lmstudio" {
 		return defaultLMStudioPort
+	}
+	if cfg.Backend == "llamacpp" {
+		return defaultLlamaCppPort
 	}
 	return defaultOllamaPort
 }

@@ -46,6 +46,7 @@ func TestEngineHealthProbePaths(t *testing.T) {
 	}{
 		{"ollama", "/"},
 		{"lmstudio", "/v1/models"},
+		{"llamacpp", "/v1/models"},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -70,6 +71,9 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	}{
 		{"ollama", managedOllamaFacadePort, managedOllamaBackendStart, portOwnershipBlockedID},
 		{"lmstudio", managedLMStudioFacadePort, managedLMStudioBackendStart, lmstudioPortOwnershipBlockedID},
+		// llama.cpp's stock ports come straight from the table (no inherited
+		// LLAMA_ARG_PORT in this process), so the effective profile must agree.
+		{"llamacpp", llamacppEffectiveProfile().FacadePort, llamacppEffectiveProfile().EnginePortBase, llamacppPortOwnershipBlockedID},
 	} {
 		t.Run(tc.engine, func(t *testing.T) {
 			p, ok := engineProxyProfileFor(tc.engine)
@@ -92,9 +96,9 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	}
 }
 
-// Ownership is the one judgment call in adding an engine, so the two values in
-// the table today are pinned explicitly. Getting these backwards does not fail
-// to compile — it silently changes which engine the broker believes it may stop.
+// Ownership is the one judgment call in adding an engine, so every value in
+// the table is pinned explicitly. Getting these backwards does not fail to
+// compile — it silently changes which engine the broker believes it may stop.
 func TestEngineOwnershipAssignments(t *testing.T) {
 	for _, tc := range []struct {
 		engine string
@@ -102,6 +106,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 	}{
 		{"ollama", adoptedEngine},
 		{"lmstudio", managedEngine},
+		{"llamacpp", managedEngine},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -132,6 +137,7 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 	}{
 		{engine: "ollama", wantBlock: "Ollama is already running on the compatibility port"},
 		{engine: "lmstudio", wantMove: true},
+		{engine: "llamacpp", wantMove: true},
 	} {
 		t.Run(tc.engine, func(t *testing.T) {
 			p, ok := engineProxyProfileFor(tc.engine)

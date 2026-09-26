@@ -21,23 +21,39 @@ export default function EngineIcon({ type, size = 32 }: { type: EngineType; size
         overflow: 'hidden'
     }
 
-    if (type === 'ollama') {
-        return (
-            <div style={containerStyle}>
-                <img src={ollamaIcon} alt="Ollama" style={imgStyle} />
-            </div>
-        )
+    switch (type) {
+        case 'ollama':
+            return (
+                <div style={containerStyle}>
+                    <img src={ollamaIcon} alt="Ollama" style={imgStyle} />
+                </div>
+            )
+        case 'lm-studio':
+            imgStyle.objectFit = 'cover'
+            return (
+                <div style={containerStyle}>
+                    <img src={lmStudioIcon} alt="LM Studio" style={imgStyle} />
+                </div>
+            )
+        case 'llamacpp':
+            return (
+                <div style={containerStyle} title="llama.cpp">
+                    <span
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: '100%',
+                            height: '100%',
+                            fontSize: size * 0.32,
+                            fontWeight: 700,
+                            color: '#111',
+                            lineHeight: 1
+                        }}
+                    >
+                        cpp
+                    </span>
+                </div>
+            )
     }
-
-    if (type === 'lm-studio') {
-        imgStyle.objectFit = 'cover'
-
-        return (
-            <div style={containerStyle}>
-                <img src={lmStudioIcon} alt="LM Studio" style={imgStyle} />
-            </div>
-        )
-    }
-
-    return null
 }

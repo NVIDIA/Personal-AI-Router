@@ -16,16 +16,14 @@ type workload struct {
 	ID             string `json:"id"`
 	Model          string `json:"model"`
 	Engine         string `json:"engine"`
+	RunID          string `json:"runId"`
 	State          string `json:"state"`
 	OriginatedFrom string `json:"originatedFrom"`
 	CreatedAt      int64  `json:"createdAt"` // Unix millis
 }
 
-// workloadsView shows cluster-wide inference workloads. The table is built
-// purely from the live workloads:upsert / workloads:remove stream after
-// subscribing, so a workload already in flight when the TUI starts stays
-// invisible until its next transition. The broker does expose
-// workloads:get-initial for a baseline; this view does not yet call it.
+// workloadsView shows live cluster workloads after subscribing. Requests already
+// in flight appear on their next event; this table does not fetch a baseline.
 type workloadsView struct {
 	client *rpc.Client
 	table  table.Model
@@ -88,9 +86,15 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 			var p struct {
 				WorkloadID     string `json:"workloadId"`
 				OriginatedFrom string `json:"originatedFrom"`
+				Engine         string `json:"engine"`
+				RunID          string `json:"runId"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
-			v.remove(workloadKey(p.OriginatedFrom, p.WorkloadID))
+			for key, w := range v.byKey {
+				if w.OriginatedFrom == p.OriginatedFrom && w.ID == p.WorkloadID && (p.Engine == "" || p.Engine == w.Engine) && (p.RunID == "" || p.RunID == w.RunID) {
+					v.remove(key)
+				}
+			}
 		}
 		return nil
 
@@ -103,7 +107,10 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (v *workloadsView) upsert(w workload) {
-	key := workloadKey(w.OriginatedFrom, w.ID)
+	key := workloadKey(w.OriginatedFrom, w.ID, w.Engine, w.RunID)
+	if previous, ok := v.byKey[key]; ok && (previous.State == "completed" || previous.State == "failed") && w.State != "completed" && w.State != "failed" {
+		return
+	}
 	if _, ok := v.byKey[key]; !ok {
 		v.order = append(v.order, key)
 	}
@@ -152,4 +159,10 @@ func (v *workloadsView) View() string {
 
 func (v *workloadsView) Help() []key.Binding { return nil }
 
-func workloadKey(origin, id string) string { return origin + "/" + id }
+func workloadKey(origin, id string, identity ...string) string {
+	key := origin + "/" + id
+	for _, part := range identity {
+		key += "/" + part
+	}
+	return key
+}

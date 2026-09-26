@@ -219,6 +219,20 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             )
             break
         case 'update':
+            if (engine === 'llamacpp') {
+                // llama.cpp has no managed update, and the generic
+                // uninstall-then-install pair below must not stand in for one.
+                // Refuse without touching the runtime or beginning a pending op;
+                // the engineType context lets the renderer drop its optimistic
+                // lifecycle entry.
+                supervisor.reportError(
+                    'llama.cpp has no managed update; uninstall and reinstall the managed runtime instead.',
+                    'warning',
+                    `engine-cmd:${payload.command}:${engine}`,
+                    { engineType: payload.engineType, operation: 'update' }
+                )
+                break
+            }
             // The engine-manager serializes per-engine ops via its lifecycle
             // lock, so the queued install waits for the uninstall to finish. The
             // uninstall's engine:state-changed briefly clears this, then the
@@ -255,6 +269,29 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 void supervisor.deleteModel(engine, payload.engineType, payload.model)
             }
             break
+        case 'cancelPull':
+            if (payload.model) {
+                supervisor.sendProcess(
+                    'broker',
+                    'engine:action',
+                    {
+                        engine,
+                        action: 'cancel_pull',
+                        params: { model: payload.model }
+                    },
+                    failAction('cancel model download'),
+                    // Observe the response like every other long-running engine
+                    // action here: without it a backend refusal is indistinguishable
+                    // from a cancel that worked.
+                    true
+                )
+            }
+            break
+        case 'importModel':
+            if (payload.model && engine === 'llamacpp') {
+                void supervisor.importLlamaModel(payload.model)
+            }
+            break
         case 'loadModel':
             // "Load" warms a model into the engine's memory/VRAM. Ollama has no
             // first-class load action, so we POST its `run_model` HTTP action
@@ -273,6 +310,23 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                             engine,
                             action: 'run_model',
                             params: { model: payload.model, stream: false }
+                        },
+                        failAction('load model', {
+                            nodeId: payload.nodeId,
+                            engineType: payload.engineType,
+                            operation: 'load',
+                            modelName: payload.model
+                        }),
+                        true
+                    )
+                } else if (payload.engineType === 'llamacpp') {
+                    supervisor.sendProcess(
+                        'broker',
+                        'engine:action',
+                        {
+                            engine,
+                            action: 'load_model',
+                            params: { model: payload.model }
                         },
                         failAction('load model', {
                             nodeId: payload.nodeId,
@@ -370,6 +424,21 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
             refuseRemote(
                 `${payload.command} is only available on the local node — remote uninstall/update is not supported yet.`
             )
+            break
+        case 'cancelPull':
+            if (payload.model && engine === 'llamacpp') {
+                supervisor.sendProcess(
+                    'broker',
+                    'engine:remote-cancel-pull',
+                    {
+                        node: nodeId,
+                        engine,
+                        model: payload.model
+                    },
+                    detail => refuseRemote(`Cancel download failed: ${detail}`),
+                    true
+                )
+            }
             break
         case 'deleteModel':
         case 'loadModel':

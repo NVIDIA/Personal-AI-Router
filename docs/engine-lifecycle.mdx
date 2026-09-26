@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
+run models. That includes Ollama, LM Studio and llama.cpp on a given machine. PAIR can
 install and run those engines for you, or work with a copy you already have.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
@@ -17,6 +17,70 @@ an engine's ports or launch command, refer to
 [Troubleshooting](troubleshooting.mdx).
 
 ## Engine Requirements
+
+### Managed llama app
+
+Engine Manager installs the official llama app into its own runtime directory
+and starts its router one port above the endpoint your clients use
+(`http://127.0.0.1:8080/v1`), so llama.cpp's usual address keeps working and
+requests go through routing. If you have set `LLAMA_ARG_PORT`, that port is used
+instead. Install eligibility is reported by the backend for the current
+platform. A detected external runtime remains read-only.
+
+On NVIDIA Windows ARM64, Install first tries the current official upstream
+installer and release in a separate staging directory. The candidate must report
+the selected version, readable licenses and a usable CUDA device. If that bounded
+attempt fails, PAIR uses its checksum-pinned b10826 app and CUDA 13.4 runtime
+archives. Cancel stops the operation instead of starting a fallback attempt.
+Install on an already-installed managed runtime reports it as already installed
+and changes nothing. There is no update action for managed llama, and PAIR does
+not uninstall and reinstall it as a substitute for one.
+
+This primary path trusts current official upstream downloads; recording their
+hashes is not prior PAIR qualification or a guarantee about future releases.
+The fallback remains the same official app and CLI, not a separate legacy engine.
+Its ARM64 CUDA support is an upstream preview and requires a compatible NVIDIA
+driver; PAIR does not install a toolkit or change drivers. Windows x64, Linux
+and Apple Silicon retain the pinned official script.
+
+Confirmed non-NVIDIA Windows ARM64 hardware uses the pinned official CPU installer.
+Failed or incomplete hardware detection does not select CPU. Intel Macs use the
+official pinned CPU app archive; this does not provide Radeon acceleration.
+Both CPU paths use the same managed model, retention and uninstall controls.
+Native hardware qualification is separate from having an installation recipe.
+
+Download by Hugging Face reference (`owner/repository:QUANT`) or import a local
+GGUF in the engine's model controls. The managed cache survives engine uninstall,
+application uninstall and reset. It lives in `Nvidia Corporation/Personal AI
+Router Models/llamacpp` under the platform configuration base: `%LOCALAPPDATA%`
+on Windows, `~/Library/Application Support` on macOS, or `$XDG_CONFIG_HOME`
+(default `~/.config`) on Linux. This library is separate from PAIR application
+data. Engine Manager migrates an older in-app cache before using it; if migration
+cannot safely finish, reset refuses and uninstall preserves the old data root.
+Open the updated app and resolve the migration error before retrying data removal.
+A downloaded model loads on the first request that names it, so that first
+response waits for the load; the router keeps up to four models resident and
+evicts idle ones.
+PAIR routes each complete request to one eligible node and does not distribute
+a model across several machines. Native platform and packaged UI validation of
+this integration must be recorded separately from passing source tests.
+
+Use a PAIR build with managed llama support on each node you intend to manage.
+Older Engine Managers reject unknown llama commands; older desktop and terminal
+builds do not gain the new controls from upgrading only a peer. Upgrade the
+application and its bundled services together. Existing model files remain
+separate from that application update.
+
+The managed default serves chat and text completions. The embeddings route can
+forward a request, but a runtime not configured for embeddings returns the
+vendor's error; route availability is not a promise of that model capability.
+Likewise, a detected GPU is not proof that the vendor selected it for inference.
+Use the actual runtime/device observation when reporting acceleration.
+
+PAIR discovery carries configured engine ports. The generic manual-node prober
+uses each engine's documented default port (llama: `8080`), like the other
+engines; the proxy's direct `node/add-manual` API accepts an explicit port.
+Do not treat a manual default-port probe as discovery of an arbitrary port.
 
 PAIR does not run models by itself. Each participating machine needs at least
 one compatible engine that is:
@@ -44,8 +108,8 @@ operations run.
 
 These actions need the UI:
 
-- Listing, loading, ejecting, and deleting models
-- Updating an engine
+- Changing an engine's port
+- Updating an engine (Ollama or LM Studio; managed llama has no update action)
 - Managing another node's engines
 
 In the terminal:
@@ -59,6 +123,8 @@ handles these engine lifecycle actions:
 - Restart an engine.
 - Uninstall an engine.
 - Pull a model.
+- List models and use supported load, eject, delete, and cancel controls.
+- Import a local GGUF into managed llama's model cache.
 
 It does not do everything that the application does.
 
@@ -114,10 +180,20 @@ Both actions apply only to an engine PAIR installed:
 - **Uninstall** removes the NVPAIR-installed copy of that engine. Use it when you
   no longer want PAIR to own that engine on the machine.
 
-Uninstalling an engine does **not** remove its models. Downloaded model files stay
-on disk, in the engine's own storage such as `~/.ollama`, so uninstalling and
-reinstalling does not cost you re-downloading them. To reclaim that space, delete
-the models through the engine, or remove its data directory yourself.
+The shared managed-engine standard is **runtime-only removal**: stop the correct
+PAIR-owned instance and remove its runtime, keeping normal separate models,
+settings and user data. Unknown external/shared ownership must result in refusal,
+not a broad cleanup. The exact recipe's native evidence establishes compliance;
+this standard is not a promise about unqualified legacy installations.
+
+Managed llama follows that standard: uninstall removes its runtime slots but
+keeps its model library and separate settings, while saving Off. Reinstall can
+reuse the retained models. Profile reset and model deletion are different actions
+and are not part of runtime uninstall. Update is not offered for managed llama,
+and PAIR does not run uninstall and reinstall in its place. The backend
+[managed install/uninstall contract](../services/nvpair-engine-manager/README.md#managed-installuninstall-contract)
+defines the same requirement for Ollama and LM Studio recipes. It does not change
+their engine-specific start/stop, port or update behavior.
 
 Port changes for an NVPAIR-installed engine also live in **Engine settings**.
 Prefer the controls in PAIR over editing the engine's own config when PAIR is
@@ -188,9 +264,10 @@ brings it back without fetching it again.
 ![An engine's model list showing the Load, Eject, and Delete actions against a downloaded model.](assets/onboarding/engine-lifecycle/04-model-actions.png)
 
 On a headless machine the terminal interface covers installing, starting,
-stopping, restarting, and uninstalling an engine, and pulling a model. Operations
-it does not have, such as deleting a model or updating an engine, need the
-desktop application on that machine.
+stopping, restarting, and uninstalling an engine, plus supported model inventory,
+download, load, unload, and delete actions. Managed llama also supports download
+cancellation and local GGUF import. See the
+[terminal controls](terminal-interface.mdx) for exact keys and limitations.
 
 PAIR does **not** warm models. Starting an engine does not pre-load models into
 memory, and it holds nothing ready in advance. Depending on the engine, a model

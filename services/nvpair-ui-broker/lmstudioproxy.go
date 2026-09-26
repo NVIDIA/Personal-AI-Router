@@ -84,18 +84,12 @@ func (b *Broker) forwardLMStudioProxyNotificationForGeneration(generation uint64
 	// The failed process is not exiting any more: this notification precedes
 	// the failing enable's response, so the port chosen here is what
 	// lmstudioFallbackPort finds when that enable retries in-process.
-	if method == "error" {
-		var ep struct {
-			Code string `json:"code"`
-			Port int    `json:"port"`
-		}
-		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && !b.lmstudioState().explicitSettings.Load() {
-			if b.lmstudioState().managedFacade.Load() && ep.Port == managedLMStudioFacadePort {
-				_, _ = b.blockManagedLMStudioFacade("another process acquired the compatibility port during startup", nil)
-			} else {
-				fallback := b.setLMStudioProxyFallback(ep.Port)
-				slog.Warn("LM Studio proxy bind failed; retrying on fallback", "port", ep.Port, "fallback", fallback)
-			}
+	if port, recover := b.facadeBindFailure(lmstudioProxyProfile, method, params); recover {
+		if b.lmstudioState().managedFacade.Load() && port == managedLMStudioFacadePort {
+			_, _ = b.blockManagedLMStudioFacade("another process acquired the compatibility port during startup", nil)
+		} else {
+			fallback := b.setLMStudioProxyFallback(port)
+			slog.Warn("LM Studio proxy bind failed; retrying on fallback", "port", port, "fallback", fallback)
 		}
 	}
 	if method == "ready" {

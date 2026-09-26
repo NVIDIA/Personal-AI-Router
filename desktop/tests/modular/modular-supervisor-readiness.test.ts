@@ -10,6 +10,8 @@ import {
 const mocks = vi.hoisted(() => ({
     bridgeState: {
         handleNotification: vi.fn(),
+        applyEngineManagerStatus: vi.fn(),
+        modelPullTarget: vi.fn(() => null),
         getSelfId: vi.fn(() => null),
         getProxyPort: vi.fn(() => null)
     },
@@ -51,6 +53,7 @@ vi.mock('@/electron/service-bridge/node-info-poller', () => ({
 
 vi.mock('@/electron/service-bridge/modular-state', () => ({
     getModularBridgeState: () => mocks.bridgeState,
+    isProxyEngine: () => false,
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => [],
     parseWorkloadsInitial: () => [],
@@ -66,6 +69,10 @@ import {
 interface ReadinessHarness {
     readonly ready: boolean
     processes: Map<string, JsonRpcSubprocess>
+    engineEventRevisions: Map<string, number>
+    hydrateEngineManager: () => Promise<void>
+    handleEngineManagerNotification: (notification: JsonRpcNotification) => void
+    callProcess: (process: string, method: string) => Promise<unknown>
     isReady: boolean
     brokerReady: boolean
     brokerHydrationDone: boolean
@@ -99,11 +106,14 @@ describe('modular supervisor readiness', () => {
         supervisor.brokerReady = false
         supervisor.brokerHydrationDone = false
         supervisor.processes.clear()
+        supervisor.engineEventRevisions.clear()
+        mocks.bridgeState.applyEngineManagerStatus.mockClear()
         supervisor.onReady = undefined
         supervisor.onBrokerReady = vi.fn().mockResolvedValue(undefined)
     })
 
     afterEach(() => {
+        vi.restoreAllMocks()
         for (const waiter of supervisor.readinessWaiters.values()) {
             clearTimeout(waiter.timeout)
         }
@@ -194,4 +204,37 @@ describe('modular supervisor readiness', () => {
 
         expect(supervisor.ready).toBe(true)
     })
+
+    it.each(['llamacpp', 'ollama', 'lmstudio'])(
+        'keeps newer %s pushes when the initial engine snapshot arrives late',
+        async engine => {
+            supervisor.processes.set('broker', new JsonRpcSubprocess('broker', 'unused'))
+            for (const running of [true, false]) {
+                let resolve!: (value: unknown) => void
+                vi.spyOn(supervisor, 'callProcess').mockImplementation(
+                    () =>
+                        new Promise(value => {
+                            resolve = value
+                        })
+                )
+                const pending = supervisor.hydrateEngineManager()
+                const newer = { engine, installed: true, running, healthy: running }
+                supervisor.handleEngineManagerNotification({
+                    source: 'broker',
+                    method: 'engine:state-changed',
+                    params: newer
+                })
+                resolve({ engines: [{ ...newer, running: !running }] })
+                await pending
+                expect(mocks.bridgeState.applyEngineManagerStatus).toHaveBeenLastCalledWith(newer)
+                mocks.bridgeState.applyEngineManagerStatus.mockClear()
+
+                const fresh = { ...newer, running: !running }
+                vi.spyOn(supervisor, 'callProcess').mockResolvedValue({ engines: [fresh] })
+                await supervisor.hydrateEngineManager()
+                expect(mocks.bridgeState.applyEngineManagerStatus).toHaveBeenCalledWith(fresh)
+                vi.restoreAllMocks()
+            }
+        }
+    )
 })

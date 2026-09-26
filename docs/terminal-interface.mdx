@@ -13,8 +13,8 @@ desktop environment, or over SSH, where the desktop application cannot run. If a
 desktop is available, use the desktop application.
 
 **It has known limitations.** It is an operations tool, not a full replacement.
-It cannot list or delete models, change an engine's port, update an engine,
-control engines on other nodes, or show which node served a workload. The full
+It cannot change an engine's port, update an engine, or control engines on
+other nodes. Managed llama supports model inventory and actions. The full
 list is in
 [What the Terminal Interface Cannot Do](#what-the-terminal-interface-cannot-do),
 and it is worth reading before you depend on it.
@@ -130,7 +130,7 @@ Tab switching and `q` do not work until you do.
 | 1 | **Overview** | Service uptime and version, and an `ok` / `DOWN` table for each worker |
 | 2 | **Errors** | Active service errors by severity, age, node, and message |
 | 3 | **Nodes** | Nodes discovered on the network, with `Connected` or `In cluster` status |
-| 4 | **Proxies** | Both compatible proxies: listening port, discovered upstreams, and which node is selected |
+| 4 | **Proxies** | Ollama, LM Studio and llama.cpp proxies: listening port, discovered upstreams, and which node is selected |
 | 5 | **Workloads** | Live inference workloads: ID, model, engine, state, and age |
 | 6 | **Engines** | Local engines: installed, running, healthy, and port |
 | 7 | **Cluster** | This node's identity, cluster membership, and pairing |
@@ -197,9 +197,19 @@ From the **Engines** tab (6), select an engine with `j` / `k`, then:
 | `r` | Restart |
 | `u` | Uninstall |
 | `p` | Download a model |
+| `m` | Show model inventory; arrows select a model, `esc` returns |
+| `L` / `e` / `d` | Load / unload / delete the selected model where supported |
+| `c` | Cancel the selected model download |
+| `I` | Import a local single-file GGUF into managed llama's cache |
 
 Pressing `p` opens a prompt. Type the model name, for example `qwen4:12b`, and
 press `enter`. Progress appears on the status line.
+
+For llama, enter `owner/repository:QUANT` for a Hugging Face download, or use
+`I` with a local GGUF path. Model actions prefill the selected model's exact ID;
+press `enter` to submit. Start llama; a downloaded model loads on the first
+request that names it.
+External llama runtimes remain under their owner's lifecycle control.
 
 A node can serve a request only when it is online, a compatible engine is
 running, and the requested model is present on that node. To route across several
@@ -208,13 +218,14 @@ machines, download the same model on each.
 ## Check Routing and Health
 
 The **Workloads** tab (5) lists inference work as it runs, with its model,
-engine, and state.
+engine, and state. Select a row to see its origin and reported serving node;
+an absent target remains unknown.
 
 ![The terminal interface Workloads tab listing live inference workloads with model, engine, state, and age.](assets/onboarding/terminal-interface/03-tui-workloads.png)
 
 The **Proxies** tab (4) shows each proxy's listening port and whether it is
 routing automatically (`selected=auto`) or pinned to one node. Press `g` to
-switch between the two engines, `enter` to pin the highlighted upstream, and `a`
+switch between the three engines, `enter` to pin the highlighted upstream, and `a`
 to return to automatic routing. Leave it on automatic unless you are
 deliberately testing one node.
 
@@ -243,12 +254,11 @@ for how PAIR arranges ports.
 
 It is an operations tool, not a full replacement for the desktop application:
 
-- It cannot list or delete models. You can download one, but the interface shows
-  no model inventory.
 - It cannot change an engine's port. The port column is read-only. Use the
   desktop application to change it.
-- It cannot update an engine or control engines on other cluster nodes.
-- It does not show which node served a particular workload.
+- It cannot update an engine or control engines on other cluster nodes. Managed
+  llama has no update action anywhere in PAIR; uninstall and reinstall are
+  separate, explicit steps and are never run on your behalf as a substitute.
 - It has no built-in way to send an inference request. Use `curl` or another
   client against the proxy port, as in
   [Getting Started](getting-started.mdx#6-run-your-first-inference).

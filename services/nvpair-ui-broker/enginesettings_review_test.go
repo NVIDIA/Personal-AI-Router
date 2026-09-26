@@ -20,9 +20,14 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			h := newSettingsHarness(t)
-			p := h.b.getProxy()
-			_, ollamaBefore := p.Status("ollama")
-			_, lmstudioBefore := p.Status("lmstudio")
+			p := h.b.settingsProxy(profile.Name)
+			if p == nil {
+				t.Fatal("settings proxy unavailable")
+			}
+			before := make(map[string]int, len(engineProxyProfiles))
+			for _, other := range engineProxyProfiles {
+				_, before[other.Name] = p.Status(other.Name)
+			}
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -32,20 +37,38 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 			if err := h.b.rebindSettingsProxy(profile.Name, port); err != nil {
 				t.Fatal(err)
 			}
-			wantOllama, wantLMStudio := ollamaBefore, lmstudioBefore
-			if profile.Name == "ollama" {
-				wantOllama = port
-			} else {
-				wantLMStudio = port
-			}
-			for engine, want := range map[string]int{"ollama": wantOllama, "lmstudio": wantLMStudio} {
-				ready, got := p.Status(engine)
+			for _, other := range engineProxyProfiles {
+				want := before[other.Name]
+				if other.Name == profile.Name {
+					want = port
+				}
+				ready, got := p.Status(other.Name)
 				if !ready || got != want {
-					t.Fatalf("%s ready=%v port=%d, want %d", engine, ready, got, want)
+					t.Fatalf("%s ready=%v port=%d, want %d", other.Name, ready, got, want)
+				}
+			}
+			// The rebind also disarms automatic takeover, for this facade alone.
+			for _, other := range engineProxyProfiles {
+				rt := h.b.engineProxy(other)
+				if other.Name == profile.Name {
+					if !rt.explicitSettings.Load() || rt.managedFacade.Load() || int(rt.startupPort.Load()) != port {
+						t.Fatalf("%s runtime did not record the explicit rebind: explicit=%v managed=%v startup=%d",
+							other.Name, rt.explicitSettings.Load(), rt.managedFacade.Load(), rt.startupPort.Load())
+					}
+				} else if rt.explicitSettings.Load() || rt.startupPort.Load() != 0 {
+					t.Fatalf("%s runtime changed by another engine's rebind", other.Name)
 				}
 			}
 		})
 	}
+}
+
+// forwardFacadeNotification delivers one facade-addressed notification through
+// the routing the live proxy reader uses, so a test reaches whichever engine
+// handler the table maps the profile to without naming it.
+func forwardFacadeNotification(b *Broker, profile engineProxyProfile, method string, params json.RawMessage) {
+	b.forwardProxyProcessNotification(b.currentOllamaProxyGeneration(), b.lmstudioProxyGeneration.Load(),
+		b.llamaCppProxyGeneration.Load(), profile.addressed(method), params)
 }
 
 func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
@@ -61,11 +84,7 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 				t.Fatal("explicit settings were not restored")
 			}
 			failure := settingsJSON(map[string]any{"code": "bind-failed", "port": requested})
-			if profile.Name == "ollama" {
-				b.forwardProxyNotification("error", failure)
-			} else {
-				b.forwardLMStudioProxyNotification("error", failure)
-			}
+			forwardFacadeNotification(b, profile, "error", failure)
 			if got := b.engineProxy(profile).startupPort.Load(); got != requested {
 				t.Fatalf("bind notification changed chosen port to %d", got)
 			}
@@ -89,14 +108,16 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 	}
 }
 
+// The request targets Ollama; every other engine in turn is the stopped sibling
+// whose saved proxy port must stay reserved.
 func TestSettingsReservesStoppedProxySavedPort(t *testing.T) {
-	test := func(name string, serverPort bool) {
-		t.Run(name, func(t *testing.T) {
+	test := func(other engineProxyProfile, name string, serverPort bool) {
+		t.Run(other.Name+"/"+name, func(t *testing.T) {
 			h := newSettingsHarness(t)
 			request := h.request(t)
-			_, reserved := h.b.getLMStudioProxy().Status("lmstudio")
-			h.b.setLMStudioProxy(nil)
-			h.b.engineSettings["lmstudio"] = &engineSettingsRecord{
+			_, reserved := h.b.settingsProxy(other.Name).Status(other.Name)
+			h.b.setEngineProxyHandle(other, nil)
+			h.b.engineSettings[other.Name] = &engineSettingsRecord{
 				Explicit: true,
 				Snapshot: settings.Snapshot{Settings: settings.Config{ProxyPort: reserved}},
 			}
@@ -114,8 +135,13 @@ func TestSettingsReservesStoppedProxySavedPort(t *testing.T) {
 			}
 		})
 	}
-	test("server port cannot reuse saved proxy port", true)
-	test("proxy port cannot reuse saved proxy port", false)
+	for _, other := range engineProxyProfiles {
+		if other.Name == ollamaProxyProfile.Name {
+			continue
+		}
+		test(other, "server port cannot reuse saved proxy port", true)
+		test(other, "proxy port cannot reuse saved proxy port", false)
+	}
 }
 
 func TestSettingsMigrationRejectsReservedPorts(t *testing.T) {
@@ -151,15 +177,20 @@ func TestSettingsMigrationRejectsReservedPorts(t *testing.T) {
 		h.b.ollamaHostAliasMu.Unlock()
 		return request.Settings.ProxyPort
 	})
-	test("stopped proxy saved port", func(h *settingsHarness, request settings.Request) int {
-		_, port := h.b.getLMStudioProxy().Status("lmstudio")
-		h.b.setLMStudioProxy(nil)
-		h.b.engineSettings["lmstudio"] = &engineSettingsRecord{
-			Explicit: true,
-			Snapshot: settings.Snapshot{Settings: settings.Config{ProxyPort: port}},
+	for _, other := range engineProxyProfiles {
+		if other.Name == ollamaProxyProfile.Name {
+			continue
 		}
-		return port
-	})
+		test("stopped "+other.Name+" proxy saved port", func(h *settingsHarness, request settings.Request) int {
+			_, port := h.b.settingsProxy(other.Name).Status(other.Name)
+			h.b.setEngineProxyHandle(other, nil)
+			h.b.engineSettings[other.Name] = &engineSettingsRecord{
+				Explicit: true,
+				Snapshot: settings.Snapshot{Settings: settings.Config{ProxyPort: port}},
+			}
+			return port
+		})
+	}
 }
 
 func TestEnabledEngineRestorationSurvivesInvalidSettingsJournal(t *testing.T) {

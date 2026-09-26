@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 # Proxy and Inference Routing
 
 Routing is owned by `nvpair-proxy` (one process hosting a facade per engine,
-addressed by clients as `ollama-proxy:` / `lmstudio-proxy:`),
+addressed by clients as `ollama-proxy:` / `lmstudio-proxy:` / `llamacpp-proxy:`),
 `nvpair-job-scheduler`, and `nvpair-ui-broker`.
 
 For model-bearing inference, each facade first filters a request-local discovery

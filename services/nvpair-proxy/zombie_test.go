@@ -371,7 +371,7 @@ func TestHandleHTTP_RealSocketWriteDeadline(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(p.soleFacade().handleHTTP)}
-	go func() { _ = srv.Serve(ln) }()
+	go func() { _ = srv.Serve(cappedSendBufferListener{ln}) }()
 	defer srv.Close()
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
@@ -379,6 +379,13 @@ func TestHandleHTTP_RealSocketWriteDeadline(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer conn.Close()
+	// Close the receive window quickly, for the same reason the send buffer is
+	// capped: the stall has to arrive well inside this test's own budget.
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		if err := tcpConn.SetReadBuffer(socketBufferCap); err != nil {
+			t.Fatalf("cap client read buffer: %v", err)
+		}
+	}
 
 	body := tc.inferenceBody()
 	reqText := fmt.Sprintf("POST %s HTTP/1.1\r\n", tc.inferencePath) +
@@ -417,6 +424,36 @@ func TestHandleHTTP_RealSocketWriteDeadline(t *testing.T) {
 	if !rec.has(`"state":"cancelled"`) {
 		t.Fatal("a client that stopped reading must terminate as cancelled, not failed")
 	}
+}
+
+// socketBufferCap bounds both ends of the loopback connection in the two tests
+// that need a client to stall.
+const socketBufferCap = 4096
+
+// cappedSendBufferListener caps the send buffer on every accepted connection.
+//
+// Both socket-level zombie tests work by letting the proxy's send buffer fill
+// until a write or flush blocks, and how long that takes is a kernel tuning
+// detail rather than anything the proxy controls. Linux autotunes loopback
+// buffers into the megabytes, so the flush test's paced 1500-byte chunks —
+// about 750 KB/s, deliberately slow so the block lands in Flush and not in
+// Write — took longer to fill them than the test's own five-second budget.
+// It failed there while passing on macOS, where the buffers are smaller.
+//
+// Capping both ends makes the backup arrive in kilobytes instead of megabytes,
+// so what these tests measure is the deadline behaviour rather than the
+// platform's buffer size.
+type cappedSendBufferListener struct{ net.Listener }
+
+func (l cappedSendBufferListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetWriteBuffer(socketBufferCap)
+	}
+	return conn, nil
 }
 
 // TestHandleHTTP_RealSocketFlushDeadline is the flush-path counterpart to the
@@ -475,7 +512,7 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(p.soleFacade().handleHTTP)}
-	go func() { _ = srv.Serve(ln) }()
+	go func() { _ = srv.Serve(cappedSendBufferListener{ln}) }()
 	defer srv.Close()
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
@@ -483,6 +520,13 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer conn.Close()
+	// Close the receive window quickly, for the same reason the send buffer is
+	// capped: the stall has to arrive well inside this test's own budget.
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		if err := tcpConn.SetReadBuffer(socketBufferCap); err != nil {
+			t.Fatalf("cap client read buffer: %v", err)
+		}
+	}
 
 	body := tc.inferenceBody()
 	reqText := fmt.Sprintf("POST %s HTTP/1.1\r\n", tc.inferencePath) +

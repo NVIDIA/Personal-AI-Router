@@ -8,8 +8,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,11 +23,39 @@ import (
 // lookup that hung would wedge StopAll (and the whole app shutdown).
 const portLookupTimeout = 2 * time.Second
 
+// validateLlamaPath refuses a managed path when the leaf or any existing
+// ancestor is a symbolic link. Missing components are skipped and the walk
+// continues upward, so a symlinked ancestor cannot hide behind a child that
+// does not exist yet (a fresh runtime slot, a model about to be written) and a
+// dangling link at the leaf is still seen. This mirrors the Windows
+// reparse-point walk in proc_windows.go.
+func validateLlamaPath(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("llama managed directory contains a redirected path; external data is left untouched")
+		}
+		if parent := filepath.Dir(current); parent == current {
+			return nil
+		}
+	}
+}
+
 // configureSysProcAttr puts the child in its own process group so a
 // terminate signals the whole group — engines that fork helper
 // processes (model runners, etc.) get cleaned up too.
 func configureSysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+// processIOBytes is not available here: the Unix vendor tools (curl, zstd,
+// llama download) stream to disk, so growth of the staging tree or the model
+// cache is the progress signal. Reporting false disables the process watcher.
+func processIOBytes(int) (int64, bool) {
+	return 0, false
 }
 
 // gracefulSignal sends SIGTERM to the process group (falling back to the

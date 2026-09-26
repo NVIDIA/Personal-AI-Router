@@ -52,7 +52,7 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
         case 'lm-studio':
             await lmStudioCatalogCache.ensureLoaded()
             return { models: lmStudioCatalogCache.list().map(lmStudioToHubModel) }
-        default:
+        case 'llamacpp':
             return { models: [] }
     }
 }

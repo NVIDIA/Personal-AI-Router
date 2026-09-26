@@ -206,8 +206,8 @@ describe('UUID node keying', () => {
             })
         )
 
-        const liveKey = 'uuid-wl-seed\u0000job-live'
-        const newKey = 'uuid-wl-seed\u0000job-new'
+        const liveKey = 'uuid-wl-seed\u0000job-live\u0000ollama\u0000'
+        const newKey = 'uuid-wl-seed\u0000job-new\u0000ollama\u0000'
         // The live entry is preserved, not clobbered by the older baseline row.
         expect(seeded[liveKey]).toMatchObject({ state: 'running', model: 'live-model' })
         // A baseline job the stream had not delivered is filled in.

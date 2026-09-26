@@ -107,7 +107,7 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 		}
 		m.codec.Respond(msg.ID, map[string]any{"opId": opID, "result": terminal.Result})
 
-	case "engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model":
+	case "engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull":
 		if p.Engine == "" {
 			m.codec.RespondError(msg.ID, -32602, "engine is required")
 			return
@@ -122,6 +122,8 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 			path = controlUnloadPath
 		case "engine:remote-delete-model":
 			path = controlDeletePath
+		case "engine:remote-cancel-pull":
+			path = controlCancelPullPath
 		}
 		res, err := client.postJSON(ctx, path, p.Engine, modelActionRequest{Engine: p.Engine, Model: p.Model})
 		m.respondOrErr(msg, res, err)

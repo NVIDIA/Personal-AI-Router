@@ -24,6 +24,7 @@ history.
 | Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
+| llama.cpp routing          | Source integration; native validation pending | `nvpair-proxy` facade on llama.cpp's own `8080`, relayed as `llamacpp-proxy:` |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
@@ -97,23 +98,50 @@ Manual nodes use the broker's `node/add`, `node/remove`, and `nodes/list`
 surface. Electron persists user entries and replays them after broker startup so
 they survive worker restarts.
 
+### Workload display
+
+The desktop displays workload snapshots and live updates, retaining origin,
+engine, proxy run and request identity. Execution labels and connection lines
+use the reported destination, not the request origin. Workload cancellation is
+not exposed by the desktop API or UI. Engine lifecycle and model-download
+cancellation are separate controls and remain supported.
+
+### Multi-node UI acceptance
+
+Engine integration must preserve each participating desktop's view of the
+cluster, not only the request origin's view. During the same bounded inference
+run, verify every available participating desktop independently:
+
+- Cluster and member UUIDs, engine availability and loaded-model ownership agree
+  after discovery converges; offline members do not look live or routable.
+- New workloads agree by their full `(originatedFrom, engine, runId, id)`
+  identity on model, destination and terminal state. Record propagation delay;
+  do not require identical historical catalog totals or instantaneous equality
+  during a state transition.
+- Capture each desktop's original Performance view during actual work. A remote
+  backend response or the origin's aggregate UI does not prove another native UI.
+
+Record unavailable or untested desktop cells explicitly. This checklist states
+the acceptance requirement; it does not assert that every platform has passed.
+
 ## Routing and inference
 
-Both text-engine facades are broker-owned and cluster-aware. They live in one
+Every text-engine facade is broker-owned and cluster-aware. They live in one
 `nvpair-proxy` process, each enabled after spawn on its own port, and each
 serves its engine's dialect:
 
 - the Ollama facade serves the Ollama-compatible surface;
-- the LM Studio facade serves the LM Studio/OpenAI-compatible surface.
+- the LM Studio facade serves the LM Studio/OpenAI-compatible surface;
+- the llama.cpp facade serves its OpenAI-compatible surface on `8080`.
 
 Sharing a process is what lets them share the burst reservations the scheduler
-depends on: two facades bursting at once compete for the same node's GPU, so a
-dispatch through either has to be visible to the other.
+depends on: facades bursting at once compete for the same node's GPU, so a
+dispatch through any of them has to be visible to the others.
 
 Routing precedence is manual selection, scheduler priority, then deterministic
 proxy ordering. Personal AI Router leaves proxies in automatic mode.
 
-`nvpair-job-scheduler` combines total queued and running workload across both
+`nvpair-job-scheduler` combines total queued and running workload across all
 engines with a smoothed 0–3 GPU-pressure signal. The backend scanner and manual
 node worker provide maximum-GPU utilization, while invalid, missing, or
 older-than-10-second samples receive neutral pressure. The scheduler emits order,
@@ -158,6 +186,10 @@ Personal AI Router supports local:
 - engine and proxy port changes;
 - desired-state restoration across app restarts;
 - engine and model progress.
+
+Managed update covers Ollama and LM Studio. llama.cpp has no managed update;
+the bridge refuses `update` for it instead of substituting an uninstall and
+reinstall.
 
 Before shutdown, Personal AI Router calls `engine:prepare-shutdown`. This stops managed engine
 processes without changing the persisted desired state; the broker restores
@@ -209,9 +241,12 @@ Personal AI Router uses:
 - `list_models`;
 - `pull_model`;
 - Ollama `run_model`, `unload_model` (`keep_alive: 0`), and `delete_model`;
-- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`).
+- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`);
+- llama.cpp `load_model`, `unload_model` (router `/models/load` and
+  `/models/unload`, settled on observed residency), `delete_model`,
+  `pull_model` and `import_model` (managed cache builtin), and `cancel_pull`.
 
-Both engines expose Load, Eject, and Delete in the model manager when the
+All three engines expose Load, Eject, and Delete in the model manager when the
 backend action exists. Keep-alive / expiry controls remain unsupported.
 
 LM Studio's `delete_model` declares `restart_after`, so the engine manager

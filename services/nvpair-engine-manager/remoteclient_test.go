@@ -83,6 +83,7 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 		{controlStartPath, "ollama", true},
 		{controlDeletePath, "lmstudio", true},
 		{controlLoadPath, "ollama", true},
+		{controlLoadPath, "llamacpp", true},
 		{controlLoadPath, "lmstudio", false},
 		{controlStopPath, "ollama", false},
 		{controlUnloadPath, "ollama", false},

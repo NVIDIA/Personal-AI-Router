@@ -95,6 +95,13 @@ export interface BackendInfo {
     proxyPort: number | null
     /** Installed engine binary version reported by the owning node */
     installedVersion?: string
+    installSupported?: boolean
+    installReason?: string
+    /** llama.cpp compute backend ("cuda", "vulkan", "cpu", ...); absent when unknown or not installed */
+    acceleration?: string
+    /** Device rows from `llama cli --list-devices` */
+    devices?: string[]
+    managed?: boolean
     /** Models on this backend with per-model status */
     models: ModelItem[]
     /** System-level dependencies required before install/run (local node only) */

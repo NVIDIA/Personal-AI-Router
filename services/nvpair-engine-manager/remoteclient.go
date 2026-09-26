@@ -52,7 +52,7 @@ func waitsForEngineReadiness(path, engine string) bool {
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
 	if path == controlLoadPath {
-		return engine == "ollama"
+		return engine == "ollama" || engine == "llamacpp"
 	}
 	return path == controlStartPath || path == controlDeletePath
 }
