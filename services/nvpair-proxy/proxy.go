@@ -616,6 +616,96 @@ func waitBeforeRetry(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// busyHold is how long a node that has just answered busy — 429 or 503, the
+// statuses an engine uses to decline work for lack of capacity rather than to
+// report a fault — is held against NEW admissions. It equals the first retry
+// backoff step on purpose: a caller refused at admission is asked to wait as
+// long as an admitted request would before its own re-dispatch, and no longer.
+//
+// The hold changes nothing for a request already admitted. Its retry budget
+// (spec §5.1) still re-dispatches to the same node after backoff, which is how
+// the hold is renewed while the node stays saturated and how it is cleared the
+// moment the node commits a response. What the hold prevents is the shape a
+// sustained flood took in production: an engine whose queue was full answered
+// every request 503 within milliseconds, and the proxy admitted each one as a
+// queued workload and re-dispatched it into the same full queue five times over
+// fifteen seconds — turning a saturated engine's prompt refusals into thousands
+// of long-lived queued jobs and five times the load on the engine.
+//
+// A var (not a const) only so a test can shorten it; production never
+// reassigns it.
+var busyHold = time.Second
+
+// isBusyStatus reports whether an upstream status is the engine declining work
+// for lack of capacity, as opposed to failing at it. Only these arm a busy
+// hold: a 502 or 504 from an engine is a fault, and a transport error says
+// nothing about the engine's queue.
+func isBusyStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable
+}
+
+// markBusy records that nodeID answered busy at now, holding it against new
+// admissions until now+busyHold. A later answer extends the hold; an earlier
+// expiry is never moved back. It reports whether the node was not already
+// held, so the caller can log the transition once rather than per answer.
+func (f *facade) markBusy(nodeID string, now time.Time) (newlyHeld bool) {
+	until := now.Add(busyHold)
+	f.busyMu.Lock()
+	defer f.busyMu.Unlock()
+	if f.busyUntil == nil {
+		f.busyUntil = make(map[string]time.Time)
+	}
+	prev, held := f.busyUntil[nodeID]
+	if until.After(prev) {
+		f.busyUntil[nodeID] = until
+	}
+	return !held || !prev.After(now)
+}
+
+// clearBusy drops nodeID's hold: it has just committed a response, so it is
+// accepting work whatever it said a moment ago.
+func (f *facade) clearBusy(nodeID string) {
+	f.busyMu.Lock()
+	defer f.busyMu.Unlock()
+	delete(f.busyUntil, nodeID)
+}
+
+// busyFor reports whether every candidate is in a busy hold at now and, if so,
+// how long until the last of those holds lapses — the Retry-After the caller
+// is given. An empty candidate list is not "all busy": that is the no-owner
+// rejection, decided before this is consulted.
+func (f *facade) busyFor(cands []candidate, now time.Time) (allBusy bool, remaining time.Duration) {
+	if len(cands) == 0 {
+		return false, 0
+	}
+	f.busyMu.Lock()
+	defer f.busyMu.Unlock()
+	for _, c := range cands {
+		until, ok := f.busyUntil[c.id]
+		if !ok || !until.After(now) {
+			// A lapsed hold is dropped as it is met, so the map never
+			// outgrows the set of nodes that answered busy recently.
+			delete(f.busyUntil, c.id)
+			return false, 0
+		}
+		if left := until.Sub(now); left > remaining {
+			remaining = left
+		}
+	}
+	return true, remaining
+}
+
+// retryAfterSeconds renders a hold's remainder as a Retry-After value: whole
+// seconds, rounded up, and never zero — a zero would invite an immediate retry
+// into a hold that has not yet lapsed.
+func retryAfterSeconds(d time.Duration) int {
+	s := int((d + time.Second - 1) / time.Second)
+	if s < 1 {
+		s = 1
+	}
+	return s
+}
+
 // errFirstBodyTimeout is returned by awaitFirstBody when an upstream sent its
 // headers but produced no content within the budget.
 var errFirstBodyTimeout = stderrors.New("upstream sent no response body within the first-byte budget")
@@ -1256,6 +1346,47 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Admission gate for a saturated engine. A node that has just answered 429
+	// or 503 is declining work for lack of capacity, and piling a new request
+	// onto it makes no room: the request would only be admitted as a queued
+	// workload and re-dispatched into the same full queue on the retry
+	// schedule. So while every eligible owner is in a busy hold, a NEW
+	// inference request is refused here — a local 503 with Retry-After, before
+	// any dispatch and before it becomes a workload, in the same shape as the
+	// no-owner rejection above. Requests already admitted are untouched; see
+	// busyHold for how the hold is armed, renewed and cleared.
+	//
+	// Debug rather than Warn: under the load that arms a hold this fires for
+	// every shed request, and a warning per request would be its own flood.
+	// The transition into a hold is warned once where it is armed, and the
+	// per-request record is the proxy/request event below.
+	if isInf && model != "" {
+		if allBusy, remaining := f.busyFor(candidates, time.Now()); allBusy {
+			const rejectionError = "every node advertising the requested model is busy"
+			slog.Debug("proxy request rejected",
+				"id", reqID, "method", r.Method, "path", r.URL.Path,
+				"remote", r.RemoteAddr, "reason", rejectionError,
+				"retry_after_ms", remaining.Milliseconds())
+			body, mErr := json.Marshal(map[string]string{"error": rejectionError + "; retry shortly"})
+			if mErr != nil {
+				body = []byte(`{"error":"every eligible node is busy"}`)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(remaining)))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write(body)
+			_ = f.notify("proxy/request", RequestEvent{
+				ID:       reqID,
+				Method:   r.Method,
+				Path:     r.URL.Path,
+				Status:   http.StatusServiceUnavailable,
+				Duration: time.Since(start).Milliseconds(),
+				Error:    rejectionError,
+			})
+			return
+		}
+	}
 	// shouldRetry reports whether an upstream status warrants failing over to
 	// the next candidate: busy/unavailable/gateway statuses, plus a 404 on an
 	// inference call (an advertised owner's inventory may have become stale).
@@ -1714,6 +1845,17 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			// have arrived but before the body streams. That's both the retry
 			// decision point and, on commit, the time-to-first-byte boundary.
 			ModifyResponse: func(resp *http.Response) error {
+				// A busy answer arms the admission hold whether or not this
+				// attempt is retried: the engine's state is the same either
+				// way, and a new request should not be queued against it.
+				if isBusyStatus(resp.StatusCode) {
+					if f.markBusy(cand.id, time.Now()) {
+						slog.Warn("proxy node answered busy, holding new admissions",
+							"id", reqID, "node_id", cand.id, "target", cand.url.Host,
+							"path", r.URL.Path, "status", resp.StatusCode,
+							"hold_ms", busyHold.Milliseconds())
+					}
+				}
 				if !last && shouldRetry(resp.StatusCode) {
 					// Abort before streaming: ReverseProxy closes resp.Body and
 					// calls ErrorHandler with our sentinel, then we try next.
@@ -1783,6 +1925,12 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				ttfbMs = time.Since(start).Milliseconds()
 				servedNodeID = cand.id
 				servedTarget = cand.url.Host
+				// The node is answering, so it is no longer held against new
+				// admissions — unless what it answered was itself a busy
+				// status, passed through because this was the final attempt.
+				if !isBusyStatus(resp.StatusCode) {
+					f.clearBusy(cand.id)
+				}
 				proxyErr = "" // clear any error recorded from a failed-over candidate
 				// Arm the liveness report only now. statusCapture also carries
 				// the proxy's OWN error bodies — ReverseProxy's ErrorHandler

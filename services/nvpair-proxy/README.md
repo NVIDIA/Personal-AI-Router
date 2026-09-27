@@ -182,6 +182,14 @@ One limit is outside the proxy's control: current Chromium-based browsers gate a
   trying under a dispatch budget and a wall-clock deadline, and it commits to a
   node at the first byte of response body rather than at its headers. `spec.md`
   §5.1–§5.4 is normative for the bounds, the commit point, and the statuses.
+- **Saturated owners**: A node that answers `429` or `503` is held busy for one
+  second, renewed on every such answer and cleared as soon as it commits a
+  response. While **every** eligible owner is held, a new inference request is
+  refused at admission with a local `503` and `Retry-After`, contacts no
+  engine, and never becomes a job. Requests already admitted keep their full
+  retry budget, so a single owner that is loading a model is still retried.
+  This is how a saturated engine's own admission control reaches the caller
+  promptly instead of being absorbed as long-lived queued work.
 
 ### IPC Transport
 

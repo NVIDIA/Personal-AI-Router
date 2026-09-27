@@ -96,6 +96,16 @@ type facade struct {
 	// overwriting each other's confirmed endpoint for the same peer.
 	targets *reach.Chooser
 
+	// busyUntil holds, per node ID, the moment that node's busy hold lapses:
+	// it answered 429 or 503 within the last busyHold, so a NEW inference
+	// request whose every eligible owner is held is refused at admission
+	// instead of being queued against a saturated engine. See busyHold.
+	//
+	// Per facade because the hold describes one engine's queue: Ollama
+	// refusing work says nothing about LM Studio on the same node.
+	busyMu    sync.Mutex
+	busyUntil map[string]time.Time
+
 	// nextRequestID tags this facade's RequestStarted / RequestEvent pairs.
 	// Atomic add returns the new value, so ids start at 1 per facade.
 	//

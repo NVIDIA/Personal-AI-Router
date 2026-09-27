@@ -756,6 +756,11 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 		if !events.has("no node advertises requested model") {
 			t.Fatalf("missing rejected request event: %s", events.b)
 		}
+		// A request refused for lack of an owner was never admitted, so it is
+		// not a job: no lifecycle event, queued or otherwise, may be emitted.
+		if events.has("workload:") {
+			t.Fatalf("rejected request emitted a workload event: %s", events.b)
+		}
 	})
 }
 

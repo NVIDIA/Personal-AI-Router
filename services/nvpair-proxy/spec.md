@@ -164,7 +164,9 @@ For a model-bearing inference request:
 1. Filter a request-local discovery snapshot to nodes whose per-engine inventory
    advertises the requested model. Ollama normalizes the implicit `:latest` tag;
    LM Studio ids match exactly. An empty owner set returns a local `502` without
-   contacting an engine.
+   contacting an engine. An owner set in which every node is in a busy hold
+   (§5.1) returns a local `503` with `Retry-After`, likewise without contacting
+   an engine.
 2. Order the eligible owners: explicit `node/select` pin, then the scheduler's
    priority list, then deterministic default ordering.
 3. Reserve the least estimated-loaded scheduler-listed candidate and move it to
@@ -256,6 +258,35 @@ A requester that has gone away ends the retry immediately: nobody is left to
 receive the answer, so the remaining attempts belong to work someone is waiting
 for. Its end is reported as `cancelled` and is never attributed to a missing
 node.
+
+#### A saturated owner
+
+A `429` or `503` is an engine declining work for lack of capacity, not failing
+at it. For the request that received it the policy above holds: the attempt is
+retried, on the same node if it is the only owner. But a **new** request should
+not be queued against a node that has just said it is full — nothing about
+admitting it makes room, and it would only be re-dispatched into the same queue
+on the retry schedule.
+
+So a node that answers `429` or `503` enters a **busy hold** of `busyHold` (one
+second, the first backoff step). Every further busy answer renews it; a commit
+from that node clears it at once, because a node that is answering is accepting
+work whatever it said a moment ago. A hold is per facade, since it describes one
+engine's queue.
+
+At admission, a model-bearing inference request whose **every** eligible owner
+is in a busy hold is refused with a local `503` and a `Retry-After` of the
+longest remaining hold, rounded up to whole seconds. Nothing is dispatched and
+no workload event is emitted: like the no-owner `502`, the request was never a
+job. One free owner among several disables the gate entirely, and non-inference
+routes are never gated.
+
+The hold changes nothing for an admitted request. It is what stopped a sustained
+flood from taking the shape it took in production: an engine whose queue was
+full answered every request `503` within milliseconds, and the proxy admitted
+each one as a queued workload and re-dispatched it into the same full queue five
+times over fifteen seconds — thousands of long-lived queued jobs, and five times
+the load on an engine that had already refused the work.
 
 ### 5.2 The commit point
 
@@ -368,6 +399,7 @@ These are the statuses the proxy itself returns:
 | Condition | Status |
 | --- | --- |
 | No owner advertises the model, nothing dispatched | `502` |
+| Every eligible owner is in a busy hold (§5.1), nothing dispatched | `503` with `Retry-After` |
 | Final permitted attempt returned a status | that status and body, unchanged |
 | Final permitted attempt failed at the transport | `502` |
 | Final permitted attempt answered but produced no content | `504` |
@@ -447,6 +479,10 @@ redelivery and dropped by every peer.
 
 A job admitted but not yet dispatched has no execution node. Consumers must
 treat an absent `scheduledOn` as "not placed" rather than assuming a node.
+
+A request refused at admission — no owner, or every owner in a busy hold — emits
+no lifecycle event at all. It was never a job; only its `proxy/request` event
+records it.
 
 ### 5.6 Coverage gap: non-streaming requests
 
@@ -591,6 +627,7 @@ new supervisor, and no new relay wiring.
 | --- | --- |
 | Requested port taken at enable | Tagged bind failure; broker retries on a fallback port |
 | No advertised owner for the model | Local `502`, no engine contacted |
+| Every owner in a busy hold at admission | Local `503` with `Retry-After`, no engine contacted, no workload |
 | All owners refuse retryably | Last upstream status surfaced |
 | Transport error with candidates left | Forget the node's confirmed address, fail over |
 | Client disconnects mid-stream | Terminal workload event emitted at once; upstream cancelled |
