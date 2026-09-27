@@ -24,7 +24,7 @@ cluster. Keep their meanings separate:
 | --- | --- | --- |
 | Cable check passed | The selected physical ports report the expected reciprocal direct or ring edges | Direct attachment, usable IP transport, RDMA, NCCL, bandwidth, or inference |
 | Fabric active | PAIR applied its reviewed temporary addresses and qualified certificate-pinned, peer-specific fast-control endpoints with RoCE v2 binding | RDMA or RoCE payload transfer, NCCL, bandwidth, or inference |
-| Management-Socket NCCL passed | The selected ranks completed the fixed collective-correctness recipe over the management network | ConnectX-7 payload traffic, RDMA, RoCE bandwidth, or model inference |
+| Socket NCCL smoke passed | The selected ranks completed the fixed collective-correctness recipe with NCCL Socket on the reviewed network: management, or the active fabric's direct lane or routed ring | RDMA, RoCE payload, bandwidth, or model inference; a management-network pass says nothing about the fast fabric |
 | Pipeline group served inference | The proxy, vLLM coordinator, ranks, model, and request path worked as one serving group over the management network | Fast-fabric payload use |
 | Direct-fabric TP2 served inference | The exact two-rank tensor plan served a request while bound to the reviewed direct fabric | Nothing beyond that exact build, model, topology, and run |
 | Ring-socket group served inference | The exact three-rank plan served a request while its NCCL Socket was bound to the reviewed routed ring | Nothing beyond that exact build, model, topology, and run |
@@ -40,7 +40,8 @@ NCCL Socket over one reviewed QSFP Ethernet lane with RDMA disabled. The
 three-Spark pipeline evidence ran over the management network; the
 `qualified-ring-socket` path, which binds a three-Spark group's NCCL Socket to an
 active routed ring, has no hardware evidence yet. The fixed NCCL correctness
-smoke uses management Socket. Do not describe any of these as RDMA, RoCE
+smoke runs NCCL Socket over management or over the active fabric; its fabric
+path has no hardware evidence yet. Do not describe any of these as RDMA, RoCE
 bandwidth or performance proof.
 
 ## Before You Start
@@ -244,20 +245,30 @@ checks a small collective recipe; it is separate from model inference.
 
 1. Select the **Registered NCCL build** and exactly two or three current nodes
    covered by that build. Registration alone is not a passing test.
-2. Select **Review NCCL smoke**. Confirm the reviewed node set, interfaces,
-   management IPv4 addresses, owner, and finite test window.
-3. Check the approval box for those exact nodes, then select **Start NCCL
+2. Under **NCCL Socket network**, keep **Management network** or choose
+   **Fabric**. Fabric needs the active fabric applied from this controller that
+   joins exactly the selected nodes: the direct fabric for two nodes, or the
+   routed ring for three. Without one, review refuses and asks you to apply it;
+   a stale fabric, or a ring applied before routed advertised addresses, blocks
+   review until you roll it back.
+3. Select **Review NCCL smoke**. Confirm the reviewed node set, interfaces,
+   IPv4 addresses, owner, and finite test window. A fabric review lists each
+   node's fabric interface and address and names the fabric operation.
+4. Check the approval box for those exact nodes, then select **Start NCCL
    smoke** once. If its reply is uncertain, use **Recover retained run** rather
-   than sending Start again.
-4. Refresh the retained operation until it reports **passed**, all 14
+   than sending Start again. Leave a reviewed fabric active: Start and the
+   launch recheck that exact fabric and refuse the run if it changed, and
+   fabric rollback is refused while the run holds its nodes.
+5. Refresh the retained operation until it reports **passed**, all 14
    correctness samples have zero wrong results, and owned cleanup is confirmed.
    Inspect the cause of a clean terminal failure before a new review. Recover
    the exact retained run only if Start's outcome is uncertain or cleanup is
    held or unconfirmed.
 
-This smoke uses NCCL Socket on the management network. It does not exercise
-the QSFP fast-fabric payload, prove RDMA/RoCE traffic, qualify bandwidth, or
-serve the selected model.
+Over the management network this smoke does not exercise the QSFP fast-fabric
+payload. Over the fabric, only NCCL Socket uses the reviewed lane or ring
+addresses; MPI launch and SSH stay on management. Neither proves RDMA/RoCE
+traffic, qualifies bandwidth, or serves the selected model.
 
 ## 5. Prepare Managed vLLM
 
@@ -349,7 +360,7 @@ pipeline stages.
    successful request or process absence alone.
 
 The Qwen review's `host-buffer-roce` policy is distinct from the ordinary
-direct- and ring-Socket paths and the management-Socket NCCL smoke. A passing
+direct- and ring-Socket paths and the Socket NCCL smoke. A passing
 fabric check or reviewed transport label alone does not prove payload traffic.
 Keep inference, same-run transport observations, and any bandwidth measurement
 as separate evidence; do not infer measured RDMA throughput from a chat

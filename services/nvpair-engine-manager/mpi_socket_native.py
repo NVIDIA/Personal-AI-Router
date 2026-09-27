@@ -27,7 +27,7 @@ import sys
 import time
 import types
 
-ADAPTER_SHA256 = "b278bab023f4581773a0b693c27277f9a5234b9fba7dcd876ee134e8ee2febc6"
+ADAPTER_SHA256 = "70a1113f78f2bce0e89d852e6f62db6d6b8abd1d3ead215ded9d1a8a533c14d3"
 OWNER = "pair-nccl-socket-native-v1"
 MAX_JSON = 128 * 1024
 MAX_OUTPUT = 1024 * 1024
@@ -302,6 +302,15 @@ class System:
             libc.freeifaddrs(first)
         return list(rows.values())
 
+    def interface_identity(self, name):
+        import socket
+        try:
+            index = socket.if_nametoindex(name)
+            mac = (Path("/sys/class/net") / name / "address").read_text().strip().lower()
+        except OSError:
+            raise NativeError("fabric_interface_unavailable") from None
+        return {"index": index, "mac": mac}
+
     def account(self):
         import pwd
         if platform.system() != "Linux" or platform.machine() != "aarch64" or os.getuid() == 0:
@@ -463,9 +472,11 @@ class Native:
             raise NativeError("go_bootstrap_binding_changed")
         if profile.get("knownHosts") != {"path": owner_paths["knownHosts"], "sha256": fingerprint(adapter.known_hosts(plan))} or profile.get("identityFile") != owner_paths["publicIdentity"]:
             raise NativeError("go_public_ssh_selection_changed")
+        if profile.get("fabric") != plan.get("fabric"):
+            raise NativeError("go_fabric_binding_changed")
         for row, planned in zip(members, plan["members"]):
             fields = {"nodeId": "nodeId", "principal": "principal", "host": "sshAddress", "user": "user", "gpu": "gpuUUID", "interface": "interface"}
-            if not adapter.HASH.fullmatch(str(row.get("clusterPinSha256", ""))) or any(row.get(k) != planned[v] for k, v in fields.items()):
+            if not adapter.HASH.fullmatch(str(row.get("clusterPinSha256", ""))) or any(row.get(k) != planned[v] for k, v in fields.items()) or row.get("fabric") != planned.get("fabric"):
                 raise NativeError("go_profile_projection_changed")
             for field, value in (("manager", planned["manager"]), ("nccl", planned["binary"]), ("smi", planned["tools"]["nvidia-smi"])):
                 if row.get(field) != {k: value[k] for k in ("path", "sha256")}:
@@ -602,6 +613,9 @@ class Native:
             budget()
         observations = self.system.interfaces()
         adapter.verify_interface_choice(self.plan, self.member["nodeId"], observations)
+        if "fabric" in self.member:
+            identity = self.system.interface_identity(self.member["fabric"]["interface"])
+            adapter.verify_fabric_choice(self.plan, self.member["nodeId"], observations, identity)
         if self.member["nodeId"] == self.plan["ownerNodeId"] and not any(row["up"] and self.plan["sshSourceIPv4"] in [a.split("/")[0] for a in row["addresses"]] for row in observations):
             raise NativeError("ssh_source_not_locally_assigned")
 

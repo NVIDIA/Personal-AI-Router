@@ -8,11 +8,14 @@ import {
     parseDiagnosticMPIOperation,
     parseDiagnosticMPIRecovery,
     parseDiagnosticMPIReview,
+    parseDiagnosticMPIReviewRequest,
     parseDiagnosticMPISelection
 } from '@/shared/utils/diagnostic-mpi'
 import {
     buildId,
+    fabricOperationId,
     operationId,
+    rawFabricReview,
     rawInventory,
     rawOperation,
     rawReview,
@@ -80,7 +83,77 @@ describe('managed NCCL Desktop contract', () => {
         ).toThrow(/duplicate/i)
     })
 
-    it('accepts only the fixed management Socket review and exact operation binding', () => {
+    it('requires an explicit management or fabric network for a review', () => {
+        expect(
+            parseDiagnosticMPIReviewRequest({
+                buildOperationId: buildId,
+                nodeIds: ['node-b', 'node-a'],
+                network: 'fabric'
+            })
+        ).toEqual({ buildOperationId: buildId, nodeIds: ['node-a', 'node-b'], network: 'fabric' })
+        expect(() =>
+            parseDiagnosticMPIReviewRequest({
+                buildOperationId: buildId,
+                nodeIds: ['node-a', 'node-b']
+            })
+        ).toThrow(/incomplete/i)
+        expect(() =>
+            parseDiagnosticMPIReviewRequest({
+                buildOperationId: buildId,
+                nodeIds: ['node-a', 'node-b'],
+                network: 'rdma'
+            })
+        ).toThrow(/network/i)
+        expect(() =>
+            parseDiagnosticMPIReviewRequest({
+                buildOperationId: buildId,
+                nodeIds: ['node-a', 'node-b'],
+                network: 'fabric',
+                interface: 'enp1s0f0np0'
+            })
+        ).toThrow(/fields/i)
+    })
+
+    it('binds a fabric review to exactly one fabric that matches its node count', () => {
+        const review = parseDiagnosticMPIReview(rawFabricReview)
+        expect(review.network).toBe('fabric')
+        expect(review.fabric).toEqual({
+            operationId: fabricOperationId,
+            qualificationDigest: 'e'.repeat(64),
+            recipeId: 'spark-two-node-temporary-addresses-v1'
+        })
+        expect(review.targets[0]).toEqual({
+            nodeId: 'node-a',
+            interface: 'enp1s0f0np0',
+            address: '10.60.0.1'
+        })
+        expect(parseDiagnosticMPIReview(rawReview).fabric).toBeUndefined()
+        for (const changed of [
+            { ...rawFabricReview, fabric: undefined },
+            { ...rawReview, fabric: rawFabricReview.fabric }
+        ])
+            expect(() => parseDiagnosticMPIReview(changed)).toThrow(/fabric binding/i)
+        expect(() =>
+            parseDiagnosticMPIReview({
+                ...rawFabricReview,
+                fabric: { ...rawFabricReview.fabric, recipeId: 'spark-three-node-ring-routed-v2' }
+            })
+        ).toThrow(/node count/i)
+        expect(() =>
+            parseDiagnosticMPIReview({
+                ...rawFabricReview,
+                fabric: { ...rawFabricReview.fabric, qualificationDigest: 'not-a-digest' }
+            })
+        ).toThrow(/qualification/i)
+        expect(() =>
+            parseDiagnosticMPIReview({
+                ...rawFabricReview,
+                fabric: { ...rawFabricReview.fabric, gateway: '10.60.0.2' }
+            })
+        ).toThrow(/fields/i)
+    })
+
+    it('accepts only the fixed Socket review and exact operation binding', () => {
         const review = parseDiagnosticMPIReview(rawReview)
         const operation = parseDiagnosticMPIOperation(rawOperation)
         expect(review.network).toBe('management')
@@ -97,7 +170,10 @@ describe('managed NCCL Desktop contract', () => {
             })
         ).toBe(operation)
         expect(() => parseDiagnosticMPIReview({ ...rawReview, transport: 'rdma' })).toThrow(
-            /management Socket/i
+            /Socket transport/i
+        )
+        expect(() => parseDiagnosticMPIReview({ ...rawReview, network: 'rdma' })).toThrow(
+            /network/i
         )
         expect(() =>
             parseDiagnosticMPIOperation({ ...rawOperation, stderr: '/private/path' })

@@ -179,33 +179,45 @@ func vllmGroupRingSocketMemberFor(nodeID string, endpoints []fabricCandidateIP) 
 }
 
 func bindVLLMGroupRingSocketFacts(selection vllmGroupSelection, facts []vllmGroupFacts, principals []string, operationID, qualification string, endpoints []fabricCandidateIP) error {
-	if len(selection.NodeIDs) != 3 || len(facts) != 3 || len(principals) != 3 || len(endpoints) != 9 || !onboardingID.MatchString(operationID) || !onboardingSHA.MatchString(qualification) {
+	if len(facts) != 3 {
 		return errors.New("qualified ring fabric endpoint set is incomplete")
 	}
+	ring, err := vllmGroupRingSocketFor(selection.NodeIDs, principals, operationID, qualification, endpoints)
+	if err != nil {
+		return err
+	}
+	facts[0].ringSocket = ring
+	return nil
+}
+
+// Members are ordered like nodeIDs.
+func vllmGroupRingSocketFor(nodeIDs, principals []string, operationID, qualification string, endpoints []fabricCandidateIP) (*vllmGroupRingSocket, error) {
+	if len(nodeIDs) != 3 || len(principals) != 3 || len(endpoints) != 9 || !onboardingID.MatchString(operationID) || !onboardingSHA.MatchString(qualification) {
+		return nil, errors.New("qualified ring fabric endpoint set is incomplete")
+	}
 	principalByNode := map[string]string{}
-	for rank, nodeID := range selection.NodeIDs {
+	for rank, nodeID := range nodeIDs {
 		principalByNode[nodeID] = principals[rank]
 	}
 	for _, endpoint := range endpoints {
 		_, local := principalByNode[endpoint.NodeID]
 		peer, known := principalByNode[endpoint.PeerNodeID]
 		if !local || !known || endpoint.NodeID == endpoint.PeerNodeID || endpoint.PeerPrincipal != peer {
-			return errors.New("qualified ring fabric endpoint identity differs from current paired membership")
+			return nil, errors.New("qualified ring fabric endpoint identity differs from current paired membership")
 		}
 	}
 	ring := &vllmGroupRingSocket{Mode: vllmGroupRingSocketMode, OperationID: operationID, QualificationSHA256: qualification}
-	for _, nodeID := range selection.NodeIDs {
+	for _, nodeID := range nodeIDs {
 		member, ok := vllmGroupRingSocketMemberFor(nodeID, endpoints)
 		if !ok {
-			return errors.New("qualified ring fabric does not advertise one routed address per member")
+			return nil, errors.New("qualified ring fabric does not advertise one routed address per member")
 		}
 		ring.Members = append(ring.Members, member)
 	}
 	if !vllmGroupRingSocketQualified(ring, endpoints) {
-		return errors.New("qualified ring fabric does not reach every member's advertised address")
+		return nil, errors.New("qualified ring fabric does not reach every member's advertised address")
 	}
-	facts[0].ringSocket = ring
-	return nil
+	return ring, nil
 }
 
 // The qualified endpoints must still carry each member's advertised address on

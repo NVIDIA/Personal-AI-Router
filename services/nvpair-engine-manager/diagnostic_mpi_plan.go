@@ -63,6 +63,8 @@ type diagnosticMPISelection struct {
 	Subnet              string
 	SSHSourceIPv4       string
 	DedicatedTestWindow bool
+	Fabric              diagnosticMPIFabric      // Zero for the management Socket baseline.
+	FabricMembers       []diagnosticMemberFabric // Ordered like the record targets.
 }
 
 func diagnosticMPISystemToolPaths() map[string]string {
@@ -250,6 +252,10 @@ func compileDiagnosticMPIPlan(record diagnosticManagedRecord, facts []diagnostic
 	if bits != 32 || ones < 1 || ones > 30 || !diagnosticConcreteIPv4(selection.SSHSourceIPv4) {
 		return profile, nil, nil, errors.New("unsupported fabric subnet or SSH source")
 	}
+	fabric := selection.Fabric != (diagnosticMPIFabric{})
+	if fabric != (len(selection.FabricMembers) != 0) || fabric && (!validDiagnosticMPIFabric(selection.Fabric, len(record.Targets)) || len(selection.FabricMembers) != len(record.Targets) || !validDiagnosticMPIFabricMembers(selection.Fabric, selection.FabricMembers)) {
+		return profile, nil, nil, errors.New("a fabric NCCL binding must name one reviewed end per participant")
+	}
 	byNode := map[string]diagnosticMPIParticipantFacts{}
 	for _, f := range facts {
 		if byNode[f.NodeID].NodeID != "" {
@@ -289,6 +295,16 @@ func compileDiagnosticMPIPlan(record diagnosticManagedRecord, facts []diagnostic
 		if err = mpiInterfaceChoice(f, subnet); err != nil {
 			return profile, nil, nil, err
 		}
+		var socket diagnosticMemberFabric
+		if fabric {
+			socket = selection.FabricMembers[index]
+			if socket.Interface == f.Interface || subnet.Contains(net.ParseIP(socket.Address)) {
+				return profile, nil, nil, errors.New("the fabric NCCL interface must stay outside the management MPI subnet")
+			}
+			if err = mpiFabricChoice(f, socket); err != nil {
+				return profile, nil, nil, err
+			}
+		}
 		if !validMPIArtifact(f.Manager) || path.Base(f.Manager.Path) != "nvpair-engine-manager" || len(f.Tools) != len(tools) {
 			return profile, nil, nil, errors.New("installed manager and fixed tool facts are required")
 		}
@@ -303,8 +319,12 @@ func compileDiagnosticMPIPlan(record diagnosticManagedRecord, facts []diagnostic
 			return profile, nil, nil, parseErr
 		}
 		runtime := diagnosticMemberRuntime{BuildOperationID: r.OperationID, BuildPlanDigest: r.PlanDigest, BuildAttempt: r.Attempt, UID: f.UID, Home: f.Home, NCCLLibrary: mpiTool(r.NCCLLibrary), CUDALibrary: mpiTool(r.Dependencies["libcudart.so.13"]), MPILibrary: mpiTool(r.Dependencies["libmpi.so.40"])}
-		profile.Members = append(profile.Members, diagnosticMember{NodeID: f.NodeID, Principal: f.Principal, ClusterPinSHA256: target.ClusterPinSHA256, Host: f.SSHAddress, User: f.User, GPU: f.GPUUUID, Interface: f.Interface, Manager: mpiTool(f.Manager), NCCL: mpiTool(r.Binary), SMI: mpiTool(f.Tools["nvidia-smi"]), Runtime: runtime})
-		members = append(members, map[string]any{"nodeId": f.NodeID, "principal": f.Principal, "uid": f.UID, "user": f.User, "home": f.Home, "sshAddress": f.SSHAddress, "sshPort": f.SSHPort, "collectiveAddress": f.CollectiveAddress, "interface": f.Interface, "gpuUUID": f.GPUUUID, "hostKey": f.SSHHostKey, "buildOperationId": r.OperationID, "buildAttempt": r.Attempt, "buildPlanDigest": r.PlanDigest, "manager": f.Manager, "binary": r.Binary, "ncclLibrary": r.NCCLLibrary, "cudaLibrary": r.Dependencies["libcudart.so.13"], "mpiLibrary": r.Dependencies["libmpi.so.40"], "tools": f.Tools})
+		profile.Members = append(profile.Members, diagnosticMember{NodeID: f.NodeID, Principal: f.Principal, ClusterPinSHA256: target.ClusterPinSHA256, Host: f.SSHAddress, User: f.User, GPU: f.GPUUUID, Interface: f.Interface, Manager: mpiTool(f.Manager), NCCL: mpiTool(r.Binary), SMI: mpiTool(f.Tools["nvidia-smi"]), Runtime: runtime, Fabric: socket})
+		member := map[string]any{"nodeId": f.NodeID, "principal": f.Principal, "uid": f.UID, "user": f.User, "home": f.Home, "sshAddress": f.SSHAddress, "sshPort": f.SSHPort, "collectiveAddress": f.CollectiveAddress, "interface": f.Interface, "gpuUUID": f.GPUUUID, "hostKey": f.SSHHostKey, "buildOperationId": r.OperationID, "buildAttempt": r.Attempt, "buildPlanDigest": r.PlanDigest, "manager": f.Manager, "binary": r.Binary, "ncclLibrary": r.NCCLLibrary, "cudaLibrary": r.Dependencies["libcudart.so.13"], "mpiLibrary": r.Dependencies["libmpi.so.40"], "tools": f.Tools}
+		if fabric {
+			member["fabric"] = socket
+		}
+		members = append(members, member)
 		if f.NodeID == selection.OwnerNodeID {
 			owner = f
 		}
@@ -363,6 +383,7 @@ func compileDiagnosticMPIPlan(record diagnosticManagedRecord, facts []diagnostic
 	profile.IdentityFile = root + "/identity.pub"
 	profile.KnownHosts = diagnosticTool{Path: root + "/known_hosts", SHA256: hex.EncodeToString(knownSum[:])}
 	profile.Bootstrap = diagnosticBootstrapProfile{OperationID: selection.OperationID, PublicKey: publicKey, AgentSocket: root + "/agent.sock", PublicIdentity: profile.IdentityFile, Subnet: selection.Subnet, SSHSourceIPv4: selection.SSHSourceIPv4}
+	profile.Fabric = selection.Fabric
 	if err = validateDiagnosticBootstrapProfile(profile); err != nil {
 		return profile, nil, privatePEM, err
 	}
@@ -377,6 +398,9 @@ func compileDiagnosticMPIPlan(record diagnosticManagedRecord, facts []diagnostic
 	}
 	body := map[string]any{"schemaVersion": 1, "recipeId": recipe, "operationId": selection.OperationID, "groupId": profile.GroupID, "profileDigest": hex.EncodeToString(profileSum[:]), "ownerNodeId": selection.OwnerNodeID, "createdAt": now.UnixMilli(), "expiresAt": now.Add(diagnosticLease).UnixMilli(), "subnet": selection.Subnet, "sshSourceIPv4": selection.SSHSourceIPv4, "operationPublicKey": publicKey, "members": members,
 		"limits": map[string]int{"ranks": len(record.Targets), "leaseSeconds": 120, "mpiSeconds": 90, "unitSeconds": 105, "stopSeconds": 10, "agentSeconds": 105, "maxOutputBytes": 1048576, "maxAuthorizedKeysBytes": 1048576}}
+	if fabric {
+		body["fabric"] = selection.Fabric
+	}
 	canonical, canonicalErr := mpiCanonical(body)
 	if canonicalErr != nil {
 		return profile, nil, privatePEM, canonicalErr

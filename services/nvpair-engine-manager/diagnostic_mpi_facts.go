@@ -30,6 +30,7 @@ type diagnosticMPIFactsRequest struct {
 	Network       string                          `json:"network"`
 	Target        diagnosticManagedTarget         `json:"target"`
 	Selection     diagnosticMPIInterfaceSelection `json:"selection"`
+	Fabric        diagnosticMemberFabric          `json:"fabric,omitzero"`
 	PeerAddress   string                          `json:"peerAddress"`
 	PeerAddresses []string                        `json:"peerAddresses,omitempty"`
 	SSHAddress    string                          `json:"sshAddress"`
@@ -337,7 +338,7 @@ func (d *diagnosticService) localMPIFacts(ctx context.Context, request diagnosti
 	}
 	d.m.mesh.Refresh()
 	pin, pinned := d.m.mesh.PinSHA256(target.Principal)
-	if (request.Network != "management" && request.Network != "fabric") || (request.Network == "fabric" && (target.NodeID != request.Selection.NodeID || target.Principal != request.Selection.Principal || request.Selection.Network != "fabric")) || target.Principal != d.m.mesh.NodeUUID() || !d.m.mesh.Clustered() || !pinned || target.ClusterPinSHA256 != pin {
+	if !validDiagnosticMPIFactsNetwork(request) || target.Principal != d.m.mesh.NodeUUID() || !d.m.mesh.Clustered() || !pinned || target.ClusterPinSHA256 != pin {
 		return reply, errors.New("managed MPI facts no longer match the adopted participant identity")
 	}
 	peers, err := diagnosticMPIFactsPeers(request)
@@ -410,24 +411,29 @@ func (d *diagnosticService) localMPIFacts(ctx context.Context, request diagnosti
 	if err = readCableJSON(ctx, f.http, "http://"+net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port))+"/v1/node-info", &connections); err != nil {
 		return reply, err
 	}
-	selected := request.Selection
-	if request.Network == "management" {
-		selected = diagnosticMPIInterfaceSelection{Network: "management", NodeID: target.NodeID, Principal: target.Principal}
-		if connections.Connections == nil {
-			return reply, errors.New("current management interface facts are unavailable")
-		}
-		for _, row := range connections.Connections.Interfaces {
-			if row.Name == facts.Route.Interface {
-				selected.Interface = cableprobe.Interface{Name: row.Name, Index: row.Index, MAC: row.MAC}
-			}
+	// OpenMPI launch and its OOB/BTL subnet always use the management route; a
+	// fabric request moves only the NCCL Socket interface.
+	selected := diagnosticMPIInterfaceSelection{Network: "management", NodeID: target.NodeID, Principal: target.Principal}
+	if connections.Connections == nil {
+		return reply, errors.New("current management interface facts are unavailable")
+	}
+	for _, row := range connections.Connections.Interfaces {
+		if row.Name == facts.Route.Interface {
+			selected.Interface = cableprobe.Interface{Name: row.Name, Index: row.Index, MAC: row.MAC}
 		}
 	}
-	address, err := projectDiagnosticMPIAddress(connections, selected, time.Now())
+	observedAt := time.Now()
+	address, err := projectDiagnosticMPIAddress(connections, selected, observedAt)
 	if err != nil {
 		return reply, err
 	}
-	if request.Network == "management" && address.Address != facts.Route.SourceAddress {
+	if address.Address != facts.Route.SourceAddress {
 		return reply, errors.New("management route and current interface address disagree")
+	}
+	if request.Network == "fabric" {
+		if err := diagnosticMPIFabricObserved(connections, request, selected.Interface.Name, observedAt); err != nil {
+			return reply, err
+		}
 	}
 	interfaces := []diagnosticMPIInterfaceObservation{}
 	for _, row := range connections.Connections.Interfaces {
@@ -454,7 +460,7 @@ func (d *diagnosticService) localMPIFacts(ctx context.Context, request diagnosti
 	if target.Local {
 		key, port, keyErr := d.localMPIHostIdentity(ctx, target)
 		state, stateErr := readDiagnosticMPILocalHostState(target)
-		if keyErr != nil || stateErr != nil || key != request.SSHHostKey || port != request.SSHPort || request.SSHAddress != facts.Route.SourceAddress || state.Interface.Name != facts.Route.Interface || request.Network == "management" && state.Interface != selected.Interface {
+		if keyErr != nil || stateErr != nil || key != request.SSHHostKey || port != request.SSHPort || request.SSHAddress != facts.Route.SourceAddress || state.Interface.Name != facts.Route.Interface || state.Interface != selected.Interface {
 			return reply, errors.New("local SSH identity or selected management interface changed during MPI facts")
 		}
 	}

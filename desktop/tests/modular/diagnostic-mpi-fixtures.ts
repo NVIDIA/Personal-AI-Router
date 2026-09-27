@@ -71,6 +71,32 @@ export const rawReview = {
     ]
 } as const
 
+export const fabricOperationId = 'f'.repeat(32)
+
+export const rawFabricReview = {
+    ...rawReview,
+    network: 'fabric',
+    fabric: {
+        operationId: fabricOperationId,
+        qualificationDigest: 'e'.repeat(64),
+        recipeId: 'spark-two-node-temporary-addresses-v1'
+    },
+    targets: [
+        {
+            nodeId: 'node-a',
+            interface: 'enp1s0f0np0',
+            address: '10.60.0.1',
+            sshAddress: '192.0.2.1'
+        },
+        {
+            nodeId: 'node-b',
+            interface: 'enp1s0f0np0',
+            address: '10.60.0.2',
+            sshAddress: '192.0.2.2'
+        }
+    ]
+}
+
 export const rawOperation = {
     operationId,
     groupId: `pair-smoke-${operationId}`,

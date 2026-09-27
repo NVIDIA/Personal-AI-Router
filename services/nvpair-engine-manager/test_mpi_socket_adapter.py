@@ -60,6 +60,21 @@ def triple_fixture():
     return resign(plan)
 
 
+def fabric_fixture(count=2):
+    # Private fabric ends: both ends of one direct /30 lane, or three ring /31 cables.
+    plan = fixture() if count == 2 else triple_fixture()
+    direct = count == 2
+    if direct:
+        plan["recipeId"] = adapter.QUICK_RECIPE
+    plan["fabric"] = {"operationId": "e" * 32, "qualificationDigest": "f" * 64, "ownerNodeId": "spark1", "ownerPrincipal": "spark1",
+                      "recipeId": "spark-two-node-temporary-addresses-v1" if direct else "spark-three-node-ring-routed-v2"}
+    addresses = ("10.60.0.1", "10.60.0.2") if direct else ("10.253.0.0", "10.253.0.2", "10.253.0.4")
+    for number, member in enumerate(plan["members"], 1):
+        member["fabric"] = {"interface": "enp1s0f0np0", "index": 5, "mac": "02:00:00:0a:00:0" + str(number),
+                            "address": addresses[number - 1], "prefix": 30 if direct else 31}
+    return resign(plan)
+
+
 def resign(plan):
     plan.pop("planDigest", None)
     plan["planDigest"] = adapter.digest(plan)
@@ -514,6 +529,89 @@ class AdapterTests(unittest.TestCase):
         changed["nodes"][1]["nodeId"] = "foreign"
         with self.assertRaises(adapter.ContractError):
             adapter.cleanup_confirmed(plan, changed)
+
+    def test_fabric_plan_moves_only_nccl_socket_onto_the_reviewed_interface(self):
+        quick = fixture()
+        quick["recipeId"] = adapter.QUICK_RECIPE
+        for count, management in ((2, resign(quick)), (3, triple_fixture())):
+            with self.subTest(count=count):
+                plan = adapter.validate_plan(fabric_fixture(count), NOW)
+                spec, baseline = adapter.compile_spec(plan), adapter.compile_spec(management)
+                for member in plan["members"]:
+                    env = spec["rankEnvironments"][member["nodeId"]]
+                    self.assertEqual(env["NCCL_SOCKET_IFNAME"], "=" + member["fabric"]["interface"])
+                    self.assertEqual(env, {**baseline["rankEnvironments"][member["nodeId"]], "NCCL_SOCKET_IFNAME": env["NCCL_SOCKET_IFNAME"]})
+                self.assertEqual(spec["fixedMCA"], baseline["fixedMCA"])
+                self.assertEqual(spec["fixedMCA"]["btl_tcp_if_include"], "10.50.0.0/24")
+                self.assertEqual(spec["fixedMCA"]["oob_tcp_if_include"], "10.50.0.0/24")
+                self.assertEqual(spec["coordinator"]["mpiApp"], baseline["coordinator"]["mpiApp"])
+                self.assertEqual(spec["coordinator"]["sshArgv"], baseline["coordinator"]["sshArgv"])
+                self.assertEqual(spec["knownHosts"], baseline["knownHosts"])
+
+    def test_fabric_binding_is_digested_exact_and_outside_the_management_subnet(self):
+        def socket(index):
+            return lambda p: p["members"][index]["fabric"]
+        changes = (
+            lambda p: p.update(recipeId=adapter.RECIPE),
+            lambda p: p["fabric"].update(recipeId="spark-three-node-ring-routed-v2"),
+            lambda p: p["fabric"].update(recipeId="spark-three-node-ring-temporary-addresses-v1"),
+            lambda p: p["fabric"].update(operationId="E" * 32),
+            lambda p: p["fabric"].update(qualificationDigest="f" * 63),
+            lambda p: p["fabric"].update(ownerPrincipal=""),
+            lambda p: p["fabric"].update(extra="field"),
+            lambda p: p.pop("fabric"),
+            lambda p: p["members"][1].pop("fabric"),
+            lambda p: socket(0)(p).update(interface=p["members"][0]["interface"]),
+            lambda p: socket(0)(p).update(interface="enp1;other"),
+            lambda p: socket(1)(p).update(address="10.50.0.9"),
+            lambda p: socket(1)(p).update(address="198.51.100.2"),
+            lambda p: socket(1)(p).update(address="10.60.0.5"),
+            lambda p: socket(1)(p).update(address="10.60.0.1"),
+            lambda p: socket(0)(p).update(prefix=31),
+            lambda p: socket(0)(p).update(prefix=True),
+            lambda p: socket(0)(p).update(mac="02:00:00:0A:00:01"),
+            lambda p: socket(0)(p).update(index=0),
+            lambda p: socket(0)(p).update(gateway="10.60.0.2"),
+        )
+        for number, change in enumerate(changes):
+            plan = fabric_fixture()
+            change(plan)
+            with self.subTest(change=number), self.assertRaises(adapter.ContractError):
+                adapter.validate_plan(resign(plan), NOW)
+        ring = fabric_fixture(3)
+        ring["members"][2]["fabric"]["address"] = "10.253.0.1"
+        with self.assertRaises(adapter.ContractError):
+            adapter.validate_plan(resign(ring), NOW)
+        unsigned = fabric_fixture()
+        unsigned["fabric"]["qualificationDigest"] = "0" * 64
+        with self.assertRaisesRegex(adapter.ContractError, "fixed_plan_mismatch"):
+            adapter.validate_plan(unsigned, NOW)
+        bare = fabric_fixture()
+        bare.pop("fabric")
+        for member in bare["members"]:
+            member.pop("fabric")
+        self.assertNotEqual(resign(bare)["planDigest"], fabric_fixture()["planDigest"])
+        adapter.validate_plan(bare, NOW)
+
+    def test_fabric_interface_must_keep_its_reviewed_identity_and_sole_address(self):
+        plan = fabric_fixture()
+        member = plan["members"][0]
+        observed = [{"name": "enp1", "up": True, "addresses": ["10.50.0.1/24"]},
+                    {"name": "enp1s0f0np0", "up": True, "addresses": ["10.60.0.1/30"]}]
+        identity = {"index": 5, "mac": "02:00:00:0a:00:01"}
+        self.assertEqual(adapter.verify_interface_choice(plan, "spark1", observed)["interface"], member["interface"])
+        self.assertEqual(adapter.verify_fabric_choice(plan, "spark1", observed, identity),
+                         {"nodeId": "spark1", "interface": "enp1s0f0np0", "address": "10.60.0.1"})
+        for rows, native in ((observed, {**identity, "index": 6}), (observed, {**identity, "mac": "02:00:00:0a:00:09"}),
+                             (observed, {"index": 5}), (observed[:1], identity),
+                             ([observed[0], {**observed[1], "up": False}], identity),
+                             ([observed[0], {**observed[1], "addresses": ["10.60.0.1/30", "10.61.0.1/30"]}], identity),
+                             ([observed[0], {**observed[1], "addresses": ["10.60.0.1/31"]}], identity),
+                             (observed + [observed[1]], identity)):
+            with self.subTest(rows=rows, identity=native), self.assertRaises(adapter.ContractError):
+                adapter.verify_fabric_choice(plan, "spark1", rows, native)
+        with self.assertRaises(adapter.ContractError):
+            adapter.verify_fabric_choice(fixture(), "spark1", observed, identity)
 
 
 if __name__ == "__main__":

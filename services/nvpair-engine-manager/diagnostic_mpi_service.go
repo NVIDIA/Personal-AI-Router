@@ -349,6 +349,8 @@ type diagnosticMPIReviewTarget struct {
 	Address    string `json:"address"`
 	SSHAddress string `json:"sshAddress"`
 }
+// A fabric review's targets name each member's NCCL Socket interface and
+// fabric address; a management review's name the management ones.
 type diagnosticMPIReview struct {
 	ReviewID         string                      `json:"reviewId"`
 	BuildOperationID string                      `json:"buildOperationId"`
@@ -358,6 +360,7 @@ type diagnosticMPIReview struct {
 	Network          string                      `json:"network"`
 	Transport        string                      `json:"transport"`
 	RecipeID         string                      `json:"recipeId,omitempty"`
+	Fabric           *diagnosticMPIReviewFabric  `json:"fabric,omitempty"`
 	ExpiresAt        int64                       `json:"expiresAt"`
 	Targets          []diagnosticMPIReviewTarget `json:"targets"`
 }
@@ -376,6 +379,7 @@ type diagnosticMPIReviewControl struct {
 	Record              diagnosticManagedRecord     `json:"record"`
 	Requests            []diagnosticMPIFactsRequest `json:"requests"`
 	DedicatedTestWindow bool                        `json:"dedicatedTestWindow"`
+	Fabric              *diagnosticMPIFabric        `json:"fabric,omitempty"`
 }
 
 func (d *diagnosticService) mpiPeer(ctx context.Context, nodeID string) (*remoteClient, error) {
@@ -427,8 +431,9 @@ func (d *diagnosticService) mpiReviewAccess(binding diagnosticParticipantBinding
 }
 
 func (d *diagnosticService) reviewMPI(ctx context.Context, request diagnosticMPIRequest) (diagnosticMPIReview, error) {
-	if !onboardingID.MatchString(request.BuildOperationID) || request.Network != "management" || !request.DedicatedTestWindow || request.OwnerNodeID != "" || request.ReviewID != "" || request.OperationID != "" || request.GroupID != "" || request.CloseUnstartedReview {
-		return diagnosticMPIReview{}, errors.New("review requires the registered build and an explicit management Socket test window")
+	fabricNetwork := request.Network == "fabric"
+	if !onboardingID.MatchString(request.BuildOperationID) || request.Network != "management" && !fabricNetwork || !request.DedicatedTestWindow || request.OwnerNodeID != "" || request.ReviewID != "" || request.OperationID != "" || request.GroupID != "" || request.CloseUnstartedReview {
+		return diagnosticMPIReview{}, errors.New("review requires the registered build, an explicit management or fabric network, and a dedicated Socket test window")
 	}
 	d.mu.Lock()
 	run := d.runtimeRuns[request.BuildOperationID]
@@ -475,6 +480,15 @@ func (d *diagnosticService) reviewMPI(ctx context.Context, request diagnosticMPI
 		return diagnosticMPIReview{}, err
 	}
 	control := diagnosticMPIReviewControl{Record: *record, DedicatedTestWindow: true}
+	var selections []diagnosticMPIInterfaceSelection
+	var sockets []diagnosticMemberFabric
+	if fabricNetwork {
+		fabric, fabricSelections, fabricSockets, fabricErr := d.mpiReviewFabric(ctx, record.Targets)
+		if fabricErr != nil {
+			return diagnosticMPIReview{}, fabricErr
+		}
+		control.Fabric, selections, sockets = &fabric, fabricSelections, fabricSockets
+	}
 	for i, target := range binding.Targets {
 		if err = accessCurrent(); err != nil {
 			return diagnosticMPIReview{}, err
@@ -509,7 +523,11 @@ func (d *diagnosticService) reviewMPI(ctx context.Context, request diagnosticMPI
 				peers = append(peers, other.Address)
 			}
 		}
-		control.Requests = append(control.Requests, diagnosticMPIFactsRequest{Network: "management", Target: record.Targets[i], PeerAddress: peers[0], PeerAddresses: peers, SSHAddress: target.Address, SSHPort: port, SSHHostKey: hostKey})
+		factsRequest := diagnosticMPIFactsRequest{Network: "management", Target: record.Targets[i], PeerAddress: peers[0], PeerAddresses: peers, SSHAddress: target.Address, SSHPort: port, SSHHostKey: hostKey}
+		if fabricNetwork {
+			factsRequest.Network, factsRequest.Selection, factsRequest.Fabric = "fabric", selections[i], sockets[i]
+		}
+		control.Requests = append(control.Requests, factsRequest)
 	}
 	if err = accessCurrent(); err != nil {
 		return diagnosticMPIReview{}, err
@@ -532,14 +550,18 @@ func (d *diagnosticService) reviewMPI(ctx context.Context, request diagnosticMPI
 	if err != nil {
 		return diagnosticMPIReview{}, err
 	}
-	if review.OwnerNodeID != owner || review.BuildOperationID != record.OperationID || review.Network != "management" || review.Transport != "socket" || !onboardingID.MatchString(review.ReviewID) || !onboardingID.MatchString(review.OperationID) || review.GroupID != "pair-smoke-"+review.OperationID || len(review.Targets) != len(record.Targets) || diagnosticMPIRecipeRanks(diagnosticMPIStoredRecipe(review.RecipeID)) != len(record.Targets) {
+	if review.OwnerNodeID != owner || review.BuildOperationID != record.OperationID || review.Network != request.Network || review.Transport != "socket" || !onboardingID.MatchString(review.ReviewID) || !onboardingID.MatchString(review.OperationID) || review.GroupID != "pair-smoke-"+review.OperationID || len(review.Targets) != len(record.Targets) || diagnosticMPIRecipeRanks(diagnosticMPIStoredRecipe(review.RecipeID)) != len(record.Targets) {
 		return diagnosticMPIReview{}, errors.New("native MPI review changed its managed participant binding")
+	}
+	if (review.Fabric == nil) != (control.Fabric == nil) || control.Fabric != nil && *review.Fabric != diagnosticMPIReviewFabricFor(*control.Fabric) {
+		return diagnosticMPIReview{}, errors.New("native MPI review changed its fabric binding")
 	}
 	if _, _, err := diagnosticMPIRecipeArgs(diagnosticMPIStoredRecipe(review.RecipeID)); err != nil {
 		return diagnosticMPIReview{}, err
 	}
 	for i, target := range review.Targets {
-		if target.NodeID != record.Targets[i].NodeID || target.SSHAddress != record.Targets[i].Address || !diagnosticConcreteIPv4(target.Address) || !diagnosticToken.MatchString(target.Interface) || len(target.Interface) > 15 {
+		if target.NodeID != record.Targets[i].NodeID || target.SSHAddress != record.Targets[i].Address || !diagnosticConcreteIPv4(target.Address) || !diagnosticToken.MatchString(target.Interface) || len(target.Interface) > 15 ||
+			fabricNetwork && (target.Interface != sockets[i].Interface || target.Address != sockets[i].Address) {
 			return diagnosticMPIReview{}, errors.New("native MPI review changed its selected target or interface")
 		}
 	}
@@ -553,7 +575,20 @@ func (d *diagnosticService) reviewMPI(ctx context.Context, request diagnosticMPI
 	if err = accessCurrent(); err != nil {
 		return diagnosticMPIReview{}, err
 	}
+	if fabricNetwork {
+		check := diagnosticMPIFabricCheck{Fabric: *control.Fabric, Members: sockets}
+		for _, target := range record.Targets {
+			check.NodeIDs, check.Principals = append(check.NodeIDs, target.NodeID), append(check.Principals, target.Principal)
+		}
+		if err = d.currentMPIFabric(ctx, check); err != nil {
+			return diagnosticMPIReview{}, &diagnosticMPIFabricRefusal{cause: err}
+		}
+	}
 	return review, nil
+}
+
+func diagnosticMPIReviewFabricFor(f diagnosticMPIFabric) diagnosticMPIReviewFabric {
+	return diagnosticMPIReviewFabric{OperationID: f.OperationID, QualificationDigest: f.QualificationDigest, RecipeID: f.RecipeID}
 }
 
 func (d *diagnosticService) reviewMPIAsCoordinator(ctx context.Context, caller string, control diagnosticMPIReviewControl) (diagnosticMPIReview, error) {
@@ -566,6 +601,13 @@ func (d *diagnosticService) reviewMPIAsCoordinator(ctx context.Context, caller s
 	count := len(control.Record.Targets)
 	if !pinned || !d.m.mesh.Clustered() || !control.DedicatedTestWindow || !control.Record.Adopted || !validDiagnosticParticipantCount(count) || len(control.Requests) != count || control.Record.Targets[0].Principal != d.m.mesh.NodeUUID() {
 		return empty, errors.New("current coordinator, registered roster, and explicit test window are required")
+	}
+	network := "management"
+	if control.Fabric != nil {
+		if !validDiagnosticMPIFabric(*control.Fabric, count) || !d.mpiFabricOwnedBy(*control.Fabric, caller) {
+			return empty, errors.New("a fabric review must bind a fabric its review controller owns")
+		}
+		network = "fabric"
 	}
 	factsBudget := 75 * time.Second
 	if count == 3 {
@@ -586,7 +628,7 @@ func (d *diagnosticService) reviewMPIAsCoordinator(ctx context.Context, caller s
 				peers = append(peers, target.Address)
 			}
 		}
-		if request.Network != "management" || !reflect.DeepEqual(request.Target, control.Record.Targets[i]) || request.PeerAddress != peers[0] || (count == 3 || request.PeerAddresses != nil) && !slices.Equal(request.PeerAddresses, peers) {
+		if request.Network != network || !validDiagnosticMPIFactsNetwork(request) || !reflect.DeepEqual(request.Target, control.Record.Targets[i]) || request.PeerAddress != peers[0] || (count == 3 || request.PeerAddresses != nil) && !slices.Equal(request.PeerAddresses, peers) {
 			return empty, errors.New("MPI prerequisite request differs from the registered roster or peer routes")
 		}
 		go func(index int, request diagnosticMPIFactsRequest) {
@@ -627,6 +669,12 @@ func (d *diagnosticService) reviewMPIAsCoordinator(ctx context.Context, caller s
 		facts[i] = reply.Facts
 	}
 	selection := diagnosticMPISelection{OperationID: newOpID(), OwnerNodeID: control.Record.Targets[0].NodeID, Subnet: replies[0].Address.Subnet, SSHSourceIPv4: replies[0].SSHSourceIPv4, DedicatedTestWindow: true}
+	if control.Fabric != nil {
+		selection.Fabric = *control.Fabric
+		for _, request := range control.Requests {
+			selection.FabricMembers = append(selection.FabricMembers, request.Fabric)
+		}
+	}
 	p, plan, key, err := compileDiagnosticMPIPlan(control.Record, facts, selection, time.Now())
 	if err != nil {
 		return empty, err
@@ -641,9 +689,17 @@ func (d *diagnosticService) reviewMPIAsCoordinator(ctx context.Context, caller s
 	if json.Unmarshal(plan, &header) != nil {
 		return empty, errors.New("compiled MPI plan is invalid")
 	}
-	review := diagnosticMPIReview{ReviewID: newOpID(), BuildOperationID: control.Record.OperationID, OperationID: header.OperationID, GroupID: p.GroupID, OwnerNodeID: p.OwnerNodeID, Network: "management", Transport: "socket", RecipeID: header.RecipeID, ExpiresAt: header.ExpiresAt, Targets: []diagnosticMPIReviewTarget{}}
-	for _, fact := range facts {
-		review.Targets = append(review.Targets, diagnosticMPIReviewTarget{NodeID: fact.NodeID, Interface: fact.Interface, Address: fact.CollectiveAddress, SSHAddress: fact.SSHAddress})
+	review := diagnosticMPIReview{ReviewID: newOpID(), BuildOperationID: control.Record.OperationID, OperationID: header.OperationID, GroupID: p.GroupID, OwnerNodeID: p.OwnerNodeID, Network: network, Transport: "socket", RecipeID: header.RecipeID, ExpiresAt: header.ExpiresAt, Targets: []diagnosticMPIReviewTarget{}}
+	if control.Fabric != nil {
+		public := diagnosticMPIReviewFabricFor(*control.Fabric)
+		review.Fabric = &public
+	}
+	for i, fact := range facts {
+		target := diagnosticMPIReviewTarget{NodeID: fact.NodeID, Interface: fact.Interface, Address: fact.CollectiveAddress, SSHAddress: fact.SSHAddress}
+		if control.Fabric != nil {
+			target.Interface, target.Address = p.Members[i].Fabric.Interface, p.Members[i].Fabric.Address
+		}
+		review.Targets = append(review.Targets, target)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -674,6 +730,24 @@ func (d *diagnosticService) approveMPI(caller, reviewID string) (diagnosticOpera
 func (d *diagnosticService) approveMPIWithIO(caller, reviewID string, storage diagnosticMPIReviewIO, start func(diagnosticProfile, json.RawMessage, []byte) (diagnosticOperation, error)) (diagnosticOperation, error) {
 	d.m.mesh.Refresh()
 	pin, pinned := d.m.mesh.PinSHA256(caller)
+	// A fabric plan revalidates its fabric with the owner before the one-use
+	// review is consumed, so a changed fabric leaves the review closable.
+	d.mu.Lock()
+	checked := d.mpiReviews[reviewID]
+	fabricChecked := checked != nil && !checked.Consumed && pinned && checked.Controller == caller && checked.ControllerPin == pin && checked.Profile.Fabric != (diagnosticMPIFabric{})
+	var checkedProfile diagnosticProfile
+	if fabricChecked {
+		checkedProfile = checked.Profile
+	}
+	d.mu.Unlock()
+	if fabricChecked {
+		ctx, cancel := context.WithTimeout(d.ctx, diagnosticMPIFabricBudget)
+		err := d.mpiFabricCurrent(ctx, checkedProfile)
+		cancel()
+		if err != nil {
+			return diagnosticOperation{}, err
+		}
+	}
 	d.mu.Lock()
 	marker, readErr := d.readMPIReviewMarker(reviewID, storage)
 	if readErr != nil {
@@ -708,6 +782,10 @@ func (d *diagnosticService) approveMPIWithIO(caller, reviewID string, storage di
 	if diagnosticMPIStoredRecipe(review.Public.RecipeID) != diagnosticMPIStoredRecipe(marker.RecipeID) || review.Public.OperationID != marker.OperationID || review.Public.GroupID != marker.GroupID || review.Public.OwnerNodeID != marker.OwnerNodeID || review.Public.BuildOperationID != marker.BuildOperationID || review.Public.ExpiresAt != marker.ExpiresAt || profileDigest(review.Profile) != marker.ProfileDigest || json.Unmarshal(review.Plan, &header) != nil || header.RecipeID != diagnosticMPIStoredRecipe(marker.RecipeID) || header.PlanDigest != marker.BootstrapPlanDigest || header.OperationID != marker.OperationID || header.GroupID != marker.GroupID || marker.MemberSetDigest != "" && marker.MemberSetDigest != diagnosticMPIMemberDigest(diagnosticMPIProfileMemberIDs(review.Profile)) {
 		d.mu.Unlock()
 		return diagnosticOperation{}, errors.New("volatile MPI review differs from its durable marker")
+	}
+	if review.Profile.Fabric != (diagnosticMPIFabric{}) && (review != checked || !fabricChecked) {
+		d.mu.Unlock()
+		return diagnosticOperation{}, errors.New("the fabric review changed while its fabric was revalidated")
 	}
 	// Reject known admission closure before consuming the marker. A rejection
 	// after consumption remains uncertain; it is never inferred unstarted.
@@ -762,6 +840,9 @@ func (m *Manager) handleDiagnosticMPI(ctx context.Context, msg *Message) {
 		if count == 3 {
 			budget = 135 * time.Second
 		}
+		if request.Network == "fabric" {
+			budget += diagnosticMPIFabricBudget
+		}
 	}
 	ctx, stop := context.WithTimeout(ctx, budget)
 	defer stop()
@@ -777,6 +858,11 @@ func (m *Manager) handleDiagnosticMPI(ctx context.Context, msg *Message) {
 	}
 	if msg.Method == "engine:diagnostic-mpi-review" {
 		value, err := d.reviewMPI(ctx, request)
+		var refusal *diagnosticMPIFabricRefusal
+		if errors.As(err, &refusal) {
+			m.codec.RespondError(msg.ID, refusal.code(), err.Error())
+			return
+		}
 		m.respondOrErr(msg, value, err)
 		return
 	}

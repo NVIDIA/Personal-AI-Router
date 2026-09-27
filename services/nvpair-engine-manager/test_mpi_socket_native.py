@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import mpi_socket_adapter as adapter
 import mpi_socket_native as port
-from test_mpi_socket_adapter import fixture, triple_fixture, NOW, resign
+from test_mpi_socket_adapter import fabric_fixture, fixture, triple_fixture, NOW, resign
 
 
 class SandboxFiles(port.Files):
@@ -114,8 +114,18 @@ class FakeSystem:
         self.clock += int(seconds * 1000)
 
     def interfaces(self):
-        return [{"name": self.member["interface"], "up": True, "addresses": [self.member["collectiveAddress"] + "/24"]},
+        rows = [{"name": self.member["interface"], "up": True, "addresses": [self.member["collectiveAddress"] + "/24"]},
                 {"name": "eth0", "up": True, "addresses": [self.member["sshAddress"] + "/24"]}]
+        if "fabric" in self.member:
+            socket = self.member["fabric"]
+            rows.append({"name": socket["interface"], "up": True, "addresses": [socket["address"] + "/" + str(socket["prefix"])]})
+        return rows
+
+    def interface_identity(self, name):
+        socket = self.member.get("fabric")
+        if socket is None or name != socket["interface"]:
+            raise port.NativeError("fabric_interface_unavailable")
+        return {"index": socket["index"], "mac": socket["mac"]}
 
     def cgroup_state(self, populated):
         self.populated = populated
@@ -214,12 +224,14 @@ def profile_for(plan):
         runtime = {k: member[k] for k in ("buildOperationId", "buildPlanDigest", "buildAttempt", "uid", "home")}
         runtime.update({k: tool(member[k]) for k in ("ncclLibrary", "cudaLibrary", "mpiLibrary")})
         members.append({"nodeId": member["nodeId"], "principal": member["principal"], "clusterPinSha256": "a" * 64, "host": member["sshAddress"], "user": member["user"],
-                        "gpu": member["gpuUUID"], "interface": member["interface"], "manager": tool(member["manager"]), "nccl": tool(member["binary"]), "smi": tool(member["tools"]["nvidia-smi"]), "runtime": runtime})
+                        "gpu": member["gpuUUID"], "interface": member["interface"], "manager": tool(member["manager"]), "nccl": tool(member["binary"]), "smi": tool(member["tools"]["nvidia-smi"]), "runtime": runtime,
+                        **({"fabric": copy.deepcopy(member["fabric"])} if "fabric" in member else {})})
     return {"transport": "socket", "groupId": plan["groupId"], "label": "fixture", "ownerNodeId": plan["ownerNodeId"], "members": members,
             "mpi": tool(owner["tools"]["mpirun"]), "ssh": tool(owner["tools"]["ssh"]),
             "knownHosts": {"path": paths["knownHosts"], "sha256": port.fingerprint(adapter.known_hosts(plan))}, "identityFile": paths["publicIdentity"],
             "dedicatedTestWindow": True, "bootstrap": {"operationId": plan["operationId"], "publicKey": plan["operationPublicKey"],
-                 "agentSocket": paths["agentSocket"], "publicIdentity": paths["publicIdentity"], "subnet": plan["subnet"], "sshSourceIPv4": plan["sshSourceIPv4"]}}
+                 "agentSocket": paths["agentSocket"], "publicIdentity": paths["publicIdentity"], "subnet": plan["subnet"], "sshSourceIPv4": plan["sshSourceIPv4"]},
+            **({"fabric": copy.deepcopy(plan["fabric"])} if "fabric" in plan else {})}
 
 
 class NativeTests(unittest.TestCase):
@@ -231,13 +243,15 @@ class NativeTests(unittest.TestCase):
         self.plan = fixture()
         self.install_plan()
 
-    def install_plan(self):
+    def install_plan(self, change_profile=None):
         for member in self.plan["members"]:
             for artifact in [member[k] for k in ("manager", "binary", "ncclLibrary", "cudaLibrary", "mpiLibrary")] + list(member["tools"].values()):
                 raw = (artifact["path"] + "\n").encode()
                 self.fs.put(artifact["path"], raw)
                 artifact.update(size=len(raw), sha256=port.fingerprint(raw))
         self.profile = profile_for(self.plan)
+        if change_profile:
+            change_profile(self.profile)
         self.profile_raw = json.dumps(self.profile, separators=(",", ":")).encode()
         self.plan["profileDigest"] = port.fingerprint(self.profile_raw)
         resign(self.plan)
@@ -262,10 +276,10 @@ class NativeTests(unittest.TestCase):
         system.native = native
         return native
 
-    def reset_fixture(self, name):
+    def reset_fixture(self, name, plan=None, change_profile=None):
         self.fs = SandboxFiles(Path(self.temp.name) / name)
-        self.plan = fixture()
-        self.install_plan()
+        self.plan = plan or fixture()
+        self.install_plan(change_profile)
 
     def retained_clean_native(self, index=0):
         native = self.native(index)
@@ -841,6 +855,61 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(environment["NCCL_NET"], "Socket")
         self.assertNotIn("/foreign", environment["LD_LIBRARY_PATH"])
         self.assertEqual(environment["OMPI_COMM_WORLD_RANK"], "0")
+
+    def test_fabric_plan_checks_its_socket_interface_and_binds_only_nccl_to_it(self):
+        for count in (2, 3):
+            with self.subTest(count=count):
+                self.reset_fixture("fabric-" + str(count), fabric_fixture(count))
+                peer = self.native(1)
+                self.assertEqual(peer.prepare_peer(self.plan)["state"], "prepared")
+                self.assertTrue(peer.cleanup(self.plan)["cleanupConfirmed"])
+                coordinator = self.native(0)
+                self.staged_unit(coordinator, "coordinator")
+                class ExecObserved(Exception):
+                    pass
+                with patch.dict(os.environ, {"OMPI_COMM_WORLD_RANK": "0"}), patch.object(port.os, "execve", side_effect=ExecObserved) as execute:
+                    with self.assertRaises(ExecObserved):
+                        coordinator.internal("rank", [self.plan["operationId"], self.plan["planDigest"], self.plan["groupId"], self.plan["operationId"]])
+                environment = execute.call_args.args[2]
+                self.assertEqual(environment["NCCL_SOCKET_IFNAME"], "=" + self.plan["members"][0]["fabric"]["interface"])
+                self.assertEqual(adapter.compile_spec(self.plan)["fixedMCA"]["oob_tcp_if_include"], self.plan["subnet"])
+
+    def test_changed_fabric_interface_refuses_participant_effects(self):
+        for number, change in enumerate(({"index": 6}, {"mac": "02:00:00:0a:00:09"}, {"addresses": ["10.60.0.2/30", "10.61.0.2/30"]},
+                                         {"addresses": ["10.60.0.6/30"]}, {"up": False}, {"missing": True})):
+            with self.subTest(change=change):
+                self.reset_fixture("fabric-change-" + str(number), fabric_fixture())
+                peer = self.native(1)
+                socket = peer.system.member["fabric"]
+                identity = {"index": socket["index"], "mac": socket["mac"], **{k: change[k] for k in ("index", "mac") if k in change}}
+                rows = [row for row in peer.system.interfaces() if row["name"] != socket["interface"] or "missing" not in change]
+                rows = [{**row, **{k: change[k] for k in ("addresses", "up") if k in change}} if row["name"] == socket["interface"] else row for row in rows]
+                with patch.object(peer.system, "interface_identity", return_value=identity), patch.object(peer.system, "interfaces", return_value=rows):
+                    with self.assertRaises((port.NativeError, adapter.ContractError)):
+                        peer.prepare_peer(self.plan)
+                self.assertFalse(self.fs.exists(peer.paths["root"]))
+                self.assertEqual(peer.system.calls, [])
+
+    def test_go_profile_must_project_the_plan_fabric_binding(self):
+        def drop_binding(profile):
+            profile.pop("fabric")
+        def move_member(profile):
+            profile["members"][1]["fabric"]["address"] = "10.60.0.3"
+        def drop_member(profile):
+            profile["members"][0].pop("fabric")
+        for name, change, code in (("binding", drop_binding, "go_fabric_binding_changed"),
+                                   ("member", move_member, "go_profile_projection_changed"),
+                                   ("missing", drop_member, "go_profile_projection_changed")):
+            with self.subTest(name=name):
+                self.reset_fixture("fabric-profile-" + name, fabric_fixture(), change)
+                peer = self.native(1)
+                with self.assertRaisesRegex(port.NativeError, code):
+                    peer.bind(self.plan)
+                self.assertEqual(peer.system.calls, [])
+        management = fixture()
+        self.reset_fixture("management-profile-fabric", management, lambda profile: profile.update(fabric=fabric_fixture()["fabric"]))
+        with self.assertRaisesRegex(port.NativeError, "go_fabric_binding_changed"):
+            self.native(1).bind(self.plan)
 
     def test_status_preserves_nonzero_worker_failure(self):
         native = self.native(0)

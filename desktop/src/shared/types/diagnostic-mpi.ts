@@ -31,6 +31,24 @@ export interface DiagnosticMPISelection {
     nodeIds: string[]
 }
 
+/** Only NCCL Socket moves to the fabric; MPI launch and SSH stay on management. */
+export type DiagnosticMPINetwork = 'management' | 'fabric'
+
+export interface DiagnosticMPIReviewRequest extends DiagnosticMPISelection {
+    network: DiagnosticMPINetwork
+}
+
+export type DiagnosticMPIFabricRecipe =
+    | 'spark-two-node-temporary-addresses-v1'
+    | 'spark-three-node-ring-routed-v2'
+
+export interface DiagnosticMPIReviewFabric {
+    operationId: string
+    qualificationDigest: string
+    recipeId: DiagnosticMPIFabricRecipe
+}
+
+/** A fabric review's interface and address are the node's NCCL Socket end. */
 export interface DiagnosticMPIReviewTarget {
     nodeId: string
     interface: string
@@ -43,9 +61,11 @@ export interface DiagnosticMPIReview {
     operationId: string
     groupId: string
     ownerNodeId: string
-    network: 'management'
+    network: DiagnosticMPINetwork
     transport: 'socket'
     recipeId: DiagnosticMPIRecipe
+    /** Present exactly when `network` is `fabric`. */
+    fabric?: DiagnosticMPIReviewFabric
     expiresAt: number
     targets: DiagnosticMPIReviewTarget[]
 }

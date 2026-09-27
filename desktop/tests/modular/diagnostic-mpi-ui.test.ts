@@ -12,7 +12,7 @@ import {
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useDiagnosticMPIStore } from '@/ui/stores/diagnostic-mpi.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
-import { rawInventory, rawReview } from './diagnostic-mpi-fixtures'
+import { rawFabricReview, rawInventory, rawReview } from './diagnostic-mpi-fixtures'
 
 const Card = ManagedNCCLCard as ComponentType<{
     initialInventory: ReturnType<typeof parseDiagnosticMPIManagedInventory>
@@ -63,12 +63,31 @@ describe('managed NCCL Cluster UI', () => {
             })
         )
         expect(markup).toContain('Managed NCCL correctness smoke')
-        expect(markup).toContain('management IPv4 interface with NCCL Socket transport')
+        expect(markup).toContain('NCCL Socket transport on the management IPv4 interface')
+        expect(markup).toContain('MPI launch and SSH stay on management')
         expect(markup).toContain('does not use RDMA')
         expect(markup).toContain('Start NCCL smoke')
         expect(markup).toContain('Close review')
         expect(markup).toContain('node-a')
         expect(markup).toContain('node-b')
         expect(markup).not.toMatch(/password|privateKey|stderr/i)
+    })
+
+    it('offers the management network by default and the fabric as the one alternative', () => {
+        const markup = renderToStaticMarkup(
+            createElement(Card, {
+                initialInventory: parseDiagnosticMPIManagedInventory(rawInventory),
+                initialReview: parseDiagnosticMPIReview(rawFabricReview)
+            })
+        )
+        expect(markup).toContain('NCCL Socket network')
+        expect(markup).toMatch(
+            /<input type="radio" name="managed-nccl-network" checked=""\/> Management network/
+        )
+        expect(markup).toMatch(/<input type="radio" name="managed-nccl-network"\/> Fabric/)
+        expect(markup).toContain('Uses the management IPv4 interface of each node.')
+        expect(markup).toContain(' (operation ffffffff)')
+        expect(markup).toContain('10.60.0.1')
+        expect(markup).toContain('enp1s0f0np0')
     })
 })

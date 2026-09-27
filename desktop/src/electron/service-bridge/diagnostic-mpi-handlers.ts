@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Managed NCCL bridge. The renderer can select only an adopted build and two
- * or three node identities, or address one exact PAIR-issued review/operation.
- * Fixed management-network Socket authority is injected here; credentials,
- * commands, paths, keys and raw process output have no request or reply field.
+ * Managed NCCL bridge. The renderer can select only an adopted build, two or
+ * three node identities and the NCCL Socket network, or address one exact
+ * PAIR-issued review/operation. Fixed Socket and dedicated-window authority is
+ * injected here; credentials, commands, paths, keys and raw process output have
+ * no request or reply field.
  */
 import type { WsInvokeRequest } from '@/shared/types/ws-channels'
 import type {
@@ -22,10 +23,11 @@ import {
     parseDiagnosticMPIRecoveryReference,
     parseDiagnosticMPIReview,
     parseDiagnosticMPIReviewClosure,
+    parseDiagnosticMPIReviewRequest,
     parseDiagnosticMPISelection
 } from '@/shared/utils/diagnostic-mpi'
 import { getModularSupervisor } from './modular-supervisor'
-import type { JsonObject } from './json-rpc-subprocess'
+import { JsonRpcResponseError, type JsonObject } from './json-rpc-subprocess'
 
 type BackendMethod =
     | 'engine:diagnostic-managed-runtimes'
@@ -37,8 +39,8 @@ type BackendMethod =
 
 const timeouts: Record<BackendMethod, number> = {
     'engine:diagnostic-managed-runtimes': 30_000,
-    // Engine Manager budgets up to 135 s for the three-node facts review.
-    'engine:diagnostic-mpi-review': 150_000,
+    // Engine Manager budgets up to 165 s for a three-node fabric review.
+    'engine:diagnostic-mpi-review': 180_000,
     'engine:diagnostic-mpi-approve': 110_000,
     'engine:diagnostic-mpi-status': 110_000,
     'engine:diagnostic-mpi-cancel': 110_000,
@@ -60,14 +62,31 @@ const publicFailures: Record<BackendMethod, string> = {
         'PAIR could not recover the retained managed NCCL selector. No backend diagnostic text was exposed.'
 }
 
+// Engine Manager tags its fabric review refusals with these codes. Only this
+// renderer-owned wording crosses the bridge, never the backend's own text.
+const fabricRefusals = new Map<string, string>([
+    [
+        '-32010',
+        'No active fabric on this controller joins exactly the selected nodes. Apply a two-node direct fabric or a three-node routed ring here first, or review on the management network.'
+    ],
+    [
+        '-32011',
+        'The fabric involving the selected nodes is stale, ambiguous, unrouted, or could not be re-proven. Roll it back or recover it before reviewing over the fabric, or review on the management network.'
+    ]
+])
+
 async function call(method: BackendMethod, params: JsonObject) {
     const supervisor = getModularSupervisor()
     if (!supervisor.ready)
         throw new Error('PAIR service is unavailable for the managed NCCL smoke.')
     try {
         return await supervisor.callProcess('broker', method, params, timeouts[method])
-    } catch {
-        throw new Error(publicFailures[method])
+    } catch (error) {
+        const refusal =
+            method === 'engine:diagnostic-mpi-review' && error instanceof JsonRpcResponseError
+                ? fabricRefusals.get(error.message.split(':', 1)[0])
+                : undefined
+        throw new Error(refusal ?? publicFailures[method])
     }
 }
 
@@ -104,21 +123,22 @@ export const diagnosticMPIHandlers = {
     'engine:diagnostic-mpi-review': async (
         payload?: WsInvokeRequest<'engine:diagnostic-mpi-review'>
     ) => {
-        const selection = parseDiagnosticMPISelection(payload)
+        const request = parseDiagnosticMPIReviewRequest(payload)
         const review = parseDiagnosticMPIReview(
             await call('engine:diagnostic-mpi-review', {
-                buildOperationId: selection.buildOperationId,
-                memberNodeIds: selection.nodeIds,
-                network: 'management',
+                buildOperationId: request.buildOperationId,
+                memberNodeIds: request.nodeIds,
+                network: request.network,
                 dedicatedTestWindow: true
             })
         )
         if (
-            review.buildOperationId !== selection.buildOperationId ||
+            review.buildOperationId !== request.buildOperationId ||
+            review.network !== request.network ||
             review.targets
                 .map(target => target.nodeId)
                 .sort()
-                .join('\n') !== selection.nodeIds.join('\n')
+                .join('\n') !== request.nodeIds.join('\n')
         )
             throw new Error('PAIR returned a managed NCCL review for a different selection.')
         return review

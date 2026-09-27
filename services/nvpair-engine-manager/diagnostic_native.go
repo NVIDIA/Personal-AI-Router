@@ -119,6 +119,11 @@ func (d *diagnosticService) nativePreflight(ctx context.Context, p diagnosticPro
 	if err != nil || !haveIPv4 {
 		return errors.New("configured collective interface has no address")
 	}
+	if member.Fabric != (diagnosticMemberFabric{}) {
+		if err := verifyDiagnosticMemberFabric(member.Fabric, net.InterfaceByName, (*net.Interface).Addrs); err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	output, err := diagnosticProcess(ctx, member.SMI.Path, []string{"--query-gpu=uuid,utilization.gpu", "--format=csv,noheader,nounits", "-i", member.GPU}, nil, nil)

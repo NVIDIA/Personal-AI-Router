@@ -15,6 +15,11 @@ import (
 
 func TestDiagnosticMPIGoProfileAndPlanBindInNativePortWithoutEffects(t *testing.T) {
 	record, facts, selection, now := mpiPlanFixture(t)
+	testDiagnosticMPIGoPlanBindsInNativePort(t, record, facts, selection, now)
+}
+
+func testDiagnosticMPIGoPlanBindsInNativePort(t *testing.T, record diagnosticManagedRecord, facts []diagnosticMPIParticipantFacts, selection diagnosticMPISelection, now time.Time) {
+	t.Helper()
 	p, plan, key, err := compileDiagnosticMPIPlan(record, facts, selection, now)
 	defer clear(key)
 	if err != nil {

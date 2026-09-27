@@ -3,8 +3,10 @@
 
 import type {
     DiagnosticMPIApproveRequest,
+    DiagnosticMPIFabricRecipe,
     DiagnosticMPIManagedInventory,
     DiagnosticMPIManagedRuntime,
+    DiagnosticMPINetwork,
     DiagnosticMPIOperation,
     DiagnosticMPIOperationBinding,
     DiagnosticMPIOperationState,
@@ -13,6 +15,8 @@ import type {
     DiagnosticMPIRecoveryReference,
     DiagnosticMPIReview,
     DiagnosticMPIReviewClosure,
+    DiagnosticMPIReviewFabric,
+    DiagnosticMPIReviewRequest,
     DiagnosticMPISelection
 } from '@/shared/types/diagnostic-mpi'
 
@@ -126,6 +130,45 @@ export function parseDiagnosticMPISelection(value: unknown): DiagnosticMPISelect
     return {
         buildOperationId: identity(input.buildOperationId, 'build identity', idPattern),
         nodeIds: participants(input.nodeIds, 'selection')
+    }
+}
+
+function network(value: unknown): DiagnosticMPINetwork {
+    if (value === 'management' || value === 'fabric') return value
+    throw new Error('Invalid managed NCCL network.')
+}
+
+export function parseDiagnosticMPIReviewRequest(value: unknown): DiagnosticMPIReviewRequest {
+    const input = row(value, 'review request')
+    exact(input, ['buildOperationId', 'nodeIds', 'network'], 'review request')
+    required(input, ['buildOperationId', 'nodeIds', 'network'], 'review request')
+    return {
+        ...parseDiagnosticMPISelection({
+            buildOperationId: input.buildOperationId,
+            nodeIds: input.nodeIds
+        }),
+        network: network(input.network)
+    }
+}
+
+function fabricRecipe(value: unknown, nodes: number): DiagnosticMPIFabricRecipe {
+    if (value === 'spark-two-node-temporary-addresses-v1' && nodes === 2) return value
+    if (value === 'spark-three-node-ring-routed-v2' && nodes === 3) return value
+    throw new Error('Managed NCCL fabric recipe does not match the reviewed node count.')
+}
+
+function parseReviewFabric(value: unknown, nodes: number): DiagnosticMPIReviewFabric {
+    const fabric = row(value, 'review fabric')
+    exact(fabric, ['operationId', 'qualificationDigest', 'recipeId'], 'review fabric')
+    required(fabric, ['operationId', 'qualificationDigest', 'recipeId'], 'review fabric')
+    return {
+        operationId: identity(fabric.operationId, 'fabric operation identity', idPattern),
+        qualificationDigest: identity(
+            fabric.qualificationDigest,
+            'fabric qualification',
+            digestPattern
+        ),
+        recipeId: fabricRecipe(fabric.recipeId, nodes)
     }
 }
 
@@ -277,6 +320,7 @@ export function parseDiagnosticMPIReview(value: unknown): DiagnosticMPIReview {
             'network',
             'transport',
             'recipeId',
+            'fabric',
             'expiresAt',
             'targets'
         ],
@@ -298,8 +342,11 @@ export function parseDiagnosticMPIReview(value: unknown): DiagnosticMPIReview {
         ],
         'review'
     )
-    if (review.network !== 'management' || review.transport !== 'socket')
-        throw new Error('Managed NCCL review changed its fixed management Socket transport.')
+    const reviewNetwork = network(review.network)
+    if (review.transport !== 'socket')
+        throw new Error('Managed NCCL review changed its fixed Socket transport.')
+    if ((reviewNetwork === 'fabric') !== (review.fabric !== undefined))
+        throw new Error('Managed NCCL review changed its fabric binding.')
     if (!Array.isArray(review.targets)) throw new Error('Invalid managed NCCL review roster.')
     const targets = review.targets.map(parseReviewTarget)
     const operationId = identity(review.operationId, 'operation identity', idPattern)
@@ -319,9 +366,12 @@ export function parseDiagnosticMPIReview(value: unknown): DiagnosticMPIReview {
         operationId,
         groupId: review.groupId as string,
         ownerNodeId,
-        network: 'management',
+        network: reviewNetwork,
         transport: 'socket',
         recipeId,
+        ...(reviewNetwork === 'fabric'
+            ? { fabric: parseReviewFabric(review.fabric, memberNodeIds.length) }
+            : {}),
         expiresAt: integer(review.expiresAt, 'review expiry', 1),
         targets
     }

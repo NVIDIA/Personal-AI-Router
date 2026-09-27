@@ -105,6 +105,9 @@ func validateDiagnosticMPIBinding(p diagnosticProfile, raw json.RawMessage, r di
 	if hex.EncodeToString(sum[:]) != plan.PlanDigest {
 		return plan, errors.New("native MPI plan content changed")
 	}
+	if !diagnosticMPIPlanFabricBound(p, raw) {
+		return plan, errors.New("native MPI plan does not bind its profile's fabric NCCL endpoints")
+	}
 	// Old retained leases remain usable for cleanup, but cannot start workers.
 	if r.ExecutionDeadlineAt != 0 && (r.ExecutionDeadlineAt <= plan.CreatedAt || r.ExecutionDeadlineAt > plan.ExpiresAt) {
 		return plan, errors.New("native MPI execution deadline exceeds its original lease")
@@ -557,6 +560,11 @@ func (d *diagnosticService) executeBootstrap(ctx context.Context, p diagnosticPr
 			runErr = errors.Join(err, errors.New("managed MPI participant did not confirm preparation"))
 			break
 		}
+	}
+	if runErr == nil {
+		// Every prepared member now holds MPI admission, which refuses fabric
+		// rollback; the reviewed fabric must still be current before any rank.
+		runErr = d.mpiFabricCurrent(ctx, p)
 	}
 	if runErr == nil {
 		d.mu.Lock()

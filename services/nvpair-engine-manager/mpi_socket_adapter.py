@@ -38,7 +38,12 @@ ID = re.compile(r"[a-f0-9]{32}\Z")
 HASH = re.compile(r"[a-f0-9]{64}\Z")
 HOME = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 INTERFACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,14}\Z")
+MAC = re.compile(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}\Z")
 SYSTEM_TOOLS = {name: "/usr/bin/" + name for name in ("mpirun", "orted", "ssh", "ssh-agent", "ssh-add", "python3", "systemd-run", "systemctl", "busctl", "nvidia-smi")}
+# A fabric plan moves only NCCL Socket: a direct fabric lane is one /30, and each
+# routed ring member advertises its address on a different /31 cable.
+FABRIC_RECIPES = {"spark-two-node-temporary-addresses-v1": (2, 30), "spark-three-node-ring-routed-v2": (3, 31)}
+PRIVATE_NETWORKS = tuple(ipaddress.IPv4Network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
 
 class ContractError(Exception):
@@ -127,9 +132,32 @@ def artifact(value, path=None):
         raise ContractError("artifact_outside_fixed_layout")
 
 
+def fabric_prefix(binding, ranks):
+    exact(binding, ("operationId", "qualificationDigest", "recipeId", "ownerNodeId", "ownerPrincipal"))
+    recipe = FABRIC_RECIPES.get(str(binding["recipeId"]))
+    if recipe is None or recipe[0] != ranks or not ID.fullmatch(str(binding["operationId"])) or not HASH.fullmatch(str(binding["qualificationDigest"])) \
+            or not TOKEN.fullmatch(str(binding["ownerNodeId"])) or not TOKEN.fullmatch(str(binding["ownerPrincipal"])):
+        raise ContractError("invalid_fabric_binding")
+    return recipe[1]
+
+
+def fabric_socket(member, subnet, prefix):
+    """Return the member's fabric cable; OpenMPI's management subnet must not select it."""
+    socket = member["fabric"]
+    exact(socket, ("interface", "index", "mac", "address", "prefix"))
+    address = ipv4(socket["address"])
+    bounded_int(socket["index"], 1, 2**31 - 1)
+    if not INTERFACE.fullmatch(str(socket["interface"])) or socket["interface"] == member["interface"] or not MAC.fullmatch(str(socket["mac"])) \
+            or type(socket["prefix"]) is not int or socket["prefix"] != prefix or not any(address in network for network in PRIVATE_NETWORKS) or address in subnet:
+        raise ContractError("invalid_fabric_socket")
+    return ipaddress.IPv4Interface(f"{address}/{prefix}").network
+
+
 def validate_plan(plan, now_ms):
+    fabric = isinstance(plan, dict) and "fabric" in plan
     exact(plan, ("schemaVersion", "recipeId", "operationId", "groupId", "profileDigest", "ownerNodeId",
-                 "createdAt", "expiresAt", "subnet", "sshSourceIPv4", "operationPublicKey", "members", "limits", "planDigest"))
+                 "createdAt", "expiresAt", "subnet", "sshSourceIPv4", "operationPublicKey", "members", "limits", "planDigest")
+          + (("fabric",) if fabric else ()))
     body = dict(plan)
     stated = body.pop("planDigest")
     ranks = recipe_ranks(plan["recipeId"])
@@ -149,11 +177,14 @@ def validate_plan(plan, now_ms):
         raise ContractError("invalid_collective_subnet")
     if not isinstance(plan["members"], list) or len(plan["members"]) != ranks:
         raise ContractError("recipe_participant_count_mismatch")
-    seen, addresses = set(), set()
+    if fabric and plan["recipeId"] == RECIPE:
+        raise ContractError("invalid_fabric_binding")
+    prefix = fabric_prefix(plan["fabric"], ranks) if fabric else None
+    seen, addresses, sockets, cables = set(), set(), set(), set()
     for member in plan["members"]:
         exact(member, ("nodeId", "principal", "uid", "user", "home", "sshAddress", "sshPort", "collectiveAddress",
                        "interface", "gpuUUID", "hostKey", "buildOperationId", "buildAttempt", "buildPlanDigest",
-                       "manager", "binary", "ncclLibrary", "cudaLibrary", "mpiLibrary", "tools"))
+                       "manager", "binary", "ncclLibrary", "cudaLibrary", "mpiLibrary", "tools") + (("fabric",) if fabric else ()))
         if member["nodeId"] != member["principal"] or not TOKEN.fullmatch(str(member["nodeId"])) or member["nodeId"] in seen:
             raise ContractError("participant_identity_mismatch")
         seen.add(member["nodeId"])
@@ -168,6 +199,9 @@ def validate_plan(plan, now_ms):
         addresses.add(collective)
         if not INTERFACE.fullmatch(str(member["interface"])) or not re.fullmatch(r"GPU-[A-Za-z0-9-]{1,80}", str(member["gpuUUID"])):
             raise ContractError("invalid_gpu_or_interface")
+        if fabric:
+            cables.add(fabric_socket(member, subnet, prefix))
+            sockets.add(member["fabric"]["address"])
         public_key(member["hostKey"])
         if not ID.fullmatch(str(member["buildOperationId"])) or not HASH.fullmatch(str(member["buildPlanDigest"])):
             raise ContractError("build_binding_missing")
@@ -187,6 +221,8 @@ def validate_plan(plan, now_ms):
             artifact(member["tools"][name], expected_path)
     if plan["ownerNodeId"] not in seen:
         raise ContractError("coordinator_not_admitted")
+    if fabric and (len(sockets) != ranks or len(cables) != (1 if prefix == 30 else ranks)):
+        raise ContractError("fabric_socket_topology_mismatch")
     plan_roster(plan)
     return plan
 
@@ -202,10 +238,11 @@ def owned_paths(plan, member):
 def rank_environment(member, recipe_id=RECIPE):
     recipe_ranks(recipe_id)
     library = member["ncclLibrary"]["path"].rsplit("/", 1)[0]
+    socket = member["fabric"]["interface"] if "fabric" in member else member["interface"]
     environment = {"PATH": "/usr/bin:/bin", "HOME": member["home"], "CUDA_VISIBLE_DEVICES": member["gpuUUID"],
             "LD_LIBRARY_PATH": library + ":" + member["cudaLibrary"]["path"].rsplit("/", 1)[0],
             "NCCL_NET": "Socket", "NCCL_NET_PLUGIN": "none", "NCCL_IB_DISABLE": "1", "NCCL_RAS_ENABLE": "0",
-            "NCCL_SOCKET_IFNAME": "=" + member["interface"], "NCCL_SOCKET_NTHREADS": "1",
+            "NCCL_SOCKET_IFNAME": "=" + socket, "NCCL_SOCKET_NTHREADS": "1",
             "NCCL_NSOCKS_PERTHREAD": "1", "NCCL_DEBUG": "WARN"}
     if recipe_id in (QUICK_RECIPE, TRIPLE_RECIPE):
         environment["UCX_LOG_FILE"] = "stderr"
@@ -233,6 +270,24 @@ def verify_interface_choice(plan, node_id, observations):
     if set(matches) != {member["interface"]} or member["collectiveAddress"] not in matches[member["interface"]]:
         raise ContractError("collective_subnet_does_not_select_exact_interface")
     return {"nodeId": node_id, "interface": member["interface"], "subnet": plan["subnet"], "address": member["collectiveAddress"]}
+
+
+def verify_fabric_choice(plan, node_id, observations, identity):
+    """Check the reviewed NCCL interface's native index, MAC and sole IPv4 address."""
+    member = next((m for m in plan["members"] if m["nodeId"] == node_id), None)
+    if member is None or "fabric" not in member or not isinstance(observations, list) or len(observations) > 128:
+        raise ContractError("fabric_observation_invalid")
+    socket = member["fabric"]
+    exact(identity, ("index", "mac"))
+    rows = []
+    for row in observations:
+        exact(row, ("name", "up", "addresses"))
+        if row["name"] == socket["interface"]:
+            rows.append(row)
+    if identity != {"index": socket["index"], "mac": socket["mac"]} or len(rows) != 1 or rows[0]["up"] is not True \
+            or rows[0]["addresses"] != [socket["address"] + "/" + str(socket["prefix"])]:
+        raise ContractError("fabric_socket_interface_changed")
+    return {"nodeId": node_id, "interface": socket["interface"], "address": socket["address"]}
 
 
 def known_hosts(plan):

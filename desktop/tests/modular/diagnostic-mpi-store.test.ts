@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { DiagnosticMPIReviewRequest } from '@/shared/types/diagnostic-mpi'
 import {
     parseDiagnosticMPIManagedInventory,
     parseDiagnosticMPIOperation,
@@ -52,9 +53,13 @@ describe('managed NCCL store', () => {
     it('reviews and starts one exact node set without resending authority', async () => {
         api.reviewDiagnosticMpi.mockResolvedValueOnce(review)
         api.approveDiagnosticMpi.mockResolvedValueOnce(operation)
-        const selection = { buildOperationId: buildId, nodeIds: ['node-a', 'node-b'] }
-        await useDiagnosticMPIStore.getState().requestReview(selection)
-        expect(api.reviewDiagnosticMpi).toHaveBeenCalledExactlyOnceWith(selection)
+        const request: DiagnosticMPIReviewRequest = {
+            buildOperationId: buildId,
+            nodeIds: ['node-a', 'node-b'],
+            network: 'fabric'
+        }
+        await useDiagnosticMPIStore.getState().requestReview(request)
+        expect(api.reviewDiagnosticMpi).toHaveBeenCalledExactlyOnceWith(request)
         await useDiagnosticMPIStore.getState().approveReview()
         expect(api.approveDiagnosticMpi).toHaveBeenCalledExactlyOnceWith({
             reviewId,
@@ -108,7 +113,8 @@ describe('managed NCCL store', () => {
         api.reviewDiagnosticMpi.mockResolvedValueOnce(review)
         api.approveDiagnosticMpi.mockRejectedValueOnce(new Error('status unavailable'))
         const selection = { buildOperationId: buildId, nodeIds: ['node-a', 'node-b'] }
-        await useDiagnosticMPIStore.getState().requestReview(selection)
+        const request: DiagnosticMPIReviewRequest = { ...selection, network: 'management' }
+        await useDiagnosticMPIStore.getState().requestReview(request)
         await useDiagnosticMPIStore.getState().approveReview()
         await useDiagnosticMPIStore.getState().approveReview()
         expect(api.approveDiagnosticMpi).toHaveBeenCalledOnce()
@@ -138,7 +144,7 @@ describe('managed NCCL store', () => {
 
         const nextReview = { ...review, reviewId: 'f'.repeat(32) }
         api.reviewDiagnosticMpi.mockResolvedValueOnce(nextReview)
-        await useDiagnosticMPIStore.getState().requestReview(selection)
+        await useDiagnosticMPIStore.getState().requestReview(request)
         expect(useDiagnosticMPIStore.getState()).toMatchObject({
             review: nextReview,
             approvalAttemptedReviewId: null
@@ -152,9 +158,11 @@ describe('managed NCCL store', () => {
                 resolve = done
             })
         )
-        const pending = useDiagnosticMPIStore
-            .getState()
-            .requestReview({ buildOperationId: buildId, nodeIds: ['node-a', 'node-b'] })
+        const pending = useDiagnosticMPIStore.getState().requestReview({
+            buildOperationId: buildId,
+            nodeIds: ['node-a', 'node-b'],
+            network: 'management'
+        })
         useDiagnosticMPIStore.getState().reset()
         resolve(review)
         await pending

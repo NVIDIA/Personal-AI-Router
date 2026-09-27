@@ -66,6 +66,15 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   exactly reversible but are never offered for a new review. An active
   qualified fabric may be leased to an exact serving-group generation; rollback
   is refused until that consumer is clean.
+- Review, approve, and run one managed NCCL correctness smoke on two or three
+  adopted nodes over the management network or over the one active fabric the
+  reviewing node owns. Only NCCL Socket moves: each rank binds the direct
+  fabric's lowest-index reciprocal lane or its advertised routed-ring address,
+  while OpenMPI launch, OOB/BTL, SSH, and the rendezvous stay on management. The
+  plan digests the fabric operation and qualification, the fabric owner
+  revalidates them at approval and before launch, and ranks recheck their
+  interface. A missing fabric refuses the review and a stale, ambiguous, or
+  unrouted one fails closed; neither falls back to management.
 
 **Out of scope**
 - **Inference traffic** — stays with `nvpair-proxy`; this service never proxies `/api/chat` etc.
@@ -209,6 +218,7 @@ Requests (caller → service):
 | `engine:fabric-status` | `{ operationId }` | current exact operation and cleanup/lease state |
 | `engine:fabric-cancel` / `engine:fabric-recover` | `{ operationId, administratorApproved }` | exact owned rollback or recovery result |
 | `engine:fabric-retained-operations` | — | bounded retained fabric inventory for UI reconciliation |
+| `engine:diagnostic-mpi-review` | `{ buildOperationId, memberNodeIds?, network: "management" \| "fabric", dedicatedTestWindow: true }` | expiring managed NCCL correctness review; fabric refusals use code `-32010` (absent) or `-32011` (stale, ambiguous, or unrouted) |
 | `engine:onboarding-bootstrap-catalog` | — | strict six-target artifact/signature catalog |
 | `engine:onboarding-bootstrap-controller-keys` | — | controller public-key identities |
 | `engine:onboarding-bootstrap-inspect` | target reference + canonical request | target-produced inspect status |

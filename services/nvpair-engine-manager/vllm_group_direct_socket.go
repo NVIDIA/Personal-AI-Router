@@ -100,13 +100,25 @@ func vllmGroupDirectSocketLaneFrom(endpoint fabricCandidateIP) vllmGroupDirectSo
 		MAC: strings.ToLower(endpoint.MAC), LocalAddress: endpoint.Address, PeerAddress: endpoint.PeerAddress}
 }
 
-// The lane is chosen deterministically: the coordinator endpoint with the
-// lowest interface index, paired with the peer endpoint facing it.
 func bindVLLMGroupDirectSocketFacts(selection vllmGroupSelection, facts []vllmGroupFacts, principals []string, operationID, qualification string, endpoints []fabricCandidateIP) error {
-	if len(selection.NodeIDs) != 2 || len(facts) != 2 || len(principals) != 2 || len(endpoints) != 4 || !onboardingID.MatchString(operationID) || !onboardingSHA.MatchString(qualification) {
+	if len(facts) != 2 {
 		return errors.New("qualified direct fabric endpoint set is incomplete")
 	}
-	coordinator, peer := selection.NodeIDs[0], selection.NodeIDs[1]
+	ds, err := vllmGroupDirectSocketFor(selection.NodeIDs, principals, operationID, qualification, endpoints)
+	if err != nil {
+		return err
+	}
+	facts[0].directSocket = ds
+	return nil
+}
+
+// The lane is chosen deterministically: the endpoint of nodeIDs[0] with the
+// lowest interface index, paired with the peer endpoint facing it.
+func vllmGroupDirectSocketFor(nodeIDs, principals []string, operationID, qualification string, endpoints []fabricCandidateIP) (*vllmGroupDirectSocket, error) {
+	if len(nodeIDs) != 2 || len(principals) != 2 || len(endpoints) != 4 || !onboardingID.MatchString(operationID) || !onboardingSHA.MatchString(qualification) {
+		return nil, errors.New("qualified direct fabric endpoint set is incomplete")
+	}
+	coordinator, peer := nodeIDs[0], nodeIDs[1]
 	var local []fabricCandidateIP
 	for _, endpoint := range endpoints {
 		switch {
@@ -114,20 +126,19 @@ func bindVLLMGroupDirectSocketFacts(selection vllmGroupSelection, facts []vllmGr
 			local = append(local, endpoint)
 		case endpoint.NodeID == peer && endpoint.PeerNodeID == coordinator && endpoint.PeerPrincipal == principals[0]:
 		default:
-			return errors.New("qualified direct fabric endpoint identity differs from current paired membership")
+			return nil, errors.New("qualified direct fabric endpoint identity differs from current paired membership")
 		}
 	}
 	sort.Slice(local, func(i, j int) bool { return local[i].InterfaceIndex < local[j].InterfaceIndex })
 	for _, near := range local {
 		for _, far := range endpoints {
 			if far.NodeID == peer && far.Address == near.PeerAddress && far.PeerAddress == near.Address {
-				facts[0].directSocket = &vllmGroupDirectSocket{Mode: vllmGroupDirectSocketMode, OperationID: operationID, QualificationSHA256: qualification,
-					Lanes: []vllmGroupDirectSocketLane{vllmGroupDirectSocketLaneFrom(near), vllmGroupDirectSocketLaneFrom(far)}}
-				return nil
+				return &vllmGroupDirectSocket{Mode: vllmGroupDirectSocketMode, OperationID: operationID, QualificationSHA256: qualification,
+					Lanes: []vllmGroupDirectSocketLane{vllmGroupDirectSocketLaneFrom(near), vllmGroupDirectSocketLaneFrom(far)}}, nil
 			}
 		}
 	}
-	return errors.New("qualified direct fabric has no reciprocal lane between the selected members")
+	return nil, errors.New("qualified direct fabric has no reciprocal lane between the selected members")
 }
 
 // A direct socket plan is usable only while its exact reviewed fabric remains

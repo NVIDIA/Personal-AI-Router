@@ -85,14 +85,16 @@ func projectDiagnosticMPIAddress(info diagnosticMPIConnections, selected diagnos
 				continue
 			}
 			ones, bits := network.Mask.Size()
-			if result.Address != "" || bits != 32 || ones < 1 || ones > 30 || ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || ip.Equal(network.IP) {
+			// A routed ring cable is one point-to-point /31 whose two addresses are both hosts.
+			pointToPoint := selected.Network == "fabric" && ones == 31
+			if result.Address != "" || bits != 32 || ones < 1 || ones > 30 && !pointToPoint || ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || !pointToPoint && ip.Equal(network.IP) {
 				return result, errors.New("selected interface needs one unambiguous IPv4 host address and subnet")
 			}
 			broadcast := append(net.IP(nil), network.IP.To4()...)
 			for i := range broadcast {
 				broadcast[i] |= ^network.Mask[i]
 			}
-			if ip.Equal(broadcast) {
+			if !pointToPoint && ip.Equal(broadcast) {
 				return result, errors.New("selected interface address is not a unicast host")
 			}
 			result.Address, result.Subnet, subnet = ip.String(), network.String(), network

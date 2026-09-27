@@ -254,6 +254,16 @@ row says which network it uses. One source serves copies to several targets at
 once: each copy's content verification runs outside the source's export lease,
 so it never stalls chunks already flowing to another target.
 
+The managed NCCL correctness smoke can review with `network: fabric`. Review
+requalifies the one active fabric the controller owns that joins exactly the
+selected Sparks and moves only `NCCL_SOCKET_IFNAME` onto the lowest-index
+direct lane or each ring member's advertised address; MPI launch, SSH, and its
+OOB/BTL subnet stay on management. The plan digests the fabric operation and
+qualification, which the fabric owner revalidates at approval and again before
+any rank launches. The run takes no lease: participant MPI admission refuses
+fabric rollback while it runs. A missing fabric refuses the review instead of
+falling back to management.
+
 Serving-group review re-hashes the retained model on every member; members
 inspect concurrently, so a Qwen3.8 review takes about one member's
 verification time rather than the sum.

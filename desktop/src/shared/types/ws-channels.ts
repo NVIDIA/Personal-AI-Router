@@ -120,6 +120,7 @@ import type {
     DiagnosticMPIRecoveryReference,
     DiagnosticMPIReview,
     DiagnosticMPIReviewClosure,
+    DiagnosticMPIReviewRequest,
     DiagnosticMPISelection
 } from '@/shared/types/diagnostic-mpi'
 import type {
@@ -316,7 +317,7 @@ export interface WsInvokeChannelMap {
         response: NCCLReplacementAdoption
     }
     'engine:diagnostic-mpi-review': {
-        request: DiagnosticMPISelection
+        request: DiagnosticMPIReviewRequest
         response: DiagnosticMPIReview
     }
     'engine:diagnostic-mpi-approve': {

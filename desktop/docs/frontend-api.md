@@ -158,6 +158,12 @@ Commands return no state. Renderer stores update from
 - `reconcileDiagnosticMpi()` asks PAIR to recheck and close every exact retained
   diagnostic lease. It takes no credentials and returns only bounded public
   per-operation cleanup states. `engine:diagnostic-mpi-recover` remains read-only.
+- `reviewDiagnosticMpi()` sends one adopted build, two or three nodes, and
+  `network: 'management' | 'fabric'`; Electron adds the fixed Socket test window.
+  A fabric review names the bound fabric operation, and its targets carry each
+  node's NCCL Socket interface and fabric address. Engine Manager's typed fabric
+  refusals (`-32010` no fabric, `-32011` stale, ambiguous, or unrouted fabric)
+  become fixed renderer remedies; no backend text crosses the bridge.
 
 Bootstrap calls are bound to the candidate ID, volatile access ID, and reviewed
 SSH host-key fingerprint. Electron keeps at most 32 exact target-reviewed plans

@@ -53,6 +53,7 @@ import type {
     DiagnosticMPIRecoveryReference,
     DiagnosticMPIReview,
     DiagnosticMPIReviewClosure,
+    DiagnosticMPIReviewRequest,
     DiagnosticMPISelection
 } from '@/shared/types/diagnostic-mpi'
 import { createFabricApi, type IFabricApi } from '@/ui/api/fabric-api'
@@ -180,7 +181,7 @@ export interface ISetupApi {
     adoptNCCLReplacement(
         selector: NCCLReplacementSelector & { expectedRevision: number }
     ): Promise<NCCLReplacementAdoption>
-    reviewDiagnosticMpi(selection: DiagnosticMPISelection): Promise<DiagnosticMPIReview>
+    reviewDiagnosticMpi(request: DiagnosticMPIReviewRequest): Promise<DiagnosticMPIReview>
     approveDiagnosticMpi(request: DiagnosticMPIApproveRequest): Promise<DiagnosticMPIOperation>
     getDiagnosticMpiStatus(
         operation: DiagnosticMPIOperationBinding
@@ -319,8 +320,8 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
                 transport.invoke('engine:diagnostic-nccl-replacement-retry', request),
             adoptNCCLReplacement: request =>
                 transport.invoke('engine:diagnostic-nccl-replacement-adopt', request),
-            reviewDiagnosticMpi: selection =>
-                transport.invoke('engine:diagnostic-mpi-review', selection),
+            reviewDiagnosticMpi: request =>
+                transport.invoke('engine:diagnostic-mpi-review', request),
             approveDiagnosticMpi: request =>
                 transport.invoke('engine:diagnostic-mpi-approve', request),
             getDiagnosticMpiStatus: operation =>

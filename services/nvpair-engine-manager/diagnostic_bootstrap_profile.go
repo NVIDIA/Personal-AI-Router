@@ -106,12 +106,21 @@ func validateDiagnosticBootstrapProfile(p diagnosticProfile) error {
 	if err != nil || key.Type() != b.PublicKey.Algorithm || ssh.FingerprintSHA256(key) != b.PublicKey.Fingerprint {
 		return errors.New("managed public key fingerprint changed")
 	}
+	fabric := p.Fabric != (diagnosticMPIFabric{})
+	if fabric && !validDiagnosticMPIFabric(p.Fabric, len(p.Members)) {
+		return errors.New("managed fabric NCCL binding is invalid")
+	}
+	sockets := make([]diagnosticMemberFabric, 0, len(p.Members))
 	seen := map[string]bool{}
 	for _, m := range p.Members {
 		if !diagnosticToken.MatchString(m.NodeID) || m.Principal != m.NodeID || !diagnosticDigest.MatchString(m.ClusterPinSHA256) || seen[m.NodeID] || !diagnosticConcreteIPv4(m.Host) || !diagnosticToken.MatchString(m.User) || !strings.HasPrefix(m.GPU, "GPU-") || !diagnosticToken.MatchString(m.GPU) || !diagnosticToken.MatchString(m.Interface) || len(m.Interface) > 15 || strings.ContainsAny(m.Interface, ":=") {
 			return errors.New("managed participant identity, control address, GPU or interface is invalid")
 		}
 		seen[m.NodeID] = true
+		if (m.Fabric != (diagnosticMemberFabric{})) != fabric || fabric && (m.Fabric.Interface == m.Interface || subnet.Contains(net.ParseIP(m.Fabric.Address))) {
+			return errors.New("managed fabric NCCL binding is partial or overlaps the management MPI subnet")
+		}
+		sockets = append(sockets, m.Fabric)
 		r := m.Runtime
 		if !onboardingID.MatchString(r.BuildOperationID) || !diagnosticDigest.MatchString(r.BuildPlanDigest) || r.BuildAttempt < 1 || r.BuildAttempt > 3 || r.UID <= 0 || !diagnosticManagedPath(r.Home) {
 			return errors.New("managed runtime build/account binding is incomplete")
@@ -131,6 +140,9 @@ func validateDiagnosticBootstrapProfile(p diagnosticProfile) error {
 	}
 	if !seen[p.OwnerNodeID] {
 		return errors.New("managed coordinator must be an explicit participant")
+	}
+	if fabric && !validDiagnosticMPIFabricMembers(p.Fabric, sockets) {
+		return errors.New("managed fabric NCCL endpoints do not form the reviewed fabric")
 	}
 	for _, tool := range []diagnosticTool{p.MPI, p.SSH, p.KnownHosts} {
 		if !diagnosticManagedToolValid(tool) {
@@ -271,7 +283,11 @@ func diagnosticManagedRankEnvironment(p diagnosticProfile, m diagnosticMember, i
 			env[name] = value
 		}
 	}
-	for k, v := range map[string]string{"PATH": "/usr/bin:/bin", "HOME": m.Runtime.Home, "CUDA_VISIBLE_DEVICES": m.GPU, "LD_LIBRARY_PATH": path.Dir(m.Runtime.NCCLLibrary.Path) + ":" + path.Dir(m.Runtime.CUDALibrary.Path), "NCCL_NET": "Socket", "NCCL_NET_PLUGIN": "none", "NCCL_IB_DISABLE": "1", "NCCL_RAS_ENABLE": "0", "NCCL_SOCKET_IFNAME": "=" + m.Interface, "NCCL_SOCKET_NTHREADS": "1", "NCCL_NSOCKS_PERTHREAD": "1", "NCCL_DEBUG": "WARN", "OMPI_MCA_pml": "ob1", "OMPI_MCA_btl": "self,tcp", "OMPI_MCA_btl_tcp_if_include": p.Bootstrap.Subnet, "OMPI_MCA_oob_tcp_if_include": p.Bootstrap.Subnet, "OMPI_MCA_mca_base_param_files": "/dev/null", "OMPI_MCA_ess": "pmi", "OMPI_MCA_pmix": "^s1,s2,cray", "PMIX_MCA_mca_base_param_files": "none"} {
+	socket := m.Interface
+	if m.Fabric != (diagnosticMemberFabric{}) {
+		socket = m.Fabric.Interface
+	}
+	for k, v := range map[string]string{"PATH": "/usr/bin:/bin", "HOME": m.Runtime.Home, "CUDA_VISIBLE_DEVICES": m.GPU, "LD_LIBRARY_PATH": path.Dir(m.Runtime.NCCLLibrary.Path) + ":" + path.Dir(m.Runtime.CUDALibrary.Path), "NCCL_NET": "Socket", "NCCL_NET_PLUGIN": "none", "NCCL_IB_DISABLE": "1", "NCCL_RAS_ENABLE": "0", "NCCL_SOCKET_IFNAME": "=" + socket, "NCCL_SOCKET_NTHREADS": "1", "NCCL_NSOCKS_PERTHREAD": "1", "NCCL_DEBUG": "WARN", "OMPI_MCA_pml": "ob1", "OMPI_MCA_btl": "self,tcp", "OMPI_MCA_btl_tcp_if_include": p.Bootstrap.Subnet, "OMPI_MCA_oob_tcp_if_include": p.Bootstrap.Subnet, "OMPI_MCA_mca_base_param_files": "/dev/null", "OMPI_MCA_ess": "pmi", "OMPI_MCA_pmix": "^s1,s2,cray", "PMIX_MCA_mca_base_param_files": "none"} {
 		env[k] = v
 	}
 	keys := make([]string, 0, len(env))

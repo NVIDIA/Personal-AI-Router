@@ -38,6 +38,7 @@ type diagnosticMember struct {
 	NCCL             diagnosticTool          `json:"nccl"`
 	SMI              diagnosticTool          `json:"smi"`
 	Runtime          diagnosticMemberRuntime `json:"runtime,omitzero"`
+	Fabric           diagnosticMemberFabric  `json:"fabric,omitzero"`
 }
 
 type diagnosticProfile struct {
@@ -54,6 +55,7 @@ type diagnosticProfile struct {
 	// not a claim that PAIR can exclude arbitrary foreign GPU users.
 	DedicatedTestWindow bool                       `json:"dedicatedTestWindow"`
 	Bootstrap           diagnosticBootstrapProfile `json:"bootstrap,omitzero"`
+	Fabric              diagnosticMPIFabric        `json:"fabric,omitzero"`
 }
 
 type diagnosticGroup struct {
@@ -155,6 +157,9 @@ func (p diagnosticProfile) validate() error {
 	if p.Bootstrap != (diagnosticBootstrapProfile{}) {
 		return validateDiagnosticBootstrapProfile(p)
 	}
+	if p.Fabric != (diagnosticMPIFabric{}) {
+		return errors.New("fabric NCCL bindings require an operation bootstrap profile")
+	}
 	if p.Transport != "socket" {
 		return errors.New("this fixed NCCL smoke recipe requires explicit socket transport; RDMA recipes are not admitted")
 	}
@@ -167,7 +172,7 @@ func (p diagnosticProfile) validate() error {
 	seen := map[string]bool{}
 	principals := map[string]bool{}
 	for _, m := range p.Members {
-		if m.Runtime != (diagnosticMemberRuntime{}) {
+		if m.Runtime != (diagnosticMemberRuntime{}) || m.Fabric != (diagnosticMemberFabric{}) {
 			return errors.New("managed runtime bindings require an operation bootstrap profile")
 		}
 		if !diagnosticToken.MatchString(m.NodeID) || !diagnosticToken.MatchString(m.Principal) || seen[m.NodeID] || principals[m.Principal] {

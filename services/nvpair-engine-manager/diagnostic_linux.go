@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -309,6 +310,9 @@ func diagnosticRankMain(group, id string) int {
 	}
 	var env []string
 	if managed {
+		if member.Fabric != (diagnosticMemberFabric{}) && verifyDiagnosticMemberFabric(member.Fabric, net.InterfaceByName, (*net.Interface).Addrs) != nil {
+			return 2
+		}
 		var err error
 		env, err = diagnosticManagedRankEnvironment(profile, member, os.Environ())
 		if err != nil {

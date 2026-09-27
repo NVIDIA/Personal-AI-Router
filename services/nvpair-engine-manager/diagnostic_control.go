@@ -30,6 +30,7 @@ type diagnosticControlRequest struct {
 	MPIReviewID  string                           `json:"mpiReviewId,omitempty"`
 	MPIRecovery  *diagnosticMPIRecoveryControl    `json:"mpiRecovery,omitempty"`
 	MPIReconcile *diagnosticMPIReconcileControl   `json:"mpiReconcile,omitempty"`
+	MPIFabric    *diagnosticMPIFabricCheck        `json:"mpiFabric,omitempty"`
 }
 
 func strictDiagnosticJSON(raw []byte, out any) error {
@@ -128,6 +129,21 @@ func (s *controlServer) handleDiagnostic(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	d := s.exec.diagnostics
+	if body.MPIFabric != nil {
+		// Only a plan member may ask the fabric owner to revalidate its fabric.
+		caller, pinned := s.mesh.VerifyClientPin(r)
+		if !pinned || body.Method != "mpi-fabric" || body.MPIReconcile != nil || body.MPIRecovery != nil || body.MPIReview != nil || body.MPIFacts != nil || body.MPIReviewID != "" || body.Participant != nil || body.Bootstrap != nil || body.MPISelection != nil || body.Request != (diagnosticRequest{}) || !slices.Contains(body.MPIFabric.Principals, caller) {
+			http.Error(w, "invalid MPI fabric revalidation envelope", 400)
+			return
+		}
+		if err := d.currentMPIFabric(r.Context(), *body.MPIFabric); err != nil {
+			http.Error(w, diagnosticPublicMessage(err.Error()), 409)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body.MPIFabric.Fabric)
+		return
+	}
 	if body.MPIReconcile != nil {
 		caller, pinned := s.mesh.VerifyClientPin(r)
 		if !pinned || body.Method != "mpi-reconcile" || body.MPIRecovery != nil || body.MPIReview != nil || body.MPIFacts != nil || body.MPIReviewID != "" || body.Participant != nil || body.Bootstrap != nil || body.MPISelection != nil || body.Request != (diagnosticRequest{}) {

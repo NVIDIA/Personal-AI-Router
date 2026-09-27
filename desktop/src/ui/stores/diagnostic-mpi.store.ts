@@ -10,6 +10,7 @@ import type {
     DiagnosticMPIRecovery,
     DiagnosticMPIRecoveryReference,
     DiagnosticMPIReview,
+    DiagnosticMPIReviewRequest,
     DiagnosticMPISelection
 } from '@/shared/types/diagnostic-mpi'
 import getErrorString from '@/shared/utils/get-error-string'
@@ -27,7 +28,7 @@ interface DiagnosticMPIState {
     pending: Pending | null
     error: string
     refreshInventory(): Promise<void>
-    requestReview(selection: DiagnosticMPISelection): Promise<void>
+    requestReview(request: DiagnosticMPIReviewRequest): Promise<void>
     approveReview(): Promise<void>
     refreshOperation(): Promise<void>
     cancelOperation(): Promise<void>
@@ -112,7 +113,7 @@ export const useDiagnosticMPIStore = create<DiagnosticMPIState>((set, get) => ({
         }
     },
 
-    requestReview: async selection => {
+    requestReview: async request => {
         if (get().pending || get().review || get().approvalRecoverySelection) return
         const revision = ++epoch
         set({
@@ -123,7 +124,7 @@ export const useDiagnosticMPIStore = create<DiagnosticMPIState>((set, get) => ({
             error: ''
         })
         try {
-            const review = await api().reviewDiagnosticMpi(selection)
+            const review = await api().reviewDiagnosticMpi(request)
             if (revision === epoch)
                 set(current => ({
                     review,

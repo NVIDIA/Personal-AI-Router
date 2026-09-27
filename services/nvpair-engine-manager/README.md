@@ -64,6 +64,7 @@ Requests (caller → service):
 | `engine:fabric-status` | `{ operationId }` | Current exact operation and cleanup/lease state |
 | `engine:fabric-cancel` / `engine:fabric-recover` | `{ operationId, administratorApproved }` | Exact owned rollback or recovery result |
 | `engine:fabric-retained-operations` | — | Bounded retained fabric inventory for UI reconciliation |
+| `engine:diagnostic-mpi-review` | `{ buildOperationId, memberNodeIds?, network: "management" \| "fabric", dedicatedTestWindow: true }` | Expiring managed NCCL correctness review. `fabric` binds only NCCL Socket to the active fabric this node owns; a missing fabric is refused with code `-32010`, a stale, ambiguous or unrouted one with `-32011` |
 | `engine:onboarding-history` | — | Read-only retained setup history: reconciled counts plus per-operation `history-only`, `current`, or `invalid` classification. Every row reports `mutation_allowed:false`; history-only records do not block discovery, while malformed or nonterminal records remain fail-closed. This method cannot create, retry, approve, cancel, clean up, or bind access to an onboarding operation. |
 | `engine:onboarding-bootstrap-catalog` | — | Strict six-target bootstrap artifact/signature catalog |
 | `engine:onboarding-bootstrap-controller-keys` | — | Canonical controller public-key identities from the OS agent and configured `.pub` files |
@@ -352,6 +353,22 @@ that adopts an active fabric takes an exact consumer lease; fabric rollback is
 refused until that group generation is clean. "Active" proves the reviewed
 temporary configuration and qualification only—not RDMA payload, NCCL,
 bandwidth, or inference.
+
+The managed NCCL correctness smoke reviews two or three adopted nodes with
+`network` `management` or `fabric`. A fabric review freshly requalifies the one
+active fabric this Engine Manager owns that joins exactly those nodes and binds
+each rank's `NCCL_SOCKET_IFNAME` to the same end a serving group would use: its
+end of the lowest-index reciprocal lane of a direct fabric, or its advertised
+p0 address on the routed ring. OpenMPI launch, its OOB/BTL subnet, SSH, and the
+rendezvous stay on management. The plan digests the fabric operation ID and
+qualification digest. The coordinator asks this owner to revalidate that
+operation, qualification, and endpoints when the review is approved and again
+after every participant prepares, and each rank rechecks its interface's
+index, MAC, and sole IPv4 address. A missing fabric refuses the review rather
+than falling back to management; a stale, ambiguous, or unrouted one fails
+closed. The run takes no consumer lease: every member's MPI admission refuses
+fabric rollback reservations while the run holds it, and a fabric that changes
+anyway fails the run.
 
 A three-node ring uses the `spark-three-node-ring-routed-v2` recipe. Each member
 advertises its p0 `/31` address, and its p0 profile carries one `/32` host

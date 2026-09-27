@@ -5,7 +5,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Badge, Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type {
     DiagnosticMPIManagedInventory,
+    DiagnosticMPINetwork,
     DiagnosticMPIReview,
+    DiagnosticMPIReviewRequest,
     DiagnosticMPISelection
 } from '@/shared/types/diagnostic-mpi'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
@@ -31,6 +33,7 @@ export default function ManagedNCCLCard({
     const diagnostic = useDiagnosticMPIStore()
     const [buildOperationId, setBuildOperationId] = useState('')
     const [selected, setSelected] = useState<string[]>([])
+    const [network, setNetwork] = useState<DiagnosticMPINetwork>('management')
     const [approved, setApproved] = useState(false)
     const [now, setNow] = useState(Date.now())
 
@@ -76,6 +79,9 @@ export default function ManagedNCCLCard({
         record && (effectiveSelected.length === 2 || effectiveSelected.length === 3)
             ? { buildOperationId: record.buildOperationId, nodeIds: effectiveSelected }
             : null
+    const reviewRequest: DiagnosticMPIReviewRequest | null = selection
+        ? { ...selection, network }
+        : null
     const operation = diagnostic.operation
     const operationMoving = !!operation && !terminalStates.has(operation.state)
     const operationHeld = !!operation && (operationMoving || !operation.cleanupConfirmed)
@@ -115,6 +121,10 @@ export default function ManagedNCCLCard({
                 : current.filter(value => value !== nodeId)
         )
     }
+    const chooseNetwork = (next: DiagnosticMPINetwork) => {
+        setApproved(false)
+        setNetwork(next)
+    }
 
     return (
         <div className="pair-paper p-4 w-full">
@@ -150,7 +160,7 @@ export default function ManagedNCCLCard({
 
                 <InlineErrorBanner
                     severity="warning"
-                    message="This fixed small correctness smoke uses the management IPv4 interface with NCCL Socket transport. It does not use RDMA and does not qualify cable directness, RoCE payload, or bandwidth."
+                    message="This fixed small correctness smoke runs NCCL Socket transport on the management IPv4 interface or, when selected, the active fabric; MPI launch and SSH stay on management. It does not use RDMA and does not qualify cable directness, RoCE payload, or bandwidth."
                 />
                 {inventory?.recoveryRequired && (
                     <InlineErrorBanner
@@ -221,19 +231,52 @@ export default function ManagedNCCLCard({
                     </fieldset>
                 )}
 
+                {records.length > 0 && (
+                    <fieldset disabled={lockSelection || !!diagnostic.pending}>
+                        <legend>
+                            <Text kind="body/semibold/sm">NCCL Socket network</Text>
+                        </legend>
+                        <label className="block">
+                            <input
+                                type="radio"
+                                name="managed-nccl-network"
+                                checked={network === 'management'}
+                                onChange={() => chooseNetwork('management')}
+                            />{' '}
+                            Management network
+                        </label>
+                        <label className="block">
+                            <input
+                                type="radio"
+                                name="managed-nccl-network"
+                                checked={network === 'fabric'}
+                                onChange={() => chooseNetwork('fabric')}
+                            />{' '}
+                            Fabric
+                        </label>
+                        <Text kind="body/regular/sm" className="text-subtle-color">
+                            {network === 'fabric'
+                                ? 'Uses the active fabric this controller applied: one direct lane for two nodes, or the routed ring for three. Review refuses when no fabric joins exactly these nodes.'
+                                : 'Uses the management IPv4 interface of each node.'}
+                        </Text>
+                    </fieldset>
+                )}
+
                 <Flex gap="2" wrap="wrap">
                     <Button
                         kind="secondary"
                         size="small"
                         disabled={
-                            !selection ||
+                            !reviewRequest ||
                             !!diagnostic.pending ||
                             !!review ||
                             operationHeld ||
                             !!diagnostic.approvalRecoverySelection ||
                             !!inventory?.recoveryRequired
                         }
-                        onClick={() => selection && void diagnostic.requestReview(selection)}
+                        onClick={() =>
+                            reviewRequest && void diagnostic.requestReview(reviewRequest)
+                        }
                     >
                         {diagnostic.pending === 'review' ? 'Reviewing…' : 'Review NCCL smoke'}
                     </Button>
@@ -266,8 +309,11 @@ export default function ManagedNCCLCard({
                             </Badge>
                         </Flex>
                         <Text kind="body/regular/sm" className="text-subtle-color">
-                            {review.targets.length} nodes · Socket on management · owner{' '}
-                            {nodeName(review.ownerNodeId)} · review expires{' '}
+                            {review.targets.length} nodes · Socket on {review.network}
+                            {review.fabric
+                                ? ` (operation ${review.fabric.operationId.slice(0, 8)})`
+                                : ''}{' '}
+                            · owner {nodeName(review.ownerNodeId)} · review expires{' '}
                             {new Date(review.expiresAt).toLocaleTimeString()}
                         </Text>
                         {review.targets.map(target => (
@@ -374,9 +420,8 @@ export default function ManagedNCCLCard({
                             </Badge>
                         </Flex>
                         <Text kind="body/regular/sm" className="text-subtle-color">
-                            {operation.memberNodeIds.map(nodeName).join(' · ')} · Socket on
-                            management · cleanup{' '}
-                            {operation.cleanupConfirmed ? 'confirmed' : 'not confirmed'}
+                            {operation.memberNodeIds.map(nodeName).join(' · ')} · NCCL Socket ·
+                            cleanup {operation.cleanupConfirmed ? 'confirmed' : 'not confirmed'}
                         </Text>
                         <Text kind="body/regular/sm" className="text-subtle-color">
                             {operation.message}

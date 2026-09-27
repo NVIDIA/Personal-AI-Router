@@ -99,6 +99,53 @@ func (s *fabricService) exactFabricFor(ctx context.Context, nodeIDs []string, re
 	return s.requalifyFabric(ctx, nodeIDs)
 }
 
+// settledQualifiedFabric is qualifiedFabric once a status proof or rollback
+// admission already running for these members settles: an unleased fabric's
+// proof is withdrawn while a status poll re-proves it.
+func (s *fabricService) settledQualifiedFabric(ctx context.Context, nodeIDs []string) (string, string, []fabricCandidateIP, error) {
+	for {
+		operationID, digest, endpoints, err := s.qualifiedFabric(nodeIDs)
+		if err == nil {
+			return operationID, digest, endpoints, nil
+		}
+		running := s.proofRunning(nodeIDs)
+		if running == nil {
+			return "", "", nil, err
+		}
+		select {
+		case <-running:
+		case <-ctx.Done():
+			return "", "", nil, errors.New("the fabric proof in progress did not settle before the deadline")
+		}
+	}
+}
+
+func (s *fabricService) proofRunning(nodeIDs []string) <-chan struct{} {
+	want := slices.Clone(nodeIDs)
+	sort.Strings(want)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.runs {
+		if run.done == nil || run.Public.State != "active" {
+			continue
+		}
+		select {
+		case <-run.done:
+			continue
+		default:
+		}
+		members := make([]string, 0, len(run.Public.Targets))
+		for _, target := range run.Public.Targets {
+			members = append(members, target.NodeID)
+		}
+		sort.Strings(members)
+		if slices.Equal(members, want) {
+			return run.done
+		}
+	}
+	return nil
+}
+
 // replaces names a prior generation the caller has proven terminal with every
 // rank's cleanup confirmed; only its lease may be superseded.
 func (s *fabricService) acquireConsumerLease(ctx context.Context, operationID, qualification string, lease fabricConsumerLease, replaces *fabricConsumerLease) error {
