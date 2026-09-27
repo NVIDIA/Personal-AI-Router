@@ -8,6 +8,7 @@ import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { roundedProgressPercent } from '@/shared/utils/engine-progress'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import { subscribePush } from '@/electron/service-bridge/push-bus'
+import { isExternalRuntime } from '@/ui/utils/engine-ownership'
 
 describe('managed llama state', () => {
     it.each([true, false])(
@@ -276,5 +277,53 @@ describe('managed llama state', () => {
         state.applyEngineManagerStatus({ engine: 'llamacpp', installed: false, running: false })
         expect(status(self)?.acceleration).toBeUndefined()
         expect(status(self)?.devices).toBeUndefined()
+    })
+    // Reproduces the live symptom: while PAIR installed llama.cpp the engine
+    // row read "External llama.cpp runtime". The local status carries the
+    // engine manager's pre-install `managed: false`; a peer with no facts yet
+    // carries no flag at all. Neither is a detected external runtime.
+    it('does not present a PAIR-driven install as an external runtime', () => {
+        const state = getModularBridgeState()
+        const self = 'llama-install-self'
+        const peer = 'llama-install-peer'
+        const preInstall = {
+            engine: 'llamacpp',
+            installed: false,
+            running: false,
+            port: 0,
+            managed: false,
+            install_supported: true,
+            install_reason: 'Supported'
+        }
+        state.setSelfId(self)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: { nodes: [{ hostUuid: peer, name: 'peer', port: 14318, modelsByEngine: {} }] }
+        })
+        state.applyEngineManagerStatus(preInstall)
+        const statusFor = (nodeId: string) =>
+            state
+                .getEngineInitialState()
+                .statuses.find(s => s.nodeId === nodeId && s.engineType === 'llamacpp')
+        expect(statusFor(self)).toMatchObject({ processStatus: 'not-installed', managed: false })
+        state.beginLocalEngineOp('llamacpp', 'installing')
+        state.beginRemoteEngineOp(peer, 'llamacpp', 'installing')
+        try {
+            const local = statusFor(self)
+            const remote = statusFor(peer)
+            expect(local).toMatchObject({ processStatus: 'installing', managed: false })
+            expect(remote).toMatchObject({ processStatus: 'installing' })
+            expect(remote?.managed).toBeUndefined()
+            for (const status of [local, remote]) {
+                if (!status) throw new Error('expected an installing llama.cpp status')
+                expect(
+                    isExternalRuntime(status.engineType, status.processStatus, status.managed)
+                ).toBe(false)
+            }
+        } finally {
+            state.applyEngineManagerStatus(preInstall)
+            state.clearPendingRemoteEngineOp(peer, 'llamacpp')
+        }
     })
 })

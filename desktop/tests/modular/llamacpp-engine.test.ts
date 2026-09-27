@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'vitest'
-import { EngineDisplayNames, EnabledEngineTypes, EngineTypes } from '@/shared/constants/engines'
+import {
+    EngineDisplayNames,
+    EnabledEngineTypes,
+    EngineProcessStatuses,
+    EngineTypes
+} from '@/shared/constants/engines'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { MODULAR_RUNTIME_BINARIES } from '@/shared/constants/modular-binaries'
 import { isExternalRuntime } from '@/ui/utils/engine-ownership'
@@ -24,12 +29,27 @@ describe('llamacpp engine', () => {
     })
     // One predicate decides which surfaces offer controls for a llama.cpp
     // runtime PAIR only observes, so the node list and the engine row agree.
-    it('treats a detected, unmanaged llama.cpp as external on every surface', () => {
+    it('treats a settled, unmanaged llama.cpp as external on every surface', () => {
         expect(isExternalRuntime('llamacpp', 'running', false)).toBe(true)
-        expect(isExternalRuntime('llamacpp', 'running', undefined)).toBe(true)
+        expect(isExternalRuntime('llamacpp', 'stopped', false)).toBe(true)
         expect(isExternalRuntime('llamacpp', 'running', true)).toBe(false)
-        expect(isExternalRuntime('llamacpp', 'not-installed', undefined)).toBe(false)
-        expect(isExternalRuntime('lm-studio', 'running', undefined)).toBe(false)
+        expect(isExternalRuntime('llamacpp', 'not-installed', false)).toBe(false)
+        expect(isExternalRuntime('lm-studio', 'running', false)).toBe(false)
+    })
+    // The engine manager always reports `managed` as a boolean, so an absent
+    // flag is a status PAIR synthesized before any fact arrived, not a detected
+    // runtime; and a transitional status is an operation PAIR itself is running.
+    // Seen live: the managed install rendered as "External llama.cpp runtime"
+    // while its `installing` status still carried the pre-install
+    // `managed: false` fact.
+    it('does not present an unreported or in-flight llama.cpp as external', () => {
+        for (const status of EngineProcessStatuses) {
+            expect(isExternalRuntime('llamacpp', status, undefined)).toBe(false)
+            expect(isExternalRuntime('llamacpp', status, true)).toBe(false)
+            if (status !== 'running' && status !== 'stopped') {
+                expect(isExternalRuntime('llamacpp', status, false)).toBe(false)
+            }
+        }
     })
     // llama.cpp ships no binary of its own: one nvpair-proxy process hosts a
     // facade per engine, so adding an engine adds no runtime executable. This
