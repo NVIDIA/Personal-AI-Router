@@ -7,11 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -164,6 +167,125 @@ func TestWatchTreeGrowthReportsProgress(t *testing.T) {
 		case <-deadline:
 			t.Fatal("growth was not reported")
 		}
+	}
+}
+
+// PAIR's own transfers live in the stage's downloads directory and report
+// their own percent; the tree watcher must not answer their growth with an
+// "installing" heartbeat that would displace the "downloading N%" line.
+func TestWatchTreeGrowthIgnoresOwnDownloads(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(llamaDownloadDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(llamaDownloadDir(root), "nvpair-engine-llamacpp-1.zip"), []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stall := newStallContext(context.Background(), time.Minute, time.Minute)
+	defer stall.Stop()
+	stop := make(chan struct{})
+	defer close(stop)
+	grew := make(chan int64, 8)
+	go watchTreeGrowth(stall, root, 10*time.Millisecond, func(b int64) { grew <- b }, stop)
+	select {
+	case b := <-grew:
+		if b != 5 {
+			t.Fatalf("tree growth = %d bytes, want the 5-byte payload alone", b)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("growth was not reported")
+	}
+}
+
+// firstReadHook runs hook once, before the first read of a response body. By
+// then downloadInto has created the file the body is copied into.
+type firstReadHook struct {
+	io.ReadCloser
+	once sync.Once
+	hook func()
+}
+
+func (r *firstReadHook) Read(p []byte) (int, error) {
+	r.once.Do(r.hook)
+	return r.ReadCloser.Read(p)
+}
+
+// llamaStagedDownloads lists the llama transfers on disk beneath any install
+// stage under installDir.
+func llamaStagedDownloads(t *testing.T, installDir string) []string {
+	t.Helper()
+	stages, err := filepath.Glob(filepath.Join(installDir, ".llama-install-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, stage := range stages {
+		err := filepath.WalkDir(stage, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), "nvpair-engine-llamacpp-") {
+				found = append(found, p)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return found
+}
+
+// Every llama.cpp transfer is written beneath the install stage, on the drive
+// that holds the install, never in the system temp directory. A live install
+// on a workstation with 287 MB free on its system drive failed the 516 MiB
+// pinned CUDA archives there and landed on the vendor's Vulkan build.
+func TestLlamaDownloadsStayInsideTheStage(t *testing.T) {
+	cudaDevices := "Available devices:\n  CUDA0: NVIDIA GB10 (122564 MiB, 512 MiB free)"
+	for _, tc := range []struct {
+		name, suffix string
+		fixture      func(t *testing.T) *windowsCUDAFixture
+		transfers    int
+	}{
+		{name: "windows-cuda-archives", suffix: ".zip", transfers: 2, fixture: func(t *testing.T) *windowsCUDAFixture {
+			return newWindowsCUDAFixture(t, "8.9\n", nil, cudaLlamaFixture(10826))
+		}},
+		{name: "windows-vendor-installer", suffix: ".ps1", transfers: 1, fixture: func(t *testing.T) *windowsCUDAFixture {
+			return newWindowsCUDAFixture(t, "6.1\n", nil, cudaLlamaFixture(10826))
+		}},
+		{name: "linux-cuda-installer", suffix: ".ps1", transfers: 1, fixture: func(t *testing.T) *windowsCUDAFixture {
+			return newLinuxCUDAFixture(t, "12.1\n", nil, cudaDevices).windowsCUDAFixture
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.fixture(t)
+			var seen []string
+			inner := f.e.client.Transport
+			f.e.client.Transport = llamaFixtureTransport(func(r *http.Request) (*http.Response, error) {
+				resp, err := inner.RoundTrip(r)
+				if err != nil {
+					return nil, err
+				}
+				resp.Body = &firstReadHook{ReadCloser: resp.Body, hook: func() {
+					seen = append(seen, llamaStagedDownloads(t, f.st.installDir)...)
+				}}
+				return resp, nil
+			})
+			if err := f.e.installLlamaApp(context.Background(), f.st); err != nil {
+				t.Fatal(err)
+			}
+			if len(seen) != tc.transfers {
+				t.Fatalf("transfers observed beneath the stage = %v, want %d", seen, tc.transfers)
+			}
+			for _, transfer := range seen {
+				if !strings.HasSuffix(transfer, tc.suffix) || filepath.Base(filepath.Dir(transfer)) != llamaDownloadsDir {
+					t.Fatalf("transfer %q is not a %s file in the stage's downloads directory", transfer, tc.suffix)
+				}
+			}
+			if matches, _ := filepath.Glob(filepath.Join(f.st.installDir, ".llama-install-*")); len(matches) != 0 {
+				t.Fatalf("successful install left its stage (and downloads) behind: %v", matches)
+			}
+		})
 	}
 }
 

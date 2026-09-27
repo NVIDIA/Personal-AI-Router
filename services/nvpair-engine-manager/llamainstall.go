@@ -65,6 +65,16 @@ func llamaInstallerEnv(st *engineState, stage string) (map[string]string, error)
 	return env, nil
 }
 
+// llamaDownloadsDir names the directory, inside an install stage, that holds
+// PAIR's own transfers (pinned archives and installer scripts) while they are
+// verified and consumed. It keeps them on the drive that holds the install
+// rather than in the system temp directory, and watchTreeGrowth skips it:
+// those transfers report their own "downloading N%" progress, which the
+// stage's "installing" heartbeat must not displace.
+const llamaDownloadsDir = ".downloads"
+
+func llamaDownloadDir(stage string) string { return filepath.Join(stage, llamaDownloadsDir) }
+
 // installLlamaApp stages, verifies and promotes a fresh managed runtime. Install
 // returns before reaching here when a managed runtime is already detected or an
 // external identified listener is adopted, so no runtime is running and the
@@ -156,7 +166,7 @@ func (e *Executor) installLlamaApp(ctx context.Context, st *engineState) (err er
 			return fmt.Errorf("official llama archives: %w", err)
 		}
 	default:
-		script, downloadErr := e.download(ctx, engine, st.plat.Install.Fetch)
+		script, downloadErr := e.downloadInto(ctx, engine, st.plat.Install.Fetch, maxDownloadBytes, llamaDownloadDir(stage))
 		if downloadErr != nil {
 			return downloadErr
 		}

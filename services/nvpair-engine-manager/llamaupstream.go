@@ -178,9 +178,9 @@ func (e *Executor) stageLlamaUpstream(ctx context.Context, st *engineState, stag
 	if err = os.MkdirAll(stage, 0700); err != nil {
 		return "", provenance, err
 	}
-	// SHA256 makes downloadLimited reject a mismatch before the script reaches
-	// disk, so the verification happens ahead of runCommand below.
-	script, err := e.downloadLimited(ctx, "llamacpp", &Fetch{URL: llamaLatestInstallerURL, SHA256: llamaInstallerSHA256}, maxLlamaInstallerBytes)
+	// SHA256 makes downloadInto reject a mismatch before the script is handed
+	// to runCommand below, so the verification happens ahead of execution.
+	script, err := e.downloadInto(ctx, "llamacpp", &Fetch{URL: llamaLatestInstallerURL, SHA256: llamaInstallerSHA256}, maxLlamaInstallerBytes, llamaDownloadDir(stage))
 	if err != nil {
 		return "", provenance, err
 	}

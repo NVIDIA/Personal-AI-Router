@@ -69,7 +69,7 @@ func (e *Executor) stageLlamaInstallerCUDA(ctx context.Context, st *engineState,
 		return "", nil, err
 	}
 	env["SKIP_VULKAN"], env["SKIP_ROCM"] = "1", "1"
-	script, err := e.download(ctx, "llamacpp", st.plat.Install.Fetch)
+	script, err := e.downloadInto(ctx, "llamacpp", st.plat.Install.Fetch, maxDownloadBytes, llamaDownloadDir(home))
 	if err != nil {
 		return "", nil, err
 	}

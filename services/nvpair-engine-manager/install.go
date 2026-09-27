@@ -291,12 +291,25 @@ func validateDownloadURL(raw string) error {
 }
 
 func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (string, error) {
-	return e.downloadLimited(ctx, engine, f, maxDownloadBytes)
+	return e.downloadInto(ctx, engine, f, maxDownloadBytes, "")
 }
 
-func (e *Executor) downloadLimited(ctx context.Context, engine string, f *Fetch, limit int64) (string, error) {
+// downloadInto fetches f into a new file under dir, verifies it against the
+// byte limit and the pinned checksum, and returns its path; the caller removes
+// the file. An empty dir means the system temp directory. The llama.cpp
+// install passes a directory inside its stage instead, so its transfers land
+// on the drive that holds the install: the 516 MiB pinned CUDA archive set
+// failed with "not enough space on the disk" in %TEMP% on a workstation whose
+// system drive had 287 MB free while the app-data drive had room, and the
+// install silently fell back to the vendor's Vulkan build.
+func (e *Executor) downloadInto(ctx context.Context, engine string, f *Fetch, limit int64, dir string) (string, error) {
 	if err := validateDownloadURL(f.URL); err != nil {
 		return "", err
+	}
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", err
+		}
 	}
 	// A stall-bounded caller (the llama install) already fails on lack of
 	// progress; a fixed budget would only cut a slow but live transfer short.
@@ -321,7 +334,7 @@ func (e *Executor) downloadLimited(ctx context.Context, engine string, f *Fetch,
 	// Preserve the URL suffix so tools that require one (notably PowerShell's
 	// -File, which accepts only .ps1 files) can execute the downloaded artifact
 	// directly instead of evaluating remote content inline.
-	tmp, err := os.CreateTemp("", "nvpair-engine-"+engine+"-*"+path.Ext(req.URL.Path))
+	tmp, err := os.CreateTemp(dir, "nvpair-engine-"+engine+"-*"+path.Ext(req.URL.Path))
 	if err != nil {
 		return "", err
 	}

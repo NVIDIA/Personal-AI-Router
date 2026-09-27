@@ -31,6 +31,10 @@ func (e *Executor) stageLlamaArchives(ctx context.Context, st *engineState, cand
 	if err := os.MkdirAll(candidate, 0700); err != nil {
 		return err
 	}
+	// Each archive is fetched into the stage that holds the candidate (its
+	// parent), never the system temp directory: the CUDA set is over 500 MiB and
+	// must only depend on the drive the install lives on.
+	downloads := llamaDownloadDir(filepath.Dir(candidate))
 	remaining, entries := maxDownloadBytes, 0
 	for _, fetch := range archives {
 		if err := ctx.Err(); err != nil {
@@ -39,7 +43,7 @@ func (e *Executor) stageLlamaArchives(ctx context.Context, st *engineState, cand
 		if strings.TrimSpace(fetch.SHA256) == "" {
 			return fmt.Errorf("llama archive requires a pinned checksum")
 		}
-		archive, err := e.download(ctx, "llamacpp", &fetch)
+		archive, err := e.downloadInto(ctx, "llamacpp", &fetch, maxDownloadBytes, downloads)
 		if err != nil {
 			return err
 		}

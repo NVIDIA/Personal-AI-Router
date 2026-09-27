@@ -152,8 +152,10 @@ func (b *boundedCapture) Bytes() []byte {
 // watchTreeGrowth reports progress while files beneath root keep growing. The
 // vendor installer runs curl silently, so the bytes it writes into its staging
 // home are the only progress signal; onGrowth also lets the caller emit a
-// heartbeat so a UI waiting on the install does not time out. It returns when
-// ctx ends or stop is closed.
+// heartbeat so a UI waiting on the install does not time out. PAIR's own
+// transfers in the stage's llamaDownloadsDir are not counted: they report
+// their own percent and keep the stall context alive themselves. It returns
+// when ctx ends or stop is closed.
 func watchTreeGrowth(ctx context.Context, root string, every time.Duration, onGrowth func(bytes int64), stop <-chan struct{}) {
 	var last int64 = -1
 	t := time.NewTicker(every)
@@ -167,10 +169,17 @@ func watchTreeGrowth(ctx context.Context, root string, every time.Duration, onGr
 		case <-t.C:
 			var total int64
 			_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
-				if err == nil && !d.IsDir() {
-					if info, statErr := d.Info(); statErr == nil {
-						total += info.Size()
+				if err != nil {
+					return nil
+				}
+				if d.IsDir() {
+					if d.Name() == llamaDownloadsDir {
+						return filepath.SkipDir
 					}
+					return nil
+				}
+				if info, statErr := d.Info(); statErr == nil {
+					total += info.Size()
 				}
 				return nil
 			})

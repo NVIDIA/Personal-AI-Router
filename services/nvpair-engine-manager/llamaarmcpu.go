@@ -114,7 +114,7 @@ func (e *Executor) prepareLlamaARMCPU(ctx context.Context, st *engineState, stag
 		return "", nil, err
 	}
 	env["SKIP_CUDA"], env["SKIP_VULKAN"] = "1", "1"
-	script, err := e.downloadLimited(ctx, "llamacpp", fetch, maxLlamaInstallerBytes)
+	script, err := e.downloadInto(ctx, "llamacpp", fetch, maxLlamaInstallerBytes, llamaDownloadDir(home))
 	if err != nil {
 		return "", nil, err
 	}
