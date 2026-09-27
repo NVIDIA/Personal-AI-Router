@@ -141,7 +141,7 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 |---|---|---|---|
 | `fetch.url` | string | when `fetch` present | Download URL — **HTTPS** (plain `http` only from loopback). |
 | `fetch.sha256` | string | no | Hex SHA-256. When set, the download is verified against it **before** `run` executes; when omitted, the fetch is HTTPS-only and runs with a loud "unpinned" warning (the same weaker guarantee as `script`). Pin it for any real release. |
-| `run` | string[] | no | Argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. Requires a `fetch` (the artifact it unpacks). |
+| `run` | string[] | no | Argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. The child also receives exact paths in `NVPAIR_INSTALL_DIR`, `NVPAIR_INSTALL_DOWNLOAD`, and `NVPAIR_INSTALL_DOWNLOAD_<ARTIFACT_NAME>` so commands that reparse argv can avoid shell quoting. Requires a `fetch` or `artifacts`. |
 | `script` | string[] | no | **Escape hatch** for vendors that only ship a script installer. Runs **without** checksum verification (logged as unpinned) and replaces `fetch`+`run`. Prefer `fetch`+`run` whenever the vendor publishes a script or artifact: download it first, then execute the local file. **Make failures loud:** a piped bootstrap such as `curl … \| bash` can mask a failed fetch, while a separate fetch prevents the run and reports the error. |
 | `mode` | string | no | `"user"` (default) or `"admin"`. The runner **refuses** `"admin"` (engine-manager is user-mode only); it is a deliberate, flagged exception, not a default. |
 
@@ -302,6 +302,7 @@ validation at load:
 | `{bin}` | Resolved binary path (process mode) | runtime args/env |
 | `{cli}` | The platform's `runtime.cli` path | runtime start/stop, action `cmd` |
 | `{download}` | Path of the verified download | `install.run` |
+| `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
 | `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
 
 A `cmd` action additionally templates the action's own `params` as

@@ -118,7 +118,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			for i := range args {
 				args[i] = expandPath(args[i])
 			}
-			if err := e.runCommand(ctx, args); err != nil {
+			if err := e.runCommandWithEnv(ctx, args, installCommandEnv(vars, inst.Artifacts)); err != nil {
 				werr := fmt.Errorf("install command failed: %w", err)
 				e.reportInstallFailed(engine, werr)
 				return werr
@@ -304,6 +304,17 @@ func removeDownloadedFiles(paths []string) {
 	}
 }
 
+func installCommandEnv(vars map[string]string, artifacts []InstallArtifact) map[string]string {
+	env := map[string]string{"NVPAIR_INSTALL_DIR": vars["install_dir"]}
+	if downloadPath := vars["download"]; downloadPath != "" {
+		env["NVPAIR_INSTALL_DOWNLOAD"] = downloadPath
+	}
+	for _, artifact := range artifacts {
+		env["NVPAIR_INSTALL_DOWNLOAD_"+strings.ToUpper(artifact.Name)] = vars["download_"+artifact.Name]
+	}
+	return env
+}
+
 func (e *Executor) downloadWithProgress(
 	ctx context.Context,
 	engine string,
@@ -370,10 +381,20 @@ func (e *Executor) downloadWithProgress(
 // step), hiding the console window on Windows; on failure it returns the
 // combined output for diagnostics.
 func (e *Executor) runCommand(ctx context.Context, argv []string) error {
+	return e.runCommandWithEnv(ctx, argv, nil)
+}
+
+func (e *Executor) runCommandWithEnv(ctx context.Context, argv []string, environment map[string]string) error {
 	if len(argv) == 0 {
 		return nil
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if len(environment) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range environment {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
 	configureSysProcAttr(cmd) // hide the console window on Windows
 	out, err := cmd.CombinedOutput()
 	if err != nil {
