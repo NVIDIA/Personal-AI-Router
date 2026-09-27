@@ -6,10 +6,11 @@ Root entrypoint is embedded/invoked only by the existing approved admin worker.
 The system unit invokes the same root-owned source as the verified normal UID.
 Native support is fail-closed: cgroup-v2 BPF readback AND datapath checks precede
 model execution. Ordinary groups retain TCP; an ordinary two-node TP2 plan may
-bind only its NCCL Socket to one reviewed direct fabric lane while the master
-address, VLLM_HOST_IP and Gloo stay on management. The exact Qwen profile
-separately requires reviewed host-buffer RoCE bindings and never falls back to
-Socket payloads.
+bind only its NCCL Socket to one reviewed direct fabric lane, and an ordinary
+three-node plan only its NCCL Socket to its advertised routed-ring address,
+while the master address, VLLM_HOST_IP and Gloo stay on management. The exact
+Qwen profile separately requires reviewed host-buffer RoCE bindings and never
+falls back to Socket payloads.
 """
 from contextlib import contextmanager
 import ctypes
@@ -71,6 +72,7 @@ QWEN_ARTIFACT_BYTES = 3940635938
 VLLM_RUNTIME = "0.29.0"
 VLLM_RECIPE = "vllm-0.29.0-py312-cu130-uv0.12.17-v1"
 DIRECT_SOCKET = "qualified-direct-socket"
+RING_SOCKET = "qualified-ring-socket"
 DISTRIBUTED_TIMEOUT_SECONDS = 180
 UNIT_PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "MainPID", "ControlGroup", "Transient", "User", "Group", "KillMode", "SendSIGKILL", "Restart", "Delegate", "ProtectControlGroups", "NoNewPrivileges", "PrivateDevices", "DevicePolicy", "DeviceAllow", "RestrictAddressFamilies", "IPAccounting", "IPAddressAllow", "IPAddressDeny", "Description", "RuntimeMaxUSec", "MemoryMax", "TasksMax", "StandardOutput", "StandardError", "LimitMEMLOCK", "LimitMEMLOCKSoft")
 
@@ -120,7 +122,8 @@ def check_plan(plan):
         raise Unavailable("fixed_owner_plan_required")
     qwen = plan.get("model") == QWEN_MODEL
     direct = isinstance(plan, dict) and "directSocket" in plan
-    if set(plan) != (keys | ({"transport", "rdmaLanes"} if qwen else set()) | ({"directSocket"} if direct else set())):
+    ring = isinstance(plan, dict) and "ringSocket" in plan
+    if set(plan) != (keys | ({"transport", "rdmaLanes"} if qwen else set()) | ({"directSocket"} if direct else set()) | ({"ringSocket"} if ring else set())):
         raise Unavailable("fixed_owner_plan_required")
     if not RUN.fullmatch(str(plan["runId"])) or type(plan["generation"]) is not int or not 1 <= plan["generation"] < 2**63:
         raise Unavailable("operation_binding_invalid")
@@ -213,6 +216,23 @@ def check_plan(plan):
                 raise Unavailable("qualified_direct_socket_required")
         if lane["localAddress"] == lane["peerAddress"]:
             raise Unavailable("qualified_direct_socket_required")
+    if ring:
+        binding = plan["ringSocket"]
+        binding_keys = {"mode", "operationId", "qualificationSha256", "interfaceName", "interfaceIndex", "mac", "advertisedAddress", "ringAddresses"}
+        if plan["model"] == QWEN_MODEL or direct or len(peers) != 3 or topology not in ordinary or not isinstance(binding, dict) or set(binding) != binding_keys or binding["mode"] != RING_SOCKET or not RUN.fullmatch(str(binding["operationId"])) or not HEX.fullmatch(str(binding["qualificationSha256"])):
+            raise Unavailable("qualified_ring_socket_required")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", str(binding["interfaceName"])) or type(binding["interfaceIndex"]) is not int or binding["interfaceIndex"] <= 0 or not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", str(binding["mac"])):
+            raise Unavailable("qualified_ring_socket_required")
+        addresses = binding["ringAddresses"]
+        if not isinstance(addresses, list) or len(addresses) != 6:
+            raise Unavailable("qualified_ring_socket_required")
+        for value in addresses:
+            try: address = ipaddress.ip_address(value)
+            except ValueError: raise Unavailable("qualified_ring_socket_required") from None
+            if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified or str(address) != value or value in peers:
+                raise Unavailable("qualified_ring_socket_required")
+        if len(set(addresses)) != 6 or len({ipaddress.ip_network(value + "/31", strict=False) for value in addresses}) != 3 or binding["advertisedAddress"] not in addresses:
+            raise Unavailable("qualified_ring_socket_required")
     return plan
 
 def model_arguments(plan, cli, runtime_version):
@@ -237,6 +257,7 @@ def model_arguments(plan, cli, runtime_version):
 
 def transport_name(plan):
     if plan["model"] == QWEN_MODEL: return "host-buffer-roce"
+    if "ringSocket" in plan: return RING_SOCKET
     return DIRECT_SOCKET if "directSocket" in plan else "tcp-only"
 
 def allowed_addresses(plan):
@@ -245,6 +266,9 @@ def allowed_addresses(plan):
         for lane in plan["rdmaLanes"]: allowed.update((lane["localAddress"], lane["peerAddress"]))
     if "directSocket" in plan:
         allowed.update((plan["directSocket"]["localAddress"], plan["directSocket"]["peerAddress"]))
+    if "ringSocket" in plan:
+        # A peer's NCCL Socket may source from its non-advertised lane address.
+        allowed.update(plan["ringSocket"]["ringAddresses"])
     return allowed
 
 def unit_properties(plan, credential_path):
@@ -609,23 +633,34 @@ def verify_device_access(plan):
             if not stat.S_ISCHR(os.fstat(descriptor).st_mode): raise Unavailable("rank_device_access_unavailable")
         finally: os.close(descriptor)
 
-def observe_direct_socket_lane(lane):
+def observe_socket_interface(name, index, mac, address):
     import fcntl
-    name = lane["interfaceName"]
     try:
-        if socket.if_nametoindex(name) != lane["interfaceIndex"] or (Path("/sys/class/net") / name / "address").read_text().strip().lower() != lane["mac"]:
+        if socket.if_nametoindex(name) != index or (Path("/sys/class/net") / name / "address").read_text().strip().lower() != mac:
             return False
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
             data = fcntl.ioctl(probe.fileno(), 0x8915, name.encode()[:15].ljust(256, b"\0"))
-        return socket.inet_ntoa(data[20:24]) == lane["localAddress"]
+        return socket.inet_ntoa(data[20:24]) == address
     except OSError:
         return False
+
+def observe_direct_socket_lane(lane):
+    return observe_socket_interface(lane["interfaceName"], lane["interfaceIndex"], lane["mac"], lane["localAddress"])
+
+def observe_ring_socket(binding):
+    return observe_socket_interface(binding["interfaceName"], binding["interfaceIndex"], binding["mac"], binding["advertisedAddress"])
 
 def bind_direct_socket(env, lane, management_interface, observed):
     # Only NCCL Socket moves to the lane; VLLM_HOST_IP, Gloo and the master
     # address stay on the management interface.
     if not observed or lane["interfaceName"] == management_interface: raise Unavailable("qualified_direct_socket_lane_changed")
     return {**env, "NCCL_SOCKET_IFNAME": "=" + lane["interfaceName"]}
+
+def bind_ring_socket(env, binding, management_interface, observed):
+    # Only NCCL Socket moves to the advertised ring address; VLLM_HOST_IP, Gloo
+    # and the master address stay on the management interface.
+    if not observed or binding["interfaceName"] == management_interface: raise Unavailable("qualified_ring_socket_interface_changed")
+    return {**env, "NCCL_SOCKET_IFNAME": "=" + binding["interfaceName"]}
 
 def bind_qwen_roce(env, hcas, gid_indexes):
     if len(gid_indexes) != 1: raise Unavailable("qualified_roce_gid_changed")
@@ -647,6 +682,8 @@ def model_environment(plan, bin_dir):
     env = {"PATH": str(bin_dir) + ":/usr/bin:/bin", "HOME": runtime_dir + "/.pair-home", "XDG_CACHE_HOME": runtime_dir + "/.pair-cache", "XDG_CONFIG_HOME": runtime_dir + "/.pair-home/config", "TMPDIR": "/run/" + runtime_name(plan), "TEMP": "/run/" + runtime_name(plan), "TMP": "/run/" + runtime_name(plan), "VLLM_RPC_BASE_PATH": "/run/" + runtime_name(plan), "HF_HOME": runtime_dir + "/.pair-cache/hf", "TORCH_EXTENSIONS_DIR": runtime_dir + "/.pair-cache/torch", "TRITON_CACHE_DIR": runtime_dir + "/.pair-cache/triton", "CUDA_CACHE_PATH": runtime_dir + "/.pair-cache/cuda", "VLLM_CACHE_ROOT": runtime_dir + "/.pair-cache/vllm", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1", "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1", "CUDA_VISIBLE_DEVICES": plan["gpuUuid"], "VLLM_HOST_IP": plan["localAddress"], "VLLM_USE_FLASHINFER_SAMPLER": "0", "VLLM_ALLREDUCE_USE_FLASHINFER": "0", "NCCL_NET": "Socket", "NCCL_IB_DISABLE": "1", "NCCL_SOCKET_FAMILY": "AF_INET", "NCCL_SOCKET_IFNAME": "=" + interface, "GLOO_SOCKET_IFNAME": interface}
     if "directSocket" in plan:
         env = bind_direct_socket(env, plan["directSocket"], interface, observe_direct_socket_lane(plan["directSocket"]))
+    if "ringSocket" in plan:
+        env = bind_ring_socket(env, plan["ringSocket"], interface, observe_ring_socket(plan["ringSocket"]))
     if plan["model"] == QWEN_MODEL:
         hcas, gid_indexes = [], set()
         for lane in plan["rdmaLanes"]:
@@ -941,6 +978,7 @@ def start_rank(plan, shipped_source):
                 record["policy"].update(netGdrLevel=0, netGdrC2c=0, netGdrRead=0, netPlugin="none", envPlugin="none", ginPlugin="none")
                 record["policy"]["mergeNICs"] = 1
             if "directSocket" in plan: record["policy"]["socketInterface"] = plan["directSocket"]["interfaceName"]
+            if "ringSocket" in plan: record["policy"]["socketInterface"] = plan["ringSocket"]["interfaceName"]
             return post_policy_start_result(channel, sender, nonce, hello, plan, record, directory)
         except Exception:
             cleanup_failed_start(plan, record, directory)
@@ -1006,6 +1044,7 @@ _NATIVE_FAILURE_CODES = {'normal_stop_cgroup_exit_unconfirmed', 'probe_nonce_cha
 _NATIVE_FAILURE_CODES.update({'supervisor_identity_invalid', 'supervisor_identity_unavailable', 'policy_record_write_failed', 'release_send_failed', 'supervisor_identity_missing'})
 _NATIVE_FAILURE_CODES.update({'qualified_roce_transport_required', 'qualified_roce_lane_required', 'qualified_roce_lane_changed', 'qualified_roce_gid_changed', 'qualified_roce_device_changed'})
 _NATIVE_FAILURE_CODES.update({'qualified_direct_socket_required', 'qualified_direct_socket_lane_changed'})
+_NATIVE_FAILURE_CODES.update({'qualified_ring_socket_required', 'qualified_ring_socket_interface_changed'})
 _NATIVE_FAILURE_CODES.update({'fixed_device_policy_required', 'effective_device_policy_changed', 'rank_device_access_unavailable'})
 
 def diagnostic_failure_code(exc):

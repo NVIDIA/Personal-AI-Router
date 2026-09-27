@@ -27,6 +27,7 @@ cluster. Keep their meanings separate:
 | Management-Socket NCCL passed | The selected ranks completed the fixed collective-correctness recipe over the management network | ConnectX-7 payload traffic, RDMA, RoCE bandwidth, or model inference |
 | Pipeline group served inference | The proxy, vLLM coordinator, ranks, model, and request path worked as one serving group over the management network | Fast-fabric payload use |
 | Direct-fabric TP2 served inference | The exact two-rank tensor plan served a request while bound to the reviewed direct fabric | Nothing beyond that exact build, model, topology, and run |
+| Ring-socket group served inference | The exact three-rank plan served a request while its NCCL Socket was bound to the reviewed routed ring | Nothing beyond that exact build, model, topology, and run |
 | Screenshot captured | The displayed state was visible at that moment | Backend acceptance, cleanup, performance, or human acceptance |
 
 Current hardware evidence covers one-Spark inference, two- and three-Spark
@@ -35,9 +36,12 @@ qualification and rollback, and three-rank failure/recovery. Final runtime
 `72afcf7a` also proves installed-TUI A/B direct-Socket TP2 review, participant
 check, masked one-use administrator access, HTTP 200 inference, exact rank
 cleanup, Desktop restoration and fabric rollback. The direct TP2 payload is
-NCCL Socket over one reviewed QSFP Ethernet lane with RDMA disabled. Three-node
-PP3 and the fixed NCCL correctness smoke still use management Socket; do not
-describe them as ring payload, RDMA, RoCE bandwidth or performance proof.
+NCCL Socket over one reviewed QSFP Ethernet lane with RDMA disabled. The
+three-Spark pipeline evidence ran over the management network; the
+`qualified-ring-socket` path, which binds a three-Spark group's NCCL Socket to an
+active routed ring, has no hardware evidence yet. The fixed NCCL correctness
+smoke uses management Socket. Do not describe any of these as RDMA, RoCE
+bandwidth or performance proof.
 
 ## Before You Start
 
@@ -275,9 +279,16 @@ reports that revision, use the **Serving group** card:
      **Tensor parallel — split each layer**. The review must say
      `qualified-direct-socket`: only NCCL Socket uses one reviewed QSFP
      Ethernet lane; rendezvous, Gloo, control, and SSH stay on management.
-   - Without that direct fabric, choose **Pipeline parallel — split layers**.
-     Two- and three-Spark pipeline groups use the management network, even when
-     a ring fabric operation is active.
+   - With three Sparks and their active routed ring, keep the default or choose
+     **Pipeline parallel — split layers** for PP3. Choose **Tensor parallel**
+     only for a model whose attention heads divide by three; review refuses
+     other models for that reason. The review must say NCCL Socket uses the
+     qualified three-node ring: each rank's NCCL Socket uses its advertised ring
+     address, while rendezvous, Gloo, control, and SSH stay on management. A
+     stale ring, or one applied before routed advertised addresses, blocks
+     review until you roll it back.
+   - Without a fabric, choose **Pipeline parallel — split layers**. Two- and
+     three-Spark pipeline groups then use the management network.
 3. Select **Review group** and read the coordinator, ranks, runtime, TP/PP/DP
    plan, and transport.
 4. Select **Check participants**. Readiness is not a start.
@@ -287,9 +298,9 @@ reports that revision, use the **Serving group** card:
    until the proxy lists the coordinator for the selected model; confirm that
    same model through `/v1/models` before sending inference.
 
-The ordinary direct-Socket TP2 path proves Ethernet Socket payload over the
-reviewed interconnect only when its exact run returns inference and cleanup
-receipts. It does not prove RDMA, host-buffer RoCE, or bandwidth.
+The ordinary direct- and ring-Socket paths prove Ethernet Socket payload over
+the reviewed interconnect only when their exact run returns inference and
+cleanup receipts. They do not prove RDMA, host-buffer RoCE, or bandwidth.
 
 ### Fixed Qwen3.8 group on the direct fabric
 
@@ -338,10 +349,11 @@ pipeline stages.
    successful request or process absence alone.
 
 The Qwen review's `host-buffer-roce` policy is distinct from the ordinary
-direct-Socket TP2 path and the management-Socket NCCL smoke. A passing fabric
-check or reviewed transport label alone does not prove payload traffic. Keep
-inference, same-run transport observations, and any bandwidth measurement as
-separate evidence; do not infer measured RDMA throughput from a chat response.
+direct- and ring-Socket paths and the management-Socket NCCL smoke. A passing
+fabric check or reviewed transport label alone does not prove payload traffic.
+Keep inference, same-run transport observations, and any bandwidth measurement
+as separate evidence; do not infer measured RDMA throughput from a chat
+response.
 
 ## 6. Run the First Inference
 

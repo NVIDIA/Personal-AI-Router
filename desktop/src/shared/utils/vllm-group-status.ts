@@ -12,6 +12,8 @@ import type {
     VllmGroupPlan,
     VllmGroupRankStatus,
     VllmGroupResourceSettings,
+    VllmGroupRingSocket,
+    VllmGroupRingSocketMember,
     VllmGroupRunState,
     VllmGroupRunStatus,
     VllmGroupStatus,
@@ -31,8 +33,11 @@ import {
     VLLM_GROUP_START_STDERR_CODES
 } from '@/shared/types/vllm-group'
 import { VLLM_QWEN38_MODEL, VLLM_QWEN38_RUNTIME } from '@/shared/constants/vllm'
+import { ipv4Value } from '@/shared/utils/fabric'
 
-const VLLM_DIRECT_SOCKET_RUNTIME = '0.29.0'
+const VLLM_FABRIC_SOCKET_RUNTIME = '0.29.0'
+const socketInterfacePattern = /^[A-Za-z0-9_.:-]{1,15}$/
+const lowerMacPattern = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/
 
 const GIB = 1024 ** 3
 const ORDINARY_LIMITS: VllmGroupLimits = {
@@ -302,6 +307,56 @@ function parseDirectSocket(value: unknown): VllmGroupDirectSocket {
     }
 }
 
+function ringAddress(value: unknown, label: string): string {
+    const result = text(value, label, 15)
+    if (ipv4Value(result) === null) throw new Error(`PAIR returned an invalid ${label}.`)
+    return result
+}
+
+function parseRingSocket(value: unknown): VllmGroupRingSocket {
+    const row = object(value, 'serving-group ring socket')
+    if (
+        Object.keys(row).length !== 4 ||
+        row.mode !== 'qualified-ring-socket' ||
+        !Array.isArray(row.members) ||
+        row.members.length !== 3
+    )
+        throw new Error('PAIR returned an invalid ring socket binding.')
+    return {
+        mode: 'qualified-ring-socket',
+        operationId: operationId(row.operationId, 'ring socket operation'),
+        qualificationSha256: digest(row.qualificationSha256, 'ring socket qualification digest'),
+        members: row.members.map((entry): VllmGroupRingSocketMember => {
+            const member = object(entry, 'ring socket member')
+            const lanes = member.laneAddresses
+            const interfaceName = text(member.interfaceName, 'ring socket interface', 15)
+            const mac = text(member.mac, 'ring socket MAC address', 17)
+            if (
+                Object.keys(member).length !== 6 ||
+                !Array.isArray(lanes) ||
+                lanes.length !== 2 ||
+                !socketInterfacePattern.test(interfaceName) ||
+                !lowerMacPattern.test(mac)
+            )
+                throw new Error('PAIR returned an invalid ring socket member.')
+            return {
+                nodeId: identity(member.nodeId, 'ring socket member node'),
+                interfaceName,
+                interfaceIndex: positive(member.interfaceIndex, 'ring socket interface index'),
+                mac,
+                advertisedAddress: ringAddress(
+                    member.advertisedAddress,
+                    'ring socket advertised address'
+                ),
+                laneAddresses: [
+                    ringAddress(lanes[0], 'ring socket lane address'),
+                    ringAddress(lanes[1], 'ring socket lane address')
+                ]
+            }
+        })
+    }
+}
+
 function optionalCount(value: unknown, label: string): number | undefined {
     return value === undefined ? undefined : count(value, label)
 }
@@ -420,6 +475,7 @@ export function parseVllmGroupPlan(value: unknown, options: VllmGroupPlanOptions
             : parseTransport(row.transport, options.historicalTransport === true)
     const directSocket =
         row.directSocket === undefined ? undefined : parseDirectSocket(row.directSocket)
+    const ringSocket = row.ringSocket === undefined ? undefined : parseRingSocket(row.ringSocket)
     if (
         new Set(members.map(member => member.nodeId)).size !== members.length ||
         new Set(members.map(member => member.pinSha256)).size !== members.length ||
@@ -448,11 +504,16 @@ export function parseVllmGroupPlan(value: unknown, options: VllmGroupPlanOptions
         transport === undefined &&
         members.every(member => member.fabric === undefined) &&
         (directSocket === undefined || directSocketMatches(directSocket, members, topology)) &&
-        (directSocket === undefined || runtime === VLLM_DIRECT_SOCKET_RUNTIME) &&
+        (directSocket === undefined || runtime === VLLM_FABRIC_SOCKET_RUNTIME) &&
+        (ringSocket === undefined ||
+            (directSocket === undefined &&
+                ringSocketMatches(ringSocket, members, topology) &&
+                runtime === VLLM_FABRIC_SOCKET_RUNTIME)) &&
         (limits === undefined || sameLimits(limits, ORDINARY_LIMITS))
     // Qwen3.8 serves only on two Sparks, as TP2+EP2.
     const qwenFixed =
         directSocket === undefined &&
+        ringSocket === undefined &&
         runtime === VLLM_QWEN38_RUNTIME &&
         members.length === 2 &&
         topology.tensorParallel === 2 &&
@@ -480,7 +541,8 @@ export function parseVllmGroupPlan(value: unknown, options: VllmGroupPlanOptions
         members,
         ...(limits ? { limits } : {}),
         ...(transport ? { transport } : {}),
-        ...(directSocket ? { directSocket } : {})
+        ...(directSocket ? { directSocket } : {}),
+        ...(ringSocket ? { ringSocket } : {})
     }
 }
 
@@ -500,6 +562,42 @@ function directSocketMatches(
         far.nodeId === members[1].nodeId &&
         near.localAddress === far.peerAddress &&
         far.localAddress === near.peerAddress
+    )
+}
+
+/**
+ * Ordinary three-node TP3 or PP3 only, one member per plan member in order,
+ * each advertising one of its two ascending ring addresses off management.
+ * The six addresses pair into /31 cables that each join two distinct members.
+ */
+function ringSocketMatches(
+    ringSocket: VllmGroupRingSocket,
+    members: VllmGroupMemberStatus[],
+    topology: VllmGroupTopology
+): boolean {
+    const owners = new Map<number, number>()
+    ringSocket.members.forEach((member, index) =>
+        member.laneAddresses.forEach(address => owners.set(ipv4Value(address) ?? -1, index))
+    )
+    const management = new Set(members.map(member => member.placement?.address))
+    return (
+        members.length === 3 &&
+        topology.dataParallel === 1 &&
+        ((topology.tensorParallel === 3 && topology.pipelineParallel === 1) ||
+            (topology.tensorParallel === 1 && topology.pipelineParallel === 3)) &&
+        ringSocket.members.every(
+            (member, index) =>
+                member.nodeId === members[index].nodeId &&
+                (ipv4Value(member.laneAddresses[0]) ?? -1) <
+                    (ipv4Value(member.laneAddresses[1]) ?? -1) &&
+                member.laneAddresses.includes(member.advertisedAddress) &&
+                member.laneAddresses.every(address => !management.has(address))
+        ) &&
+        owners.size === 6 &&
+        Array.from(owners).every(([address, owner]) => {
+            const peer = owners.get(address % 2 === 0 ? address + 1 : address - 1)
+            return peer !== undefined && peer !== owner
+        })
     )
 }
 

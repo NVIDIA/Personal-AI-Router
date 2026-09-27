@@ -253,14 +253,14 @@ func qualifiedDirectFabricFixture(t *testing.T) (*fabricService, *fabricRunRecor
 func TestDirectFabricAbsenceDefaultsWhileStaleOrAmbiguousFailsClosed(t *testing.T) {
 	members := []string{"node-a", "node-b"}
 	empty := newFabricService(&Manager{exec: &Executor{baseDir: t.TempDir()}})
-	if _, _, _, err := empty.directFabricFor(context.Background(), members); !errors.Is(err, errNoDirectFabric) {
+	if _, _, _, err := empty.directFabricFor(context.Background(), members); !errors.Is(err, errNoFabric) {
 		t.Fatalf("no fabric was not reported as genuine absence: %v", err)
 	}
 	s, r := qualifiedDirectFabricFixture(t)
 	if op, digest, endpoints, err := s.directFabricFor(context.Background(), members); err != nil || op != r.Public.OperationID || digest != r.Public.QualificationDigest || len(endpoints) != 4 {
 		t.Fatalf("the exact active direct fabric was not requalified: %v", err)
 	}
-	if _, _, _, err := s.directFabricFor(context.Background(), []string{"node-x", "node-y"}); !errors.Is(err, errNoDirectFabric) {
+	if _, _, _, err := s.directFabricFor(context.Background(), []string{"node-x", "node-y"}); !errors.Is(err, errNoFabric) {
 		t.Fatalf("an unrelated fabric blocked other members: %v", err)
 	}
 	for name, spoil := range map[string]func(*fabricService, *fabricRunRecord){
@@ -285,14 +285,14 @@ func TestDirectFabricAbsenceDefaultsWhileStaleOrAmbiguousFailsClosed(t *testing.
 		t.Run(name, func(t *testing.T) {
 			s, r := qualifiedDirectFabricFixture(t)
 			spoil(s, r)
-			if _, _, _, err := s.directFabricFor(context.Background(), members); err == nil || errors.Is(err, errNoDirectFabric) {
+			if _, _, _, err := s.directFabricFor(context.Background(), members); err == nil || errors.Is(err, errNoFabric) {
 				t.Fatalf("a stale or ambiguous fabric did not fail closed: %v", err)
 			}
 		})
 	}
 	s, r = qualifiedDirectFabricFixture(t)
 	r.Public.CleanupConfirmed = true
-	if _, _, _, err := s.directFabricFor(context.Background(), members); !errors.Is(err, errNoDirectFabric) {
+	if _, _, _, err := s.directFabricFor(context.Background(), members); !errors.Is(err, errNoFabric) {
 		t.Fatalf("a cleaned-up operation still counted as present: %v", err)
 	}
 }

@@ -328,10 +328,22 @@ reply is reconciled from `status`; callers must not resend it blindly.
 The ordinary two-node tensor path requires an active qualified direct fabric.
 Its `qualified-direct-socket` plan uses NCCL Socket on the reviewed QSFP
 Ethernet lane while rendezvous, Gloo, control, and SSH stay on the management
-network; RDMA is disabled. Two- or three-node pipeline mode uses the management
-network. The separate fixed Qwen3.8 profile may admit its reviewed
-`host-buffer-roce` contract, but an active ring alone does not make an ordinary
-group use RDMA or the ring payload lanes.
+network; RDMA is disabled. Two-node pipeline mode uses the management network.
+
+Three ordinary nodes default to PP3. When one active routed ring joins exactly
+the selected nodes and requalifies, PP3 and explicit TP3 bind the
+`qualified-ring-socket` plan: each rank's NCCL Socket uses the p0 interface that
+carries its advertised ring address, and its unit admits only the six ring
+addresses beyond management. Rendezvous, `VLLM_HOST_IP`, Gloo, control, and SSH
+stay on the management network, and RDMA is disabled. Explicit TP3 also needs a
+model whose heads, linear dimensions, and padded vocabulary divide three ways; a
+model that cannot is refused for that reason before the ring is consulted.
+With no fabric involving the selected nodes, PP3 uses the management network
+and TP3 is refused. Any other fabric state involving them, such as a stale,
+ambiguous, or unrouted ring or a direct fabric joining two of them, refuses
+review in every mode. Both socket plans require the managed vLLM runtime. The
+separate fixed Qwen3.8 profile may admit its reviewed `host-buffer-roce`
+contract, but an active fabric alone never makes an ordinary group use RDMA.
 
 Fabric follows review → approve/apply → active → cancel/rollback, with explicit
 status and recovery. Records retain the exact targets, temporary addresses,

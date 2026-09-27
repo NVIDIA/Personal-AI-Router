@@ -53,9 +53,13 @@ func TestVLLMGroupLlamaTP3AndPP3BindDifferentPlans(t *testing.T) {
 		facts[i].Config = []byte(denseLlamaModeConfig)
 	}
 	selection.Parallelism = "tensor"
+	if _, err := assembleVLLMGroupPlan(selection, facts, pins); !errors.Is(err, errVLLMGroupTensorNeedsRingFabric) {
+		t.Fatal("verified-dimension dense Llama fixture was admitted as TP3 without a routed ring", err)
+	}
+	facts[0].ringSocket = ringSocketTestBinding(t, selection.NodeIDs...)
 	tp, err := assembleVLLMGroupPlan(selection, facts, pins)
-	if err != nil || tp.Topology.TensorParallel != 3 || tp.Topology.PipelineParallel != 1 {
-		t.Fatal("verified-dimension dense Llama fixture did not admit explicit TP3", err)
+	if err != nil || tp.Topology.TensorParallel != 3 || tp.Topology.PipelineParallel != 1 || tp.RingSocket == nil {
+		t.Fatal("verified-dimension dense Llama fixture did not admit explicit TP3 over the routed ring", err)
 	}
 	partition, err := vllmGroupLayerPartition(tp.Topology, 3, facts[0].Config)
 	if err != nil || partition != "30" {

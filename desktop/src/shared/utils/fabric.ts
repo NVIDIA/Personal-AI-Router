@@ -115,7 +115,7 @@ function distinct(values: string[], label: string): void {
     if (new Set(values).size !== values.length) invalid(label)
 }
 
-function ipv4Value(value: string): number | null {
+export function ipv4Value(value: string): number | null {
     const parts = value.split('.')
     if (
         parts.length !== 4 ||

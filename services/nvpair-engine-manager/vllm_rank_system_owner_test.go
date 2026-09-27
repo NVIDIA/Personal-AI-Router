@@ -26,6 +26,15 @@ func TestFixedRankWorkerTransport(t *testing.T) {
 	}
 }
 
+// Linux caps a single exec argument at 128 KiB, and the worker ships inline.
+func TestFixedRankWorkerFitsOneExecArgument(t *testing.T) {
+	argv, input, err := vllmSystemRankInvocation("start", vllmRankSystemPlan{NodeID: "node-a"}, nil, &diagnosticPackageElevation{NodeID: "node-a", NonInteractive: true})
+	defer clear(input)
+	if err != nil || len(argv) == 0 || len(argv[len(argv)-1]) >= 128<<10 {
+		t.Fatalf("the inline fixed rank worker no longer fits one exec argument: %v", err)
+	}
+}
+
 func TestFixedRankWorkerNormalizesBoundedSystemdArrayReadback(t *testing.T) {
 	for _, fragment := range []string{
 		`repeatable = {"DeviceAllow", "IPAddressAllow", "IPAddressDeny"}`,

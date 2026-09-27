@@ -70,6 +70,7 @@ type vllmRankSystemPlan struct {
 	Transport          *vllmGroupTransport     `json:"transport,omitempty"`
 	RDMALanes          []vllmGroupRDMALane     `json:"rdmaLanes,omitempty"`
 	DirectSocket       *vllmRankDirectSocket   `json:"directSocket,omitempty"`
+	RingSocket         *vllmRankRingSocket     `json:"ringSocket,omitempty"`
 	Devices            []string                `json:"devices"`
 	Limits             vllmRankSystemLimits    `json:"limits"`
 }
@@ -85,6 +86,19 @@ type vllmRankDirectSocket struct {
 	LocalAddress        string `json:"localAddress"`
 	PeerAddress         string `json:"peerAddress"`
 	PeerNodeID          string `json:"peerNodeId"`
+}
+
+// The interface carrying this member's advertised ring address, plus every
+// ring address the rank's NCCL Socket peers may use.
+type vllmRankRingSocket struct {
+	Mode                string   `json:"mode"`
+	OperationID         string   `json:"operationId"`
+	QualificationSHA256 string   `json:"qualificationSha256"`
+	InterfaceName       string   `json:"interfaceName"`
+	InterfaceIndex      int      `json:"interfaceIndex"`
+	MAC                 string   `json:"mac"`
+	AdvertisedAddress   string   `json:"advertisedAddress"`
+	RingAddresses       []string `json:"ringAddresses"`
 }
 
 // The caller places this fixed request behind the existing reviewed admin form

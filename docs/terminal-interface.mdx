@@ -295,11 +295,17 @@ is lost, PAIR refreshes retained status instead of resending the effect.
 
 Transport labels are intentionally literal:
 
-- A two-node tensor review using `qualified-direct-socket` runs NCCL Socket on
-  one reviewed QSFP Ethernet lane. Rendezvous, Gloo, SSH, and control stay on
-  the management network, and RDMA is disabled.
-- An ordinary two- or three-node pipeline review uses the management network,
-  even when a direct or ring fabric operation is active.
+- A two-node tensor review using `qualified-direct-socket` shows **NCCL Socket
+  on the qualified direct fabric lane** and runs NCCL Socket on one reviewed
+  QSFP Ethernet lane. Rendezvous, Gloo, SSH, and control stay on the management
+  network, and RDMA is disabled.
+- A three-node review over an active routed ring uses `qualified-ring-socket`
+  and shows **NCCL Socket on the qualified routed ring**: each rank's NCCL
+  Socket uses its advertised ring address, control stays on the management
+  network, and RDMA is disabled. Tensor parallelism needs that ring and a model
+  whose attention heads divide by three.
+- An ordinary two-node pipeline review, or a three-node review with no fabric,
+  uses the management network and shows no transport line.
 - The fixed Qwen3.8 `host-buffer-roce` profile is a separate reviewed contract.
   Cabling, a passing cable check, or an active ring alone does not prove RDMA,
   model payload on the ring, bandwidth, or inference.

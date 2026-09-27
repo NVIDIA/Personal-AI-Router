@@ -45,6 +45,9 @@ func systemRankPolicyPassed(plan vllmRankSystemPlan, result vllmSystemRankResult
 	if plan.DirectSocket != nil {
 		return p.Transport == vllmGroupDirectSocketMode && p.RDMADisabled && len(p.HCAs) == 0 && p.SocketInterface == plan.DirectSocket.InterfaceName
 	}
+	if plan.RingSocket != nil {
+		return p.Transport == vllmGroupRingSocketMode && p.RDMADisabled && len(p.HCAs) == 0 && p.SocketInterface == plan.RingSocket.InterfaceName
+	}
 	return p.Transport == "tcp-only" && p.RDMADisabled && len(p.HCAs) == 0 && p.SocketInterface == ""
 }
 
@@ -338,6 +341,8 @@ func (r *vllmManagedRank) observeSystem(ctx context.Context) (vllmSystemRankResu
 		wantTransport = vllmQwen38Transport
 	} else if plan.DirectSocket != nil {
 		wantTransport = vllmGroupDirectSocketMode
+	} else if plan.RingSocket != nil {
+		wantTransport = vllmGroupRingSocketMode
 	}
 	if result.State != "running" || result.CleanupConfirmed || result.MainPID != supervisor.PID ||
 		!slices.Contains(result.OwnedPIDs, supervisor.PID) || result.Transport != wantTransport ||

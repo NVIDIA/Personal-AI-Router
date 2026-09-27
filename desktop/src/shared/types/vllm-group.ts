@@ -87,6 +87,8 @@ export const VLLM_GROUP_START_FAILURE_CODES = [
     'process_failed',
     'qualified_direct_socket_lane_changed',
     'qualified_direct_socket_required',
+    'qualified_ring_socket_interface_changed',
+    'qualified_ring_socket_required',
     'qualified_roce_gid_changed',
     'qualified_roce_device_changed',
     'qualified_roce_lane_changed',

@@ -192,6 +192,18 @@ func (p *vllmGroupPeer) control(ctx context.Context, r vllmGroupPeerRequest) (vl
 			return vllmGroupPeerResult{}, errors.New("the direct fabric consumer lease must be held before any rank starts")
 		}
 	}
+	if r.Plan.RingSocket != nil && r.Action != "stop" && r.Action != "reconcile" {
+		if p == nil || p.m == nil || p.m.exec == nil || p.m.exec.fabric == nil {
+			return vllmGroupPeerResult{}, errors.New("the ring fabric owner is unavailable")
+		}
+		if err := currentVLLMGroupRingSocket(p.m.exec.fabric, r.Plan); err != nil {
+			return vllmGroupPeerResult{}, err
+		}
+		lease := fabricConsumerLease{Owner: fabricLeaseOwnerServingGroup, RunID: r.RunID, Generation: r.Generation, PlanDigest: r.PlanDigest}
+		if (r.Action == "prepare" || r.Action == "start") && !p.m.exec.fabric.consumerLeaseHeld(r.Plan.RingSocket.OperationID, lease) {
+			return vllmGroupPeerResult{}, errors.New("the ring fabric consumer lease must be held before any rank starts")
+		}
+	}
 	timeout := vllmGroupPeerActionBudget(r)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

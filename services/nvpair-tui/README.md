@@ -79,10 +79,13 @@ the pending administrator input and requires fresh state.
 
 The direct two-node tensor plan is `qualified-direct-socket`: NCCL Socket uses
 the reviewed QSFP Ethernet lane while control remains on the management
-network, with RDMA disabled. A three-node ordinary pipeline group still uses
-the management network even if a ring is active. The separate fixed Qwen3.8
-profile is the only current ring-RoCE payload contract; the UI must not infer
-that contract from cabling or an active fabric operation alone.
+network, with RDMA disabled. A three-node ordinary group over an active routed
+ring is `qualified-ring-socket`: each rank's NCCL Socket uses its advertised
+ring address, with the same management control and RDMA disabled. Without a
+fabric, pipeline groups use the management network. Reviews and runs label the
+socket transport they bind. The separate fixed Qwen3.8 profile is the only
+current RoCE payload contract; the UI must not infer that contract from cabling
+or an active fabric operation alone.
 
 ## Keys
 

@@ -34,7 +34,16 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - Relay canonical device bootstrap control to the target's fixed helper: strict catalog/public-key metadata, access- and host-key-bound inspect/review/apply/status/recover/verify, and target-produced status/receipt validation. The target—not engine-manager—owns privileged effects and durable bootstrap authority.
 - Review, check, start, stop, and reconcile one exact two- or three-node managed
   vLLM group. Engine Manager owns the retained generation and cleanup hold,
-  while each Linux participant's fixed system owner owns its rank.
+  while each Linux participant's fixed system owner owns its rank. An ordinary
+  group moves only NCCL Socket onto a fabric: two-node TP2 onto one lane of the
+  exact active direct fabric (`qualified-direct-socket`), and three-node PP3 or
+  TP3 onto each member's advertised address on the exact active routed ring
+  (`qualified-ring-socket`). Rendezvous, Gloo, and control stay on management
+  and RDMA stays off. Explicit tensor parallelism requires that fabric, and TP3
+  also a model that divides three ways. A consulted fabric that is absent leaves
+  pipeline stages on the management network, while a stale, ambiguous, or
+  unrouted one fails closed; explicit two-node pipeline mode does not consult
+  the direct fabric.
 - The Qwen3.8 profile serves only as TP2+EP2 on exactly two Sparks. Review
   refuses a three-Spark selection before inspecting any member: the model's two
   key-value heads cannot split three ways, a full copy of its shared weights on

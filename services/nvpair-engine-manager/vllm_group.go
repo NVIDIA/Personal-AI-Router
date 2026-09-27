@@ -67,6 +67,7 @@ type vllmGroupPlan struct {
 	Topology     vllmGroupTopology      `json:"topology"`
 	Transport    *vllmGroupTransport    `json:"transport,omitempty"`
 	DirectSocket *vllmGroupDirectSocket `json:"directSocket,omitempty"`
+	RingSocket   *vllmGroupRingSocket   `json:"ringSocket,omitempty"`
 	Limits       vllmGroupLimits        `json:"limits"`
 	Coordinator  string                 `json:"coordinator"`
 	Model        string                 `json:"model"`
@@ -303,6 +304,9 @@ func vllmGroupFabricBinding(plan vllmGroupPlan) (operationID, qualification stri
 	if plan.DirectSocket != nil {
 		return plan.DirectSocket.OperationID, plan.DirectSocket.QualificationSHA256, true
 	}
+	if plan.RingSocket != nil {
+		return plan.RingSocket.OperationID, plan.RingSocket.QualificationSHA256, true
+	}
 	return "", "", false
 }
 
@@ -324,6 +328,7 @@ func cloneVLLMGroupPlan(p vllmGroupPlan) vllmGroupPlan {
 		p.Transport = &value
 	}
 	p.DirectSocket = cloneVLLMGroupDirectSocket(p.DirectSocket)
+	p.RingSocket = cloneVLLMGroupRingSocket(p.RingSocket)
 	if p.Topology.MTP != nil {
 		value := *p.Topology.MTP
 		p.Topology.MTP = &value
@@ -409,6 +414,9 @@ func vllmGroupPlanDigest(p vllmGroupPlan) (string, error) {
 	}
 	if err == nil {
 		err = validateVLLMGroupDirectSocket(p)
+	}
+	if err == nil {
+		err = validateVLLMGroupRingSocket(p)
 	}
 	if err != nil {
 		return "", err

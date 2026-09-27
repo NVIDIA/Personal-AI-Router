@@ -134,6 +134,12 @@ func buildVLLMSystemRankPlanAt(b vllmGroupBinding, runtimeDir string) (vllmRankS
 			InterfaceName: lane.InterfaceName, InterfaceIndex: lane.InterfaceIndex, MAC: lane.MAC, LocalAddress: lane.LocalAddress,
 			PeerAddress: lane.PeerAddress, PeerNodeID: ds.Lanes[1-b.Rank].NodeID}
 	}
+	if rs := b.Plan.RingSocket; rs != nil {
+		if err := validateVLLMGroupRingSocket(b.Plan); err != nil {
+			return vllmRankSystemPlan{}, errors.New("native rank lacks the exact qualified ring socket plan")
+		}
+		result.RingSocket = vllmRankRingSocketFor(rs, b.Rank)
+	}
 	devices, err := vllmRankDevicePaths(member.GPUUUID, result.RDMALanes)
 	if err != nil {
 		return vllmRankSystemPlan{}, err

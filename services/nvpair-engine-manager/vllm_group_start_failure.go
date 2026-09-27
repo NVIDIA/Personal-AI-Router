@@ -153,6 +153,8 @@ func init() {
 	vllmRankFailureCodes["prepare_owner_busy"] = true
 	vllmRankFailureCodes["qualified_direct_socket_required"] = true
 	vllmRankFailureCodes["qualified_direct_socket_lane_changed"] = true
+	vllmRankFailureCodes["qualified_ring_socket_required"] = true
+	vllmRankFailureCodes["qualified_ring_socket_interface_changed"] = true
 }
 
 func init() {

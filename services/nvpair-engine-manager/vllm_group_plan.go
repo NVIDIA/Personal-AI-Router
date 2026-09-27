@@ -59,6 +59,7 @@ type vllmGroupFacts struct {
 	fabricTransport            *vllmGroupTransport    // existing fabric owner evidence; never accepted from peer JSON
 	fabric                     *vllmGroupMemberFabric // existing fabric owner evidence; never accepted from peer JSON
 	directSocket               *vllmGroupDirectSocket // existing fabric owner evidence; never accepted from peer JSON
+	ringSocket                 *vllmGroupRingSocket   // existing fabric owner evidence; never accepted from peer JSON
 	NodeID                     string                 `json:"nodeId"`
 	Model                      string                 `json:"model"`
 	ModelDigest                string                 `json:"modelDigest"`
@@ -383,8 +384,9 @@ func assembleVLLMGroupPlan(s vllmGroupSelection, facts []vllmGroupFacts, pins []
 	}
 	plan = vllmGroupPlan{Coordinator: s.NodeIDs[0], Model: s.Model, Runtime: runtimeVersion, Limits: vllmGroupLimitsForModel(s.Model), Topology: vllmGroupTopology{TensorParallel: len(facts), PipelineParallel: 1, DataParallel: 1}}
 	// Three nodes are not implicitly a TP3 request, and two ordinary nodes
-	// default to TP2 only over a bound direct socket lane. Model validation still
-	// gates every explicit mode.
+	// default to TP2 only over a bound direct socket lane. Three ordinary nodes
+	// carry a bound ring socket in either mode. Model validation gates every
+	// explicit mode before its fabric requirement.
 	direct := !qwen && len(facts) == 2 && facts[0].directSocket != nil
 	if !qwen && (s.Parallelism == "pipeline" || s.Parallelism == "" && (len(facts) == 3 || !direct)) {
 		plan.Topology.TensorParallel = 1
@@ -411,6 +413,9 @@ func assembleVLLMGroupPlan(s vllmGroupSelection, facts []vllmGroupFacts, pins []
 				return vllmGroupPlan{}, errVLLMGroupTensorNeedsDirectFabric
 			}
 			plan.DirectSocket = cloneVLLMGroupDirectSocket(facts[0].directSocket)
+		}
+		if len(facts) == 3 {
+			plan.RingSocket = cloneVLLMGroupRingSocket(facts[0].ringSocket)
 		}
 	}
 	common := map[string]bool{}
@@ -498,6 +503,9 @@ func assembleVLLMGroupPlan(s vllmGroupSelection, facts []vllmGroupFacts, pins []
 			member.Fabric = &vllmGroupMemberFabric{Lanes: append([]vllmGroupRDMALane(nil), f.fabric.Lanes...)}
 		}
 		plan.Members = append(plan.Members, member)
+	}
+	if !qwen && plan.Topology.TensorParallel == 3 && plan.RingSocket == nil {
+		return vllmGroupPlan{}, errVLLMGroupTensorNeedsRingFabric
 	}
 	if _, err := vllmGroupPlanDigest(plan); err != nil {
 		return plan, err
@@ -592,12 +600,16 @@ func (m *Manager) buildVLLMGroupPlan(ctx context.Context, s vllmGroupSelection) 
 			if err := bindVLLMGroupDirectSocketFacts(s, facts, principals, operationID, qualification, endpoints); err != nil {
 				return empty, err
 			}
-		case errors.Is(fabricErr, errNoDirectFabric) && s.Parallelism == "":
+		case errors.Is(fabricErr, errNoFabric) && s.Parallelism == "":
 			// Genuine absence: the default falls back to PP2 on the management network.
-		case errors.Is(fabricErr, errNoDirectFabric):
+		case errors.Is(fabricErr, errNoFabric):
 			return empty, errVLLMGroupTensorNeedsDirectFabric
 		default:
 			return empty, fabricErr
+		}
+	} else if len(s.NodeIDs) == 3 {
+		if err := resolveVLLMGroupRingSocket(ctx, s, facts, principals, m.vllmGroupRingFabric); err != nil {
+			return empty, err
 		}
 	}
 	return assembleVLLMGroupPlan(s, facts, pins)

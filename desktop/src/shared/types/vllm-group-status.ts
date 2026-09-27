@@ -151,6 +151,24 @@ export interface VllmGroupDirectSocket {
     lanes: VllmGroupDirectSocketLane[]
 }
 
+export interface VllmGroupRingSocketMember {
+    nodeId: string
+    interfaceName: string
+    interfaceIndex: number
+    mac: string
+    advertisedAddress: string
+    /** The member's two ring cable addresses, ascending; one is advertised. */
+    laneAddresses: string[]
+}
+
+/** Ordinary three-node TP3 or PP3 only: NCCL Socket on each member's advertised routed-ring address. */
+export interface VllmGroupRingSocket {
+    mode: 'qualified-ring-socket'
+    operationId: string
+    qualificationSha256: string
+    members: VllmGroupRingSocketMember[]
+}
+
 export interface VllmGroupPlan {
     coordinator: string
     model: string
@@ -160,6 +178,7 @@ export interface VllmGroupPlan {
     limits?: VllmGroupLimits
     transport?: VllmGroupTransport
     directSocket?: VllmGroupDirectSocket
+    ringSocket?: VllmGroupRingSocket
 }
 
 export interface VllmGroupRunStatus {

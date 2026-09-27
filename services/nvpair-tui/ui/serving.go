@@ -55,12 +55,22 @@ type servingGroupRun struct {
 }
 
 type servingGroupPlan struct {
-	Coordinator string                 `json:"coordinator"`
-	Model       string                 `json:"model"`
-	Runtime     string                 `json:"runtime"`
-	Topology    servingGroupTopology   `json:"topology"`
-	Members     []servingGroupMember   `json:"members"`
-	Transport   *servingGroupTransport `json:"transport,omitempty"`
+	Coordinator  string                 `json:"coordinator"`
+	Model        string                 `json:"model"`
+	Runtime      string                 `json:"runtime"`
+	Topology     servingGroupTopology   `json:"topology"`
+	Members      []servingGroupMember   `json:"members"`
+	Transport    *servingGroupTransport `json:"transport,omitempty"`
+	DirectSocket *servingGroupSocket    `json:"directSocket,omitempty"`
+	RingSocket   *servingGroupSocket    `json:"ringSocket,omitempty"`
+}
+
+// Only the reviewed fabric identity of an ordinary NCCL Socket binding; Engine
+// Manager validates its interfaces and addresses.
+type servingGroupSocket struct {
+	Mode                string `json:"mode"`
+	OperationID         string `json:"operationId"`
+	QualificationSHA256 string `json:"qualificationSha256"`
 }
 
 type servingGroupTransport struct {
@@ -441,7 +451,10 @@ func validateServingGroupPlanMode(plan servingGroupPlan, allowHistoricalTranspor
 		if plan.Transport != nil {
 			return fmt.Errorf("ordinary serving-group plan claimed the fixed Qwen transport")
 		}
-		return nil
+		return validateServingGroupSocket(plan)
+	}
+	if plan.DirectSocket != nil || plan.RingSocket != nil {
+		return fmt.Errorf("fixed Qwen serving-group plan claimed an ordinary socket binding")
 	}
 	// Qwen3.8 serves only on two Sparks, as TP2+EP2.
 	if plan.Runtime != servingGroupQwenRuntime || len(plan.Members) != 2 || plan.Topology.TensorParallel != 2 || plan.Topology.PipelineParallel != 1 || plan.Topology.DataParallel != 1 {
@@ -449,6 +462,26 @@ func validateServingGroupPlanMode(plan servingGroupPlan, allowHistoricalTranspor
 	}
 	if err := validateServingGroupTransport(plan.Transport, allowHistoricalTransport); err != nil {
 		return err
+	}
+	return nil
+}
+
+// An ordinary plan binds NCCL Socket to at most one fabric: the direct lane of
+// a two-node TP2 group, or the routed ring of a three-node TP3 or PP3 group.
+func validateServingGroupSocket(plan servingGroupPlan) error {
+	topology := plan.Topology
+	socket, mode := plan.DirectSocket, "qualified-direct-socket"
+	fits := len(plan.Members) == 2 && topology.TensorParallel == 2 && topology.PipelineParallel == 1
+	if plan.RingSocket != nil {
+		socket, mode = plan.RingSocket, "qualified-ring-socket"
+		fits = len(plan.Members) == 3 && (topology.TensorParallel == 3 && topology.PipelineParallel == 1 || topology.TensorParallel == 1 && topology.PipelineParallel == 3)
+	}
+	if socket == nil {
+		return nil
+	}
+	if plan.DirectSocket != nil && plan.RingSocket != nil || !fits || topology.DataParallel != 1 || socket.Mode != mode ||
+		!servingGroupIDPattern.MatchString(socket.OperationID) || !servingGroupDigestPattern.MatchString(socket.QualificationSHA256) {
+		return fmt.Errorf("ordinary serving-group socket binding is invalid")
 	}
 	return nil
 }
@@ -986,10 +1019,14 @@ func topologyLabel(topology servingGroupTopology) string {
 }
 
 func servingGroupTransportLabel(plan servingGroupPlan) string {
-	if plan.Transport == nil {
+	switch {
+	case plan.DirectSocket != nil:
+		return "NCCL Socket on the qualified direct fabric lane · control on management · RDMA off"
+	case plan.RingSocket != nil:
+		return "NCCL Socket on the qualified routed ring · control on management · RDMA off"
+	case plan.Transport == nil:
 		return ""
-	}
-	if plan.Transport.SubnetAwareRouting == nil {
+	case plan.Transport.SubnetAwareRouting == nil:
 		return "host-buffer RoCE · historical peer-subnet policy not recorded · socket payload fallback off"
 	}
 	return "host-buffer RoCE · merged NICs on · socket payload fallback off"

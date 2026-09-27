@@ -132,6 +132,9 @@ func vllmRankArgs(cli string, b vllmGroupBinding, p vllmRankPlacement, s vllmRes
 	if err := validateVLLMRankBinding(b, p); err != nil {
 		return nil, err
 	}
+	if b.Plan.RingSocket != nil {
+		return nil, errors.New("the qualified ring socket requires the contained native owner")
+	}
 	if len(b.Plan.Members) != 2 || b.Plan.Topology.TensorParallel != 2 || b.Plan.Topology.PipelineParallel != 1 {
 		return nil, errors.New("direct managed-process compiler supports TP2/PP1 only; use the contained native owner for other modes")
 	}

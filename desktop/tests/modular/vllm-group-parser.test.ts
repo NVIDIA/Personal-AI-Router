@@ -19,7 +19,8 @@ import {
 import {
     VLLM_GROUP_START_FAILURE_CODES,
     VLLM_GROUP_START_FAILURE_STAGES,
-    VLLM_GROUP_START_STDERR_CODES
+    VLLM_GROUP_START_STDERR_CODES,
+    type VllmGroupReview
 } from '@/shared/types/vllm-group'
 import {
     groupCheck,
@@ -177,6 +178,85 @@ describe('serving-group review parser', () => {
                 })
             ],
             [groupReview(2), attachCurrent({ ...directSocket, lanes: [lane] })]
+        ]
+        for (const [review, spoil] of refused)
+            expect(() => parseVllmGroupReview(mutate(review, spoil))).toThrow()
+    })
+
+    it('accepts a qualified ring socket only on an ordinary three-node TP3 or PP3 plan', () => {
+        const member = (nodeId: string, advertisedAddress: string, laneAddresses: string[]) => ({
+            nodeId,
+            interfaceName: `${nodeId}-p0`,
+            interfaceIndex: 2,
+            mac: '02:00:00:00:00:01',
+            advertisedAddress,
+            laneAddresses
+        })
+        const members = [
+            member('node-a', '10.253.0.0', ['10.253.0.0', '10.253.0.2']),
+            member('node-b', '10.253.0.4', ['10.253.0.1', '10.253.0.4']),
+            member('node-c', '10.253.0.3', ['10.253.0.3', '10.253.0.5'])
+        ]
+        const ringSocket = {
+            mode: 'qualified-ring-socket',
+            operationId: 'a'.repeat(32),
+            qualificationSha256: 'b'.repeat(64),
+            members
+        }
+        const attach = (socket: object) => (row: Mutable) => (row.plan.ringSocket = socket)
+        const attachCurrent = (socket: object) => (row: Mutable) => {
+            row.plan.runtime = '0.29.0'
+            attach(socket)(row)
+        }
+        const withMember = (index: number, change: object) =>
+            attachCurrent({
+                ...ringSocket,
+                members: members.map((entry, at) =>
+                    at === index ? { ...entry, ...change } : entry
+                )
+            })
+        for (const parallelism of ['tensor', 'pipeline'] as const) {
+            const review = mutate(groupReview(3, parallelism), attachCurrent(ringSocket))
+            expect(
+                parseVllmGroupReview(review).plan.ringSocket?.members.map(
+                    entry => entry.advertisedAddress
+                )
+            ).toEqual(['10.253.0.0', '10.253.0.4', '10.253.0.3'])
+        }
+        const run = mutate(groupRun('ready', groupReview(3)), attachCurrent(ringSocket))
+        expect(parseVllmGroupRun(run).plan.ringSocket?.mode).toBe('qualified-ring-socket')
+        const refused: Array<[VllmGroupReview, (row: Mutable) => void]> = [
+            [groupReview(2), attachCurrent(ringSocket)],
+            [qwenGroupReview(), attach(ringSocket)],
+            [groupReview(3), attach(ringSocket)],
+            [groupReview(3), attachCurrent({ ...ringSocket, mode: 'qualified-direct-socket' })],
+            [groupReview(3), attachCurrent({ ...ringSocket, rdmaDevice: 'mlx5_0' })],
+            [groupReview(3), attachCurrent({ ...ringSocket, members: members.slice(0, 2) })],
+            [
+                groupReview(3),
+                attachCurrent({ ...ringSocket, members: [members[1], members[0], members[2]] })
+            ],
+            [
+                groupReview(3),
+                attachCurrent({
+                    ...ringSocket,
+                    members: [
+                        { ...members[0], laneAddresses: ['10.253.0.0', '10.253.0.1'] },
+                        { ...members[1], laneAddresses: ['10.253.0.2', '10.253.0.4'] },
+                        members[2]
+                    ]
+                })
+            ],
+            [groupReview(3), withMember(0, { rdmaDevice: 'mlx5_0' })],
+            [groupReview(3), withMember(0, { mac: '02:00:00:0A:00:01' })],
+            [groupReview(3), withMember(0, { interfaceName: 'node-a-p0-renamed' })],
+            [groupReview(3), withMember(0, { advertisedAddress: '10.253.0.9' })],
+            [groupReview(3), withMember(0, { laneAddresses: ['10.253.0.0'] })],
+            [groupReview(3), withMember(0, { laneAddresses: ['10.253.0.2', '10.253.0.0'] })],
+            [groupReview(3), withMember(0, { laneAddresses: ['10.253.0.0', 'ring-lane'] })],
+            [groupReview(3), withMember(2, { laneAddresses: ['10.253.0.2', '10.253.0.3'] })],
+            [groupReview(3), withMember(2, { laneAddresses: ['10.253.0.3', '10.253.0.7'] })],
+            [groupReview(3), withMember(2, { laneAddresses: ['10.253.0.3', '192.168.50.3'] })]
         ]
         for (const [review, spoil] of refused)
             expect(() => parseVllmGroupReview(mutate(review, spoil))).toThrow()

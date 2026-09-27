@@ -23,26 +23,42 @@ type fabricConsumerLease struct {
 	PlanDigest string `json:"planDigest"`
 }
 
-var errNoDirectFabric = errors.New("no retained fabric operation involves the selected members")
+var errNoFabric = errors.New("no retained fabric operation involves the selected members")
 
 func validFabricConsumerLease(lease fabricConsumerLease) bool {
 	return lease.Owner == fabricLeaseOwnerServingGroup && onboardingID.MatchString(lease.RunID) && lease.Generation > 0 && onboardingSHA.MatchString(lease.PlanDigest)
 }
 
 // directFabricFor returns the freshly requalified endpoints of the one active
-// direct fabric between exactly these two members. errNoDirectFabric means no
-// retained fabric operation or reservation involves either member; any other
-// error means one that does is stale or ambiguous, and callers fail closed.
+// direct fabric between exactly these two members.
 func (s *fabricService) directFabricFor(ctx context.Context, nodeIDs []string) (string, string, []fabricCandidateIP, error) {
-	want := slices.Clone(nodeIDs)
-	sort.Strings(want)
-	if len(want) != 2 || want[0] == want[1] {
+	if len(nodeIDs) != 2 || nodeIDs[0] == nodeIDs[1] {
 		return "", "", nil, errors.New("a direct fabric joins exactly two distinct members")
 	}
+	return s.exactFabricFor(ctx, nodeIDs, fabricRecipe, "roll it back or recover it, or choose pipeline parallelism explicitly")
+}
+
+// ringFabricFor returns the freshly requalified endpoints of the one active
+// routed ring joining exactly these three members. The retained unrouted ring
+// advertises no address every member reaches, so it fails closed.
+func (s *fabricService) ringFabricFor(ctx context.Context, nodeIDs []string) (string, string, []fabricCandidateIP, error) {
+	if len(nodeIDs) != 3 || nodeIDs[0] == nodeIDs[1] || nodeIDs[0] == nodeIDs[2] || nodeIDs[1] == nodeIDs[2] {
+		return "", "", nil, errors.New("a ring fabric joins exactly three distinct members")
+	}
+	return s.exactFabricFor(ctx, nodeIDs, fabricRingRecipe, "roll it back or recover it before reviewing a group of these Sparks")
+}
+
+// exactFabricFor returns the freshly requalified endpoints of the one active
+// recipeID fabric joining exactly these members. errNoFabric means no retained
+// fabric operation or reservation involves any of them; any other error means
+// one that does is stale or ambiguous, and callers fail closed.
+func (s *fabricService) exactFabricFor(ctx context.Context, nodeIDs []string, recipeID, remedy string) (string, string, []fabricCandidateIP, error) {
+	want := slices.Clone(nodeIDs)
+	sort.Strings(want)
 	s.mu.Lock()
 	if s.recoveryFailed {
 		s.mu.Unlock()
-		return "", "", nil, errors.New("retained fabric history is incomplete; no direct lane can be proven")
+		return "", "", nil, errors.New("retained fabric history is incomplete; no fabric lane can be proven")
 	}
 	var involved []*fabricRunRecord
 	for _, run := range s.runs {
@@ -57,7 +73,7 @@ func (s *fabricService) directFabricFor(ctx context.Context, nodeIDs []string) (
 		}
 	}
 	reserved := s.reservation != nil && slices.Contains(want, s.reservation.Target.NodeID)
-	exact := false
+	exact, unrouted := false, false
 	if len(involved) == 1 {
 		run := involved[0]
 		members := make([]string, 0, len(run.Public.Targets))
@@ -65,15 +81,20 @@ func (s *fabricService) directFabricFor(ctx context.Context, nodeIDs []string) (
 			members = append(members, target.NodeID)
 		}
 		sort.Strings(members)
-		exact = run.Public.State == "active" && run.Public.RecipeID == fabricRecipe && slices.Equal(members, want) &&
+		active := run.Public.State == "active" && slices.Equal(members, want) &&
 			(!reserved || s.reservation.OperationID == run.Public.OperationID)
+		exact = active && run.Public.RecipeID == recipeID
+		unrouted = active && recipeID == fabricRingRecipe && run.Public.RecipeID == fabricRingRetainedRecipe
 	}
 	s.mu.Unlock()
 	if len(involved) == 0 && !reserved {
-		return "", "", nil, errNoDirectFabric
+		return "", "", nil, errNoFabric
+	}
+	if unrouted {
+		return "", "", nil, errors.New("the active ring predates routed advertised addresses and cannot carry serving traffic; roll it back and apply the routed ring")
 	}
 	if !exact {
-		return "", "", nil, errors.New("a stale or ambiguous fabric operation involves the selected Sparks; roll it back or recover it, or choose pipeline parallelism explicitly")
+		return "", "", nil, errors.New("a stale or ambiguous fabric operation involves the selected Sparks; " + remedy)
 	}
 	return s.requalifyFabric(ctx, nodeIDs)
 }
@@ -96,7 +117,7 @@ func (s *fabricService) acquireConsumerLease(ctx context.Context, operationID, q
 		r := s.runs[operationID]
 		if r == nil {
 			s.mu.Unlock()
-			return errors.New("the reviewed direct fabric is no longer active and qualified")
+			return errors.New("the reviewed fabric is no longer active and qualified")
 		}
 		if r.done != nil {
 			select {
@@ -108,17 +129,17 @@ func (s *fabricService) acquireConsumerLease(ctx context.Context, operationID, q
 				case <-done:
 					continue
 				case <-ctx.Done():
-					return errors.New("the reviewed direct fabric did not settle before the lease deadline")
+					return errors.New("the reviewed fabric did not settle before the lease deadline")
 				}
 			}
 		}
 		if r.Public.State != "active" || r.Public.QualificationDigest != qualification || s.qualified[operationID] != qualification {
 			s.mu.Unlock()
-			return errors.New("the reviewed direct fabric is no longer active and qualified")
+			return errors.New("the reviewed fabric is no longer active and qualified")
 		}
 		if held := r.ConsumerLease; held != nil && *held != lease && (replaces == nil || *held != *replaces) {
 			s.mu.Unlock()
-			return errors.New("another serving group holds the reviewed direct fabric")
+			return errors.New("another serving group holds the reviewed fabric")
 		}
 		previous := r.ConsumerLease
 		next := lease

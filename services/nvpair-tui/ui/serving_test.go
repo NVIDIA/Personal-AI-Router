@@ -172,6 +172,85 @@ func TestServingGroupQwenTransportIsExactAndVisible(t *testing.T) {
 	}
 }
 
+func TestServingGroupSocketBindingsAreExactAndVisible(t *testing.T) {
+	socket := func(mode string) *servingGroupSocket {
+		return &servingGroupSocket{Mode: mode, OperationID: strings.Repeat("7", 32), QualificationSHA256: strings.Repeat("8", 64)}
+	}
+	threeNode := func(tp, pp int) servingGroupPlan {
+		plan := servingTestPlan()
+		plan.Members = append(plan.Members, servingGroupMember{NodeID: "node-c"})
+		plan.Topology = servingGroupTopology{TensorParallel: tp, PipelineParallel: pp, DataParallel: 1}
+		return plan
+	}
+	direct := servingTestPlan()
+	direct.DirectSocket = socket("qualified-direct-socket")
+	pipelineRing, tensorRing := threeNode(1, 3), threeNode(3, 1)
+	pipelineRing.RingSocket, tensorRing.RingSocket = socket("qualified-ring-socket"), socket("qualified-ring-socket")
+	ringLabel := "NCCL Socket on the qualified routed ring · control on management · RDMA off"
+	for _, tc := range []struct {
+		plan servingGroupPlan
+		want string
+	}{
+		{direct, "NCCL Socket on the qualified direct fabric lane · control on management · RDMA off"},
+		{pipelineRing, ringLabel},
+		{tensorRing, ringLabel},
+	} {
+		if err := validateServingGroupPlan(tc.plan); err != nil {
+			t.Fatal(err)
+		}
+		v := newServingGroupView(nil)
+		v.SetSize(140, 30)
+		v.Update(servingGroupMsg{status: servingGroupStatus{ActivationEnabled: servingBool(true), Reserved: servingBool(false)}})
+		v.review = &servingGroupReview{ReviewID: strings.Repeat("b", 32), PlanDigest: strings.Repeat("c", 64), Plan: tc.plan, ExpiresAt: time.Now().Add(time.Minute).UnixMilli(), ActivationEnabled: servingBool(true)}
+		if got := v.View(); !strings.Contains(got, tc.want) {
+			t.Fatalf("visible review omitted %q:\n%s", tc.want, got)
+		}
+	}
+	for name, plan := range map[string]func() servingGroupPlan{
+		"ring on two nodes": func() servingGroupPlan {
+			p := servingTestPlan()
+			p.RingSocket = socket("qualified-ring-socket")
+			return p
+		},
+		"direct on three nodes": func() servingGroupPlan {
+			p := threeNode(3, 1)
+			p.DirectSocket = socket("qualified-direct-socket")
+			return p
+		},
+		"direct pipeline": func() servingGroupPlan {
+			p := servingTestPlan()
+			p.Topology = servingGroupTopology{TensorParallel: 1, PipelineParallel: 2, DataParallel: 1}
+			p.DirectSocket = socket("qualified-direct-socket")
+			return p
+		},
+		"both bindings": func() servingGroupPlan {
+			p := threeNode(1, 3)
+			p.RingSocket, p.DirectSocket = socket("qualified-ring-socket"), socket("qualified-direct-socket")
+			return p
+		},
+		"direct mode on the ring": func() servingGroupPlan {
+			p := threeNode(1, 3)
+			p.RingSocket = socket("qualified-direct-socket")
+			return p
+		},
+		"missing operation": func() servingGroupPlan {
+			p := threeNode(1, 3)
+			p.RingSocket = socket("qualified-ring-socket")
+			p.RingSocket.OperationID = ""
+			return p
+		},
+		"qwen profile": func() servingGroupPlan {
+			p := servingQwenTestPlan()
+			p.DirectSocket = socket("qualified-direct-socket")
+			return p
+		},
+	} {
+		if err := validateServingGroupPlan(plan()); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+}
+
 func TestServingGroupNeverAcceptsAThreeSparkQwenPlan(t *testing.T) {
 	for name, topology := range map[string]servingGroupTopology{
 		"pipeline":      {TensorParallel: 1, PipelineParallel: 3, DataParallel: 1},

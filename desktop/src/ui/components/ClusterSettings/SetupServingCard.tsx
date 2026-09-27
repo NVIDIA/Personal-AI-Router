@@ -1308,8 +1308,8 @@ export default function SetupServingCard({
                                     : 'Default (2 nodes: TP2 on an active direct fabric, otherwise PP2; 3 nodes: PP3)'}
                             </option>
                             <option value="tensor">
-                                Tensor parallel — split each layer (2 nodes need an active direct
-                                fabric)
+                                Tensor parallel — split each layer (needs an active direct fabric or
+                                routed three-node ring)
                             </option>
                             <option value="pipeline">Pipeline parallel — split layers</option>
                         </select>
@@ -1447,6 +1447,9 @@ export default function SetupServingCard({
                                     : ''}
                                 {group.review.plan.directSocket
                                     ? ` · NCCL Socket on direct fabric lane ${group.review.plan.directSocket.lanes[0].interfaceName}; control stays on the management network`
+                                    : ''}
+                                {group.review.plan.ringSocket
+                                    ? ' · NCCL Socket on the qualified three-node ring; control stays on the management network'
                                     : ''}
                             </Text>
                             {group.review.plan.members.map(member => (

@@ -28,7 +28,7 @@ var errVLLMGroupTensorNeedsDirectFabric = errors.New("two-node tensor parallel r
 
 func (m *Manager) vllmGroupDirectFabric(ctx context.Context, nodeIDs []string) (string, string, []fabricCandidateIP, error) {
 	if m.exec == nil || m.exec.fabric == nil {
-		return "", "", nil, errNoDirectFabric
+		return "", "", nil, errNoFabric
 	}
 	return m.exec.fabric.directFabricFor(ctx, nodeIDs)
 }
