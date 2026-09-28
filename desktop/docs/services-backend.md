@@ -194,10 +194,14 @@ stopping uses immediate `taskkill /T /F`.
 
 Shutdown ordering belongs to the broker. Personal AI Router sends the broker `shutdown` and
 does not stop the engines itself. The broker stops the proxy first, so no new
-inference arrives, then calls `engine:prepare-shutdown`, which stops local
-engine processes without clearing their persisted desired state, then waits for
-each worker to exit without force-killing it, so engines are not orphaned. The
-broker restores enabled engines on the next startup.
+inference arrives, then calls `engine:prepare-shutdown` before tearing down its
+workers, which stops local engine processes without clearing their persisted
+desired state, so engines are not orphaned. Engine-manager sweeps its engines
+once per process; a repeated call waits for that sweep instead of starting
+another. The broker then joins its workers concurrently within one shared
+teardown budget. A worker that misses its grace is terminated and then killed,
+except engine-manager on Windows, whose join is abandoned rather than killed
+mid-stop. The broker restores enabled engines on the next startup.
 
 ## Discovery and models
 
