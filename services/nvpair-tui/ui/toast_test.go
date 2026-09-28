@@ -251,6 +251,32 @@ func TestInboundPairingIsPromptedOnce(t *testing.T) {
 	}
 }
 
+// TestInboundInviteDoesNotHideOutboundPIN checks a second live pairing request
+// does not make the PIN for our still-pending outbound invite unreadable.
+//
+// Both used to be pinned to the status line, which holds one message, so the
+// inbound request replaced the PIN the operator was about to read out.
+func TestInboundInviteDoesNotHideOutboundPIN(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(100, 30)
+	v.Update(nodeInviteMsg{name: "peer", inviteID: "outbound", pin: "123456"})
+	if !contains(v.View(), "PIN 123456") {
+		t.Fatal("outbound PIN was not visible before the inbound invite arrived")
+	}
+
+	v.Update(inviteReceived("inbound", "other peer"))
+
+	if v.outboundInviteID != "outbound" {
+		t.Fatalf("outbound invite is no longer pending: %q", v.outboundInviteID)
+	}
+	if v.inbound == nil || v.inbound.InviteID != "inbound" {
+		t.Fatalf("inbound invite was not recorded: %#v", v.inbound)
+	}
+	if got := v.View(); !contains(got, "PIN 123456") {
+		t.Errorf("live outbound PIN disappeared after an unrelated inbound invite: %q", got)
+	}
+}
+
 // TestAcceptingPairingChangesThePrompt checks the prompt follows the request
 // into its second state.
 //
