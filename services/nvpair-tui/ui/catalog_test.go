@@ -216,6 +216,30 @@ func TestCatalogEmptyCatalogIsDistinctFromNoMatch(t *testing.T) {
 	}
 }
 
+// TestPeerCatalogNamesTheMachineItWasFilteredFor checks a peer's list states
+// both halves of what it was filtered for. The operating system alone does not
+// decide what installs: an Intel Mac and an Apple Silicon one are offered
+// different LM Studio lists.
+func TestPeerCatalogNamesTheMachineItWasFilteredFor(t *testing.T) {
+	b := newCatalogBrowser(nil, "lmstudio", "LM Studio", "peer-host", true)
+	b.SetSize(100, 24)
+	b.update(catalogLoadedMsg{
+		engine: "lmstudio",
+		target: "darwin/amd64",
+		models: []catalogModel{{ID: "x", Name: "x"}},
+	})
+	if got := b.summary(); !strings.Contains(got, "filtered for darwin/amd64") {
+		t.Errorf("summary %q does not say which machine the list applies to", got)
+	}
+
+	// This machine's own list needs no caveat: it is filtered for itself.
+	local := loadedBrowser()
+	local.target = "darwin/arm64"
+	if got := local.summary(); strings.Contains(got, "filtered for") {
+		t.Errorf("local summary %q carries a caveat meant for peers", got)
+	}
+}
+
 func TestShortDate(t *testing.T) {
 	if got := shortDate("2026-07-21T02:07:47.321Z"); got != "2026-07-21" {
 		t.Errorf("shortDate = %q", got)

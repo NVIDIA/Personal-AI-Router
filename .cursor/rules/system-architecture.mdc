@@ -231,7 +231,7 @@ The model catalogue is owned by `nvpair-engine-manager` and served over
 `engine:catalog`, so the desktop app and the terminal interface browse one
 implementation. Electron relays it through
 `src/electron/service-bridge/model-catalog.ts`. It provides curated Ollama and
-LM Studio catalogs, filtered for the platform a model will install on; model
+LM Studio catalogs, filtered for the OS and CPU a model will install on; model
 operations go through the engine manager.
 
 ## Pairing and security

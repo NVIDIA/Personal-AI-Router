@@ -55,9 +55,9 @@ type catalogLoadedMsg struct {
 	engine    string
 	models    []catalogModel
 	fetchedAt string
-	// platform is the OS the served list was filtered for.
-	platform string
-	err      error
+	// target is the machine the served list was filtered for, as OS/arch.
+	target string
+	err    error
 }
 
 var (
@@ -101,21 +101,21 @@ type catalogBrowser struct {
 
 	loading   bool
 	fetchedAt string
-	// platform is the OS the catalogue was filtered for, and remote marks a
+	// target is the machine the catalogue was filtered for, and remote marks a
 	// browse aimed at a peer. Together they say whether the list applies to the
-	// target: the catalogue is served by THIS machine's engine-manager and
-	// filtered for its platform, so a peer running another OS can be shown
-	// models it cannot install, or have usable ones hidden.
-	platform string
-	remote   bool
-	status   toast
+	// peer: the catalogue is served by THIS machine's engine-manager and
+	// filtered for this machine, so a peer of another kind can be shown models
+	// it cannot install, or have usable ones hidden.
+	target string
+	remote bool
+	status toast
 
 	width, height int
 }
 
 // remote marks a browse aimed at a peer. The catalogue is served by this
-// machine's engine-manager and filtered for this machine's platform, so a
-// peer-targeted list carries a caveat rather than pretending to be authoritative
+// machine's engine-manager and filtered for this machine, so a peer-targeted
+// list carries a caveat rather than pretending to be authoritative
 // for that peer.
 func newCatalogBrowser(client *rpc.Client, engine, label, node string, remote bool) *catalogBrowser {
 	ti := textinput.New()
@@ -153,13 +153,20 @@ func (b *catalogBrowser) Init() tea.Cmd {
 				Models    []catalogModel `json:"models"`
 				FetchedAt string         `json:"fetchedAt"`
 				Platform  string         `json:"platform"`
+				Arch      string         `json:"arch"`
 			}
 			_ = decodeParams(msg.Result, &r)
+			// The architecture is half of the answer: an Intel Mac and an
+			// Apple Silicon one are offered different lists.
+			target := r.Platform
+			if r.Arch != "" {
+				target += "/" + r.Arch
+			}
 			return catalogLoadedMsg{
 				engine:    engine,
 				models:    r.Models,
 				fetchedAt: r.FetchedAt,
-				platform:  r.Platform,
+				target:    target,
 			}
 		})
 }
@@ -187,7 +194,7 @@ func (b *catalogBrowser) update(msg tea.Msg) (tea.Cmd, string, bool) {
 		}
 		b.all = msg.models
 		b.fetchedAt = msg.fetchedAt
-		b.platform = msg.platform
+		b.target = msg.target
 		b.refresh()
 		return nil, "", true
 
@@ -370,11 +377,11 @@ func (b *catalogBrowser) summary() string {
 		parts = append(parts, "catalog "+shortDate(b.fetchedAt))
 	}
 	// Said out loud when it might be wrong. The list comes from this machine's
-	// engine-manager and is filtered for its platform, so a peer on a different
-	// OS may be offered a model it cannot install. Better to state the basis
+	// engine-manager and is filtered for this machine, so a peer of another
+	// kind may be offered a model it cannot install. Better to state the basis
 	// than to let a filtered list look authoritative for another machine.
-	if b.remote && b.platform != "" {
-		parts = append(parts, "filtered for "+b.platform)
+	if b.remote && b.target != "" {
+		parts = append(parts, "filtered for "+b.target)
 	}
 	return strings.Join(parts, "   ")
 }

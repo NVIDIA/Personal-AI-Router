@@ -41,13 +41,15 @@ SPDX-License-Identifier: Apache-2.0
   is not re-dialled on every call.
 - Both sources normalize to `CatalogModel`, which the desktop maps to the shared
   `EngineHubModel` (`desktop/src/shared/types/engine-api.ts`).
-- **The catalogue is filtered for the platform the models will install on**, not
-  the one serving it. MLX quantizations only install on Apple Silicon, so
-  `engine:catalog` takes an optional `platform` (defaulting to the server's
-  `GOOS`), marks Apple-only rows with `appleOnly`, and echoes the platform it
-  filtered for. A client driving a peer should say which peer; a client that
-  cannot determine it must tell the operator which platform the list applies to
-  rather than presenting it as universal.
+- **The catalogue is filtered for the machine the models will install on**, not
+  the one serving it. MLX quantizations only install on Apple Silicon — not on
+  an Intel Mac — so `engine:catalog` takes an optional `platform` and `arch`
+  (GOOS and GOARCH; omitting both means the server's own), marks Apple-only rows
+  with `appleOnly`, keeps them only for `darwin`/`arm64`, and echoes the target
+  it filtered for. A named platform without an arch leaves the arch unknown
+  rather than borrowing the server's. A client driving a peer should say which
+  peer; a client that cannot determine it must tell the operator which machine
+  the list applies to rather than presenting it as universal.
 - **Frame size matters here.** The Ollama reply is a single ~1.9 MiB JSON-RPC
   line. Every hop on its path shares `jsonrpc.WorkerFrameBytes`, because an
   over-long line is a terminal read error that silently closes the peer while

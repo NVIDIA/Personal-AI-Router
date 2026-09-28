@@ -254,8 +254,8 @@ reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
 good metrics and never marks a node offline.
 
 The model catalogue is backend-owned. `nvpair-engine-manager` serves the curated
-Ollama and LM Studio lists over `engine:catalog`, filtered for the platform a
-model will install on; Electron relays the call and maps rows for the renderer,
+Ollama and LM Studio lists over `engine:catalog`, filtered for the operating
+system and CPU a model will install on; Electron relays the call and maps rows for the renderer,
 which then sends pull-ready model IDs back through the engine manager. The
 Ollama reply is a single multi-megabyte frame, so every hop on its path shares
 `jsonrpc.WorkerFrameBytes`.

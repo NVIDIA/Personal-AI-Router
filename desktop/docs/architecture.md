@@ -269,9 +269,11 @@ same method, so both front ends browse one implementation.
   callers coalesced onto one request and a failure backoff. The cache is warmed
   when the Overview renderer reports ready, not when the service connects, so a
   slow or hanging catalog fetch cannot compete with the window's first paint;
-- the request takes an optional `platform`, marks Apple-only (MLX) rows, and
-  echoes the platform it filtered for, so a client driving a peer is not offered
-  models that peer cannot install;
+- the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
+  rows, keeps them only for Apple Silicon, and echoes the target it filtered
+  for, so a client driving a peer is not offered models that peer cannot
+  install. The desktop names no target: the hub installs only to this machine,
+  which is also the one answering;
 - the Ollama reply is a single multi-megabyte frame, so every hop on its path
   shares `jsonrpc.WorkerFrameBytes`. See `docs/services-backend.md`;
 - model pulls still run through `nvpair-engine-manager`.
