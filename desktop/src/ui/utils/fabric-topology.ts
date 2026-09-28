@@ -4,6 +4,7 @@
 import type {
     CableRun,
     FabricInventorySnapshot,
+    FabricOperation,
     FabricPortObservation,
     FabricPortRef,
     FabricSelection
@@ -11,7 +12,13 @@ import type {
 import { parseFabricSelection } from '@/shared/utils/fabric'
 
 export type DetectedFabricLayout = 'single' | 'direct' | 'ring'
-export type FabricEdgeState = 'pending' | 'matched' | 'missing' | 'misplaced' | 'duplicate'
+export type FabricEdgeState =
+    | 'pending'
+    | 'matched'
+    | 'active'
+    | 'missing'
+    | 'misplaced'
+    | 'duplicate'
 
 export interface FabricDiagramEdge {
     left: FabricPortRef
@@ -279,6 +286,33 @@ function inventoryIssues(
         }
     }
     return issues
+}
+
+/** The cables an active fabric qualified, each seen from both of its ends. */
+export function activeFabricTopology(operation: FabricOperation): FabricTopologyCandidate | null {
+    if (operation.state !== 'active' || !operation.candidateIPs) return null
+    const lanes = operation.candidateIPs.filter(row => !row.gateway)
+    const edges = new Map<string, FabricDiagramEdge>()
+    for (const row of lanes) {
+        const peer = lanes.find(
+            other => other.nodeId === row.peerNodeId && other.address === row.peerAddress
+        )
+        if (!peer) continue
+        const left = { nodeId: row.nodeId, switchId: row.switchId, portName: row.portName }
+        const right = { nodeId: peer.nodeId, switchId: peer.switchId, portName: peer.portName }
+        const key = edgeKey(left, right)
+        if (!edges.has(key)) edges.set(key, { left, right, state: 'active' })
+    }
+    const nodeIds = operation.targets.map(target => target.nodeId)
+    if (edges.size === 0 || (nodeIds.length !== 2 && nodeIds.length !== 3)) return null
+    return {
+        layout: nodeIds.length === 3 ? 'ring' : 'direct',
+        nodeIds,
+        ports: [],
+        selection: null,
+        edges: [...edges.values()],
+        issues: []
+    }
 }
 
 /** Choose the strongest exact topology the currently observed nodes can support. */

@@ -2,9 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'vitest'
-import type { CableRun, FabricInventorySnapshot, FabricPortRef } from '@/shared/types/fabric'
+import type {
+    CableRun,
+    FabricCandidateIP,
+    FabricInventorySnapshot,
+    FabricOperation,
+    FabricPortRef
+} from '@/shared/types/fabric'
 import { parseFabricInventoryRequest, parseFabricInventorySnapshot } from '@/shared/utils/fabric'
 import {
+    activeFabricTopology,
     buildFabricTopologyCandidate,
     fabricInventoryExpiryDelay
 } from '@/ui/utils/fabric-topology'
@@ -133,6 +140,79 @@ describe('fabric topology detection', () => {
         expect(candidate.issues).toContain(
             'The last cable evidence has expired. Rerun the finite cable check before treating any edge as current.'
         )
+    })
+})
+
+describe('active fabric topology', () => {
+    const lane = (
+        nodeId: string,
+        portName: string,
+        address: string,
+        peerNodeId: string,
+        peerAddress: string,
+        gateway?: string
+    ): FabricCandidateIP => ({
+        nodeId,
+        peerNodeId,
+        peerPrincipal: `principal-${peerNodeId}`,
+        address,
+        peerAddress,
+        interfaceName: `if-${portName}`,
+        interfaceIndex: 1,
+        mac: '00:00:00:00:00:00',
+        switchId: `switch-${nodeIds.indexOf(nodeId)}`,
+        portName,
+        rdmaDevice: '',
+        rdmaPort: 0,
+        gidIndex: 0,
+        gidType: '',
+        ...(gateway ? { gateway } : {})
+    })
+    const ring = (state: FabricOperation['state']): FabricOperation => ({
+        schemaVersion: 1,
+        operationId: '3'.repeat(32),
+        reviewId: '4'.repeat(32),
+        ownerNodeId: 'node-a',
+        state,
+        targets: nodeIds.map(nodeId => ({
+            nodeId,
+            principal: `principal-${nodeId}`,
+            interfaces: []
+        })),
+        cleanupConfirmed: false,
+        effectsApplied: true,
+        message: '',
+        createdAt: NOW,
+        expiresAt: NOW + 60_000,
+        qualifiedAt: NOW,
+        candidateIPs: [
+            lane('node-a', 'p0', '10.0.0.0', 'node-b', '10.0.0.1'),
+            lane('node-b', 'p1', '10.0.0.1', 'node-a', '10.0.0.0'),
+            lane('node-a', 'p1', '10.0.0.2', 'node-c', '10.0.0.3'),
+            lane('node-c', 'p0', '10.0.0.3', 'node-a', '10.0.0.2'),
+            lane('node-b', 'p0', '10.0.0.4', 'node-c', '10.0.0.5'),
+            lane('node-c', 'p1', '10.0.0.5', 'node-b', '10.0.0.4'),
+            lane('node-a', 'p0', '10.0.0.0', 'node-b', '10.0.0.4', '10.0.0.1'),
+            lane('node-b', 'p0', '10.0.0.4', 'node-c', '10.0.0.3', '10.0.0.5'),
+            lane('node-c', 'p0', '10.0.0.3', 'node-a', '10.0.0.0', '10.0.0.2')
+        ]
+    })
+
+    it('draws one live edge per qualified cable and ignores routed paths', () => {
+        const topology = activeFabricTopology(ring('active'))
+        expect(topology?.layout).toBe('ring')
+        expect(topology?.edges.map(edge => edge.state)).toEqual(['active', 'active', 'active'])
+        expect(
+            topology?.edges.map(
+                edge =>
+                    `${edge.left.nodeId}.${edge.left.portName}-${edge.right.nodeId}.${edge.right.portName}`
+            )
+        ).toEqual(['node-a.p0-node-b.p1', 'node-a.p1-node-c.p0', 'node-b.p0-node-c.p1'])
+    })
+
+    it('draws nothing for a fabric that is not active', () => {
+        expect(activeFabricTopology(ring('applying'))).toBeNull()
+        expect(activeFabricTopology(ring('rolling-back'))).toBeNull()
     })
 })
 

@@ -23,6 +23,7 @@ import { useFabricStore, watchFabric } from '@/ui/stores/fabric.store'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import FabricTopologyDiagram from './FabricTopologyDiagram'
 import {
+    activeFabricTopology,
     buildFabricTopologyCandidate,
     fabricInventoryExpiryDelay
 } from '@/ui/utils/fabric-topology'
@@ -113,6 +114,7 @@ export default function FabricSetupCard({ initialTopology }: FabricSetupCardProp
     }, [detectionNodeIds.join('\n'), initialTopology, inventory]) // eslint-disable-line react-hooks/exhaustive-deps
 
     const operation = fabric.fabricOperation
+    const activeTopology = operation ? activeFabricTopology(operation) : null
     const cable = fabric.cableRun
     const cablePass = cableSucceeded(cable) || fabricOperationCarriesCableMatch(operation)
     const cableActive = !!cable && ['preparing', 'running', 'cancelling'].includes(cable.state)
@@ -793,6 +795,9 @@ export default function FabricSetupCard({ initialTopology }: FabricSetupCardProp
                         <Text kind="body/semibold/sm">
                             Fabric operation: {operation.state.replaceAll('-', ' ')}
                         </Text>
+                        {activeTopology && (
+                            <FabricTopologyDiagram candidate={activeTopology} nodeName={nodeName} />
+                        )}
                         <Text kind="body/regular/sm" className="text-subtle-color">
                             {operation.message}
                         </Text>

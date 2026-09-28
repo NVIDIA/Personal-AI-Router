@@ -26,7 +26,7 @@ function shortName(value: string): string {
 }
 
 function edgeColor(state: FabricTopologyCandidate['edges'][number]['state']): string {
-    if (state === 'matched') return '#76b900'
+    if (state === 'matched' || state === 'active') return '#76b900'
     if (state === 'pending') return '#8a8a8a'
     return '#d94646'
 }
@@ -64,7 +64,30 @@ export default function FabricTopologyDiagram({ candidate, nodeName }: Props) {
                             strokeWidth="4"
                             strokeLinecap="round"
                             strokeDasharray={edge.state === 'pending' ? '8 7' : undefined}
-                        />
+                        >
+                            {edge.state === 'pending' && (
+                                <animate
+                                    attributeName="stroke-dashoffset"
+                                    from="0"
+                                    to="-15"
+                                    dur="0.8s"
+                                    repeatCount="indefinite"
+                                />
+                            )}
+                        </line>
+                        {edge.state === 'active' &&
+                            [
+                                `M ${left.x},${left.y} L ${right.x},${right.y}`,
+                                `M ${right.x},${right.y} L ${left.x},${left.y}`
+                            ].map(path => (
+                                <circle key={path} r="3.5" fill="#c6f27a">
+                                    <animateMotion
+                                        dur="1.6s"
+                                        repeatCount="indefinite"
+                                        path={path}
+                                    />
+                                </circle>
+                            ))}
                         <rect
                             x={x - 37}
                             y={y - 10}
