@@ -839,6 +839,13 @@ func (s *fabricService) execute(ctx context.Context, r *fabricRunRecord) {
 			break
 		}
 		if _, e = s.control(ctx, target, request); e != nil {
+			// The participant's own refusal text stays private; name only the
+			// device and the conditions its admission checks.
+			if ctx.Err() == nil {
+				s.mu.Lock()
+				r.Failure = "Fabric reservation failed on " + target.NodeID + ": the device was unreachable, or another fabric, diagnostic or cable operation, a running managed engine, or active workloads held it."
+				s.mu.Unlock()
+			}
 			prepared = false
 			break
 		}

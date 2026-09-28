@@ -253,6 +253,34 @@ func TestFabricServiceApplyFailureRollsBackOnlyAttemptedTargets(t *testing.T) {
 	}
 }
 
+func TestFabricServiceReservationRefusalNamesTheParticipant(t *testing.T) {
+	s, r := fabricServiceFixture(t)
+	secret := "synthetic-private-admission-detail"
+	s.control = func(_ context.Context, target fabricTarget, request fabricControlRequest) (fabricControlResult, error) {
+		if request.Method == "reserve" && target.NodeID == "node-b" {
+			return fabricControlResult{}, errors.New("remote /v1/fabric/control: HTTP 409: " + secret)
+		}
+		return fabricControlResult{Reserved: request.Method == "reserve"}, nil
+	}
+	s.worker = func(_ context.Context, _ cableLaunchPlan, request fabricWorkerRequest) (fabricWorkerResult, error) {
+		if request.Method != "rollback" {
+			t.Fatalf("worker %s ran after a refused reservation", request.Method)
+		}
+		return fabricWorkerResult{CleanupConfirmed: true}, nil
+	}
+	s.execute(context.Background(), r)
+	if r.Public.State != "failed" || !r.Public.CleanupConfirmed || s.held() {
+		t.Fatalf("refused reservation did not fail cleanly: %s / %s", r.Public.State, r.Public.Message)
+	}
+	if !strings.Contains(r.Public.Message, "Fabric reservation failed on node-b") || strings.Contains(r.Public.Message, secret) {
+		t.Fatalf("refusal message = %q; want the participant named without its private detail", r.Public.Message)
+	}
+	raw, err := readOnboardingFile(s.file(r.Public.OperationID), maxFabricRecordBytes)
+	if err != nil || strings.Contains(string(raw), secret) {
+		t.Fatalf("private refusal detail entered retained state: %v", err)
+	}
+}
+
 func TestFabricServiceCancellationCleansBothAppliedTargets(t *testing.T) {
 	s, r := fabricServiceFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
