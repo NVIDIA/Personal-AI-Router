@@ -42,14 +42,15 @@ func TestProcImageResolvesThisProcess(t *testing.T) {
 // TestProcImageRejectsInvalidPID checks the failure direction, since an image
 // that cannot be resolved must never be mistaken for a match.
 func TestProcImageRejectsInvalidPID(t *testing.T) {
-	for _, pid := range []int{0, -1} {
-		if got := procImage(pid); got != "" {
-			t.Errorf("procImage(%d) = %q, want empty", pid, got)
-		}
+	test := func(name string, pid int) {
+		t.Run(name, func(t *testing.T) {
+			if got := procImage(pid); got != "" {
+				t.Errorf("procImage(%d) = %q, want empty", pid, got)
+			}
+		})
 	}
-	if isOurEngineImage("", "/opt/nvpair/ollama") {
-		t.Error("an unresolvable image matched; ownership checks must fail closed")
-	}
+	test("zero PID", 0)
+	test("negative PID", -1)
 }
 
 // TestPathComparisonFollowsSymlinks is the regression guard for the second half

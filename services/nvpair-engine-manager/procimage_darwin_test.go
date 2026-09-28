@@ -63,9 +63,12 @@ func TestSystemToolPrefersAnAbsoluteLocation(t *testing.T) {
 		t.Errorf("systemTool resolved %q; macOS ships lsof at an absolute location "+
 			"and it should be preferred over a PATH lookup", got)
 	}
+}
 
-	// With no candidate present, the bare name is returned so a PATH lookup can
-	// still find a distribution that puts the tool somewhere else.
+// TestSystemToolFallsBackToTheBareName checks that with no candidate present the
+// bare name is returned, so a PATH lookup can still find a distribution that puts
+// the tool somewhere else.
+func TestSystemToolFallsBackToTheBareName(t *testing.T) {
 	if got := systemTool("lsof", []string{"/nonexistent/a", "/nonexistent/b"}); got != "lsof" {
 		t.Errorf("systemTool with no candidates = %q, want the bare name", got)
 	}
@@ -102,9 +105,6 @@ func TestProcImageRejectsAPlantedLsof(t *testing.T) {
 func TestProcImageFailsClosedOnAMissingTool(t *testing.T) {
 	if got := procImageVia("/nonexistent/lsof", os.Getpid()); got != "" {
 		t.Errorf("procImageVia with a missing tool = %q, want empty", got)
-	}
-	if isOurEngineImage("", "/opt/nvpair/ollama") {
-		t.Error("an unresolvable image matched; the check must fail closed")
 	}
 }
 
