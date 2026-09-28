@@ -111,8 +111,14 @@ const ollamaCatalogPath = "catalog/ollama-models.json"
 
 // The LM Studio catalogue endpoint. Its repo ids are the pull-ready strings.
 const (
-	hfModelsAPI        = "https://huggingface.co/api/models"
-	lmStudioAuthor     = "lmstudio-community"
+	hfModelsAPI    = "https://huggingface.co/api/models"
+	lmStudioAuthor = "lmstudio-community"
+	// lmStudioLimit is one page of the listing, deliberately not followed by
+	// more. The listing is sorted by downloads, so what falls off the end is the
+	// least-used tail, and every page past the first would be another request
+	// inside the same timeout on a cold cache. A model beyond it is still one
+	// download-by-name away; the catalogue is for browsing, not the boundary of
+	// what can be installed.
 	lmStudioLimit      = 500
 	catalogCacheTTL    = 6 * time.Hour
 	catalogHTTPTimeout = 20 * time.Second
@@ -139,16 +145,19 @@ type ollamaLibraryFile struct {
 
 // ollamaLibraryRow is one committed entry, shaped like an Ollama tags response.
 type ollamaLibraryRow struct {
-	Name       string `json:"name"`
-	Model      string `json:"model"`
-	ModifiedAt string `json:"modified_at"`
-	Size       uint64 `json:"size"`
-	Digest     string `json:"digest"`
-	Details    struct {
-		Family        string `json:"family"`
-		ParameterSize string `json:"parameter_size"`
-		Quantization  string `json:"quantization_level"`
-	} `json:"details"`
+	Name       string               `json:"name"`
+	Model      string               `json:"model"`
+	ModifiedAt string               `json:"modified_at"`
+	Size       uint64               `json:"size"`
+	Digest     string               `json:"digest"`
+	Details    ollamaLibraryDetails `json:"details"`
+}
+
+// ollamaLibraryDetails is the subset of an entry's details the catalogue uses.
+type ollamaLibraryDetails struct {
+	Family        string `json:"family"`
+	ParameterSize string `json:"parameter_size"`
+	Quantization  string `json:"quantization_level"`
 }
 
 // hfModelRow is the subset of a Hugging Face listing entry that matters here.
