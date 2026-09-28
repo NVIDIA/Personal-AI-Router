@@ -6,7 +6,6 @@ import type { EngineHubModel, EngineHubSearchResponse } from '@/shared/types/eng
 import { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
 import type { JsonObject, JsonValue } from '@/electron/service-bridge/json-rpc-subprocess'
 import { createStructuredLogger } from '@/shared/utils/log'
-import { currentPlatform } from '@/shared/utils/platform'
 import { MODULAR_CATALOG_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 
@@ -19,26 +18,6 @@ const log = createStructuredLogger('model-catalog')
 const BACKEND_ENGINE_NAME: Record<EngineType, string> = {
     ollama: 'ollama',
     'lm-studio': 'lmstudio'
-}
-
-/**
- * This machine's platform in the backend's vocabulary.
- *
- * `engine:catalog` keys on GOOS, and Node and Go disagree on the spelling for
- * Windows — `win32` against `windows`. Only `darwin` is consulted today, and it
- * is spelled the same in both, so sending Node's string happens to filter
- * correctly; but the value is echoed back in the reply and any future
- * backend branch on `windows` would silently not match.
- */
-function backendPlatform(): string {
-    switch (currentPlatform()) {
-        case 'win32':
-            return 'windows'
-        case 'darwin':
-            return 'darwin'
-        default:
-            return 'linux'
-    }
 }
 
 /**
@@ -108,13 +87,14 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
     const engine = BACKEND_ENGINE_NAME[engineType]
     if (!engine) return { models: [] }
     try {
-        // The hub only ever installs to this machine, so the target platform is
-        // this one. Sent explicitly rather than relying on the backend's default
-        // so the request states its own intent.
+        // No target machine is named. The hub only ever installs to this
+        // machine, which is also the one answering, and omitting the target is
+        // how the backend is told to filter for itself — operating system and
+        // CPU both, since an Intel Mac cannot install what Apple Silicon can.
         const result = await getModularSupervisor().callProcess(
             'broker',
             'engine:catalog',
-            { engine, platform: backendPlatform() },
+            { engine },
             MODULAR_CATALOG_CALL_TIMEOUT_MS
         )
         const rows = isObject(result) && Array.isArray(result.models) ? result.models : []

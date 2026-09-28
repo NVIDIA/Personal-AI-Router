@@ -24,7 +24,7 @@ import (
 // has nothing to offer".
 func TestOllamaCatalogLoadsFromEmbeddedFile(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "linux")
+	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64")
 	if err != nil {
 		t.Fatalf("ollama catalog: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestOllamaCatalogIsServedFromCache(t *testing.T) {
 // adding rows or by widening them.
 func TestOllamaCatalogFitsInAFrame(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "linux")
+	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64")
 	if err != nil {
 		t.Fatalf("ollama catalog: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestNormalizeCatalogEngine(t *testing.T) {
 // rather than returning an empty list that reads as "nothing available".
 func TestCatalogRejectsUnknownEngine(t *testing.T) {
 	c := newCatalogService()
-	if _, err := c.Catalog(context.Background(), "vllm", "linux"); err == nil {
+	if _, err := c.Catalog(context.Background(), "vllm", "linux", "amd64"); err == nil {
 		t.Error("unknown engine returned a catalog")
 	}
 }
@@ -259,46 +259,64 @@ func TestNormalizeHFRowsMarksMLX(t *testing.T) {
 	}
 }
 
-// TestFilterForPlatform is the guard for the bug this replaced: the list was
-// filtered by whichever machine served it, so browsing for a Mac peer from a
-// Linux box hid every model that peer could actually use.
-func TestFilterForPlatform(t *testing.T) {
+// TestFilterForTarget is the guard for two versions of one bug. The list was
+// first filtered by whichever machine served it, so browsing for a Mac peer
+// from a Linux box hid every model that peer could use; then by operating
+// system alone, so an Intel Mac was offered MLX models it can never install.
+func TestFilterForTarget(t *testing.T) {
 	models := []CatalogModel{
 		{ID: "plain/gguf"},
 		{ID: "apple/mlx", AppleOnly: true},
 	}
 
-	if got := filterForPlatform(models, "darwin"); len(got) != 2 {
-		t.Errorf("darwin target got %d models, want both", len(got))
+	if got := filterForTarget(models, "darwin", "arm64"); len(got) != 2 {
+		t.Errorf("Apple Silicon target got %d models, want both", len(got))
 	}
-	for _, target := range []string{"linux", "windows"} {
-		got := filterForPlatform(models, target)
+	for _, target := range []struct{ platform, arch string }{
+		{"darwin", "amd64"},
+		{"darwin", ""},
+		{"linux", "arm64"},
+		{"windows", "amd64"},
+	} {
+		got := filterForTarget(models, target.platform, target.arch)
 		if len(got) != 1 || got[0].ID != "plain/gguf" {
-			t.Errorf("%s target got %v, want only the portable model", target, got)
+			t.Errorf("%s/%s target got %v, want only the portable model",
+				target.platform, target.arch, got)
 		}
 	}
 }
 
-// TestCatalogEchoesTargetPlatform checks the reply says which platform it was
-// filtered for, so a client can tell the operator rather than presenting a
-// filtered list as universal.
-func TestCatalogEchoesTargetPlatform(t *testing.T) {
+// TestCatalogEchoesTarget checks the reply says which machine it was filtered
+// for, so a client can tell the operator rather than presenting a filtered list
+// as universal.
+func TestCatalogEchoesTarget(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "darwin")
+	res, err := c.Catalog(context.Background(), "ollama", "darwin", "amd64")
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
-	if res.Platform != "darwin" {
-		t.Errorf("Platform = %q, want the requested target", res.Platform)
+	if res.Platform != "darwin" || res.Arch != "amd64" {
+		t.Errorf("target = %s/%s, want the requested darwin/amd64", res.Platform, res.Arch)
 	}
 
-	// An omitted platform means this host.
-	res, err = c.Catalog(context.Background(), "ollama", "")
+	// Omitting both means this host.
+	res, err = c.Catalog(context.Background(), "ollama", "", "")
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
-	if res.Platform != runtime.GOOS {
-		t.Errorf("Platform = %q, want the local %q", res.Platform, runtime.GOOS)
+	if res.Platform != runtime.GOOS || res.Arch != runtime.GOARCH {
+		t.Errorf("target = %s/%s, want the local %s/%s",
+			res.Platform, res.Arch, runtime.GOOS, runtime.GOARCH)
+	}
+
+	// A named platform does not borrow this host's architecture: that would
+	// describe a machine the caller did not ask about.
+	res, err = c.Catalog(context.Background(), "ollama", "darwin", "")
+	if err != nil {
+		t.Fatalf("catalog: %v", err)
+	}
+	if res.Arch != "" {
+		t.Errorf("Arch = %q for a platform named without one, want it left unknown", res.Arch)
 	}
 }
 

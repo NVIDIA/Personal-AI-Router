@@ -70,7 +70,7 @@ type CatalogModel struct {
 	ParameterSize string `json:"parameterSize,omitempty"`
 	// AppleOnly marks a quantization that only installs on Apple Silicon (MLX).
 	// Reported rather than silently dropped so the decision can be made against
-	// the platform the model is destined for, which is not always this host.
+	// the machine the model is destined for, which is not always this host.
 	AppleOnly bool `json:"appleOnly,omitempty"`
 }
 
@@ -82,21 +82,25 @@ type CatalogResult struct {
 	// FetchedAt is when the served list was obtained. For an embedded list this
 	// is when it was scraped, which tells an operator how stale it is.
 	FetchedAt string `json:"fetchedAt,omitempty"`
-	// Platform is the GOOS this list was filtered for. Echoed back so a client
-	// can tell the operator which machine the list actually applies to, rather
-	// than presenting a platform-filtered list as universal.
+	// Platform and Arch are the GOOS and GOARCH this list was filtered for.
+	// Echoed back so a client can tell the operator which machine the list
+	// actually applies to, rather than presenting a filtered list as universal.
+	// Arch is empty when the caller named a platform without one.
 	Platform string `json:"platform,omitempty"`
+	Arch     string `json:"arch,omitempty"`
 }
 
 // catalogParams is the engine:catalog request.
+//
+// Platform and Arch are the GOOS and GOARCH the models will actually be
+// installed on. They matter because some quantizations are locked to one kind
+// of machine, and the machine asking is not always the machine downloading — a
+// client driving a peer should say which. Omitting both means this host, which
+// is the common case.
 type catalogParams struct {
-	Engine string `json:"engine"`
-	// Platform is the GOOS the models will actually be installed on. It matters
-	// because some quantizations are platform-locked, and the machine asking is
-	// not always the machine downloading — a client driving a peer should say
-	// which peer. Empty means this host, which is the common case and preserves
-	// the behaviour of a caller that does not know.
+	Engine   string `json:"engine"`
 	Platform string `json:"platform"`
+	Arch     string `json:"arch"`
 }
 
 //go:embed catalog/ollama-models.json
@@ -198,11 +202,9 @@ func newCatalogService() *catalogService {
 }
 
 // Catalog returns the downloadable models for an engine, filtered for the
-// platform they will be installed on.
-func (c *catalogService) Catalog(ctx context.Context, engine, platform string) (CatalogResult, error) {
-	if platform == "" {
-		platform = runtime.GOOS
-	}
+// machine they will be installed on.
+func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch string) (CatalogResult, error) {
+	platform, arch = catalogTarget(platform, arch)
 	switch normalizeCatalogEngine(engine) {
 	case "ollama":
 		models, meta, err := c.ollamaCatalog()
@@ -213,8 +215,9 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform string) (
 			Models:   models,
 			Source:   meta.Source,
 			Platform: platform,
-			// The committed Ollama list carries no platform-locked entries, so
-			// nothing is dropped and the caller's platform does not change it.
+			Arch:     arch,
+			// The committed Ollama list carries no machine-locked entries, so
+			// nothing is dropped and the caller's target does not change it.
 			FetchedAt: meta.ScrapedAt,
 		}, nil
 	case "lmstudio":
@@ -223,9 +226,10 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform string) (
 			return CatalogResult{}, err
 		}
 		return CatalogResult{
-			Models:    filterForPlatform(models, platform),
+			Models:    filterForTarget(models, platform, arch),
 			Source:    hfModelsAPI + "?author=" + lmStudioAuthor,
 			Platform:  platform,
+			Arch:      arch,
 			FetchedAt: fetchedAt.UTC().Format(time.RFC3339),
 		}, nil
 	default:
@@ -233,14 +237,28 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform string) (
 	}
 }
 
-// filterForPlatform drops models that cannot install on the target.
+// catalogTarget resolves the machine a catalogue is filtered for.
 //
-// MLX quantizations are Apple's framework and only run on Apple Silicon; `lms
-// get` refuses them elsewhere. Filtering happens here, against the *target's*
-// platform rather than this host's, so a client driving a peer is not offered
-// models that peer can never install.
-func filterForPlatform(models []CatalogModel, platform string) []CatalogModel {
-	if platform == "darwin" {
+// Omitting both means this host. A caller that names a platform but not an
+// architecture is describing some other machine, so this host's architecture is
+// not borrowed to fill the gap: the architecture stays unknown, and anything
+// that depends on it is left out rather than guessed at.
+func catalogTarget(platform, arch string) (string, string) {
+	if platform == "" && arch == "" {
+		return runtime.GOOS, runtime.GOARCH
+	}
+	return platform, arch
+}
+
+// filterForTarget drops models that cannot install on the target.
+//
+// MLX is Apple's framework and only runs on Apple Silicon; `lms get` refuses it
+// anywhere else, an Intel Mac included, so the operating system alone does not
+// decide it. Filtering happens here, against the *target* rather than this
+// host, so a client driving a peer is not offered models that peer can never
+// install.
+func filterForTarget(models []CatalogModel, platform, arch string) []CatalogModel {
+	if platform == "darwin" && arch == "arm64" {
 		return models
 	}
 	out := make([]CatalogModel, 0, len(models))
