@@ -121,7 +121,10 @@ func TestPullDeadlineReportsDetachedNotSilence(t *testing.T) {
 func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
 	// Only operations engineOps actually declares: the TUI offers no engine
 	// update, so listing one here would assert against a path nothing reaches.
-	for _, op := range []string{"pull", "load", "install", "uninstall"} {
+	// Start and restart wait on the engine's readiness probe, which the
+	// manifests allow up to ten minutes, so a deadline on either is a slow
+	// reply rather than a failed start.
+	for _, op := range []string{"pull", "load", "install", "uninstall", "start", "restart"} {
 		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
 		if !ok {
 			t.Fatalf("%s: unexpected message type", op)
@@ -134,7 +137,7 @@ func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
 		}
 	}
 
-	for _, op := range []string{"unload", "delete", "start", "stop", "restart"} {
+	for _, op := range []string{"unload", "delete", "stop"} {
 		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
 		if !ok {
 			t.Fatalf("%s: unexpected message type", op)

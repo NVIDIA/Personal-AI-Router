@@ -204,13 +204,24 @@ func modelCmd(client *rpc.Client, node, engine string, act modelAction, model st
 // Ollama's load is `run_model` with streaming off, which does not answer until
 // the model is resident and has produced a response, so a large model on cold
 // storage exceeds the reply deadline routinely. Install downloads an engine.
-// Delete and unload, by contrast, are quick, and a deadline there is a real
-// fault worth surfacing.
+//
+// Start and restart belong here too. The engine manager answers only once the
+// engine passes its readiness probe, and the manifests allow that probe six
+// hundred seconds for Ollama and sixty for LM Studio — the desktop app gives
+// the same calls a fourteen-minute envelope for exactly this reason. Held to
+// the thirty-five-second reply deadline, a cold start behind a slow probe
+// reported failure while the engine went on to come up.
+//
+// Stop, delete, and unload, by contrast, are quick — stop is bounded by the
+// manifest's five-second grace — and a deadline there is a real fault worth
+// surfacing.
 var longRunningOps = map[string]bool{
 	"pull":      true,
 	"load":      true,
 	"install":   true,
 	"uninstall": true,
+	"start":     true,
+	"restart":   true,
 }
 
 // classifyOpResult reports an operation as done, failed, or still running.
