@@ -1104,6 +1104,49 @@ func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
 	}
 }
 
+// TestOpenDetailFollowsPresenceAndMembership is the regression guard for a
+// detail screen that kept describing a peer as it was when the screen opened.
+//
+// Presence and membership are merged from feeds the detail does not read — the
+// cluster roster among them — so a peer that left the cluster or dropped off
+// the network went on reading "Member" and "Online" until the screen was
+// reopened, with its engine controls still offered.
+func TestOpenDetailFollowsPresenceAndMembership(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(100, 30)
+	peer := availableNode{HostUUID: "peer", Name: "peer-host", IPAddress: "10.0.0.2", Port: 9000, Trusted: true}
+	v.feeds.discovered = []availableNode{peer}
+	v.rebuild()
+	v.selectedKey = "peer"
+	v.restoreSelection()
+	v.openDetail()
+	d := v.detail
+	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true}}
+	d.refreshEngines()
+	if d.node.membership != membershipMember || d.node.presence != presenceOnline {
+		t.Fatalf("setup: detail opened as %v/%v", d.node.presence, d.node.membership)
+	}
+
+	// The peer leaves the cluster but is still on the network.
+	peer.Trusted = false
+	v.Update(discoveryPush(peer))
+	if d.node.membership == membershipMember {
+		t.Error("the detail still reads Member after the peer left the cluster")
+	}
+	if len(d.engines) != 0 {
+		t.Error("engine controls are still offered for a node no longer in the cluster")
+	}
+	if !contains(d.View(), "not in this cluster") {
+		t.Errorf("the engines pane does not say why the list went: %q", d.View())
+	}
+
+	// And then drops off the network entirely.
+	v.Update(discoveryPush())
+	if d.node.presence == presenceOnline {
+		t.Error("the detail still reads Online after the node dropped out of every feed")
+	}
+}
+
 // TestEngineNameDoesNotDependOnTheEngineFetch is the regression guard for the
 // same engine reading "Ollama" on one machine and "ollama" on another.
 //

@@ -332,6 +332,36 @@ func (d *nodeDetail) enginesCmd() tea.Cmd {
 	})
 }
 
+// followNode brings the screen's copy of its node up to date with the Nodes
+// list's latest merge; found is false once the node has dropped out of every
+// feed.
+//
+// The row is copied when the screen opens, and presence and membership come
+// from feeds this screen does not read itself — the cluster roster among them.
+// Without this a peer that went away or left the cluster went on reading
+// "Online" and "Member" here until the screen was reopened.
+func (d *nodeDetail) followNode(row nodeRow, found bool) {
+	was := d.node.membership
+	if found {
+		d.node.name = row.name
+		d.node.presence = row.presence
+		d.node.membership = row.membership
+	} else {
+		d.node.presence = presenceOffline
+		d.node.membership = membershipNone
+	}
+	// Leaving the cluster puts the engines out of reach, so the list read while
+	// it was a member offers controls that can no longer do anything. It goes,
+	// and the empty-list hint says why. Rejoining needs nothing here: the
+	// engine poll asks again once the node is queryable.
+	if d.remote() && was == membershipMember && d.node.membership != membershipMember {
+		d.engines = nil
+		d.enginesStale = false
+		d.refreshEngines()
+		d.sizeEngineTable()
+	}
+}
+
 // enginesQueryable reports whether this node's engine list can be fetched at
 // all.
 //
