@@ -428,15 +428,41 @@ The resulting workload state:
 | Outcome | State |
 | --- | --- |
 | committed 2xx, streamed to the end | `completed` |
+| committed 2xx, streamed to the end, client closed before the copy unwound | `completed` |
 | committed 2xx, truncated by the node dying | `completed` |
 | committed non-2xx | `failed` |
-| client disconnected, or dead-client write deadline tripped | `cancelled` |
-| cancelled by our own shutdown | `cancelled` |
+| client disconnected before the body was complete, or dead-client write deadline tripped | `cancelled` |
+| cancelled by our own shutdown before the body was complete | `cancelled` |
 | budget or deadline exhausted pre-commit | `failed` |
 
 `cancelled` distinguishes requester-initiated termination from an actionable
 engine, node, or routing failure. Client disconnects and shutdown cancellation
 therefore do not appear in the failed bucket.
+
+**A disconnect after the last frame is a completion.** A client that closes
+its connection the moment it has read the terminal frame cancels the request
+context before the copy has seen the upstream's EOF — the llama.cpp router
+sends EOF 0-5 ms after `data: [DONE]` — and that cancel also cancels the
+upstream request, so the copy ends in a context error rather than EOF. Nothing
+was lost: the client has the whole response. Observed before the fix as 21 of
+120 complete streams labelled `cancelled` on an eight-node cluster, against 24
+of 24 `completed` from a client that drained to EOF.
+
+The proxy therefore tracks whether the committed body is *complete* and treats
+a cancelled context as a cancellation only when it is not. The body is complete
+once the client has been written the route's terminal frame — `data: [DONE]` on
+`/v1/chat/completions` and `/v1/completions`, `event: message_stop` on
+`/v1/messages`, a `"done":true` frame on `/api/chat` and `/api/generate` —
+or the declared `Content-Length`, or the upstream body's EOF together with the
+bytes that came with it. SSE markers count only at the start of a line, so
+model text that quotes one does not end the stream. Both reporters apply the
+test: the disconnect watcher stays silent when the body is complete, and the
+deferred classification excludes a complete body from the cancelled branch.
+A client that closes before the body is complete stays `cancelled`; a failed
+write to the client stays `cancelled` whatever the upstream sent; a body that
+ends without EOF or a terminal frame is truncated, as before. A streamed body
+on a route with no terminal frame completes on EOF alone, so a close inside
+that window is still reported `cancelled`.
 
 **Reporting is deferred.** A mid-copy error is never returned to the handler:
 `httputil.ReverseProxy` converts it into `panic(http.ErrAbortHandler)` when
@@ -630,5 +656,6 @@ new supervisor, and no new relay wiring.
 | Every owner in a busy hold at admission | Local `503` with `Retry-After`, no engine contacted, no workload |
 | All owners refuse retryably | Last upstream status surfaced |
 | Transport error with candidates left | Forget the node's confirmed address, fail over |
-| Client disconnects mid-stream | Terminal workload event emitted at once; upstream cancelled |
+| Client disconnects mid-stream | Terminal `cancelled` emitted at once; upstream cancelled |
+| Client closes after the last frame, before upstream EOF | Terminal `completed` (§5.4); the cancelled context is not a cancellation |
 | Broker link closed | Facades stop serving, then the shared transport pool closes |

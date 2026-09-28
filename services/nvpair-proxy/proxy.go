@@ -261,6 +261,144 @@ type statusCapture struct {
 	// discovery cannot obtain for itself while the node is too busy to answer a
 	// probe. Called on the reverse proxy's copy goroutine, so it must be cheap.
 	upstreamAlive func()
+
+	// complete is set once every byte of the committed body has been handed to
+	// the client: the route's terminal frame was written, the declared
+	// Content-Length was reached, or the upstream body returned io.EOF and
+	// whatever came with it was written. It is what lets handleHTTP tell a
+	// client that hung up the moment it had read the last frame — before the
+	// upstream's EOF, which the llama.cpp router sends 0-5 ms after
+	// `data: [DONE]` — from one that left mid-stream. Read by the disconnect
+	// watcher on its own goroutine, hence atomic; every other field below is
+	// touched only on the copy goroutine (ReverseProxy reads and writes on one
+	// goroutine, and ModifyResponse runs on it before the copy starts).
+	complete atomic.Bool
+	// terminal is the frame that ends this route's streamed body; the zero
+	// value, for a route that never streams, matches nothing.
+	terminal streamTerminal
+	// contentLength is the upstream's declared body length. Zero or negative
+	// means unknown (chunked), so only a positive value is counted against.
+	contentLength int64
+	written       int64
+	// midLine is true when the last write did not end in a newline, so a
+	// line-anchored terminal at the start of the next write is not at a line
+	// start.
+	midLine bool
+	// eofPending is set by completionBody when the upstream's final Read
+	// returned bytes together with io.EOF: the body is complete once those
+	// bytes are written, not before.
+	eofPending bool
+}
+
+// noteWritten records a successful body write and marks the body complete once
+// the client has been handed every byte of it.
+func (sc *statusCapture) noteWritten(b []byte) {
+	if len(b) == 0 || sc.complete.Load() {
+		return
+	}
+	sc.written += int64(len(b))
+	atLineStart := !sc.midLine
+	sc.midLine = b[len(b)-1] != '\n'
+	if sc.eofPending ||
+		(sc.contentLength > 0 && sc.written >= sc.contentLength) ||
+		sc.terminal.in(b, atLineStart) {
+		sc.complete.Store(true)
+	}
+}
+
+// bodyComplete reports whether the whole committed body reached the client.
+// Safe from any goroutine.
+func (sc *statusCapture) bodyComplete() bool { return sc.complete.Load() }
+
+// completionBody wraps a committed upstream body so its clean end is recorded
+// on the statusCapture the copy writes to. io.EOF alone is not enough to
+// classify a request — cancelling the client's context also cancels the
+// upstream request, so a copy interrupted just after the last frame ends in a
+// context error, never EOF — but when EOF does arrive first it is definitive.
+type completionBody struct {
+	io.ReadCloser
+	sc *statusCapture
+}
+
+func (b completionBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	// Plain equality, as ReverseProxy's copy loop compares: anything else it
+	// treats as an error, so a wrapped EOF would never be a clean end here.
+	if err == io.EOF {
+		if n == 0 {
+			b.sc.complete.Store(true)
+		} else {
+			b.sc.eofPending = true
+		}
+	}
+	return n, err
+}
+
+// streamTerminal is the frame a dialect writes last on a streamed inference
+// response. Keyed by route rather than by Content-Type because the route fixes
+// the dialect; a non-streaming answer on the same route never carries the
+// frame and completes on its Content-Length instead.
+type streamTerminal struct {
+	// markers are the accepted spellings; any one of them ends the stream.
+	markers [][]byte
+	// lineStart anchors a marker to the start of a line. SSE control lines
+	// (`data: [DONE]`, `event: message_stop`) always begin one, and the anchor
+	// keeps model text that quotes the marker inside a JSON string from ending
+	// the stream early. NDJSON's `"done":true` sits inside the frame's object,
+	// so it is matched anywhere; a quoted copy in model output carries escaped
+	// quotes and does not match.
+	lineStart bool
+}
+
+var (
+	// sseDone ends an OpenAI chat/completions or completions stream.
+	sseDone = streamTerminal{markers: [][]byte{[]byte("data: [DONE]")}, lineStart: true}
+	// anthropicStop ends an Anthropic messages stream.
+	anthropicStop = streamTerminal{markers: [][]byte{[]byte("event: message_stop")}, lineStart: true}
+	// ndjsonDone ends an Ollama /api/chat or /api/generate stream. The spaced
+	// spelling covers a compatible server that indents its JSON.
+	ndjsonDone = streamTerminal{markers: [][]byte{[]byte(`"done":true`), []byte(`"done": true`)}}
+)
+
+// streamTerminalFor returns the terminal frame for an inference route, or the
+// zero streamTerminal for one that never streams (embeddings) or is unknown.
+func streamTerminalFor(path string) streamTerminal {
+	switch path {
+	case "/v1/chat/completions", "/v1/completions":
+		return sseDone
+	case "/v1/messages":
+		return anthropicStop
+	case "/api/chat", "/api/generate":
+		return ndjsonDone
+	}
+	return streamTerminal{}
+}
+
+// in reports whether b carries the terminal frame. atLineStart says whether b
+// begins at the start of a line, which the previous write decided.
+func (t streamTerminal) in(b []byte, atLineStart bool) bool {
+	for _, m := range t.markers {
+		if !t.lineStart {
+			if bytes.Contains(b, m) {
+				return true
+			}
+			continue
+		}
+		if atLineStart && bytes.HasPrefix(b, m) {
+			return true
+		}
+		for rest := b; ; {
+			i := bytes.Index(rest, m)
+			if i < 0 {
+				break
+			}
+			if i > 0 && rest[i-1] == '\n' {
+				return true
+			}
+			rest = rest[i+1:]
+		}
+	}
+	return false
 }
 
 // Unwrap exposes the underlying ResponseWriter so http.ResponseController can
@@ -290,8 +428,11 @@ func (sc *statusCapture) Write(b []byte) (int, error) {
 		if sc.wroteErr == nil {
 			sc.wroteErr = err
 		}
-	} else if sc.rc != nil {
-		_ = sc.rc.SetWriteDeadline(time.Time{})
+	} else {
+		if sc.rc != nil {
+			_ = sc.rc.SetWriteDeadline(time.Time{})
+		}
+		sc.noteWritten(b[:n])
 	}
 	// Reported on every chunk rather than once per response so a long generation
 	// keeps vouching for its node for as long as it streams. The reporter
@@ -1488,6 +1629,22 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// committedSC is the statusCapture of the candidate we committed to
+	// streaming; its wroteErr tells us after the fact whether the client write
+	// failed (dead/half-open client) so we can mark the workload failed, and
+	// its complete flag whether the whole body reached the client. It is
+	// assigned at the commit point as well as after the loop, because the
+	// post-loop assignment does not always run — see finalize below. Both
+	// assignments and the disconnect watcher's read hold wlMu: the watcher
+	// wakes on its own goroutine while the commit may be assigning.
+	var committedSC *statusCapture
+	bodyComplete := func() bool {
+		wlMu.Lock()
+		sc := committedSC
+		wlMu.Unlock()
+		return sc != nil && sc.bodyComplete()
+	}
+
 	// Watch for the client going away while the request is in flight. The
 	// terminal event is otherwise emitted only after the stream copy returns;
 	// a client that disconnects mid-stream can leave the copy blocked, so we
@@ -1497,6 +1654,15 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// terminalOnce keeps this from double-emitting with the normal path. The
 	// half-open case (no FIN, r.Context() never fires) is caught instead by
 	// statusCapture's write deadline below.
+	//
+	// A client that hangs up the moment it has read the last frame also
+	// cancels r.Context() — before the copy has seen the upstream's EOF, which
+	// the llama.cpp router sends 0-5 ms after `data: [DONE]`, and the cancel
+	// then reaches the upstream request first, so the copy ends in a context
+	// error rather than EOF. Nothing was lost: the client has the whole
+	// response. Observed live as 21 of 120 complete streams labelled
+	// cancelled. So a disconnect after the body is complete is not reported
+	// here; finalize below classifies it a completion.
 	if wl != nil {
 		reqCtx := r.Context()
 		finished := make(chan struct{})
@@ -1504,6 +1670,9 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			select {
 			case <-reqCtx.Done():
+				if bodyComplete() {
+					return
+				}
 				emitTerminal("cancelled", "client disconnected before completion")
 			case <-finished:
 			}
@@ -1518,13 +1687,6 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// emitTerminal, say from the codec — so a workload never stays "running"
 	// for the life of the broker whatever path the handler leaves by.
 	defer emitTerminal("failed", "request handler exited before completion")
-
-	// committedSC is the statusCapture of the candidate we committed to
-	// streaming; its wroteErr tells us after the fact whether the client write
-	// failed (dead/half-open client) so we can mark the workload failed. It is
-	// assigned at the commit point as well as after the loop, because the
-	// post-loop assignment does not always run — see finalize below.
-	var committedSC *statusCapture
 
 	// finalize reports this request's outcome, and it is deferred because a
 	// mid-copy error is never returned to us: ReverseProxy converts one into
@@ -1547,12 +1709,18 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// first and the node is still counted as loaded while we report.
 	defer func() {
 		aborted := recover()
+		// complete means every byte of the body reached the client
+		// (statusCapture.complete). A cancelled context after that is the
+		// requester hanging up on a finished answer, not abandoning one, and
+		// the abort it causes in the copy is not a mid-response abort either.
+		// The disconnect watcher applies the same test.
+		complete := committedSC != nil && committedSC.bodyComplete()
 		// An aborted copy is operational detail, not a verdict on the job. A
 		// stream that already committed a 2xx is a completion whether or not
 		// it reached its end, so this never feeds the terminal state below,
 		// and proxyErr is left untouched for that reason.
 		reportErr := proxyErr
-		if aborted != nil && reportErr == "" {
+		if aborted != nil && reportErr == "" && !complete {
 			reportErr = "upstream stream aborted mid-response"
 		}
 		if committedSC != nil && finalStatus == 0 {
@@ -1594,7 +1762,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// emit exactly once.
 		if wl != nil {
 			switch {
-			case r.Context().Err() != nil:
+			case r.Context().Err() != nil && !complete:
 				// The request was cancelled before it finished: the client
 				// disconnected or shutdown cancelled the in-flight inference. A
 				// mid-stream cancel never reaches ErrorHandler (the 200 headers
@@ -1602,7 +1770,9 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// misreported as completed. (The watcher above usually beats us
 				// to it; emitTerminal makes that a no-op.) Cancelled rather
 				// than failed: nothing went wrong here, the requester stopped
-				// waiting.
+				// waiting. A cancel that arrived after the whole body had been
+				// forwarded is excluded: that requester got its answer, and
+				// the branches below classify the response on its own terms.
 				emitTerminal("cancelled", "request cancelled before completion")
 			case committedSC != nil && committedSC.wroteErr != nil:
 				// The response committed but a write to (or flush toward) the
@@ -1921,6 +2091,16 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				if peeked != nil {
 					resp.Body = peeked
 				}
+				// Arm completion tracking for the body about to stream, so a
+				// client that hangs up after the last frame is not mistaken
+				// for one that left mid-stream (statusCapture.complete).
+				// Inference only: that is the traffic classified as a
+				// workload, and the body is already ours to wrap there.
+				if isInf {
+					sc.terminal = streamTerminalFor(r.URL.Path)
+					sc.contentLength = resp.ContentLength
+					resp.Body = completionBody{ReadCloser: resp.Body, sc: sc}
+				}
 				// Committing to this candidate — body stream is about to begin.
 				ttfbMs = time.Since(start).Milliseconds()
 				servedNodeID = cand.id
@@ -1958,8 +2138,10 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					// Record the commit here, not just after the loop: a copy
 					// error aborts this handler by panic, and finalize needs to
 					// know the response had committed (and on which capture) to
-					// classify it.
+					// classify it. Under wlMu for the disconnect watcher's read.
+					wlMu.Lock()
 					committedSC = sc
+					wlMu.Unlock()
 					// queued -> running: the engine is producing content, so
 					// this is the first moment "running" is true. It also fixes
 					// the placement on the node that actually served, which may
@@ -2041,7 +2223,9 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if !retry {
 			finalStatus = sc.status
+			wlMu.Lock()
 			committedSC = sc
+			wlMu.Unlock()
 			committed = true
 		}
 	}
