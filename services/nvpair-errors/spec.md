@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 
 `nvpair-errors` owns the node's single list of surfaced operational errors. Every producer in the process tree (each `nvpair-proxy` engine facade, `nvpair-engine-manager`, `nvpair-manual-nodes`, `nvpair-job-scheduler`, the broker's own supervisor, and the desktop client) emits `errors:report` / `errors:clear` on its existing stdio, and `nvpair-ui-broker` forwards each frame here. This service stores the entry, resolves conflicts by highest `timestamp`, and pushes the complete merged list back as an `errors:update` notification, which the broker relays verbatim to its client. It is a passive datastore: it does not decide what an error means, infer `severity`, escalate, retry, or interpret `action` — the producer is the authority on all of that.
 
-It is also the cluster's error fan-out. With `--peer-sync` (which the broker always passes) the same in-process store serves a cross-node HTTP surface on `:14319`, learns its peer set from the broker's discovery relay, and pushes its own local-origin snapshot to every pinned cluster peer, so each node's UI renders the whole cluster's errors from one list. The store keys by the composite `(nodeId, id)` because ids are unique only within a node, and a node propagates only entries whose `nodeId` equals its own — the single rule that makes push fan-out loop-free. Both peer directions are pin-based cluster mTLS with no plaintext personality: a node that belongs to no cluster exchanges nothing there and remains a purely local datastore.
+It is also the cluster's error fan-out. With `--peer-sync` (which the broker always passes) the same in-process store serves a cross-node HTTPS surface on `:14319`, learns its peer set from the broker's discovery relay, and pushes its own local-origin snapshot to every pinned cluster peer, so each node's UI renders the whole cluster's errors from one list. The store keys by the composite `(nodeId, id)` because ids are unique only within a node, and a node propagates only entries whose `nodeId` equals its own — the single rule that makes push fan-out loop-free. Both peer directions are pin-based cluster mTLS with no plaintext personality: a node that belongs to no cluster exchanges nothing there and remains a purely local datastore.
 
 ## 2. Scope
 
@@ -20,7 +20,7 @@ It is also the cluster's error fan-out. With `--peer-sync` (which the broker alw
 - Serve `POST /v1/errors` (ingest a peer's `SyncEnvelope` and reconcile replace-by-origin) and `GET /v1/errors` (this node's local-origin snapshot).
 - Push the local-origin snapshot to pinned peers on local change, on peer discovery, on a 30 s heartbeat, and on a cluster membership flip.
 - Evict every stored entry originating on a peer that leaves the discovery set.
-- Gate both HTTP directions on live cluster membership and per-peer certificate pins read from `--cluster-dir`.
+- Gate both HTTPS directions on live cluster membership and per-peer certificate pins read from `--cluster-dir`.
 
 **Out of scope**
 
@@ -142,7 +142,7 @@ Example outbound broadcast — `params` is the bare full list, sorted by `id` th
 
 ## 7. API / Interface Contract
 
-Three interfaces: a **local JSON-RPC interface** toward the supervising broker (stdio or `--ipc`), an **inter-node HTTP interface** toward peer `nvpair-errors` instances (`:14319`, cluster mTLS), and a **read-only on-disk interface** to the cluster trust directory that gates the second.
+Three interfaces: a **local JSON-RPC interface** toward the supervising broker (stdio or `--ipc`), an **inter-node HTTPS interface** toward peer `nvpair-errors` instances (`:14319`, cluster mTLS, no plaintext listener), and a **read-only on-disk interface** to the cluster trust directory that gates the second.
 
 ### 7.0 Methods and notifications
 
@@ -158,7 +158,7 @@ Three interfaces: a **local JSON-RPC interface** toward the supervising broker (
 
 Outbound notifications: `ready` with `{ "version": "<build version>" }`, emitted once before the read loop starts; `errors:update` whose `params` is the full `ServiceError[]` snapshot, emitted after every committed change (local report or clear, peer reconcile, peer eviction) and never after a no-op; and `discovery:subscribe` with `{ "services": ["er"] }`, sent once at startup when `--peer-sync` is set so the broker relay begins pushing snapshots.
 
-### 7.1 Inter-node HTTP interface
+### 7.1 Inter-node HTTPS interface
 
 - Endpoint `/v1/errors` on TCP `:14319` (`--port`), bound once for the process lifetime whenever `--peer-sync` is set.
 - `POST /v1/errors` — body is a `SyncEnvelope`. Reconciles replace-by-origin for its `nodeId`, then `204 No Content`. An undecodable body is `400 invalid JSON body`; an empty `nodeId` is `400 "nodeId" is required`.
@@ -284,8 +284,8 @@ When the peer reappears in discovery the facade emits `errors:clear` for the sam
 Flags, with defaults exactly as declared:
 
 - `--ipc ""` — IPC endpoint: a Unix domain socket path or Windows named pipe. Empty selects `stdin`/`stdout`. A dial failure is fatal.
-- `--peer-sync false` — enable the cross-node surface: bind the HTTP endpoint, subscribe to the discovery relay, and push to pinned peers. Off, the binary is a purely local stdio datastore with no listener and no relay subscription.
-- `--port 14319` — HTTP port for the cross-node errors endpoint; used only with `--peer-sync`.
+- `--peer-sync false` — enable the cross-node surface: bind the HTTPS endpoint, subscribe to the discovery relay, and push to pinned peers. Off, the binary is a purely local stdio datastore with no listener and no relay subscription.
+- `--port 14319` — port for the cross-node errors endpoint, which serves HTTPS only; used only with `--peer-sync`.
 - `--cluster-dir ""` — cluster config directory (`node.crt` / `node.key` plus `trusted/`). Cross-node sync is pin-based cluster mTLS, so without a usable identity and live membership here the node serves and pushes nothing.
 - `--node-id ""` — this node's stable origin id. Empty keeps the hostname default.
 - `--log-level ""` — `debug` / `info` / `warn` / `error`; falls back to `$NVPAIR_LOG_LEVEL`, then `info`.
