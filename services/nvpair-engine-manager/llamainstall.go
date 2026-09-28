@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 func llamaExecutable() string {
@@ -291,7 +292,7 @@ func recoverLlamaRuntime(root string) error {
 	if err := validateLlamaOwnedPaths(root); err != nil {
 		return err
 	}
-	return os.Rename(previous, current)
+	return renameWithRetry(previous, current)
 }
 
 func promoteLlamaRuntime(root, candidate string) error {
@@ -316,20 +317,44 @@ func promoteLlamaRuntime(root, candidate string) error {
 	}
 	hadCurrent := false
 	if _, err := os.Lstat(current); err == nil {
-		if err := os.Rename(current, previous); err != nil {
+		if err := renameWithRetry(current, previous); err != nil {
 			return err
 		}
 		hadCurrent = true
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.Rename(candidate, current); err != nil {
+	if err := renameWithRetry(candidate, current); err != nil {
 		if hadCurrent {
-			return errors.Join(err, os.Rename(previous, current))
+			return errors.Join(err, renameWithRetry(previous, current))
 		}
 		return err
 	}
 	return nil
+}
+
+// renameWithRetry retries a directory rename that the platform denies only
+// transiently. On Windows, Defender and the search indexer hold freshly
+// written executables for a moment: a promotion right after the validation
+// probes was denied on a lab node for about a second, twice, and succeeded on
+// the third install. Errors that are not transient return at once; the window
+// bounds a directory that is genuinely held.
+var (
+	renameDir            = os.Rename
+	renameRetryWindow    = 10 * time.Second
+	renameRetryEvery     = 250 * time.Millisecond
+	isTransientRenameErr = transientRenameError
+)
+
+func renameWithRetry(oldpath, newpath string) error {
+	deadline := time.Now().Add(renameRetryWindow)
+	for {
+		err := renameDir(oldpath, newpath)
+		if err == nil || !isTransientRenameErr(err) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(renameRetryEvery)
+	}
 }
 
 func removeLlamaRuntime(st *engineState) error {

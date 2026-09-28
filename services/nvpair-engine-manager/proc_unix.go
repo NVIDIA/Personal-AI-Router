@@ -58,6 +58,12 @@ func processIOBytes(int) (int64, bool) {
 	return 0, false
 }
 
+// transientRenameError: a Unix rename of a directory is not blocked by another
+// process merely holding files inside it, so no error is retried here.
+func transientRenameError(error) bool {
+	return false
+}
+
 // gracefulSignal sends SIGTERM to the process group (falling back to the
 // process itself). It is the only stop signal engine-manager sends: stop()
 // sends this once and waits for the engine to exit, and never escalates to

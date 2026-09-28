@@ -60,6 +60,21 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 	}
 }
 
+// transientRenameError reports the errors a directory rename hits while another
+// process briefly holds a file inside it (antivirus scanning fresh executables,
+// the search indexer): access denied, sharing violation, lock violation.
+func transientRenameError(err error) bool {
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	switch errno {
+	case windows.ERROR_ACCESS_DENIED, windows.ERROR_SHARING_VIOLATION, windows.ERROR_LOCK_VIOLATION:
+		return true
+	}
+	return false
+}
+
 var procGetProcessIoCounters = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessIoCounters")
 
 // processIOBytes returns the bytes a process has moved through I/O so far:
