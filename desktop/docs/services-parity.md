@@ -162,9 +162,11 @@ Personal AI Router supports local:
 Before shutdown, Personal AI Router calls `engine:prepare-shutdown`. This stops managed engine
 processes without changing the persisted desired state; the broker restores
 enabled engines on the next launch. The broker also self-initiates
-`engine:prepare-shutdown` before tearing down its workers and waits for each
-worker to exit without force-killing the worker, so engines are not orphaned
-during teardown. Stopping a managed engine itself sends one stop signal and
+`engine:prepare-shutdown` before tearing down its workers, so engines are not
+orphaned during teardown; engine-manager sweeps once per process, and later
+calls wait for that sweep. The broker joins its workers concurrently within one
+shared teardown budget and escalates a worker that misses its grace, except
+engine-manager on Windows. Stopping a managed engine itself sends one stop signal and
 waits for it to exit with no timeout: SIGTERM to the process group on Unix
 (never escalated to SIGKILL) and `taskkill /T /F` on Windows (its windowless
 engines cannot receive a graceful close).

@@ -194,10 +194,14 @@ the orphan-reclaim path, for a process whose `exec.Cmd` handle was lost.
 
 Personal AI Router calls `engine:prepare-shutdown` before broker teardown so local processes
 stop without clearing their persisted desired state. The broker also
-self-initiates `engine:prepare-shutdown` before tearing down its workers and
-waits for each worker to exit without force-killing the worker, so engines are
-not orphaned even if Personal AI Router does not call it first. The broker restores enabled
-engines on the next startup.
+self-initiates `engine:prepare-shutdown` before tearing down its workers, so
+engines are not orphaned even if Personal AI Router does not call it first.
+Engine-manager sweeps its engines once per process; a repeated call waits for
+that sweep instead of starting another. The broker then joins its workers
+concurrently within one shared teardown budget. A worker that misses its grace
+is terminated and then killed, except engine-manager on Windows, whose join is
+abandoned rather than killed mid-stop. The broker restores enabled engines on
+the next startup.
 
 ## Discovery and models
 
