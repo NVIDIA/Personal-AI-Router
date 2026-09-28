@@ -60,6 +60,15 @@ type subscriptionResult struct {
 func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, cleanup func()) {
 	t.Helper()
 	cmd := exec.Command(brokerBin, "--scanner-path", scannerBin, "--cluster-dir", t.TempDir())
+	// The broker migrates and writes the per-user data dir on start; a test must
+	// never move or rewrite the developer's real one.
+	configDir := t.TempDir()
+	cmd.Env = append(os.Environ(),
+		"HOME="+configDir,
+		"XDG_CONFIG_HOME="+configDir,
+		"APPDATA="+configDir,
+		"LOCALAPPDATA="+configDir,
+	)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()

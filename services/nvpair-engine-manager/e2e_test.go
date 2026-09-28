@@ -27,8 +27,8 @@ func TestE2EOverStdio(t *testing.T) {
 	// Drop the test manifest in every location os.UserConfigDir might
 	// resolve to, so the child finds it regardless of OS.
 	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),                                    // Windows %LocalAppData%, Linux $XDG_CONFIG_HOME
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"), // macOS
+		filepath.Join(cfg, "Nvidia Corporation", "NVIDIA PAIR", "engines"),                                    // Windows %LocalAppData%, Linux $XDG_CONFIG_HOME
+		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "NVIDIA PAIR", "engines"), // macOS
 	} {
 		writeFakeManifest(t, dir)
 	}
@@ -93,8 +93,8 @@ func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
 		},
 	}
 	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
+		filepath.Join(cfg, "Nvidia Corporation", "NVIDIA PAIR", "engines"),
+		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "NVIDIA PAIR", "engines"),
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -127,8 +127,8 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
+		filepath.Join(cfg, "Nvidia Corporation", "NVIDIA PAIR", "engines"),
+		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "NVIDIA PAIR", "engines"),
 	} {
 		writeFakeManifest(t, dir)
 	}
@@ -181,8 +181,8 @@ func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
 	platform.Runtime.Ready.TimeoutS = 120
 	manifest.Platforms[hostKey()] = platform
 	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
+		filepath.Join(cfg, "Nvidia Corporation", "NVIDIA PAIR", "engines"),
+		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "NVIDIA PAIR", "engines"),
 	} {
 		writeE2EManifest(t, dir, manifest)
 	}
@@ -414,7 +414,7 @@ func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
 	cfg, home := t.TempDir(), t.TempDir()
 	fixture := settingsExecutor(t, false)
 	manifest, _ := fixture.reg.Get("fake")
-	for _, dir := range []string{filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"), filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines")} {
+	for _, dir := range []string{filepath.Join(cfg, "Nvidia Corporation", "NVIDIA PAIR", "engines"), filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "NVIDIA PAIR", "engines")} {
 		writeE2EManifest(t, dir, manifest)
 	}
 	manager := startE2EManager(t, cfg, home)

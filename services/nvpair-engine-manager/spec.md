@@ -160,7 +160,7 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
 ## 9. Data Ownership
 - **Owned**: the in-memory engine registry (parsed manifests + per-engine runtime state) and per-engine log/error ring buffers — transient only.
 - **Source of truth**: no — `nvpair-errors` owns the node's error list (in memory, for the session); model inventories belong to the engines; manifests on disk are authored elsewhere.
-- **Storage**: in-memory; manifests read from the per-user data dir's `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on macOS) plus bundled `manifests/*.json`. No database.
+- **Storage**: in-memory; manifests read from the per-user data dir's `engines/*.json` (`%LocalAppData%\Nvidia Corporation\NVIDIA PAIR` on Windows, `~/.config/Nvidia Corporation/NVIDIA PAIR` on Linux, `~/Library/Application Support/Nvidia Corporation/NVIDIA PAIR` on macOS) plus bundled `manifests/*.json`. No database.
 
 ## 10. Design Constraints
 - **Performance**: control plane, not inference; sub-second RPCs except install (network-bound) and start (bounded by the readiness timeout).

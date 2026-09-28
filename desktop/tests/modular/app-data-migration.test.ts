@@ -5,7 +5,14 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { migrateAppDataDirectory } from '@/electron/app-data-migration'
+import { migrateAppDataDirectory, withAppDataMigrationLock } from '@/electron/app-data-migration'
+import {
+    APP_DATA_DIR_NAME,
+    APP_DATA_MIGRATION_LOCK_NAME,
+    APP_DATA_MIGRATION_SKIP_ENTRIES,
+    APP_ORG,
+    APP_PREVIOUS_DATA_DIRS
+} from '@/shared/constants/app'
 
 const roots: string[] = []
 
@@ -27,11 +34,11 @@ describe('app data migration', () => {
         const previousRoot = path.join(root, 'NVIDIA Corporation')
         const sharedRoot = path.join(root, 'Nvidia Corporation')
         const source = path.join(previousRoot, 'PAIR')
-        const destination = path.join(sharedRoot, 'Personal AI Router')
+        const destination = path.join(sharedRoot, 'NVIDIA PAIR')
         fs.mkdirSync(path.join(source, 'logs'), { recursive: true })
         fs.writeFileSync(path.join(source, 'logs', 'app.log'), 'existing log')
 
-        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'Personal AI Router')
+        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'NVIDIA PAIR')
 
         expect(fs.existsSync(source)).toBe(false)
         expect(fs.readFileSync(path.join(destination, 'logs', 'app.log'), 'utf8')).toBe(
@@ -44,7 +51,7 @@ describe('app data migration', () => {
         const previousRoot = path.join(root, 'NVIDIA Corporation')
         const sharedRoot = path.join(root, 'Nvidia Corporation')
         const source = path.join(previousRoot, 'PAIR')
-        const destination = path.join(sharedRoot, 'Personal AI Router')
+        const destination = path.join(sharedRoot, 'NVIDIA PAIR')
         fs.mkdirSync(path.join(source, 'config'), { recursive: true })
         fs.mkdirSync(path.join(destination, 'config'), { recursive: true })
         fs.mkdirSync(path.join(destination, 'engine-bin'))
@@ -52,7 +59,7 @@ describe('app data migration', () => {
         fs.writeFileSync(path.join(source, 'config', 'shared.json'), 'previous conflict')
         fs.writeFileSync(path.join(destination, 'config', 'shared.json'), 'current conflict')
 
-        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'Personal AI Router')
+        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'NVIDIA PAIR')
 
         expect(fs.readFileSync(path.join(destination, 'config', 'ui.json'), 'utf8')).toBe(
             'previous'
@@ -73,11 +80,11 @@ describe('app data migration', () => {
         const previousRoot = path.join(root, 'old-vendor')
         const sharedRoot = path.join(root, 'new-vendor')
         const source = path.join(previousRoot, 'PAIR')
-        const destination = path.join(sharedRoot, 'Personal AI Router')
+        const destination = path.join(sharedRoot, 'NVIDIA PAIR')
         fs.mkdirSync(path.join(source, 'logs'), { recursive: true })
         fs.writeFileSync(path.join(source, 'logs', 'app.log'), 'existing log')
 
-        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'Personal AI Router')
+        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'NVIDIA PAIR')
 
         expect(fs.existsSync(sharedRoot)).toBe(true)
         expect(fs.existsSync(source)).toBe(false)
@@ -91,13 +98,13 @@ describe('app data migration', () => {
         const previousRoot = path.join(root, 'old-vendor')
         const sharedRoot = path.join(root, 'new-vendor')
         const source = path.join(previousRoot, 'PAIR')
-        const destination = path.join(sharedRoot, 'Personal AI Router')
+        const destination = path.join(sharedRoot, 'NVIDIA PAIR')
         fs.mkdirSync(path.join(source, 'bin'), { recursive: true })
         fs.mkdirSync(path.join(source, 'config'))
         fs.writeFileSync(path.join(source, 'bin', 'nvpair.cmd'), 'launcher')
         fs.writeFileSync(path.join(source, 'config', 'ui.json'), 'previous')
 
-        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'Personal AI Router', ['bin'])
+        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'NVIDIA PAIR', ['bin'])
 
         expect(fs.readFileSync(path.join(destination, 'config', 'ui.json'), 'utf8')).toBe(
             'previous'
@@ -114,14 +121,96 @@ describe('app data migration', () => {
         const previousRoot = path.join(root, 'NVIDIA Corporation')
         const sharedRoot = path.join(root, 'Nvidia Corporation')
         const source = path.join(previousRoot, 'PAIR')
-        const destinationFile = path.join(sharedRoot, 'Personal AI Router', 'state.json')
+        const destinationFile = path.join(sharedRoot, 'NVIDIA PAIR', 'state.json')
         fs.mkdirSync(source, { recursive: true })
         fs.writeFileSync(path.join(source, 'state.json'), 'state')
 
-        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'Personal AI Router')
-        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'Personal AI Router')
+        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'NVIDIA PAIR')
+        migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'NVIDIA PAIR')
 
         expect(fs.readFileSync(destinationFile, 'utf8')).toBe('state')
         expect(fs.existsSync(source)).toBe(false)
+    })
+
+    it('does nothing when the previous and current paths are one directory', () => {
+        const root = createRoot()
+        const directory = path.join(root, 'vendor', 'NVIDIA PAIR')
+        fs.mkdirSync(directory, { recursive: true })
+        fs.writeFileSync(path.join(directory, 'state.json'), 'state')
+
+        migrateAppDataDirectory(
+            path.join(root, 'vendor'),
+            'NVIDIA PAIR',
+            path.join(root, 'vendor', '.'),
+            'NVIDIA PAIR'
+        )
+
+        expect(fs.readFileSync(path.join(directory, 'state.json'), 'utf8')).toBe('state')
+    })
+})
+
+describe('app data migration lock', () => {
+    it('runs the migration and releases the lock', () => {
+        const lockPath = path.join(createRoot(), 'vendor', APP_DATA_MIGRATION_LOCK_NAME)
+        let ran = false
+
+        const acquired = withAppDataMigrationLock(lockPath, () => {
+            ran = fs.existsSync(lockPath)
+        })
+
+        expect(acquired).toBe(true)
+        expect(ran).toBe(true)
+        expect(fs.existsSync(lockPath)).toBe(false)
+    })
+
+    it('breaks a lock left by a crashed holder', () => {
+        const lockPath = path.join(createRoot(), APP_DATA_MIGRATION_LOCK_NAME)
+        fs.writeFileSync(lockPath, '')
+        const stale = new Date(Date.now() - 5 * 60_000)
+        fs.utimesSync(lockPath, stale, stale)
+        let ran = false
+
+        const acquired = withAppDataMigrationLock(lockPath, () => {
+            ran = true
+        })
+
+        expect(acquired).toBe(true)
+        expect(ran).toBe(true)
+    })
+})
+
+describe('app data directory constants', () => {
+    // The broker migrates the same directories under the same lock for launches
+    // that never start Electron; a drift would split one node's state in two.
+    const appdirSource = fs.readFileSync(
+        path.join(__dirname, '..', '..', '..', 'services', 'shared', 'appdir', 'appdir.go'),
+        'utf8'
+    )
+
+    function goStringConstant(name: string): string | undefined {
+        return new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(appdirSource)?.[1]
+    }
+
+    it('matches the Go data directory and lock file names', () => {
+        expect(goStringConstant('orgDir')).toBe(APP_ORG)
+        expect(goStringConstant('appDir')).toBe(APP_DATA_DIR_NAME)
+        expect(goStringConstant('migrationLockName')).toBe(APP_DATA_MIGRATION_LOCK_NAME)
+    })
+
+    it('matches the Go previous directories in order', () => {
+        const block = /previousDirs = \[\]\[2\]string\{([\s\S]*?)\n\}/.exec(appdirSource)?.[1] ?? ''
+        const goPrevious = [...block.matchAll(/\{"([^"]*)", "([^"]*)"\}/g)].map(match => ({
+            org: match[1],
+            name: match[2]
+        }))
+
+        expect(goPrevious).toEqual(APP_PREVIOUS_DATA_DIRS)
+    })
+
+    it('matches the Go preserved launcher entries', () => {
+        const block = /preservedEntries = \[\]string\{([^}]*)\}/.exec(appdirSource)?.[1] ?? ''
+        const goPreserved = [...block.matchAll(/"([^"]*)"/g)].map(match => match[1])
+
+        expect(goPreserved).toEqual(APP_DATA_MIGRATION_SKIP_ENTRIES)
     })
 })

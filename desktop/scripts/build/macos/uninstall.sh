@@ -113,9 +113,10 @@ fi
 
 echo "Removing user data..."
 # Per-user data roots. Keep these names in sync with APP_ORG/APP_DATA_DIR_NAME in
-# src/shared/constants/app.ts and the Go appdir "Nvidia Corporation/Personal AI
-# Router" under Application Support. The living, append-only inventory is
-# scripts/wipe-app-data.sh — do not silently diverge.
+# src/shared/constants/app.ts and the Go appdir "Nvidia Corporation/NVIDIA PAIR"
+# under Application Support; the other two are earlier locations. The living,
+# append-only inventory is scripts/wipe-app-data.sh — do not silently diverge.
+rm -rf "$APP_SUPPORT/Nvidia Corporation/NVIDIA PAIR" 2>/dev/null || true
 rm -rf "$APP_SUPPORT/Nvidia Corporation/Personal AI Router" 2>/dev/null || true
 rm -rf "$APP_SUPPORT/NVIDIA Corporation/PAIR" 2>/dev/null || true
 # Remove the current and previous parents only when empty so other NVIDIA

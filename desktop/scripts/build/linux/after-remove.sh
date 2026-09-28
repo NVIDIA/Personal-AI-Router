@@ -65,10 +65,12 @@ case "${1:-}" in
       [ -n "$user_home" ] || user_home="/home/$real_user"
 
       # Per-user data roots. Keep these names in sync with APP_ORG/APP_DATA_DIR_NAME in
-      # src/shared/constants/app.ts and the Go appdir "Nvidia Corporation/Personal
-      # AI Router" (backend base = $XDG_CONFIG_HOME or ~/.config). The living,
-      # append-only inventory is scripts/wipe-app-data.sh — do not silently diverge.
+      # src/shared/constants/app.ts and the Go appdir "Nvidia Corporation/NVIDIA
+      # PAIR" (backend base = $XDG_CONFIG_HOME or ~/.config); the other two are
+      # earlier locations. The living, append-only inventory is
+      # scripts/wipe-app-data.sh — do not silently diverge.
       # Every delete is best-effort so a locked or missing path never aborts removal.
+      rm -rf "$user_home/.config/Nvidia Corporation/NVIDIA PAIR" 2>/dev/null || true
       rm -rf "$user_home/.config/Nvidia Corporation/Personal AI Router" 2>/dev/null || true
       rm -rf "$user_home/.config/NVIDIA Corporation/PAIR" 2>/dev/null || true
       # Remove the current and previous parents only when empty so other NVIDIA

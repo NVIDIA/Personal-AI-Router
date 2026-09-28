@@ -212,8 +212,8 @@ func TestE2EStdinCloseStopsEngine(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
+		filepath.Join(cfg, "Nvidia Corporation", "NVIDIA PAIR", "engines"),
+		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "NVIDIA PAIR", "engines"),
 	} {
 		writeFakeManifest(t, dir)
 	}

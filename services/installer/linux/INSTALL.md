@@ -60,9 +60,11 @@ extracted directory:
 rm -rf /path/to/NVIDIA-Personal-AI-Router-<version>
 ```
 
-The workers store configuration in `~/.config/Nvidia Corporation/Personal AI Router/`
+The workers store configuration in `~/.config/Nvidia Corporation/NVIDIA PAIR/`
 (manual-node list, log-level preference, cluster identity/pins, etc.). Remove
-that directory too if you want a fully clean slate.
+that directory too if you want a fully clean slate, along with
+`~/.config/Nvidia Corporation/Personal AI Router/` or
+`~/.config/NVIDIA Corporation/PAIR/` if an earlier release left one behind.
 
 ## Requirements
 

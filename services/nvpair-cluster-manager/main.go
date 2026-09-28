@@ -19,7 +19,7 @@ import (
 
 func main() {
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
-	configDir := flag.String("config-dir", "", "base config directory; the cluster/ subtree lives here (default: the per-user Nvidia Corporation/Personal AI Router data dir)")
+	configDir := flag.String("config-dir", "", "base config directory; the cluster/ subtree lives here (default: the per-user Nvidia Corporation/NVIDIA PAIR data dir)")
 	port := flag.Int("port", defaultPort, "inter-node HTTP listener port")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)

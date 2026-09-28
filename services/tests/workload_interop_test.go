@@ -83,6 +83,15 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 	t.Helper()
 	args = append([]string{"--cluster-dir", clusterDir}, args...)
 	cmd := exec.Command(brokerBin, args...)
+	// The broker migrates and writes the per-user data dir on start; a test must
+	// never move or rewrite the developer's real one.
+	configDir := t.TempDir()
+	cmd.Env = append(os.Environ(),
+		"HOME="+configDir,
+		"XDG_CONFIG_HOME="+configDir,
+		"APPDATA="+configDir,
+		"LOCALAPPDATA="+configDir,
+	)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()

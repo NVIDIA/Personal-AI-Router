@@ -3,7 +3,7 @@
 
 import { app } from 'electron'
 import { initPlatform } from '@/electron/globals'
-import { ElectronPathProvider, setPaths } from '@/electron/path'
+import { ElectronPathProvider, migrateAppData, setPaths } from '@/electron/path'
 import { initFileLogger } from '@/shared/utils/log'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 
@@ -11,6 +11,7 @@ const init = async (): Promise<void> => {
     try {
         app.setName(APP_DISPLAY_NAME)
         await setPaths()
+        migrateAppData()
 
         const paths = new ElectronPathProvider(app)
         initPlatform(paths)

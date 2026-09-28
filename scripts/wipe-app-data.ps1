@@ -92,9 +92,10 @@ if ($ShowHelp) {
 
 $AppId = 'com.nvidia.nvpair'
 $AppOrg = 'Nvidia Corporation'
-$AppDataDirName = 'Personal AI Router'
+$AppDataDirName = 'NVIDIA PAIR'
 $PreviousOrg = 'NVIDIA Corporation'
 $PreviousDataDirName = 'PAIR'
+$RenamedDataDirName = 'Personal AI Router'
 
 $LocalAppData = $env:LOCALAPPDATA
 if (-not $LocalAppData) {
@@ -107,6 +108,7 @@ if (-not $HomeDir) { $HomeDir = $HOME }
 
 $CurrentRoot = Join-Path $LocalAppData (Join-Path $AppOrg $AppDataDirName)
 $LegacyRoot = Join-Path $LocalAppData (Join-Path $PreviousOrg $PreviousDataDirName)
+$RenamedRoot = Join-Path $LocalAppData (Join-Path $AppOrg $RenamedDataDirName)
 
 $Username = $env:USERNAME
 if (-not $Username) { $Username = 'user' }
@@ -128,7 +130,8 @@ $Targets = @(
     @{ Path = $LegacyRoot; Reason = 'Legacy pre-rename app data root (NVIDIA Corporation/PAIR)' },
     @{ Path = (Join-Path $LocalAppData 'nvpair-updater'); Reason = 'electron-updater download cache (Windows)' },
     @{ Path = (Join-Path $CurrentRoot (Join-Path 'bin' 'nvpair.cmd')); Reason = 'Generated Windows nvpair launcher under userData' },
-    @{ Path = $ControlDir; Reason = 'Removed CLI control token directory' }
+    @{ Path = $ControlDir; Reason = 'Removed CLI control token directory' },
+    @{ Path = $RenamedRoot; Reason = 'Previous app data root (Nvidia Corporation/Personal AI Router)' }
 )
 
 $PairProcs = @(
@@ -204,7 +207,8 @@ if ($running.Count -gt 0 -and $ForceKill) {
 Get-CimInstance Win32_Process | Where-Object {
   $_.ExecutablePath -and (
     $_.ExecutablePath -like "$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*" -or
-    $_.ExecutablePath -like "$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*"
+    $_.ExecutablePath -like "$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*" -or
+    $_.ExecutablePath -like "$env:LOCALAPPDATA\Nvidia Corporation\NVIDIA PAIR\*"
   )
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 '@

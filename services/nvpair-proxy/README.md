@@ -133,8 +133,8 @@ node. Membership and pins are re-derived per request, so joining or leaving a
 cluster needs no restart.
 
 **Persisted port.** A port chosen at runtime via `set-port` is saved to the
-per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on
-Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) and
+per-user data dir (`%LocalAppData%\Nvidia Corporation\NVIDIA PAIR` on
+Windows, `~/.config/Nvidia Corporation/NVIDIA PAIR` on Linux) and
 **restored when the facade is enabled**, taking precedence over the requested
 `port`/the default — so the proxy comes back up where it was last put. Each
 engine has its own file, so moving one proxy never moves another.

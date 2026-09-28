@@ -356,6 +356,13 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 		"--cluster-dir", t.TempDir(),
 	)
+	configDir := t.TempDir()
+	cmd.Env = append(os.Environ(),
+		"HOME="+configDir,
+		"XDG_CONFIG_HOME="+configDir,
+		"APPDATA="+configDir,
+		"LOCALAPPDATA="+configDir,
+	)
 	cmd.Stderr = os.Stderr
 	// Keep stdin OPEN for the lifetime of the test so shutdown is driven
 	// purely by the signal, not by stdin EOF (closing stdin would shut the

@@ -15,9 +15,9 @@ runner is engine-agnostic: **adding an engine is a manifest, not code.**
   `nvpair-engine-manager/manifests/*.json` (e.g. `ollama.json`).
 - **User / third-party** manifests are read at runtime from
   the per-user data dir's `engines/*.json`
-  (`%LocalAppData%\Nvidia Corporation\Personal AI Router\engines\` on Windows,
-  `~/.config/Nvidia Corporation/Personal AI Router/engines/` on Linux,
-  `~/Library/Application Support/Nvidia Corporation/Personal AI Router/engines/` on macOS).
+  (`%LocalAppData%\Nvidia Corporation\NVIDIA PAIR\engines\` on Windows,
+  `~/.config/Nvidia Corporation/NVIDIA PAIR/engines/` on Linux,
+  `~/Library/Application Support/Nvidia Corporation/NVIDIA PAIR/engines/` on macOS).
 
 A user manifest **overrides** a bundled one with the same `engine` name,
 so a vendor or operator can ship or tweak an engine without rebuilding. The

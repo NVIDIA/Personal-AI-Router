@@ -81,9 +81,10 @@ done
 
 APP_ID=com.nvidia.nvpair
 APP_ORG="Nvidia Corporation"
-APP_DATA_DIR_NAME="Personal AI Router"
+APP_DATA_DIR_NAME="NVIDIA PAIR"
 APP_PREVIOUS_ORG="NVIDIA Corporation"
 APP_PREVIOUS_DATA_DIR_NAME=PAIR
+APP_RENAMED_DATA_DIR_NAME="Personal AI Router"
 
 uname_s="$(uname -s 2>/dev/null || echo unknown)"
 case "$uname_s" in
@@ -112,6 +113,7 @@ fi
 
 CURRENT_ROOT="$CONFIG_BASE/$APP_ORG/$APP_DATA_DIR_NAME"
 LEGACY_ROOT="$CONFIG_BASE/$APP_PREVIOUS_ORG/$APP_PREVIOUS_DATA_DIR_NAME"
+RENAMED_ROOT="$CONFIG_BASE/$APP_ORG/$APP_RENAMED_DATA_DIR_NAME"
 
 USERNAME="${USER:-user}"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -133,6 +135,7 @@ TARGETS+=("$CACHE_HOME/nvpair-updater|electron-updater download cache")
 TARGETS+=("$CONTROL_DIR|Removed CLI control socket directory and auth token")
 TARGETS+=("$HOME_DIR/.local/bin/nvpair|Generated Linux nvpair launcher")
 TARGETS+=("/usr/local/bin/nvpair|Generated macOS/Linux nvpair launcher (best-effort)")
+TARGETS+=("$RENAMED_ROOT|Previous app data root (Nvidia Corporation/Personal AI Router)")
 
 if [[ "$PLATFORM" == "darwin" ]]; then
   TARGETS+=("$HOME_DIR/Library/Preferences/${APP_ID}.plist|macOS preferences")

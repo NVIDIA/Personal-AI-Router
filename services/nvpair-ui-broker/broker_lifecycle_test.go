@@ -21,7 +21,7 @@ import (
 // different bases the node would pair into a directory nothing reads — a healthy
 // roster with no cluster traffic, and no restart left to mask it.
 func TestClusterManagerConfigDirTracksBrokerClusterDir(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "Personal AI Router")
+	base := filepath.Join(t.TempDir(), "NVIDIA PAIR")
 	b := &Broker{clusterDir: filepath.Join(base, "cluster")}
 	if got := b.clusterManagerConfigDir(); got != base {
 		t.Fatalf("clusterManagerConfigDir = %q, want %q", got, base)
