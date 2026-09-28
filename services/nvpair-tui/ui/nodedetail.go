@@ -523,6 +523,13 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 
 	case engineSettingsMsg:
+		// Replies are not cancelled when the screen closes, so one sent from
+		// another node's screen can land here. Taken, it opened this node's
+		// field prefilled with that node's value and cached its revision here,
+		// so the next save wrote one machine's settings against another's.
+		if msg.node != d.nodeArg() {
+			return nil, true
+		}
 		if msg.err != nil {
 			d.settingsWanted = nil
 			d.status.error("read engine settings failed: %s", msg.err)
@@ -547,9 +554,15 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 
 	case enginePreviewMsg:
+		if msg.request.NodeID != d.nodeArg() {
+			return nil, true
+		}
 		return d.applySettingsPreview(msg), true
 
 	case engineSettingsAppliedMsg:
+		if msg.node != d.nodeArg() {
+			return nil, true
+		}
 		if errors.Is(msg.err, context.DeadlineExceeded) {
 			// Not a rejection. Accepted work is target-owned — the broker does
 			// not abandon a half-finished port swap because this screen stopped
