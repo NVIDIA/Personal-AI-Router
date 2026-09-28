@@ -353,11 +353,12 @@ current URL.
 An engine PAIR installed for you is a normal installation, and you can drive it
 with its own command-line interface (CLI).
 
-When PAIR installs an engine, it adds that engine's command directory to your
-user `PATH`, so `ollama` or `lms` works by name. **Open a new terminal
-afterwards** — a shell that was already running keeps the `PATH` it started with.
-Uninstalling the engine removes the entry again. If PAIR could not update your
-`PATH`, it tells you so and the engine still works; use the full path below.
+When PAIR installs an engine, it asks whether to add that engine's command
+directory to your user `PATH`. If you agree, `ollama` or `lms` works by name.
+**Open a new terminal afterwards** — a shell that was already running keeps the
+`PATH` it started with. When you uninstall the engine, PAIR offers to remove the
+entry again. If you declined, or PAIR could not update your `PATH`, the engine
+still works; use the full path below.
 
 One thing still catches people out: the engine is not on the port its CLI expects
 by default. Refer to [Set the port explicitly](#set-the-port-explicitly) below.
@@ -383,7 +384,7 @@ official installer:
 lms status
 ```
 
-If you need the full path — because `PATH` setup failed, or you are scripting
+If you need the full path — because you declined `PATH` setup, it failed, or you are scripting
 against a specific installation — these are the locations:
 
 | Engine | Platform | Path |

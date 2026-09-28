@@ -57,6 +57,12 @@ export interface EngineCommandPayload {
     nodeId: string
     model?: string
     expiry?: string
+    /**
+     * The user's answer to changing their PATH, for `install` (add the engine's
+     * command-line tools) and `uninstall` (remove what PAIR added). Absent means
+     * no consent, so PATH is left as it is.
+     */
+    path?: boolean
 }
 
 /** Canonical engine state snapshot sent on connect/reconnect. */

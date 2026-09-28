@@ -251,6 +251,58 @@ func (e *Executor) uninstallPath(engine string) error {
 	return nil
 }
 
+// recordInstalled notes that PAIR ran the engine's installer when the user
+// declined the PATH entry. Nothing is published; the flag only keeps a later
+// consented install able to re-adopt the engine.
+func (e *Executor) recordInstalled(engine string) error {
+	unlock, err := lockUserPath(e.baseDir)
+	if err != nil {
+		return fmt.Errorf("lock PATH ownership: %w", err)
+	}
+	defer unlock()
+	file := e.pathReceiptFile(engine)
+	receipt, err := loadPathReceipt(file)
+	if err != nil && !errors.Is(err, errUnreadableReceipt) {
+		return fmt.Errorf("read PATH ownership: %w", err)
+	}
+	if receipt.Installed {
+		return nil
+	}
+	receipt.Installed = true
+	return savePathReceipt(file, receipt)
+}
+
+// releasePathOwnership is the uninstall a user who kept the PATH entries asked
+// for: the entries stay where they are and the record that claims them goes, so
+// they are the user's from here on.
+func (e *Executor) releasePathOwnership(engine string) error {
+	unlock, err := lockUserPath(e.baseDir)
+	if err != nil {
+		return fmt.Errorf("lock PATH ownership: %w", err)
+	}
+	defer unlock()
+	if err := os.Remove(e.pathReceiptFile(engine)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		err = fmt.Errorf("%s is uninstalled, but its PATH ownership record could not be removed: %w", engine, err)
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: redactHome(err.Error()), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
+		return err
+	}
+	e.reporter.clear(uninstallFailedID(engine))
+	e.reporter.clear(pathFailedID(engine))
+	return nil
+}
+
+// pathManaged reports whether PAIR currently owns a PATH entry for the engine,
+// which is what decides whether an uninstall has anything to ask about.
+//
+// It reads the record on every call rather than caching it: nvpair-tui runs its
+// own engine-manager against the same records, so a cached answer goes stale
+// the moment the other one installs or uninstalls. Records are published by
+// atomic rename, so the read needs no lock.
+func (e *Executor) pathManaged(engine string) bool {
+	receipt, err := loadPathReceipt(e.pathReceiptFile(engine))
+	return err == nil && receipt.Dir != ""
+}
+
 // removeAllUserPaths releases every PATH entry the engines under baseDir own.
 //
 // The receipts live inside the data directory the application uninstaller

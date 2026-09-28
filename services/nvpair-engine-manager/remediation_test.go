@@ -116,7 +116,7 @@ func TestUninstallRetries(t *testing.T) {
 	m.Platforms[key] = p
 
 	ex := newTestExecutor(t, m)
-	err := ex.Uninstall(context.Background(), "fake")
+	err := ex.Uninstall(context.Background(), "fake", true)
 	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
 		t.Fatalf("expected uninstall failure after 3 attempts, got %v", err)
 	}
@@ -284,7 +284,7 @@ func TestInstallChecksumMismatchReported(t *testing.T) {
 		}},
 	}
 	ex, c := capturingExecutor(t, m)
-	err := ex.Install(context.Background(), "fake")
+	err := ex.Install(context.Background(), "fake", true)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected checksum mismatch, got %v", err)
 	}

@@ -232,9 +232,11 @@
 |---|---|---|
 | `cluster:identity-changed` | request (we call) | ✅ yes |
 | `cluster:invite-received` | request (we call) | ✅ yes |
+| `engine:install` | request (we call) | ✅ yes |
 | `engine:install-progress` | request (we call) | ✅ yes |
 | `engine:pull-progress` | request (we call) | ✅ yes |
 | `engine:state-changed` | request (we call) | ✅ yes |
+| `engine:uninstall` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
 | `nodes:changed` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |

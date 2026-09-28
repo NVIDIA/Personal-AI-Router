@@ -61,7 +61,7 @@ func pathWarning(ex *Executor, engine string) string {
 	return ""
 }
 
-func TestInstallAutomaticallyAddsCLIToPath(t *testing.T) {
+func TestConsentedInstallAddsCLIToPath(t *testing.T) {
 	test := func(name, engine, mode string) {
 		t.Run(name, func(t *testing.T) {
 			ex, cli := pathInstallExecutor(t, engine, mode)
@@ -73,7 +73,7 @@ func TestInstallAutomaticallyAddsCLIToPath(t *testing.T) {
 				added = append(added, dir)
 				return nil
 			}
-			if err := ex.Install(context.Background(), engine); err != nil {
+			if err := ex.Install(context.Background(), engine, true); err != nil {
 				t.Fatal(err)
 			}
 			if !fileExists(cli) {
@@ -108,7 +108,7 @@ func TestPathFailureStillCompletesInstallAndWarns(t *testing.T) {
 	ex.addToPath = func(string, *pathReceipt, func() error) error {
 		return errors.New("profile is read only")
 	}
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatalf("install error = %v, want success with a PATH warning", err)
 	}
 	installed, err := ex.Detect("ollama")
@@ -125,7 +125,7 @@ func TestPathFailureStillCompletesInstallAndWarns(t *testing.T) {
 
 	var added string
 	ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if added != filepath.Dir(cli) {
@@ -147,7 +147,7 @@ func TestPathWarningOmitsTheUsersHomeDirectory(t *testing.T) {
 	ex.addToPath = func(string, *pathReceipt, func() error) error {
 		return errors.New("open " + filepath.Join(home, ".zshrc") + ": permission denied")
 	}
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	warning := pathWarning(ex, "ollama")
@@ -171,7 +171,7 @@ func TestPathRefusesAnUndeclaredCLIOutsideTheInstallDirectory(t *testing.T) {
 		t.Error("claimed a PATH directory PAIR does not own")
 		return nil
 	}
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if !fileExists(cli) {
@@ -198,7 +198,7 @@ func TestPreexistingEngineProducesNoPathWarning(t *testing.T) {
 		t.Error("claimed a PATH directory PAIR does not own")
 		return nil
 	}
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if warning := pathWarning(ex, "ollama"); warning != "" {
@@ -217,7 +217,7 @@ func TestPathRejectsARelativeManifestCLI(t *testing.T) {
 		t.Error("published a PATH entry from a relative manifest path")
 		return nil
 	}
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if warning := pathWarning(ex, "ollama"); !strings.Contains(warning, "relative path") {
@@ -235,7 +235,7 @@ func TestInstallAppliesManifestDeclaredInstallerEnvironment(t *testing.T) {
 	st.plat.Install.Env = map[string]string{"PAIR_TEST_INSTALL_ENV": "declared"}
 	st.plat.Install.Run = []string{fakeEngineBin, "write-env", "PAIR_TEST_INSTALL_ENV", record}
 	st.plat.Detect = []string{record}
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	value, err := os.ReadFile(record)
@@ -282,20 +282,19 @@ func TestFailedInstallDoesNotChangePath(t *testing.T) {
 		t.Error("PATH changed after failed install")
 		return nil
 	}
-	if err := ex.Install(context.Background(), "ollama"); err == nil {
+	if err := ex.Install(context.Background(), "ollama", true); err == nil {
 		t.Fatal("expected install failure")
 	}
 }
 
-func TestInstallRPCAutomaticallyAddsCLIToPath(t *testing.T) {
-	ex, cli := pathInstallExecutor(t, "ollama", "process")
-	var added string
-	ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
+// runOpForTest sends one lifecycle request through the JSON-RPC front end and
+// returns the status it responded with.
+func runOpForTest(t *testing.T, ex *Executor, method, params string) EngineStatus {
+	t.Helper()
 	var out bytes.Buffer
 	m := NewManager(NewCodec(&out), ex, nil)
 	id := json.RawMessage("1")
-	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:install",
-		Params: json.RawMessage(`{"engine":"ollama"}`)})
+	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: method, Params: json.RawMessage(params)})
 	var response struct {
 		Result EngineStatus     `json:"result"`
 		Error  *json.RawMessage `json:"error"`
@@ -304,14 +303,128 @@ func TestInstallRPCAutomaticallyAddsCLIToPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if response.Error != nil {
-		t.Fatalf("install returned an error: %s", *response.Error)
+		t.Fatalf("%s returned an error: %s", method, *response.Error)
 	}
-	if !response.Result.Installed {
-		t.Error("install reported the engine as not installed")
+	return response.Result
+}
+
+func TestInstallRPCAddsCLIToPathOnlyWithConsent(t *testing.T) {
+	t.Run("path true publishes the CLI directory", func(t *testing.T) {
+		ex, cli := pathInstallExecutor(t, "ollama", "process")
+		var added string
+		ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
+		status := runOpForTest(t, ex, "engine:install", `{"engine":"ollama","path":true}`)
+		if !status.Installed {
+			t.Error("install reported the engine as not installed")
+		}
+		if added != filepath.Dir(cli) {
+			t.Errorf("published %q on PATH, want the CLI directory %q", added, filepath.Dir(cli))
+		}
+		if !status.PathManaged {
+			t.Error("status does not report the PATH entry PAIR now owns")
+		}
+	})
+	t.Run("omitted path leaves PATH alone", func(t *testing.T) {
+		ex, cli := pathInstallExecutor(t, "ollama", "process")
+		ex.addToPath = func(string, *pathReceipt, func() error) error {
+			t.Error("changed PATH without the user's consent")
+			return nil
+		}
+		status := runOpForTest(t, ex, "engine:install", `{"engine":"ollama"}`)
+		if !status.Installed || !fileExists(cli) {
+			t.Fatal("a declined PATH entry must still install the engine")
+		}
+		if status.PathManaged {
+			t.Error("status claims a PATH entry that was never published")
+		}
+	})
+}
+
+// Declining the PATH entry still records that PAIR installed the engine, so a
+// later consented install of the engine already on disk can publish it even
+// when the vendor owns the engine's location.
+func TestDeclinedInstallRecordsOwnershipForALaterConsent(t *testing.T) {
+	ex, cli := pathInstallExecutor(t, "lmstudio", "command")
+	st := engineStateForTest(t, ex, "lmstudio")
+	st.installDir = t.TempDir()
+	if err := ex.Install(context.Background(), "lmstudio", false); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := loadPathReceipt(ex.pathReceiptFile("lmstudio"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.Installed || receipt.Dir != "" {
+		t.Fatalf("receipt after a declined install = %+v, want only the installed flag", receipt)
+	}
+
+	var added string
+	ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
+	if err := ex.Install(context.Background(), "lmstudio", true); err != nil {
+		t.Fatal(err)
 	}
 	if added != filepath.Dir(cli) {
-		t.Errorf("published %q on PATH, want the CLI directory %q", added, filepath.Dir(cli))
+		t.Fatalf("consented reinstall published %q, want %q", added, filepath.Dir(cli))
 	}
+}
+
+// Installing over an engine already on disk without consent records nothing:
+// finding the engine there is no evidence that PAIR put it there.
+func TestDeclinedInstallOfAPresentEngineRecordsNothing(t *testing.T) {
+	ex, _ := pathInstallExecutor(t, "ollama", "process")
+	st := engineStateForTest(t, ex, "ollama")
+	for _, path := range st.plat.Detect {
+		if err := os.WriteFile(path, []byte("vendor install"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ex.Install(context.Background(), "ollama", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ex.pathReceiptFile("ollama")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a declined install over a present engine wrote a record: %v", err)
+	}
+}
+
+func TestUninstallRPCRemovesPathOnlyWithConsent(t *testing.T) {
+	install := func(t *testing.T) (*Executor, string, string) {
+		ex, cli, profile := pathLifecycleExecutor(t, "ollama", "process")
+		if err := ex.Install(context.Background(), "ollama", true); err != nil {
+			t.Fatal(err)
+		}
+		return ex, filepath.Dir(cli), profile
+	}
+	profileHas := func(t *testing.T, profile, dir string) bool {
+		t.Helper()
+		data, err := os.ReadFile(profile)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		return strings.Contains(string(data), dir)
+	}
+	t.Run("path true removes the entry", func(t *testing.T) {
+		ex, dir, profile := install(t)
+		status := runOpForTest(t, ex, "engine:uninstall", `{"engine":"ollama","path":true}`)
+		if profileHas(t, profile, dir) {
+			t.Fatal("the consented uninstall left the PATH entry in the profile")
+		}
+		if status.PathManaged {
+			t.Error("status still claims the removed PATH entry")
+		}
+	})
+	t.Run("omitted path keeps the entry and gives up the claim", func(t *testing.T) {
+		ex, dir, profile := install(t)
+		status := runOpForTest(t, ex, "engine:uninstall", `{"engine":"ollama"}`)
+		if !profileHas(t, profile, dir) {
+			t.Fatal("removed the PATH entry although the user kept it")
+		}
+		if _, err := os.Stat(ex.pathReceiptFile("ollama")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the record claiming the kept entry survived: %v", err)
+		}
+		if status.PathManaged {
+			t.Error("status still claims an entry that now belongs to the user")
+		}
+	})
 }
 
 // A pinned peer may install an engine here, but rewriting this user's login

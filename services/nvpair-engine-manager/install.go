@@ -21,11 +21,28 @@ import (
 	"time"
 )
 
+// installPathMode says what an install may do to the user's PATH.
+type installPathMode int
+
+const (
+	// pathUntouched leaves PATH and the ownership record alone.
+	pathUntouched installPathMode = iota
+	// pathRecordOnly records that PAIR ran the installer without publishing
+	// anything, so a later consented install can still re-adopt an engine whose
+	// vendor owns its location.
+	pathRecordOnly
+	// pathPublish publishes the CLI directory on the user's PATH.
+	pathPublish
+)
+
 // Install obtains the engine in user mode for a request that originated on this
-// machine: download (checksum-verified), run the declared command, then publish
-// the CLI directory on this user's PATH.
-func (e *Executor) Install(ctx context.Context, engine string) error {
-	return e.install(ctx, engine, true)
+// machine: download (checksum-verified), run the declared command, then, when
+// the user consented, publish the CLI directory on this user's PATH.
+func (e *Executor) Install(ctx context.Context, engine string, addToPath bool) error {
+	if addToPath {
+		return e.install(ctx, engine, pathPublish)
+	}
+	return e.install(ctx, engine, pathRecordOnly)
 }
 
 // InstallForPeer installs on behalf of a paired cluster node.
@@ -37,10 +54,10 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 // nothing in the remote-install flow tells the person sitting at this machine
 // that their shell startup files are about to be rewritten.
 func (e *Executor) InstallForPeer(ctx context.Context, engine string) error {
-	return e.install(ctx, engine, false)
+	return e.install(ctx, engine, pathUntouched)
 }
 
-func (e *Executor) install(ctx context.Context, engine string, setUserPath bool) error {
+func (e *Executor) install(ctx context.Context, engine string, pathMode installPathMode) error {
 	st, err := e.state(engine)
 	if err != nil {
 		return err
@@ -48,7 +65,9 @@ func (e *Executor) install(ctx context.Context, engine string, setUserPath bool)
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	if ok, _ := e.Detect(engine); ok {
-		if setUserPath {
+		// Nothing was installed now, so a declined install records nothing:
+		// the engine on disk is no evidence that PAIR placed it.
+		if pathMode == pathPublish {
 			e.installPath(engine, st, false)
 		}
 		e.reporter.clear(installFailedID(engine))
@@ -142,8 +161,13 @@ func (e *Executor) install(ctx context.Context, engine string, setUserPath bool)
 		e.reportInstallFailed(engine, err)
 		return err
 	}
-	if setUserPath {
+	switch pathMode {
+	case pathPublish:
 		e.installPath(engine, st, true)
+	case pathRecordOnly:
+		if err := e.recordInstalled(engine); err != nil {
+			slog.Warn("could not record that PAIR installed an engine", "engine", engine, "err", err)
+		}
 	}
 	e.reporter.clear(installFailedID(engine))
 	e.emitInstallProgress(engine, "done", 100)
@@ -230,7 +254,11 @@ func managedCLI(st *engineState) bool {
 
 // Uninstall runs the manifest's uninstall command (user-mode), stopping
 // the engine first. No-op if the engine isn't currently detected.
-func (e *Executor) Uninstall(ctx context.Context, engine string) error {
+//
+// removePath is the user's answer to removing what PAIR added to PATH. When
+// false the entries stay and PAIR gives up its claim on them, so they become
+// the user's and the application uninstaller leaves them alone too.
+func (e *Executor) Uninstall(ctx context.Context, engine string, removePath bool) error {
 	st, err := e.state(engine)
 	if err != nil {
 		return err
@@ -241,7 +269,7 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		// Joined rather than sequenced: this branch is the documented retry
 		// after the files are already gone, so a desired-state write that keeps
 		// failing must not be what makes PATH cleanup unreachable.
-		return errors.Join(e.setDesiredEnabled(engine, false), e.uninstallPath(engine))
+		return errors.Join(e.setDesiredEnabled(engine, false), e.finishUninstallPath(engine, removePath))
 	}
 	un := st.plat.Uninstall
 	if un == nil || len(un.Run) == 0 {
@@ -314,7 +342,14 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	// The engine is gone either way, so both steps run and both errors travel.
 	// Short-circuiting here left PATH published and the previous attempt's
 	// error card standing whenever the desired-state write failed.
-	return errors.Join(e.setDesiredEnabled(engine, false), e.uninstallPath(engine))
+	return errors.Join(e.setDesiredEnabled(engine, false), e.finishUninstallPath(engine, removePath))
+}
+
+func (e *Executor) finishUninstallPath(engine string, removePath bool) error {
+	if removePath {
+		return e.uninstallPath(engine)
+	}
+	return e.releasePathOwnership(engine)
 }
 
 // maxDownloadBytes caps a single engine download (engine installers /

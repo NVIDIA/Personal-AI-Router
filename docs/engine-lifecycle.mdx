@@ -70,9 +70,12 @@ Refer also to [Getting started](getting-started.mdx).
 You can install a supported engine during first-run setup or later from
 **Engine settings**.
 
-PAIR automatically adds the installed engine's command-line tools (`ollama` or
-`lms`) to your PATH. Open a new terminal after installation; on Windows, you may
-need to restart your terminal app.
+Before an install, PAIR asks whether to add the engine's command-line tools
+(`ollama` or `lms`) to your PATH. First-run setup asks once for every engine you
+selected. Answering **No** still installs the engine; closing the question
+cancels the install. The terminal interface asks the same question. If you
+answer **Yes**, open a new terminal after installation; on Windows, you may need
+to restart your terminal app.
 
 PATH setup only ever changes the account that asked for the install. Installing
 an engine on another node from this one leaves that node's PATH alone, and an
@@ -82,10 +85,12 @@ installer set up.
 If PATH setup fails, PAIR reports it as a dismissible warning. The install still
 succeeds, the engine still starts, and it works normally through its full path.
 
-On uninstall, PAIR removes only the PATH entries it recorded adding for an
-engine it installed. Pre-existing entries and user-edited shell blocks are
-preserved. Installations without an ownership record are left unchanged.
-Uninstalling PAIR itself releases any entries its engines still own.
+If PAIR added an engine to your PATH, the uninstall confirmation includes
+**Also remove it from my PATH**, checked by default. PAIR removes only the PATH
+entries it recorded adding. Pre-existing entries and user-edited shell blocks
+are preserved. Installations without an ownership record are left unchanged. If
+you clear the box, the entry stays and is yours from then on: PAIR no longer
+tracks it. Uninstalling PAIR itself releases any entries its engines still own.
 
 When you install an engine, consider the following:
 

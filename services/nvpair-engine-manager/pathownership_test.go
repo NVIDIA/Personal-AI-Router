@@ -39,14 +39,14 @@ func TestUninstallRemovesOwnedPathAfterRestart(t *testing.T) {
 			if err := os.WriteFile(profile, []byte(original), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := ex.Install(context.Background(), engine); err != nil {
+			if err := ex.Install(context.Background(), engine, true); err != nil {
 				t.Fatal(err)
 			}
 			// A fresh executor must use the persisted ownership, not memory.
 			restarted := NewExecutor(ex.reg, NewReporter(nil), func(string, any) {}, ex.baseDir)
 			restarted.removeFromPath = removeShellPath
 			engineStateForTest(t, restarted, engine).installDir = engineStateForTest(t, ex, engine).installDir
-			if err := restarted.Uninstall(context.Background(), engine); err != nil {
+			if err := restarted.Uninstall(context.Background(), engine, true); err != nil {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(profile)
@@ -86,10 +86,10 @@ func TestDetectedExternalEngineDoesNotAcquirePathOwnership(t *testing.T) {
 		t.Error("cleaned up an unowned PATH")
 		return nil
 	}
-	if err := ex.Install(context.Background(), "lmstudio"); err != nil {
+	if err := ex.Install(context.Background(), "lmstudio", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := ex.Uninstall(context.Background(), "lmstudio"); err != nil {
+	if err := ex.Uninstall(context.Background(), "lmstudio", true); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -98,7 +98,7 @@ func TestDetectedExternalEngineDoesNotAcquirePathOwnership(t *testing.T) {
 // while silently leaving PATH alone.
 func TestManagedInstallWithNoReceiptStillClaimsPath(t *testing.T) {
 	ex, cli, _ := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(ex.pathReceiptFile("ollama")); err != nil {
@@ -107,7 +107,7 @@ func TestManagedInstallWithNoReceiptStillClaimsPath(t *testing.T) {
 	var added string
 	ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
 	// Already detected, so this install short-circuits before any download.
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if added != filepath.Dir(cli) {
@@ -120,7 +120,7 @@ func TestManagedInstallWithNoReceiptStillClaimsPath(t *testing.T) {
 // at a directory the engine is no longer in.
 func TestMovedCLIMigratesTheOwnedPathEntry(t *testing.T) {
 	ex, cli, profile := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(profile)
@@ -142,7 +142,7 @@ func TestMovedCLIMigratesTheOwnedPathEntry(t *testing.T) {
 	st.plat.Runtime.CLI = moved
 
 	// Already detected, so this is the short-circuit path.
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.ReadFile(profile)
@@ -164,7 +164,7 @@ func TestMovedCLIMigratesTheOwnedPathEntry(t *testing.T) {
 // blocks, so a reinstall has to re-adopt a block it demonstrably authored.
 func TestReinstallReadoptsItsOwnOrphanedProfileBlock(t *testing.T) {
 	ex, _, profile := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	orphaned, err := os.ReadFile(profile)
@@ -179,7 +179,7 @@ func TestReinstallReadoptsItsOwnOrphanedProfileBlock(t *testing.T) {
 	if err := os.RemoveAll(ex.pathReceiptDir()); err != nil {
 		t.Fatal(err)
 	}
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.ReadFile(profile)
@@ -189,7 +189,7 @@ func TestReinstallReadoptsItsOwnOrphanedProfileBlock(t *testing.T) {
 	if string(after) != string(orphaned) {
 		t.Fatalf("reinstall duplicated the block: %q", after)
 	}
-	if err := ex.Uninstall(context.Background(), "ollama"); err != nil {
+	if err := ex.Uninstall(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	remaining, err := os.ReadFile(profile)
@@ -205,7 +205,7 @@ func TestReinstallReadoptsItsOwnOrphanedProfileBlock(t *testing.T) {
 // receipts live in.
 func TestDrainReleasesThePathBlock(t *testing.T) {
 	ex, _, profile := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(profile)
@@ -233,7 +233,7 @@ func TestDrainReleasesThePathBlock(t *testing.T) {
 // directory, because nothing else distinguishes it from an external install.
 func TestDrainKeepsTheInstalledFlagSoReinstallCanReadopt(t *testing.T) {
 	ex, _, _ := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := drainUserPaths(ex.baseDir, removeShellPath); err != nil {
@@ -278,7 +278,7 @@ func TestDrainRemovesARecordWithNoInstallBehindIt(t *testing.T) {
 func TestReinstallRepublishesPathForAnEngineOutsideTheInstallDirectory(t *testing.T) {
 	ex, cli, _ := pathLifecycleExecutor(t, "lmstudio", "command")
 	engineStateForTest(t, ex, "lmstudio").installDir = t.TempDir()
-	if err := ex.Install(context.Background(), "lmstudio"); err != nil {
+	if err := ex.Install(context.Background(), "lmstudio", true); err != nil {
 		t.Fatal(err)
 	}
 	// The application uninstaller: release the entries, leave the engine.
@@ -287,7 +287,7 @@ func TestReinstallRepublishesPathForAnEngineOutsideTheInstallDirectory(t *testin
 	}
 	var added string
 	ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
-	if err := ex.Install(context.Background(), "lmstudio"); err != nil {
+	if err := ex.Install(context.Background(), "lmstudio", true); err != nil {
 		t.Fatal(err)
 	}
 	if added != filepath.Dir(cli) {
@@ -308,7 +308,7 @@ func TestSkippingAnExternalInstallLeavesTheWarningStanding(t *testing.T) {
 		}
 	}
 	ex.reporter.report(serviceError{ID: pathFailedID("lmstudio"), Message: "an earlier attempt failed", Severity: "warning"})
-	if err := ex.Install(context.Background(), "lmstudio"); err != nil {
+	if err := ex.Install(context.Background(), "lmstudio", true); err != nil {
 		t.Fatal(err)
 	}
 	if pathWarning(ex, "lmstudio") == "" {
@@ -320,14 +320,14 @@ func TestSkippingAnExternalInstallLeavesTheWarningStanding(t *testing.T) {
 // released would strand them and clear the retry that is the only route back.
 func TestUninstallWithAnUnreadableReceiptReportsFailure(t *testing.T) {
 	ex, _, _ := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	file := ex.pathReceiptFile("ollama")
 	if err := os.WriteFile(file, []byte("{ this is not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := ex.Uninstall(context.Background(), "ollama")
+	err := ex.Uninstall(context.Background(), "ollama", true)
 	if !errors.Is(err, errUnreadableReceipt) {
 		t.Fatalf("uninstall returned %v, want the unreadable record to surface", err)
 	}
@@ -417,7 +417,7 @@ func TestPathLockWaitIsBounded(t *testing.T) {
 // written over it is the only way the file is ever repaired.
 func TestUnreadableReceiptIsTreatedAsNoClaim(t *testing.T) {
 	ex, cli, _ := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(ex.pathReceiptFile("ollama"), []byte("{ truncated"), 0o600); err != nil {
@@ -425,20 +425,20 @@ func TestUnreadableReceiptIsTreatedAsNoClaim(t *testing.T) {
 	}
 	var added string
 	ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatalf("install refused to proceed past a corrupt receipt: %v", err)
 	}
 	if added != filepath.Dir(cli) {
 		t.Fatalf("added %q, want %q", added, filepath.Dir(cli))
 	}
-	if err := ex.Uninstall(context.Background(), "ollama"); err != nil {
+	if err := ex.Uninstall(context.Background(), "ollama", true); err != nil {
 		t.Fatalf("uninstall refused to proceed past a corrupt receipt: %v", err)
 	}
 }
 
 func TestFailedUninstallPreservesPathOwnership(t *testing.T) {
 	ex, _, profile := pathLifecycleExecutor(t, "ollama", "process")
-	if err := ex.Install(context.Background(), "ollama"); err != nil {
+	if err := ex.Install(context.Background(), "ollama", true); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(profile)
@@ -452,7 +452,7 @@ func TestFailedUninstallPreservesPathOwnership(t *testing.T) {
 	// The command returns successfully but leaves the executable in place.
 	st.plat.Uninstall.Run = []string{fakeEngineBin, "echo", "still installed"}
 	ex.detectTimeout = time.Millisecond
-	if err := ex.Uninstall(context.Background(), "ollama"); err == nil {
+	if err := ex.Uninstall(context.Background(), "ollama", true); err == nil {
 		t.Fatal("expected failed uninstall")
 	}
 	after, err := os.ReadFile(profile)
@@ -469,19 +469,19 @@ func TestFailedUninstallPreservesPathOwnership(t *testing.T) {
 
 func TestPathCleanupCanRetryAfterEngineRemoval(t *testing.T) {
 	ex, cli, profile := pathLifecycleExecutor(t, "lmstudio", "command")
-	if err := ex.Install(context.Background(), "lmstudio"); err != nil {
+	if err := ex.Install(context.Background(), "lmstudio", true); err != nil {
 		t.Fatal(err)
 	}
 	wantErr := errors.New("profile is read only")
 	ex.removeFromPath = func(*pathReceipt) error { return wantErr }
-	if err := ex.Uninstall(context.Background(), "lmstudio"); !errors.Is(err, wantErr) {
+	if err := ex.Uninstall(context.Background(), "lmstudio", true); !errors.Is(err, wantErr) {
 		t.Fatalf("uninstall error = %v", err)
 	}
 	if fileExists(cli) {
 		t.Fatal("engine was not removed before cleanup")
 	}
 	ex.removeFromPath = removeShellPath
-	if err := ex.Uninstall(context.Background(), "lmstudio"); err != nil {
+	if err := ex.Uninstall(context.Background(), "lmstudio", true); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(profile)

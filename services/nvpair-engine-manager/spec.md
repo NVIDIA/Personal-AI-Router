@@ -33,12 +33,13 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - **The node's error list** — owned by `nvpair-errors`, which holds it as in-memory session state; this service only emits `errors:report` / `errors:clear`.
 
 ## 3. Key Use Cases
-- **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects, then publishes the engine's CLI directory on this user's PATH.
+- **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects, then — when the request carries `path:true` — publishes the engine's CLI directory on this user's PATH.
+- **PATH consent**: every PATH change is the user's decision, carried as `path` on `engine:install` and `engine:uninstall`. A missing or false `path` never touches PATH. A declined install still records that PAIR ran the installer; a declined uninstall leaves the entries and deletes the record, handing them to the user. `EngineStatus.path_managed` tells a client whether there is an entry to ask about.
 - **Publish the CLI on PATH**: the directory comes from `runtime.cli`, or from the detected executable when the manifest declares none and that executable is inside the directory PAIR installed into. Ownership is recorded before the change, under a cross-process lock, so uninstall removes exactly what PAIR added. A remote install from a cluster peer (`InstallForPeer`) skips this step: editing the login shell of whoever is sitting at the target node is not something a paired peer decides.
 - **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port.
 - **Run a declared action**: `engine:action {engine, action, params}` → the manifest-declared HTTP call to the engine's loopback control API (e.g. `127.0.0.1:{port}/api/pull`). (Methods, notifications, and UI events all use the colon form `engine:*`, matching the POC UI and the `errors:*` notifications.)
 - **Onboard a new engine (no code)**: a vendor adds `engines/<vendor>.json`; the generic runner exposes their lifecycle + actions immediately.
-- **Edge case — already installed**: detect short-circuits the download and the install command. The PATH step still runs, so an engine whose ownership record was lost — the data directory was wiped, or an earlier save failed — reacquires it instead of reporting success with nothing on PATH. Recovery does not depend on where the CLI lives: the record's `installed` flag survives the application uninstaller's release, and a wiped record is recovered from the executable's location only when that location is inside PAIR's install directory. It is idempotent: an entry PAIR already owns is left as it is. If the CLI has moved — a manifest update, or a vendor that relocated it — the recorded entry is released and the new directory claimed, so the stale one does not outlive the engine it pointed at.
+- **Edge case — already installed**: detect short-circuits the download and the install command. With `path:true` the PATH step still runs, so an engine whose ownership record was lost — the data directory was wiped, or an earlier save failed — reacquires it instead of reporting success with nothing on PATH. Recovery does not depend on where the CLI lives: the record's `installed` flag survives the application uninstaller's release, and a wiped record is recovered from the executable's location only when that location is inside PAIR's install directory. It is idempotent: an entry PAIR already owns is left as it is. If the CLI has moved — a manifest update, or a vendor that relocated it — the recorded entry is released and the new directory claimed, so the stale one does not outlive the engine it pointed at.
 - **Edge case — PATH setup fails**: reported as a dismissible warning, never an install failure. The engine is installed and usable through its full path, and the caller's optional start step still runs.
 - **Edge case — engine already present before PAIR**: no PATH entry and no warning. Its own installer owns that location.
 - **Edge case — checksum mismatch**: install fails before `run`, is reported, and never executes an unverified payload.
@@ -80,6 +81,7 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   running: boolean
   healthy: boolean
   port: number
+  path_managed: boolean  // PAIR owns a PATH entry for this engine on this machine
 }
 ```
 
@@ -115,8 +117,8 @@ Requests (caller → service):
 | `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine }` | `EngineStatus` |
-| `engine:install` | `{ engine }` | `EngineStatus` (after install and PATH publication) |
-| `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal and PATH cleanup) |
+| `engine:install` | `{ engine, start?, path? }` | `EngineStatus` (after install, and PATH publication when `path:true`) |
+| `engine:uninstall` | `{ engine, path? }` | `EngineStatus` (after removal, and PATH cleanup when `path:true`) |
 | `engine:start` | `{ engine }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
@@ -169,7 +171,7 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
 ## 10. Design Constraints
 - **Performance**: control plane, not inference; sub-second RPCs except install (network-bound) and start (bounded by the readiness timeout).
 - **Scalability**: a handful of engines per node; one managed instance per engine in v1.
-- **Reliability**: best-effort; readiness + health probes; automatic restart on crash is planned but **not yet implemented** (see §4); install is one-shot and idempotent — detect short-circuits the download, and the PATH step re-runs but changes nothing it already owns.
+- **Reliability**: best-effort; readiness + health probes; automatic restart on crash is planned but **not yet implemented** (see §4); install is one-shot and idempotent — detect short-circuits the download, and a consented PATH step re-runs but changes nothing it already owns.
 - **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install time); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN (Ollama defaults to `0.0.0.0`, overridable per-call); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
 - **Compliance**: no PII; payloads carry engine/model identifiers and error messages only.
 

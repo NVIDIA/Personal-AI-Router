@@ -8,9 +8,15 @@ import { errorDismissalKey } from '@/ui/utils/error-modal-dismissal'
 import { InlineErrorBanner } from './InlineErrorBanner'
 import { useErrorsStore } from '@/ui/stores/errors.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
+import { useConnectionStore } from '@/ui/stores/connection.store'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { isEngineType } from '@/shared/utils/engines'
+import { EngineDisplayNames } from '@/shared/constants/engines'
+import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
+import { ConfirmModal } from './ConfirmModal'
+import { EnginePathConsentModal } from './EnginePathConsentModal'
 
 interface ErrorModalFilter {
     nodeId?: string
@@ -94,25 +100,33 @@ function bannerStatus(severity: ServiceError['severity']): 'info' | 'warning' | 
 }
 
 /**
- * Build the retry handler for a `retry` action error by re-running the failed
- * engine operation from the fields the backend stamped on the error. Returns
- * `null` (no button) when the action isn't `retry` or the error lacks the
- * engine/node/model context needed to re-dispatch.
+ * How a `retry` action error re-runs the failed engine operation from the
+ * fields the backend stamped on it. Install and uninstall change PATH, so they
+ * carry the target and are asked about before they run.
  */
-function buildRetry(error: ServiceError): (() => void) | null {
+type RetryAction =
+    | { kind: 'install' | 'uninstall'; engineType: EngineType; nodeId: string }
+    | { kind: 'run'; run: () => void }
+
+/**
+ * Returns `null` (no button) when the action isn't `retry` or the error lacks
+ * the engine/node/model context needed to re-dispatch.
+ */
+function buildRetry(error: ServiceError): RetryAction | null {
     if (error.action !== 'retry') return null
     const { engineType, nodeId, operation, modelName } = error
     if (!engineType || !isEngineType(engineType) || !nodeId) return null
     const engines = window.pairApi.engines
     switch (operation) {
         case 'install':
-            return () => engines.install(engineType, nodeId)
         case 'uninstall':
-            return () => engines.uninstall(engineType, nodeId)
+            return { kind: operation, engineType, nodeId }
         case 'start':
-            return () => engines.toggle(engineType, nodeId)
+            return { kind: 'run', run: () => engines.toggle(engineType, nodeId) }
         case 'pull':
-            return modelName ? () => engines.pullModel(engineType, nodeId, modelName) : null
+            return modelName
+                ? { kind: 'run', run: () => engines.pullModel(engineType, nodeId, modelName) }
+                : null
         default:
             return null
     }
@@ -164,20 +178,92 @@ function ErrorBanner({
     const displayMessage = formatErrorMessage(error, nodeLabel, showNodePrefix)
     const severity = bannerStatus(error.severity)
     const retry = buildRetry(error)
+    const selfId = useConnectionStore(state => state.selfId)
+    const retryTarget = retry && retry.kind !== 'run' ? retry : null
+    const pathManaged = useEngineStatusStore(state =>
+        retryTarget
+            ? state.statusByNode.get(retryTarget.nodeId)?.get(retryTarget.engineType)
+                  ?.pathManaged === true
+            : false
+    )
+    const [askInstallPath, setAskInstallPath] = useState(false)
+    const [askUninstallPath, setAskUninstallPath] = useState(false)
+    const [removePath, setRemovePath] = useState(true)
+
+    // Clearing the error unmounts this banner, so it waits for any PATH answer.
+    const rerun = (run: () => void) => {
+        onClear(error.id)
+        run()
+    }
+
+    const handleRetry = () => {
+        if (!retry) return
+        if (retry.kind === 'run') {
+            rerun(retry.run)
+            return
+        }
+        const { engineType, nodeId } = retry
+        const isLocal = nodeId === selfId
+        if (retry.kind === 'install') {
+            if (isLocal) setAskInstallPath(true)
+            else rerun(() => window.pairApi.engines.install(engineType, nodeId, false))
+            return
+        }
+        if (pathManaged) {
+            setRemovePath(true)
+            setAskUninstallPath(true)
+        } else {
+            rerun(() => window.pairApi.engines.uninstall(engineType, nodeId, false))
+        }
+    }
 
     return (
         <InlineErrorBanner severity={severity} message={displayMessage}>
             {retry && (
-                <Button
-                    kind="primary"
-                    size="small"
-                    onClick={() => {
-                        onClear(error.id)
-                        retry()
-                    }}
-                >
+                <Button kind="primary" size="small" onClick={handleRetry}>
                     Retry
                 </Button>
+            )}
+            {retryTarget && (
+                <>
+                    <EnginePathConsentModal
+                        open={askInstallPath}
+                        engines={[retryTarget.engineType]}
+                        onAnswer={addToPath => {
+                            setAskInstallPath(false)
+                            rerun(() =>
+                                window.pairApi.engines.install(
+                                    retryTarget.engineType,
+                                    retryTarget.nodeId,
+                                    addToPath
+                                )
+                            )
+                        }}
+                        onCancel={() => setAskInstallPath(false)}
+                    />
+                    <ConfirmModal
+                        open={askUninstallPath}
+                        onOpenChange={setAskUninstallPath}
+                        title="Uninstall"
+                        message={`Retry uninstalling ${EngineDisplayNames[retryTarget.engineType]}?`}
+                        confirmLabel="Uninstall"
+                        confirmColor="danger"
+                        option={{
+                            label: `Also remove ${EngineDisplayNames[retryTarget.engineType]} from my PATH`,
+                            checked: removePath,
+                            onCheckedChange: setRemovePath
+                        }}
+                        onConfirm={() =>
+                            rerun(() =>
+                                window.pairApi.engines.uninstall(
+                                    retryTarget.engineType,
+                                    retryTarget.nodeId,
+                                    removePath
+                                )
+                            )
+                        }
+                    />
+                </>
             )}
         </InlineErrorBanner>
     )

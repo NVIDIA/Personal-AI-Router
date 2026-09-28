@@ -35,6 +35,9 @@ type EngineStatus struct {
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port,omitempty"`
+	// PathManaged is true while PAIR owns a PATH entry for this engine on this
+	// machine, so a client asks about removing it only when there is one.
+	PathManaged bool `json:"path_managed"`
 }
 
 // engineState is the per-engine runtime state.

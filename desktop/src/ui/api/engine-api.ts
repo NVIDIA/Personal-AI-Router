@@ -48,10 +48,13 @@ export interface IEngineApi {
 
     /** Start or stop an engine process on a node. */
     toggle(engineType: EngineType, nodeId: string): void
-    /** Install an engine on a node. */
-    install(engineType: EngineType, nodeId: string): void
-    /** Uninstall an engine from a node without removing downloaded models. */
-    uninstall(engineType: EngineType, nodeId: string): void
+    /** Install an engine on a node, adding its command-line tools to PATH when the user agreed. */
+    install(engineType: EngineType, nodeId: string, addToPath: boolean): void
+    /**
+     * Uninstall an engine from a node without removing downloaded models,
+     * removing the PATH entry PAIR added when the user agreed.
+     */
+    uninstall(engineType: EngineType, nodeId: string, removePath: boolean): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
     /** Load a model into memory on a node. */
@@ -94,10 +97,10 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
 
         toggle: (engineType, nodeId) =>
             fireCommand(transport, { command: 'toggle', engineType, nodeId }),
-        install: (engineType, nodeId) =>
-            fireCommand(transport, { command: 'install', engineType, nodeId }),
-        uninstall: (engineType, nodeId) =>
-            fireCommand(transport, { command: 'uninstall', engineType, nodeId }),
+        install: (engineType, nodeId, addToPath) =>
+            fireCommand(transport, { command: 'install', engineType, nodeId, path: addToPath }),
+        uninstall: (engineType, nodeId, removePath) =>
+            fireCommand(transport, { command: 'uninstall', engineType, nodeId, path: removePath }),
         pullModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
         loadModel: (engineType, nodeId, model) =>

@@ -4,6 +4,7 @@
 import type { ReactNode } from 'react'
 import {
     Button,
+    Checkbox,
     Flex,
     ModalContent,
     ModalDialog,
@@ -13,6 +14,13 @@ import {
     Text
 } from '@nvidia/foundations-react-core'
 
+/** A controlled checkbox the confirmed action reads when it runs. */
+interface ConfirmModalOption {
+    label: string
+    checked: boolean
+    onCheckedChange: (checked: boolean) => void
+}
+
 export function ConfirmModal({
     open,
     onOpenChange,
@@ -20,6 +28,7 @@ export function ConfirmModal({
     message,
     confirmLabel,
     confirmColor = 'brand',
+    option,
     onConfirm
 }: {
     open: boolean
@@ -28,6 +37,7 @@ export function ConfirmModal({
     message: ReactNode
     confirmLabel: string
     confirmColor?: 'brand' | 'danger'
+    option?: ConfirmModalOption
     onConfirm: () => void
 }) {
     const handleClose = () => onOpenChange(false)
@@ -41,6 +51,15 @@ export function ConfirmModal({
                         <Text kind="body/regular/sm" asChild>
                             <div>{message}</div>
                         </Text>
+                        {option && (
+                            <Checkbox
+                                checked={option.checked}
+                                onCheckedChange={checked =>
+                                    option.onCheckedChange(checked === true)
+                                }
+                                slotLabel={option.label}
+                            />
+                        )}
                         <Flex justify="end" gap="2">
                             <Button kind="secondary" size="small" onClick={handleClose}>
                                 Cancel

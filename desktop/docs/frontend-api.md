@@ -117,6 +117,12 @@ environment assignments pass through without an engine-option catalog.
 - `deleteModel`;
 - `setModelExpiry`.
 
+`install` and `uninstall` carry `path`, the user's answer to changing their
+PATH. Absent means no consent. The renderer asks before a local install (once
+for every engine the first-run wizard installs) and offers removal on uninstall
+only when the local status reports `pathManaged`. Remote installs never change
+PATH, and `update` reuses the existing `pathManaged` answer without asking.
+
 Commands return no state. Renderer stores update from
 `engines:state-changed`, `engines:progress-changed`, and
 `engines:progress-cleared`.

@@ -49,6 +49,12 @@ export interface EngineStatusData {
      * reported version data or engines that are not installed.
      */
     installedVersion?: string
+    /**
+     * True while PAIR owns a PATH entry for this engine's command-line tools on
+     * the local node, which is what decides whether uninstall offers to remove
+     * one. Only the local node reports it.
+     */
+    pathManaged?: boolean
 }
 
 export type ModelItemStatus = (typeof ModelItemStatuses)[number]

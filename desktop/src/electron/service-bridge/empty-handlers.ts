@@ -203,7 +203,7 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             supervisor.sendProcess(
                 'broker',
                 'engine:install',
-                { engine, start: true },
+                { engine, start: true, path: payload.path === true },
                 failPendingOp('install', 'install'),
                 true
             )
@@ -213,32 +213,36 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             supervisor.sendProcess(
                 'broker',
                 'engine:uninstall',
-                { engine },
+                { engine, path: payload.path === true },
                 failPendingOp('uninstall', 'uninstall'),
                 true
             )
             break
-        case 'update':
+        case 'update': {
             // The engine-manager serializes per-engine ops via its lifecycle
             // lock, so the queued install waits for the uninstall to finish. The
             // uninstall's engine:state-changed briefly clears this, then the
             // install's progress re-establishes `installing`.
+            // An update carries the user's earlier PATH answer through both
+            // steps rather than asking again.
+            const path = state.localEnginePathManaged(payload.engineType)
             state.beginLocalEngineOp(payload.engineType, 'installing')
             supervisor.sendProcess(
                 'broker',
                 'engine:uninstall',
-                { engine },
+                { engine, path },
                 failPendingOp('update', 'uninstall'),
                 true
             )
             supervisor.sendProcess(
                 'broker',
                 'engine:install',
-                { engine, start: true },
+                { engine, start: true, path },
                 failPendingOp('update', 'install'),
                 true
             )
             break
+        }
         case 'toggle':
             void toggleLocalEngine(engine, payload.engineType)
             break

@@ -33,8 +33,8 @@ Requests (caller → service):
 | `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine }` | `EngineStatus` |
-| `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
-| `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
+| `engine:install` | `{ engine, start?, port?, bind?, path? }` | `EngineStatus` (after install; also starts it if `start:true`; publishes the CLI on PATH only if `path:true`) |
+| `engine:uninstall` | `{ engine, path? }` | `EngineStatus` (after removal; removes PAIR's PATH entries only if `path:true`) |
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
@@ -51,10 +51,19 @@ Requests (caller → service):
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-`EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
+`EngineStatus` = `{ engine, display_name, installed, running, healthy, port, path_managed }`.
+`path_managed` is true while PAIR owns a PATH entry for the engine on this
+machine, so a client asks about removing one only when there is one.
 
-A locally-initiated install publishes the engine's CLI directory on this user's
-PATH. Windows updates `HKCU\Environment\Path`; Unix appends a block to the login
+PATH changes need the user's consent, carried as `path` on each request. A
+missing or false `path` never touches PATH, so a client that does not ask the
+user changes nothing.
+
+A locally-initiated install with `path:true` publishes the engine's CLI
+directory on this user's PATH. Without it the install still records that PAIR
+ran the installer, so a later consented install can re-adopt an engine whose
+vendor owns its location; an install over an engine already on disk records
+nothing. Windows updates `HKCU\Environment\Path`; Unix appends a block to the login
 shell's profiles, read from the passwd database rather than the inherited
 environment. Existing entries are preserved and repeated requests do not
 duplicate PAIR's entries. New terminals pick up the change.
@@ -71,10 +80,12 @@ own. An installation PAIR did not place gets no PATH entry and no warning.
 Ownership is recorded under `engine-bin/engine-path/<engine>.json` in the user
 data directory, written before PATH is touched and guarded by a lock file in the
 same directory so a concurrent engine-manager — `nvpair-tui` starts its own —
-cannot clobber it. After a successful uninstall PAIR removes only recorded
-entries or unchanged shell snippets; pre-existing entries and unrecorded
-installations are preserved. Cleanup failures keep the receipt for a later
-uninstall retry, even after the executable is gone.
+cannot clobber it. After a successful uninstall with `path:true` PAIR removes
+only recorded entries or unchanged shell snippets; pre-existing entries and
+unrecorded installations are preserved. Cleanup failures keep the receipt for a
+later uninstall retry, even after the executable is gone. An uninstall without
+`path:true` leaves the entries in place and deletes the receipt, so they become
+the user's and `--remove-user-path` no longer touches them.
 
 Those receipts live inside the tree the application uninstaller deletes, while
 the PATH entries do not, so `--remove-user-path` drains every one of them and

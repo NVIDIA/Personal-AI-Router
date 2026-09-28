@@ -128,7 +128,7 @@ func TestLiveOllamaCleanRoom(t *testing.T) {
 	if r := waitResult(t, frames, "1", 5*time.Second); !strings.Contains(string(r), `"engine":"ollama"`) {
 		t.Fatalf("ollama not listed: %s", r)
 	}
-	send(t, stdin, 2, "engine:install", map[string]string{"engine": "ollama"})
+	send(t, stdin, 2, "engine:install", map[string]any{"engine": "ollama", "path": true})
 	if r := waitResult(t, frames, "2", 600*time.Second); !strings.Contains(string(r), `"installed":true`) {
 		t.Errorf("expected installed:true after install, got %s", r)
 	}
@@ -172,7 +172,7 @@ func TestLiveOllamaCleanRoom(t *testing.T) {
 	}
 	send(t, stdin, 5, "engine:stop", map[string]string{"engine": "ollama"})
 	waitResult(t, frames, "5", 30*time.Second)
-	send(t, stdin, 6, "engine:uninstall", map[string]string{"engine": "ollama"})
+	send(t, stdin, 6, "engine:uninstall", map[string]any{"engine": "ollama", "path": true})
 	waitResult(t, frames, "6", 60*time.Second)
 	send(t, stdin, 7, "shutdown", nil)
 	waitResult(t, frames, "7", 5*time.Second)
@@ -205,7 +205,7 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 	if r := waitResult(t, frames, "1", 5*time.Second); !strings.Contains(string(r), `"engine":"lmstudio"`) {
 		t.Fatalf("lmstudio not listed: %s", r)
 	}
-	send(t, stdin, 2, "engine:install", map[string]string{"engine": "lmstudio"})
+	send(t, stdin, 2, "engine:install", map[string]any{"engine": "lmstudio", "path": true})
 	if r := waitResult(t, frames, "2", 600*time.Second); !strings.Contains(string(r), `"installed":true`) {
 		t.Errorf("expected installed:true after install, got %s", r)
 	}
@@ -215,7 +215,7 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 	waitResult(t, frames, "4", 30*time.Second)
 	send(t, stdin, 5, "engine:stop", map[string]string{"engine": "lmstudio"})
 	waitResult(t, frames, "5", 30*time.Second)
-	send(t, stdin, 6, "engine:uninstall", map[string]string{"engine": "lmstudio"})
+	send(t, stdin, 6, "engine:uninstall", map[string]any{"engine": "lmstudio", "path": true})
 	waitResult(t, frames, "6", 60*time.Second)
 	send(t, stdin, 7, "shutdown", nil)
 	waitResult(t, frames, "7", 5*time.Second)
