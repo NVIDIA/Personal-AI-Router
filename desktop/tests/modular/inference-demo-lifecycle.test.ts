@@ -45,9 +45,10 @@ const POISONED_ENV: Record<string, string> = {
 }
 
 /** Proxy ports the fake broker reports. Mutable so a test can withhold one. */
-const proxyPorts: Record<'ollama' | 'lm-studio', number | null> = {
+const proxyPorts: Record<'ollama' | 'lm-studio' | 'llamacpp', number | null> = {
     ollama: 11434,
-    'lm-studio': 1234
+    'lm-studio': 1234,
+    llamacpp: null
 }
 
 /** Model inventory each probe returns. Mutable so a test can return none. */
@@ -114,7 +115,7 @@ vi.mock('electron', () => ({
 
 vi.mock('@/electron/service-bridge/modular-state', () => ({
     getModularBridgeState: () => ({
-        getProxyPort: (engine: 'ollama' | 'lm-studio') => proxyPorts[engine]
+        getProxyPort: (engine: 'ollama' | 'lm-studio' | 'llamacpp') => proxyPorts[engine]
     })
 }))
 
@@ -138,6 +139,7 @@ beforeEach(() => {
     inventory = [{ name: 'demo-model', type: 'llm' }]
     proxyPorts.ollama = 11434
     proxyPorts['lm-studio'] = 1234
+    proxyPorts.llamacpp = null
     Object.assign(process.env, POISONED_ENV)
     vi.useFakeTimers()
 })
@@ -151,6 +153,22 @@ afterEach(() => {
 })
 
 describe('inference demo lifecycle', () => {
+    it('drives llama.cpp through its reported proxy when it is the only engine available', async () => {
+        proxyPorts.ollama = null
+        proxyPorts['lm-studio'] = null
+        proxyPorts.llamacpp = 19084
+        const state = await startInferenceDemo()
+        expect(state.engineCount).toBe(1)
+        expect(state.targetCount).toBe(1)
+        await vi.advanceTimersByTimeAsync(70_000)
+        expect(spawned.length).toBeGreaterThan(0)
+        for (const child of spawned) {
+            expect(child.args[child.args.indexOf('--backend') + 1]).toBe('llamacpp')
+            expect(portOf(child)).toBe(19084)
+        }
+        expect(getInferenceDemoState().status).toBe('idle')
+    })
+
     it('returns to idle immediately on stop, with no draining tail', async () => {
         await startInferenceDemo()
         expect(getInferenceDemoState().status).toBe('running')

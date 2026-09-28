@@ -8,6 +8,7 @@ import { OpenInNew } from '@/ui/components/icons'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { PlatformDisplayName } from '@/shared/types/platform'
 import { canAutoInstallBackendForOs } from '@/ui/utils/backend-target-os'
+import { engineInstallUnavailableReason } from '@/ui/utils/engine-control-policy'
 
 const INLINE_LINK_STYLE: CSSProperties = {
     alignItems: 'center',
@@ -28,18 +29,22 @@ export function BackendFooter({
     onUninstall
 }: {
     backend: BackendInfo
-    targetOs: PlatformDisplayName
+    targetOs?: PlatformDisplayName
     showUninstall: boolean
     disabled: boolean
     onUninstall: () => void
 }) {
-    const autoInstall = canAutoInstallBackendForOs(backend.type, targetOs)
+    const autoInstall =
+        backend.type === 'llamacpp'
+            ? backend.installSupported === true
+            : canAutoInstallBackendForOs(backend.type, targetOs)
     const isTransitioning =
         backend.processStatus === 'installing' || backend.processStatus === 'uninstalling'
     const isNotInstalled = backend.processStatus === 'not-installed'
     const isInstalled = !isNotInstalled && !isTransitioning
 
     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
+    const installUnavailableReason = engineInstallUnavailableReason(backend)
 
     const openLink = useCallback((e: React.MouseEvent, url: string) => {
         e.preventDefault()
@@ -75,6 +80,12 @@ export function BackendFooter({
                         </Flex>
                     ))}
                 </Stack>
+            )}
+
+            {installUnavailableReason && (
+                <Text kind="body/regular/sm" className="text-subtle-color">
+                    {installUnavailableReason}
+                </Text>
             )}
 
             <Flex align="center" justify="between" gap="3">

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
@@ -71,6 +72,16 @@ func main() {
 
 	codec := NewCodec(transport)
 	proxy := NewProxy(codec)
+	// Unblock a parked control-plane read at shutdown without disturbing the
+	// write side, so the terminal workload events emitted while facades drain
+	// still reach the broker. An IPC connection can have its read deadline
+	// brought forward; stdio cannot, and ends instead when the parent closes
+	// the pipe.
+	proxy.interruptRead = func() {
+		if conn, ok := transport.(interface{ SetReadDeadline(time.Time) error }); ok {
+			_ = conn.SetReadDeadline(time.Now())
+		}
+	}
 	// Open a live view of this node's cluster mTLS trust fabric. While unclustered
 	// the proxy serves only the loopback plaintext personality; once this node is
 	// a member the same listener also serves the pin-gated LAN mTLS ingress, and

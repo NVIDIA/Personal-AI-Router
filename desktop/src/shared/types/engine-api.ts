@@ -37,6 +37,18 @@ export interface EngineHubSearchResponse {
     models: EngineHubModel[]
 }
 
+/** One bounded line from a PAIR-owned local engine process. */
+export interface EngineLogLine {
+    time: string
+    stream: 'stdout' | 'stderr'
+    text: string
+}
+
+/** Read-only snapshot of the local Engine Manager's bounded per-engine ring. */
+export interface EngineLogSnapshot {
+    lines: EngineLogLine[]
+}
+
 /** Engine command discriminator. */
 export type EngineCommandType =
     | 'toggle'
@@ -45,6 +57,8 @@ export type EngineCommandType =
     | 'uninstall'
     | 'update'
     | 'pullModel'
+    | 'cancelPull'
+    | 'importModel'
     | 'loadModel'
     | 'unloadModel'
     | 'deleteModel'

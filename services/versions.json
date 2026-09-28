@@ -13,6 +13,8 @@
     "nvpair-engine-manager": "0.18.1",
     "nvpair-cluster-manager": "1.1.5",
     "nvpair-job-scheduler": "0.4.2",
-    "nvpair-tui": "0.7.3"
+    "nvpair-tui": "0.7.3",
+    "nvpair-host-bootstrap": "0.1.0",
+    "nvpair-host-helper": "0.1.0"
   }
 }

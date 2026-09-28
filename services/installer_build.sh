@@ -148,11 +148,20 @@ cp "$BIN_SRC/nvpair-cluster-manager" "$STAGE/bin/"
 cp "$BIN_SRC/nvpair-job-scheduler" "$STAGE/bin/"
 cp "$BIN_SRC/nvpair-ui-broker"    "$STAGE/bin/"
 cp "$BIN_SRC/nvpair-tui"          "$STAGE/bin/"
+cp "$BIN_SRC/nvpair-host-bootstrap" "$STAGE/bin/"
+cp "$BIN_SRC/nvpair-host-helper"  "$STAGE/bin/"
 
+mkdir -p "$STAGE/installer-inputs"
 if [[ "$PLATFORM" == "darwin" ]]; then
     cp "$ROOT/installer/macos/INSTALL.md" "$STAGE/"
+    cp "$ROOT/installer/bootstrap/macos/com.nvidia.nvpair.host-helper.plist" \
+        "$STAGE/installer-inputs/"
 else
     cp "$ROOT/installer/linux/INSTALL.md" "$STAGE/"
+    cp "$ROOT/installer/bootstrap/linux/nvpair-host-helper.service" \
+        "$STAGE/installer-inputs/"
+    cp "$ROOT/installer/bootstrap/linux/nvpair-host-helper.socket" \
+        "$STAGE/installer-inputs/"
 fi
 
 # Make sure execute bits are preserved on every binary that needs them.

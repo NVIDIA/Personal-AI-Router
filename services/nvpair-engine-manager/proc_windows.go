@@ -7,7 +7,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -21,6 +24,33 @@ import (
 // force-kills engine-manager on a timeout.
 const taskkillTimeout = 5 * time.Second
 
+// Windows canonicalization expands ordinary8.3 aliases as well as reparse
+// points. Inspect actual filesystem attributes instead of treating every name
+// change as redirection. Check ancestors too, including above missing children.
+func validateLlamaPath(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		extended, err := llamaCachePath(current)
+		if err != nil {
+			return err
+		}
+		ptr, err := windows.UTF16PtrFromString(extended)
+		if err != nil {
+			return err
+		}
+		attrs, err := windows.GetFileAttributes(ptr)
+		if err != nil && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) && !errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+			return err
+		}
+		if err == nil && attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return fmt.Errorf("llama managed directory contains a reparse point; external data is left untouched")
+		}
+		if parent := filepath.Dir(current); parent == current {
+			break
+		}
+	}
+	return nil
+}
+
 // configureSysProcAttr hides the child's console window
 // (HideWindow + CREATE_NO_WINDOW), matching every other NVPAIR subprocess.
 func configureSysProcAttr(cmd *exec.Cmd) {
@@ -30,9 +60,27 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 	}
 }
 
-// gracefulSignal stops the process tree and is the only stop signal
-// engine-manager sends: stop() sends this once and waits for the engine to
-// exit. Windows has no SIGTERM, and the engines we spawn run windowless
+var procGetProcessIoCounters = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessIoCounters")
+
+// processIOBytes returns the bytes a process has moved through I/O so far:
+// reads, writes and "other" transfers, which is where socket receives land. A
+// PowerShell installer buffers a whole download in memory before writing the
+// file, so nothing on disk grows while it transfers; its counters do.
+func processIOBytes(pid int) (int64, bool) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return 0, false
+	}
+	defer windows.CloseHandle(h)
+	var c windows.IO_COUNTERS
+	if r, _, _ := procGetProcessIoCounters.Call(uintptr(h), uintptr(unsafe.Pointer(&c))); r == 0 {
+		return 0, false
+	}
+	return int64(c.ReadTransferCount + c.WriteTransferCount + c.OtherTransferCount), true
+}
+
+// gracefulSignal stops the process tree for the first bounded stop attempt.
+// Windows has no SIGTERM, and the engines we spawn run windowless
 // (CREATE_NO_WINDOW), so a non-/F taskkill only posts WM_CLOSE — which a
 // windowless process can't receive ("can only be terminated forcefully"), i.e.
 // it does nothing. Never force-killing such a process would leave the engine

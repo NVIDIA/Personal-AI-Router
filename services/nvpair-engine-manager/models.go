@@ -19,13 +19,17 @@ const modelsTimeout = 5 * time.Second
 
 // ModelsResult is the model payload the LAN HTTP surface (/v1/models) and the
 // engine:models RPC return: the flat, de-duplicated union of every running
-// engine's models plus the per-engine attribution keyed by engine name (e.g.
+// engine's models plus per-engine attribution keyed by engine name (e.g.
 // "ollama", "lmstudio"). Models is retained unchanged for consumers that only
 // need the node-level set; ByEngine is the additive attribution a per-engine
 // consumer needs (a node's engine card, and the proxies' own-engine model-owner
 // ranking). ByEngine includes every running engine whose inventory was
 // successfully queried, so an empty list means "running, no models available"
 // while a missing key means "not running / not queryable".
+//
+// RetainedByEngine is a separate downloaded/catalog inventory. It never enters
+// Models or ByEngine because those fields are proxy routing truth: advertising
+// every downloaded vLLM receipt there would claim stopped models are served.
 //
 // LoadedByEngine names the models currently resident in memory, per engine —
 // normally a subset of that engine's ByEngine list. It is populated for every
@@ -39,9 +43,10 @@ const modelsTimeout = 5 * time.Second
 // ByEngine/Models entry until the next successful sweep. Its own omitempty drops
 // the whole map when no engine reports loaded state.
 type ModelsResult struct {
-	Models         []string            `json:"models"`
-	ByEngine       map[string][]string `json:"modelsByEngine,omitempty"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	Models           []string            `json:"models"`
+	ByEngine         map[string][]string `json:"modelsByEngine,omitempty"`
+	LoadedByEngine   map[string][]string `json:"loadedByEngine,omitempty"`
+	RetainedByEngine map[string][]string `json:"retainedByEngine,omitempty"`
 }
 
 // Models returns the union of model names served by every installed, running
@@ -57,9 +62,10 @@ func (e *Executor) Models(ctx context.Context) []string {
 // engine-specific shapes, and returns both the flat de-duplicated union and the
 // per-engine attribution — from a single sweep, so a caller needing both
 // (the /v1/models HTTP surface, the engine:models RPC) never sweeps twice.
-// Stopped engines contribute nothing — their model list isn't queryable while
-// the server is down. Best-effort: a per-engine failure is logged and skipped
-// so the engines that did answer still surface their models.
+// vLLM also reports exact IDs from its bounded PAIR-owned receipt library in the
+// separate RetainedByEngine catalog, including while stopped. Stopped engines
+// contribute nothing to the served Models/ByEngine inventories. Best-effort: an
+// engine API or retained-inventory failure is logged and skipped independently.
 //
 // The per-engine queries run CONCURRENTLY. A host running several engines (e.g.
 // Ollama + LM Studio) must not have the later engines squeezed out of a single
@@ -77,6 +83,8 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	// deterministic (registration order) despite concurrent completion.
 	perEngine := make([][]string, len(engineNames))
 	listOK := make([]bool, len(engineNames))
+	retained := make([][]string, len(engineNames))
+	retainedOK := make([]bool, len(engineNames))
 	loaded := make([][]string, len(engineNames))
 	loadedOK := make([]bool, len(engineNames))
 	var wg sync.WaitGroup
@@ -92,17 +100,44 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		if act, ok := mf.Actions["loaded_models"]; ok {
 			loadedSpec = act.Result
 		}
-		if listSpec == nil && loadedSpec == nil {
+		if listSpec == nil && loadedSpec == nil && name != "vllm" {
 			continue
 		}
 		wg.Add(1)
 		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
 			defer wg.Done()
-			st, err := e.Status(name)
-			if err != nil || !st.Running {
-				return
+			var st EngineStatus
+			var err error
+			if name == "vllm" {
+				// Downloaded receipts are read without the lifecycle lock. A pull
+				// holds opMu for hours, and full vLLM Status also revalidates its
+				// runtime; neither may delay the stopped catalog or peer refresh.
+				engineState, stateErr := e.state(name)
+				if stateErr != nil {
+					slog.Debug("engine:models retained vLLM state unavailable", "err", stateErr)
+					return
+				}
+				if models, inventoryErr := retainedVLLMModels(ctx, engineState); inventoryErr != nil {
+					slog.Debug("engine:models retained vLLM inventory refused", "err", inventoryErr)
+				} else {
+					retained[i] = models
+					retainedOK[i] = true
+				}
+				engineState.mu.Lock()
+				running := engineState.running
+				engineState.mu.Unlock()
+				if !running {
+					return
+				}
+				var fresh bool
+				st, fresh = e.vllmStatusForRead(ctx, engineState)
+				if !fresh {
+					return // no unverified served-model claim
+				}
+			} else {
+				st, err = e.Status(name)
 			}
-			if listSpec != nil {
+			if err == nil && st.Running && listSpec != nil {
 				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {
 					slog.Debug("engine:models list_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, listSpec); ok {
@@ -112,7 +147,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 					slog.Debug("engine:models list_models returned an invalid inventory", "engine", name)
 				}
 			}
-			if loadedSpec != nil {
+			if err == nil && st.Running && loadedSpec != nil {
 				if raw, err := e.Action(ctx, name, "loaded_models", nil); err != nil {
 					slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, loadedSpec); ok {
@@ -128,7 +163,10 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		}(i, name, listSpec, loadedSpec)
 	}
 	wg.Wait()
+	return assembleModelsResult(engineNames, perEngine, listOK, loaded, loadedOK, retained, retainedOK)
+}
 
+func assembleModelsResult(engineNames []string, perEngine [][]string, listOK []bool, loaded [][]string, loadedOK []bool, retained [][]string, retainedOK []bool) ModelsResult {
 	res := ModelsResult{Models: []string{}}
 	seen := map[string]bool{}
 	for i, models := range perEngine {
@@ -148,6 +186,16 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 					res.Models = append(res.Models, m)
 				}
 			}
+		}
+		if retainedOK[i] {
+			if res.RetainedByEngine == nil {
+				res.RetainedByEngine = make(map[string][]string)
+			}
+			catalog := retained[i]
+			if catalog == nil {
+				catalog = []string{}
+			}
+			res.RetainedByEngine[engineNames[i]] = catalog
 		}
 		if loadedOK[i] {
 			if res.LoadedByEngine == nil {
@@ -201,7 +249,7 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 		if spec.Match != nil && !matchRow(el, spec.Match) {
 			continue
 		}
-		fv, ok := el[spec.Field]
+		fv, ok := lookupField(el, spec.Field)
 		if !ok {
 			continue
 		}
@@ -223,7 +271,7 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 // wrong-typed field fails the match, so a row we cannot classify is excluded
 // rather than counted as loaded.
 func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
-	fv, ok := el[m.Field]
+	fv, ok := lookupField(el, m.Field)
 	if !ok {
 		return false
 	}

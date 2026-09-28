@@ -14,8 +14,203 @@ import {
     getModularSupervisor,
     parseListModelNames
 } from '@/electron/service-bridge/modular-supervisor'
+import { vllmGroupHandlers } from '@/electron/service-bridge/vllm-group-handlers'
+import { inactiveStatus } from '../fixtures/vllm-group'
+
+const RETAINED_VLLM_MODEL = `owner/model@${'a'.repeat(40)}`
+const LIVE_VLLM_MODEL = `owner/live@${'b'.repeat(40)}`
+
+describe('vLLM retained model reconciliation', () => {
+    it('hydrates a stopped managed selector from retained catalog and admits the exact backend call', async () => {
+        const state = getModularBridgeState()
+        const supervisor = getModularSupervisor()
+        const nodeId = 'vllm-retained-selector-local'
+
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'vllm-retained-selector-host',
+                        ipAddress: '127.0.0.1',
+                        port: 14318,
+                        models: [LIVE_VLLM_MODEL],
+                        modelsByEngine: { vllm: [LIVE_VLLM_MODEL] },
+                        loadedByEngine: { vllm: [LIVE_VLLM_MODEL] },
+                        retainedByEngine: {
+                            vllm: [RETAINED_VLLM_MODEL, LIVE_VLLM_MODEL]
+                        }
+                    }
+                ]
+            }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            running: false,
+            healthy: false,
+            managed: true,
+            adopted: false,
+            routable: false,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', ['stale-live-cache'])
+        supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
+
+        const initial = state.getEngineInitialState()
+        const status = initial.statuses.find(
+            entry => entry.nodeId === nodeId && entry.engineType === 'vllm'
+        )
+        const models = initial.models.find(
+            entry => entry.nodeId === nodeId && entry.engineType === 'vllm'
+        )?.models
+        expect(status?.processStatus).toBe('stopped')
+        expect(status?.routable).toBe(false)
+        expect(models?.map(model => [model.name, model.downloaded, model.status])).toEqual([
+            [RETAINED_VLLM_MODEL, true, 'idle'],
+            [LIVE_VLLM_MODEL, true, 'idle']
+        ])
+        state.setVllmGroupStatus(inactiveStatus())
+        vi.spyOn(supervisor, 'ready', 'get').mockReturnValue(true)
+        const call = vi.spyOn(supervisor, 'callProcess').mockResolvedValueOnce({
+            engine: 'vllm',
+            model: RETAINED_VLLM_MODEL,
+            selected: true,
+            status: {
+                engine: 'vllm',
+                installed: true,
+                running: false,
+                healthy: false,
+                managed: true,
+                adopted: false,
+                routable: false,
+                port: 8001,
+                selected_model: RETAINED_VLLM_MODEL
+            }
+        })
+        await expect(
+            vllmGroupHandlers['engine:vllm-select-model']({
+                nodeId,
+                model: RETAINED_VLLM_MODEL
+            })
+        ).resolves.toEqual({
+            nodeId,
+            model: RETAINED_VLLM_MODEL,
+            selectedModel: RETAINED_VLLM_MODEL
+        })
+        expect(call).toHaveBeenCalledExactlyOnceWith(
+            'broker',
+            'engine:vllm-select-model',
+            { model: RETAINED_VLLM_MODEL },
+            10 * 60_000
+        )
+    })
+
+    it('includes a stopped managed peer retained catalog in the initial snapshot', () => {
+        const state = getModularBridgeState()
+        const localNodeId = 'vllm-retained-initial-local'
+        const remoteNodeId = 'vllm-retained-initial-remote'
+
+        state.setSelfId(localNodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: remoteNodeId,
+                        name: 'vllm-retained-initial-peer',
+                        ipAddress: '192.0.2.194',
+                        port: 14318,
+                        models: [],
+                        modelsByEngine: { vllm: [] },
+                        loadedByEngine: { vllm: [] },
+                        retainedByEngine: {
+                            vllm: [RETAINED_VLLM_MODEL, LIVE_VLLM_MODEL]
+                        }
+                    }
+                ]
+            }
+        })
+        state.applyRemoteEngineFacts(remoteNodeId, {
+            engines: [
+                {
+                    engine: 'vllm',
+                    installed: true,
+                    running: false,
+                    healthy: false,
+                    managed: true,
+                    adopted: false,
+                    routable: false,
+                    enabled: false,
+                    install_supported: true,
+                    version: '0.29.0',
+                    port: 8001
+                }
+            ]
+        })
+
+        expect(
+            state
+                .getEngineInitialState()
+                .models.find(entry => entry.nodeId === remoteNodeId && entry.engineType === 'vllm')
+                ?.models.map(model => [model.name, model.downloaded, model.status])
+        ).toEqual([
+            [RETAINED_VLLM_MODEL, true, 'idle'],
+            [LIVE_VLLM_MODEL, true, 'idle']
+        ])
+    })
+})
 
 describe('LM Studio model reconciliation', () => {
+    it('loads the native llama downloaded inventory into actionable local model rows', async () => {
+        const state = getModularBridgeState()
+        const supervisor = getModularSupervisor()
+        const nodeId = 'llama-native-inventory-self'
+        const facts = {
+            engine: 'llamacpp',
+            installed: true,
+            running: true,
+            port: 8082,
+            managed: true,
+            install_supported: true
+        }
+        state.setSelfId(nodeId)
+        state.applyEngineManagerStatus(facts)
+        const hasProcess = vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
+        const call = vi
+            .spyOn(supervisor, 'callProcess')
+            .mockResolvedValue({ data: [{ id: 'owner/cached:Q4', status: { value: 'unloaded' } }] })
+        try {
+            supervisor.refreshManagedEngineModels(facts)
+            await vi.waitFor(() =>
+                expect(
+                    state
+                        .getEngineInitialState()
+                        .models.find(m => m.nodeId === nodeId && m.engineType === 'llamacpp')
+                        ?.models[0]
+                ).toMatchObject({ name: 'owner/cached:Q4', downloaded: true, status: 'idle' })
+            )
+            expect(call).toHaveBeenCalledWith('broker', 'engine:action', {
+                engine: 'llamacpp',
+                action: 'list_downloaded'
+            })
+            expect(parseListModelNames({ data: [] })).toEqual([])
+            expect(() => parseListModelNames({ data: [{}] })).toThrow('no usable model names')
+        } finally {
+            supervisor.refreshManagedEngineModels({
+                engine: 'llamacpp',
+                installed: false,
+                running: false,
+                managed: false
+            })
+            call.mockRestore()
+            hasProcess.mockRestore()
+        }
+    })
     it('parses the native inventory and distinguishes explicit empty from unknown', () => {
         expect(
             parseListModelNames({

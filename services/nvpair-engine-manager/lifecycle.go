@@ -5,14 +5,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -26,6 +30,12 @@ import (
 const (
 	unavailableConfirmations  = 3
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
+)
+
+var (
+	vllmVersionPattern                     = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+_-]*$`)
+	errManagedProcessExitedBeforeReadiness = errors.New("owned engine process exited before readiness")
+	errExternallyManaged                   = errors.New("running under external management")
 )
 
 type listenerProbeResult uint8
@@ -61,6 +71,11 @@ type startOpts struct {
 	RequireOwned bool
 	Port         int
 	Bind         string
+	// allowOwnedVLLMRecovery is a narrow rollback exception: only a receipt
+	// tuple in the closed ownership catalog that was running before a failed
+	// update may be restarted, even if it is no longer in the runnable catalog.
+	allowOwnedVLLMRecovery       bool
+	allowVLLMActivationCandidate bool
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -88,20 +103,47 @@ func (e *Executor) Start(ctx context.Context, engine string) error {
 // StartWith is Start with per-call overrides. The overrides are not
 // persisted — a service restart reverts to the manifest.
 func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts) error {
+	if err := e.rejectVLLMGroupMutation(engine, "start"); err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return err
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
+	ctx, finish, err := e.beginVLLMMutation(ctx, st)
+	if err != nil {
+		return err
+	}
+	defer finish()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
 		return err
 	}
-	return e.setDesiredEnabled(engine, true)
+	if err := e.setDesiredEnabled(engine, true); err != nil {
+		return err
+	}
+	e.emitState(engine)
+	return nil
 }
 
 // doStart performs the start. Callers must hold st.opMu.
 func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, opts startOpts) error {
+	if err := e.rejectVLLMGroupMutation(engine, "start"); err != nil {
+		return err
+	}
+	st.mu.Lock()
+	admitted := st.diagnosticAdmitted
+	st.mu.Unlock()
+	if !admitted {
+		var finish func()
+		var err error
+		ctx, finish, err = e.beginVLLMMutation(ctx, st)
+		if err != nil {
+			return err
+		}
+		defer finish()
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	st.mu.Lock()
 	st.startCancel = cancel
@@ -115,17 +157,50 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if e.shuttingDown.Load() {
 		return context.Canceled
 	}
-
 	st.mu.Lock()
-	running := st.running
-	adopted := st.adopted
+	running, adopted := st.running, st.adopted
+	st.mu.Unlock()
+	if running && !adopted {
+		return nil
+	}
+
+	if engine == "vllm" && !opts.allowVLLMActivationCandidate {
+		if err := e.reconcileManagedVLLMActivation(ctx, st); err != nil {
+			return err
+		}
+	}
+	var pathInstalled bool
+	var detectErr error
+	if engine == "vllm" && opts.allowVLLMActivationCandidate {
+		pathInstalled, detectErr = detectManagedVLLMRecord(st, true)
+	} else {
+		pathInstalled, detectErr = e.Detect(engine)
+	}
+	if detectErr != nil {
+		return fmt.Errorf("detect engine %q: %w", engine, detectErr)
+	}
+	if engine == "vllm" && pathInstalled {
+		if opts.allowVLLMActivationCandidate {
+			if err := validateManagedVLLMActivationCandidate(st); err != nil {
+				return err
+			}
+		} else if !opts.allowOwnedVLLMRecovery {
+			if err := validateManagedVLLMStartAdmission(st); err != nil {
+				return err
+			}
+		}
+		if _, _, err := e.observeManagedVLLMListener(ctx, st, activeVLLMRuntimeID(st)); err != nil {
+			return err
+		}
+	}
+	st.mu.Lock()
+	running = st.running
+	adopted = st.adopted
 	if running && !adopted {
 		st.mu.Unlock()
 		return nil
 	}
 	st.mu.Unlock()
-
-	pathInstalled, _ := e.Detect(engine)
 	rt := st.plat.Runtime
 	port := st.port
 	if opts.Port > 0 {
@@ -172,10 +247,17 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
+	if engine == "vllm" {
+		if err := validateManagedVLLMSelection(st.modelDir); err != nil {
+			return err
+		}
+	}
 	vars := map[string]string{
 		"host":        effectiveBind(rt.Bind, opts.Bind),
 		"port":        strconv.Itoa(port),
 		"install_dir": st.installDir,
+		"models_dir":  st.modelDir,
+		"model_dir":   llamaModelDir(st),
 	}
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
@@ -202,19 +284,24 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	e.reporter.clear(unhealthyID(engine))
 	e.emitState(engine)
 
-	st.mu.Lock()
-	proc := st.proc
-	st.mu.Unlock()
-	if proc != nil {
-		e.watch(st, engine, proc)
-	}
-
 	if rt.Health != nil {
 		hctx, cancel := context.WithCancel(context.Background())
 		st.mu.Lock()
 		st.healthStop = cancel
 		st.mu.Unlock()
 		go e.runHealth(hctx, st, engine, port, gen)
+	}
+	return nil
+}
+
+func validateManagedVLLMSelection(modelsRoot string) error {
+	st := &engineState{modelDir: modelsRoot}
+	model, err := selectedVLLMModel(st)
+	if err != nil {
+		return fmt.Errorf("vLLM requires a selected managed model: %w", err)
+	}
+	if _, _, err := verifyVLLMModel(context.Background(), st, model); err != nil {
+		return fmt.Errorf("vLLM selected model failed retained-content verification: %w", err)
 	}
 	return nil
 }
@@ -232,17 +319,43 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()
+	if rt.Driver == "vllm-python" {
+		if binPath == "" {
+			return fmt.Errorf("managed vLLM has no receipt-owned active runtime")
+		}
+		runtimeDir := filepath.Dir(filepath.Dir(filepath.Dir(binPath)))
+		resolved, err := pathInside(st.installDir, runtimeDir)
+		if err != nil {
+			return fmt.Errorf("resolve managed vLLM runtime: %w", err)
+		}
+		vars["runtime_dir"] = resolved
+	}
 	launch, err := resolveProcessLaunch(rt, binPath, vars)
 	if err != nil {
 		return err
 	}
+	if rt.Driver == "vllm-python" {
+		launch.Args, err = managedVLLMProcessArgs(st, launch.Args)
+		if err != nil {
+			return err
+		}
+	}
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
+	shared, err := childEnv(st, vars)
+	if err != nil {
+		return err
+	}
+	env := layerLaunchEnvironment(shared, launch.Env)
+	if err := e.prepareLlamaCompatibility(ctx, st, launch.Bin, launch.Args, env); err != nil {
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
+		return err
+	}
 
-	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
+	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), env)
 	defer diagnostics.close()
-	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+	proc, err := startManagedProcWithEnv(launch.Bin, launch.Args, env, !rt.IsolatedEnv, func(stream, line string) {
 		_, _ = diagnostics.Write([]byte(line + "\n"))
 		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
 		// out of exported engine logs; report exit/readiness failures separately.
@@ -259,42 +372,60 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.proc = proc
 	st.mu.Unlock()
 
-	readyCtx, readyCancel := context.WithCancel(ctx)
-	defer readyCancel()
-	go func() {
-		select {
-		case <-proc.done:
-			readyCancel()
-		case <-readyCtx.Done():
-		}
-	}()
-	readyErr := e.waitReady(readyCtx, rt.Ready, port)
-	select {
-	case <-proc.done:
-		readyErr = fmt.Errorf("process exited before readiness; check the launch options")
-	default:
-	}
-	if err := readyErr; err != nil {
-		// Clean up the failed start before returning its single readiness error.
+	if err := e.waitReadyUntilExit(ctx, rt.Ready, port, proc.exited); err != nil {
+		// No watcher is active before readiness, so every failure here is one
+		// start-failed result rather than a duplicate unexpected-exit event.
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop()
-		st.mu.Lock()
-		st.proc = nil
-		st.mu.Unlock()
+		stopErr := proc.stop(stopGrace(rt))
+		e.reconcileFailedProcessStart(st, engine, proc, stopErr)
 		werr := fmt.Errorf("engine %q did not become ready: %w", engine, diagnostics.failure(err))
+		if stopErr != nil {
+			werr = errors.Join(werr, fmt.Errorf("failed startup cleanup: %w", stopErr))
+		}
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return werr
 	}
+	e.watch(st, engine, proc, true)
 	return nil
+}
+
+func (e *Executor) reconcileFailedProcessStart(st *engineState, engine string, proc *managedProc, stopErr error) {
+	st.mu.Lock()
+	if stopErr == nil {
+		st.proc = nil
+	} else {
+		st.proc, st.running, st.healthy, st.adopted, st.stopping = proc, true, false, false, true
+	}
+	st.mu.Unlock()
+	if stopErr != nil {
+		e.watch(st, engine, proc, false)
+	}
+}
+
+func managedVLLMProcessArgs(st *engineState, args []string) ([]string, error) {
+	settings, err := readVLLMResourceSettings(st)
+	if err != nil {
+		return nil, fmt.Errorf("read managed vLLM resource settings: %w", err)
+	}
+	model, err := selectedVLLMModel(st)
+	if err != nil {
+		return nil, fmt.Errorf("read managed vLLM selected model: %w", err)
+	}
+	args = append(args, "--served-model-name", model)
+	return appendVLLMResourceArgs(args, settings), nil
 }
 
 // bringUpCommand runs the manifest's ordered start commands (for a
 // daemon-style engine such as LM Studio), then waits for readiness.
 // There is no owned process — liveness comes from the probe.
 func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+	shared, err := childEnv(st, vars)
+	if err != nil {
+		return err
+	}
 	st.mu.Lock()
 	st.proc = nil
 	st.mu.Unlock()
@@ -328,16 +459,24 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 			}
 		}
 		argv := append([]string{launch.Bin}, launch.Args...)
-		run := e.runCommand
+		env := layerLaunchEnvironment(shared, launch.Env)
+		run := func(ctx context.Context, argv []string) error {
+			return e.runCommand(ctx, argv, env)
+		}
 		if rt.LaunchArgs != nil || rt.LaunchEnv != nil || len(launch.Env) > 0 {
 			run = func(ctx context.Context, argv []string) error {
-				return runPrivateLaunchCommand(ctx, argv, launch.Env, launchDiagnosticArgs(rt))
+				return runPrivateLaunchCommand(ctx, argv, env, launchDiagnosticArgs(rt))
 			}
 			// A vendor command may spawn its daemon and then exit unsuccessfully.
 			// Attempt its official cleanup even if the first command failed.
 			started = true
 		}
 		if err := run(ctx, argv); err != nil {
+			// A control command canceled mid-run may already have launched its
+			// detached daemon, so it gets the official cleanup too.
+			if ctx.Err() != nil {
+				started = true
+			}
 			werr := fmt.Errorf("start command failed: %w", err)
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 			return cleanup(werr)
@@ -354,6 +493,30 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		return cleanup(werr)
 	}
 	return nil
+}
+
+// layerLaunchEnvironment builds the environment an engine start receives: the
+// shared child environment (manifest defaults plus the owned llama model cache),
+// then the resolved launch environment so saved launch settings and managed
+// controls override manifest defaults. The llama cache location is not a launch
+// setting; the validated, normalized path childEnv resolved stays authoritative.
+func layerLaunchEnvironment(shared, launch map[string]string) map[string]string {
+	env := make(map[string]string, len(shared)+len(launch))
+	for key, value := range shared {
+		env[key] = value
+	}
+	for key, value := range launch {
+		if _, owned := shared[key]; owned && llamaOwnedEnvironmentKey(key) {
+			continue
+		}
+		for existing := range env {
+			if environmentKey(existing) == environmentKey(key) {
+				delete(env, existing)
+			}
+		}
+		env[key] = value
+	}
+	return env
 }
 
 // Capture vendor startup diagnostics without interpreting engine options.
@@ -379,9 +542,9 @@ func runPrivateLaunchCommand(ctx context.Context, argv []string, environment map
 }
 
 // watch reports an unexpected engine exit (one not initiated by Stop).
-func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
+func (e *Executor) watch(st *engineState, engine string, proc *managedProc, reportUnexpected bool) {
 	go func() {
-		<-proc.done
+		<-proc.exited
 		st.mu.Lock()
 		stopping := st.stopping
 		current := st.proc == proc
@@ -395,7 +558,7 @@ func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
 			}
 		}
 		st.mu.Unlock()
-		if current && !stopping {
+		if current && !stopping && reportUnexpected {
 			e.reporter.report(serviceError{
 				ID: exitedID(engine), Message: engine + " exited unexpectedly",
 				Severity: "error", Action: "none", EngineType: engine,
@@ -409,9 +572,38 @@ func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
 // owned process (graceful then forced); in command mode it runs the
 // manifest's stop command. No-op if not running.
 func (e *Executor) Stop(engine string) error {
+	holdErr := e.rejectVLLMGroupMutation(engine, "stop")
 	st, err := e.state(engine)
 	if err != nil {
+		if holdErr != nil {
+			return holdErr
+		}
 		return err
+	}
+	if engine == "vllm" {
+		requestVLLMGroupStop(st, false)
+		st.mu.Lock()
+		group, rank := st.vllmGroup, st.vllmRank
+		st.mu.Unlock()
+		groupOwned := group != nil && group.reserved() || rank != nil && rank.reserved()
+		if !groupOwned && holdErr != nil {
+			return holdErr
+		}
+	} else if holdErr != nil {
+		return holdErr
+	}
+	if engine == "llamacpp" {
+		st.mu.Lock()
+		st.stopPending++
+		cancelMutation, cancelStart := st.mutationCancel, st.startCancel
+		st.mu.Unlock()
+		defer func() { st.mu.Lock(); st.stopPending--; st.mu.Unlock() }()
+		if cancelMutation != nil {
+			cancelMutation()
+		}
+		if cancelStart != nil {
+			cancelStart()
+		}
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
@@ -422,11 +614,23 @@ func (e *Executor) Stop(engine string) error {
 	// engine back on. Restart and StopAll call doStop directly and never
 	// rewrite intent — shutdown must not erase the user's saved choice.
 	setErr := e.setDesiredEnabled(engine, false)
+	e.emitState(engine)
 	return errors.Join(stopErr, setErr)
 }
 
 // doStop performs the stop. Callers must hold st.opMu.
 func (e *Executor) doStop(st *engineState, engine string) error {
+	if engine == "vllm" {
+		if err := stopVLLMGroupLocked(st); err != nil {
+			return err
+		}
+		if st.vllmRank != nil && st.vllmRank.reserved() {
+			return st.vllmRank.stop(st.vllmRank.binding)
+		}
+		if err := e.rejectVLLMGroupMutation(engine, "stop"); err != nil {
+			return err
+		}
+	}
 	rt := st.plat.Runtime
 	mode := rt.modeOrDefault()
 	st.mu.Lock()
@@ -440,6 +644,31 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 	binPath := st.binPath
 	if mode != "command" && proc == nil {
 		st.mu.Unlock()
+		pid, image, ownerKnown := pidOnPort(port)
+		receiptOwned := engine == "vllm" && managedVLLMRecordedImageMatches(st, image)
+		genericOwned := isManagedInstallPath(binPath, st.installDir) && isOurEngineImage(image, binPath)
+		if ownerKnown && (receiptOwned || genericOwned) {
+			st.mu.Lock()
+			st.stopping = true
+			if st.healthStop != nil {
+				st.healthStop()
+				st.healthStop = nil
+			}
+			st.mu.Unlock()
+			grace := stopGrace(rt)
+			terminatePID(pid, grace)
+			if !pidAlive(pid) {
+				e.markStopped(st, engine)
+				return nil
+			}
+			// A killed child its parent has not reaped still answers kill(0);
+			// the released listener is the proof that it exited.
+			if rt.Ready == nil || e.waitUnavailable(rt.Ready, port, grace+2*time.Second) {
+				e.markStopped(st, engine)
+				return nil
+			}
+			return fmt.Errorf("cannot stop engine %q: its PAIR-owned process did not exit", engine)
+		}
 		if adopted {
 			if rt.Ready != nil && e.waitUnavailable(rt.Ready, port, time.Second) {
 				e.markStopped(st, engine)
@@ -468,18 +697,19 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 					e.markStopped(st, engine)
 					return nil
 				}
-				if rt.Ready == nil || e.waitUnavailable(rt.Ready, port, grace+2*time.Second) {
+				if rt.Ready != nil {
+					_ = e.waitUnavailable(rt.Ready, port, grace+2*time.Second)
+				}
+				if !pidAlive(pid) {
 					e.markStopped(st, engine)
 					return nil
 				}
 			}
-			e.emitState(engine)
 			if ok {
-				return fmt.Errorf("cannot stop engine %q: it is running under external management (pid %d, %s); stop it in its own application, then retry", engine, pid, image)
+				return fmt.Errorf("cannot stop engine %q: it is %w (pid %d, %s); stop it in its own application, then retry", engine, errExternallyManaged, pid, image)
 			}
-			return fmt.Errorf("cannot stop engine %q: it is running under external management; stop it in its own application, then retry", engine)
+			return fmt.Errorf("cannot stop engine %q: it is %w; stop it in its own application, then retry", engine, errExternallyManaged)
 		}
-		e.emitState(engine)
 		return fmt.Errorf("cannot stop engine %q: no NVPAIR-owned process is available to stop", engine)
 	}
 	st.stopping = true
@@ -498,7 +728,9 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop()
+		if err := proc.stop(stopGrace(rt)); err != nil {
+			return fmt.Errorf("stop engine %q: %w", engine, err)
+		}
 	}
 
 	e.markStopped(st, engine)
@@ -528,7 +760,12 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	// force-kills engine-manager on a timeout, so an unbounded stop command
 	// would wedge StopAll and, in turn, the whole app shutdown.
 	stopCtx, cancelStop := context.WithTimeout(context.Background(), commandStopTimeout(rt))
-	runErr := e.runCommand(stopCtx, argv)
+	env, envErr := childEnv(st)
+	if envErr != nil {
+		cancelStop()
+		return envErr
+	}
+	runErr := e.runCommand(stopCtx, argv, env)
 	cancelStop()
 	if runErr != nil {
 		return fmt.Errorf("stop %s: %w", engine, runErr)
@@ -732,24 +969,43 @@ func (e *Executor) reconcileFailedCommandStop(st *engineState, engine string, ru
 // Restart stops then starts the engine, holding the op lock across both
 // so nothing can interleave between the stop and the start.
 func (e *Executor) Restart(ctx context.Context, engine string) error {
+	if err := e.rejectVLLMGroupMutation(engine, "restart"); err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return err
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
+	ctx, finish, err := e.beginVLLMMutation(ctx, st)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	if err := adoptedVLLMMutationError(st, "restart"); err != nil {
+		return err
+	}
 	if err := e.doStop(st, engine); err != nil {
 		return err
 	}
 	if err := e.doStart(ctx, st, engine, startOpts{}); err != nil {
 		return err
 	}
-	return e.setDesiredEnabled(engine, true)
+	if err := e.setDesiredEnabled(engine, true); err != nil {
+		return err
+	}
+	e.emitState(engine)
+	return nil
 }
 
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
 func (e *Executor) StopAll() {
+	_ = e.stopAll()
+}
+
+func (e *Executor) stopAll() error {
 	e.shuttingDown.Store(true)
 	e.mu.Lock()
 	names := make([]string, 0, len(e.engines))
@@ -765,6 +1021,7 @@ func (e *Executor) StopAll() {
 	// ~one grace and guarantees every engine gets its stop signal immediately.
 	// Each engine still serializes on its own opMu, so this is safe.
 	var wg sync.WaitGroup
+	errs := make(chan error, len(names))
 	for _, n := range names {
 		st, err := e.state(n)
 		if err != nil {
@@ -774,19 +1031,43 @@ func (e *Executor) StopAll() {
 		go func(st *engineState, n string) {
 			defer wg.Done()
 			st.mu.Lock()
-			cancel := st.startCancel
+			cancelStart := st.startCancel
+			cancelMutation := st.mutationCancel
+			cancelPull := st.pullCancel
+			cancelDistribution := st.distributionCancel
 			st.mu.Unlock()
-			if cancel != nil {
-				cancel()
+			for _, cancel := range []context.CancelFunc{
+				cancelStart, cancelPull, cancelDistribution, cancelMutation,
+			} {
+				if cancel != nil {
+					cancel()
+				}
+			}
+			if n == "vllm" {
+				requestVLLMGroupStop(st, true)
 			}
 			st.opMu.Lock()
 			defer st.opMu.Unlock()
-			if err := e.doStop(st, n); err != nil {
+			err := e.doStop(st, n)
+			switch {
+			case err == nil:
+			case errors.Is(err, errExternallyManaged):
+				// Shutdown owns only what PAIR started; an adopted external
+				// engine keeps running under its own manager.
+				slog.Info("leaving externally managed engine running at shutdown", "engine", n)
+			default:
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
+				errs <- fmt.Errorf("stop %s: %w", n, err)
 			}
 		}(st, n)
 	}
 	wg.Wait()
+	close(errs)
+	var joined []error
+	for err := range errs {
+		joined = append(joined, err)
+	}
+	return errors.Join(joined...)
 }
 
 func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string, port int, gen int64) {
@@ -829,6 +1110,10 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 }
 
 func (e *Executor) waitReady(ctx context.Context, p *Probe, port int) error {
+	return e.waitReadyUntilExit(ctx, p, port, nil)
+}
+
+func (e *Executor) waitReadyUntilExit(ctx context.Context, p *Probe, port int, exited <-chan struct{}) error {
 	if p == nil {
 		return nil
 	}
@@ -838,8 +1123,18 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int) error {
 	}
 	deadline := time.Now().Add(timeout)
 	for {
+		select {
+		case <-exited:
+			return errManagedProcessExitedBeforeReadiness
+		default:
+		}
 		if e.probe(ctx, p, port) {
-			return nil
+			select {
+			case <-exited:
+				return errManagedProcessExitedBeforeReadiness
+			default:
+				return nil
+			}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("not ready after %s", timeout)
@@ -847,6 +1142,8 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-exited:
+			return errManagedProcessExitedBeforeReadiness
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
@@ -869,17 +1166,74 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 			return false
 		}
 		req.Header.Set(engineIdentityProbeHeader, "1")
-		resp, err := e.client.Do(req)
+		client := e.client
+		if p.Identity == "vllm" {
+			bounded := *e.client
+			bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+			client = &bounded
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return false
 		}
-
-		httpcon.DrainAndClose(resp.Body)
+		defer httpcon.DrainAndClose(resp.Body)
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		if resp.StatusCode != want {
+			return false
+		}
+		if p.Identity == "vllm" {
+			var models struct {
+				Object string `json:"object"`
+				Data   []struct {
+					Owner string `json:"owned_by"`
+				} `json:"data"`
+			}
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			if err != nil || json.Unmarshal(body, &models) != nil || models.Object != "list" || len(models.Data) == 0 {
+				return false
+			}
+			for _, model := range models.Data {
+				if model.Owner != "vllm" {
+					return false
+				}
+			}
+			versionURL := *req.URL
+			versionURL.Path, versionURL.RawQuery = "/version", ""
+			versionReq, err := http.NewRequestWithContext(pctx, http.MethodGet, versionURL.String(), nil)
+			if err != nil {
+				return false
+			}
+			versionReq.Header.Set(engineIdentityProbeHeader, "1")
+			versionResp, err := client.Do(versionReq)
+			if err != nil {
+				return false
+			}
+			defer versionResp.Body.Close()
+			var version struct {
+				Version string `json:"version"`
+			}
+			versionBody, err := io.ReadAll(io.LimitReader(versionResp.Body, 64<<10))
+			if err != nil || versionResp.StatusCode != http.StatusOK || json.Unmarshal(versionBody, &version) != nil || !vllmVersionPattern.MatchString(version.Version) {
+				return false
+			}
+		}
+		if p.Identity == "llamacpp" {
+			if resp.Header.Get("Server") != "llama.cpp" {
+				return false
+			}
+			var payload struct {
+				Data json.RawMessage `json:"data"`
+			}
+			if json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&payload) != nil {
+				return false
+			}
+			var rows []json.RawMessage
+			return len(payload.Data) > 0 && string(payload.Data) != "null" && json.Unmarshal(payload.Data, &rows) == nil
+		}
+		return true
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)

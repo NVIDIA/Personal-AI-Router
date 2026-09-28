@@ -32,6 +32,8 @@ broker supervises every worker and relays its control plane.
 | `nvpair-cluster-manager`  | Pairing, trust, and membership                            |
 | `nvpair-job-scheduler`    | Node-wide routing priority                                |
 | `nvpair-tui`              | Bundled standalone terminal client                        |
+| `nvpair-host-bootstrap`   | Bundled target-local bootstrap; never supervised          |
+| `nvpair-host-helper`      | Bundled fixed local helper; never supervised              |
 
 The runtime inventory and ownership flags live in
 `src/shared/constants/modular-binaries.ts`. Product and component versions live
@@ -69,6 +71,12 @@ flowchart TB
 Optional workers are non-fatal at runtime, but a normal build produces every
 binary from the `services/` source.
 
+`nvpair-tui`, `nvpair-host-bootstrap`, and `nvpair-host-helper` are in
+`MODULAR_BUNDLED_BINARIES`, not `MODULAR_RUNTIME_BINARIES`. The TUI launches its
+own broker. The target runs the bootstrap, and the operating system owns the
+installed helper. Electron and the broker never launch or supervise either
+bootstrap binary.
+
 ## Electron integration
 
 The main integration points are:
@@ -89,8 +97,8 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
-asynchronous capability signal. Personal AI Router waits up to the canonical
+service connection, while Ollama, LM Studio, and llama.cpp proxy readiness
+remains an asynchronous capability signal. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
 Settings > Service with retry and log access. If a stalled broker reports ready
@@ -116,7 +124,7 @@ reserved for inference clients.
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `ollama-proxy:ready` / `lmstudio-proxy:ready`        | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `ollama-proxy:ready` / `lmstudio-proxy:ready` / `llamacpp-proxy:ready` | Record engine proxy port                                                                              | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:settings-changed`                            | Validate and republish the owning node's settings snapshot                                                                      | `engines:settings-changed`                                |
@@ -128,7 +136,7 @@ reserved for inference clients.
 | `nodes:changed`                                      | Replace membership snapshot                                                                                                     | `nodes:changed`                                           |
 | `workloads:upsert` / `workloads:remove`              | Update workload catalog                                                                                                         | workload pushes                                           |
 
-`nvpair-job-scheduler` combines queued and running work across both engines with
+`nvpair-job-scheduler` combines queued and running work across all engines with
 a smoothed 0–3 pressure from the busiest GPU. Invalid, missing, or
 older-than-10-second telemetry receives neutral pressure. It emits
 `schedule:priority` with order, pending count, and pressure; the broker applies
@@ -150,8 +158,14 @@ waiting for authoritative state. Pending state clears on matching engine state,
 progress, or error pushes.
 
 Local engine operations include install, start, stop, uninstall, update, port
-changes, and model actions. Remote cluster operations use the engine manager's
-remote control surface where supported.
+changes, and model actions. Engine Manager owns the official llama app install,
+router process, managed cache, downloads, load/unload and delete. llama.cpp has
+no managed update: the bridge refuses `update` for it rather than substituting
+an uninstall and reinstall. The desktop uses reported install support and
+ownership; external runtimes remain read-only. Downloaded cache entries remain
+distinct from runtime residency. The app endpoint is `http://127.0.0.1:8080/v1`;
+a downloaded model loads on the first request that names it. Remote cluster
+operations use the engine manager's remote control surface where supported.
 
 ### Engine settings
 
@@ -278,6 +292,55 @@ Personal AI Router:
 - persists identity changes through `nvpair-node-settings`;
 - renders membership from `nodes:changed`.
 
+### Device bootstrap
+
+`nvpair-engine-manager` is the controller-side relay for both Desktop and TUI.
+It reports the six-entry package catalog and controller public-key identities,
+binds every operation to a candidate, volatile access ID, reviewed SSH host-key
+fingerprint, target account, endpoint, artifacts, lane, and owner, and calls one
+fixed helper command over SSH. It does not perform target mutation itself.
+
+Quick Connect and Zero Touch are the interactive and enterprise lanes of the
+same contract. The matrix is Windows, macOS, and Linux on amd64 and arm64, with
+the Linux target adapter restricted to Debian and Ubuntu. Catalog order,
+filenames, fixed install paths, roles, provenance, and signature metadata are
+strict. Official provenance rejects missing or inconsistent required signature
+material; unsigned engineering catalogs are accepted only as engineering
+artifacts and are never promoted to official.
+
+Auto resolves to Desktop on Windows/macOS and Headless on Linux. Desktop and
+Headless requests must resolve to exactly one owner. The headless owner is the
+fixed Windows helper broker wrapper, macOS system launchd definition, or Linux
+system service. A Desktop broker tree and headless owner may not run
+simultaneously.
+
+The helper protocol carries only an operation ID and `inspect`, `apply`,
+`verify`, or fixed rank-reconcile action. The helper loads the target's stored
+request and plan and invokes the fixed bootstrap executable path. It listens on
+an ACL-protected Windows named pipe or root-owned, target-group Unix socket; it
+has no shell or network listener.
+
+The target produces observations and the complete receipt. The controller
+cannot send either through the helper protocol. Inspect produces target state,
+review deterministically derives `apply`, `repair-owned`, `no-op`, or
+`refuse-foreign`, apply journals each exact effect, and verify seals exact
+postconditions as the complete receipt. Status and recover operate by operation
+ID against that target journal.
+
+Repair is limited to drift authorized by both the complete receipt and current
+ownership markers. Foreign resources block mutation. Uninstall is target-local:
+it requires the original request and immutable receipt, validates all removals
+before changing state, removes only proven-owned resources in reverse order,
+verifies each absence, and records a tombstone before deleting active operation
+state.
+
+Temporary access may use a password, passphrase, elevation password, or
+existing private key, but those values remain volatile and are cleared or
+expired. Persisted bootstrap state carries the controller public-key identity,
+not credentials or private key bytes. After bootstrap, the current SSH host key
+is observed and must be explicitly approved before any authenticated enrollment
+call; a receipt does not confer host-key trust.
+
 Cluster membership correlates by `ClusterNode.nodeUuid` — the stable per-host
 UUID that also keys discovery, workloads, errors, and `selfId` — never the
 hostname (`ClusterNode.id`, which is display only). `nodes:remove` is sent the
@@ -314,6 +377,14 @@ npm run build:modular-binaries
 
 The build is cache-aware. CI passes `--force`. Packaging validates that
 `cli-bin/` contains only the expected binaries and manifest.
+
+`scripts/package-bootstrap.ts` separately builds and verifies the strict
+six-target target-local matrix. Its public mode emits unsigned engineering
+artifacts. Official mode requires final-content attestations and the
+platform-specific signature/notarization records and fails closed when any
+required catalog, checksum, or signature input is unavailable. This policy does
+not assert that official matrix artifacts have been produced or accepted on
+native hosts.
 
 ## Contract artifacts
 

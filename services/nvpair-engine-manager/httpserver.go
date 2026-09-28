@@ -55,9 +55,10 @@ func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// {"models":[...union...],"modelsByEngine":{"ollama":[...],...},
-		// "loadedByEngine":{"ollama":[...],...}} — the flat union stays for
-		// existing consumers; modelsByEngine and loadedByEngine are additive
+		// {"models":[...served union...],"modelsByEngine":{"ollama":[...],...},
+		// "loadedByEngine":{"ollama":[...],...},"retainedByEngine":{"vllm":[...]}}
+		// — the flat union stays for existing routing consumers; the per-engine
+		// served, loaded, and retained/catalog maps are additive
 		// (both omitempty, so absent when no engine reports them).
 		_ = json.NewEncoder(w).Encode(exec.ModelsResult(r.Context()))
 	})

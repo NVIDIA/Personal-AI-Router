@@ -23,9 +23,12 @@ import (
 )
 
 const (
+	maxRemoteResponseBytes           = 8 << 20
 	remoteResponseHeaderTimeout      = 30 * time.Second
 	remoteReadyResponseHeaderTimeout = 11 * time.Minute
 )
+
+const remoteActionTimeout = remoteReadyResponseHeaderTimeout
 
 // remoteClient talks to one peer's ec surface.
 type remoteClient struct {
@@ -52,7 +55,7 @@ func waitsForEngineReadiness(path, engine string) bool {
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
 	if path == controlLoadPath {
-		return engine == "ollama"
+		return engine == "ollama" || engine == "llamacpp"
 	}
 	return path == controlStartPath || path == controlDeletePath
 }
@@ -67,20 +70,43 @@ func newRemoteHTTPClient(base *http.Transport, responseHeaderTimeout time.Durati
 // node isn't clustered or the peer isn't a pinned cluster member. Membership is
 // re-derived per call, so remote management becomes available as soon as this
 // node joins a cluster and stops the moment it leaves.
-func (m *Manager) remoteClient(ctx context.Context, peer ecPeer) (*remoteClient, error) {
+func (m *Manager) pinnedPeerClients(peer ecPeer) (*http.Client, *http.Client, error) {
 	m.mesh.Refresh()
 	if !m.mesh.Clustered() {
-		return nil, fmt.Errorf("this node is not clustered; remote engine management is unavailable")
+		return nil, nil, fmt.Errorf("this node is not clustered; remote engine management is unavailable")
 	}
 	m.remoteHTTP.DropUnpinned()
 	m.readyHTTP.DropUnpinned()
 	httpClient, ok := m.remoteHTTP.Client(peer.clusterUUID)
 	if !ok {
-		return nil, fmt.Errorf("node %q is not a pinned cluster peer", peer.nodeID)
+		return nil, nil, fmt.Errorf("node %q is not a pinned cluster peer", peer.nodeID)
 	}
 	readyClient, ok := m.readyHTTP.Client(peer.clusterUUID)
 	if !ok {
-		return nil, fmt.Errorf("node %q is not a pinned cluster peer", peer.nodeID)
+		return nil, nil, fmt.Errorf("node %q is not a pinned cluster peer", peer.nodeID)
+	}
+	return httpClient, readyClient, nil
+}
+
+// remoteClientVia reaches the peer's pinned control surface at one exact
+// address. It bypasses the address cache so a fabric route never becomes the
+// peer's default for ordinary control traffic.
+func (m *Manager) remoteClientVia(peer ecPeer, address string) (*remoteClient, error) {
+	httpClient, readyClient, err := m.pinnedPeerClients(peer)
+	if err != nil {
+		return nil, err
+	}
+	return &remoteClient{
+		http:      httpClient,
+		readyHTTP: readyClient,
+		base:      "https://" + net.JoinHostPort(address, strconv.Itoa(peer.port)),
+	}, nil
+}
+
+func (m *Manager) remoteClient(ctx context.Context, peer ecPeer) (*remoteClient, error) {
+	httpClient, readyClient, err := m.pinnedPeerClients(peer)
+	if err != nil {
+		return nil, err
 	}
 	// No total client timeout: install/pull run for minutes, bounded on the
 	// server by the executor's action ceiling. ResponseHeaderTimeout still
@@ -105,6 +131,23 @@ func (c *remoteClient) forgetAddress() {
 	}
 }
 
+func remoteDo(client *http.Client, req *http.Request) (*http.Response, error) {
+	bounded := *client
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return bounded.Do(req)
+}
+
+func readRemoteBody(body io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read remote response: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("remote response exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
 // getEngines fetches the peer's engine status list (GET /v1/engines), returning
 // the raw {"engines":[...]} object.
 func (c *remoteClient) getEngines(ctx context.Context) (json.RawMessage, error) {
@@ -112,7 +155,7 @@ func (c *remoteClient) getEngines(ctx context.Context) (json.RawMessage, error) 
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := remoteDo(c.http, req)
 	if err != nil {
 		c.forgetAddress()
 		return nil, err
@@ -141,7 +184,11 @@ func (c *remoteClient) postJSON(ctx context.Context, path, engine string, body a
 	if waitsForEngineReadiness(path, engine) && c.readyHTTP != nil {
 		client = c.readyHTTP
 	}
-	resp, err := client.Do(req)
+	bounded := *client
+	if bounded.CheckRedirect == nil {
+		bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	resp, err := bounded.Do(req)
 	if err != nil {
 		c.forgetAddress()
 		return nil, err
@@ -154,9 +201,16 @@ func (c *remoteClient) postJSON(ctx context.Context, path, engine string, body a
 	return json.RawMessage(data), nil
 }
 
+func (c *remoteClient) postJSONWithTimeout(ctx context.Context, path, engine string, body any, timeout time.Duration) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return c.postJSON(ctx, path, engine, body)
+}
+
 // stream POSTs body to a streaming ec endpoint and consumes its NDJSON frames,
 // calling onProgress for each progress frame and returning the terminal result
-// frame. An error frame (or a stream that ends without a result) is an error.
+// frame. An error frame retains its terminal identity alongside the error;
+// an interrupted stream has no terminal frame.
 func (c *remoteClient) stream(ctx context.Context, path string, body any, onProgress func(streamFrame)) (streamFrame, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -167,7 +221,7 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 		return streamFrame{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := remoteDo(c.http, req)
 	if err != nil {
 		c.forgetAddress()
 		return streamFrame{}, err
@@ -179,13 +233,11 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 	}
 
 	dec := json.NewDecoder(resp.Body)
-	var result streamFrame
-	haveResult := false
 	for {
 		var f streamFrame
 		if derr := dec.Decode(&f); derr != nil {
 			if derr == io.EOF {
-				break
+				return streamFrame{}, fmt.Errorf("remote %s: stream ended without a result", path)
 			}
 			return streamFrame{}, fmt.Errorf("remote %s: decode frame: %w", path, derr)
 		}
@@ -195,14 +247,9 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 				onProgress(f)
 			}
 		case "result":
-			result = f
-			haveResult = true
+			return f, nil
 		case "error":
-			return streamFrame{}, fmt.Errorf("%s", f.Message)
+			return f, fmt.Errorf("%s", f.Message)
 		}
 	}
-	if !haveResult {
-		return streamFrame{}, fmt.Errorf("remote %s: stream ended without a result", path)
-	}
-	return result, nil
 }

@@ -187,7 +187,6 @@ func waitForMethod(t *testing.T, ch <-chan jsonrpc.Message, method string, timeo
 			t.Fatalf("timed out (%s) waiting for method %q", timeout, method)
 		}
 	}
-	return jsonrpc.Message{}
 }
 
 func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Duration) jsonrpc.Message {
@@ -207,5 +206,4 @@ func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Durat
 			t.Fatal("timed out waiting for JSON-RPC response")
 		}
 	}
-	return jsonrpc.Message{}
 }

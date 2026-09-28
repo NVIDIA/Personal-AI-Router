@@ -36,7 +36,9 @@ var allowedPlaceholders = map[string]bool{
 	"port":        true,
 	"download":    true,
 	"install_dir": true,
+	"model_dir":   true,
 	"models_dir":  true,
+	"runtime_dir": true,
 }
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
@@ -71,8 +73,30 @@ type Platform struct {
 // download (fetch.sha256 set) is checksum-verified before its `run`
 // command executes; an unpinned fetch is HTTPS-only (see download).
 type Install struct {
-	Fetch *Fetch   `json:"fetch,omitempty"`
-	Run   []string `json:"run,omitempty"`
+	// Driver selects a built-in installer when ownership and rollback cannot be
+	// expressed safely as generic argv: llama-app for llama.cpp's official
+	// builds, vllm-python for the managed vLLM environment.
+	Driver string `json:"driver,omitempty"`
+	Fetch  *Fetch `json:"fetch,omitempty"`
+	// Requires lists commands that must already resolve on PATH before the
+	// user-mode recipe is offered or executed.
+	Requires []string `json:"requires,omitempty"`
+	// UpstreamFirst opts only Windows ARM64 llama into the fixed official latest
+	// installer (useful with a CUDA Toolkit present), retaining Archives as its
+	// checksum-qualified CUDA fallback. Off by default: NVIDIA ARM64 installs
+	// the pinned CUDA archives directly.
+	UpstreamFirst bool   `json:"upstream_first,omitempty"`
+	CPUFetch      *Fetch `json:"cpu_fetch,omitempty"`    // confirmed non-NVIDIA Windows ARM CPU path
+	ArchiveRoot   string `json:"archive_root,omitempty"` // fixed prefix of the official Intel Mac tar
+	// Archives is the checksum-pinned official llama app and companion runtime
+	// bundle set for Windows ARM64, where the script distribution lacks CUDA.
+	Archives []Fetch `json:"archives,omitempty"`
+	// CUDAArchives is the checksum-pinned official CUDA llama app and CUDA
+	// runtime bundle for Windows x64, whose script distribution installs CUDA
+	// only alongside the CUDA Toolkit. When an NVIDIA GPU cannot run the build,
+	// or the build reports no CUDA device, the pinned Fetch installer runs.
+	CUDAArchives []Fetch  `json:"cuda_archives,omitempty"`
+	Run          []string `json:"run,omitempty"`
 	// Script is an escape hatch for vendors that only ship a script
 	// installer. It runs without checksum verification — strictly opt-in
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
@@ -88,7 +112,8 @@ type Install struct {
 // uninstaller (or removing its install dir). No download/checksum —
 // it only runs a local command.
 type Uninstall struct {
-	Run []string `json:"run"`
+	Driver string   `json:"driver,omitempty"`
+	Run    []string `json:"run,omitempty"`
 }
 
 // Fetch is an engine download. SHA256, when set, pins it (verified
@@ -113,6 +138,7 @@ type Fetch struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
+	Driver         string            `json:"driver,omitempty"`
 	EditableLaunch *EditableLaunch   `json:"editable_launch,omitempty"`
 	LaunchArgs     *[]string         `json:"launch_args,omitempty"` // literal arguments after managed fields
 	LaunchEnv      *[]string         `json:"launch_env,omitempty"`  // complete literal explicit environment
@@ -120,9 +146,13 @@ type Runtime struct {
 	Bin            string            `json:"bin,omitempty"`
 	Args           []string          `json:"args,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
-	Port           int               `json:"port"`            // 0 => auto-assign a free loopback port
-	Bind           string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
-	Start          [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
+	// IsolatedEnv starts with only the declared Env rather than inheriting the
+	// operator process environment. Managed Python runtimes use this to prevent
+	// user-site, credential, and package-path bleed-through.
+	IsolatedEnv bool       `json:"isolated_env,omitempty"`
+	Port        int        `json:"port"`            // 0 => auto-assign a free loopback port
+	Bind        string     `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
+	Start       [][]string `json:"start,omitempty"` // command mode: ordered bring-up commands
 	// CLI is the engine's control-CLI path for this platform, referenced
 	// elsewhere as {cli}. It lets the manifest's global actions resolve
 	// to the correct per-OS binary (e.g. lms.exe vs lms).
@@ -167,6 +197,7 @@ func (r *Runtime) hasCustomLaunch() bool {
 // Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
 // should be set; HTTP wins if both are.
 type Probe struct {
+	Identity  string `json:"identity,omitempty"`
 	HTTP      string `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
 	TCP       string `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
 	Status    int    `json:"status,omitempty"` // expected HTTP status (default 200)
@@ -189,6 +220,7 @@ type StopSpec struct {
 // placeholders (e.g. {model}); an HTTP action sends params as the JSON
 // request body.
 type Action struct {
+	Builtin     string            `json:"builtin,omitempty"`
 	Description string            `json:"description,omitempty"`
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
 	Cmd         []string          `json:"cmd,omitempty"`
@@ -566,14 +598,37 @@ func (m *Manifest) Validate() error {
 		return errors.New("at least one platforms entry is required")
 	}
 	for key, p := range m.Platforms {
+		if m.Engine != "llamacpp" && ((p.Install != nil && p.Install.Driver == "llama-app") || (p.Uninstall != nil && p.Uninstall.Driver == "llama-app")) {
+			return fmt.Errorf("platform %q: llama-app driver requires engine llamacpp", key)
+		}
 		if !validPlatformKey(key) {
 			return fmt.Errorf("platform key %q must be \"<goos>/<goarch>\"", key)
 		}
 		if err := p.validate(key); err != nil {
 			return err
 		}
+		if p.Install != nil && p.Install.Driver == "vllm-python" && m.Engine != "vllm" {
+			return fmt.Errorf("platform %q: install driver vllm-python is reserved for engine vllm", key)
+		}
+		if p.Uninstall != nil && p.Uninstall.Driver == "vllm-python" && m.Engine != "vllm" {
+			return fmt.Errorf("platform %q: uninstall driver vllm-python is reserved for engine vllm", key)
+		}
+		if p.Runtime.Driver == "vllm-python" && m.Engine != "vllm" {
+			return fmt.Errorf("platform %q: runtime driver vllm-python is reserved for engine vllm", key)
+		}
 	}
 	for name, a := range m.Actions {
+		switch a.Builtin {
+		case "":
+		case "vllm":
+			if m.Engine != "vllm" {
+				return fmt.Errorf("action %q: vllm builtin requires engine vllm", name)
+			}
+		default:
+			if m.Engine != "llamacpp" {
+				return fmt.Errorf("action %q: llama builtin requires engine llamacpp", name)
+			}
+		}
 		if err := a.validate(name); err != nil {
 			return err
 		}
@@ -596,6 +651,9 @@ func (m *Manifest) Validate() error {
 }
 
 func (p *Platform) validate(key string) error {
+	if p.Runtime.Driver != "" && p.Runtime.Driver != "vllm-python" {
+		return fmt.Errorf("platform %q: unknown runtime driver %q", key, p.Runtime.Driver)
+	}
 	if policy := p.Runtime.EditableLaunch; policy != nil {
 		if policy.StartIndex < 0 || (p.Runtime.modeOrDefault() == "command" && policy.StartIndex >= len(p.Runtime.Start)) {
 			return fmt.Errorf("platform %q: invalid editable launch definition", key)
@@ -625,7 +683,7 @@ func (p *Platform) validate(key string) error {
 	}
 	switch p.Runtime.modeOrDefault() {
 	case "process":
-		if strings.TrimSpace(p.Runtime.Bin) == "" {
+		if strings.TrimSpace(p.Runtime.Bin) == "" && p.Runtime.Driver == "" {
 			return fmt.Errorf("platform %q: runtime.bin is required in process mode", key)
 		}
 	case "command":
@@ -636,11 +694,62 @@ func (p *Platform) validate(key string) error {
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
+		switch p.Install.Driver {
+		case "", "llama-app", "vllm-python":
+		default:
+			return fmt.Errorf("platform %q: unknown install driver %q", key, p.Install.Driver)
+		}
+		if p.Install.Driver == "vllm-python" && (len(p.Install.Script) > 0 || len(p.Install.Run) > 0) {
+			return fmt.Errorf("platform %q: install.driver is mutually exclusive with script/run", key)
+		}
+		if p.Install.Driver == "vllm-python" && p.Install.Fetch == nil {
+			return fmt.Errorf("platform %q: install driver vllm-python requires a pinned uv fetch", key)
+		}
+		if p.Install.CPUFetch != nil && (key != "windows/arm64" || p.Install.Driver != "llama-app" || len(p.Install.Archives) == 0 || p.Install.CPUFetch.SHA256 == "" || p.Install.CPUFetch.URL == "") {
+			return fmt.Errorf("platform %q: cpu_fetch requires the Windows ARM64 llama-app policy with pinned CUDA archives and a pinned fetch", key)
+		}
+		// Recipe shape is validated here; the exact pinned build, URLs and
+		// digests of the bundled recipe are pinned by its tests, so a pin bump
+		// is a manifest change and a per-user override may carry its own set.
+		if p.Install.ArchiveRoot != "" && (p.Install.Driver != "llama-app" || len(p.Install.Archives) == 0 || !safeLlamaTarName(p.Install.ArchiveRoot) || strings.Contains(p.Install.ArchiveRoot, "/")) {
+			return fmt.Errorf("platform %q: archive_root requires the llama-app driver, at least one pinned archive and a single safe path component", key)
+		}
+		if p.Install.UpstreamFirst && (key != "windows/arm64" || p.Install.Driver != "llama-app" || len(p.Install.Archives) == 0) {
+			return fmt.Errorf("platform %q: upstream_first requires the Windows ARM64 llama-app policy with at least one pinned fallback archive", key)
+		}
+		if len(p.Install.Archives) > 0 {
+			if p.Install.Driver != "llama-app" || p.Install.Fetch != nil || len(p.Install.Run) > 0 || len(p.Install.Script) > 0 {
+				return fmt.Errorf("platform %q: archives require the llama-app driver without fetch/run/script", key)
+			}
+			for _, archive := range p.Install.Archives {
+				if strings.TrimSpace(archive.URL) == "" || archive.SHA256 == "" {
+					return fmt.Errorf("platform %q: every llama archive requires a URL and checksum", key)
+				}
+			}
+		}
+		if len(p.Install.CUDAArchives) > 0 {
+			if key != "windows/amd64" || p.Install.Driver != "llama-app" || p.Install.Fetch == nil || p.Install.Fetch.SHA256 == "" || p.Install.UpstreamFirst {
+				return fmt.Errorf("platform %q: cuda_archives require the Windows x64 llama-app policy with a pinned fetch fallback", key)
+			}
+			for _, archive := range p.Install.CUDAArchives {
+				if strings.TrimSpace(archive.URL) == "" || archive.SHA256 == "" {
+					return fmt.Errorf("platform %q: every llama archive requires a URL and checksum", key)
+				}
+			}
+		}
+		if p.Install.Driver == "llama-app" && len(p.Install.Archives) == 0 && (p.Install.Fetch == nil || p.Install.Fetch.SHA256 == "" || len(p.Install.Run) > 0 || len(p.Install.Script) > 0) {
+			return fmt.Errorf("platform %q: llama-app requires pinned archives or a pinned fetch without custom run/script", key)
+		}
 		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || len(p.Install.Run) > 0) {
 			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/run (a script install cannot also be checksum-pinned)", key)
 		}
 		if len(p.Install.Run) > 0 && p.Install.Fetch == nil {
 			return fmt.Errorf("platform %q: install.run requires a fetch (the artifact the run command unpacks)", key)
+		}
+		for i, command := range p.Install.Requires {
+			if strings.TrimSpace(command) == "" {
+				return fmt.Errorf("platform %q: install.requires[%d] must not be empty", key, i)
+			}
 		}
 		if p.Install.Fetch != nil && strings.TrimSpace(p.Install.Fetch.URL) == "" {
 			return fmt.Errorf("platform %q: install.fetch.url is required when fetch is present", key)
@@ -651,8 +760,18 @@ func (p *Platform) validate(key string) error {
 			return fmt.Errorf("platform %q: install.mode %q invalid (want \"user\" or \"admin\")", key, p.Install.Mode)
 		}
 	}
-	if p.Uninstall != nil && len(p.Uninstall.Run) == 0 {
-		return fmt.Errorf("platform %q: uninstall.run is required when uninstall is present", key)
+	if p.Uninstall != nil {
+		switch p.Uninstall.Driver {
+		case "", "llama-app", "vllm-python":
+		default:
+			return fmt.Errorf("platform %q: unknown uninstall driver %q", key, p.Uninstall.Driver)
+		}
+		if p.Uninstall.Driver == "vllm-python" && len(p.Uninstall.Run) > 0 {
+			return fmt.Errorf("platform %q: uninstall.driver is mutually exclusive with uninstall.run", key)
+		}
+		if p.Uninstall.Driver == "" && len(p.Uninstall.Run) == 0 {
+			return fmt.Errorf("platform %q: uninstall.run is required when uninstall is present", key)
+		}
 	}
 	if err := validateProbe(key, "ready", p.Runtime.Ready); err != nil {
 		return err
@@ -671,6 +790,11 @@ func validateProbe(key, which string, p *Probe) error {
 	if p == nil {
 		return nil
 	}
+	switch p.Identity {
+	case "", "llamacpp", "vllm":
+	default:
+		return fmt.Errorf("platform %q: runtime.%s has unknown identity %q", key, which, p.Identity)
+	}
 	if strings.TrimSpace(p.HTTP) == "" && strings.TrimSpace(p.TCP) == "" {
 		return fmt.Errorf("platform %q: runtime.%s must set either http or tcp", key, which)
 	}
@@ -682,6 +806,14 @@ func (a *Action) validate(name string) error {
 	hasCmd := len(a.Cmd) > 0
 	hasRemovePath := a.RemovePath != nil
 	kinds := 0
+	if a.Builtin != "" {
+		switch a.Builtin {
+		case "llama-models", "llama-cancel", "vllm":
+		default:
+			return fmt.Errorf("action %q: unknown builtin", name)
+		}
+		kinds++
+	}
 	if hasHTTP {
 		kinds++
 	}

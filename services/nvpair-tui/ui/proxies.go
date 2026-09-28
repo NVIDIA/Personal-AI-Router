@@ -59,6 +59,9 @@ type proxiesView struct {
 	portInput   textinput.Model
 	editingPort bool
 	status      string
+	groupKnown  bool
+	groupHeld   bool
+	groupReason string
 
 	width, height int
 }
@@ -109,7 +112,7 @@ func newProxiesView(client *rpc.Client) *proxiesView {
 func (v *proxiesView) Title() string { return "Proxies" }
 
 func (v *proxiesView) Init() tea.Cmd {
-	var cmds []tea.Cmd
+	cmds := []tea.Cmd{servingGroupStatusCmd(v.client)}
 	for i, e := range v.engines {
 		cmds = append(cmds,
 			call(v.client, e.prefix+":subscribe", nil, func(_ *rpc.Message, _ error) tea.Msg { return nil }),
@@ -211,6 +214,19 @@ func (v *proxiesView) Update(msg tea.Msg) tea.Cmd {
 			v.status = msg.what + " ok"
 		}
 		return nil
+	case servingGroupMsg:
+		v.groupKnown = true
+		v.groupHeld = msg.err != nil || msg.status.Reserved == nil || *msg.status.Reserved || (msg.status.Run != nil && !msg.status.Run.CleanupConfirmed)
+		v.groupReason = msg.status.Reason
+		if msg.err != nil {
+			v.groupReason = msg.err.Error()
+		}
+		if v.vllmProxyBlocked() && v.editingPort {
+			v.editingPort = false
+			v.portInput.Blur()
+			v.status = "vLLM proxy action held: " + v.vllmProxyBlockReason()
+		}
+		return nil
 	case NotificationMsg:
 		return v.handleNotification(msg.Msg)
 	case tea.KeyMsg:
@@ -272,6 +288,10 @@ func (v *proxiesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.focus = (v.focus + 1) % len(v.engines)
 		return nil
 	case key.Matches(msg, proxyPortKey):
+		if v.vllmProxyBlocked() {
+			v.status = "vLLM proxy action held: " + v.vllmProxyBlockReason()
+			return nil
+		}
 		v.editingPort = true
 		v.portInput.SetValue(strconv.Itoa(v.engines[v.focus].port))
 		v.portInput.Focus()
@@ -296,6 +316,10 @@ func (v *proxiesView) selectHighlighted() tea.Cmd {
 }
 
 func (v *proxiesView) selectNode(id string) tea.Cmd {
+	if v.vllmProxyBlocked() {
+		v.status = "vLLM proxy action held: " + v.vllmProxyBlockReason()
+		return nil
+	}
 	e := v.engines[v.focus]
 	return call(v.client, e.prefix+":node/select", map[string]string{"id": id}, func(_ *rpc.Message, err error) tea.Msg {
 		return proxyActionMsg{what: "select", err: err}
@@ -305,6 +329,10 @@ func (v *proxiesView) selectNode(id string) tea.Cmd {
 func (v *proxiesView) submitPort() tea.Cmd {
 	v.editingPort = false
 	v.portInput.Blur()
+	if v.vllmProxyBlocked() {
+		v.status = "vLLM proxy action held: " + v.vllmProxyBlockReason()
+		return nil
+	}
 	port, err := strconv.Atoi(strings.TrimSpace(v.portInput.Value()))
 	if err != nil || port <= 0 || port > 65535 {
 		v.status = "invalid port"
@@ -339,6 +367,10 @@ func (v *proxiesView) View() string {
 	focused := v.engines[v.focus]
 	b.WriteString(titleStyle.Render(focused.label + " upstreams"))
 	b.WriteByte('\n')
+	if v.vllmProxyBlocked() {
+		b.WriteString(statusErrStyle.Render("vLLM proxy mutations held: " + v.vllmProxyBlockReason()))
+		b.WriteByte('\n')
+	}
 	if len(focused.nodes) == 0 {
 		b.WriteString(footerStyle.Render("No upstreams discovered."))
 	} else {
@@ -370,5 +402,22 @@ func (v *proxiesView) engineStatusLine(i int, e *proxyEngine) string {
 }
 
 func (v *proxiesView) Help() []key.Binding {
+	if v.vllmProxyBlocked() {
+		return []key.Binding{proxyFocusKey}
+	}
 	return []key.Binding{proxyFocusKey, proxySelectKey, proxyAutoKey, proxyPortKey}
+}
+
+func (v *proxiesView) vllmProxyBlocked() bool {
+	return v.engines[v.focus].prefix == "vllm-proxy" && (!v.groupKnown || v.groupHeld)
+}
+
+func (v *proxiesView) vllmProxyBlockReason() string {
+	if v.groupReason != "" {
+		return v.groupReason
+	}
+	if !v.groupKnown {
+		return "serving-group ownership is not known"
+	}
+	return "retained serving-group cleanup is required"
 }

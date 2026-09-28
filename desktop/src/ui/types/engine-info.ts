@@ -8,6 +8,7 @@ import type {
     ModelExpiry,
     EngineProcessStatus
 } from '@/shared/types/engines'
+import type { VllmServingGroupRoute } from '@/shared/types/vllm-group-status'
 
 export interface ModelItem {
     name: string
@@ -95,6 +96,19 @@ export interface BackendInfo {
     proxyPort: number | null
     /** Installed engine binary version reported by the owning node */
     installedVersion?: string
+    enabled?: boolean
+    managed?: boolean
+    adopted?: boolean
+    routable?: boolean
+    installSupported?: boolean
+    installReason?: string
+    /** llama.cpp compute backend ("cuda", "vulkan", "cpu", ...); absent when unknown or not installed */
+    acceleration?: string
+    /** Device rows from `llama cli --list-devices` */
+    devices?: string[]
+    /** Canonical retained model PAIR will serve on the next owned vLLM start; reported, never inferred. */
+    selectedModel?: string
+    servingGroup?: VllmServingGroupRoute
     /** Models on this backend with per-model status */
     models: ModelItem[]
     /** System-level dependencies required before install/run (local node only) */

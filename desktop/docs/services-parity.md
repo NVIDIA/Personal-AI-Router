@@ -20,10 +20,11 @@ history.
 | -------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                      |
 | Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                 |
-| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                 |
+| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP) for identity-bound OS and telemetry; unreachable peers remain telemetry-limited          |
 | Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
+| llama.cpp routing          | Source integration; native validation pending | `nvpair-proxy` facade on llama.cpp's own `8080`, relayed as `llamacpp-proxy:` |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
@@ -34,6 +35,7 @@ history.
 | Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none |
 | Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                            |
 | Model catalog search       | Electron-owned                  | Curated Ollama and LM Studio catalogs are fetched in Electron main                                                                              |
+| Device bootstrap           | Integrated contract             | Desktop and TUI share target-produced plans, recovery, and receipts for the exact Windows/macOS/Debian-or-Ubuntu × x64/arm64 matrix; native matrix acceptance is not asserted |
 
 ## Supervision
 
@@ -53,6 +55,46 @@ history.
 
 Worker crashes are handled by the broker. Electron reports a broker crash and
 allows the user to restart the service.
+
+`nvpair-host-bootstrap` and `nvpair-host-helper` are bundled tools, not workers.
+Electron and the broker never supervise them.
+
+## Device bootstrap
+
+The complete bootstrap channel set is wired through the service bridge:
+catalog, controller public keys, inspect, review, apply, status, recover, and
+verify. Desktop **Set up a device** and TUI **Setup** consume the same methods
+and canonical types.
+
+Current behavior:
+
+- Quick Connect and Zero Touch select the reviewed and enterprise lanes of the
+  same target-local contract.
+- The catalog contains exactly Windows amd64/arm64, macOS amd64/arm64, and
+  Linux amd64/arm64. The Linux target then admits Debian and Ubuntu only.
+- Auto resolves to Desktop on Windows/macOS and Headless on Linux. Explicit
+  roles must match one resolved owner.
+- Desktop ownership excludes the fixed headless owner. Headless uses the
+  Windows fixed helper wrapper, macOS system launchd, or Linux system service.
+- The helper has a closed action protocol on an ACL-protected local pipe or
+  socket. It exposes neither a shell nor a network listener.
+- Inspect/status/recover state and the complete receipt come from the target.
+  Electron accepts apply and verify only for an exact plan returned by the
+  current review.
+- Repair is restricted to receipt-and-marker-proven owned drift. Foreign state
+  blocks mutation. Target-local uninstall requires the original request and
+  receipt and removes only proven-owned resources.
+- Passwords, passphrases, elevation passwords, and private key bytes are
+  volatile access material. Durable bootstrap identity is public-key-only.
+- SSH host-key observation and explicit fingerprint approval remain mandatory
+  after bootstrap.
+- Official provenance fails closed on incomplete catalog/checksum/signature
+  metadata. Unsigned engineering artifacts stay explicitly non-official.
+
+The current source and local tests establish strict contracts, deterministic
+packaging, cross-compilation, and simulated platform behavior. They do not
+establish that official signed combinations have been produced, nor do they
+constitute native acceptance of all six targets.
 
 ## Discovery and nodes
 
@@ -83,37 +125,67 @@ the same UUID key rather than a hostname guess.
 The broker discovery surface does not include full dynamic telemetry, so
 Electron polls `/v1/node-info` for CPU, memory, GPU, and VRAM values.
 
-Two limitations follow from the current discovery and node-info contract:
+One limitation follows from the current discovery and node-info contract:
 
 - **Remote telemetry.** The poll is plain HTTP. A remote node that does not
   answer `/v1/node-info` over plain HTTP contributes no live CPU/GPU/VRAM
   telemetry; Personal AI Router still shows its discovery-level data. This resolves when the
   backend exposes a plaintext metrics path for such nodes.
-- **Remote OS.** The contract does not report a remote node's operating system.
-  The local node's OS is known from the running process; remote nodes fall back
-  to a placeholder until the backend reports OS on discovery or node-info.
+
+`/v1/node-info` also reports the target's canonical operating system. Electron
+accepts that value only from an identity-matched response and retains it across
+broker/proxy refreshes. Older or offline peers remain unknown instead of being
+shown as Windows; an explicit remote Engine Manager `installSupported` result
+remains authoritative for install controls when that legacy OS field is absent.
 
 Manual nodes use the broker's `node/add`, `node/remove`, and `nodes/list`
 surface. Electron persists user entries and replays them after broker startup so
 they survive worker restarts.
 
+### Workload display
+
+The desktop displays workload snapshots and live updates, retaining origin,
+engine, proxy run and request identity. Execution labels and connection lines
+use the reported destination, not the request origin. Workload cancellation is
+not exposed by the desktop API or UI. Engine lifecycle and model-download
+cancellation are separate controls and remain supported.
+
+### Multi-node UI acceptance
+
+Engine integration must preserve each participating desktop's view of the
+cluster, not only the request origin's view. During the same bounded inference
+run, verify every available participating desktop independently:
+
+- Cluster and member UUIDs, engine availability and loaded-model ownership agree
+  after discovery converges; offline members do not look live or routable.
+- New workloads agree by their full `(originatedFrom, engine, runId, id)`
+  identity on model, destination and terminal state. Record propagation delay;
+  do not require identical historical catalog totals or instantaneous equality
+  during a state transition.
+- Capture each desktop's original Performance view during actual work. A remote
+  backend response or the origin's aggregate UI does not prove another native UI.
+
+Record unavailable or untested desktop cells explicitly. This checklist states
+the acceptance requirement; it does not assert that every platform has passed.
+
 ## Routing and inference
 
-Both text-engine facades are broker-owned and cluster-aware. They live in one
+Every text-engine facade is broker-owned and cluster-aware. They live in one
 `nvpair-proxy` process, each enabled after spawn on its own port, and each
 serves its engine's dialect:
 
 - the Ollama facade serves the Ollama-compatible surface;
-- the LM Studio facade serves the LM Studio/OpenAI-compatible surface.
+- the LM Studio facade serves the LM Studio/OpenAI-compatible surface;
+- the llama.cpp facade serves its OpenAI-compatible surface on `8080`.
 
 Sharing a process is what lets them share the burst reservations the scheduler
-depends on: two facades bursting at once compete for the same node's GPU, so a
-dispatch through either has to be visible to the other.
+depends on: facades bursting at once compete for the same node's GPU, so a
+dispatch through any of them has to be visible to the others.
 
 Routing precedence is manual selection, scheduler priority, then deterministic
 proxy ordering. Personal AI Router leaves proxies in automatic mode.
 
-`nvpair-job-scheduler` combines total queued and running workload across both
+`nvpair-job-scheduler` combines total queued and running workload across all
 engines with a smoothed 0–3 GPU-pressure signal. The backend scanner and manual
 node worker provide maximum-GPU utilization, while invalid, missing, or
 older-than-10-second samples receive neutral pressure. The scheduler emits order,
@@ -145,6 +217,133 @@ Personal AI Router consequences (all reflection, no security implementation):
   run inference across the version boundary. Local use and the shared
   nearby-model list are unaffected.
 
+### Serving groups and the fast fabric
+
+A managed vLLM serving group places each rank on the one private subnet that
+every selected member shares, which on DGX Spark is the management network.
+Pipeline-parallel groups of two or three Sparks serve over that network.
+Tensor parallelism is admitted only when the model's attention and KV heads
+divide by the member count.
+
+An ordinary two-Spark tensor-parallel group runs only over an active, freshly
+qualified direct fabric between exactly those two Sparks. Its reviewed plan
+binds one reciprocal fabric lane, and only NCCL Socket uses it
+(`NCCL_NET=Socket`, `NCCL_IB_DISABLE=1`, `NCCL_SOCKET_IFNAME` set to the lane
+interface). The master address, `VLLM_HOST_IP`, Gloo, control and SSH stay on
+the management network, and the rank gains no RDMA device or `AF_IB` socket.
+Without an explicit mode, two Sparks use that lane when the fabric is present
+and fall back to pipeline parallelism when no fabric involves them; a stale,
+recovering or ambiguous fabric (including the three-Spark ring) refuses the
+review instead. Explicit pipeline parallelism never depends on a fabric.
+
+Such a group leases its fabric before any rank starts. Fabric rollback and
+recovery are refused while the lease is held, and the lease is released only
+after every rank's cleanup is confirmed; it is retained across Engine Manager
+restarts. Ordinary ranks on the managed runtime bound the NCCL and Gloo
+process-group timeouts to 180 seconds. Only the Qwen3.8 profile binds its
+ranks to qualified RoCE fabric lanes.
+
+Copying a model to missing Sparks also uses the fabric when one links the source
+and target: the controller re-proves the fabric, gives the target the source's
+end of one reciprocal lane, and journals a hold that refuses fabric rollback and
+recovery until the target confirms that copy ended, including across a
+controller restart. The target still authenticates the source by its pinned
+identity. With no fabric linking the pair the copy uses the management network,
+and a stale or unprovable linking fabric refuses the copy. The copy's progress
+row says which network it uses. One source serves copies to several targets at
+once: each copy's content verification runs outside the source's export lease,
+so it never stalls chunks already flowing to another target.
+
+The managed NCCL correctness smoke can review with `network: fabric`. Review
+requalifies the one active fabric the controller owns that joins exactly the
+selected Sparks and moves only `NCCL_SOCKET_IFNAME` onto the lowest-index
+direct lane or each ring member's advertised address; MPI launch, SSH, and its
+OOB/BTL subnet stay on management. The plan digests the fabric operation and
+qualification, which the fabric owner revalidates at approval and again before
+any rank launches. The run takes no lease: participant MPI admission refuses
+fabric rollback while it runs. A missing fabric refuses the review instead of
+falling back to management.
+
+Serving-group review re-hashes the retained model on every member; members
+inspect concurrently, so a Qwen3.8 review takes about one member's
+verification time rather than the sum.
+
+The Qwen3.8 checkpoint holds 65.6 GiB of expert weights and 57.9 GiB of shared
+weights. Its one layout, TP2+EP2 on exactly two Sparks, splits both, about
+62 GiB per rank, and serves over the two RoCE lanes of one direct cable. No
+three-Spark layout fits: the model's two key-value heads cannot split three
+ways, a data-parallel layout would copy the shared weights to every rank (about
+80 GiB each) and does not load on a 128 GB DGX Spark, and the pinned vLLM
+refuses pipeline stages because the model's N-gram PLE embedding needs raw
+input IDs on every rank. Review refuses a three-Spark selection with that
+reason before inspecting any member. Qwen3.8 ranks pass
+`--gpu-memory-utilization 0.8`: DGX Spark GPU memory is shared with the OS and
+page cache, and vLLM's default 0.92 startup check fails whenever a few GiB are
+cached.
+
+Managed vLLM installs only on Linux amd64 and arm64. Windows reports that no
+native recipe exists and names the missing WSL2 gate: PAIR does not yet own an
+explicitly selected user-owned distro, its child Engine Manager, path/endpoint
+bridging, or cancellation. Detecting or installing WSL alone therefore does not
+make managed vLLM available. macOS remains unsupported. Serving groups also
+need a non-root Engine Manager on Linux with the systemd system owner, and
+report activation as unavailable otherwise. Hardware acceptance covers Linux
+arm64 (DGX Spark) only; Linux amd64 and WSL are not natively validated.
+
+The Setup card owns the zero-to-review model journey without handling payload
+bytes or credentials. It pulls one immutable public
+`owner/repository@40-character-commit` snapshot on a selected stopped managed
+node, records the model license/notices, prepares the fixed Qwen3.8 runtime
+locally or through the paired remote control plane, and asks each missing target
+to pull receipt-bound 32 MiB chunks directly from the selected source over
+cluster mTLS. Every target reviews capacity, checkpoints exact prefix hashes for
+resume, verifies per-chunk/full-file/final receipt hashes, and promotes through
+the same retained model owner. Progress and cancellation stay bound to one exact
+operation; model paths and bytes never enter the renderer or broker.
+
+For Qwen3.8, Review and Start remain disabled until every selected node reports
+the exact model/runtime and the same qualified provider closure. The UI shows a
+compact fleet matrix for PAIR, Engine Manager, vLLM, provider, and model
+revisions, leaving unavailable peer component revisions explicitly unknown.
+Already enrolled peers can enter the existing typed multi-target PAIR package
+inspection/review/update operation from that matrix. Provider drift links to
+NVIDIA's DGX Dashboard update guide. The renderer never runs package-manager or
+operating-system commands; a DGX OS update remains separate maintenance.
+
+A group is published ready only after the coordinator's broker confirms that
+the local proxy lists the coordinator among the model's inference owners;
+until then the coordinator reports itself as routing so the broker can
+advertise it. A group that the proxy does not route within 60 seconds fails
+and cleans up. The served-model inventory the scanner refreshes every 15
+seconds reads vLLM status without queueing behind lifecycle operations; when
+another status refresh holds the lock it shares that refresh's result instead
+of omitting the served model, which would otherwise withdraw the route for a
+whole refresh interval. Fabric admission requires every participant's managed engines
+to be disabled and idle; a refusal currently surfaces only as a generic
+preparation failure.
+
+The fabric review always requires the read-only administrator inspection when
+it is available, because only that inspection can bind NetworkManager's
+generated default profiles for pause consent. On consented ports, apply
+tolerates NetworkManager replacing its generated DHCP attempts, and pauses the
+attempt that is pending at pause time. Rollback of an applied operation
+re-accepts each node's current SSH candidate only for the host-key fingerprint
+approved for that node in the operation, so it survives the Engine Manager
+restart of a package update. It still needs fresh temporary account access,
+and every participant's installed worker must match the controller's running
+image or a verified PAIR package, so update peers through PAIR after updating
+the controller. Before review, the fabric card asks Engine Manager for a bounded
+projection of fresh node-info physical-port facts for one to three paired nodes.
+It automatically prefers an exact three-node p0/p1 ring, then an exact two-node
+direct pair, renders the expected wiring, and names missing, duplicate, or
+misplaced endpoints/edges. Manual switch and port identities are available only
+under Advanced fallback. The projection carries no routes, addresses, commands,
+credentials, or mutation authority; only the finite cable run proves reciprocal
+peer edges. On mount the fabric card adopts the newest operation whose
+cleanup is unconfirmed from `engine:fabric-retained-operations`, so an applied
+fabric and its rollback stay visible after Desktop restarts or when another
+client applied it.
+
 ## Engine lifecycle
 
 `nvpair-engine-manager` is authoritative for installed, running, healthy, and
@@ -158,6 +357,10 @@ Personal AI Router supports local:
 - engine and proxy port changes;
 - desired-state restoration across app restarts;
 - engine and model progress.
+
+Managed update covers Ollama and LM Studio. llama.cpp has no managed update;
+the bridge refuses `update` for it instead of substituting an uninstall and
+reinstall.
 
 Before shutdown, Personal AI Router calls `engine:prepare-shutdown`. This stops managed engine
 processes without changing the persisted desired state; the broker restores
@@ -209,9 +412,12 @@ Personal AI Router uses:
 - `list_models`;
 - `pull_model`;
 - Ollama `run_model`, `unload_model` (`keep_alive: 0`), and `delete_model`;
-- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`).
+- LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`);
+- llama.cpp `load_model`, `unload_model` (router `/models/load` and
+  `/models/unload`, settled on observed residency), `delete_model`,
+  `pull_model` and `import_model` (managed cache builtin), and `cancel_pull`.
 
-Both engines expose Load, Eject, and Delete in the model manager when the
+All three engines expose Load, Eject, and Delete in the model manager when the
 backend action exists. Keep-alive / expiry controls remain unsupported.
 
 LM Studio's `delete_model` declares `restart_after`, so the engine manager
@@ -277,16 +483,20 @@ completion (clearing the entry and refreshing the model list); a CLI-driven pull
 (LM Studio) emits a single `pulling` marker and degrades to the indeterminate
 spinner.
 
-`engine:models` (and the `em` `GET /v1/models` surface) returns the flat model
-union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of
-models loaded in memory (`loadedByEngine`). The engine-manager watches each
+`engine:models` (and the `em` `GET /v1/models` surface) returns the flat served
+model union, the served per-engine breakdown (`modelsByEngine`), the per-engine
+set loaded in memory (`loadedByEngine`), and a separate downloaded catalog
+(`retainedByEngine`, currently bounded PAIR-owned vLLM receipts). Retained
+entries never join the served union or proxy routing candidates. The engine-manager watches each
 running engine's loaded set and pushes `engine:models-changed`
 (`{ engine, models }`, the full `engine:models` shape) on explicit load/unload,
 LM Studio JIT auto-load, and TTL/idle eviction. Discovery carries
 `loadedByEngine` onto each node's `AvailableNode` so remote cards reflect
-residency too.
+residency too, and carries `retainedByEngine` independently for stopped managed
+model selection.
 
-Personal AI Router consumes both: `parseBrokerNode` records `loadedByEngine` on every node
+Personal AI Router consumes both: `parseBrokerNode` records `loadedByEngine` and
+`retainedByEngine` on every node
 (local via loopback self-enrichment, remote via the peer's enrichment), and
 `applyLocalLoadedModels` (`modular-supervisor.ts` → `modular-state.ts`) applies
 the `engine:models-changed` snapshot to the local node immediately. Model rows
@@ -296,7 +506,9 @@ gates **Eject** to loaded models only (`ModelRow.tsx`). The optimistic
 load/eject pending-action clears on the resulting model patch instead of its
 safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 `sizeVram`/`expiresAt` — the backend delivers the simpler `loadedByEngine`
-name-set, not structured details.
+name-set, not structured details. A stopped managed vLLM drops any stale live
+cache and exposes its retained catalog as downloaded, idle rows to the exact
+model selector; other stopped engines keep an authoritative empty list.
 
 The model hub is intentionally outside the backend: Electron main fetches
 curated catalogs and sends selected pull-ready IDs to the engine manager.

@@ -5,11 +5,16 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-engine-manager
 
-A config-driven control plane for local inference engines (Ollama today;
-Intel/others via a dropped-in manifest). It manages everything about an
-engine **except serving inference**: detect, user-mode install,
-start/stop/restart, health, and config-declared actions. Adding an engine
-is a JSON manifest, not code.
+A config-driven control plane for local inference engines, including Ollama,
+LM Studio, llama.cpp and managed vLLM, plus the narrow typed orchestrator for
+PAIR-managed vLLM serving groups and temporary Spark fabric. It manages
+everything about an engine **except serving inference**: detect, user-mode
+install, start/stop/restart, health, and config-declared actions. Manifests
+describe common operations; engine-specific backend drivers handle ownership or
+lifecycle behavior a command recipe cannot safely express. The explicit
+vLLM/fabric paths add cross-node review, fixed-helper effects, durable cleanup
+custody, and route readiness. The desktop and TUI remain clients of this
+control plane, and inference traffic remains `nvpair-proxy`'s job.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
@@ -42,10 +47,40 @@ Requests (caller → service):
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
+| `engine:vllm-group-review` | `{ selection: { nodeIds, model, parallelism? } }` | Expiring immutable review built from current participant facts |
+| `engine:vllm-group-check` | `{ reviewId }` | Capability result for every participant; no effects or administrator input |
+| `engine:vllm-group-start` | `{ reviewId, elevation? }` | Retained exact-generation run; ready is withheld until the proxy confirms the route |
+| `engine:vllm-group-status` | — | Activation/reservation state and retained run, if any |
+| `engine:vllm-group-stop` | `{ runId, generation }` | Status after ordinary exact-generation stop |
+| `engine:vllm-group-reconcile` | `{ runId, generation, elevation? }` | Status after exact unresolved-rank cleanup reconciliation |
+| `engine:vllm-group-cleanup` | `{ runId, generation, planDigest }` | Cleanup-only reconciliation for the exact retained owner |
+| `engine:vllm-qwen38-prepare` | `{ operationId, cancel? }` | Exact provider-gated 196-artifact runtime preparation result; `cancel:true` targets only the matching active operation, and retry resumes PAIR-owned partials |
+| `engine:vllm-distribute-model` | `{ engine:"vllm", operationId, sourceNode, model, cancel? }` | Exact local-target receive result; target pulls verified chunks from the paired source over the qualified fabric lane when one links them (otherwise the management network) and `cancel:true` removes only the matching checkpoint |
+| `engine:cable-review` / `engine:cable-start` | Exact 2-node direct or 3-node ring selection, then `{ reviewId }` | Reviewed bounded physical-cable check and retained run |
+| `engine:cable-status` / `engine:cable-cancel` | Exact review or run identity | Current cable result or exact-run cancellation/cleanup |
+| `engine:fabric-inventory` | `{ nodeIds }` (1-3 current paired nodes) | Bounded read-only eligible physical-port projection from fresh node-info facts; no routes, addresses, commands, credentials, or mutation authority |
+| `engine:fabric-review` | Cable selection plus optional `inspectSelectedProfiles` | Reviewed temporary address/port plan and blockers |
+| `engine:fabric-approve` | `{ reviewId, administratorApproved, selectedPortPauseApproved }` | Retained apply/qualification operation |
+| `engine:fabric-status` | `{ operationId }` | Current exact operation and cleanup/lease state |
+| `engine:fabric-cancel` / `engine:fabric-recover` | `{ operationId, administratorApproved }` | Exact owned rollback or recovery result |
+| `engine:fabric-retained-operations` | — | Bounded retained fabric inventory for UI reconciliation |
+| `engine:diagnostic-mpi-review` | `{ buildOperationId, memberNodeIds?, network: "management" \| "fabric", dedicatedTestWindow: true }` | Expiring managed NCCL correctness review. `fabric` binds only NCCL Socket to the active fabric this node owns; a missing fabric is refused with code `-32010`, a stale, ambiguous or unrouted one with `-32011` |
+| `engine:onboarding-history` | — | Read-only retained setup history: reconciled counts plus per-operation `history-only`, `current`, or `invalid` classification. Every row reports `mutation_allowed:false`; history-only records do not block discovery, while malformed or nonterminal records remain fail-closed. This method cannot create, retry, approve, cancel, clean up, or bind access to an onboarding operation. |
+| `engine:onboarding-bootstrap-catalog` | — | Strict six-target bootstrap artifact/signature catalog |
+| `engine:onboarding-bootstrap-controller-keys` | — | Canonical controller public-key identities from the OS agent and configured `.pub` files |
+| `engine:onboarding-bootstrap-inspect` | `{ candidateId, accessId, hostKeySha256, request }` | Target-produced `hostbootstrap.Status` in `inspect` |
+| `engine:onboarding-bootstrap-review` | same request envelope | Deterministic `hostbootstrap.Plan` derived from a fresh target inspection |
+| `engine:onboarding-bootstrap-apply` | `{ candidateId, accessId, hostKeySha256, plan }` | Target-produced apply/verify status for the exact reviewed plan |
+| `engine:onboarding-bootstrap-status` | target reference plus `{ operationId }` | Current target-produced operation status |
+| `engine:onboarding-bootstrap-recover` | target reference plus `{ operationId }` | Recovery status after the target resumes its journal |
+| `engine:onboarding-bootstrap-verify` | target reference plus reviewed `{ plan }` | Target-produced complete receipt |
+| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, retainedByEngine: { <engine>: [string] } }` — `models` and `modelsByEngine` are served/routing truth from running engines; `loadedByEngine` is current memory residency. `retainedByEngine` is a separate downloaded catalog (currently PAIR-owned vLLM receipts) and never makes a model routable. Each map preserves present-empty versus missing/unknown. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
+| `engine:remote-cancel-pull` | `{ node, engine:"vllm", model, operationId }` | `{ accepted }` from the exact remote acquisition owner |
+| `engine:remote-vllm-qwen38-prepare` | `{ node, operationId, cancel? }` | Typed Qwen3.8 preparation result from the pinned peer; live progress uses `engine:remote-progress` |
+| `engine:remote-distribute-model` | `{ node, engine:"vllm", operationId, sourceNode, model, cancel? }` | Exact remote-target receive result; the controller passes the target the source's fabric lane when one links them and holds that fabric until the copy ends; live progress uses `engine:remote-progress` with `network` |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
@@ -58,9 +93,9 @@ Notifications (service → caller): `engine:ready{version}`,
 `engine:models-changed{engine, models}` — pushed when an engine's set of
 loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
-`loadedByEngine`) so a consumer swaps its whole snapshot,
+`loadedByEngine` and `retainedByEngine`) so a consumer swaps its whole snapshot,
 `engine:install-progress{engine, stage, percent}`,
-`engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
+`engine:pull-progress{engine, op, stage, percent, message, operationId?}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
 stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
@@ -79,6 +114,29 @@ relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
 progress frame up as `engine:remote-progress`, and settles the request with the
 terminal result. They fail if this node isn't clustered or the target isn't a
 pinned cluster peer. See "Remote engine management" below.
+
+PAIR-managed vLLM also owns public Hugging Face model acquisition. A pull must
+name one immutable `owner/repository@40-character-commit`; mutable branches,
+URLs, gated repositories, and implicit Hub credentials are refused. Engine
+Manager resolves the exact public metadata and declared license, reviews
+account-available storage with a 32 GiB post-operation reserve, downloads into
+one same-filesystem resumable stage, verifies every selected file against its
+LFS SHA-256 or Git blob identity, and atomically promotes `pair-model.json`.
+Cancel requires the exact `operationId` emitted with progress and preserves the
+partial stage for a same-model retry. These retained receipts feed
+`list_downloaded` / `retainedByEngine`; they do not make a stopped model
+routable. Local acquisition and notice retention do not grant redistribution
+rights; the operator remains bound by the model's terms.
+
+Model reuse between paired nodes uses the `ec` mTLS surface end to end. The
+target fetches a receipt-bound export plan and bounded 32 MiB chunks directly
+from the selected source, verifies every chunk and full-file digest, journals a
+durable prefix hash for exact resume, repeats the target capacity review, and
+atomically promotes the same `pair-model.json`. The controller and renderer see
+only identities, progress, errors, and the final bounded receipt—never model
+payloads, credentials, or host paths. A deterministic source/target/model
+operation identity lets the UI resume or explicitly cancel/clean the same
+checkpoint after restart.
 
 `engine:install`, `engine:start`, `engine:stop`, `engine:restart`,
 `engine:set-port`, and `engine:action` run in their own goroutine on the
@@ -128,11 +186,40 @@ unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
-reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+reports the failed start. Stop sends one graceful stop signal (SIGTERM to the
+process group on Unix; `taskkill /T /F` on Windows, where the windowless engines
+we spawn can't receive a graceful close) and waits for the engine to exit; if
+the engine, or a model child it spawned, is still alive fifteen seconds later
+the whole process group is force-killed, so a stop is complete only when
+nothing PAIR started is left running.
+
+### Managed install/uninstall contract
+
+This is the required recipe standard shared by Ollama, LM Studio and llama.cpp.
+It defines acceptance requirements, not a blanket certification of legacy
+recipes. Each engine must provide evidence for its actual platform and layout.
+
+| Operation or boundary | Required behavior |
+| --- | --- |
+| Install | Put the managed runtime in a PAIR-owned location using the supported vendor path. Do not overwrite a detected external installation or take ownership of its data. |
+| Detection/adoption | Finding an executable or serving endpoint does not grant uninstall authority. Keep existing engine-specific detection, start/stop and port behavior; prove ownership separately before removal. |
+| Uninstall | Stop the correct managed instance, then remove only its owned runtime. Refuse removal of external, shared or legacy installations when ownership cannot be established, including command-mode engines. |
+| Retention | Keep normal separate model libraries, settings and user data. Runtime removal is not profile reset or model cleanup. Persisting the user's Off intent is allowed; erasing their configuration is not. |
+| Reinstall | Reuse retained data without requiring models to be downloaded again. A vendor cache is not disposable merely because the runtime was removed. |
+| Failure | Return an actionable error and the observed state. A successful command exit alone does not prove runtime removal or data preservation. |
+
+Parity here is **install/uninstall ownership and retention**. It does not add a
+new detach interface, job-drain mechanism, profile-reset/model-cleanup feature,
+API-first rewrite or generic updater redesign. Update behavior remains
+engine-specific: Ollama and LM Studio keep their existing update paths, and
+managed llama has no update action. Uninstall-then-install is not a substitute
+for one and must not be wired up as such for superficial similarity.
+
+Minimum recipe evidence: managed install/detection, bounded start/stop, runtime
+removal with model/settings retention, reinstall using retained data, and
+external/shared-install refusal. A manifest or mock alone does not establish
+native vendor-package behavior. For llama, only `runtime` and `previous` are
+removable installation slots; model/cache and settings paths remain separate.
 
 ### Adoption — start may attach to an engine it didn't launch
 
@@ -228,6 +315,134 @@ directory so the peer directory stays current. It does **not** restart
 engine-manager on `cluster:identity-changed` — the surface follows membership on
 its own.
 
+## Managed vLLM serving groups and temporary fabric
+
+These are typed product workflows, not generic manifest actions. A group review
+selects two or three paired Linux nodes, one exact retained model, and optional
+`tensor` or `pipeline` parallelism. Engine Manager re-reads each participant's
+model, runtime, GPU, pin, network, and current fabric facts, then returns an
+expiring immutable plan. `check` is effect-free. `start` consumes the review,
+binds every rank to the run ID, generation, plan digest, and rank number, and
+retains the group until every attempted rank has cleanup proof. A lost Start
+reply is reconciled from `status`; callers must not resend it blindly.
+
+The ordinary two-node tensor path requires an active qualified direct fabric.
+Its `qualified-direct-socket` plan uses NCCL Socket on the reviewed QSFP
+Ethernet lane while rendezvous, Gloo, control, and SSH stay on the management
+network; RDMA is disabled. Two-node pipeline mode uses the management network.
+
+Three ordinary nodes default to PP3. When one active routed ring joins exactly
+the selected nodes and requalifies, PP3 and explicit TP3 bind the
+`qualified-ring-socket` plan: each rank's NCCL Socket uses the p0 interface that
+carries its advertised ring address, and its unit admits only the six ring
+addresses beyond management. Rendezvous, `VLLM_HOST_IP`, Gloo, control, and SSH
+stay on the management network, and RDMA is disabled. Explicit TP3 also needs a
+model whose heads, linear dimensions, and padded vocabulary divide three ways; a
+model that cannot is refused for that reason before the ring is consulted.
+With no fabric involving the selected nodes, PP3 uses the management network
+and TP3 is refused. Any other fabric state involving them, such as a stale,
+ambiguous, or unrouted ring or a direct fabric joining two of them, refuses
+review in every mode. Both socket plans require the managed vLLM runtime. The
+separate fixed Qwen3.8 profile may admit its reviewed `host-buffer-roce`
+contract, but an active fabric alone never makes an ordinary group use RDMA.
+
+Fabric follows review → approve/apply → active → cancel/rollback, with explicit
+status and recovery. Records retain the exact targets, temporary addresses,
+qualification, ownership, and cleanup state across restart. A serving group
+that adopts an active fabric takes an exact consumer lease; fabric rollback is
+refused until that group generation is clean. "Active" proves the reviewed
+temporary configuration and qualification only—not RDMA payload, NCCL,
+bandwidth, or inference.
+
+The managed NCCL correctness smoke reviews two or three adopted nodes with
+`network` `management` or `fabric`. A fabric review freshly requalifies the one
+active fabric this Engine Manager owns that joins exactly those nodes and binds
+each rank's `NCCL_SOCKET_IFNAME` to the same end a serving group would use: its
+end of the lowest-index reciprocal lane of a direct fabric, or its advertised
+p0 address on the routed ring. OpenMPI launch, its OOB/BTL subnet, SSH, and the
+rendezvous stay on management. The plan digests the fabric operation ID and
+qualification digest. The coordinator asks this owner to revalidate that
+operation, qualification, and endpoints when the review is approved and again
+after every participant prepares, and each rank rechecks its interface's
+index, MAC, and sole IPv4 address. A missing fabric refuses the review rather
+than falling back to management; a stale, ambiguous, or unrouted one fails
+closed. The run takes no consumer lease: every member's MPI admission refuses
+fabric rollback reservations while the run holds it, and a fabric that changes
+anyway fails the run.
+
+A three-node ring uses the `spark-three-node-ring-routed-v2` recipe. Each member
+advertises its p0 `/31` address, and its p0 profile carries one `/32` host
+route to the peer on that cable, via that peer's cable address, so every member
+reaches every advertised address over the cable the two share. Qualification
+adds a routed proof per member: the kernel must choose that gateway, interface,
+and source, and a certificate-pinned identity read at the advertised address
+must succeed. Retained records of the earlier unrouted ring recipe stay
+inspectable, requalifiable, and exactly reversible, but reviews no longer offer
+it.
+
+Engine Manager itself stays unprivileged. Start and unresolved-rank reconcile
+may carry one-use administrator choices for the exact reviewed participants;
+those bytes are passed only to the fixed participant helper, cleared on every
+completion path, and never retained in the group or fabric journals.
+
+Runtime preparation installs the Python 3.12 development headers vLLM needs on
+a Linux arm64 target from three Ubuntu packages embedded in
+`diagnostic_python_archives_data.go`, so the target needs no archive access.
+Their Debian copyright files and notice manifest live in `third_party/ubuntu/`.
+Change them together with the archives, then run
+`npm --prefix desktop run licenses`.
+
+## Target-local device bootstrap
+
+Engine-manager is the controller-side relay, not the privileged executor. The
+target runs `nvpair-host-bootstrap`; the installed `nvpair-host-helper` exposes
+only fixed local actions. Electron and the broker supervise neither binary.
+
+The contract accepts Quick Connect and Zero Touch and exactly six ordered target
+combinations: Windows, macOS, and Linux on amd64 and arm64. The target-local
+Linux adapter then admits Debian and Ubuntu only. Auto resolves to Desktop on
+Windows/macOS and Headless on Linux; explicit Desktop or Headless requests must
+resolve to that same owner.
+
+Each call is bound to the current candidate ID, volatile access ID, reviewed SSH
+host-key fingerprint, target account and endpoint, controller public key, target
+role/owner, and catalog artifact identities. `validateBootstrapBinding` reloads
+the packaged catalog and rejects a missing target, mismatched helper/product, or
+unavailable owner.
+
+The relay never sends observations, a plan, or a receipt to the local helper.
+It sends only a bounded `HelperRequest` containing the operation ID and one of
+`inspect`, `apply`, or `verify`; status/recovery reuses those fixed actions. The
+helper loads the target-local request and reviewed plan, invokes the fixed
+bootstrap path, and returns target-produced typed state. Review derives its plan
+from a fresh helper inspection. Apply and verify reject a response whose
+operation, binding, or decision differs.
+
+The target transaction is inspect → review → apply → verify → complete. A no-op
+plan skips mutation; foreign ownership is refused. Recovery resumes the target
+journal. Receipt-authorized repair is limited to resources with matching
+ownership markers. Target-local uninstall is intentionally not a controller
+RPC: it requires the original request and immutable receipt and removes only
+proven-owned resources.
+
+Controller key discovery reads agent public keys and public files, including
+configured `IdentityFile` paths after adding `.pub`; it does not read the
+corresponding private-key file. Ordinary SSH access may transiently use a
+password, passphrase, elevation password, key path, or provider-backed signer.
+Those values remain in memory, expire, and are cleared on service shutdown; they
+are not written into bootstrap state or history. The durable bootstrap identity
+is public-key-only.
+
+Completing bootstrap does not trust SSH. Access authorization observes the
+current host key, blocks keys rejected by existing trust, and requires explicit
+approval of the exact fingerprint before authentication.
+
+The packaged catalog distinguishes `official-release` from `engineering`.
+Official metadata must be complete and consistently signed, with detached
+release material and macOS notarization where required. Missing catalog,
+checksum, or declared signature material fails closed. Unsigned engineering
+artifacts remain non-official.
+
 ## CLI flags
 
 | Flag | Default | Description |
@@ -247,7 +462,9 @@ reserved for JSON-RPC frames in stdio mode.
 ## Logging & errors
 
 Each managed engine's stdout/stderr is captured into a bounded ring
-(queryable via `engine:logs`). Operational failures (install/start/health)
+(queryable via `engine:logs`). The newest snapshot is capped at 2,000 lines,
+256 KiB per input line, and 1 MiB of aggregate UTF-8 child-output text; a line
+that cannot fit by itself is omitted. Operational failures (install/start/health)
 are recorded and surfaced as `errors:report` / `errors:clear`
 notifications using the `nvpair-shared/errors` wire shape. The broker
 (`nvpair-ui-broker`) forwards them to the `nvpair-errors` registry.
@@ -255,8 +472,9 @@ Ids follow `engine-manager:<class>:<engine>`.
 
 ## Security posture
 
-Runs **user mode only** — no admin/sudo at runtime (privilege escalation
-is reserved for NVPAIR's own install time). It has two optional LAN listeners, and
+Runs **user mode only** — no admin/sudo inside engine-manager at runtime.
+Target bootstrap privilege is isolated in the signed target package and fixed
+local helper. Engine-manager has two optional LAN listeners, and
 **both are pin-based cluster mutual TLS with a live membership check** — every
 caller is authorized against a per-peer pin, a non-member is refused with a `403`,
 and while this node belongs to no cluster it presents no leaf so no handshake
@@ -289,8 +507,245 @@ Per-OS variance lives in the manifest first; OS primitives (process
 termination, console hiding) are the only build-tagged Go
 (`proc_windows.go` / `proc_unix.go`).
 
+Managed vLLM is narrower than the Engine Manager binary: its owned installer
+and runtime recipe exists only for Linux amd64 and arm64. Windows and macOS
+still receive a typed unavailable status. Windows names WSL2 plus an explicitly
+selected user-owned Linux distribution as prerequisites, while also stating
+that this build has no owned WSL child route; it never enables WSL or guesses a
+default distribution.
+
 ## Shutdown
 
 Shuts down on stdin EOF (parent closed the pipe), `SIGINT`/`SIGTERM`, or a
 `shutdown` JSON-RPC request — stopping any running engines first so none
 are orphaned.
+
+## Managed llama app
+
+On Windows x64, the qualified b10826 / 73a43d1f6 Vulkan runtime automatically
+receives a B580 compatibility profile before a managed start when
+`llama cli --list-devices` actually enumerates Intel Arc B580. Automatic device
+selection and explicit device lists containing that B580 receive the profile;
+explicit CPU (including zero GPU layers), CUDA, or other Vulkan device selections retain their options.
+PAIR checks the existing managed install receipt, pinned installer identity,
+and exact qualified executable SHA-256 before enumeration. Unknown or adopted
+runtimes do not receive defaults. Windows on ARM with CUDA, Apple Silicon,
+other engines, and other Vulkan devices do not acquire this profile.
+
+The process-local defaults are `GGML_VK_DISABLE_COOPMAT=1`,
+`GGML_VK_DISABLE_COOPMAT2=1`, `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1`,
+`GGML_VK_DISABLE_F16=1`, `GGML_VK_DISABLE_BFLOAT16=1`, and
+`LLAMA_ARG_FLASH_ATTN=off`. No ASYNC override is added. These defaults also
+reach model-serving children of `llama serve`. They apply to fresh and older
+managed installations on their next start after a PAIR upgrade; no reinstall,
+model change, or receipt rewrite is needed. Install on an already-installed
+runtime stays a no-op, and saved Off stays Off. No global environment, registry, driver,
+upstream source, or safety/bounds check is changed.
+
+Existing runtime environment options override inherited environment options;
+explicit CLI options take precedence where the vendor supports them. Compatible
+explicit values are preserved. A conflicting flash-attention value, ambiguous
+Windows spelling of a value-bearing option, or a per-model preset that could override flash attention stops Start
+with an actionable retry error. Remove or correct the named override in the
+per-user engine manifest or inherited environment before retrying. Disable
+variables use presence semantics: any existing value, including empty or `0`,
+already disables that feature and is preserved. Missing disables receive `1`.
+The vendor's equivalent flash-attention-off values (`off`, `disabled`, `false`,
+and `0`) are accepted without rewriting the user's option.
+The profile ID `b10826-73a43d1f6-windows-vulkan-b580` and its effective options
+appear in the existing manager and engine logs without inference content.
+
+This is a bounded compatibility workaround based on repeated correct requests,
+not a uniquely isolated root cause, globally minimal option set, or broad
+numerical guarantee. Options affect the whole serving process, including other
+Vulkan adapters used together with B580. Maintainers must requalify or remove
+the profile when changing vendor identity; `llamacompat.go` pins the qualified
+executable so an unrelated future build cannot silently inherit the workaround.
+Automatic mixed-device inference still requires native runtime validation.
+
+`llamacpp` installs the official llama app. Windows x64, Linux and Apple Silicon
+use the checksum-pinned installer from ggml-org/llama-install.sh commit
+`27a82f3a6e0f259f88c2c31cd6b20d858a975f27`. Pins refer to raw repository
+bytes, before Windows checkout line-ending conversion. Their supported runtime
+is `b10826`. Install reports an already-installed managed runtime as
+`already-installed` and changes nothing; there is no update action that moves an
+older managed runtime to a newer build, and uninstall-then-install is not run as
+a substitute for one.
+
+NVIDIA Windows ARM64 Install stages the two checksum-pinned b10826 CUDA 13.4
+archives declared in `install.archives` directly and requires the CUDA device
+check below before promotion. The official installer's CUDA path needs a CUDA
+Toolkit on the host; without one it produced a CPU build that failed the check
+and fell back to these same archives after a wasted attempt, so that attempt is
+no longer the default. Setting `install.upstream_first` (restricted to this
+platform and driver, with the two pinned archives as fallback) opts back into
+trying the current official `ggml-org/llama-install.sh` PowerShell installer
+first: the fixed official version endpoint resolves one numeric build, which is
+passed to the installer; the whole attempt, including validation, is limited to
+three minutes; the version response is limited to 64 bytes and the script to
+1 MiB; builds older than the qualified fallback are refused; the installer gets
+CUDA enabled and Vulkan skipped.
+
+Before promotion, PAIR checks the exact selected build, nonempty vendor licenses,
+and an actual `CUDA0:` (or other numbered CUDA device) row from
+`llama cli --list-devices`. This check starts no server and loads no model.
+If acquisition, the installer, or validation fails or times out, PAIR uses the
+tested b10826 app ZIP plus CUDA 13.4 runtime ZIP declared in `install.archives`,
+in a separate clean stage. Parent cancellation stops the operation without
+starting a fallback. CUDA on this platform is an upstream preview and requires
+a compatible NVIDIA driver; PAIR installs no driver or toolkit.
+
+Each fallback archive is verified before bounded extraction into its owned stage.
+Unsafe paths, nonregular entries and file collisions are refused. Both bundles
+move together through the existing validation, promotion, rollback and runtime-only
+removal flow. Whichever source succeeds is what Install promotes; an installed
+managed runtime is never re-fetched or replaced by a later Install request.
+
+`runtime/pair-install.json` records the actual source, selected build, executable
+hash, CUDA validation, and any fallback reason/attempt metadata. The latest
+installer is pinned to an upstream commit and **verified against a prequalified
+SHA-256 before it is executed**, because it is a script PAIR runs rather than an
+artifact it only unpacks; an upstream change fails the download and the pinned
+CUDA archives take over. The build installed is still whatever the version
+endpoint resolves to, so pinning the installer does not pin the engine. The
+fallback retains its verified archive pins and recipe identity. Maintainers update those pins together
+and repeat platform/failure/retention checks when changing the fallback. Acquired
+runtime provenance and vendor license output remain with the managed installation;
+normal release signing/notarization belongs to CI/CD, not a local bypass.
+Security reports follow the repository's `SECURITY.md` process.
+
+Windows ARM policy is selected inside the install transaction from successful
+native CPU and PNP inventory. NVIDIA CPU/hardware identity or a retained verified
+CUDA receipt keeps the CUDA-required path above, including with an unbound or
+broken driver. Failed/incomplete inventory never selects CPU. Confirmed
+non-NVIDIA ARM uses `install.cpu_fetch`: the pinned b10826 official PowerShell
+installer with CUDA/Vulkan probes explicitly skipped. Its receipt records
+`source: official-pinned-cpu`, `acceleration_policy: cpu`, installer/binary hashes
+and `cuda_device_verified: false`.
+
+Intel macOS uses the checksum-pinned official b10826 x64 CPU unified-app tar
+archive. `install.archive_root` selects its fixed `llama-b10826` prefix. Bounded
+extraction rejects escaping/duplicate paths, hardlinks and special files;
+contained versioned dylib links become regular files, never filesystem symlinks.
+The existing version/license, candidate promotion/rollback and persistent model
+cache lifecycle apply. This artifact requires macOS 13.3 or newer and does not
+provide Radeon acceleration.
+
+On Windows x64 the official installer selects its CUDA build only when the CUDA
+Toolkit is installed; with just the NVIDIA driver it selects Vulkan. Install
+therefore reads one compute capability per GPU from `nvidia-smi` first. When
+every NVIDIA GPU reports 7.5 (Turing) or newer, PAIR stages the checksum-pinned
+b10826 CUDA 13.3 app ZIP plus CUDA runtime ZIP declared in
+`install.cuda_archives`, which need no toolkit, and requires the same `CUDA0:`
+device check before promotion. No NVIDIA GPU, an older or unreadable one, an
+unavailable archive or a failed device check runs the pinned installer below in
+a separate stage instead, and its receipt records the reason as
+`cuda_not_used`. Parent cancellation never starts that installer. A CUDA receipt
+records `source: pinned-cuda-archives`, `acceleration_policy: cuda`, the archive
+recipe and the reported compute capabilities.
+
+Linux applies the same gate with the same pinned installer. When every NVIDIA
+GPU reports 7.5 or newer, Install runs the installer restricted to its CUDA
+payload (`SKIP_VULKAN=1 SKIP_ROCM=1`; the script has no CPU skip, so a CPU
+landing is rejected by the device check) in a private stage, requires the `CUDA0:`
+device check before promotion, and retries the transfer once, because the
+unrestricted installer falls through to Vulkan or CPU without saying so when
+the CUDA payload download fails or no CUDA build exists for the GPU (Jetson
+Thor at b10826). If both attempts fail, the unrestricted installer runs in a
+separate stage and the receipt records the reason as `cuda_not_used`. A CUDA
+receipt records `source: official-installer-cuda`, `acceleration_policy: cuda`
+and the reported compute capabilities.
+
+Every install path records the accelerator the promoted runtime actually has:
+`pair-install.json` carries `acceleration_policy` (`cuda`, `vulkan`, `metal`,
+`cpu`, ...) and `devices`, the rows `llama cli --list-devices` printed, and
+`engine:status` exposes them as `acceleration` and `devices` for a managed
+runtime so a Vulkan or CPU landing is visible rather than silent. The Windows
+x64 installer path and Apple Silicon retain the vendor's accelerator selection.
+Selection is not automatic recovery from a GPU hang or incorrect model answer.
+`install_supported` and `install_reason` describe recipe availability and
+selection requirements, not proof of a GPU or a particular model. Native
+validation verifies the actual host.
+
+Downloads and the vendor installer are bounded by lack of progress rather than
+a fixed budget: an install or model pull fails when nothing has been transferred
+for ten minutes (or after six hours in total), with that reason in the error,
+instead of failing a slow but live link at thirty minutes. Progress is anything
+observable: the installer's staging tree or the model cache growing, bytes the
+vendor downloader writes to stderr, and on Windows the child's own I/O counters
+(PowerShell buffers each download in memory, so nothing on disk grows until a
+payload is complete). Each signal also emits a progress heartbeat.
+
+The per-user `engine-bin/llamacpp` directory contains `runtime` and `previous`.
+Models live outside removable application data, in the sibling
+`Nvidia Corporation/Personal AI Router Models/llamacpp` directory under the
+platform configuration base: LocalAppData on Windows, XDG_CONFIG_HOME (or
+`~/.config`) on Linux, and `~/Library/Application Support` on macOS.
+An old `engine-bin/llamacpp/models` cache is atomically migrated before use.
+Migration refuses existing-destination collisions, redirected/absolute/external
+links, and a live configured listener; it never merges or overwrites caches.
+Reset/uninstall preserve an unmigrated cache rather than deleting it.
+Script installer subprocesses receive a fresh private home,
+`SKIP_INSTALL=1`, and the selected vendor build, so user-global llama binaries and
+PATH are untouched. Version and bundled license output are checked before
+promotion; `runtime/pair-install.json` records installer and executable identity.
+On Windows script attempts, the acquired official installer runs
+with a process-scoped PowerShell execution-policy override; no saved execution
+policy is changed. The Windows ARM64 fallback stage extracts archives without
+executing another installer script.
+Install stages and verifies the candidate before promoting it: promotion moves
+any existing `runtime` slot to `previous` and the candidate into `runtime` with
+two renames. If the manager exits between those renames, the next manager
+restores the retained runtime when the current slot is absent. Saved Off
+remains Off. Uninstall removes
+the two runtime slots while retaining models and failed diagnostic stages.
+Redirected managed directories are refused rather than mutating external data.
+The first headless mutation detects the installed runtime and reconciles listener
+ownership itself; it does not require a preceding status request or UI poll.
+
+The foreground `llama serve` process binds loopback, uses the same `LLAMA_CACHE`
+and `HF_HUB_CACHE` as downloads, and runs with `--models-autoload`: a cached
+model loads on the first request that names it, and the router keeps up to four
+models resident (vendor `--models-max` default), evicting idle ones. Cached,
+unloaded, loading, and loaded are separate states. Readiness checks the llama.cpp
+server identity and router model-list shape. An externally started instance can
+be inspected but cannot be mutated; `managed` is false for an adopted listener.
+On Windows, both subprocess paths use the standard extended-length cache path
+form to support long Hugging Face filenames without changing OS settings.
+
+Launch settings follow the shared editable-launch contract: the fixed startup arguments are `serve --models-autoload`, the reviewed networking controls are `--port` ({server.port}) and `--host` ({server.host}, loopback only), no CORS switch is declared, and the owned model cache environment (`LLAMA_CACHE`, `HF_HUB_CACHE`) is injected on every launch rather than edited; the settings preview rejects assignments to those two names.
+
+These actions use the existing `engine:action` request with `engine: "llamacpp"`:
+
+| Action | Parameters and result |
+| --- | --- |
+| `list_models` | Current router `/models` response; `data[].id`, nested `status.value` |
+| `loaded_models` | Same response; residency extraction keeps only `status.value == loaded` |
+| `list_downloaded` | Managed cache IDs as `data[].id`; works while stopped or after uninstall |
+| `pull_model` | `{model: "owner/repository:TAG", file?: "file.gguf"}`; official CLI download |
+| `import_model` | `{path: "/absolute/model-Q4_K_M.gguf"}`; copies a single GGUF into managed cache |
+| `load_model`, `unload_model`, `delete_model` | `{model: "exact ID from inventory"}` |
+| `cancel_pull` | `{model: "same requested model"}`; acknowledges the cancellation request |
+| `get_version` | Vendor version string |
+
+There is no `update` action for `llamacpp`; a request for one is refused rather
+than translated into uninstall followed by install.
+
+Import preserves the source file and requires a single primary GGUF with a
+quantization suffix; split-file and auxiliary-only imports are refused. Pulls
+require returned owned GGUF files with a supported header and model tensors;
+preset/configuration-only results are explicitly unsupported even if the vendor
+downloader exits successfully. This format check is not full tensor validation.
+Downloads run as cancellable owned CLI processes. Their progress is indeterminate until
+completion because vendor CLI output does not provide a reliable percentage.
+Terminal completion/cancellation is distinct from a cancellation request.
+Load/unload responses wait for observed vendor state instead of treating the
+vendor's asynchronous acceptance response as completed work; failed loads surface
+their exit status and waiting honors cancellation.
+Downloads/imports/deletes refresh the router catalogue; deletion unloads an
+observed loaded model first and removes only matching cache artifacts.
+
+Paired control adds `engine:remote-cancel-pull {node, engine, model}` through
+the existing pinned-mTLS boundary at `POST /v1/models/cancel-pull`. Mixed-version
+peers that lack that route return an explicit error. This layer does not claim
+vendor acknowledgement of an inference cancellation or aggregate GPU memory.

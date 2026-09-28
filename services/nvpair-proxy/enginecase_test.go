@@ -21,6 +21,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"nvpair-shared/noderec"
 )
 
 type engineCase struct {
@@ -91,6 +93,43 @@ func lmstudioCase(t *testing.T) engineCase {
 	}
 }
 
+func llamacppCase(t *testing.T) engineCase {
+	t.Helper()
+	p, ok := profileFor("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp profile missing")
+	}
+	return engineCase{
+		profile:       p,
+		inferencePath: "/v1/chat/completions",
+		// llama-server's own status surface, unlisted in Routes and so
+		// forwarded verbatim.
+		nonInferencePath: "/props",
+		modelListPath:    "/v1/models",
+		emptyModelList:   `{"object":"list","data":[]}`,
+		advertisedModel:  "qwen3-8b-gguf",
+		requestedModel:   "qwen3-8b-gguf",
+	}
+}
+
+// advertiseEngine records model on a discovery record as belonging to engine
+// p, in the per-engine catalog every facade's eligibility reads.
+//
+// Bodies use this instead of assigning Models or ModelsByEngine directly so a
+// shared fixture means "this node can serve model" for every engine.
+func advertiseEngine(n *noderec.DirectoryNode, p engineProfile, model string) {
+	if n.ModelsByEngine == nil {
+		n.ModelsByEngine = map[string][]string{}
+	}
+	n.ModelsByEngine[p.Name] = append(n.ModelsByEngine[p.Name], model)
+	n.Models = append(n.Models, model)
+}
+
+// advertise is advertiseEngine for the engine under test.
+func (tc engineCase) advertise(n *noderec.DirectoryNode, model string) {
+	advertiseEngine(n, tc.profile, model)
+}
+
 // inferenceBody is the request body a client sends for requestedModel. It is
 // the one shape both dialects share: a top-level "model" field, which is all
 // bufferBodyAndModel reads.
@@ -108,7 +147,7 @@ func (tc engineCase) inferenceRequest() *http.Request {
 // under this is asserting behavior both proxies must share.
 func engineCases(t *testing.T) []engineCase {
 	t.Helper()
-	return []engineCase{ollamaCase(t), lmstudioCase(t)}
+	return []engineCase{ollamaCase(t), lmstudioCase(t), llamacppCase(t)}
 }
 
 // forEachEngine runs body as a subtest per engine.

@@ -34,12 +34,20 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 	if err := e.reservedPortError(port); err != nil {
 		return EngineStatus{}, err
 	}
+	if err := e.rejectVLLMGroupMutation(engine, "change port for"); err != nil {
+		return EngineStatus{}, err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return EngineStatus{}, err
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
+	ctx, finish, err := e.beginVLLMMutation(ctx, st)
+	if err != nil {
+		return EngineStatus{}, err
+	}
+	defer finish()
 
 	st.mu.Lock()
 	wasRunning := st.running

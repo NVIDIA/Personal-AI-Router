@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { mkdir, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 interface CssAsset {
     name: string
     url: string
     outputPath: string
+    sha256: string
 }
 
 const version = '1.0.0'
@@ -16,12 +18,14 @@ const assets: CssAsset[] = [
     {
         name: 'base-external.css',
         url: `https://webassets.nvidia.com/kaizen-ui-foundations/${version}/base-external.css`,
-        outputPath: join(outputDir, 'base-external.css')
+        outputPath: join(outputDir, 'base-external.css'),
+        sha256: '1f4fa957599713e4493c96d1c15469a9c306e68b3a140a1aae1bdf82b0134de9'
     },
     {
         name: 'components.css',
         url: `https://webassets.nvidia.com/kaizen-ui-foundations/${version}/components.css`,
-        outputPath: join(outputDir, 'components.css')
+        outputPath: join(outputDir, 'components.css'),
+        sha256: '0bab509b2c3cb14c0dc3d246fc52245a78bd4637daadc0de31d4adb8e4f32fb2'
     }
 ]
 
@@ -73,6 +77,13 @@ async function fetchText(asset: CssAsset): Promise<string> {
 async function vendorAsset(asset: CssAsset): Promise<void> {
     const css = await fetchText(asset)
     const offlineCss = ensureOfflineCss(css, asset.name)
+    const digest = createHash('sha256').update(offlineCss).digest('hex')
+    if (digest !== asset.sha256) {
+        throw new Error(
+            `${asset.name} content changed for Kaizen UI Foundations ${version}: ` +
+                `got ${digest}, expected ${asset.sha256}. Review and update the committed asset and pin together.`
+        )
+    }
     await writeFile(asset.outputPath, offlineCss, 'utf8')
     console.log(`Vendored ${asset.name} (${offlineCss.length} bytes)`)
 }

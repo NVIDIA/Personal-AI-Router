@@ -38,8 +38,10 @@ const controlEnginesPath = "/v1/engines"
 
 // controlServer holds the dependencies the ec handlers share.
 type controlServer struct {
-	exec *Executor
-	mesh *clustertrust.Mesh
+	exec       *Executor
+	mesh       *clustertrust.Mesh
+	manager    *Manager
+	cableLocal *cableLocalFacts
 }
 
 // requirePin gates a handler on cluster-peer mTLS, sharing the one gate the
@@ -62,12 +64,32 @@ func (s *controlServer) mux() *http.ServeMux {
 	s.settingsRoutes(mux)
 	mux.HandleFunc(controlEnginesPath, s.requirePin(s.handleEngines))
 	mux.HandleFunc(controlInstallPath, s.requirePin(s.handleInstall))
+	mux.HandleFunc(controlUpdatePath, s.requirePin(s.handleUpdate))
+	mux.HandleFunc(controlQwen38PreparePath, s.requirePin(s.handleQwen38Prepare))
 	mux.HandleFunc(controlPullPath, s.requirePin(s.handlePull))
+	mux.HandleFunc(controlVLLMExportPlanPath, s.requirePin(s.handleVLLMExportPlan))
+	mux.HandleFunc(controlVLLMExportChunkPath, s.requirePin(s.handleVLLMExportChunk))
+	mux.HandleFunc(controlVLLMReceivePath, s.requirePin(s.handleVLLMReceive))
 	mux.HandleFunc(controlLoadPath, s.requirePin(s.handleLoad))
 	mux.HandleFunc(controlUnloadPath, s.requirePin(s.handleUnload))
 	mux.HandleFunc(controlDeletePath, s.requirePin(s.handleDelete))
+	mux.HandleFunc(controlCancelPullPath, s.requirePin(s.handleCancelPull))
 	mux.HandleFunc(controlStartPath, s.requirePin(s.handleStart))
 	mux.HandleFunc(controlStopPath, s.requirePin(s.handleStop))
+	if s.manager != nil && s.manager.exec != nil && s.manager.exec.groupPeer != nil {
+		mux.HandleFunc(vllmGroupPeerPath, s.requirePin(s.manager.exec.groupPeer.serveHTTP))
+		mux.HandleFunc(vllmGroupFactsPath, s.requirePin(s.manager.exec.groupPeer.serveFacts))
+	}
+	if s.exec != nil && s.exec.diagnostics != nil {
+		mux.HandleFunc(diagnosticControlPath, s.requirePin(s.handleDiagnostic))
+	}
+	if s.manager != nil && s.manager.exec != nil && s.manager.exec.fabric != nil {
+		mux.HandleFunc(fabricControlPath, s.requirePin(s.handleFabricControl))
+	}
+	if s.cableLocal != nil {
+		mux.HandleFunc(controlCablePortsPath, s.requirePin(s.handleCablePorts))
+		mux.HandleFunc(controlCableWorkerPath, s.requirePin(s.handleCableWorkerBinding))
+	}
 	return mux
 }
 
@@ -80,13 +102,13 @@ func (s *controlServer) handleEngines(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"engines": s.exec.GetInstalled()})
+	_ = json.NewEncoder(w).Encode(map[string]any{"engines": s.exec.GetInstalledContext(r.Context())})
 }
 
 // serveControl runs the ec mTLS control surface on 0.0.0.0:port until ctx is
 // cancelled. A bind failure is non-fatal: stdio engine management (and local
 // peers' remote calls being unavailable) must not take the process down.
-func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertrust.Mesh) {
+func serveControl(ctx context.Context, port int, exec *Executor, manager *Manager, mesh *clustertrust.Mesh) {
 	addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -95,7 +117,7 @@ func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertr
 	}
 	ln = tls.NewListener(ln, mesh.ServerTLSConfig())
 	srv := &http.Server{
-		Handler:           (&controlServer{exec: exec, mesh: mesh}).mux(),
+		Handler:           (&controlServer{exec: exec, mesh: mesh, manager: manager, cableLocal: manager.cableLocal}).mux(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       clustertrust.PeerListenerIdleTimeout,
 	}

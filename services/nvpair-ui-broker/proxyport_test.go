@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
+func TestEnabledEngineRestoreWaitsForEveryPortGate(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
@@ -20,6 +20,7 @@ func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
 	broker := &Broker{
 		ollamaPortReady:   make(chan struct{}),
 		lmstudioPortReady: make(chan struct{}),
+		llamacppPortReady: make(chan struct{}),
 	}
 	broker.setEngineMgr(worker)
 
@@ -49,11 +50,17 @@ func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
 	close(broker.lmstudioPortReady)
 	select {
 	case got := <-method:
+		t.Fatalf("restore %q was sent before the llama.cpp port gate opened", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(broker.llamacppPortReady)
+	select {
+	case got := <-method:
 		if got != restoreEnabledEnginesMethod {
 			t.Fatalf("method = %q, want %q", got, restoreEnabledEnginesMethod)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("restore was not sent after both port gates opened")
+		t.Fatal("restore was not sent after every port gate opened")
 	}
 	if !<-done {
 		t.Fatal("restore wait reported cancellation")

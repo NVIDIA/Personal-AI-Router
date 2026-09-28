@@ -8,7 +8,14 @@ export function gatewayEndpointDisplayUrl(
     proxyPort: number,
     inferenceType: EngineType
 ): string | null {
-    void inferenceType
     if (proxyPort <= 0) return null
-    return `http://127.0.0.1:${proxyPort}`
+    const base = `http://127.0.0.1:${proxyPort}`
+    switch (inferenceType) {
+        case 'ollama':
+            return base
+        case 'lm-studio':
+        case 'llamacpp':
+        case 'vllm':
+            return `${base}/v1`
+    }
 }

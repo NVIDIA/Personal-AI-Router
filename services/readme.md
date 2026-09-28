@@ -11,8 +11,9 @@ local network: each node advertises itself over mDNS as one consolidated
 node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
-discovery. A node may be running [Ollama](https://ollama.com/), LM Studio, both,
-or neither, and its model inventory is fetched over HTTP from its engine-manager
+discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
+llama.cpp, any combination, or none, and its model inventory is fetched over HTTP
+from its engine-manager
 rather than crammed into mDNS TXT records, which are too small to carry it.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
@@ -35,7 +36,7 @@ see the [root README](../README.md#what-is-supported).
 
 ## Architecture
 
-This tree builds twelve Go binaries. `nvpair-ui-broker` is the parent service and supervises the workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-proxy` is one worker process that fronts every enabled engine, hosting a facade for each. `nvpair-tui` is a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
+This tree builds fourteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-proxy` is one worker process that fronts every enabled engine, hosting a facade for each. `nvpair-tui` is a terminal client that launches and supervises its own broker rather than being supervised. `nvpair-host-bootstrap` and `nvpair-host-helper` are target-local setup tools; Electron and the broker do not launch them. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
 
 | Binary | Role |
 | --- | --- |
@@ -51,6 +52,8 @@ This tree builds twelve Go binaries. `nvpair-ui-broker` is the parent service an
 | `nvpair-cluster-manager` | Node identity, PIN pairing, and the trusted-node store. |
 | `nvpair-job-scheduler` | Responsive scheduler combining total node queue depth across engines with smoothed GPU pressure. |
 | `nvpair-tui` | Terminal interface for headless and SSH operation; launches and supervises its own broker. |
+| `nvpair-host-bootstrap` | Signed target-local SSH and PAIR bootstrap. It is not a broker worker. |
+| `nvpair-host-helper` | Narrow local helper for owned bootstrap and rank cleanup actions. It is not a network listener. |
 
 Shared code lives in the local `shared/` Go module (imported as `nvpair-shared/…`, replaced via `replace nvpair-shared => ../shared`). It provides logging, wire types, JSON-RPC and IPC, discovery records, mDNS, network monitoring, stable node identity, application data paths, and cluster trust helpers.
 
@@ -62,7 +65,7 @@ configuration.
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama and LM Studio together. Fresh maximum-GPU utilization is
+node across Ollama, LM Studio, and llama.cpp together. Fresh maximum-GPU utilization is
 smoothed into pressure 0–3; missing or stale telemetry is neutral. Rankings use
 `pending + gpuPressure`, and each proxy adds local reservations before choosing,
 so bursts spread without waiting for workload feedback.
@@ -82,12 +85,14 @@ nvpair-node-settings/    Per-node preferences store
 nvpair-cluster-manager/  Node pairing / trust service
 nvpair-job-scheduler/    Cluster job scheduler
 nvpair-tui/              Terminal interface for headless / SSH operation
+nvpair-host-bootstrap/   Target-local SSH and PAIR bootstrap
+nvpair-host-helper/      Local owned-bootstrap and rank-cleanup helper
 shared/                   Shared Go module (nvpair-shared/…)
 eap-noob/                 EAP-NOOB implementation used by cluster pairing
 tests/                    Cross-process integration tests (separate go.mod)
 versions.json             Single source of truth for every component version
-build.bat                 Builds all twelve binaries (Windows)
-build.sh                  Builds all twelve binaries (Linux)
+build.bat                 Builds all fourteen binaries (Windows)
+build.sh                  Builds all fourteen binaries (Linux)
 VERSIONING.md             SemVer rules and version-bump workflow
 ```
 
@@ -96,7 +101,7 @@ source it covers. See [Testing](#testing).
 
 ## Requirements
 
-- [Go](https://go.dev/dl/) 1.25 or newer.
+- [Go](https://go.dev/dl/) 1.26 or newer.
 - [`jq`](https://jqlang.org/) on `PATH` — the build scripts use it to parse `versions.json`. Install via `winget install jqlang.jq` / `choco install jq` / `scoop install jq` on Windows, `sudo apt install jq` on Debian/Ubuntu, `sudo dnf install jq` on Fedora/RHEL, or `brew install jq` on macOS.
 - No C toolchain, GUI, or webkit dependencies. Every module is pure Go (`cgo` is not used).
 
@@ -117,7 +122,7 @@ On Linux and macOS:
 ./build.sh
 ```
 
-Both scripts read `versions.json`, build all twelve Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
+Both scripts read `versions.json`, build all fourteen Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
 
 Do **not** build individual components by hand without also copying their binaries into `build/bin/`: the broker will silently keep using the older binary there.
 

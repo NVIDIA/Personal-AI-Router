@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"nvpair-shared/enginelogs"
 )
 
 // managedProc is a spawned engine process with its stdout/stderr
@@ -20,8 +23,9 @@ import (
 // graceful signal, force kill) live in proc_windows.go / proc_unix.go
 // so the same logic here runs on every platform.
 type managedProc struct {
-	cmd  *exec.Cmd
-	done chan struct{}
+	cmd    *exec.Cmd
+	exited chan struct{} // closes when the OS process exits
+	done   chan struct{} // closes after remaining output has drained
 }
 
 // startManagedProc launches bin with args and the extra env (merged
@@ -29,12 +33,16 @@ type managedProc struct {
 // stdout/stderr lines to onLine. The returned proc's done channel
 // closes once the process exits.
 func startManagedProc(bin string, args []string, env map[string]string, onLine func(stream, line string)) (*managedProc, error) {
+	return startManagedProcWithEnv(bin, args, env, true, onLine)
+}
+
+func startManagedProcWithEnv(bin string, args []string, env map[string]string, inherit bool, onLine func(stream, line string)) (*managedProc, error) {
 	cmd := exec.Command(bin, args...)
-	if len(env) > 0 {
+	if inherit {
 		cmd.Env = os.Environ()
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	configureSysProcAttr(cmd)
 
@@ -50,16 +58,15 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 		return nil, err
 	}
 
-	mp := &managedProc{cmd: cmd, done: make(chan struct{})}
+	mp := &managedProc{cmd: cmd, exited: make(chan struct{}), done: make(chan struct{})}
 	var scanWg sync.WaitGroup
 	scanWg.Add(2)
 	go func() { defer scanWg.Done(); scanLines(stdout, "stdout", onLine) }()
 	go func() { defer scanWg.Done(); scanLines(stderr, "stderr", onLine) }()
 	go func() {
-		// Drain stdout/stderr fully before Wait: Wait closes the pipes on
-		// exit, which would otherwise truncate the final captured lines.
-		scanWg.Wait()
 		_ = cmd.Wait()
+		close(mp.exited)
+		scanWg.Wait()
 		close(mp.done)
 	}()
 	return mp, nil
@@ -67,7 +74,7 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 
 func scanLines(r io.Reader, stream string, onLine func(stream, line string)) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), enginelogs.MaxLineBytes)
 	for sc.Scan() {
 		if onLine != nil {
 			onLine(stream, sc.Text())
@@ -75,31 +82,48 @@ func scanLines(r io.Reader, stream string, onLine func(stream, line string)) {
 	}
 }
 
-// stop stops the process and waits for it to exit, with no timeout.
+// stop bounds graceful shutdown, escalates the exact owned process group, and
+// returns only after OS process exit is observed. Output draining is separate
+// so an inherited pipe cannot wedge lifecycle ownership under opMu.
 //
-// It sends one platform-appropriate stop signal (see gracefulSignal) and then
-// blocks until the process is gone:
-//   - Unix: SIGTERM to the process group — a graceful ask, with no escalation
-//     to SIGKILL. A well-behaved engine (Ollama, and the test fake) exits on it.
+// The graceful signal is platform-appropriate (see gracefulSignal):
+//   - Unix: SIGTERM to the process group. A well-behaved engine (Ollama, and
+//     the test fake) exits on it.
 //   - Windows: taskkill /T /F. Our engines run windowless, and a windowless
 //     process can't receive a graceful (non-/F) close, so /F is the only signal
-//     that actually stops it — never force-killing there would leave the engine
-//     running forever.
+//     that actually stops it.
 //
-// There is deliberately no timeout: a stop is complete only when the engine has
-// actually exited. On Unix an engine that ignored SIGTERM would not be stopped
-// and this would wait for it; in practice engines exit on SIGTERM.
-func (mp *managedProc) stop() {
+// An engine still running when grace expires, together with any child left in
+// its process group, is force-killed as a group.
+func (mp *managedProc) stop(grace time.Duration) error {
 	if mp == nil || mp.cmd == nil || mp.cmd.Process == nil {
-		return
+		return nil
 	}
 	select {
-	case <-mp.done:
-		return // already exited
+	case <-mp.exited:
+		return nil // already exited
 	default:
 	}
-	_ = gracefulSignal(mp.cmd)
-	<-mp.done
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	gracefulErr := gracefulSignal(mp.cmd)
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-mp.exited:
+		return nil
+	case <-timer.C:
+	}
+	forceErr := signalPID(mp.cmd.Process.Pid, true)
+	forceTimer := time.NewTimer(5 * time.Second)
+	defer forceTimer.Stop()
+	select {
+	case <-mp.exited:
+		return nil
+	case <-forceTimer.C:
+		return fmt.Errorf("managed process did not exit after graceful and forced stop: graceful=%v force=%v", gracefulErr, forceErr)
+	}
 }
 
 // terminatePID stops the process with the given PID (and its tree on
@@ -128,6 +152,13 @@ func terminatePID(pid int, grace time.Duration) {
 	}
 	if pidAlive(pid) {
 		_ = signalPID(pid, true)
+	}
+	forceDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(forceDeadline) {
+		if !pidAlive(pid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

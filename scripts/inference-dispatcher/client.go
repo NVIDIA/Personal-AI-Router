@@ -111,7 +111,7 @@ func decodeObject(data []byte, target any) error {
 func (c *backendClient) listModels(ctx context.Context) ([]RegisteredModel, error) {
 	var models []RegisteredModel
 	var err error
-	if c.cfg.Backend == "lmstudio" {
+	if usesOpenAIAPI(c.cfg.Backend) {
 		models, err = c.listLMStudioModels(ctx)
 	} else {
 		models, err = c.listOllamaModels(ctx)
@@ -340,8 +340,12 @@ func (c *backendClient) resolveModel(ctx context.Context) (string, []RegisteredM
 	return "", models, errors.New("no available model advertises text-generation support")
 }
 
+func usesOpenAIAPI(backend string) bool {
+	return backend == "lmstudio" || backend == "llamacpp"
+}
+
 func (c *backendClient) inferencePath() string {
-	if c.cfg.Backend == "lmstudio" {
+	if usesOpenAIAPI(c.cfg.Backend) {
 		return "/v1/chat/completions"
 	}
 	return "/api/generate"
@@ -349,7 +353,7 @@ func (c *backendClient) inferencePath() string {
 
 func (c *backendClient) infer(ctx context.Context, model, prompt string) (string, error) {
 	var payload map[string]any
-	if c.cfg.Backend == "lmstudio" {
+	if usesOpenAIAPI(c.cfg.Backend) {
 		payload = map[string]any{
 			"model":    model,
 			"messages": []map[string]string{{"role": "user", "content": prompt}},
@@ -386,7 +390,7 @@ func (c *backendClient) infer(ctx context.Context, model, prompt string) (string
 	if err != nil {
 		return "", err
 	}
-	if c.cfg.Backend == "lmstudio" {
+	if usesOpenAIAPI(c.cfg.Backend) {
 		return parseLMStudioResponse(data)
 	}
 	var response struct {

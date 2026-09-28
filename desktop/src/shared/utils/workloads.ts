@@ -7,17 +7,19 @@ import type { Workload } from '@/shared/types/workloads'
  * Stable catalog key for a workload.
  *
  * The backend's catalog is keyed by `(originatedFrom, engine, runId, id)`, but
- * the `workloads:remove` push carries only `(workloadId, originatedFrom)` — and
- * the broker's own `Store.Remove` drops every record matching that pair — so
- * `(originatedFrom, id)` is the only key a subscribe client can maintain
- * consistently across upsert and remove. Each node's proxy assigns workload ids
- * from its own monotonic counter, so ids collide across nodes; `originatedFrom`
- * (the origin node) disambiguates. Mirror that here so a remote node's job never
- * overwrites a local one that happens to share an id. The `\u0000` separator
- * cannot appear in a host id or proxy counter, so the key is unambiguous.
+ * clients retain all four fields so equal counters from different engines or
+ * proxy runs never overwrite one another. A legacy removal without engine/run
+ * identity removes the matching origin/id prefix, as the broker does. Targeted
+ * removals retain exact identity.
  */
-export function workloadKey(originatedFrom: string | null, id: string): string {
-    return `${originatedFrom ?? ''}\u0000${id}`
+export function workloadKey(
+    originatedFrom: string | null,
+    id: string,
+    engine?: string,
+    runId?: string
+): string {
+    const prefix = `${originatedFrom ?? ''}\u0000${id}`
+    return engine === undefined ? prefix : `${prefix}\u0000${engine}\u0000${runId ?? ''}`
 }
 
 /**

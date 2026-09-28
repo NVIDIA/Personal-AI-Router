@@ -42,6 +42,9 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 				"ollama":   {"llama3:8b"},
 				"lmstudio": {},
 			},
+			"retainedByEngine": map[string][]string{
+				"vllm": {"owner/model@" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -86,7 +89,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 				if json.Unmarshal(msg.Result, &res) == nil {
 					if n, found := findNode(res.Nodes, instance); found &&
 						modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
-						loadedByEngineMatch(n.LoadedByEngine) {
+						loadedByEngineMatch(n.LoadedByEngine) && retainedByEngineMatch(n.RetainedByEngine) {
 						return // enriched flat + per-engine + loaded lists surfaced
 					}
 				}
@@ -139,6 +142,13 @@ func loadedByEngineMatch(loaded map[string][]string) bool {
 		"lmstudio": {},
 	}
 	return byEngineEqual(loaded, want)
+}
+
+func retainedByEngineMatch(retained map[string][]string) bool {
+	want := map[string][]string{
+		"vllm": {"owner/model@" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}
+	return byEngineEqual(retained, want)
 }
 
 // byEngineEqual reports whether a per-engine map equals want: same key set, each

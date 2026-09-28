@@ -7,8 +7,10 @@
  *   - every runtime (production) npm dependency + all their transitives
  *   - the Electron runtime itself (declared as a devDependency, but shipped
  *     with the packaged app, so legally it has to appear in the report)
- *   - the Go modules linked into the twelve service binaries, which the
+ *   - the Go modules linked into the fourteen service binaries, which the
  *     installer ships from `../services` as extraResources
+ *   - the Ubuntu packages the engine manager embeds for target preparation,
+ *     listed in `services/nvpair-engine-manager/third_party/ubuntu/notices.json`
  *
  * Dev-only tooling (vite, tsx, typescript, prettier, knip, etc.) is deliberately
  * excluded — it is not redistributed and does not need attribution.
@@ -33,6 +35,7 @@ const servicesDir = resolve(repoRoot, '..', 'services')
 const NOTICE_PATH = resolve(repoRoot, '..', 'THIRD_PARTY_NOTICES.md')
 const ELECTRON_DIR = join(repoRoot, 'node_modules/electron')
 const SERVICE_VERSIONS_PATH = join(servicesDir, 'versions.json')
+const EMBEDDED_PACKAGES_DIR = join(servicesDir, 'nvpair-engine-manager', 'third_party', 'ubuntu')
 
 type Entry = LicenseEntry
 
@@ -60,9 +63,18 @@ function normalizeLicense(licenses: string | string[] | undefined): string {
     return licenses
 }
 
+function normalizeLicenseText(value: string): string {
+    return value
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map(line => line.trimEnd())
+        .join('\n')
+        .trim()
+}
+
 function toEntry(key: string, info: ModuleInfo): Entry {
     const { name, version } = parseKey(key)
-    const licenseText = (info.licenseText ?? '').trim()
+    const licenseText = normalizeLicenseText(info.licenseText ?? '')
     return {
         name,
         version,
@@ -107,8 +119,33 @@ async function buildElectronEntry(): Promise<Entry> {
         email,
         repository,
         homepage: electronPkg.homepage ?? null,
-        licenseText: licenseText.trim()
+        licenseText: normalizeLicenseText(licenseText)
     }
+}
+
+async function buildEmbeddedPackageEntries(): Promise<Entry[]> {
+    const raw = await readFile(join(EMBEDDED_PACKAGES_DIR, 'notices.json'), 'utf8')
+    const manifest: {
+        packages: {
+            name: string
+            version: string
+            license: string
+            repository: string
+            licenseFile: string
+        }[]
+    } = JSON.parse(raw)
+    return Promise.all(
+        manifest.packages.map(async entry => ({
+            name: entry.name,
+            version: entry.version,
+            license: entry.license,
+            author: null,
+            email: null,
+            repository: entry.repository,
+            homepage: null,
+            licenseText: await readFile(join(EMBEDDED_PACKAGES_DIR, entry.licenseFile), 'utf8')
+        }))
+    )
 }
 
 function mergeEntries(scan: ModuleInfos, extras: Entry[]): Entry[] {
@@ -119,7 +156,10 @@ function mergeEntries(scan: ModuleInfos, extras: Entry[]): Entry[] {
         byKey.set(key, toEntry(key, info))
     }
     for (const entry of extras) {
-        byKey.set(`${entry.name}@${entry.version}`, entry)
+        byKey.set(`${entry.name}@${entry.version}`, {
+            ...entry,
+            licenseText: normalizeLicenseText(entry.licenseText)
+        })
     }
     return [...byKey.values()].sort((a, b) =>
         a.name === b.name ? a.version.localeCompare(b.version) : a.name.localeCompare(b.name)
@@ -145,9 +185,12 @@ function renderMarkdown(entries: Entry[]): string {
         'reproduced in this file.',
         '',
         'Scope: npm dependencies and the Electron runtime shipped in the desktop',
-        'application, plus the Go modules linked into the twelve shipped service',
+        'application, plus the Go modules linked into the fourteen shipped service',
         'binaries across the Windows, Linux, and macOS targets. First-party modules',
-        '(`nvpair-shared`, `eapnoob`) are excluded.',
+        '(`nvpair-shared`, `eapnoob`) are excluded. The engine manager also embeds',
+        'three Ubuntu arm64 development packages that it installs on Linux targets',
+        'to prepare the vLLM runtime; their Debian copyright files are reproduced',
+        'below.',
         '',
         '## Components',
         '',
@@ -167,7 +210,10 @@ function renderMarkdown(entries: Entry[]): string {
         parts.push('```text', e.licenseText, '```', '')
     }
 
-    return `${parts.join('\n').trimEnd()}\n`
+    return `${parts
+        .join('\n')
+        .replace(/[\t ]+$/gm, '')
+        .trimEnd()}\n`
 }
 
 async function serviceComponentNames(): Promise<string[]> {
@@ -190,11 +236,12 @@ async function main(): Promise<void> {
 
     const electronEntry = await buildElectronEntry()
     const goEntries = await collectGoModuleEntries(servicesDir, await serviceComponentNames())
-    const entries = mergeEntries(prod, [electronEntry, ...goEntries])
+    const embeddedEntries = await buildEmbeddedPackageEntries()
+    const entries = mergeEntries(prod, [electronEntry, ...goEntries, ...embeddedEntries])
 
     await writeFile(NOTICE_PATH, renderMarkdown(entries))
     console.log(
-        `Wrote ${entries.length} dependencies (${goEntries.length} Go modules) to ${NOTICE_PATH}`
+        `Wrote ${entries.length} dependencies (${goEntries.length} Go modules, ${embeddedEntries.length} embedded packages) to ${NOTICE_PATH}`
     )
 }
 

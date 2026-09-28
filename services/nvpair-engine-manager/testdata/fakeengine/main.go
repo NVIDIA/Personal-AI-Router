@@ -19,9 +19,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -95,6 +98,36 @@ func main() {
 		_ = json.NewEncoder(file).Encode(os.Args[1:])
 		_ = file.Close()
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "licenses" || (len(os.Args) == 3 && os.Args[1] == "cli" && os.Args[2] == "--list-devices")) {
+		// Socket-free llama install validation. Each staged copy can describe a
+		// different build/device result without changing the executor's env.
+		var fixture struct {
+			Version      string `json:"version"`
+			Licenses     string `json:"licenses"`
+			Devices      string `json:"devices"`
+			DelayCommand string `json:"delay_command"`
+			DelayMS      int    `json:"delay_ms"`
+		}
+		bin, _ := os.Executable()
+		data, _ := os.ReadFile(filepath.Join(filepath.Dir(bin), ".llama-fixture.json"))
+		_ = json.Unmarshal(data, &fixture)
+		if version := os.Getenv("FAKE_LLAMA_VERSION"); version != "" {
+			fixture.Version = version
+		}
+		if fixture.DelayCommand == os.Args[1] {
+			_ = os.WriteFile(filepath.Join(filepath.Dir(bin), ".llama-delay-started"), []byte(os.Args[1]), 0600)
+			time.Sleep(time.Duration(fixture.DelayMS) * time.Millisecond)
+		}
+		switch os.Args[1] {
+		case "version":
+			fmt.Println(fixture.Version)
+		case "licenses":
+			fmt.Println(fixture.Licenses)
+		case "cli":
+			fmt.Println(fixture.Devices)
+		}
+		return
+	}
 	// Subcommands used by command-mode + cmd-action tests. They run and
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
@@ -130,7 +163,80 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, "Error: Failed to resolve artifact %q: The artifact does not exist or you do not have permission to read it\n", strings.ToLower(arg))
 			os.Exit(1)
+		case "download": // stand in for `llama download --hf-repo owner/repo [--hf-file name]`:
+			// write one GGUF into the hf-cache layout under LLAMA_CACHE and print
+			// its path, as the vendor CLI does. .llama-fixture.json beside the
+			// binary can delay the download (download_delay_ms) or make it return
+			// a preset instead of weights (download_preset), which the runner
+			// must reject.
+			var fixture struct {
+				DownloadPreset  bool `json:"download_preset"`
+				DownloadDelayMS int  `json:"download_delay_ms"`
+				// download_chunks / download_chunk_delay_ms grow the file
+				// progressively and silently, like the vendor's curl-backed
+				// download on a slow link (nothing on stderr while it transfers).
+				DownloadChunks       int `json:"download_chunks"`
+				DownloadChunkDelayMS int `json:"download_chunk_delay_ms"`
+			}
+			bin, _ := os.Executable()
+			data, _ := os.ReadFile(filepath.Join(filepath.Dir(bin), ".llama-fixture.json"))
+			_ = json.Unmarshal(data, &fixture)
+			repo, file := "", ""
+			for i := 2; i+1 < len(os.Args); i += 2 {
+				switch os.Args[i] {
+				case "--hf-repo":
+					repo = os.Args[i+1]
+				case "--hf-file":
+					file = os.Args[i+1]
+				}
+			}
+			cache := os.Getenv("LLAMA_CACHE")
+			if repo == "" || cache == "" {
+				fmt.Fprintln(os.Stderr, "download: missing --hf-repo or LLAMA_CACHE")
+				os.Exit(2)
+			}
+			time.Sleep(time.Duration(fixture.DownloadDelayMS) * time.Millisecond)
+			if fixture.DownloadPreset {
+				preset := filepath.Join(cache, "preset.ini")
+				if os.WriteFile(preset, []byte("[preset]\n"), 0o600) != nil {
+					os.Exit(1)
+				}
+				fmt.Println(preset)
+				return
+			}
+			if file == "" {
+				file = "fixture-Q4_0.gguf"
+			}
+			const commit = "0123456789abcdef0123456789abcdef01234567"
+			base := filepath.Join(cache, "models--"+strings.ReplaceAll(repo, "/", "--"))
+			snapshot := filepath.Join(base, "snapshots", commit)
+			if os.MkdirAll(snapshot, 0o700) != nil || os.MkdirAll(filepath.Join(base, "refs"), 0o700) != nil {
+				os.Exit(1)
+			}
+			header := make([]byte, 32)
+			copy(header, "GGUF")
+			header[4] = 3 // GGUF version 3, little endian
+			header[8] = 1 // one tensor
+			path := filepath.Join(snapshot, file)
+			if os.WriteFile(path, header, 0o600) != nil || os.WriteFile(filepath.Join(base, "refs", "main"), []byte(commit), 0o600) != nil {
+				os.Exit(1)
+			}
+			for i := 0; i < fixture.DownloadChunks; i++ {
+				time.Sleep(time.Duration(fixture.DownloadChunkDelayMS) * time.Millisecond)
+				f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+				if err != nil {
+					os.Exit(1)
+				}
+				_, _ = f.Write(make([]byte, 4096))
+				_ = f.Close()
+			}
+			fmt.Println(path)
+			return
 		case "noserve": // run but never bind — used to test readiness timeout
+			time.Sleep(time.Hour)
+			return
+		case "ignoreterm": // prove managed stop escalates instead of wedging opMu
+			signal.Ignore(syscall.Signal(15))
 			time.Sleep(time.Hour)
 			return
 		case "failmark": // append a byte then exit non-zero — for uninstall-retry tests
@@ -280,10 +386,21 @@ func main() {
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		data := make([]map[string]string, 0)
 		for _, n := range modelNames() {
-			data = append(data, map[string]string{"id": n, "object": "model"})
+			model := map[string]string{"id": n, "object": "model"}
+			if os.Getenv("FAKE_VLLM") == "1" {
+				model["owned_by"] = "vllm"
+			}
+			data = append(data, model)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	})
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("FAKE_VLLM") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": "0.29.0"})
 	})
 	// LM Studio native REST v1 models API: /api/v1/models lists every model with
 	// a loaded_instances array, so the loaded_models nonempty-array row filter

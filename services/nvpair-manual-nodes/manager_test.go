@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -151,6 +152,82 @@ func TestProbeLMStudioReportsModels(t *testing.T) {
 	downUp, downModels := m.probeLMStudio("absent.local", lmStudioPort)
 	if downUp || downModels != nil {
 		t.Fatalf("expected absent lmstudio down, got up=%v models=%#v", downUp, downModels)
+	}
+}
+
+// configureHealthyLlamaCpp registers a 200 GET /v1/models on llama.cpp's probe
+// port listing one resident and one cached-but-unloaded model, so probeLlamaCpp
+// reports the node up with both ids.
+func configureHealthyLlamaCpp(rt *fakeRoundTripper, addr string) {
+	host := net.JoinHostPort(addr, strconv.Itoa(llamaCppPort))
+	rt.set(http.MethodGet, host, "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"object":"list","data":[{"id":"resident-one","status":{"value":"loaded"}},{"id":"cached-two","status":{"value":"unloaded"}}]}`)
+	})
+}
+
+// TestProbeLlamaCppReportsModels covers the llama.cpp probe: a reachable
+// server reports up with every listed id whatever its residency tag (the
+// router loads a cached model on demand), a 200 with an empty list is still
+// up, and an absent one reports down.
+func TestProbeLlamaCppReportsModels(t *testing.T) {
+	m, _, rt := newTestManager()
+	configureHealthyLlamaCpp(rt, "node.local")
+
+	up, models := m.probeLlamaCpp("node.local", llamaCppPort)
+	if !up {
+		t.Fatal("expected llamacpp up")
+	}
+	if len(models) != 2 || models[0] != "resident-one" || models[1] != "cached-two" {
+		t.Fatalf("models = %#v, want [resident-one cached-two]", models)
+	}
+
+	emptyHost := net.JoinHostPort("empty.local", strconv.Itoa(llamaCppPort))
+	rt.set(http.MethodGet, emptyHost, "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"object":"list","data":[{"id":""}]}`)
+	})
+	emptyUp, emptyModels := m.probeLlamaCpp("empty.local", llamaCppPort)
+	if !emptyUp {
+		t.Fatal("expected llamacpp up with empty model list")
+	}
+	if len(emptyModels) != 0 {
+		t.Fatalf("empty list models = %#v, want empty", emptyModels)
+	}
+
+	downUp, downModels := m.probeLlamaCpp("absent.local", llamaCppPort)
+	if downUp || downModels != nil {
+		t.Fatalf("expected absent llamacpp down, got up=%v models=%#v", downUp, downModels)
+	}
+}
+
+func TestProbeNodeLlamaCppOnlyIsReachable(t *testing.T) {
+	m, rw, rt := newTestManager()
+	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local"}}
+	configureHealthyLlamaCpp(rt, "node.local")
+
+	m.probeNode(entry)
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
+	if !updated.LlamaCppUp {
+		t.Fatalf("expected llamacpp up: %+v", updated)
+	}
+	if updated.LlamaCppPort != llamaCppPort {
+		t.Fatalf("llamacpp_port = %d, want %d", updated.LlamaCppPort, llamaCppPort)
+	}
+	if len(updated.LlamaCppModels) != 2 || updated.LlamaCppModels[0] != "resident-one" || updated.LlamaCppModels[1] != "cached-two" {
+		t.Fatalf("llamacpp_models = %#v", updated.LlamaCppModels)
+	}
+	if m.nodes["lab"].consecutiveFails != 0 {
+		t.Fatalf("llama.cpp-only node counted as unreachable: fails=%d", m.nodes["lab"].consecutiveFails)
+	}
+
+	host := net.JoinHostPort("node.local", strconv.Itoa(llamaCppPort))
+	rt.set(http.MethodGet, host, "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"object":"list","data":[{"id":"loaded-two","status":{"value":"loaded"}}]}`)
+	})
+	m.probeNode(entry)
+	second := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
+	if len(second.LlamaCppModels) != 1 || second.LlamaCppModels[0] != "loaded-two" {
+		t.Fatalf("second llamacpp_models = %#v", second.LlamaCppModels)
 	}
 }
 

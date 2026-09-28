@@ -4,6 +4,7 @@
 import { spawnSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import { describe, expect, it } from 'vitest'
 import { currentPlatform } from '@/shared/utils/platform'
 
@@ -20,6 +21,95 @@ describe('repo-root wipe scripts', () => {
     // Under Git Bash / MSYS the unix script refuses to run at all and points at
     // the Windows twin, so only its static inventory is observable there.
     const itUnix = it.skipIf(currentPlatform() === 'win32')
+
+    it.skipIf(currentPlatform() !== 'win32')(
+        'Windows reset removes app data but retains the sibling model library',
+        () => {
+            const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-model-retention-'))
+            const config = path.join(isolated, 'config')
+            const app = path.join(config, 'Nvidia Corporation', 'Personal AI Router')
+            const model = path.join(
+                config,
+                'Nvidia Corporation',
+                'Personal AI Router Models',
+                'llamacpp',
+                'retained.gguf'
+            )
+            fs.mkdirSync(app, { recursive: true })
+            fs.mkdirSync(path.dirname(model), { recursive: true })
+            fs.writeFileSync(path.join(app, 'settings.json'), '{}')
+            fs.writeFileSync(model, 'retained-model')
+            try {
+                // Only process enumeration is stubbed: never stop a real application.
+                // The exact script still performs its real filesystem removal.
+                const quotedScript = ps1.replaceAll("'", "''")
+                const result = spawnSync(
+                    'powershell.exe',
+                    [
+                        '-NoProfile',
+                        '-Command',
+                        `function tasklist {}; & '${quotedScript}' --confirm`
+                    ],
+                    {
+                        encoding: 'utf8',
+                        env: {
+                            ...process.env,
+                            USERPROFILE: isolated,
+                            LOCALAPPDATA: config,
+                            TEMP: isolated,
+                            TMP: isolated
+                        }
+                    }
+                )
+                expect(result.status).toBe(0)
+                expect(fs.existsSync(app)).toBe(false)
+                expect(fs.readFileSync(model, 'utf8')).toBe('retained-model')
+            } finally {
+                fs.rmSync(isolated, { recursive: true, force: true })
+            }
+        }
+    )
+
+    it('refuses reset before deleting unmigrated llama models', () => {
+        const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-legacy-models-'))
+        const config =
+            currentPlatform() === 'darwin'
+                ? path.join(isolated, 'Library', 'Application Support')
+                : path.join(isolated, 'config')
+        const model = path.join(
+            config,
+            'Nvidia Corporation',
+            'Personal AI Router',
+            'engine-bin',
+            'llamacpp',
+            'models',
+            'retained.gguf'
+        )
+        fs.mkdirSync(path.dirname(model), { recursive: true })
+        fs.writeFileSync(model, 'retained-model')
+        try {
+            const windows = currentPlatform() === 'win32'
+            const result = spawnSync(
+                windows ? 'powershell.exe' : 'bash',
+                windows ? ['-NoProfile', '-File', ps1, '--confirm'] : [sh, '--confirm'],
+                {
+                    encoding: 'utf8',
+                    env: {
+                        ...process.env,
+                        HOME: isolated,
+                        USERPROFILE: isolated,
+                        LOCALAPPDATA: config,
+                        XDG_CONFIG_HOME: config
+                    }
+                }
+            )
+            expect(result.status).toBe(1)
+            expect(result.stdout + result.stderr).toContain('Open the updated app to migrate')
+            expect(fs.readFileSync(model, 'utf8')).toBe('retained-model')
+        } finally {
+            fs.rmSync(isolated, { recursive: true, force: true })
+        }
+    })
 
     it('ships unix and windows entrypoints', () => {
         expect(fs.existsSync(sh), sh).toBe(true)

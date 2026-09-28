@@ -23,6 +23,9 @@ func TestLocalEnginePortFallback(t *testing.T) {
 	if got, ok := b.localEnginePort("lmstudio", defaultLMStudioPort); !ok || got != defaultLMStudioPort {
 		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultLMStudioPort)
 	}
+	if got, ok := b.localEnginePort("llamacpp", defaultLlamaCppPort); !ok || got != defaultLlamaCppPort {
+		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultLlamaCppPort)
+	}
 }
 
 func TestRunningEnginePort(t *testing.T) {
@@ -33,6 +36,8 @@ func TestRunningEnginePort(t *testing.T) {
 		ok   bool
 	}{
 		{name: "running", raw: `{"running":true,"port":1235}`, port: 1235, ok: true},
+		{name: "explicitly routable", raw: `{"running":true,"routable":true,"port":8001}`, port: 8001, ok: true},
+		{name: "disabled is not routable", raw: `{"running":true,"routable":false,"port":8001}`},
 		{name: "stopped is authoritative", raw: `{"running":false,"port":1235}`},
 		{name: "running without a port", raw: `{"running":true,"port":0}`},
 		{name: "malformed response", raw: `{`},
@@ -41,6 +46,33 @@ func TestRunningEnginePort(t *testing.T) {
 			port, ok := runningEnginePort([]byte(tc.raw))
 			if port != tc.port || ok != tc.ok {
 				t.Fatalf("runningEnginePort = (%d, %v), want (%d, %v)", port, ok, tc.port, tc.ok)
+			}
+		})
+	}
+}
+
+func TestRoutableEnginePortRequiresStandaloneOrReadyCoordinator(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		ok   bool
+	}{
+		{name: "standalone", raw: `{"engine":"vllm","running":true,"healthy":true,"routable":true,"port":8001}`, ok: true},
+		{name: "ready coordinator while standalone disabled", raw: `{"engine":"vllm","running":true,"healthy":true,"enabled":false,"routable":false,"port":8001,"serving_group":{"role":"coordinator","state":"ready"}}`, ok: true},
+		{name: "wrong engine", raw: `{"engine":"ollama","running":true,"healthy":true,"routable":true,"port":8001}`},
+		{name: "disabled standalone", raw: `{"engine":"vllm","running":true,"healthy":true,"routable":false,"port":8001}`},
+		{name: "ready participant", raw: `{"engine":"vllm","running":true,"healthy":true,"routable":false,"port":8001,"serving_group":{"role":"participant","state":"ready"}}`},
+		{name: "starting coordinator", raw: `{"engine":"vllm","running":true,"healthy":true,"routable":false,"port":8001,"serving_group":{"role":"coordinator","state":"starting"}}`},
+		{name: "collectively ready coordinator awaiting its route", raw: `{"engine":"vllm","running":true,"healthy":true,"routable":false,"port":8001,"serving_group":{"role":"coordinator","state":"starting","routing":true}}`, ok: true},
+		{name: "routing participant", raw: `{"engine":"vllm","running":true,"healthy":true,"routable":false,"port":8001,"serving_group":{"role":"participant","state":"starting","routing":true}}`},
+		{name: "routing flag on a stopping coordinator", raw: `{"engine":"vllm","running":true,"healthy":true,"routable":false,"port":8001,"serving_group":{"role":"coordinator","state":"stopping","routing":true}}`},
+		{name: "unhealthy", raw: `{"engine":"vllm","running":true,"healthy":false,"routable":true,"port":8001}`},
+		{name: "unhealthy ready coordinator", raw: `{"engine":"vllm","running":true,"healthy":false,"routable":false,"port":8001,"serving_group":{"role":"coordinator","state":"ready"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			port, ok := routableEnginePort([]byte(tc.raw), "vllm")
+			if ok != tc.ok || (ok && port != 8001) {
+				t.Fatalf("routableEnginePort = (%d, %v), want (8001, %v)", port, ok, tc.ok)
 			}
 		})
 	}

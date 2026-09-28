@@ -24,7 +24,8 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.ps1 (Windows twin — update both in the same change)
 #
-# Explicit exclusions (never add): ~/.ollama, ~/.lmstudio, external engine
+# Explicit exclusions (never add): the sibling Personal AI Router Models directory,
+# ~/.ollama, ~/.lmstudio, external engine
 # installs, and the application install tree (Program Files / /opt/PAIR /
 # PAIR.app).
 # ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ Usage: scripts/wipe-app-data.sh [options]
 Delete all Personal AI Router-owned application data (settings, logs, cluster
 identity, chat history, PAIR-managed engines under the app data root).
 
-Does NOT delete third-party model libraries (e.g. ~/.ollama, ~/.lmstudio).
+Does NOT delete model libraries, including Personal AI Router Models/llamacpp.
 Does NOT uninstall the application binary.
 
 Options:
@@ -172,6 +173,16 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+# Engine Manager owns cache migration. Refuse even a dangling link rather than
+# deleting a legacy library when the updated app has not migrated it yet.
+for root in "$CURRENT_ROOT" "$LEGACY_ROOT"; do
+  legacy_models="$root/engine-bin/llamacpp/models"
+  if [[ -e "$legacy_models" || -L "$legacy_models" ]]; then
+    echo "Llama models remain under app data. Open the updated app to migrate them before resetting: $legacy_models" >&2
+    exit 1
+  fi
+done
+
 # The app spawns this script detached and then exits, so the wipe must happen
 # after its process is gone. Otherwise Chromium flushes session/cache files back
 # into the directory we just deleted and the "clean" relaunch is not clean.
@@ -215,7 +226,7 @@ if [[ "$CONFIRM" -eq 0 ]]; then
   fi
   echo ""
   echo "WARNING: This permanently deletes all Personal AI Router app data."
-  echo "Third-party model libraries (e.g. ~/.ollama, ~/.lmstudio) are NOT removed."
+  echo "Model libraries, including Personal AI Router Models/llamacpp, are NOT removed."
   echo ""
   echo "Paths to remove:"
   for entry in "${TARGETS[@]}"; do

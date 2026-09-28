@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestStreamOpEmitsProgressThenResult verifies streamOp forwards published
@@ -58,6 +59,72 @@ func TestStreamOpEmitsErrorFrame(t *testing.T) {
 	frames := decodeFrames(t, rec.Body.String())
 	if len(frames) != 1 || frames[0].Type != "error" || frames[0].Message == "" {
 		t.Fatalf("expected one error frame, got %+v", frames)
+	}
+}
+
+func TestStreamOpCancellationReleasesHandlerAndSubscription(t *testing.T) {
+	exec := &Executor{progress: newProgressHub()}
+	s := &controlServer{exec: exec}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("POST", controlVLLMReceivePath, nil).WithContext(ctx)
+	entered := make(chan struct{})
+	finish := make(chan struct{})
+	workerDone := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		s.streamOp(httptest.NewRecorder(), req, "op", "vllm", "distribute", func(ctx context.Context) (streamFrame, error) {
+			defer close(workerDone)
+			close(entered)
+			<-ctx.Done()
+			<-finish
+			return streamFrame{}, ctx.Err()
+		})
+		close(returned)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("receive worker did not start")
+	}
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled stream handler stayed joined to its worker")
+	}
+	exec.progress.mu.Lock()
+	subscribers := len(exec.progress.subs)
+	exec.progress.mu.Unlock()
+	if subscribers != 0 {
+		t.Fatalf("cancelled stream retained %d progress subscriptions", subscribers)
+	}
+	close(finish)
+	select {
+	case <-workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("receive worker did not finish after its test barrier opened")
+	}
+}
+
+func TestStreamOpFiltersForeignVLLMDistributionProgress(t *testing.T) {
+	exec := &Executor{progress: newProgressHub()}
+	s := &controlServer{exec: exec}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", controlVLLMReceivePath, nil)
+	operationID := strings.Repeat("a", 32)
+	foreignID := strings.Repeat("b", 32)
+
+	s.streamOp(rec, req, operationID, "vllm", "distribute", func(context.Context) (streamFrame, error) {
+		exec.progress.publish(ProgressEvent{Engine: "vllm", Op: "distribute", Stage: "foreign", Percent: 20, OperationID: foreignID})
+		exec.progress.publish(ProgressEvent{Engine: "vllm", Op: "pull", Stage: "wrong-op", Percent: 30, OperationID: operationID})
+		exec.progress.publish(ProgressEvent{Engine: "vllm", Op: "distribute", Stage: "receiving", Percent: 40, OperationID: operationID})
+		return streamFrame{Type: "result", OpID: operationID, Engine: "vllm", Op: "distribute"}, nil
+	})
+
+	frames := decodeFrames(t, rec.Body.String())
+	if len(frames) != 2 || frames[0].Type != "progress" || frames[0].Stage != "receiving" || frames[0].OpID != operationID || frames[1].Type != "result" {
+		t.Fatalf("foreign vLLM progress crossed operation boundary: %+v", frames)
 	}
 }
 

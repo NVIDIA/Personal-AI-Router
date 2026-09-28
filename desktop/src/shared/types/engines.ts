@@ -10,6 +10,7 @@ import {
     ModelExpiries,
     ModelItemStatuses
 } from '@/shared/constants/engines'
+import type { VllmServingGroupRoute } from '@/shared/types/vllm-group-status'
 
 /**
  * Canonical engine identifier — a closed literal union of every engine PAIR
@@ -49,6 +50,29 @@ export interface EngineStatusData {
      * reported version data or engines that are not installed.
      */
     installedVersion?: string
+    /** Engine Manager ownership and participation facts. */
+    enabled?: boolean
+    managed?: boolean
+    adopted?: boolean
+    routable?: boolean
+    installSupported?: boolean
+    installReason?: string
+    /**
+     * llama.cpp compute backend reported by the owning node's engine-manager
+     * ("cuda" | "rocm" | "metal" | "vulkan" | "sycl" | "opencl" | "cann" | "musa" | "cpu").
+     * Absent when unknown or the engine is not installed.
+     */
+    acceleration?: string
+    /** Device rows from `llama cli --list-devices`, e.g. "CUDA0: NVIDIA GB10 (122564 MiB, 512 MiB free)". */
+    devices?: string[]
+    /**
+     * Canonical id of the retained model PAIR has selected for the next owned
+     * vLLM start (owner/model@revision). Reported by Engine Manager only; the
+     * Desktop never infers it.
+     */
+    selectedModel?: string
+    /** Exact retained vLLM serving-group execution reported by Engine Manager. */
+    servingGroup?: VllmServingGroupRoute
 }
 
 export type ModelItemStatus = (typeof ModelItemStatuses)[number]
@@ -74,12 +98,16 @@ export interface EngineProgress {
     operation: EngineOperationType
     /** Set for model operations (pull, load, unload, delete). */
     model?: string
+    /** Exact PAIR operation binding for cancellable vLLM work. */
+    operationId?: string
     /** 'started' | 'downloading' | 'complete' | 'error' | engine-specific status string. */
     status: string
     percent?: number
     completed?: number
     total?: number
     error?: string
+    /** Network a model copy uses: a qualified fabric lane or the management network. */
+    network?: 'fabric' | 'management'
 }
 
 /**

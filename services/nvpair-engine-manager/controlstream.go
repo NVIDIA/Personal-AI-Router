@@ -20,6 +20,8 @@ import (
 
 // controlInstallPath streams a remote engine install.
 const controlInstallPath = "/v1/engines/install"
+const controlUpdatePath = "/v1/engines/update"
+const controlQwen38PreparePath = "/v1/engines/vllm/qwen38/prepare"
 
 // controlPullPath streams a remote model pull.
 const controlPullPath = "/v1/models/pull"
@@ -39,6 +41,7 @@ type streamFrame struct {
 	Stage   string          `json:"stage,omitempty"`
 	Percent int             `json:"percent,omitempty"`
 	Message string          `json:"message,omitempty"`
+	Network string          `json:"network,omitempty"`
 	Status  *EngineStatus   `json:"status,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 }
@@ -48,6 +51,54 @@ type installRequest struct {
 	OpID   string `json:"opId"`
 	Engine string `json:"engine"`
 	Start  bool   `json:"start"`
+}
+
+type updateRequest struct {
+	OpID   string `json:"opId"`
+	Engine string `json:"engine"`
+}
+
+func (s *controlServer) handleQwen38Prepare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var request vllmQwen38PrepareRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxControlBody)).Decode(&request); err != nil || !vllmQwen38OperationID.MatchString(request.OperationID) {
+		http.Error(w, "invalid Qwen3.8 prepare request", http.StatusBadRequest)
+		return
+	}
+	s.streamOp(w, r, request.OperationID, "vllm", "qwen38-prepare", func(ctx context.Context) (streamFrame, error) {
+		result, err := s.exec.PrepareQwen38Runtime(ctx, request)
+		if err != nil {
+			return streamFrame{}, err
+		}
+		return streamFrame{Type: "result", OpID: request.OperationID, Engine: "vllm", Op: "qwen38-prepare", Result: marshalQwen38PrepareResult(result)}, nil
+	})
+}
+
+func (s *controlServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req updateRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxControlBody)).Decode(&req); err != nil || req.Engine == "" {
+		http.Error(w, "invalid update request", http.StatusBadRequest)
+		return
+	}
+	s.streamOp(w, r, req.OpID, req.Engine, "update", func(ctx context.Context) (streamFrame, error) {
+		if err := s.exec.Update(ctx, req.Engine); err != nil {
+			return streamFrame{}, err
+		}
+		status, err := s.exec.Status(req.Engine)
+		if err != nil {
+			return streamFrame{}, err
+		}
+		return streamFrame{Type: "result", OpID: req.OpID, Engine: req.Engine, Op: "update", Status: &status}, nil
+	})
 }
 
 // pullRequest is the POST /v1/models/pull body. Params, when set, is passed
@@ -115,6 +166,31 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"model" or "params" is required`, http.StatusBadRequest)
 		return
 	}
+	if req.Engine == "vllm" {
+		var pull vllmPullParams
+		if len(req.Params) != 0 {
+			if err := decodeActionParams(req.Params, &pull); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		if pull.Model == "" {
+			pull.Model = req.Model
+		}
+		if pull.Name == "" {
+			pull.Name = pull.Model
+		}
+		if pull.OperationID != "" && pull.OperationID != req.OpID {
+			http.Error(w, "vLLM pull operationId does not match its authenticated remote operation", http.StatusBadRequest)
+			return
+		}
+		pull.OperationID = req.OpID
+		if !vllmPullOperationToken.MatchString(pull.OperationID) {
+			http.Error(w, "vLLM pull requires a 32-character operation id", http.StatusBadRequest)
+			return
+		}
+		req.Params, _ = json.Marshal(pull)
+	}
 	s.streamOp(w, r, req.OpID, req.Engine, "pull", func(ctx context.Context) (streamFrame, error) {
 		res, err := s.exec.PullModelStream(ctx, req.Engine, req.Model, req.Params)
 		if err != nil {
@@ -149,9 +225,13 @@ func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, e
 
 	enc := json.NewEncoder(w)
 	writeProgress := func(ev ProgressEvent) {
+		if engine == "vllm" && (op == "pull" || op == "distribute") &&
+			(ev.Op != op || ev.OperationID != opID) {
+			return
+		}
 		f := streamFrame{
-			Type: "progress", OpID: opID, Engine: ev.Engine, Op: ev.Op,
-			Stage: ev.Stage, Message: ev.Message,
+			Type: "progress", OpID: opID, Engine: ev.Engine, Op: op,
+			Stage: ev.Stage, Message: ev.Message, Network: ev.Network,
 		}
 		if wirePercentIncluded(ev.Percent) {
 			f.Percent = ev.Percent

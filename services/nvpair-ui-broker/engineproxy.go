@@ -161,12 +161,22 @@ func (b *Broker) lmstudioState() *engineProxyRuntime { return b.engineProxy(lmst
 // alias that later engines must route around.
 var engineProxyProfiles = buildEngineProxyProfiles()
 
+var vllmProxyProfile = mustEngineProxyProfile("vllm")
+
 func buildEngineProxyProfiles() []engineProxyProfile {
 	brokerOnly := map[string]engineProxyProfile{
 		"ollama": {Ownership: adoptedEngine, HealthProbePath: "/"},
 		// LM Studio is the one engine engine-manager may move while running:
 		// its identified command-mode runtime has an official stop command.
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
+		// llama.cpp is managed like LM Studio: engine-manager installs it and
+		// owns its lifecycle, and prepareEnabledFacades claims its stock
+		// client port (8080) as the facade while relocating the engine to
+		// EnginePortBase (or one above an inherited LLAMA_ARG_PORT). Ownership
+		// reads managedEngine because the broker may reposition this engine
+		// while it runs.
+		"llamacpp": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
+		"vllm":     {Ownership: adoptedEngine, HealthProbePath: "/v1/models"},
 	}
 	out := make([]engineProxyProfile, 0, len(engines.All()))
 	for _, e := range engines.All() {
@@ -295,6 +305,26 @@ func (b *Broker) enableProxyFacadeWithFallback(
 	return b.enableProxyFacade(parent, p, spec)
 }
 
+// forwardVLLMProxyNotificationForGeneration drops notifications from a
+// retired shared-proxy incarnation before they can mutate vLLM state. Error
+// notifications take the broker's common error pipeline; everything else
+// continues through the generic per-engine relay.
+func (b *Broker) forwardVLLMProxyNotificationForGeneration(
+	generation uint64, method string, params json.RawMessage,
+) {
+	if b.vllmProxyGeneration.Load() != generation {
+		return
+	}
+	method, addressed := facadeMethodFor(vllmProxyProfile, method)
+	if !addressed {
+		return
+	}
+	if b.dispatchErrorsNotif(vllmProxyProfile.ComponentName(), method, params) {
+		return
+	}
+	b.forwardEngineProxyNotification(vllmProxyProfile, method, params)
+}
+
 // facadeMethodFor strips a facade-scoped notification's engine address and
 // confirms it belongs to the engine this reader speaks for.
 //
@@ -378,6 +408,9 @@ func (b *Broker) prepareEnabledFacades() {
 	}
 	if b.proxyEnabled(lmstudioProxyProfile) {
 		b.prepareManagedLMStudioFacade()
+	}
+	if b.proxyEnabled(llamacppProxyProfile) {
+		b.prepareManagedLlamaCppFacade()
 	}
 }
 

@@ -17,6 +17,10 @@ import { useDiscoveredNodesStore } from '@/ui/stores/discovered-nodes.store'
 import { useClusterInvitationsStore } from '@/ui/stores/cluster-invitations.store'
 import { useInferenceDemoStore } from '@/ui/stores/inference-demo.store'
 import { useServiceStatusStore } from '@/ui/stores/service-status.store'
+import { useVllmGroupStore } from '@/ui/stores/vllm-group.store'
+import { useFabricStore } from '@/ui/stores/fabric.store'
+import { useDiagnosticMPIReconcileStore } from '@/ui/stores/diagnostic-mpi-reconcile.store'
+import { useDiagnosticMPIStore } from '@/ui/stores/diagnostic-mpi.store'
 
 let unsubStateRefresh: (() => void) | null = null
 let unsubServiceStatus: (() => void) | null = null
@@ -100,6 +104,11 @@ let resyncTail: Promise<void> = Promise.resolve()
 
 function enqueueResync(): void {
     if (!window.pairApi) return
+    // Invalidate the effect when the identity refresh is requested, not when
+    // its queued reads eventually run. A reply from the previous broker or
+    // cluster generation must never publish into the replacement snapshot.
+    useDiagnosticMPIReconcileStore.getState().reset()
+    useDiagnosticMPIStore.getState().reset()
     resyncTail = resyncTail.then(resyncAllStores, resyncAllStores).catch(() => undefined)
 }
 
@@ -117,6 +126,10 @@ function cleanupAllStores(): void {
     useEngineProgressStore.getState().cleanup()
     useEngineUpdateAvailableStore.getState().cleanup()
     usePendingActionsStore.getState().cleanup()
+    useVllmGroupStore.getState().reset()
+    useFabricStore.getState().reset()
+    useDiagnosticMPIReconcileStore.getState().reset()
+    useDiagnosticMPIStore.getState().reset()
     useWorkloadsStore.getState().cleanup()
 }
 
@@ -155,6 +168,7 @@ async function resyncAllStores(): Promise<void> {
     useEngineProgressStore.getState().initialize(engineInitial)
     useEngineUpdateAvailableStore.getState().initialize(engineInitial)
     usePendingActionsStore.getState().initialize()
+    await useDiagnosticMPIStore.getState().refreshInventory()
 }
 
 async function fetchAppInitial(): Promise<AppInitialSnapshot | undefined> {

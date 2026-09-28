@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -224,6 +225,63 @@ func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
 	}
 }
 
+func TestOwnedProcessExitAbortsReadinessImmediately(t *testing.T) {
+	m := &Manifest{
+		Engine: "quick-exit", DisplayName: "Quick Exit", ManifestVersion: 1,
+		Platforms: map[string]Platform{hostKey(): {
+			Detect: []string{fakeEngineBin},
+			Runtime: Runtime{
+				Bin:   fakeEngineBin,
+				Args:  []string{"echo", "startup failed"},
+				Ready: &Probe{TCP: "127.0.0.1:{port}", TimeoutS: 60},
+			},
+		}},
+	}
+	ex, _ := capturingExecutor(t, m)
+	startedAt := time.Now()
+	err := ex.Start(context.Background(), m.Engine)
+	if err == nil || !strings.Contains(err.Error(), errManagedProcessExitedBeforeReadiness.Error()) {
+		t.Fatalf("expected prompt process-exit failure, got %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
+		t.Fatalf("process exit waited for readiness timeout: %s", elapsed)
+	}
+	if !hasErr(ex.Errors(), startFailedID(m.Engine)) || hasErr(ex.Errors(), exitedID(m.Engine)) {
+		t.Fatalf("early exit did not remain one start failure: %+v", ex.Errors())
+	}
+	state, _ := ex.state(m.Engine)
+	state.mu.Lock()
+	proc, running := state.proc, state.running
+	state.mu.Unlock()
+	if proc != nil || running {
+		t.Fatalf("exited engine retained runtime state: proc=%v running=%v", proc != nil, running)
+	}
+}
+
+func TestFailedStartupCleanupObservesDelayedExitSilently(t *testing.T) {
+	ex := &Executor{reporter: NewReporter(nil)}
+	ex.reporter.report(serviceError{ID: startFailedID("delayed-exit"), Message: "startup cleanup unconfirmed", Severity: "error"})
+	proc := &managedProc{exited: make(chan struct{})}
+	state := &engineState{proc: proc, running: true, stopping: true}
+	ex.reconcileFailedProcessStart(state, "delayed-exit", proc, errors.New("cleanup unconfirmed"))
+
+	state.mu.Lock()
+	retained, stopping := state.proc == proc && state.running, state.stopping
+	state.mu.Unlock()
+	if !retained || !stopping {
+		t.Fatal("unconfirmed startup cleanup did not retain suppressed process custody")
+	}
+	close(proc.exited)
+	waitFor(t, time.Second, func() bool {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return state.proc == nil && !state.running
+	})
+	if !hasErr(ex.Errors(), startFailedID("delayed-exit")) || hasErr(ex.Errors(), exitedID("delayed-exit")) {
+		t.Fatalf("delayed cleanup did not remain one start failure: %+v", ex.Errors())
+	}
+}
+
 // TestStartWaitsForDelayedReadinessWithinBudget is a reduced-time regression
 // for engines whose initialization finishes after several failed probes. Start
 // must keep the owned process alive until the configured finite budget expires.
@@ -344,9 +402,8 @@ func TestUnexpectedExitReported(t *testing.T) {
 	// The /exit route makes the fake engine os.Exit(1) — a crash.
 	_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/exit", st.Port))
 	waitFor(t, 6*time.Second, func() bool { s, _ := ex.Status("fake"); return !s.Running })
-	if !hasErr(ex.Errors(), exitedID("fake")) {
-		t.Fatalf("expected an 'exited' error after a crash, got %+v", ex.Errors())
-	}
+	// The watcher publishes the stopped state before it reports the exit.
+	waitFor(t, 2*time.Second, func() bool { return hasErr(ex.Errors(), exitedID("fake")) })
 }
 
 func TestNormalStopIsSilent(t *testing.T) {
@@ -453,7 +510,7 @@ func TestBundledManifestsGolden(t *testing.T) {
 	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
 		t.Fatalf("bundled manifests invalid: %v", err)
 	}
-	for _, want := range []string{"ollama", "lmstudio"} {
+	for _, want := range []string{"ollama", "lmstudio", "llamacpp"} {
 		m, ok := reg.Get(want)
 		if !ok {
 			t.Fatalf("missing bundled engine %q (have %v)", want, reg.Names())

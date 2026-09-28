@@ -11,17 +11,18 @@ import (
 	settings "nvpair-shared/enginesettings"
 )
 
-// handleSettingsPortRPC serves the port-only RPCs — engine:set-port,
-// proxy:set-port, and lmstudio-proxy:set-port — which nvpair-tui calls to move
-// a single port without rendering the full launch settings form. They keep
-// their own narrow request and response shapes, but run through the same
-// authoritative settings operation as the desktop editor, so a port change
-// made from the terminal cannot diverge from one made from the UI. In
-// particular a proxy change now fails on a busy port instead of silently
-// binding a different one.
+// handleSettingsPortRPC serves the port-only RPCs — engine:set-port and every
+// engine's <engine>-proxy:set-port — which nvpair-tui calls to move a single
+// port without rendering the full launch settings form. They keep their own
+// narrow request and response shapes, but run through the same authoritative
+// settings operation as the desktop editor, so a port change made from the
+// terminal cannot diverge from one made from the UI. In particular a proxy
+// change now fails on a busy port instead of silently binding a different one.
 //
 // proxyEngine selects which port the request addresses: "" is the engine's own
-// server port, and a non-empty value names the proxy in front of that engine.
+// server port, and a non-empty value names the engine whose proxy facade moves.
+// Every engine in engineProxyProfiles is served the same way; an engine without
+// a profile is refused by the settings operation itself.
 func (b *Broker) handleSettingsPortRPC(msg *Message, proxyEngine string) {
 	var p struct {
 		Engine string `json:"engine"`

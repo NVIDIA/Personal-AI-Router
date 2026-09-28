@@ -10,12 +10,13 @@ import (
 	"nvpair-shared/noderec"
 )
 
-// modelInventory is the three-part answer a node's engine manager gives, carried
+// modelInventory is the four-part answer a node's engine manager gives, carried
 // as one value so the concurrent ask can return it.
 type modelInventory struct {
-	models         []string
-	byEngine       map[string][]string
-	loadedByEngine map[string][]string
+	models           []string
+	byEngine         map[string][]string
+	loadedByEngine   map[string][]string
+	retainedByEngine map[string][]string
 }
 
 // hostKey identifies one node's endpoint for one service. Node-info and the engine

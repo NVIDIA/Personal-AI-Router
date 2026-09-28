@@ -10,6 +10,24 @@ import (
 	"nvpair-shared/noderec"
 )
 
+func TestRetainedCatalogProjectsWithoutJoiningServedModels(t *testing.T) {
+	node := directoryToEnriched(noderec.DirectoryNode{
+		HostUUID: "catalog-node", Name: "catalog-node", IP: "127.0.0.1",
+		Models:           []string{"model-b"},
+		ModelsByEngine:   map[string][]string{"vllm": {"model-b"}},
+		RetainedByEngine: map[string][]string{"vllm": {"model-a", "model-b"}},
+	})
+	store := newDiscoveryStore()
+	store.Upsert(node, sourceScanner)
+	got := store.Snapshot()[0]
+	if len(got.Models) != 1 || got.Models[0] != "model-b" || len(got.ModelsByEngine["vllm"]) != 1 {
+		t.Fatalf("served inventory changed during projection: %+v", got)
+	}
+	if catalog := got.RetainedByEngine["vllm"]; len(catalog) != 2 || catalog[0] != "model-a" || catalog[1] != "model-b" {
+		t.Fatalf("retained catalog was not projected separately: %+v", got.RetainedByEngine)
+	}
+}
+
 // TestDiscoveryStoreRekeysOnRename verifies that a discovered node changing
 // hostname (same host UUID, new mDNS instance name) updates its single
 // store entry in place rather than leaving a ghost under the old name.

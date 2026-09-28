@@ -58,8 +58,14 @@ func modelFromParams(params json.RawMessage) string {
 // params is empty it defaults to {"name","model"} (covering Ollama's `name` body
 // key and the {model} CLI placeholder), so a caller can pass just a model name.
 func (e *Executor) PullModelStream(ctx context.Context, engine, model string, params json.RawMessage) (json.RawMessage, error) {
+	if err := e.rejectVLLMGroupMutation(engine, "pull models into"); err != nil {
+		return nil, err
+	}
 	st, err := e.state(engine)
 	if err != nil {
+		return nil, err
+	}
+	if err := adoptedVLLMMutationError(st, "pull models into"); err != nil {
 		return nil, err
 	}
 	act, ok := st.manifest.Actions[pullModelAction]
@@ -69,9 +75,26 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	if len(params) == 0 || string(params) == "null" {
 		params, _ = json.Marshal(map[string]string{"name": model, "model": model})
 	}
+	if engine == "vllm" && act.Builtin == "vllm" {
+		return e.vllmAcquisitionAction(ctx, st, pullModelAction, params)
+	}
+
+	release, err := e.admitDiagnosticMutation("engine actions")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
 	defer cancel()
+	if act.Builtin == "llama-models" {
+		res, err := e.Action(ctx, engine, pullModelAction, params)
+		if err == nil {
+			e.reporter.clear(pullFailedID(engine, model))
+			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "done", Percent: 100, Message: model})
+		}
+		return res, err
+	}
 
 	// CLI action (e.g. lms get): no structured line progress; emit a start
 	// marker and return the final result via the existing runner.

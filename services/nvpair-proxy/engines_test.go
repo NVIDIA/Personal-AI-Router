@@ -18,6 +18,14 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	if !ok {
 		t.Fatal("lmstudio profile missing")
 	}
+	llamacpp, ok := profileFor("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp profile missing")
+	}
+	vllm, ok := profileFor("vllm")
+	if !ok {
+		t.Fatal("vllm profile missing")
+	}
 
 	for _, tc := range []struct {
 		name     string
@@ -38,9 +46,23 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		{"lmstudio chat", lmstudio, "POST", "/v1/chat/completions", roleInferencePOST, true},
 		{"lmstudio anthropic messages", lmstudio, "POST", "/v1/messages", roleInferencePOST, true},
 		{"lmstudio list", lmstudio, "GET", "/v1/models", roleModelListOpenAIGET, true},
+		{"vllm chat", vllm, "POST", "/v1/chat/completions", roleInferencePOST, true},
+		{"vllm completions", vllm, "POST", "/v1/completions", roleInferencePOST, true},
+		{"vllm embeddings", vllm, "POST", "/v1/embeddings", roleInferencePOST, true},
+		{"vllm list", vllm, "GET", "/v1/models", roleModelListOpenAIGET, true},
+		{"vllm has no native routes", vllm, "POST", "/api/chat", 0, false},
+		{"vllm messages passthrough", vllm, "POST", "/v1/messages", 0, false},
 		// LM Studio serves no native Ollama routes, so /api/chat is not
 		// inference for it — it is forwarded verbatim like any other path.
 		{"lmstudio has no native routes", lmstudio, "POST", "/api/chat", 0, false},
+
+		// The llama.cpp router serves the same OpenAI and Anthropic inference
+		// surface; its own /models and /models/load stay verbatim passthroughs.
+		{"llamacpp chat", llamacpp, "POST", "/v1/chat/completions", roleInferencePOST, true},
+		{"llamacpp anthropic messages", llamacpp, "POST", "/v1/messages", roleInferencePOST, true},
+		{"llamacpp list", llamacpp, "GET", "/v1/models", roleModelListOpenAIGET, true},
+		{"llamacpp has no native routes", llamacpp, "POST", "/api/chat", 0, false},
+		{"llamacpp router list passthrough", llamacpp, "GET", "/models", 0, false},
 
 		// The method is part of the classification. Without it a POST to the
 		// model-list path would be served as a list, and a GET to an
@@ -81,6 +103,7 @@ func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
 func TestModelNaming(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
+	vllm, _ := profileFor("vllm")
 
 	for _, tc := range []struct {
 		profile engineProfile
@@ -97,6 +120,7 @@ func TestModelNaming(t *testing.T) {
 		{lmstudio, "qwen3-8b", "qwen3-8b"},
 		{lmstudio, "qwen3-8b:latest", "qwen3-8b:latest"},
 		{lmstudio, "", ""},
+		{vllm, "Qwen/Qwen3-8B", "Qwen/Qwen3-8B"},
 	} {
 		if got := tc.profile.normalizeModel(tc.in); got != tc.want {
 			t.Errorf("%s normalizeModel(%q) = %q, want %q", tc.profile.Name, tc.in, got, tc.want)
@@ -163,12 +187,16 @@ func TestNoDuplicateRoutePerMethod(t *testing.T) {
 func TestDerivedIdentifiers(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
+	vllm, _ := profileFor("vllm")
 
 	if got := ollama.PortFile; got != "proxy-port.json" {
 		t.Errorf("ollama PortFile = %q, want the pre-unification name", got)
 	}
 	if got := lmstudio.PortFile; got != "lmstudio-proxy-port.json" {
 		t.Errorf("lmstudio PortFile = %q", got)
+	}
+	if got := vllm.PortFile; got != "vllm-proxy-port.json" {
+		t.Errorf("vllm PortFile = %q", got)
 	}
 	if got := upstreamUnreachableID(ollama, "peer-A"); got != "ollama-proxy:upstream-unreachable:peer-A" {
 		t.Errorf("ollama upstreamUnreachableID = %q", got)
@@ -183,6 +211,7 @@ func TestDerivedIdentifiers(t *testing.T) {
 func TestChooseStartupPort(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
+	vllm, _ := profileFor("vllm")
 
 	for _, tc := range []struct {
 		name            string
@@ -202,6 +231,8 @@ func TestChooseStartupPort(t *testing.T) {
 		{"lmstudio refuses the engine's port", lmstudio, 1234, false, 1235, true, 1234},
 		// Ollama reserves nothing, so the equivalent value is honoured.
 		{"ollama reserves nothing", ollama, 11434, false, 11435, true, 11435},
+		{"vllm defaults to its facade", vllm, 8000, false, 0, false, 8000},
+		{"vllm refuses the engine port", vllm, 8000, false, 8001, true, 8000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := chooseStartupPort(tc.profile, tc.flagPort, tc.ignorePersisted, tc.persisted, tc.hasPersisted)

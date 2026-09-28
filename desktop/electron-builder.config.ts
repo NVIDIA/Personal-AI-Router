@@ -9,7 +9,8 @@
 // Its installer targets are reference material rather than a distribution path:
 // signing and notarization live outside this repository, so anything built here
 // is unsigned. Released builds come from NVIDIA's own signed pipeline.
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import path from 'node:path'
 import type { Configuration } from 'electron-builder'
 import electronPkg from 'electron/package.json'
 import pkg from './package.json'
@@ -62,6 +63,26 @@ const output = osSegment ? `release/${pkg.version}/${osSegment}` : `release/${pk
 // (`PAIR.app`) and Linux install dir (`/opt/PAIR`) stay stable across the rename
 // — existing generated CLI launchers embed those absolute paths.
 const packagingProductName = osSegment === 'windows' ? APP_DISPLAY_NAME : APP_EXECUTABLE_NAME
+
+function onboardingBootstrapResources(): { from: string; to: string }[] {
+    const configured = process.env.PAIR_BOOTSTRAP_RESOURCE_DIR
+    if (!configured) return []
+    const source = path.resolve(configured)
+    for (const required of [
+        'onboarding-bootstrap-catalog.json',
+        'onboarding-bootstrap-catalog.json.sha256'
+    ]) {
+        if (!existsSync(path.join(source, required))) {
+            throw new Error(
+                `PAIR_BOOTSTRAP_RESOURCE_DIR is missing ${required}: ${source}. ` +
+                    'Run npm run build:bootstrap:matrix first.'
+            )
+        }
+    }
+    return [{ from: source, to: 'onboarding-bootstrap' }]
+}
+
+const bootstrapResources = onboardingBootstrapResources()
 
 function packagingPlatform(): SupportedPlatform {
     const platform =
@@ -324,6 +345,13 @@ const config: Configuration = {
             to: 'scripts'
         },
         {
+            // Inert native service definitions. The signed bootstrap renders
+            // account-bound values and installs them after review; packaging
+            // never registers or starts the helper.
+            from: '../services/installer/bootstrap',
+            to: 'onboarding-bootstrap/installer-inputs'
+        },
+        {
             // The repository keeps one copy of each of these at its root; the
             // packaged app ships those same files rather than a desktop-local
             // duplicate that could disagree with them.
@@ -333,7 +361,8 @@ const config: Configuration = {
         {
             from: '../THIRD_PARTY_NOTICES.md',
             to: 'THIRD_PARTY_NOTICES.md'
-        }
+        },
+        ...bootstrapResources
     ],
     win: {
         executableName: APP_EXECUTABLE_NAME,
@@ -389,6 +418,21 @@ const config: Configuration = {
         }
     },
     deb: {
+        // Explicit depends replace electron-builder defaults. Preserve its current
+        // runtime set, adding GBM and the ALSA SONAME on both pre/post-t64 distros.
+        depends: [
+            'libgtk-3-0',
+            'libnotify4',
+            'libnss3',
+            'libxss1',
+            'libxtst6',
+            'xdg-utils',
+            'libatspi2.0-0',
+            'libuuid1',
+            'libsecret-1-0',
+            'libgbm1',
+            'libasound2t64 | libasound2'
+        ],
         afterInstall: 'scripts/build/linux/after-install.sh',
         afterRemove: 'scripts/build/linux/after-remove.sh'
     },

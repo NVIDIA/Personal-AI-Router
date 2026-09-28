@@ -40,6 +40,7 @@ export function formatModelDisplayName(name: string, engineType?: string | null)
 
     switch (engineType) {
         case 'lm-studio':
+        case 'llamacpp':
             return isHfModel ? formatted : formatLmStudioModelName(formatted)
 
         case 'ollama':

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Bill of Materials — Third-Party Go Libraries
 
-Scope: dependencies linked into the twelve shipped binaries (`nvpair-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-cluster-manager`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-job-scheduler`, `nvpair-tui`). The local modules `nvpair-shared` and `eapnoob` (the EAP-NOOB implementation under `eap-noob/`, linked by `nvpair-cluster-manager`) are first-party and excluded. The `tests/`, `mdns-test/`, and `broker-test-driver/` modules are development-only and excluded.
+Scope: dependencies linked into the fourteen shipped binaries (`nvpair-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-cluster-manager`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-job-scheduler`, `nvpair-tui`, `nvpair-host-bootstrap`, `nvpair-host-helper`). The local modules `nvpair-shared` and `eapnoob` (the EAP-NOOB implementation under `eap-noob/`, linked by `nvpair-cluster-manager`) are first-party and excluded. The `tests/`, `mdns-test/`, and `broker-test-driver/` modules are development-only and excluded.
 
 `nvpair-tui` is the only component that links the Bubble Tea terminal-UI stack (`charmbracelet/bubbletea` + `lipgloss` + `bubbles`); its transitive `charmbracelet/*`, `muesli/*`, `mattn/*`, `clipperhouse/*`, `atotto/clipboard`, `aymanbagabas/go-osc52`, `lucasb-eyer/go-colorful`, `erikgeiser/coninput`, and `xo/terminfo` dependencies are unique to it.
 
@@ -13,7 +13,10 @@ Where a library is selected at multiple versions across components (Go MVS picks
 
 The workers are pure Go services with no GUI/native-webview dependencies, so there are no system-package native dependencies to track beyond the Go libraries below. Build tags keep platform-specific packages out of other targets; in particular, `nvpair-node-info` links the purego-backed gopsutil collector only on macOS.
 
-`nvpair-engine-manager` links no third-party library that the other binaries don't already (only `go-winio` for its Windows named-pipe IPC, plus `golang.org/x/sys`, which it uses directly on Windows to resolve the PID owning a listening port when reclaiming an orphaned managed engine).
+The host bootstrap adds direct `go-ole` firewall inspection and
+`golang.org/x/crypto/ssh` public-key parsing. Both bootstrap binaries also use
+`go-winio` and `golang.org/x/sys` for their fixed Windows pipe/service and
+cross-platform secure-filesystem boundaries.
 
 As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` are linked into the mDNS services **through the first-party `nvpair-shared/mdns` (responder) and `nvpair-shared/discovery` (browser) packages** rather than imported directly by each binary; the Used-By lists below reflect the binaries they end up linked into. Advertising uses only `miekg/dns` + `x/net` (a custom responder); browsing additionally uses `zeroconf`.
 
@@ -21,16 +24,18 @@ As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` a
 
 | Library | Version | Used By | License | License URL |
 |---------|---------|---------|---------|-------------|
-| `github.com/Microsoft/go-winio` | v0.6.2 | nvpair-proxy, nvpair-node-scanner, nvpair-manual-nodes, nvpair-node-settings, nvpair-cluster-manager, nvpair-ui-broker, nvpair-workload-manager, nvpair-errors, nvpair-engine-manager, nvpair-job-scheduler | MIT | [LICENSE](https://github.com/microsoft/go-winio/blob/main/LICENSE) |
+| `github.com/Microsoft/go-winio` | v0.6.2 | nvpair-proxy, nvpair-node-scanner, nvpair-manual-nodes, nvpair-node-settings, nvpair-cluster-manager, nvpair-ui-broker, nvpair-workload-manager, nvpair-errors, nvpair-engine-manager, nvpair-job-scheduler, nvpair-host-bootstrap, nvpair-host-helper | MIT | [LICENSE](https://github.com/microsoft/go-winio/blob/main/LICENSE) |
 | `github.com/charmbracelet/bubbles` | v1.0.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbles/blob/master/LICENSE) |
 | `github.com/charmbracelet/bubbletea` | v1.3.10 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/bubbletea/blob/master/LICENSE) |
 | `github.com/charmbracelet/lipgloss` | v1.1.0 | nvpair-tui | MIT | [LICENSE](https://github.com/charmbracelet/lipgloss/blob/master/LICENSE) |
 | `github.com/grandcat/zeroconf` | v1.0.0 | nvpair-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | MIT | [LICENSE](https://github.com/grandcat/zeroconf/blob/master/LICENSE) |
+| `github.com/go-ole/go-ole` | v1.2.6 | nvpair-host-bootstrap (Windows) | MIT | [LICENSE](https://github.com/go-ole/go-ole/blob/master/LICENSE) |
 | `github.com/jaypipes/ghw` | v0.24.0 | nvpair-node-info | Apache-2.0 | [COPYING](https://github.com/jaypipes/ghw/blob/main/COPYING) |
 | `github.com/miekg/dns` | v1.1.55 / v1.1.72 | nvpair-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | BSD-3-Clause | [LICENSE](https://github.com/miekg/dns/blob/master/LICENSE) |
 | `github.com/shirou/gopsutil/v4` | v4.26.7 | nvpair-node-info (macOS) | BSD-3-Clause | [LICENSE](https://github.com/shirou/gopsutil/blob/master/LICENSE) |
+| `golang.org/x/crypto` | v0.43.0 | nvpair-host-bootstrap | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/crypto/+/master:LICENSE) |
 | `golang.org/x/net` | v0.58.0 | nvpair-proxy, nvpair-node-scanner, nvpair-errors, nvpair-cluster-manager | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/net/+/master:LICENSE) |
-| `golang.org/x/sys` | v0.47.0 | nvpair-node-info, nvpair-cluster-manager, nvpair-engine-manager | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/sys/+/master:LICENSE) |
+| `golang.org/x/sys` | v0.47.0 | nvpair-node-info, nvpair-cluster-manager, nvpair-engine-manager, nvpair-host-bootstrap, nvpair-host-helper | BSD-3-Clause | [LICENSE](https://cs.opensource.google/go/x/sys/+/master:LICENSE) |
 | `howett.net/plist` | v1.0.2-0.20250314 | nvpair-node-info | BSD-2-Clause | [LICENSE](https://github.com/DHowett/go-plist/blob/main/LICENSE) |
 
 ## Transitive (Indirect) Dependencies
@@ -49,7 +54,7 @@ As of the mDNS dedup, `grandcat/zeroconf`, `miekg/dns`, and `golang.org/x/net` a
 | `github.com/clipperhouse/uax29/v2` | v2.5.0 | charmbracelet/x/ansi | MIT | [LICENSE](https://github.com/clipperhouse/uax29/blob/master/LICENSE) |
 | `github.com/ebitengine/purego` | v0.10.2 | gopsutil (macOS) | Apache-2.0 | [LICENSE](https://github.com/ebitengine/purego/blob/main/LICENSE) |
 | `github.com/erikgeiser/coninput` | v0.0.0-20211004153227 | bubbletea | MIT | [LICENSE](https://github.com/erikgeiser/coninput/blob/main/LICENSE) |
-| `github.com/go-ole/go-ole` | v1.2.6 / v1.3.0 | ghw | MIT | [LICENSE](https://github.com/go-ole/go-ole/blob/master/LICENSE) |
+| `github.com/go-ole/go-ole` | v1.3.0 | ghw | MIT | [LICENSE](https://github.com/go-ole/go-ole/blob/master/LICENSE) |
 | `github.com/jaypipes/pcidb` | v1.1.1 | ghw | Apache-2.0 | [LICENSE](https://github.com/jaypipes/pcidb/blob/main/LICENSE) |
 | `github.com/lucasb-eyer/go-colorful` | v1.3.0 | lipgloss, termenv | MIT | [LICENSE](https://github.com/lucasb-eyer/go-colorful/blob/master/LICENSE) |
 | `github.com/mattn/go-isatty` | v0.0.20 | bubbletea | MIT | [LICENSE](https://github.com/mattn/go-isatty/blob/master/LICENSE) |

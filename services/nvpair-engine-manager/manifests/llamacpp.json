@@ -1,0 +1,197 @@
+{
+  "engine": "llamacpp",
+  "display_name": "llama.cpp",
+  "manifest_version": 1,
+  "install": {
+    "driver": "llama-app",
+    "mode": "user",
+    "fetch": {
+      "url": "https://raw.githubusercontent.com/ggml-org/llama-install.sh/27a82f3a6e0f259f88c2c31cd6b20d858a975f27/install.sh",
+      "sha256": "cccdfcbd1b55bf6003ac3037588c9f5b3b79aa0a75fe991e97bb218ccdb55e4d"
+    }
+  },
+  "uninstall": {
+    "driver": "llama-app"
+  },
+  "detect": [
+    "{install_dir}/runtime/llama"
+  ],
+  "runtime": {
+    "mode": "process",
+    "bin": "{install_dir}/runtime/llama",
+    "cli": "{install_dir}/runtime/llama",
+    "args": [
+      "serve",
+      "--models-autoload",
+      "--host",
+      "{host}",
+      "--port",
+      "{port}"
+    ],
+    "editable_launch": {
+      "fixed_args": [
+        "serve",
+        "--models-autoload"
+      ],
+      "controls": [
+        {
+          "flags": [
+            "--port"
+          ],
+          "value": "{server.port}"
+        },
+        {
+          "flags": [
+            "--host"
+          ],
+          "value": "{server.host}"
+        }
+      ]
+    },
+    "bind": "127.0.0.1",
+    "port": 8081,
+    "ready": {
+      "http": "http://127.0.0.1:{port}/models",
+      "status": 200,
+      "timeout_s": 120,
+      "identity": "llamacpp"
+    },
+    "health": {
+      "http": "http://127.0.0.1:{port}/models",
+      "status": 200,
+      "interval_s": 5,
+      "identity": "llamacpp"
+    }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "detect": [
+        "{install_dir}/runtime/llama.exe"
+      ],
+      "runtime": {
+        "bin": "{install_dir}/runtime/llama.exe",
+        "cli": "{install_dir}/runtime/llama.exe"
+      },
+      "install": {
+        "fetch": {
+          "url": "https://raw.githubusercontent.com/ggml-org/llama-install.sh/27a82f3a6e0f259f88c2c31cd6b20d858a975f27/install.ps1",
+          "sha256": "455084203db0c864f4eb218bc82792b4304458a96211c385275d8337a5049851"
+        },
+        "cuda_archives": [
+          {
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10826/llama-b10826-bin-win-cuda-13.3-x64.zip",
+            "sha256": "34549bd7c46717333277d7bfc4c8617a12be0fad33a5253748e59e1085ffda4f"
+          },
+          {
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10826/cudart-llama-bin-win-cuda-13.3-x64.zip",
+            "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e"
+          }
+        ]
+      }
+    },
+    "windows/arm64": {
+      "detect": [
+        "{install_dir}/runtime/llama.exe"
+      ],
+      "runtime": {
+        "bin": "{install_dir}/runtime/llama.exe",
+        "cli": "{install_dir}/runtime/llama.exe"
+      },
+      "install": {
+        "fetch": null,
+        "cpu_fetch": {
+          "url": "https://raw.githubusercontent.com/ggml-org/llama-install.sh/27a82f3a6e0f259f88c2c31cd6b20d858a975f27/install.ps1",
+          "sha256": "455084203db0c864f4eb218bc82792b4304458a96211c385275d8337a5049851"
+        },
+        "archives": [
+          {
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10826/llama-b10826-bin-win-cuda-13.4-arm64.zip",
+            "sha256": "b0b2b071d45ad14b85f935a9a4451e83ca82935dfc4b66327f3490e8e26263c9"
+          },
+          {
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10826/cudart-llama-bin-win-cuda-13.4-arm64.zip",
+            "sha256": "5a40dc7c5fa3d0a80ceeba4f16f9e8d25d87bcf1399c9233588953c43436c33c"
+          }
+        ]
+      }
+    },
+    "linux/amd64": {},
+    "linux/arm64": {},
+    "darwin/arm64": {},
+    "darwin/amd64": {
+      "install": {
+        "fetch": null,
+        "archive_root": "llama-b10826",
+        "archives": [{
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10826/llama-b10826-bin-macos-x64.tar.gz",
+          "sha256": "adcd2066b2a1a3d8e774e36c8f97d166defccd01d947d9e39667b0435e8361b0"
+        }]
+      }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "http": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "result": {
+        "array": "data",
+        "field": "id"
+      }
+    },
+    "loaded_models": {
+      "http": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "result": {
+        "array": "data",
+        "field": "id",
+        "match": {
+          "field": "status.value",
+          "in": [
+            "loaded"
+          ]
+        }
+      }
+    },
+    "list_downloaded": {
+      "builtin": "llama-models",
+      "result": {
+        "array": "data",
+        "field": "id"
+      }
+    },
+    "pull_model": {
+      "builtin": "llama-models"
+    },
+    "import_model": {
+      "builtin": "llama-models"
+    },
+    "delete_model": {
+      "builtin": "llama-models"
+    },
+    "load_model": {
+      "http": {
+        "method": "POST",
+        "path": "/models/load"
+      }
+    },
+    "unload_model": {
+      "http": {
+        "method": "POST",
+        "path": "/models/unload"
+      }
+    },
+    "get_version": {
+      "cmd": [
+        "{cli}",
+        "version"
+      ]
+    },
+    "cancel_pull": {
+      "builtin": "llama-cancel"
+    }
+  }
+}

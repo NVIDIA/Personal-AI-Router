@@ -86,7 +86,7 @@ source and a `README.md` describing its JSON-RPC surface. Shared packages live i
 Prefer the Go source when a README disagrees with it.
 
 Build from `services/` — `build.bat` on Windows, `./build.sh` on Linux and
-macOS. Staged binaries land in `services/build/bin/`. Requires Go 1.25 or newer
+macOS. Staged binaries land in `services/build/bin/`. Requires Go 1.26 or newer
 and `jq`.
 
 Run `go test ./...` from a component directory, and from `services/tests` for

@@ -5,8 +5,10 @@ package clustertrust
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -234,6 +236,18 @@ func (m *Mesh) trustedDER(uuid string) ([]byte, bool) {
 func (m *Mesh) HasPin(uuid string) bool {
 	_, ok := m.trustedDER(uuid)
 	return ok
+}
+
+// PinSHA256 returns the exact certificate pin for a current peer or this node.
+// It exposes identity, not key material, and shares HasPin's live-membership
+// gate so callers cannot retain a stale pin after leaving the cluster.
+func (m *Mesh) PinSHA256(uuid string) (string, bool) {
+	der, ok := m.trustedDER(uuid)
+	if !ok {
+		return "", false
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:]), true
 }
 
 // matchDER is the server-side gate: accept der for uuid when it byte-for-byte

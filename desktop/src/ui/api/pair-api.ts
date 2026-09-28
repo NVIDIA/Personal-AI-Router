@@ -12,8 +12,51 @@ import type {
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadRemoval } from '@/shared/types/workloads'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
+import type { OnboardingHistorySummary } from '@/shared/types/onboarding-history'
+import type {
+    BootstrapCatalog,
+    BootstrapControllerKeys,
+    BootstrapOperationInvoke,
+    BootstrapPlan,
+    BootstrapPlanInvoke,
+    BootstrapReceipt,
+    BootstrapRequestInvoke,
+    BootstrapStatus,
+    OnboardingAccessRequest,
+    OnboardingAccessResult,
+    OnboardingArtifact,
+    OnboardingCandidate,
+    OnboardingCandidates,
+    OnboardingDiscoverRequest,
+    OnboardingOperation,
+    OnboardingOperationRequest,
+    OnboardingReview,
+    OnboardingReviewRequest,
+    OnboardingScopes
+} from '@/shared/types/onboarding-live'
+import type { DiagnosticMPIReconcileResult } from '@/shared/types/diagnostic-mpi-reconcile'
+import type {
+    NCCLReplacementAdoption,
+    NCCLReplacementOperation,
+    NCCLReplacementReview,
+    NCCLReplacementSelector,
+    NCCLReplacementStatus
+} from '@/shared/types/diagnostic-runtime-replacement'
+import type {
+    DiagnosticMPIApproveRequest,
+    DiagnosticMPIManagedInventory,
+    DiagnosticMPIOperation,
+    DiagnosticMPIOperationBinding,
+    DiagnosticMPIRecovery,
+    DiagnosticMPIRecoveryReference,
+    DiagnosticMPIReview,
+    DiagnosticMPIReviewClosure,
+    DiagnosticMPIReviewRequest,
+    DiagnosticMPISelection
+} from '@/shared/types/diagnostic-mpi'
+import { createFabricApi, type IFabricApi } from '@/ui/api/fabric-api'
 
 // ---------------------------------------------------------------------------
 // Sub-API interfaces
@@ -85,9 +128,7 @@ export interface IWorkloadsApi {
     /** A workload was created or updated. */
     onUpsert(callback: (workload: Workload) => void): () => void
     /** A workload was completed and removed. */
-    onRemove(
-        callback: (removal: { workloadId: string; originatedFrom: string | null }) => void
-    ): () => void
+    onRemove(callback: (removal: WorkloadRemoval) => void): () => void
 }
 
 export interface IErrorsApi {
@@ -102,6 +143,54 @@ export interface IErrorsApi {
 export interface IMetricsApi {
     /** Periodic hardware metrics update (CPU, GPU, memory) for a node. */
     onUpdate(callback: (metrics: NodeItemMetrics) => void): () => void
+}
+
+export interface ISetupApi {
+    /** Read-only retained setup history and its discovery/recovery gates. */
+    getHistory(): Promise<OnboardingHistorySummary>
+    getCandidates(): Promise<OnboardingCandidates>
+    addTarget(address: string, port: number, label?: string): Promise<OnboardingCandidate>
+    authorizeAccess(request: OnboardingAccessRequest): Promise<OnboardingAccessResult>
+    inspect(request: OnboardingReviewRequest): Promise<OnboardingReview>
+    approve(reviewId: string): Promise<OnboardingOperation>
+    getOperation(request: OnboardingOperationRequest): Promise<OnboardingOperation>
+    cancel(request: OnboardingOperationRequest): Promise<OnboardingOperation>
+    retry(request: OnboardingOperationRequest): Promise<OnboardingOperation>
+    getScopes(): Promise<OnboardingScopes>
+    discover(request: OnboardingDiscoverRequest): Promise<OnboardingCandidates>
+    importArtifact(file: string): Promise<OnboardingArtifact>
+    getBootstrapCatalog(): Promise<BootstrapCatalog>
+    getBootstrapControllerKeys(): Promise<BootstrapControllerKeys>
+    inspectBootstrap(request: BootstrapRequestInvoke): Promise<BootstrapStatus>
+    reviewBootstrap(request: BootstrapRequestInvoke): Promise<BootstrapPlan>
+    applyBootstrap(request: BootstrapPlanInvoke): Promise<BootstrapStatus>
+    getBootstrapStatus(request: BootstrapOperationInvoke): Promise<BootstrapStatus>
+    recoverBootstrap(request: BootstrapOperationInvoke): Promise<BootstrapStatus>
+    verifyBootstrap(request: BootstrapPlanInvoke): Promise<BootstrapReceipt>
+    /** Recheck and close only retained, PAIR-owned diagnostic MPI cleanup leases. */
+    reconcileDiagnosticMpi(): Promise<DiagnosticMPIReconcileResult>
+    getDiagnosticMpiInventory(): Promise<DiagnosticMPIManagedInventory>
+    reviewNCCLReplacement(buildOperationId: string): Promise<NCCLReplacementReview>
+    approveNCCLReplacement(selector: NCCLReplacementSelector): Promise<NCCLReplacementOperation>
+    getNCCLReplacementStatus(selector: NCCLReplacementSelector): Promise<NCCLReplacementStatus>
+    closeNCCLReplacementReview(selector: NCCLReplacementSelector): Promise<NCCLReplacementStatus>
+    cancelNCCLReplacement(selector: NCCLReplacementSelector): Promise<NCCLReplacementOperation>
+    retryNCCLReplacement(
+        selector: NCCLReplacementSelector & { expectedRevision: number }
+    ): Promise<NCCLReplacementOperation>
+    adoptNCCLReplacement(
+        selector: NCCLReplacementSelector & { expectedRevision: number }
+    ): Promise<NCCLReplacementAdoption>
+    reviewDiagnosticMpi(request: DiagnosticMPIReviewRequest): Promise<DiagnosticMPIReview>
+    approveDiagnosticMpi(request: DiagnosticMPIApproveRequest): Promise<DiagnosticMPIOperation>
+    getDiagnosticMpiStatus(
+        operation: DiagnosticMPIOperationBinding
+    ): Promise<DiagnosticMPIOperation>
+    cancelDiagnosticMpi(operation: DiagnosticMPIOperationBinding): Promise<DiagnosticMPIOperation>
+    recoverDiagnosticMpi(selection: DiagnosticMPISelection): Promise<DiagnosticMPIRecovery>
+    closeDiagnosticMpiReview(
+        reference: DiagnosticMPIRecoveryReference
+    ): Promise<DiagnosticMPIReviewClosure>
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +211,8 @@ export interface IPairApi {
     workloads: IWorkloadsApi
     errors: IErrorsApi
     metrics: IMetricsApi
+    setup: ISetupApi
+    fabric: IFabricApi
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +274,65 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
         },
         metrics: {
             onUpdate: cb => transport.subscribePush('metrics:update', cb)
-        }
+        },
+        setup: {
+            getHistory: () => transport.invoke('setup:get-history'),
+            getCandidates: () => transport.invoke('engine:onboarding-candidates'),
+            addTarget: (address, port, label) =>
+                transport.invoke('engine:onboarding-add-target', { address, port, label }),
+            authorizeAccess: request => transport.invoke('engine:onboarding-access', request),
+            inspect: request => transport.invoke('engine:onboarding-inspect', request),
+            approve: reviewId => transport.invoke('engine:onboarding-approve', { reviewId }),
+            getOperation: request => transport.invoke('engine:onboarding-status', request),
+            cancel: request => transport.invoke('engine:onboarding-cancel', request),
+            retry: request => transport.invoke('engine:onboarding-retry', request),
+            getScopes: () => transport.invoke('engine:onboarding-scopes'),
+            discover: request => transport.invoke('engine:onboarding-discover', request),
+            importArtifact: file => transport.invoke('engine:onboarding-import-artifact', { file }),
+            getBootstrapCatalog: () => transport.invoke('engine:onboarding-bootstrap-catalog'),
+            getBootstrapControllerKeys: () =>
+                transport.invoke('engine:onboarding-bootstrap-controller-keys'),
+            inspectBootstrap: request =>
+                transport.invoke('engine:onboarding-bootstrap-inspect', request),
+            reviewBootstrap: request =>
+                transport.invoke('engine:onboarding-bootstrap-review', request),
+            applyBootstrap: request =>
+                transport.invoke('engine:onboarding-bootstrap-apply', request),
+            getBootstrapStatus: request =>
+                transport.invoke('engine:onboarding-bootstrap-status', request),
+            recoverBootstrap: request =>
+                transport.invoke('engine:onboarding-bootstrap-recover', request),
+            verifyBootstrap: request =>
+                transport.invoke('engine:onboarding-bootstrap-verify', request),
+            reconcileDiagnosticMpi: () => transport.invoke('engine:diagnostic-mpi-reconcile', {}),
+            getDiagnosticMpiInventory: () => transport.invoke('engine:diagnostic-managed-runtimes'),
+            reviewNCCLReplacement: buildOperationId =>
+                transport.invoke('engine:diagnostic-nccl-replacement-review', { buildOperationId }),
+            approveNCCLReplacement: selector =>
+                transport.invoke('engine:diagnostic-nccl-replacement-approve', selector),
+            getNCCLReplacementStatus: selector =>
+                transport.invoke('engine:diagnostic-nccl-replacement-status', selector),
+            closeNCCLReplacementReview: selector =>
+                transport.invoke('engine:diagnostic-nccl-replacement-close', selector),
+            cancelNCCLReplacement: selector =>
+                transport.invoke('engine:diagnostic-nccl-replacement-cancel', selector),
+            retryNCCLReplacement: request =>
+                transport.invoke('engine:diagnostic-nccl-replacement-retry', request),
+            adoptNCCLReplacement: request =>
+                transport.invoke('engine:diagnostic-nccl-replacement-adopt', request),
+            reviewDiagnosticMpi: request =>
+                transport.invoke('engine:diagnostic-mpi-review', request),
+            approveDiagnosticMpi: request =>
+                transport.invoke('engine:diagnostic-mpi-approve', request),
+            getDiagnosticMpiStatus: operation =>
+                transport.invoke('engine:diagnostic-mpi-status', operation),
+            cancelDiagnosticMpi: operation =>
+                transport.invoke('engine:diagnostic-mpi-cancel', operation),
+            recoverDiagnosticMpi: selection =>
+                transport.invoke('engine:diagnostic-mpi-recover', selection),
+            closeDiagnosticMpiReview: reference =>
+                transport.invoke('engine:diagnostic-mpi-close-review', reference)
+        },
+        fabric: createFabricApi(transport)
     }
 }

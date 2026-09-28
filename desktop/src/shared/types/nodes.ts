@@ -15,5 +15,6 @@ export interface NodeItem {
     port: number
     allIpAddresses: string[]
     topology: SystemTopology
-    os: PlatformDisplayName
+    /** Absent until a legacy/offline remote node reports its platform. */
+    os?: PlatformDisplayName
 }

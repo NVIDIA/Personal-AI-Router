@@ -1,0 +1,78 @@
+{
+  "engine": "vllm",
+  "display_name": "vLLM",
+  "manifest_version": 1,
+  "platforms": {
+    "linux/amd64": {
+      "install": {
+        "driver": "vllm-python",
+        "mode": "user",
+        "requires": ["getconf", "nvidia-smi"],
+        "fetch": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.17/uv-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "fa82fd8dde8e8eefdecada6aa0889666556cfceb690d06e0c3bca49eb3070a63"
+        }
+      },
+      "uninstall": { "driver": "vllm-python" },
+      "runtime": {
+        "driver": "vllm-python",
+        "isolated_env": true,
+        "env": {
+          "PATH": "{runtime_dir}/venv/bin:/usr/bin:/bin",
+          "HOME": "{install_dir}/runtime-home",
+          "HF_HOME": "{models_dir}/huggingface",
+          "HF_HUB_OFFLINE": "1",
+          "TRANSFORMERS_OFFLINE": "1",
+          "VLLM_USE_FLASHINFER_SAMPLER": "0",
+          "VLLM_ALLREDUCE_USE_FLASHINFER": "0",
+          "PYTHONNOUSERSITE": "1",
+          "PYTHONDONTWRITEBYTECODE": "1"
+        },
+        "args": ["serve", "{models_dir}/selected", "--host", "{host}", "--port", "{port}"],
+        "bind": "127.0.0.1",
+        "port": 8001,
+        "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 600, "identity": "vllm" },
+        "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 5, "identity": "vllm" }
+      }
+    },
+    "linux/arm64": {
+      "install": {
+        "driver": "vllm-python",
+        "mode": "user",
+        "requires": ["getconf", "nvidia-smi"],
+        "fetch": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.17/uv-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "d636d1b678e9e7f367ecb22b46bd1cabbed234d6bc3b4d96365d2b507f72f86c"
+        }
+      },
+      "uninstall": { "driver": "vllm-python" },
+      "runtime": {
+        "driver": "vllm-python",
+        "isolated_env": true,
+        "env": {
+          "PATH": "{runtime_dir}/venv/bin:/usr/bin:/bin",
+          "HOME": "{install_dir}/runtime-home",
+          "HF_HOME": "{models_dir}/huggingface",
+          "HF_HUB_OFFLINE": "1",
+          "TRANSFORMERS_OFFLINE": "1",
+          "VLLM_USE_FLASHINFER_SAMPLER": "0",
+          "VLLM_ALLREDUCE_USE_FLASHINFER": "0",
+          "PYTHONNOUSERSITE": "1",
+          "PYTHONDONTWRITEBYTECODE": "1"
+        },
+        "args": ["serve", "{models_dir}/selected", "--host", "{host}", "--port", "{port}"],
+        "bind": "127.0.0.1",
+        "port": 8001,
+        "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 600, "identity": "vllm" },
+        "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 5, "identity": "vllm" }
+      }
+    }
+  },
+  "actions": {
+    "list_models": { "http": { "method": "GET", "path": "/v1/models" }, "result": { "array": "data", "field": "id" } },
+    "loaded_models": { "http": { "method": "GET", "path": "/v1/models" }, "result": { "array": "data", "field": "id" } },
+    "list_downloaded": { "builtin": "vllm", "result": { "array": "data", "field": "id" } },
+    "pull_model": { "builtin": "vllm" },
+    "cancel_pull": { "builtin": "vllm" }
+  }
+}

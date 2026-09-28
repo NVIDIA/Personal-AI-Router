@@ -87,6 +87,8 @@ const (
 	ServiceNodeInfo ServiceKey = "ni"
 	ServiceOllama   ServiceKey = "ol"
 	ServiceLMStudio ServiceKey = "lm"
+	ServiceLlamaCpp ServiceKey = "lc"
+	ServiceVLLM     ServiceKey = "vl"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -104,7 +106,7 @@ const (
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
-	ServiceNodeInfo, ServiceOllama, ServiceLMStudio,
+	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCpp, ServiceVLLM,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
 	ServiceEngineControl,
 }
@@ -507,6 +509,12 @@ type DirectoryNode struct {
 	// missing key means it was not running/queryable. Omitted when no engine
 	// inventory was successfully reported.
 	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
+	// RetainedByEngine is the separate downloaded/catalog inventory reported by
+	// engine-manager. It is never served/routing truth and must not feed
+	// EngineModels; consumers use it only for operations such as selecting a
+	// stopped PAIR-owned vLLM model. A present engine key is authoritative,
+	// including an empty list; omission means unknown/not reported.
+	RetainedByEngine map[string][]string `json:"retainedByEngine,omitempty"`
 	// LoadedByEngine names the models currently resident in memory on this node,
 	// per engine (normally a subset of ModelsByEngine). Enriched from
 	// engine-manager's em /v1/models loadedByEngine field so a remote node's

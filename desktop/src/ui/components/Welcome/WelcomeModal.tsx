@@ -9,6 +9,7 @@ import { useBlurOnOpen } from '@/ui/hooks/useBlurOnOpen'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useErrorsStore } from '@/ui/stores/errors.store'
 import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
+import { useVllmGroupStore, vllmGroupSelfHold } from '@/ui/stores/vllm-group.store'
 import type { EngineType } from '@/shared/types/engines'
 import {
     getWelcomeEngineCandidates,
@@ -39,6 +40,7 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
     const errors = useErrorsStore(s => s.errors)
     const focusNodeEngineSettings = useOverviewUiStore(s => s.focusNodeEngineSettings)
+    const vllmGroupBlocked = useVllmGroupStore(vllmGroupSelfHold)
 
     const [step, setStep] = useState(0)
     const [engineSelections, setEngineSelections] = useState<Partial<
@@ -74,10 +76,13 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
         if (engineSelections !== null) return
         const initial: Partial<Record<EngineType, boolean>> = {}
         for (const t of candidates) {
-            initial[t] = WELCOME_ENGINE_DEFAULT_SELECTED[t] ?? false
+            initial[t] =
+                t === 'vllm' && vllmGroupBlocked
+                    ? false
+                    : (WELCOME_ENGINE_DEFAULT_SELECTED[t] ?? false)
         }
         setEngineSelections(initial)
-    }, [open, step, candidates, engineSelections])
+    }, [open, step, candidates, engineSelections, vllmGroupBlocked])
 
     const isEngineInstalled = useCallback(
         (t: EngineType) => {
@@ -89,10 +94,13 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
 
     const isEngineInstallable = useCallback(
         (t: EngineType) => {
+            if (t === 'vllm' && vllmGroupBlocked) return false
+            if (t === 'llamacpp' && statusByNode.get(selfId)?.get(t)?.installSupported !== true)
+                return false
             const status = statusByNode.get(selfId)?.get(t)?.processStatus
             return isWelcomeEngineInstallable(status)
         },
-        [statusByNode, selfId]
+        [statusByNode, selfId, vllmGroupBlocked]
     )
 
     /**
@@ -224,6 +232,7 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
                                 installing={installing}
                                 onEngineToggle={handleEngineToggle}
                                 isEngineInstalled={isEngineInstalled}
+                                isEngineDisabled={t => t === 'vllm' && vllmGroupBlocked}
                             />
                         )}
 

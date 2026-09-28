@@ -13,12 +13,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-tui/ui"
@@ -32,12 +34,68 @@ var Version = "dev"
 func main() {
 	brokerPath := flag.String("broker-path", "", "path to nvpair-ui-broker binary (default: ./nvpair-ui-broker alongside this executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	headless := flag.Bool("headless", false, "run the Linux backend parent with private same-account onboarding control")
+	control := flag.Bool("control", false, "exchange one private onboarding request using non-terminal stdin/stdout")
+	service := flag.String("headless-service", "", "manage the fixed Linux user service: install, start, stop, status, uninstall, upgrade")
+	lifetime := flag.String("startup-lifetime", "persistent", "headless service lifetime: persistent (requires existing lingering), or explicit session-only mode")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(Version)
 		os.Exit(0)
+	}
+	modes := 0
+	for _, enabled := range []bool{*headless, *control, *service != ""} {
+		if enabled {
+			modes++
+		}
+	}
+	if modes > 1 {
+		fmt.Fprintln(os.Stderr, "choose exactly one headless mode")
+		os.Exit(2)
+	}
+	if *control {
+		if err := privateControlPipes(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		deadline := time.Now().Add(headlessRequestTimeout)
+		_ = os.Stdin.SetReadDeadline(deadline)
+		_ = os.Stdout.SetWriteDeadline(deadline)
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		if err := runHeadlessControl(ctx, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *service != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), headlessServiceTimeout(*service))
+		defer cancel()
+		var result any
+		var err error
+		if *service == "upgrade" {
+			if err = privateControlPipes(); err == nil {
+				inputCtx, inputCancel := context.WithTimeout(ctx, 10*time.Second)
+				request, readErr := readHeadlessUpgrade(inputCtx, os.Stdin)
+				inputCancel()
+				if readErr != nil {
+					err = readErr
+				} else {
+					result, err = runHeadlessUpgrade(ctx, request, *brokerPath, *lifetime)
+				}
+			}
+		} else {
+			result, err = runHeadlessService(ctx, *service, *brokerPath, *lifetime)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(result)
+		return
 	}
 
 	applog.Init("nvpair-tui", resolveLevel())
@@ -60,6 +118,13 @@ func main() {
 		case <-ctx.Done():
 		}
 	}()
+	if *headless {
+		if err := runHeadless(ctx, resolvedBroker); err != nil {
+			slog.Error("headless parent stopped", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	sup, err := Spawn(ctx, resolvedBroker)
 	if err != nil {

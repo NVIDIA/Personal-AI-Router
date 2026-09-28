@@ -18,6 +18,8 @@ notes.txt
 vault-notes.txt
 coverage
 cli-bin
+bootstrap-bin
+bootstrap-artifacts
 
 # Compiled inference-dispatcher client (built from ../scripts/inference-dispatcher
 # by `npm run build:tools`; the Go sources are tracked at the monorepo root).

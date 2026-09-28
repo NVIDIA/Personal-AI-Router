@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,33 @@ func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
 	if _, err := c.postJSON(context.Background(), controlStopPath, "ollama", stopRequest{Engine: "ollama"}); err == nil ||
 		!strings.Contains(err.Error(), "timeout awaiting response headers") {
 		t.Fatalf("ordinary remote call error = %v, want the ordinary bounded response-header timeout", err)
+	}
+}
+
+func TestRemoteStreamDistinguishesPeerTerminalFromBrokenTransport(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		terminal bool
+	}{
+		{"peer error", `{"type":"error","opId":"exact","engine":"vllm","op":"distribute","message":"copy failed"}` + "\n", true},
+		{"truncated frame", `{"type":"error","opId":`, false},
+		{"missing terminal", `{"type":"progress","opId":"exact"}` + "\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			client := &remoteClient{http: srv.Client(), base: srv.URL}
+			frame, err := client.stream(context.Background(), controlVLLMReceivePath, json.RawMessage(`{}`), nil)
+			if err == nil || (frame.Type == "error") != tc.terminal {
+				t.Fatalf("stream error = %v, terminal = %+v", err, frame)
+			}
+			if tc.terminal && frame.OpID != "exact" {
+				t.Fatalf("peer terminal lost its operation identity: %+v", frame)
+			}
+		})
 	}
 }
 
@@ -83,6 +111,7 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 		{controlStartPath, "ollama", true},
 		{controlDeletePath, "lmstudio", true},
 		{controlLoadPath, "ollama", true},
+		{controlLoadPath, "llamacpp", true},
 		{controlLoadPath, "lmstudio", false},
 		{controlStopPath, "ollama", false},
 		{controlUnloadPath, "ollama", false},

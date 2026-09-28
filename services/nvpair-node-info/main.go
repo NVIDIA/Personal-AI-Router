@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -72,11 +73,15 @@ type MemoryInfo struct {
 }
 
 type NodeInfoResponse struct {
-	GPUs           []GPUInfo   `json:"GPUs"`
-	CPU            *CPUInfo    `json:"cpu,omitempty"`
-	Memory         *MemoryInfo `json:"memory,omitempty"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
+	GPUs           []GPUInfo       `json:"GPUs"`
+	CPU            *CPUInfo        `json:"cpu,omitempty"`
+	Memory         *MemoryInfo     `json:"memory,omitempty"`
+	Connections    *ConnectionInfo `json:"connections,omitempty"`
+	TelemetryValid bool            `json:"telemetryValid"`
+	MSSince        int64           `json:"msSince"`
+	// OS is Go's canonical operating-system identifier (windows, linux, darwin).
+	// Unlike display labels, it is stable across locales and consumers.
+	OS string `json:"os"`
 	// HostUUID is this node's stable per-host identity (the same value the
 	// node-scanner advertises as uuid= and the cluster uses as nodeUuid). It lets
 	// a consumer that reaches this node only over HTTP — notably a user-added
@@ -169,11 +174,11 @@ func handleClusterIdentity(msg applog.StdinMessage, identity *clusterIdentity) {
 // cpuStatic is nil when static CPU introspection failed; memTotal is zero when
 // physical-memory introspection failed. Both conditions omit their respective
 // top-level object from the JSON entirely.
-func buildResponse(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string) []byte {
-	return buildResponseAt(gpus, cpuStatic, memTotal, snap, hostUUID, clusterUUID, time.Now())
+func buildResponse(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, connections *ConnectionInfo) []byte {
+	return buildResponseAt(gpus, cpuStatic, memTotal, snap, hostUUID, clusterUUID, connections, time.Now())
 }
 
-func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, now time.Time) []byte {
+func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, connections *ConnectionInfo, now time.Time) []byte {
 	outGPUs := mergeGPUInventory(gpus, snap.GPUInventory)
 	for i := range outGPUs {
 		gpu := &outGPUs[i]
@@ -191,8 +196,10 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 	telemetryValid, msSince := telemetryStatus(snap.GPUSampledAt, now)
 	resp := NodeInfoResponse{
 		GPUs:           outGPUs,
+		Connections:    connections,
 		TelemetryValid: telemetryValid,
 		MSSince:        msSince,
+		OS:             runtime.GOOS,
 		HostUUID:       hostUUID,
 		ClusterUUID:    clusterUUID,
 	}
@@ -257,7 +264,7 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 // host's GPU inventory in the clear, and neither can a plain-HTTP caller on the
 // shared port. Refresh picks up a membership change or a peer paired after
 // startup.
-func nodeInfoHandler(mesh *clustertrust.Mesh, body func() []byte) http.HandlerFunc {
+func nodeInfoHandler(mesh *clustertrust.Mesh, body func(bool) []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mesh.Refresh()
 		if mesh.Clustered() {
@@ -267,7 +274,10 @@ func nodeInfoHandler(mesh *clustertrust.Mesh, body func() []byte) http.HandlerFu
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body())
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		ip := net.ParseIP(host)
+		loopback := err == nil && ip != nil && ip.IsLoopback()
+		_, _ = w.Write(body(loopback))
 	}
 }
 
@@ -408,8 +418,14 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func() []byte {
-		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal())
+	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func(loopback bool) []byte {
+		var connections *ConnectionInfo
+		// The manager consumes these locally and republishes only reviewed port
+		// facts over cluster mTLS; the LAN inventory stays at its existing scope.
+		if loopback {
+			connections = observeConnections()
+		}
+		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal(), connections)
 	}))
 
 	// Listener layout (set up below depending on flags). Exactly one of the two

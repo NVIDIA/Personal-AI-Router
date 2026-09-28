@@ -211,6 +211,11 @@ function listFingerprintFiles(repo: string): string[] {
                 out.push(full)
             } else if (entry === 'go.mod' || entry === 'go.sum') {
                 out.push(full)
+            } else if (entry.endsWith('.json') && path.basename(dir) === 'manifests') {
+                // Engine manifests are compiled into nvpair-engine-manager
+                // (`//go:embed manifests/*.json`), so a manifest-only change
+                // produces a different binary and must miss the cache.
+                out.push(full)
             }
         }
     }
@@ -218,7 +223,7 @@ function listFingerprintFiles(repo: string): string[] {
     return out.sort()
 }
 
-/** Content hash of services Go sources + module files — not monorepo git HEAD. */
+/** Content hash of services Go sources, module files and embedded engine manifests — not monorepo git HEAD. */
 function servicesSourceFingerprint(repo: string): string {
     const hash = createHash('sha256')
     for (const file of listFingerprintFiles(repo)) {
@@ -368,14 +373,24 @@ function buildBinary(
     const outFile = path.join(CLI_BIN_DIR, fileName)
     const res = spawnSync(
         'go',
-        ['build', '-trimpath', '-ldflags', `-s -w -X main.Version=${version}`, '-o', outFile, '.'],
+        [
+            'build',
+            '-buildvcs=false',
+            '-trimpath',
+            '-ldflags',
+            `-s -w -X main.Version=${version}`,
+            '-o',
+            outFile,
+            '.'
+        ],
         {
             cwd: componentDir,
             env: {
                 ...process.env,
                 CGO_ENABLED: '0',
                 GOOS: goos(options.platform),
-                GOARCH: goarch(options.arch)
+                GOARCH: goarch(options.arch),
+                GOFLAGS: '-buildvcs=false'
             },
             stdio: 'inherit'
         }

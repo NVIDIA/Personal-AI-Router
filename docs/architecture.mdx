@@ -40,8 +40,8 @@ flowchart TB
   one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node, Ollama or LM Studio. A node can
-  run both, one, or neither, and a node with no running engine is not eligible to
+- An **engine** is an inference server on a node: Ollama, LM Studio or llama.cpp.
+  A node can run several, one, or none, and a node with no running engine is not eligible to
   serve.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
   model on two nodes is two independent copies and that duplication is what makes
@@ -67,6 +67,9 @@ flowchart TB
     Tui["nvpair-tui"]
     TuiBroker["TUI-owned nvpair-ui-broker"]
     TuiWorkers["TUI broker-supervised Go workers"]
+    Bootstrap["nvpair-host-bootstrap"]
+    Helper["nvpair-host-helper"]
+    Owner["one Desktop or fixed headless owner"]
 
     Renderer -->|"window.pairApi"| Preload
     Preload <-->|"Electron IPC"| Main
@@ -75,6 +78,8 @@ flowchart TB
     Broker --> Workers
     Tui <-->|"JSON-RPC over stdio"| TuiBroker
     TuiBroker --> TuiWorkers
+    Bootstrap -->|"fixed local actions"| Helper
+    Bootstrap --> Owner
 ```
 
 Electron starts only `nvpair-ui-broker`. In normal operation the broker starts
@@ -87,6 +92,71 @@ the `nvpair` command on PATH resolves to. Do not run it and the desktop
 application on the same machine at the same time, because each starts its own
 broker and worker tree and the two would then contend for the same local ports,
 engines, and persisted settings.
+
+`nvpair-host-bootstrap` and `nvpair-host-helper` are not members of either
+process tree. Electron and the broker never launch or supervise them. The
+bootstrap runs on the target under the operating system's native administrator
+flow; the installed helper accepts a closed action set over an
+access-controlled local named pipe or Unix socket. It has no shell mode and no
+network listener.
+
+### Target-Local Device Bootstrap
+
+Device setup has two lanes: operator-reviewed **Quick Connect** and enterprise
+**Zero Touch**. The lane is part of the immutable operation binding, but both
+use the same target-local package, phase machine, ownership checks, and receipt.
+The closed target matrix contains Windows, macOS, and Linux on both amd64 and
+arm64. Linux additionally requires `/etc/os-release` to identify Debian or
+Ubuntu; other distributions fail closed.
+
+Every request binds the target, lane, requested role, resolved runtime owner,
+target account and SSH endpoint, controller public-key identity, and exact
+helper and product identities. It never carries a password, private key,
+arbitrary command, or shell fragment. Transient SSH credentials used to reach a
+prepared target stay in memory and expire; durable bootstrap state contains
+public-key identity only.
+
+Role and owner are distinct so **Auto** can be resolved before the request
+reaches the target:
+
+- Auto resolves to **Desktop** on Windows and macOS and **Headless** on Linux.
+- An explicit Desktop or Headless role must equal the resolved owner.
+- Desktop records the desktop broker tree as the sole owner and requires the
+  fixed headless owner to be absent.
+- Headless installs exactly one fixed owner: the Windows helper's
+  `headless-service` broker wrapper, a macOS system launchd job, or a Linux
+  system service.
+
+The target owns the transaction. It inspects native resources, produces the
+observations used for review, journals each owned effect, verifies exact
+postconditions, and seals the complete receipt. The controller can request only
+the closed progression **inspect → review → apply → verify → complete**; it
+cannot submit its own observations or receipt. A no-op review proceeds directly
+to verification. Foreign ownership blocks apply.
+
+Recovery resumes the exact target-journaled operation. A later repair plan may
+restore only resources proven owned by the complete receipt and target markers;
+missing or foreign authority requires rerunning the signed bootstrap instead of
+guessing. Uninstall requires the original request and immutable receipt and
+removes only proven-owned resources in reverse dependency order, verifying each
+absence and retaining a target-local tombstone.
+
+After bootstrap, SSH enrollment remains a separate trust step. PAIR observes the
+current SSH host key and requires explicit review of that fingerprint before
+authentication. A completed bootstrap receipt never auto-accepts an SSH host
+key.
+
+The package catalog has exactly six ordered entries and binds each target's
+bootstrap, helper, product, and combination archive. Official mode rejects
+missing or inconsistent checksum/signature metadata, required detached
+signatures, and missing macOS notarization records. Public source builds produce
+truthfully unsigned `engineering` artifacts; those artifacts are not official
+releases. A displayed digest is identity metadata, not a manual replacement for
+the catalog and signature policy.
+
+Desktop **Set up a device** and the TUI **Setup** tab use the same engine-manager
+methods, public-key identities, target statuses, reviewed plans, recovery
+operation, and complete receipt.
 
 ### Health and Failure Detection
 
@@ -418,17 +488,11 @@ the same node.
 are the same unit of pending work, so "fewest jobs" is not "least busy." A node
 running one enormous request looks more idle than a node running two trivial ones.
 
-**Model load state is not considered.** Eligibility asks whether a node *has* the
-model, not whether it is already loaded in memory. PAIR knows which models are
-loaded, and the interface shows it, but routing does not use it, so a request can
-be sent to a node that must cold-load the model while a node holding it warm sits
-one place lower in the order.
-
 **Only work PAIR routed contributes to pending counts.** Inference sent straight
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**Both engines are counted as one pool.** Ollama and LM Studio load is summed,
+**All engines are counted as one pool.** Ollama, LM Studio and llama.cpp load is summed,
 and maximum GPU pressure applies to the whole node. That is conservative on a
 typical single-GPU machine and can underuse a multi-GPU node where the engines
 occupy different devices.
@@ -698,12 +762,16 @@ The important boundaries are:
    [Engine settings](engine-settings.mdx) for allowing an origin.
 4. **LAN discovery and metadata.** The network can reveal service presence and
    selected host information. Some enrichment endpoints use plain HTTP.
-5. **Pairing bootstrap.** A six-digit PIN bootstraps certificate trust. It is a
+5. **Target-local device bootstrap.** Native administrator work occurs only in
+   the signed target package and fixed local helper. Target-produced ownership
+   state and receipts cross back to the controller; passwords and private keys
+   do not become persisted bootstrap state.
+6. **Pairing bootstrap.** A six-digit PIN bootstraps certificate trust. It is a
    convenience code, not a high-entropy long-term authenticator.
-6. **Cluster boundary.** Cluster-scoped workers and promoted proxy ingress are
+7. **Cluster boundary.** Cluster-scoped workers and promoted proxy ingress are
    designed to use pinned certificates and mutual TLS after pairing. This does
    not protect every local or discovery endpoint.
-7. **Third-party boundary.** Engines, models, catalogs, and update mechanisms
+8. **Third-party boundary.** Engines, models, catalogs, and update mechanisms
    have their own network behavior and terms.
 
 Refer to [SECURITY.md](../SECURITY.md) for deployment assumptions and reporting.
@@ -716,7 +784,7 @@ desktop build compiles the sibling tree directly.
 | Build In | Output | Contents |
 | --- | --- | --- |
 | `desktop/` | `desktop/cli-bin/` | What the app supervises, one OS/arch |
-| `services/` | `services/build/bin/` | All 13 executables, for standalone use |
+| `services/` | `services/build/bin/` | All 14 executables, for standalone use |
 
 `desktop/scripts/build-modular-binaries.ts` compiles the runtime inventory for a
 selected target and writes a manifest recording the source identity, versions,
@@ -727,9 +795,13 @@ stale or hand-placed binary is caught rather than silently supervised.
 stamped from `versions.json`. Building one component by hand without restaging is
 the one thing to avoid: the broker keeps running whatever is in `build/bin/`.
 
-Both paths produce binaries you run on the machine that built them. This tree
-provides build materials only. There is no packaging, installer, or signing step
-here, and installable builds come from the
+Both paths support target-specific binaries. The desktop build scripts can also
+produce unsigned reference installers with the public electron-builder config,
+and `desktop/scripts/package-bootstrap.ts` can assemble and reopen the six
+target-local device-bootstrap combinations and catalog as unsigned engineering
+artifacts. Signing and publication belong to NVIDIA's release pipeline; this
+source path does not turn unsigned bytes into official artifacts, and supported
+released installers come from the
 [releases page](https://github.com/NVIDIA/Personal-AI-Router/releases). Refer to
 [Building PAIR](building.mdx).
 

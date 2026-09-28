@@ -159,18 +159,30 @@ func (b *Broker) settingsWorkerCall(ctx context.Context, method string, params a
 	return nil
 }
 
+// settingsProxy is the live proxy process fronting an engine's facade, or nil
+// when the engine has no proxy profile or its proxy is not running.
 func (b *Broker) settingsProxy(engine string) *proxyProcess {
-	if engine == "ollama" {
-		return b.getProxy()
+	profile, ok := engineProxyProfileFor(engine)
+	if !ok {
+		return nil
 	}
-	if engine == "lmstudio" {
-		return b.getLMStudioProxy()
+	return b.engineProxyHandle(profile)
+}
+
+// isEngineDiscoveryService reports whether a registered service key is one of
+// the engine facades this broker advertises. Their ports are accounted for by
+// engine below, so they are not treated as opaque reserved PAIR listeners.
+func isEngineDiscoveryService(key noderec.ServiceKey) bool {
+	for _, profile := range engineProxyProfiles {
+		if profile.DiscoveryService == key {
+			return true
+		}
 	}
-	return nil
+	return false
 }
 
 func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (settings.Snapshot, error) {
-	if engine != "ollama" && engine != "lmstudio" {
+	if _, ok := engineProxyProfileFor(engine); !ok {
 		return settings.Snapshot{}, fmt.Errorf("this engine does not support settings")
 	}
 	if err := b.loadEngineSettingsLocked(); err != nil {
@@ -233,8 +245,8 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 
 func (b *Broker) publishSettingsLocked() {
 	all := make([]settings.Snapshot, 0, len(b.engineSettings))
-	for _, engine := range []string{"ollama", "lmstudio"} {
-		if record := b.engineSettings[engine]; record != nil {
+	for _, profile := range engineProxyProfiles {
+		if record := b.engineSettings[profile.Name]; record != nil {
 			record.Snapshot.Sequence++
 			all = append(all, record.Snapshot)
 			if b.codec != nil {
@@ -261,7 +273,7 @@ func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string,
 	// Include every registered PAIR listener, including services added later.
 	if b.regCache != nil {
 		for _, service := range b.regCache.Snapshot() {
-			if service.Port > 0 && service.Service != noderec.ServiceOllama && service.Service != noderec.ServiceLMStudio {
+			if service.Port > 0 && !isEngineDiscoveryService(service.Service) {
 				reserved[service.Port] = true
 			}
 		}
@@ -283,7 +295,8 @@ func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string,
 			return fmt.Errorf("a selected port is reserved by another configured engine")
 		}
 	}
-	for _, other := range []string{"ollama", "lmstudio"} {
+	for _, otherProfile := range engineProxyProfiles {
+		other := otherProfile.Name
 		if other == engine {
 			continue
 		}
@@ -347,13 +360,14 @@ func (b *Broker) previewSettingsLocked(ctx context.Context, p settings.Request) 
 // restart. settingsApplyMu, which the caller also holds, is what keeps a
 // second apply out of this window.
 func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, record *engineSettingsRecord) error {
+	profile, ok := engineProxyProfileFor(engine)
+	if !ok {
+		return fmt.Errorf("this engine does not support settings")
+	}
 	if err := b.migrateSettingsArgumentsLocked(ctx, engine, record); err != nil {
 		return err
 	}
-	service := noderec.ServiceOllama
-	if engine == "lmstudio" {
-		service = noderec.ServiceLMStudio
-	}
+	service := profile.DiscoveryService
 	if b.regCache != nil {
 		b.unregisterService(service)
 	}
@@ -398,11 +412,7 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 		record.Snapshot.EffectiveServerPort = launch.EffectivePort
 		record.Snapshot.Editable = launch.Editable
 		record.Snapshot.Reason = launch.Reason
-		if engine == "ollama" {
-			b.ollamaState().backendPort.Store(int32(launch.EffectivePort))
-		} else {
-			b.lmstudioState().backendPort.Store(int32(launch.EffectivePort))
-		}
+		b.engineProxy(profile).backendPort.Store(int32(launch.EffectivePort))
 	}
 	proxyReady := false
 	if proxy := b.settingsProxy(engine); proxy != nil {
@@ -676,33 +686,28 @@ func (b *Broker) handleSettingsRelay(raw json.RawMessage) {
 }
 
 func (b *Broker) rebindSettingsProxy(engine string, port int) error {
+	profile, ok := engineProxyProfileFor(engine)
+	if !ok {
+		return fmt.Errorf("this engine does not support settings")
+	}
 	p := b.settingsProxy(engine)
 	if p == nil {
 		return fmt.Errorf("proxy unavailable")
 	}
 	// Disable automatic facade takeover before the ready event can race the
 	// explicit rebind. The accepted journal restores these choices after restart.
-	profile, _ := engineProxyProfileFor(engine)
-	b.engineProxy(profile).explicitSettings.Store(true)
-	if engine == "ollama" {
-		b.ollamaState().managedFacade.Store(false)
-	} else {
-		b.lmstudioState().managedFacade.Store(false)
-	}
-	_, rpcErr, err := p.Call(context.Background(), engine+":set-port", settingsJSON(map[string]int{"port": port}))
+	rt := b.engineProxy(profile)
+	rt.explicitSettings.Store(true)
+	rt.managedFacade.Store(false)
+	_, rpcErr, err := p.Call(context.Background(), profile.addressed("set-port"), settingsJSON(map[string]int{"port": port}))
 	if err != nil {
 		return err
 	}
 	if rpcErr != nil {
 		return fmt.Errorf("%s", rpcErr.Message)
 	}
-	if engine == "ollama" {
-		b.ollamaState().managedFacade.Store(false)
-		b.ollamaState().startupPort.Store(int32(port))
-	} else {
-		b.lmstudioState().managedFacade.Store(false)
-		b.lmstudioState().startupPort.Store(int32(port))
-	}
+	rt.managedFacade.Store(false)
+	rt.startupPort.Store(int32(port))
 	return nil
 }
 
@@ -723,12 +728,12 @@ func (b *Broker) refreshEngineSettings(ctx context.Context) {
 				readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				defer cancel()
 				changed := false
-				for _, engine := range []string{"ollama", "lmstudio"} {
+				for _, profile := range engineProxyProfiles {
 					var before settings.Snapshot
-					if r := b.engineSettings[engine]; r != nil {
+					if r := b.engineSettings[profile.Name]; r != nil {
 						before = r.Snapshot
 					}
-					after, err := b.settingsSnapshotLocked(readCtx, engine)
+					after, err := b.settingsSnapshotLocked(readCtx, profile.Name)
 					if err == nil && before != after {
 						changed = true
 					}

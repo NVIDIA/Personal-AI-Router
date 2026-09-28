@@ -11,6 +11,13 @@ import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/Dismissib
 import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { statusLabel } from '@/ui/utils/status'
+import {
+    engineEnabled,
+    engineInstallAllowed,
+    engineInstallUnavailableReason,
+    engineLifecycleAllowed
+} from '@/ui/utils/engine-control-policy'
+import { roundedProgressPercent } from '@/shared/utils/engine-progress'
 
 /** Install/uninstall lines include asset names + percentages — allow more room than generic status. */
 const INSTALL_STATUS_MAX_LEN = 52
@@ -40,10 +47,13 @@ export function BackendHeader({
     onExpand: () => void
     expanded: boolean
     isLocalNode: boolean
-    targetOs: PlatformDisplayName
+    targetOs?: PlatformDisplayName
     onInstall: () => void
 }) {
     const caps = EngineCapabilities[backend.type]
+    const enabled = engineEnabled(backend)
+    const lifecycleAllowed = engineLifecycleAllowed(backend)
+    const installUnavailableReason = engineInstallUnavailableReason(backend)
     // The proxy URL / web UI live on this machine's 127.0.0.1 — meaningless for a
     // remote node's engine, so only offer them on the local node.
     const showWebUI =
@@ -91,7 +101,17 @@ export function BackendHeader({
             className={`${isUnavailable ? 'cursor-default' : 'cursor-pointer'} p-4 -m-4`}
         >
             <Flex align="center" gap="2" className=" grow">
-                <Flex align="center" gap="1">
+                <button
+                    type="button"
+                    className="inline-flex items-center gap-1 focus-visible:outline focus-visible:outline-2"
+                    aria-expanded={expanded}
+                    aria-label={backend.displayName + ' settings'}
+                    disabled={isUnavailable}
+                    onClick={e => {
+                        e.stopPropagation()
+                        handleHeaderClick()
+                    }}
+                >
                     {!isUnavailable && (
                         <ExpandMore
                             style={{ fontSize: 14 }}
@@ -99,7 +119,22 @@ export function BackendHeader({
                         />
                     )}
                     <Text kind="body/semibold/md">{backend.displayName}</Text>
-                </Flex>
+                </button>
+
+                {backend.acceleration && (
+                    <Text
+                        kind="body/regular/xs"
+                        className="shrink-0 rounded-full px-1.5 py-0.5 text-subtle-color"
+                        style={{
+                            backgroundColor: 'color-mix(in srgb, currentColor 12%, transparent)',
+                            letterSpacing: '0.04em',
+                            lineHeight: 1
+                        }}
+                        title={backend.devices?.length ? backend.devices.join('\n') : undefined}
+                    >
+                        {backend.acceleration.toUpperCase()}
+                    </Text>
+                )}
 
                 <Flex align="center">
                     {isLocalNode &&
@@ -114,7 +149,7 @@ export function BackendHeader({
                                     e.stopPropagation()
                                     handleCopy()
                                 }}
-                                title={`Copy ${backend.displayName} API http://127.0.0.1:${backend.proxyPort}`}
+                                title={`Copy ${backend.displayName} API ${proxyUrl}`}
                                 style={{ padding: '2px 6px', minWidth: 'auto' }}
                                 aria-label={`Copy ${backend.displayName} API URL`}
                             >
@@ -155,12 +190,22 @@ export function BackendHeader({
                 </DismissibleTooltip>
             )}
 
+            {!isUnavailable && !isTransitioning && installUnavailableReason && (
+                <DismissibleTooltip slotContent={installUnavailableReason}>
+                    <Flex align="center" className="ml-2" style={{ minHeight: 32 }}>
+                        <Text kind="body/regular/sm" className="text-subtle-color">
+                            Prerequisite
+                        </Text>
+                    </Flex>
+                </DismissibleTooltip>
+            )}
+
             {isTransitioning &&
                 (() => {
                     const baseStatus =
                         backend.installProgress?.status ?? statusLabel[backend.processStatus]
                     const pct = backend.installProgress?.percent
-                    const pctRounded = pct != null && Number.isFinite(pct) ? Math.round(pct) : null
+                    const pctRounded = roundedProgressPercent(pct)
                     const pctSuffix = pctRounded != null ? ` · ${pctRounded}%` : ''
                     const baseWithoutDuplicatePercent =
                         pctRounded != null
@@ -205,6 +250,7 @@ export function BackendHeader({
 
             {!isUnavailable &&
                 !isTransitioning &&
+                lifecycleAllowed &&
                 backend.processStatus !== 'not-installed' &&
                 (() => {
                     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
@@ -215,11 +261,11 @@ export function BackendHeader({
                         <Flex align="center" justify="center" className="h-7 w-7 shrink-0">
                             <Switch
                                 size="small"
-                                checked={backend.processStatus === 'running'}
+                                checked={enabled}
                                 onCheckedChange={onToggle}
                                 onClick={e => e.stopPropagation()}
                                 disabled={disabled || isStartDisabled}
-                                aria-label={`${backend.processStatus === 'running' ? 'Stop' : 'Start'} ${backend.displayName}`}
+                                aria-label={`${enabled ? 'Disable' : 'Enable'} ${backend.displayName}`}
                             />
                         </Flex>
                     )
@@ -249,15 +295,18 @@ export function BackendHeader({
                     return toggle
                 })()}
 
-            {!isUnavailable && !isTransitioning && backend.processStatus === 'not-installed' && (
-                <InstallButton
-                    backend={backend}
-                    targetOs={targetOs}
-                    isLocalNode={isLocalNode}
-                    disabled={disabled}
-                    onInstall={onInstall}
-                />
-            )}
+            {!isUnavailable &&
+                !isTransitioning &&
+                backend.processStatus === 'not-installed' &&
+                engineInstallAllowed(backend) && (
+                    <InstallButton
+                        backend={backend}
+                        targetOs={targetOs}
+                        isLocalNode={isLocalNode}
+                        disabled={disabled}
+                        onInstall={onInstall}
+                    />
+                )}
         </Flex>
     )
 }

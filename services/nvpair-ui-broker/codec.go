@@ -23,8 +23,9 @@ type (
 )
 
 var (
-	NewCodec = jsonrpc.NewCodec
-	NewPeer  = jsonrpc.NewPeer
+	NewCodec         = jsonrpc.NewCodec
+	NewCodecMaxFrame = jsonrpc.NewCodecMaxFrame
+	NewPeer          = jsonrpc.NewPeer
 )
 
 // errPeerClosed is the sentinel a worker handle's Call/RelayRequest returns

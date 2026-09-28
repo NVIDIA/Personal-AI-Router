@@ -35,7 +35,7 @@ Unicode true
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "..\dist\NVIDIA-Personal-AI-Router-${PRODUCT_VERSION}-Setup.exe"
-InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
+InstallDir "$PROGRAMFILES64\NVIDIA Corporation\PAIR"
 InstallDirRegKey HKLM "${ARP_KEY}" "InstallLocation"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
@@ -173,6 +173,15 @@ Section "Install"
 
   SetOutPath "$INSTDIR"
   File "EULA.txt"
+  File "..\build\bin\nvpair-host-bootstrap.exe"
+  ; Preserve an exact helper already adopted by bootstrap state. A clean
+  ; installation has no file, so File writes the inert package input.
+  IfFileExists "$INSTDIR\nvpair-host-helper.exe" helper_already_staged
+    File "..\build\bin\nvpair-host-helper.exe"
+  helper_already_staged:
+
+  SetOutPath "$INSTDIR\installer-inputs"
+  File "bootstrap\windows\nvpair-host-helper.service.ini"
 
   SetOutPath "$INSTDIR\bin"
   ; nvpair-proxy fronts every engine from one process, hosting a facade per
@@ -338,6 +347,14 @@ Section "Uninstall"
   Delete "$INSTDIR\bin\nvpair-ui-broker.exe"
   Delete "$INSTDIR\bin\nvpair-tui.exe"
   RMDir  "$INSTDIR\bin"
+  Delete "$INSTDIR\nvpair-host-bootstrap.exe"
+  Delete "$INSTDIR\installer-inputs\nvpair-host-helper.service.ini"
+  RMDir  "$INSTDIR\installer-inputs"
+  ; operation.json proves this helper is bootstrap-owned. Leave it for the
+  ; marker-bound bootstrap uninstall instead of deleting a live service binary.
+  IfFileExists "$PROGRAMDATA\NVIDIA Corporation\Personal AI Router\host-bootstrap\operation.json" helper_is_owned
+    Delete "$INSTDIR\nvpair-host-helper.exe"
+  helper_is_owned:
   Delete "$INSTDIR\EULA.txt"
   Delete "$INSTDIR\uninstall.exe"
   RMDir  "$INSTDIR"

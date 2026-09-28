@@ -9,7 +9,8 @@
 // carried in every engine-manager JSON-RPC call, in the per-engine model
 // attribution on a discovery record, on a workload's Engine field, and as the
 // basename of the engine-manager manifest that describes how to install and run
-// the engine. A mismatch between any two of those does not fail to compile in a
+// the engine when PAIR manages its lifecycle. Adopt-only engines deliberately
+// have no managed manifest. A mismatch between any two of those does not fail to compile in a
 // world where each component spells the id itself — it produces an engine that
 // discovers, advertises, and never resolves a model owner. Declaring the set
 // once, here, is what turns that class of bug into a build error.
@@ -61,6 +62,11 @@
 //     relocates the engine to free that port, and the base of the next-free-port
 //     search. The two must differ.
 //
+//     Where an engine lets the user move that default through the environment,
+//     the value read at preparation time wins over the constant here. The
+//     constant is what a stock install uses, not an assertion about this
+//     machine.
+//
 //   - All is ordered, and Ollama is first. The broker prepares managed ports in
 //     this order, and Ollama's preparation reserves any inherited OLLAMA_HOST
 //     alias that later engines must route around. Iterating a map here would
@@ -89,7 +95,9 @@ type Engine struct {
 	DiscoveryService noderec.ServiceKey
 
 	// FacadePort is the engine's stock client-facing port, which PAIR's proxy
-	// claims in managed mode.
+	// claims in managed mode. An engine whose port the user can move through
+	// the environment supersedes this at preparation time; see the package
+	// comment.
 	FacadePort int
 
 	// EnginePortBase is where PAIR relocates the engine so the proxy can take
@@ -104,6 +112,14 @@ type Engine struct {
 	// broker reads it when reserving ports away from the OLLAMA_HOST alias,
 	// so the two must agree — which is why it lives here.
 	PortFile string
+
+	// AdoptOnly means PAIR may front an existing engine endpoint but must not
+	// claim installation, launch, stop, or model-mutation authority over it.
+	AdoptOnly bool
+
+	// EnabledByDefault engines start and route without an explicit choice.
+	// The others stay off until the operator records explicit ON intent.
+	EnabledByDefault bool
 }
 
 // ProxyComponent is the proxy *process* identity, as distinct from the
@@ -134,6 +150,7 @@ var all = []Engine{
 		FacadePort:       11434,
 		EnginePortBase:   11435,
 		PortFile:         "proxy-port.json",
+		EnabledByDefault: true,
 	},
 	{
 		Name:             "lmstudio",
@@ -142,6 +159,33 @@ var all = []Engine{
 		FacadePort:       1234,
 		EnginePortBase:   1235,
 		PortFile:         "lmstudio-proxy-port.json",
+		EnabledByDefault: true,
+	},
+	{
+		// 8080 is llama.cpp's own default: common/common.h declares
+		// `int32_t port = 8080` and the server documents "listens on
+		// 127.0.0.1:8080". So it is treated exactly like the other two — the
+		// facade claims the port a llama.cpp client already points at, and
+		// the engine is relocated to EnginePortBase directly above it.
+		//
+		// A user who has set LLAMA_ARG_PORT has told us where their llama.cpp
+		// listens; that is read at preparation time and supersedes this
+		// default, the same way an inherited OLLAMA_HOST supersedes 11434.
+		Name:             "llamacpp",
+		DisplayName:      "llama.cpp",
+		DiscoveryService: noderec.ServiceLlamaCpp,
+		FacadePort:       8080,
+		EnginePortBase:   8081,
+		PortFile:         "llamacpp-proxy-port.json",
+		EnabledByDefault: true,
+	},
+	{
+		Name:             "vllm",
+		DisplayName:      "vLLM",
+		DiscoveryService: noderec.ServiceVLLM,
+		FacadePort:       8000,
+		EnginePortBase:   8001,
+		PortFile:         "vllm-proxy-port.json",
 	},
 }
 
@@ -158,6 +202,19 @@ func Names() []string {
 	out := make([]string, len(all))
 	for i, e := range all {
 		out[i] = e.Name
+	}
+	return out
+}
+
+// DefaultNames returns only engines whose proxy participation predates an
+// explicit enablement choice. Catalog membership alone must not make a new
+// engine routable.
+func DefaultNames() []string {
+	var out []string
+	for _, e := range all {
+		if e.EnabledByDefault {
+			out = append(out, e.Name)
+		}
 	}
 	return out
 }

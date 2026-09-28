@@ -97,7 +97,7 @@ func resolveRuntimeCommand(rt Runtime, index int, vars map[string]string) (launc
 // settings read probes ports, starts processes or writes configuration.
 func launchForState(st *engineState, port int) (launchCommand, error) {
 	rt := st.plat.Runtime
-	vars := map[string]string{"host": effectiveBind(rt.Bind, ""), "port": strconv.Itoa(port), "install_dir": st.installDir}
+	vars := map[string]string{"host": effectiveBind(rt.Bind, ""), "port": strconv.Itoa(port), "install_dir": st.installDir, "model_dir": llamaModelDir(st)}
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -122,7 +122,9 @@ func (e *Executor) launchStateLocked(engine string, st *engineState) settings.La
 	result := settings.LaunchState{Engine: engine, ServerPort: st.plat.Runtime.Port, EffectivePort: st.port, Running: st.running, Adopted: st.adopted, Format: launchTextFormat}
 	st.mu.Unlock()
 	command, err := launchForState(st, result.ServerPort)
-	if err == nil {
+	// An engine without an editable launch has no argument text to show; asking
+	// for it would read as a display failure instead of "not supported".
+	if err == nil && st.plat.Runtime.EditableLaunch != nil {
 		result.LaunchText, err = command.argumentText(st.plat.Runtime.EditableLaunch)
 	}
 	switch {
@@ -260,7 +262,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	host := effectiveBind(rt.Bind, "")
 	vars := map[string]string{
 		"host": host, "port": strconv.Itoa(request.Settings.ServerPort),
-		"install_dir": st.installDir, "bin": base.Bin, "cli": expandPath(rt.CLI),
+		"install_dir": st.installDir, "model_dir": llamaModelDir(st), "bin": base.Bin, "cli": expandPath(rt.CLI),
 	}
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return fail("PAIR-managed launch settings require a loopback bind.")
@@ -281,6 +283,9 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		}
 		if seenEnv[environmentKey(key)] {
 			return fail("An environment assignment is repeated.")
+		}
+		if st.manifest != nil && st.manifest.Engine == "llamacpp" && llamaOwnedEnvironmentKey(key) {
+			return fail("PAIR manages the llama.cpp model cache location; LLAMA_CACHE and HF_HUB_CACHE cannot be set in launch settings.")
 		}
 		seenEnv[environmentKey(key)] = true
 		managed := false

@@ -6,16 +6,24 @@ import { EngineType } from '@/shared/types/engines'
 
 export type WorkloadState = (typeof WorkloadStates)[number]
 
+export interface WorkloadRemoval {
+    workloadId: string
+    originatedFrom: string | null
+    engine?: EngineType
+    runId?: string
+}
+
 export interface Workload {
     id: string
+    runId?: string
     model: string
     engine: EngineType
     state: WorkloadState
     /**
      * Owner/origin node of the workload — the node whose proxy received the
-     * request. This is the identity half of the backend's `(originatedFrom, id)`
-     * global catalog key (workload ids are a per-node proxy counter, so they
-     * collide across nodes; `originatedFrom` disambiguates).
+     * request. Together with engine, runId and id, this identifies one request
+     * in the global catalog; proxy counters can repeat across nodes, engines
+     * and proxy runs.
      */
     originatedFrom: string | null
     /**

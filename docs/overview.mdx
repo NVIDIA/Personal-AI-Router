@@ -15,7 +15,8 @@ the inference engine those applications already speak to, so existing tools work
 unchanged while gaining the ability to use another machine's GPU.
 
 You install PAIR on each machine you want to contribute compute and pair those
-machines together. On every one of them, PAIR runs two things:
+machines together, or use the product's device-setup flow to provision an
+SSH-ready peer. On every one of them, PAIR runs two things:
 
 - An **application** you interact with: a desktop window or a terminal
   interface for machines with no desktop
@@ -35,15 +36,16 @@ install PAIR and send a first request, go to
 These terms have specific meanings in PAIR:
 
 - **Node** — one machine running PAIR. Every node runs the same software. There
-  is no server, controller, or primary node.
+  is no permanent cluster master, although one node drives a setup operation and
+  a managed serving group names an exact coordinator while it runs.
 - **Cluster** — the set of nodes you have paired together. A node belongs to at
   most one cluster, and it must leave before it can join another.
-- **Engine** — the local inference server that runs models: Ollama or LM Studio.
-  PAIR can install, start, stop, and update an engine, or adopt one you already
-  run yourself.
-- **Model** — what you prepare on each node. Nodes do not share models, so a
-  node can serve a request only for a model it already holds. Preparing the same
-  model on several nodes is what makes those nodes interchangeable.
+- **Engine** — an inference server that runs models: Ollama, LM Studio, or
+  managed vLLM on a supported Linux host. PAIR can install, start, stop, and
+  update an engine, or adopt one when that engine supports adoption.
+- **Model** — what you prepare on a node. Ordinary routed requests can use only
+  a node that already holds the model. A managed vLLM serving group requires the
+  exact model content on every selected participant.
 - **Endpoint** — the local URL your applications use. PAIR presents one for each
   engine on the machine you are working at, and it stays the same no matter which
   node serves the request.
@@ -64,12 +66,14 @@ Running PAIR follows five steps:
    services.
 2. **Discover.** Nodes announce themselves and browse for peers on the local
    network. Discovery only finds candidates. Seeing a machine grants it nothing.
-3. **Pair.** You invite a node, and someone enters the six-digit PIN on the other
-   machine. Pairing is what establishes trust between two nodes.
-4. **Prepare.** On each node, you enable an engine and download the models that
-   node should be able to serve.
-5. **Serve.** Applications send requests to the local endpoint and PAIR routes
-   each one.
+3. **Pair.** An existing install uses an invitation and PIN; device setup can
+   provision and pair an SSH-ready headless peer from the first node. Pairing is
+   what establishes trust.
+4. **Prepare.** Enable an engine and prepare its models. A serving-group review
+   verifies the exact runtime and model on every participant.
+5. **Serve.** Applications send requests to the local endpoint. PAIR either
+   routes an ordinary request to one eligible node or presents a ready managed
+   vLLM group as one endpoint.
 
 Discovery, pairing, and preparation are one-time work for each machine. After
 you form a cluster, only the last step repeats.
@@ -77,9 +81,12 @@ you form a cluster, only the last step repeats.
 ## Request Model
 
 An application sends an ordinary Ollama-compatible or OpenAI-compatible
-request, or an Anthropic Messages API request, to a local proxy. The proxy
-selects one eligible node and forwards the whole request. That node's engine
-performs the inference, and the response streams back through the proxy.
+request, or an Anthropic Messages API request, to a local proxy. For Ollama,
+LM Studio, llama.cpp, and standalone vLLM, the proxy selects one eligible node
+and forwards the whole request, and that node's engine performs the inference.
+For a ready managed vLLM serving group, it forwards to the group's coordinator
+while the reviewed ranks execute the distributed plan. The response streams back
+through the same local endpoint.
 
 ```mermaid
 flowchart LR
@@ -118,14 +125,15 @@ confirm where work ran.
 ## Trust Between Nodes
 
 Discovery is deliberately not a trust decision. Every machine on the network is
-visible. Pairing is the trust decision, and it is explicit and mutual. It
-requires an invitation and a PIN that a person enters. After pairing,
-node-to-node traffic runs over mutual TLS restricted to nodes in the cluster,
-and the cluster refuses a machine that is not a member.
+visible. Pairing is the trust decision. Two existing installs use an explicit
+invitation and PIN; product device setup instead binds the selected SSH host key,
+controller public key, target-produced plan, and completion receipt. After
+pairing, node-to-node traffic runs over mutual TLS restricted to nodes in the
+cluster, and the cluster refuses a machine that is not a member.
 
-The PIN is a short convenience code for bootstrapping that exchange, not a strong
-authenticator, so pair only over networks and with machines you trust. Local
-applications reach the proxy over loopback.
+For manual pairing, the PIN is a short convenience code for bootstrapping that
+exchange, not a strong authenticator, so pair only over networks and with
+machines you trust. Local applications reach the proxy over loopback.
 
 For the trust boundaries in detail, refer to
 [Architecture](architecture.mdx) and the [security policy](../SECURITY.md).
@@ -138,6 +146,7 @@ PAIR provides these capabilities:
 - LAN discovery plus manually configured nodes.
 - Routing proxies for Ollama-compatible, OpenAI-compatible, and Anthropic
   Messages API requests.
+- A managed vLLM endpoint for accepted standalone and serving-group plans.
 - Pairing and cluster membership managed by the background services.
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between machines: a request sent to another node travels over
@@ -151,16 +160,20 @@ PAIR provides these capabilities:
 
 PAIR has these limits:
 
-- It does not pool GPU memory or make several GPUs act as one larger GPU.
-- It does not split one model across machines or split one in-flight request.
-  Each request runs whole on a single node.
+- It does not expose arbitrary paired nodes as one generic pooled GPU. Distributed
+  execution exists only through an explicitly reviewed managed vLLM serving
+  group on supported Linux nodes.
+- Ordinary routed requests still run whole on one node. A serving-group request
+  uses only the exact model, ranks, topology, and transport accepted by its
+  current review.
 - It does not move a request that is already running to a different node.
 - It does not store or serve models itself. Engines fetch and hold their own.
 - It does not make every client, model, engine, GPU, or network compatible.
   Behavior and performance depend on all of them.
 
-Adding machines therefore increases how many requests you can run at once. It
-does not make an individual request faster.
+Adding ordinary routed nodes increases how many requests you can run at once. A
+managed vLLM group can also place one model across selected nodes, but it does
+not guarantee that an individual request is faster.
 
 ## How the Code Is Organized
 

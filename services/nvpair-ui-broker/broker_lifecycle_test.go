@@ -35,7 +35,12 @@ func TestClusterManagerConfigDirTracksBrokerClusterDir(t *testing.T) {
 	}
 }
 
-func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
+// Every managed engine has its own ownership gate, and restoration must wait
+// for all of them: restoring desired state while any engine's port is still
+// changing hands is what assigns an engine the port its proxy is about to take.
+// The gates are released one at a time here so a missing one cannot pass by
+// being masked by the others.
+func TestEngineAvailabilityWaitsForEveryProxyOutcome(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	defer engineClient.Close()
 	defer engineServer.Close()
@@ -44,6 +49,7 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 	b := &Broker{
 		ollamaPortReady:   make(chan struct{}),
 		lmstudioPortReady: make(chan struct{}),
+		llamacppPortReady: make(chan struct{}),
 	}
 	b.setEngineMgr(engine)
 
@@ -54,7 +60,7 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 			restore <- msg.Method
 		}
 	}()
-	advertised := make(chan string, 2)
+	advertised := make(chan string, 3)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan bool, 1)
@@ -63,25 +69,28 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 			ctx,
 			func(context.Context) { advertised <- "ollama" },
 			func(context.Context) { advertised <- "lmstudio" },
+			func(context.Context) { advertised <- "llamacpp" },
 		)
 	}()
 
-	select {
-	case got := <-restore:
-		t.Fatalf("restore %q ran before either proxy outcome", got)
-	case got := <-advertised:
-		t.Fatalf("%s advertising ran before either proxy outcome", got)
-	case <-time.After(100 * time.Millisecond):
+	gates := []struct {
+		name string
+		open chan struct{}
+	}{
+		{"ollama", b.ollamaPortReady},
+		{"lmstudio", b.lmstudioPortReady},
+		{"llamacpp", b.llamacppPortReady},
 	}
-	close(b.ollamaPortReady)
-	select {
-	case got := <-restore:
-		t.Fatalf("restore %q ran before LM Studio proxy outcome", got)
-	case got := <-advertised:
-		t.Fatalf("%s advertising ran before LM Studio proxy outcome", got)
-	case <-time.After(100 * time.Millisecond):
+	for _, gate := range gates {
+		select {
+		case got := <-restore:
+			t.Fatalf("restore %q ran before the %s proxy outcome", got, gate.name)
+		case got := <-advertised:
+			t.Fatalf("%s advertising ran before the %s proxy outcome", got, gate.name)
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(gate.open)
 	}
-	close(b.lmstudioPortReady)
 
 	select {
 	case got := <-restore:
@@ -89,15 +98,15 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 			t.Fatalf("restore method = %q, want %q", got, restoreEnabledEnginesMethod)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("enabled-engine restore did not run after both proxy outcomes")
+		t.Fatal("enabled-engine restore did not run after every proxy outcome")
 	}
 	seen := map[string]bool{}
-	for len(seen) < 2 {
+	for len(seen) < len(gates) {
 		select {
 		case got := <-advertised:
 			seen[got] = true
 		case <-time.After(2 * time.Second):
-			t.Fatalf("advertising did not start for both engines: %v", seen)
+			t.Fatalf("advertising did not start for every engine: %v", seen)
 		}
 	}
 	if !<-done {

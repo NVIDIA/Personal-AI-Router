@@ -7,7 +7,8 @@ import { type EngineType } from '@/shared/types/engines'
 import { EngineDefaultLinks, EngineDisplayNames } from '@/shared/constants/engines'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
-import { engineProgressKey } from '@/shared/utils/engine-progress'
+import { engineProgressKey, roundedProgressPercent } from '@/shared/utils/engine-progress'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 
 interface WelcomeEngineRowProps {
     engineType: EngineType
@@ -16,6 +17,7 @@ interface WelcomeEngineRowProps {
     installing: boolean
     /** When true, switch is off and disabled with a tooltip (engine already on disk). */
     alreadyInstalled: boolean
+    disabledReason?: string
     onCheckedChange: (checked: boolean) => void
 }
 
@@ -25,13 +27,17 @@ export function WelcomeEngineRow({
     checked,
     installing,
     alreadyInstalled,
+    disabledReason,
     onCheckedChange
 }: WelcomeEngineRowProps) {
+    const status = useEngineStatusStore(s => s.statusByNode.get(nodeId)?.get(engineType))
+    const unsupported = engineType === 'llamacpp' && status?.installSupported !== true
     const progress = useEngineProgressStore(s =>
         s.progress.get(engineProgressKey({ nodeId, engineType, operation: 'install' }))
     )
     const docs = EngineDefaultLinks[engineType]?.docsUrl
     const label = EngineDisplayNames[engineType]
+    const percent = roundedProgressPercent(progress?.percent)
     return (
         <Flex align="center" justify="between" gap="3">
             <Stack gap="1" className="min-w-0 flex-1">
@@ -59,21 +65,27 @@ export function WelcomeEngineRow({
                         />
                         <Text kind="body/regular/sm" className="text-subtle-color capitalize">
                             {progress?.status ?? 'Installing'}
-                            {progress?.percent !== undefined
-                                ? ` ${Math.round(progress.percent)}%`
-                                : '...'}
+                            {percent !== null ? ` ${percent}%` : '...'}
                         </Text>
                     </Flex>
                 ) : null}
             </Stack>
-            {alreadyInstalled ? (
-                <DismissibleTooltip slotContent="This engine is already installed on this machine.">
+            {alreadyInstalled || disabledReason ? (
+                <DismissibleTooltip
+                    slotContent={
+                        disabledReason || 'This engine is already installed on this machine.'
+                    }
+                >
                     <span className="inline-flex shrink-0">
                         <Switch
                             checked={checked}
                             disabled
                             size="small"
-                            aria-label={`${label} already installed`}
+                            aria-label={
+                                disabledReason
+                                    ? `${label} action held`
+                                    : `${label} already installed`
+                            }
                         />
                     </span>
                 </DismissibleTooltip>
@@ -81,10 +93,15 @@ export function WelcomeEngineRow({
                 <Switch
                     checked={checked}
                     onCheckedChange={onCheckedChange}
-                    disabled={installing}
+                    disabled={installing || unsupported}
                     size="small"
                     aria-label={`Install ${label}`}
                 />
+            )}
+            {unsupported && !alreadyInstalled && (
+                <Text kind="body/regular/sm">
+                    {status?.installReason || 'Install support not yet reported.'}
+                </Text>
             )}
         </Flex>
     )

@@ -34,15 +34,35 @@ type EngineStatus struct {
 	Installed   bool   `json:"installed"`
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Managed     bool   `json:"managed"`
+	Adopted     bool   `json:"adopted"`
+	Routable    bool   `json:"routable"`
+	// InstallSupported is omitted only when a cached read skipped the install
+	// probe, so consumers can tell "not checked" from "not supported".
+	InstallSupported *bool  `json:"install_supported,omitempty"`
+	InstallReason    string `json:"install_reason,omitempty"`
+	// Acceleration and Devices are the backend the managed llama.cpp runtime
+	// verified at install ("cuda", "vulkan", "metal", "cpu", ...) and the device
+	// rows behind it, from runtime/pair-install.json. Absent for other engines,
+	// adopted runtimes and installs that predate the receipt fields.
+	Acceleration  string                `json:"acceleration,omitempty"`
+	Devices       []string              `json:"devices,omitempty"`
+	Version       string                `json:"version,omitempty"`
+	Port          int                   `json:"port,omitempty"`
+	Starting      bool                  `json:"starting,omitempty"`
+	SelectedModel string                `json:"selected_model,omitempty"`
+	ServingGroup  *vllmGroupRouteStatus `json:"serving_group,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
 type engineState struct {
-	manifest   *Manifest
-	plat       *Platform
-	logs       *logBuffer
-	installDir string
+	diagnosticAdmitted bool
+	manifest           *Manifest
+	plat               *Platform
+	logs               *logBuffer
+	installDir         string
+	modelDir           string
 
 	// opMu serializes lifecycle operations (install / start / stop /
 	// restart / uninstall) for this engine, so concurrent calls can't
@@ -60,10 +80,47 @@ type engineState struct {
 	gen        int64 // bumped each start; gates stale health loops
 	port       int
 	binPath    string
+	version    string
 	proc       *managedProc
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
-	startCancel context.CancelFunc
+	startCancel     context.CancelFunc
+	mutationCancel  context.CancelFunc
+	pullCancel      context.CancelFunc
+	pullModel       string
+	pullOperationID string
+	// One exact inbound model-copy owner. The target pulls verified chunks
+	// directly from its paired source over ec mTLS; renderer/broker never carry
+	// payload bytes.
+	distributionOperationID string
+	distributionSourceNode  string
+	distributionModel       string
+	distributionCancel      context.CancelFunc
+	distributionDone        chan struct{}
+
+	// The sealed serving-group owner shares this engine's lifecycle lock and
+	// process custody. These pointers never form a second engine registry.
+	vllmGroup    *vllmServingGroup
+	vllmRank     *vllmManagedRank
+	stopPending  int
+	servingModel string
+	// statusRefresh is the vLLM status refresh holding opMu, if any. Inventory
+	// readers that lose opMu to it share its result; a lifecycle operation
+	// publishes none, so those readers never wait behind one.
+	statusRefresh *vllmStatusRefresh
+}
+
+func adoptedVLLMMutationError(st *engineState, operation string) error {
+	if st.manifest.Engine != "vllm" {
+		return nil
+	}
+	st.mu.Lock()
+	adopted := st.adopted
+	st.mu.Unlock()
+	if !adopted {
+		return nil
+	}
+	return fmt.Errorf("cannot %s adopted vLLM: the external process remains under its own manager", operation)
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
@@ -77,12 +134,21 @@ type Executor struct {
 	reporter         *Reporter
 	emit             func(method string, params any)
 	client           *http.Client
-	ollamaLoadClient *http.Client
+	armHardwareQuery func(context.Context, map[string]string) (string, error) // nil uses the native inventory command
+	// nvidiaComputeQuery returns one compute capability per NVIDIA GPU; nil runs nvidia-smi.
+	nvidiaComputeQuery func(context.Context, map[string]string) (string, error)
+	// runLlamaInstaller runs an acquired, verified vendor installer script; nil
+	// runs it natively. Tests substitute installers that cannot run here.
+	runLlamaInstaller func(context.Context, string, map[string]string) error
+	ollamaLoadClient  *http.Client
 	// progress fans install/pull progress to transient subscribers (the ec
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
 	progress *progressHub
 	baseDir  string // user-scoped install base
+	// main injects appdir.ModelsDir; executor-only fixtures keep their cache
+	// beneath the explicitly supplied isolated install base.
+	modelBaseDir string
 	// desired persists explicit per-engine ON/OFF intent. Runtime state remains
 	// in-memory; shutdown cleanup must not rewrite this store.
 	desired *desiredStateStore
@@ -104,7 +170,17 @@ type Executor struct {
 	// loadedPoke lets an explicit action (load/unload/pull/…) request an
 	// immediate out-of-cycle loaded-set check instead of waiting for the next
 	// tick. Buffered depth 1: a coalesced signal is enough.
-	loadedPoke chan struct{}
+	loadedPoke       chan struct{}
+	groupPeer        *vllmGroupPeer
+	vllmNodeID       string
+	fabric           *fabricService
+	diagnostics      *diagnosticService
+	diagnosticMu     sync.RWMutex
+	vllmOwnsListener func(*managedProc, int) bool
+	vllmExec         func(context.Context, string, []string, []string) ([]byte, error)
+	vllmRuntimeLock  func(context.Context, *engineState) (vllmRuntimeLock, error)
+	vllmStorageFS    vllmFilesystemReader
+	vllmStorageAlloc vllmAllocationReader
 
 	reservedPort atomic.Int32
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
@@ -188,6 +264,23 @@ func (e *Executor) notify(method string, params any) {
 	}
 }
 
+// engineModelDir keeps ordinary engine caches under the engine's install
+// directory. Managed vLLM alone uses the persistent product-model sibling that
+// survives app-data replacement: <vendor>/Personal AI Router Models/vllm.
+func engineModelDir(baseDir, engine string) string {
+	fallback := filepath.Join(baseDir, engine, "models")
+	if engine != "vllm" {
+		return fallback
+	}
+	installBase := filepath.Clean(baseDir)
+	appRoot := filepath.Dir(installBase)
+	vendorRoot := filepath.Dir(appRoot)
+	if filepath.Base(installBase) != "engine-bin" || filepath.Base(appRoot) != "Personal AI Router" || filepath.Base(vendorRoot) != "Nvidia Corporation" {
+		return fallback
+	}
+	return filepath.Join(vendorRoot, "Personal AI Router Models", "vllm")
+}
+
 // state returns (lazily creating) the per-engine state for a known
 // engine that has a block for the host os/arch.
 func (e *Executor) state(engine string) (*engineState, error) {
@@ -210,6 +303,18 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
 		installDir: filepath.Join(e.baseDir, engine),
+		modelDir:   engineModelDir(e.baseDir, engine),
+	}
+	if engine == "llamacpp" {
+		if e.modelBaseDir != "" {
+			st.modelDir = filepath.Join(e.modelBaseDir, "llamacpp")
+			if err := migrateLlamaCache(st); err != nil {
+				return nil, fmt.Errorf("preserve llama model cache: %w", err)
+			}
+		}
+		if err := recoverLlamaRuntime(st.installDir); err != nil {
+			return nil, fmt.Errorf("recover interrupted llama replacement: %w", err)
+		}
 	}
 	e.engines[engine] = st
 	return st, nil
@@ -227,6 +332,30 @@ func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
 	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct})
 }
 
+// repeatInstallProgress re-emits one install step every interval until stop
+// returns, for a step that reports nothing while it runs. Clients expire an
+// install that stays quiet, although it is still running.
+func (e *Executor) repeatInstallProgress(engine, stage string, pct int, interval time.Duration) (stop func()) {
+	done, exited := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(exited)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				e.emitInstallProgress(engine, stage, pct)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-exited
+	}
+}
+
 // emitPullProgress reports one model-pull step to both consumers: the local
 // engine:pull-progress notification (this node's UI) and the progress hub (so an
 // ec streaming handler can relay it to a remote initiator). It mirrors
@@ -235,6 +364,12 @@ func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
 func (e *Executor) emitPullProgress(ev ProgressEvent) {
 	params := map[string]any{
 		"engine": ev.Engine, "op": ev.Op, "stage": ev.Stage, "message": ev.Message,
+	}
+	if ev.OperationID != "" {
+		params["operationId"] = ev.OperationID
+	}
+	if ev.Network != "" {
+		params["network"] = ev.Network
 	}
 	if wirePercentIncluded(ev.Percent) {
 		params["percent"] = ev.Percent

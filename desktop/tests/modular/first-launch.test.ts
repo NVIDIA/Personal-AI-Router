@@ -196,4 +196,24 @@ describe('first launch', () => {
             status: 'active'
         })
     })
+
+    it('does not label an offline remote member as Windows without evidence', () => {
+        const members = [
+            {
+                id: 'legacy-peer',
+                nodeUuid: 'legacy-uuid',
+                name: 'Legacy Peer',
+                ipAddress: '192.0.2.70',
+                port: 14318,
+                clusterId: 'cluster',
+                state: 'member' as const,
+                joinedAt: 1,
+                lastSeen: 1
+            }
+        ]
+        const [node] = buildOverviewNodes(new Map(), members, null, 'Windows')
+
+        expect(node).toMatchObject({ id: 'legacy-uuid', status: 'offline' })
+        expect(node.os).toBeUndefined()
+    })
 })

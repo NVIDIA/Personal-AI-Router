@@ -46,6 +46,8 @@ func TestEngineHealthProbePaths(t *testing.T) {
 	}{
 		{"ollama", "/"},
 		{"lmstudio", "/v1/models"},
+		{"llamacpp", "/v1/models"},
+		{"vllm", "/v1/models"},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -70,6 +72,9 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	}{
 		{"ollama", managedOllamaFacadePort, managedOllamaBackendStart, portOwnershipBlockedID},
 		{"lmstudio", managedLMStudioFacadePort, managedLMStudioBackendStart, lmstudioPortOwnershipBlockedID},
+		// llama.cpp's stock ports come straight from the table (no inherited
+		// LLAMA_ARG_PORT in this process), so the effective profile must agree.
+		{"llamacpp", llamacppEffectiveProfile().FacadePort, llamacppEffectiveProfile().EnginePortBase, llamacppPortOwnershipBlockedID},
 	} {
 		t.Run(tc.engine, func(t *testing.T) {
 			p, ok := engineProxyProfileFor(tc.engine)
@@ -92,9 +97,9 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	}
 }
 
-// Ownership is the one judgment call in adding an engine, so the two values in
-// the table today are pinned explicitly. Getting these backwards does not fail
-// to compile — it silently changes which engine the broker believes it may stop.
+// Ownership is the one judgment call in adding an engine, so every value in
+// the table is pinned explicitly. Getting these backwards does not fail to
+// compile — it silently changes which engine the broker believes it may stop.
 func TestEngineOwnershipAssignments(t *testing.T) {
 	for _, tc := range []struct {
 		engine string
@@ -102,6 +107,8 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 	}{
 		{"ollama", adoptedEngine},
 		{"lmstudio", managedEngine},
+		{"llamacpp", managedEngine},
+		{"vllm", adoptedEngine},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -132,6 +139,7 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 	}{
 		{engine: "ollama", wantBlock: "Ollama is already running on the compatibility port"},
 		{engine: "lmstudio", wantMove: true},
+		{engine: "llamacpp", wantMove: true},
 	} {
 		t.Run(tc.engine, func(t *testing.T) {
 			p, ok := engineProxyProfileFor(tc.engine)
@@ -167,14 +175,15 @@ func TestParseProxyEngines(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{name: "default is every engine", csv: "ollama,lmstudio", want: []string{"ollama", "lmstudio"}},
+		{name: "default is every engine", csv: "ollama,lmstudio,vllm", want: []string{"ollama", "lmstudio", "vllm"}},
 		{name: "single engine", csv: "lmstudio", want: []string{"lmstudio"}},
-		{name: "whitespace and blanks are tolerated", csv: " ollama , , lmstudio ", want: []string{"ollama", "lmstudio"}},
+		{name: "single adopted engine", csv: "vllm", want: []string{"vllm"}},
+		{name: "whitespace and blanks are tolerated", csv: " ollama , , lmstudio , vllm ", want: []string{"ollama", "lmstudio", "vllm"}},
 		{name: "duplicates collapse", csv: "ollama,ollama", want: []string{"ollama"}},
 		{name: "empty selects nothing", csv: "", want: nil},
 		// Silently fronting the engines it did recognize would look like the
 		// flag worked.
-		{name: "unknown engine fails", csv: "ollama,vllm", wantErr: true},
+		{name: "unknown engine fails", csv: "ollama,nope", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := parseProxyEngines(tc.csv)

@@ -61,7 +61,16 @@ func (b *Broker) explicitEngineSettingsLocked(engine string) (settings.Config, b
 	return settings.Config{}, false
 }
 
+// prepareExplicitEngineSettings restores a saved explicit choice onto an
+// engine's proxy runtime before its facade is prepared, and reports whether
+// automatic facade planning must stand down for it. It is the startup half of
+// the contract rebindSettingsProxy keeps at run time: an explicit choice turns
+// managed takeover off and fixes both the backend and the startup port.
 func (b *Broker) prepareExplicitEngineSettings(engine string) bool {
+	profile, ok := engineProxyProfileFor(engine)
+	if !ok {
+		return false
+	}
 	b.engineConfigMu.Lock()
 	loadErr := b.loadEngineSettingsLocked()
 	b.engineConfigMu.Unlock()
@@ -72,25 +81,68 @@ func (b *Broker) prepareExplicitEngineSettings(engine string) bool {
 	if !ok {
 		return false
 	}
-	profile, _ := engineProxyProfileFor(engine)
-	b.engineProxy(profile).explicitSettings.Store(true)
-	if engine == "ollama" {
-		b.ollamaState().managedFacade.Store(false)
+	rt := b.engineProxy(profile)
+	rt.explicitSettings.Store(true)
+	rt.managedFacade.Store(false)
+	rt.backendPort.Store(int32(config.ServerPort))
+	rt.startupPort.Store(int32(config.ProxyPort))
+	if engine == ollamaProxyProfile.Name {
+		// Only Ollama carries a pending backend move and an inherited
+		// OLLAMA_HOST alias reservation that have to follow the explicit choice.
 		b.managedOllamaBackend.Store(0)
-		b.ollamaState().backendPort.Store(int32(config.ServerPort))
-		b.ollamaState().startupPort.Store(int32(config.ProxyPort))
 		b.syncCurrentEngineOllamaHostAliasReservation()
-	} else {
-		b.lmstudioState().managedFacade.Store(false)
-		b.lmstudioState().backendPort.Store(int32(config.ServerPort))
-		b.lmstudioState().startupPort.Store(int32(config.ProxyPort))
 	}
 	return true
 }
 
+// facadeBindFailure decodes a facade's bind-failed error notification and
+// reports whether automatic recovery may act on it. A facade whose port is an
+// explicit settings choice is never moved by that path: the choice stands, and
+// the failure reaches the user through the settings operation that made it.
+// This runs on the proxy reader goroutine, so it reads the atomic and takes no
+// lock — a settings operation may hold engineConfigMu while waiting on that
+// very reader.
+func (b *Broker) facadeBindFailure(profile engineProxyProfile, method string, params json.RawMessage) (port int, recover bool) {
+	if method != "error" {
+		return 0, false
+	}
+	var ep struct {
+		Code string `json:"code"`
+		Port int    `json:"port"`
+	}
+	if json.Unmarshal(params, &ep) != nil || ep.Code != "bind-failed" {
+		return 0, false
+	}
+	return ep.Port, !b.engineProxy(profile).explicitSettings.Load()
+}
+
+// settingsGovernFacadeLocked reports whether the engine-settings journal, not
+// automatic ownership planning, decides where this engine's facade listens:
+// when the user has made an explicit choice, and when the journal cannot be
+// read, which suppresses every automatic component rewrite. Readiness
+// reconciliation stands down in both cases and opens the engine's gate instead.
+// Caller holds engineConfigMu.
+func (b *Broker) settingsGovernFacadeLocked(profile engineProxyProfile) bool {
+	if b.loadEngineSettingsLocked() != nil {
+		return true
+	}
+	_, explicit := b.explicitEngineSettingsLocked(profile.Name)
+	return explicit
+}
+
+// obsoleteLegacyProxyDefault reports a saved proxy port that an older proxy
+// wrote as its own default rather than as a record of a user's choice. Only LM
+// Studio has one: its standalone proxy defaulted to 1235, the port its managed
+// backend is now relocated onto, and its store migration already discards it.
+// Ollama's saved port has always been preserved, and llama.cpp's store is newer
+// than the journal, so neither has a default to exclude.
+func obsoleteLegacyProxyDefault(profile engineProxyProfile, port int) bool {
+	return profile.Name == lmstudioProxyProfile.Name && port == managedLMStudioBackendStart
+}
+
 // Legacy proxy stores did not distinguish user choices from automatic moves.
 // Preserve a valid non-colliding saved choice as explicit on first upgrade.
-// LM Studio's old 1235 default is excluded, matching its existing migration.
+// Every engine's proxy keeps such a store, named by its profile's PortFile.
 func (b *Broker) migrateLegacyEngineSettings() {
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
@@ -101,22 +153,19 @@ func (b *Broker) migrateLegacyEngineSettings() {
 	if err != nil {
 		return
 	}
-	for _, engine := range []string{"ollama", "lmstudio"} {
-		name := "proxy-port.json"
-		if engine == "lmstudio" {
-			name = "lmstudio-proxy-port.json"
-		}
+	for _, profile := range engineProxyProfiles {
+		engine := profile.Name
 		if b.engineSettings[engine] != nil {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(filepath.Dir(journal), name))
+		data, err := os.ReadFile(filepath.Join(filepath.Dir(journal), profile.PortFile))
 		if err != nil {
 			continue
 		}
 		var saved struct {
 			Port int `json:"port"`
 		}
-		if json.Unmarshal(data, &saved) != nil || saved.Port < 1 || saved.Port > 65535 || (engine == "lmstudio" && saved.Port == 1235) {
+		if json.Unmarshal(data, &saved) != nil || saved.Port < 1 || saved.Port > 65535 || obsoleteLegacyProxyDefault(profile, saved.Port) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

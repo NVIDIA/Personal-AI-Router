@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/enginelogs"
 )
 
 // rpcWorkerCallTimeout bounds how long the broker waits for a relayed request
@@ -32,6 +33,13 @@ type rpcWorker struct {
 	peer     *Peer
 	done     chan struct{}
 	onNotify func(method string, params json.RawMessage)
+}
+
+func newRPCWorkerCodec(name string, rw io.ReadWriter) *Codec {
+	if name == engineManagerWorkerName {
+		return NewCodecMaxFrame(rw, enginelogs.MaxBrokerFrameBytes)
+	}
+	return NewCodec(rw)
 }
 
 // Done implements supervisedHandle: the returned channel closes once the worker
@@ -109,7 +117,7 @@ func startRPCWorker(name, binaryPath string, args []string, onNotify func(method
 		name:     name,
 		cmd:      cmd,
 		stdin:    stdin,
-		peer:     NewPeer(NewCodec(readWriter{stdout, stdin})),
+		peer:     NewPeer(newRPCWorkerCodec(name, readWriter{stdout, stdin})),
 		done:     make(chan struct{}),
 		onNotify: onNotify,
 	}

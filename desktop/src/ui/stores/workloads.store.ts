@@ -45,15 +45,23 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
             for (const op of ops) {
                 const base = updated ?? prev
                 if (op.kind === 'upsert') {
-                    const key = workloadKey(op.workload.originatedFrom, op.workload.id)
+                    const key = workloadKey(
+                        op.workload.originatedFrom,
+                        op.workload.id,
+                        op.workload.engine,
+                        op.workload.runId
+                    )
                     const existing = base.get(key)
                     if (existing && deepEqual(existing, op.workload)) continue
                     if (!updated) updated = new Map(prev)
                     updated.set(key, op.workload)
                 } else {
-                    if (!base.has(op.key)) continue
-                    if (!updated) updated = new Map(prev)
-                    updated.delete(op.key)
+                    for (const key of base.keys()) {
+                        if (key === op.key || key.startsWith(op.key + '\u0000')) {
+                            if (!updated) updated = new Map(prev)
+                            updated.delete(key)
+                        }
+                    }
                 }
             }
 
@@ -83,12 +91,14 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                     pendingOps.push({ kind: 'upsert', workload })
                     schedule()
                 }),
-                window.pairApi.workloads.onRemove(({ workloadId, originatedFrom }) => {
-                    const key = workloadKey(originatedFrom, workloadId)
-                    if (initializing) removedDuringInit.add(key)
-                    pendingOps.push({ kind: 'remove', key })
-                    schedule()
-                })
+                window.pairApi.workloads.onRemove(
+                    ({ workloadId, originatedFrom, engine, runId }) => {
+                        const key = workloadKey(originatedFrom, workloadId, engine, runId)
+                        if (initializing) removedDuringInit.add(key)
+                        pendingOps.push({ kind: 'remove', key })
+                        schedule()
+                    }
+                )
             )
         }
 
@@ -101,7 +111,11 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
             // Subtract jobs a `workloads:remove` retired during the fetch (that
             // delta is newer than the snapshot), before overlaying upserts — so a
             // remove-then-readd of the same key still surfaces the re-add.
-            for (const key of removedDuringInit) map.delete(key)
+            for (const prefix of removedDuringInit) {
+                for (const key of map.keys()) {
+                    if (key === prefix || key.startsWith(prefix + '\u0000')) map.delete(key)
+                }
+            }
             // Overlay upserts that already landed during the fetch (also newer than
             // the baseline), so seeding never regresses a live transition.
             for (const [key, workload] of get().workloads) {

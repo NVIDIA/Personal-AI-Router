@@ -87,7 +87,7 @@ var modelKeys = map[string]bool{
 // modelParentKeys hold per-engine maps, so their leaf values are model names but
 // their keys are engine names.
 var modelParentKeys = map[string]bool{
-	"modelsByEngine": true, "loadedByEngine": true,
+	"modelsByEngine": true, "loadedByEngine": true, "retainedByEngine": true,
 }
 
 type discovery struct {

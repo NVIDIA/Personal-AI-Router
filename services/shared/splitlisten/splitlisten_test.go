@@ -237,11 +237,11 @@ func testServerTLSConfig(t *testing.T) *tls.Config {
 
 // scriptedListener is a net.Listener whose Accept behavior is driven by acceptFn.
 type scriptedListener struct {
-	addr     net.Addr
-	acceptFn func(call int) (net.Conn, error)
-	mu       sync.Mutex
-	calls    int
-	closed   chan struct{}
+	addr      net.Addr
+	acceptFn  func(call int) (net.Conn, error)
+	mu        sync.Mutex
+	calls     int
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 

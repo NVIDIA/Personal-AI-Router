@@ -691,3 +691,15 @@ func TestNewManager_Floor(t *testing.T) {
 		t.Fatalf("interval = %v, want floor %v", m.interval, intervalFloor)
 	}
 }
+
+func TestSchedulerEnginesIncludesLlamaCpp(t *testing.T) {
+	found := false
+	for _, e := range schedulerEngines {
+		if e == "llamacpp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("schedulerEngines missing llamacpp")
+	}
+}

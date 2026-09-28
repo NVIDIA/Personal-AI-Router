@@ -56,6 +56,7 @@ function blockStyle(open, close, continuation, options = {}) {
 
 const SLASH = lineStyle('//')
 const HASH = lineStyle('#')
+const SEMICOLON = lineStyle(';')
 // services/build.bat and services/installer_build.bat set the precedent: `@REM`
 // rather than `REM`, so the header does not echo before `@echo off` runs.
 const BATCH = lineStyle('@REM')
@@ -85,6 +86,9 @@ const STYLE_BY_EXTENSION = new Map([
     ['.yml', HASH],
     ['.yaml', HASH],
     ['.toml', HASH],
+    ['.service', HASH],
+    ['.socket', HASH],
+    ['.ini', SEMICOLON],
     // Vault agent HCL configs and the consul-template files they render. The CI
     // env parser skips `#` lines, so a header in a .tmpl does not reach the
     // rendered secrets file as data.

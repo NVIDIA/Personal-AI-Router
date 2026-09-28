@@ -12,6 +12,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"sync"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
@@ -61,21 +62,42 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
+	onboarding    *onboardingService
+	cables        *cableProductService
 	settingsRelay settingsRelay
 	codec         *Codec
 	exec          *Executor
 	peers         *peerDirectory
 	addrs         *reach.Chooser
 	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
+	cableLocal    *cableLocalFacts
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
-	remoteHTTP *clustertrust.PeerClientPool
-	readyHTTP  *clustertrust.PeerClientPool
-	cancel     context.CancelFunc
+	remoteHTTP   *clustertrust.PeerClientPool
+	readyHTTP    *clustertrust.PeerClientPool
+	groupRoute   *vllmGroupRouteGate
+	cancel       context.CancelFunc
+	shutdownOnce sync.Once
+	shutdownDone chan struct{}
+	shutdownErr  error
 }
 
 func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager {
+	m := newManagerTransport(codec, exec, mesh)
+	m.settingsRelay.send = codec.Notify
+	exec.settingsParent = m.settingsRelay.call
+	m.groupRoute = newVLLMGroupRouteGate()
+	exec.groupPeer = &vllmGroupPeer{m: m}
+	exec.groupPeer.bootstrapSystemOwner()
+	m.onboarding = newOnboardingService(m)
+	exec.diagnostics = newDiagnosticService(m)
+	m.cables = newCableProductService(m)
+	exec.fabric = newFabricService(m)
+	return m
+}
+
+func newManagerTransport(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager {
 	// cancel defaults to a no-op so the "shutdown" handler is safe even if
 	// handleMessage is reached before Run() installs the real CancelFunc
 	// (e.g. a unit test calling it directly); Run overwrites it.
@@ -93,8 +115,6 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		}),
 		cancel: func() {},
 	}
-	m.settingsRelay.send = codec.Notify
-	exec.settingsParent = m.settingsRelay.call
 	return m
 }
 
@@ -102,6 +122,11 @@ func (m *Manager) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
 	defer cancel()
+	m.onboarding.ctx = ctx
+	m.cables.ctx = ctx
+	m.exec.fabric.ctx = ctx
+	m.exec.diagnostics.ctx = ctx
+	m.exec.diagnostics.recover(ctx)
 
 	if err := m.codec.Notify("engine:ready", ReadyParams{Version: Version}); err != nil {
 		return fmt.Errorf("failed to send ready notification: %w", err)
@@ -125,7 +150,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	// Cancel first so any in-flight start aborts at its readiness wait,
 	// then stop engines so the parent's exit doesn't orphan them.
 	cancel()
-	m.exec.StopAll()
+	err = errors.Join(err, m.shutdown())
 	m.remoteHTTP.CloseIdle()
 	m.readyHTTP.CloseIdle()
 	return err
@@ -155,6 +180,57 @@ func (m *Manager) readLoop(ctx context.Context) error {
 }
 
 func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
+	if msg.Method == "engine:diagnostic-workload-state" {
+		m.exec.diagnostics.receiveWorkloads(msg.Params)
+		return
+	}
+	if msg.Method == "engine:vllm-group-route-state" {
+		if m.groupRoute != nil {
+			m.groupRoute.receive(msg.Params)
+		}
+		return
+	}
+	if msg.Method == "engine:onboarding-cluster-response" {
+		m.onboarding.clusterReply(msg.Params)
+		return
+	}
+	switch msg.Method {
+	case "engine:diagnostic-mpi-review", "engine:diagnostic-mpi-approve", "engine:diagnostic-mpi-status", "engine:diagnostic-mpi-cancel", "engine:diagnostic-mpi-recover", "engine:diagnostic-mpi-reconcile":
+		if msg.IsRequest() {
+			go m.handleDiagnosticMPI(ctx, msg)
+		}
+		return
+	case "engine:diagnostic-runtime-review", "engine:diagnostic-runtime-approve", "engine:diagnostic-runtime-status", "engine:diagnostic-runtime-cancel", "engine:diagnostic-runtime-retry", "engine:diagnostic-runtime-adopt", "engine:diagnostic-managed-runtime", "engine:diagnostic-managed-runtimes":
+		if msg.IsRequest() {
+			go m.handleDiagnosticRuntime(ctx, msg)
+		}
+		return
+	case "engine:vllm-python-prepare-review", "engine:diagnostic-package-review", "engine:diagnostic-package-approve", "engine:diagnostic-package-status", "engine:diagnostic-package-cancel", "engine:diagnostic-package-retry":
+		if msg.IsRequest() {
+			go m.handleDiagnosticPackages(ctx, msg)
+		}
+		return
+	case "engine:diagnostic-targets", "engine:diagnostic-inspect":
+		if msg.IsRequest() {
+			go m.handleDiagnosticInspection(ctx, msg)
+		}
+		return
+	case "engine:diagnostic-setup-review":
+		if msg.IsRequest() {
+			go m.handleDiagnosticSetupReview(msg)
+		}
+		return
+	case "engine:diagnostic-groups", "engine:diagnostic-start", "engine:diagnostic-status", "engine:diagnostic-cancel":
+		if msg.IsRequest() {
+			go m.handleDiagnostic(ctx, msg)
+		}
+		return
+	case "engine:onboarding-candidates", "engine:onboarding-add-target", "engine:onboarding-access", "engine:onboarding-inspect", "engine:onboarding-approve", "engine:onboarding-status", "engine:onboarding-cancel", "engine:onboarding-retry", "engine:onboarding-scopes", "engine:onboarding-discover", "engine:onboarding-import-artifact", "engine:onboarding-bootstrap-catalog", "engine:onboarding-bootstrap-controller-keys", "engine:onboarding-bootstrap-inspect", "engine:onboarding-bootstrap-review", "engine:onboarding-bootstrap-apply", "engine:onboarding-bootstrap-status", "engine:onboarding-bootstrap-recover", "engine:onboarding-bootstrap-verify":
+		if msg.IsRequest() {
+			go m.handleOnboarding(ctx, msg)
+		}
+		return
+	}
 	if m.handleSettingsMessage(ctx, msg) {
 		return
 	}
@@ -197,6 +273,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	switch msg.Method {
 	case "shutdown":
+		m.exec.diagnostics.closePackageAdmission()
 		if err := m.codec.Respond(msg.ID, nil); err != nil {
 			log.Printf("failed to respond to shutdown: %v", err)
 		}
@@ -205,13 +282,13 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case "engine:get-installed":
 		go func() {
-			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.GetInstalled()})
+			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.GetInstalledContext(ctx)})
 		}()
 
 	case prepareShutdownMethod:
+		m.exec.diagnostics.closePackageAdmission()
 		go func() {
-			m.exec.StopAll()
-			m.codec.Respond(msg.ID, nil)
+			m.respondOrErr(msg, nil, m.shutdown())
 		}()
 
 	case "engine:describe":
@@ -247,14 +324,92 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:errors":
 		m.codec.Respond(msg.ID, map[string]any{"errors": m.exec.Errors()})
 
+	case "engine:onboarding-history":
+		// Read-only compatibility inventory. It cannot create or resume an
+		// onboarding operation and therefore carries no runtime authority.
+		history := m.exec.OnboardingHistory()
+		history.DiagnosticRecoveryRequired = m.exec.diagnostics.recoveryRequired()
+		m.codec.Respond(msg.ID, history)
+
+	case "engine:vllm-group-review", "engine:vllm-group-check", "engine:vllm-group-start",
+		"engine:vllm-group-stop", "engine:vllm-group-reconcile":
+		go m.handleVLLMGroup(ctx, msg)
+
+	case "engine:vllm-group-status":
+		m.handleVLLMGroup(ctx, msg)
+
+	case "engine:vllm-group-cleanup":
+		// Binding-only in this generation. The backend re-reads the retained
+		// journal and returns an explicit admission hold without effects.
+		var p vllmGroupCleanupRequest
+		if !m.parse(msg, &p) {
+			return
+		}
+		go func() {
+			status, err := m.exec.ReconcileVLLMGroupCleanup(ctx, p)
+			m.respondOrErr(msg, status, err)
+		}()
+
+	case "engine:vllm-select-model":
+		var p vllmSelectModelRequest
+		if !m.parse(msg, &p) {
+			return
+		}
+		go func() {
+			result, err := m.exec.SelectVLLMModel(ctx, p.Model)
+			m.respondOrErr(msg, result, err)
+		}()
+
+	case "engine:vllm-qwen38-prepare":
+		go m.runQwen38Prepare(ctx, msg)
+
+	case "engine:vllm-distribute-model":
+		var request vllmDistributionRequest
+		if !m.parse(msg, &request) {
+			return
+		}
+		if request.OpID == "" {
+			request.OpID = request.OperationID
+		}
+		go func() {
+			result, err := m.distributeVLLMModelHere(ctx, request)
+			m.respondOrErr(msg, result, err)
+		}()
+
 	case "engine:models":
 		go m.runModels(ctx, msg)
 
-	case "engine:install", "engine:uninstall", "engine:start", "engine:stop", "engine:restart":
+	case "engine:install", "engine:update", "engine:uninstall", "engine:start", "engine:stop", "engine:restart":
 		go m.runOp(ctx, msg)
 
 	case "engine:set-port":
 		go m.runSetPort(ctx, msg)
+
+	case "engine:cable-review":
+		go m.runCableReview(ctx, msg)
+	case "engine:fabric-inventory":
+		var p struct {
+			NodeIDs []string `json:"nodeIds"`
+		}
+		if !m.parse(msg, &p) {
+			return
+		}
+		go func() {
+			if m.exec.fabric == nil {
+				m.codec.RespondError(msg.ID, -32000, "fabric inventory is unavailable")
+				return
+			}
+			inventory, err := m.exec.fabric.topologyInventory(ctx, p.NodeIDs)
+			m.respondOrErr(msg, inventory, err)
+		}()
+	case "engine:fabric-review", "engine:fabric-approve", "engine:fabric-status", "engine:fabric-cancel", "engine:fabric-recover", "engine:fabric-retained-operations":
+		go m.handleFabric(ctx, msg)
+	case "engine:cable-start", "engine:cable-status", "engine:cable-cancel":
+		go m.runCableProduct(ctx, msg)
+	case "engine:cable-retained-runs":
+		go m.runCableRetained(ctx, msg)
+	case "engine:cable-cleanup-review", "engine:cable-cleanup-verify", "engine:cable-cleanup-cancel":
+		go m.runCableCleanup(ctx, msg)
 
 	case "internal:set-reserved-port":
 		var p struct {
@@ -272,9 +427,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:action":
 		go m.runAction(ctx, msg)
 
-	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
+	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model", "engine:remote-vllm-qwen38-prepare", "engine:remote-distribute-model",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
-		"engine:remote-start", "engine:remote-stop":
+		"engine:remote-update", "engine:remote-start", "engine:remote-stop", "engine:remote-cancel-pull":
 		go m.runRemote(ctx, msg)
 
 	default:
@@ -310,6 +465,8 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		if err = m.exec.Install(ctx, p.Engine); err == nil && p.Start {
 			err = start()
 		}
+	case "engine:update":
+		err = m.exec.Update(ctx, p.Engine)
 	case "engine:uninstall":
 		err = m.exec.Uninstall(ctx, p.Engine)
 	case "engine:start":
@@ -346,8 +503,8 @@ func (m *Manager) runSetPort(ctx context.Context, msg *Message) {
 	m.respondOrErr(msg, st, err)
 }
 
-// runModels answers engine:models with the union of running engines' model
-// lists plus per-engine attribution (modelsByEngine). It runs async (like
+// runModels answers engine:models with the union of running engines' served
+// model lists, per-engine attribution, and separate retained catalogs. It runs async (like
 // engine:action) because it makes one loopback HTTP call per running engine and
 // must not block the read loop.
 func (m *Manager) runModels(ctx context.Context, msg *Message) {
@@ -373,6 +530,11 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 		model := modelFromParams(p.Params)
 		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Op: "pull", Stage: "cancelled", Percent: -1, Message: model})
+				m.codec.RespondError(msg.ID, -32000, "model download cancelled")
+				return
+			}
 			// A pull can fail after the client's synchronous call has already
 			// timed out (long downloads), so the RPC error alone can't reach a
 			// UI that stopped waiting. Emit one terminal engine:pull-progress
@@ -410,6 +572,21 @@ func (m *Manager) applyDiscovery(msg *Message) {
 		return
 	}
 	m.peers.set(res.Nodes)
+	if m.mesh != nil {
+		m.mesh.Refresh()
+		self := m.mesh.NodeUUID()
+		for _, node := range res.Nodes {
+			if self != "" && node.ClusterUUID == self {
+				if m.cableLocal == nil {
+					m.cableLocal = newCableLocalFacts(node.HostUUID, 14318)
+				} else {
+					m.cableLocal.nodeID = node.HostUUID
+				}
+				m.exec.vllmNodeID = node.HostUUID
+				break
+			}
+		}
+	}
 }
 
 func (m *Manager) parse(msg *Message, v any) bool {

@@ -11,6 +11,8 @@ import { useOverviewNodes } from '@/ui/hooks/useOverviewNodes'
 import NodeCardDetails from './NodeCardDetails'
 import { CONNECTIONS_WIDTH } from '@/ui/constants/app'
 import OfflineNode from './OfflineNode'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
+import { buildOverviewNodeSections } from '@/ui/utils/overview-vllm-groups'
 
 const SCROLLBAR_OPTIONS = {
     scrollbars: { autoHide: 'leave', autoHideDelay: 800 }
@@ -18,6 +20,7 @@ const SCROLLBAR_OPTIONS = {
 
 function NodeList() {
     const allNodes = useOverviewNodes()
+    const statusByNode = useEngineStatusStore(state => state.statusByNode)
 
     const { online, offline } = useMemo(() => {
         const on: NodeItem[] = []
@@ -31,6 +34,10 @@ function NodeList() {
         })
         return { online: on, offline: off }
     }, [allNodes])
+    const sections = useMemo(
+        () => buildOverviewNodeSections(online, statusByNode),
+        [online, statusByNode]
+    )
 
     if (online.length === 0 && offline.length === 0) {
         return <Stack className="grow min-w-0 h-full" />
@@ -48,9 +55,31 @@ function NodeList() {
                 defer
             >
                 <Stack className="min-w-0 min-h-full dir-ltr" gap="3" data-node-list-content>
-                    {online.map(node => (
-                        <NodeCardDetails key={node.id} node={node} />
-                    ))}
+                    {sections.map(section =>
+                        section.kind === 'node' ? (
+                            <NodeCardDetails key={section.node.id} node={section.node} />
+                        ) : (
+                            <section
+                                key={section.id}
+                                className="vllm-serving-group"
+                                data-vllm-serving-group={section.id}
+                                aria-label={`Ready vLLM serving group with ${section.nodes.length} nodes`}
+                            >
+                                <div
+                                    className="vllm-serving-group-label"
+                                    title={section.route.model}
+                                >
+                                    <span>vLLM serving group</span>
+                                    <span>{section.nodes.length} nodes · Ready</span>
+                                </div>
+                                <Stack gap="3">
+                                    {section.nodes.map(node => (
+                                        <NodeCardDetails key={node.id} node={node} />
+                                    ))}
+                                </Stack>
+                            </section>
+                        )
+                    )}
 
                     {offline &&
                         offline.length > 0 &&

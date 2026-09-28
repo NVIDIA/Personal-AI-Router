@@ -16,19 +16,42 @@
 - none ✅
 
 ### Requests the backend handles but the bridge never calls (unused capability)
+- ⚠️ nvpair-cluster-manager → cluster:create
 - ⚠️ nvpair-engine-manager → engine:configure-launch
 - ⚠️ nvpair-engine-manager → engine:configured-ports
 - ⚠️ nvpair-engine-manager → engine:describe
+- ⚠️ nvpair-engine-manager → engine:diagnostic-cancel
+- ⚠️ nvpair-engine-manager → engine:diagnostic-groups
+- ⚠️ nvpair-engine-manager → engine:diagnostic-inspect
+- ⚠️ nvpair-engine-manager → engine:diagnostic-package-approve
+- ⚠️ nvpair-engine-manager → engine:diagnostic-package-cancel
+- ⚠️ nvpair-engine-manager → engine:diagnostic-package-retry
+- ⚠️ nvpair-engine-manager → engine:diagnostic-package-review
+- ⚠️ nvpair-engine-manager → engine:diagnostic-package-status
+- ⚠️ nvpair-engine-manager → engine:diagnostic-setup-review
+- ⚠️ nvpair-engine-manager → engine:diagnostic-start
+- ⚠️ nvpair-engine-manager → engine:diagnostic-status
+- ⚠️ nvpair-engine-manager → engine:diagnostic-targets
 - ⚠️ nvpair-engine-manager → engine:errors
 - ⚠️ nvpair-engine-manager → engine:get-launch
-- ⚠️ nvpair-engine-manager → engine:logs
 - ⚠️ nvpair-engine-manager → engine:preview-launch
 - ⚠️ nvpair-engine-manager → engine:remote-apply-settings
 - ⚠️ nvpair-engine-manager → engine:remote-get-settings
 - ⚠️ nvpair-engine-manager → engine:remote-preview-settings
 - ⚠️ nvpair-engine-manager → engine:restart
 - ⚠️ nvpair-engine-manager → engine:set-port
+- ⚠️ nvpair-engine-manager → engine:vllm-python-prepare-review
+- ⚠️ nvpair-engine-manager → headless:status
 - ⚠️ nvpair-engine-manager → internal:set-reserved-port
+- ⚠️ nvpair-host-bootstrap → apply:helper
+- ⚠️ nvpair-host-bootstrap → apply:ssh-service
+- ⚠️ nvpair-host-bootstrap → role:remove
+- ⚠️ nvpair-host-bootstrap → role:repair-remove
+- ⚠️ nvpair-host-bootstrap → role:repair-stop
+- ⚠️ nvpair-host-bootstrap → role:start
+- ⚠️ nvpair-host-bootstrap → role:stop
+- ⚠️ nvpair-host-bootstrap → uninstall:helper
+- ⚠️ nvpair-host-bootstrap → uninstall:ssh-service
 - ⚠️ nvpair-job-scheduler → scheduler:get-interval
 - ⚠️ nvpair-job-scheduler → scheduler:get-status
 - ⚠️ nvpair-job-scheduler → scheduler:set-interval
@@ -39,19 +62,28 @@
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/set-force-ports
 - ⚠️ nvpair-proxy → facade/enable
+- ⚠️ nvpair-proxy → node/select
 - ⚠️ nvpair-proxy → node/selected
 - ⚠️ nvpair-proxy → node/set-local-backend
+- ⚠️ nvpair-proxy → node/set-priority
+- ⚠️ nvpair-tui → headless:status
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:configure-launch
 - ⚠️ nvpair-ui-broker → engine:set-port
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
+- ⚠️ nvpair-ui-broker → llamacpp-proxy:get-status
+- ⚠️ nvpair-ui-broker → llamacpp-proxy:set-port
+- ⚠️ nvpair-ui-broker → llamacpp-proxy:subscribe
+- ⚠️ nvpair-ui-broker → llamacpp-proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → lmstudio-proxy:get-status
 - ⚠️ nvpair-ui-broker → lmstudio-proxy:set-port
+- ⚠️ nvpair-ui-broker → lmstudio-proxy:subscribe
 - ⚠️ nvpair-ui-broker → lmstudio-proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → ollama-proxy:get-status
 - ⚠️ nvpair-ui-broker → ollama-proxy:set-port
+- ⚠️ nvpair-ui-broker → ollama-proxy:subscribe
 - ⚠️ nvpair-ui-broker → ollama-proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
 
@@ -69,7 +101,7 @@
 | `cluster:trust-changed` | notification (we consume) | ➖ ignored |
 | `nodes:changed` | notification (we consume) | ✅ yes |
 | `cluster:cancel-invite` | request (we call) | ✅ yes |
-| `cluster:create` | request (we call) | ✅ yes |
+| `cluster:create` | request (we call) | ⚠️ not called |
 | `cluster:get-node-id` | request (we call) | ✅ yes |
 | `cluster:invite-node` | request (we call) | ✅ yes |
 | `cluster:invite-status` | request (we call) | ✅ yes |
@@ -86,30 +118,101 @@
 
 | Method | Direction | In bridge? |
 |---|---|---|
+| `engine:diagnostic-workload-check` | notification (we consume) | ➖ ignored |
 | `engine:install-progress` | notification (we consume) | ✅ yes |
 | `engine:models-changed` | notification (we consume) | ✅ yes |
+| `engine:onboarding-cluster-call` | notification (we consume) | ➖ ignored |
 | `engine:pull-progress` | notification (we consume) | ✅ yes |
 | `engine:ready` | notification (we consume) | ✅ yes |
 | `engine:remote-progress` | notification (we consume) | ✅ yes |
 | `engine:settings-changed` | notification (we consume) | ✅ yes |
 | `engine:settings-disconnected` | notification (we consume) | ✅ yes |
 | `engine:state-changed` | notification (we consume) | ✅ yes |
+| `engine:vllm-group-route-check` | notification (we consume) | ➖ ignored |
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
+| `cluster:cancel-invite` | request (we call) | ✅ yes |
+| `cluster:get-node-id` | request (we call) | ✅ yes |
+| `cluster:invite-node` | request (we call) | ✅ yes |
+| `cluster:invite-status` | request (we call) | ✅ yes |
+| `cluster:respond-to-invite` | request (we call) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
+| `engine:cable-cancel` | request (we call) | ✅ yes |
+| `engine:cable-cleanup-cancel` | request (we call) | ✅ yes |
+| `engine:cable-cleanup-review` | request (we call) | ✅ yes |
+| `engine:cable-cleanup-verify` | request (we call) | ✅ yes |
+| `engine:cable-retained-runs` | request (we call) | ✅ yes |
+| `engine:cable-review` | request (we call) | ✅ yes |
+| `engine:cable-start` | request (we call) | ✅ yes |
+| `engine:cable-status` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-cancel` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-groups` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-inspect` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-managed-runtime` | request (we call) | ✅ yes |
+| `engine:diagnostic-managed-runtimes` | request (we call) | ✅ yes |
+| `engine:diagnostic-mpi-approve` | request (we call) | ✅ yes |
+| `engine:diagnostic-mpi-cancel` | request (we call) | ✅ yes |
+| `engine:diagnostic-mpi-reconcile` | request (we call) | ✅ yes |
+| `engine:diagnostic-mpi-recover` | request (we call) | ✅ yes |
+| `engine:diagnostic-mpi-review` | request (we call) | ✅ yes |
+| `engine:diagnostic-mpi-status` | request (we call) | ✅ yes |
+| `engine:diagnostic-package-approve` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-package-cancel` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-package-retry` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-package-review` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-package-status` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-runtime-adopt` | request (we call) | ✅ yes |
+| `engine:diagnostic-runtime-approve` | request (we call) | ✅ yes |
+| `engine:diagnostic-runtime-cancel` | request (we call) | ✅ yes |
+| `engine:diagnostic-runtime-retry` | request (we call) | ✅ yes |
+| `engine:diagnostic-runtime-review` | request (we call) | ✅ yes |
+| `engine:diagnostic-runtime-status` | request (we call) | ✅ yes |
+| `engine:diagnostic-setup-review` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-start` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-status` | request (we call) | ⚠️ not called |
+| `engine:diagnostic-targets` | request (we call) | ⚠️ not called |
 | `engine:errors` | request (we call) | ⚠️ not called |
+| `engine:fabric-approve` | request (we call) | ✅ yes |
+| `engine:fabric-cancel` | request (we call) | ✅ yes |
+| `engine:fabric-inventory` | request (we call) | ✅ yes |
+| `engine:fabric-recover` | request (we call) | ✅ yes |
+| `engine:fabric-retained-operations` | request (we call) | ✅ yes |
+| `engine:fabric-review` | request (we call) | ✅ yes |
+| `engine:fabric-status` | request (we call) | ✅ yes |
 | `engine:get-installed` | request (we call) | ✅ yes |
 | `engine:get-launch` | request (we call) | ⚠️ not called |
 | `engine:install` | request (we call) | ✅ yes |
-| `engine:logs` | request (we call) | ⚠️ not called |
+| `engine:logs` | request (we call) | ✅ yes |
 | `engine:models` | request (we call) | ✅ yes |
+| `engine:onboarding-access` | request (we call) | ✅ yes |
+| `engine:onboarding-add-target` | request (we call) | ✅ yes |
+| `engine:onboarding-approve` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-apply` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-catalog` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-controller-keys` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-inspect` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-recover` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-review` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-status` | request (we call) | ✅ yes |
+| `engine:onboarding-bootstrap-verify` | request (we call) | ✅ yes |
+| `engine:onboarding-cancel` | request (we call) | ✅ yes |
+| `engine:onboarding-candidates` | request (we call) | ✅ yes |
+| `engine:onboarding-discover` | request (we call) | ✅ yes |
+| `engine:onboarding-history` | request (we call) | ✅ yes |
+| `engine:onboarding-import-artifact` | request (we call) | ✅ yes |
+| `engine:onboarding-inspect` | request (we call) | ✅ yes |
+| `engine:onboarding-retry` | request (we call) | ✅ yes |
+| `engine:onboarding-scopes` | request (we call) | ✅ yes |
+| `engine:onboarding-status` | request (we call) | ✅ yes |
 | `engine:prepare-shutdown` | request (we call) | ✅ yes |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
+| `engine:remote-cancel-pull` | request (we call) | ✅ yes |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
+| `engine:remote-distribute-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
 | `engine:remote-get-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-install` | request (we call) | ✅ yes |
@@ -119,14 +222,31 @@
 | `engine:remote-start` | request (we call) | ✅ yes |
 | `engine:remote-stop` | request (we call) | ✅ yes |
 | `engine:remote-unload-model` | request (we call) | ✅ yes |
+| `engine:remote-update` | request (we call) | ✅ yes |
+| `engine:remote-vllm-qwen38-prepare` | request (we call) | ✅ yes |
 | `engine:restart` | request (we call) | ⚠️ not called |
 | `engine:set-port` | request (we call) | ⚠️ not called |
 | `engine:start` | request (we call) | ✅ yes |
 | `engine:status` | request (we call) | ✅ yes |
 | `engine:stop` | request (we call) | ✅ yes |
 | `engine:uninstall` | request (we call) | ✅ yes |
+| `engine:update` | request (we call) | ✅ yes |
+| `engine:vllm-distribute-model` | request (we call) | ✅ yes |
+| `engine:vllm-group-check` | request (we call) | ✅ yes |
+| `engine:vllm-group-cleanup` | request (we call) | ✅ yes |
+| `engine:vllm-group-reconcile` | request (we call) | ✅ yes |
+| `engine:vllm-group-review` | request (we call) | ✅ yes |
+| `engine:vllm-group-start` | request (we call) | ✅ yes |
+| `engine:vllm-group-status` | request (we call) | ✅ yes |
+| `engine:vllm-group-stop` | request (we call) | ✅ yes |
+| `engine:vllm-python-prepare-review` | request (we call) | ⚠️ not called |
+| `engine:vllm-qwen38-prepare` | request (we call) | ✅ yes |
+| `engine:vllm-select-model` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
+| `headless:status` | request (we call) | ⚠️ not called |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
+| `nodes:get-initial` | request (we call) | ✅ yes |
+| `ready` | request (we call) | ✅ yes |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
 - `method (var)  (executor.go)`
@@ -141,12 +261,33 @@
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `errors:report` | request (we call) | ✅ yes |
 
+## nvpair-host-bootstrap
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `apply:helper` | request (we call) | ⚠️ not called |
+| `apply:ssh-service` | request (we call) | ⚠️ not called |
+| `role:remove` | request (we call) | ⚠️ not called |
+| `role:repair-remove` | request (we call) | ⚠️ not called |
+| `role:repair-stop` | request (we call) | ⚠️ not called |
+| `role:start` | request (we call) | ⚠️ not called |
+| `role:stop` | request (we call) | ⚠️ not called |
+| `uninstall:helper` | request (we call) | ⚠️ not called |
+| `uninstall:ssh-service` | request (we call) | ⚠️ not called |
+
+**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
+- `temporary (var)  (securefs_windows.go)`
+
+## nvpair-host-helper
+
+_No JSON-RPC methods detected (HTTP-only binary, or source not present)._
+
 ## nvpair-job-scheduler
 
 | Method | Direction | In bridge? |
 |---|---|---|
 | `ready` | notification (we consume) | ✅ yes |
-| `schedule:priority` | notification (we consume) | ✅ yes |
+| `schedule:priority` | notification (we consume) | ➖ ignored |
 | `discovery:nodes-changed` | request (we call) | ✅ yes |
 | `scheduler:get-interval` | request (we call) | ⚠️ not called |
 | `scheduler:get-status` | request (we call) | ⚠️ not called |
@@ -216,11 +357,12 @@
 | `ready` | notification (we consume) | ✅ yes |
 | `facade/enable` | request (we call) | ⚠️ not called |
 | `node/add-manual` | request (we call) | ✅ yes |
+| `node/model-owners` | request (we call) | ➖ ignored |
 | `node/remove-manual` | request (we call) | ✅ yes |
-| `node/select` | request (we call) | ✅ yes |
+| `node/select` | request (we call) | ⚠️ not called |
 | `node/selected` | request (we call) | ⚠️ not called |
 | `node/set-local-backend` | request (we call) | ⚠️ not called |
-| `node/set-priority` | request (we call) | ✅ yes |
+| `node/set-priority` | request (we call) | ⚠️ not called |
 | `nodes/list` | request (we call) | ✅ yes |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
@@ -230,13 +372,22 @@
 
 | Method | Direction | In bridge? |
 |---|---|---|
+| `cluster:cancel-invite` | request (we call) | ✅ yes |
+| `cluster:get-node-id` | request (we call) | ✅ yes |
 | `cluster:identity-changed` | request (we call) | ✅ yes |
+| `cluster:invite-node` | request (we call) | ✅ yes |
 | `cluster:invite-received` | request (we call) | ✅ yes |
+| `cluster:invite-status` | request (we call) | ✅ yes |
+| `cluster:respond-to-invite` | request (we call) | ✅ yes |
 | `engine:install-progress` | request (we call) | ✅ yes |
+| `engine:models-changed` | request (we call) | ✅ yes |
 | `engine:pull-progress` | request (we call) | ✅ yes |
 | `engine:state-changed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
+| `headless:status` | request (we call) | ⚠️ not called |
 | `nodes:changed` | request (we call) | ✅ yes |
+| `nodes:get-initial` | request (we call) | ✅ yes |
+| `ready` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:upsert` | request (we call) | ✅ yes |
 
@@ -246,13 +397,17 @@
 |---|---|---|
 | `app:ready` | notification (we consume) | ✅ yes |
 | `discovery:nodes-changed` | notification (we consume) | ✅ yes |
+| `engine:diagnostic-workload-state` | notification (we consume) | ➖ ignored |
+| `engine:onboarding-cluster-response` | notification (we consume) | ➖ ignored |
 | `engine:restore-enabled` | notification (we consume) | ➖ ignored |
 | `engine:settings-changed` | notification (we consume) | ✅ yes |
 | `engine:settings-projection` | notification (we consume) | ➖ ignored |
 | `engine:settings-reply` | notification (we consume) | ➖ ignored |
+| `engine:vllm-group-route-state` | notification (we consume) | ➖ ignored |
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
+| `llamacpp-proxy:ready` | notification (we consume) | ➖ ignored |
 | `lmstudio-proxy:ready` | notification (we consume) | ➖ ignored |
 | `ollama-proxy:ready` | notification (we consume) | ➖ ignored |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
@@ -273,9 +428,13 @@
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
+| `llamacpp-proxy:get-status` | request (we call) | ⚠️ not called |
+| `llamacpp-proxy:set-port` | request (we call) | ⚠️ not called |
+| `llamacpp-proxy:subscribe` | request (we call) | ⚠️ not called |
+| `llamacpp-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `lmstudio-proxy:get-status` | request (we call) | ⚠️ not called |
 | `lmstudio-proxy:set-port` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:subscribe` | request (we call) | ✅ yes |
+| `lmstudio-proxy:subscribe` | request (we call) | ⚠️ not called |
 | `lmstudio-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `node/add` | request (we call) | ✅ yes |
 | `node/discovered` | request (we call) | ✅ yes |
@@ -285,7 +444,7 @@
 | `nodes/list` | request (we call) | ✅ yes |
 | `ollama-proxy:get-status` | request (we call) | ⚠️ not called |
 | `ollama-proxy:set-port` | request (we call) | ⚠️ not called |
-| `ollama-proxy:subscribe` | request (we call) | ✅ yes |
+| `ollama-proxy:subscribe` | request (we call) | ⚠️ not called |
 | `ollama-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |

@@ -334,6 +334,52 @@ func TestLMStudioDefaultPort(t *testing.T) {
 	}
 }
 
+func TestBackendLlamaCpp(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, err := parseConfig([]string{"--backend", "llamacpp", "--prompt", "hi"}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Backend != "llamacpp" {
+		t.Fatalf("backend = %q", cfg.Backend)
+	}
+	if port := effectivePort(cfg); port != defaultLlamaCppPort {
+		t.Fatalf("port = %d, want %d", port, defaultLlamaCppPort)
+	}
+}
+
+func TestLlamaCppUsesOpenAIInventory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/models":
+			http.Error(w, "not found", http.StatusNotFound)
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"gguf-model"}]}`))
+		case "/v1/chat/completions":
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	exit := runAgainstServer(
+		t,
+		context.Background(),
+		[]string{"--backend", "llamacpp", "--prompt", "test"},
+		server.URL,
+		&stdout,
+		&stderr,
+	)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "gguf-model") {
+		t.Fatalf("selected model missing from output: %s", stdout.String())
+	}
+}
+
 func TestResponseTextNeverReachesStdout(t *testing.T) {
 	const secret = "the capital of France is Paris"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

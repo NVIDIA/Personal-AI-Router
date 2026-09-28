@@ -81,6 +81,22 @@ func TestRunOpInstallAutostart(t *testing.T) {
 	}
 }
 
+func TestRunOpDispatchesVLLMUpdateThroughOwnedBackend(t *testing.T) {
+	ex, srv := externalVLLMFixture(t, "vllm")
+	defer srv.Close()
+	if _, err := ex.Status("vllm"); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	m := NewManager(NewCodec(&out), ex, nil)
+	id := json.RawMessage("1")
+	m.runOp(context.Background(), &Message{
+		JSONRPC: "2.0", ID: &id, Method: "engine:update",
+		Params: json.RawMessage(`{"engine":"vllm"}`),
+	})
+	mustContain(t, out.String(), "external process remains under its own manager")
+}
+
 func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -143,6 +159,38 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 			}
 		})
 	}
+}
+
+func TestControlGetInstalledReturnsCachedVLLMWhileLifecycleBusy(t *testing.T) {
+	f := vllmResourceFixture(t)
+	f.st.mu.Lock()
+	f.st.installed = true
+	f.st.version = "0.29.0"
+	f.st.mu.Unlock()
+	f.st.opMu.Lock()
+	const readers = 16
+	response := make(chan []EngineStatus, readers)
+	for range readers {
+		go func() { response <- f.e.GetInstalledContext(context.Background()) }()
+	}
+	deadline := time.After(time.Second)
+	for range readers {
+		select {
+		case got := <-response:
+			if len(got) != 1 || got[0].Engine != "vllm" || !got[0].Installed || got[0].Running || got[0].Version != "0.29.0" {
+				f.st.opMu.Unlock()
+				t.Fatalf("cached vLLM status = %+v", got)
+			}
+			if got[0].InstallSupported != nil {
+				f.st.opMu.Unlock()
+				t.Fatalf("cached status claimed fresh install support: %+v", got[0])
+			}
+		case <-deadline:
+			f.st.opMu.Unlock()
+			t.Fatal("concurrent get-installed requests queued behind vLLM lifecycle lock")
+		}
+	}
+	f.st.opMu.Unlock()
 }
 
 func mustContain(t *testing.T, s, sub string) {

@@ -105,6 +105,157 @@ describe('remote pull progress', () => {
 
         expect(progressEvents.at(-1)?.percent).toBe(42)
     })
+
+    it('projects remote update frames onto the existing install progress row', () => {
+        const state = getModularBridgeState()
+        const progressEvents: Array<{ operation?: string; status?: string; percent?: number }> = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') {
+                progressEvents.push(event.payload)
+            }
+        })
+
+        state.applyRemoteEngineProgress({
+            node: 'remote-update-node',
+            engine: 'vllm',
+            op: 'update',
+            stage: 'downloading',
+            percent: 37
+        })
+
+        expect(progressEvents.at(-1)).toMatchObject({
+            operation: 'install',
+            status: 'downloading',
+            percent: 37
+        })
+    })
+
+    it('projects typed distribution and runtime preparation onto their exact node rows', () => {
+        const state = getModularBridgeState()
+        const progressEvents: Array<{
+            operation?: string
+            operationId?: string
+            model?: string
+            status?: string
+            percent?: number
+        }> = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') progressEvents.push(event.payload)
+        })
+        const model = `owner/model@${'a'.repeat(40)}`
+        const operationId = 'b'.repeat(32)
+        state.beginVllmJourney('remote-distribution-node', 'distribute', operationId, model)
+        state.applyRemoteEngineProgress({
+            node: 'remote-distribution-node',
+            engine: 'vllm',
+            op: 'distribute',
+            stage: 'receiving',
+            percent: 61
+        })
+        expect(progressEvents.at(-1)).toMatchObject({
+            operation: 'distribute',
+            operationId,
+            model,
+            status: 'receiving',
+            percent: 61
+        })
+
+        state.beginVllmJourney('remote-prepare-node', 'prepare', operationId)
+        state.applyRemoteEngineProgress({
+            node: 'remote-prepare-node',
+            engine: 'vllm',
+            op: 'qwen38-prepare',
+            stage: 'installing-runtime',
+            percent: 25
+        })
+        expect(progressEvents.at(-1)).toMatchObject({
+            operation: 'prepare',
+            operationId,
+            status: 'installing-runtime',
+            percent: 25
+        })
+        state.finishVllmJourney('remote-distribution-node', 'distribute')
+        state.finishVllmJourney('remote-prepare-node', 'prepare')
+    })
+
+    it("carries a model copy's network and ignores it anywhere else", () => {
+        const state = getModularBridgeState()
+        const events: Array<{ operation?: string; network?: string; status?: string }> = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload)
+        })
+        const model = `owner/model@${'a'.repeat(40)}`
+        const operationId = 'd'.repeat(32)
+        state.beginVllmJourney('copy-node', 'distribute', operationId, model)
+        const copyFrame = (network: string) =>
+            state.applyRemoteEngineProgress({
+                node: 'copy-node',
+                engine: 'vllm',
+                op: 'distribute',
+                stage: 'receiving',
+                percent: 10,
+                network
+            })
+        copyFrame('fabric')
+        expect(events.at(-1)).toMatchObject({ operation: 'distribute', network: 'fabric' })
+        copyFrame('management')
+        expect(events.at(-1)).toMatchObject({ operation: 'distribute', network: 'management' })
+        copyFrame('wifi')
+        expect(events.at(-1)).not.toHaveProperty('network')
+        state.finishVllmJourney('copy-node', 'distribute')
+
+        state.beginVllmJourney('prepare-node', 'prepare', operationId)
+        state.applyRemoteEngineProgress({
+            node: 'prepare-node',
+            engine: 'vllm',
+            op: 'qwen38-prepare',
+            stage: 'installing-runtime',
+            network: 'fabric'
+        })
+        expect(events.at(-1)).not.toHaveProperty('network')
+        state.finishVllmJourney('prepare-node', 'prepare')
+
+        state.setSelfId('local-copy-node')
+        state.beginVllmJourney('local-copy-node', 'distribute', operationId, model)
+        state.applyLocalEngineProgress({
+            engine: 'vllm',
+            op: 'distribute',
+            stage: 'receiving',
+            percent: 20,
+            network: 'fabric'
+        })
+        expect(events.at(-1)).toMatchObject({
+            operation: 'distribute',
+            status: 'receiving',
+            network: 'fabric'
+        })
+        state.finishVllmJourney('local-copy-node', 'distribute')
+    })
+
+    it('projects local Qwen preparation install frames onto the prepare row', () => {
+        const state = getModularBridgeState()
+        const events: Array<{ operation?: string; operationId?: string; percent?: number }> = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload)
+        })
+        const nodeId = 'local-prepare-node'
+        const operationId = 'c'.repeat(32)
+        state.setSelfId(nodeId)
+        state.beginVllmJourney(nodeId, 'prepare', operationId)
+        expect(
+            state.applyLocalVllmPrepareProgress({
+                engine: 'vllm',
+                stage: 'installing-qwen38-offline',
+                percent: 75
+            })
+        ).toBe(true)
+        expect(events.at(-1)).toMatchObject({
+            operation: 'prepare',
+            operationId,
+            percent: 75
+        })
+        state.finishVllmJourney(nodeId, 'prepare')
+    })
 })
 
 describe('mergePullProgressPercent', () => {

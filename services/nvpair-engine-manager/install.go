@@ -22,13 +22,33 @@ import (
 // Install obtains the engine in user mode: download (checksum-verified)
 // then run the declared command. No-op if already detected.
 func (e *Executor) Install(ctx context.Context, engine string) error {
+	if err := e.rejectVLLMGroupMutation(engine, "install"); err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
+		if _, known := e.reg.Get(engine); known {
+			unavailable := fmt.Errorf("engine %q install is unavailable: %s", engine, unavailablePlatformInstallReason(engine))
+			e.reportInstallFailed(engine, unavailable)
+			return unavailable
+		}
 		return err
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
-	if ok, _ := e.Detect(engine); ok {
+	ctx, finish, err := e.beginVLLMMutation(ctx, st)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	if engine == "vllm" {
+		if err := e.reconcileManagedVLLMActivation(ctx, st); err != nil {
+			return err
+		}
+	}
+	if ok, detectErr := e.Detect(engine); detectErr != nil {
+		return fmt.Errorf("detect existing engine %q: %w", engine, detectErr)
+	} else if ok {
 		e.reporter.clear(installFailedID(engine))
 		e.emitInstallProgress(engine, "already-installed", 100)
 		return nil
@@ -38,6 +58,9 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	st.mu.Unlock()
 	presence := e.reconcilePresence(ctx, engine, st, false, port, false)
 	if presence.Identified {
+		if err := adoptedVLLMMutationError(st, "install"); err != nil {
+			return err
+		}
 		// A healthy service is already present even though no managed binary
 		// was detected. Treat it as an external installation and never fetch a
 		// second copy. reconcilePresence emits the adopted state; the terminal
@@ -55,16 +78,38 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	if inst == nil {
 		return fmt.Errorf("engine %q has no install block for this platform", engine)
 	}
+	if supported, reason := installSupport(engine, st.plat); !supported {
+		err := fmt.Errorf("engine %q install is unavailable: %s", engine, reason)
+		e.reportInstallFailed(engine, err)
+		return err
+	}
 	if inst.ModeOrDefault() == "admin" {
 		err := fmt.Errorf("engine %q declares an admin install, which is refused (engine-manager is user-mode only)", engine)
 		e.reportInstallFailed(engine, err)
 		return err
 	}
+	switch inst.Driver {
+	case "vllm-python":
+		if err := e.installManagedVLLM(ctx, st, false); err != nil {
+			e.reportInstallFailed(engine, err)
+			return err
+		}
+		return nil
+	case "llama-app":
+		if engine != "llamacpp" {
+			return fmt.Errorf("llama-app driver requires llamacpp engine")
+		}
+		return e.installLlamaApp(ctx, st)
+	}
 	if err := os.MkdirAll(st.installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
 
-	vars := map[string]string{"install_dir": st.installDir}
+	vars := map[string]string{"install_dir": st.installDir, "models_dir": st.modelDir}
+	env, err := childEnv(st)
+	if err != nil {
+		return err
+	}
 
 	if len(inst.Script) > 0 {
 		// Escape hatch: vendor-script install with no checksum. Logged
@@ -79,7 +124,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		for i := range argv {
 			argv[i] = expandPath(argv[i])
 		}
-		if err := e.runCommand(ctx, argv); err != nil {
+		if err := e.runCommand(ctx, argv, env); err != nil {
 			werr := fmt.Errorf("script install failed: %w", err)
 			e.reportInstallFailed(engine, werr)
 			return werr
@@ -106,7 +151,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			for i := range args {
 				args[i] = expandPath(args[i])
 			}
-			if err := e.runCommand(ctx, args); err != nil {
+			if err := e.runCommand(ctx, args, env); err != nil {
 				werr := fmt.Errorf("install command failed: %w", err)
 				e.reportInstallFailed(engine, werr)
 				return werr
@@ -128,17 +173,83 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 // Uninstall runs the manifest's uninstall command (user-mode), stopping
 // the engine first. No-op if the engine isn't currently detected.
 func (e *Executor) Uninstall(ctx context.Context, engine string) error {
+	if err := e.rejectVLLMGroupMutation(engine, "uninstall"); err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return err
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
+	ctx, finish, err := e.beginVLLMMutation(ctx, st)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	if engine == "vllm" {
+		record, recordErr := readVLLMRuntimeRecord(st)
+		if recordErr != nil {
+			return recordErr
+		}
+		if record.Activating != nil {
+			if err := e.reconcileManagedVLLMActivation(ctx, st); err != nil {
+				return err
+			}
+			record, recordErr = readVLLMRuntimeRecord(st)
+			if recordErr != nil {
+				return recordErr
+			}
+		}
+		if record.Removing {
+			if err := e.uninstallManagedVLLM(ctx, st); err != nil {
+				return err
+			}
+			e.reporter.clear(uninstallFailedID(engine))
+			e.emitState(engine)
+			return e.setDesiredEnabled(engine, false)
+		}
+		pathInstalled := record.Active != ""
+		if pathInstalled {
+			cli, receipt, validateErr := validateVLLMEnvironment(st, record.Active)
+			if validateErr != nil {
+				return validateErr
+			}
+			st.mu.Lock()
+			st.installed, st.binPath, st.version = true, cli, receipt.Version
+			st.mu.Unlock()
+		}
+		st.mu.Lock()
+		port := st.port
+		st.mu.Unlock()
+		if pathInstalled {
+			if _, _, observeErr := e.observeManagedVLLMRecordedListener(ctx, st, record); observeErr != nil {
+				return observeErr
+			}
+		}
+		presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, false)
+		if err := adoptedVLLMMutationError(st, "uninstall"); err != nil {
+			return err
+		}
+		st.mu.Lock()
+		ownedProcess := st.proc != nil
+		st.mu.Unlock()
+		if presence.Occupied && !presence.Identified && !ownedProcess {
+			return fmt.Errorf("cannot uninstall engine %q: port %d is occupied by an unidentified service", engine, port)
+		}
+		if err := e.uninstallManagedVLLM(ctx, st); err != nil {
+			e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
+			return err
+		}
+		e.reporter.clear(uninstallFailedID(engine))
+		e.emitState(engine)
+		return e.setDesiredEnabled(engine, false)
+	}
 	if ok, _ := e.Detect(engine); !ok {
 		return e.setDesiredEnabled(engine, false) // already gone
 	}
 	un := st.plat.Uninstall
-	if un == nil || len(un.Run) == 0 {
+	if un == nil || (len(un.Run) == 0 && un.Driver == "") {
 		return fmt.Errorf("engine %q has no uninstall defined for this platform", engine)
 	}
 	st.mu.Lock()
@@ -169,6 +280,22 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: werr.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return werr
 	}
+	if un.Driver == "llama-app" {
+		if engine != "llamacpp" {
+			return fmt.Errorf("llama-app driver requires llamacpp engine")
+		}
+		if err := removeLlamaRuntime(st); err != nil {
+			return err
+		}
+		if installed, _ := e.Detect(engine); installed {
+			uerr := fmt.Errorf("engine %q still detected after uninstall", engine)
+			e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+			return uerr
+		}
+		e.reporter.clear(uninstallFailedID(engine))
+		e.emitState(engine)
+		return e.setDesiredEnabled(engine, false)
+	}
 
 	args, err := resolveArgs(un.Run, map[string]string{"install_dir": st.installDir})
 	if err != nil {
@@ -178,8 +305,12 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		args[i] = expandPath(args[i])
 	}
 	var runErr error
+	env, err := childEnv(st)
+	if err != nil {
+		return err
+	}
 	for attempt := 1; attempt <= uninstallRetries; attempt++ {
-		if runErr = e.runCommand(ctx, args); runErr == nil {
+		if runErr = e.runCommand(ctx, args, env); runErr == nil {
 			break
 		}
 		if attempt < uninstallRetries {
@@ -248,10 +379,19 @@ func validateDownloadURL(raw string) error {
 }
 
 func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (string, error) {
+	return e.downloadLimited(ctx, engine, f, maxDownloadBytes)
+}
+
+func (e *Executor) downloadLimited(ctx context.Context, engine string, f *Fetch, limit int64) (string, error) {
 	if err := validateDownloadURL(f.URL); err != nil {
 		return "", err
 	}
-	dctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	// A stall-bounded caller (the llama install) already fails on lack of
+	// progress; a fixed budget would only cut a slow but live transfer short.
+	dctx, cancel := ctx, context.CancelFunc(func() {})
+	if !hasStall(ctx) {
+		dctx, cancel = context.WithTimeout(ctx, 30*time.Minute)
+	}
 	defer cancel()
 	req, err := http.NewRequestWithContext(dctx, http.MethodGet, f.URL, nil)
 	if err != nil {
@@ -275,18 +415,25 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 	}
 	pw := &progressWriter{total: resp.ContentLength, onPct: func(p int) {
 		e.emitInstallProgress(engine, "downloading", p)
-	}}
+	}, touch: func() { touchStall(dctx) }}
 	h := sha256.New()
 	// Read one byte past the cap so we can detect (and reject) overflow.
-	n, err := io.Copy(io.MultiWriter(tmp, h), io.TeeReader(io.LimitReader(resp.Body, maxDownloadBytes+1), pw))
-	tmp.Close()
+	n, err := io.Copy(io.MultiWriter(tmp, h), io.TeeReader(io.LimitReader(resp.Body, limit+1), pw))
+	// A close error means the last buffered bytes never reached disk, so the
+	// file on disk is not what the digest above was computed over. Report it
+	// here rather than letting a truncated artifact fail later in extraction,
+	// where the cause is no longer visible.
+	closeErr := tmp.Close()
+	if err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf("download %s: %w", f.URL, err)
+		return "", fmt.Errorf("download %s: %w", f.URL, transferError(dctx, err))
 	}
-	if n > maxDownloadBytes {
+	if n > limit {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf("download %s exceeds the %d-byte limit", f.URL, int64(maxDownloadBytes))
+		return "", fmt.Errorf("download %s exceeds the %d-byte limit", f.URL, limit)
 	}
 
 	sum := hex.EncodeToString(h.Sum(nil))
@@ -309,12 +456,14 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 // runCommand executes a manifest-declared argv (an install or uninstall
 // step), hiding the console window on Windows; on failure it returns the
 // combined output for diagnostics.
-func (e *Executor) runCommand(ctx context.Context, argv []string) error {
+func (e *Executor) runCommand(ctx context.Context, argv []string, env ...map[string]string) error {
 	if len(argv) == 0 {
 		return nil
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = commandEnv(env...)
 	configureSysProcAttr(cmd) // hide the console window on Windows
+	configureCommandCancel(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
@@ -338,11 +487,15 @@ type progressWriter struct {
 	read  int64
 	last  int
 	onPct func(int)
+	touch func() // every chunk, even when the percentage has not moved
 }
 
 func (p *progressWriter) Write(b []byte) (int, error) {
 	n := len(b)
 	p.read += int64(n)
+	if p.touch != nil {
+		p.touch()
+	}
 	if p.total > 0 && p.onPct != nil {
 		pct := int(p.read * 100 / p.total)
 		if pct != p.last {

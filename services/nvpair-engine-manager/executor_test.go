@@ -59,6 +59,26 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
 }
 
+func TestEngineModelDirUsesPersistentVLLMSiblingOnly(t *testing.T) {
+	vendorRoot := filepath.Join(t.TempDir(), "Nvidia Corporation")
+	installBase := filepath.Join(vendorRoot, "Personal AI Router", "engine-bin")
+	if got, want := engineModelDir(installBase, "vllm"), filepath.Join(vendorRoot, "Personal AI Router Models", "vllm"); got != want {
+		t.Fatalf("vLLM model root = %q, want canonical sibling %q", got, want)
+	}
+	if got, want := engineModelDir(installBase+string(os.PathSeparator), "vllm"), filepath.Join(vendorRoot, "Personal AI Router Models", "vllm"); got != want {
+		t.Fatalf("vLLM model root with trailing separator = %q, want %q", got, want)
+	}
+	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
+		if got, want := engineModelDir(installBase, engine), filepath.Join(installBase, engine, "models"); got != want {
+			t.Fatalf("%s model root = %q, want existing layout %q", engine, got, want)
+		}
+	}
+	isolated := t.TempDir()
+	if got, want := engineModelDir(isolated, "vllm"), filepath.Join(isolated, "vllm", "models"); got != want {
+		t.Fatalf("non-product fixture root = %q, want isolated fallback %q", got, want)
+	}
+}
+
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 	t.Helper()
 	transport, ok := client.Transport.(*http.Transport)
@@ -1097,4 +1117,44 @@ func rmCmd(path string) []string {
 		return []string{"cmd", "/c", "del", "/q", path}
 	}
 	return []string{"rm", "-f", path}
+}
+
+func TestRepeatInstallProgressKeepsAQuietStepVisibleUntilStopped(t *testing.T) {
+	ex := newTestExecutor(t, &Manifest{Engine: "vllm", DisplayName: "vLLM", ManifestVersion: 1})
+	var mu sync.Mutex
+	var stages []string
+	ex.emit = func(method string, value any) {
+		if method != "engine:install-progress" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		stages = append(stages, value.(map[string]any)["stage"].(string))
+	}
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(stages)
+	}
+	stop := ex.repeatInstallProgress("vllm", "installing", 75, 5*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for count() < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+	stopped := count()
+	if stopped < 3 {
+		t.Fatalf("a quiet install step repeated its progress %d times; want at least 3", stopped)
+	}
+	time.Sleep(30 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stages) != stopped {
+		t.Fatalf("progress continued after stop: %d then %d", stopped, len(stages))
+	}
+	for _, stage := range stages {
+		if stage != "installing" {
+			t.Fatalf("repeated stage = %q, want installing", stage)
+		}
+	}
 }

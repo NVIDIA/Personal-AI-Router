@@ -10,11 +10,14 @@ import "sync"
 // engine:install-progress notification path (this node's own UI) and the ec
 // streaming handlers that relay live progress to a remote initiator.
 type ProgressEvent struct {
-	Engine  string `json:"engine"`
-	Op      string `json:"op"` // "install" | "pull"
-	Stage   string `json:"stage,omitempty"`
-	Percent int    `json:"percent"`
-	Message string `json:"message,omitempty"`
+	Engine      string `json:"engine"`
+	Op          string `json:"op"` // "install" | "pull"
+	Stage       string `json:"stage,omitempty"`
+	Percent     int    `json:"percent"`
+	Message     string `json:"message,omitempty"`
+	OperationID string `json:"operationId,omitempty"`
+	// Network is the path a model copy uses: "fabric" or "management".
+	Network string `json:"network,omitempty"`
 }
 
 // wirePercentIncluded reports whether a pull progress percent should appear on
