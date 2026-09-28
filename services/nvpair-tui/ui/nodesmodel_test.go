@@ -6,6 +6,8 @@ package ui
 import (
 	"testing"
 	"time"
+
+	"nvpair-shared/noderec"
 )
 
 // mergeReference is a fixed instant for building lastSeen timestamps.
@@ -195,6 +197,70 @@ func TestMergeManualProbeBeatsDiscoverySilence(t *testing.T) {
 	}
 	if got := findRow(t, rows, "dead").presence; got != presenceOffline {
 		t.Errorf("unreachable manual node presence = %v, want Offline", got)
+	}
+}
+
+// TestMergeUsesEveryFactTheManualWorkerReports is the regression guard for the
+// merged table reading the manual-node worker's reply too narrowly.
+//
+// It decoded only Ollama and node-info liveness and an address, so a host
+// running only LM Studio read Offline, a hostname typed by hand could not be
+// joined to the same machine discovered by IP, and the node-info port and TLS
+// setting the probe found were dropped.
+func TestMergeUsesEveryFactTheManualWorkerReports(t *testing.T) {
+	rows := mergeNodes(nodeFeeds{
+		manual: []manualNode{{ID: "m1", Name: "lms-only", Address: "10.0.0.7", LMStudioUp: true}},
+	})
+	if got := findRow(t, rows, "lms-only").presence; got != presenceOnline {
+		t.Errorf("a host answering only on LM Studio reads %v, want Online", got)
+	}
+
+	// Typed as a hostname, discovered by IP: only the UUID ties them together.
+	rows = mergeNodes(nodeFeeds{
+		discovered: []availableNode{{HostUUID: "u1", Name: "gpu-box", IPAddress: "10.0.0.5", Port: 14318}},
+		manual:     []manualNode{{ID: "m1", Address: "gpu-box.lan", HostUUID: "u1", NodeInfoUp: true}},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("one machine produced %d rows; the manual entry was not joined by its UUID", len(rows))
+	}
+	if rows[0].manualID != "m1" {
+		t.Errorf("the joined row lost its manual handle: %q", rows[0].manualID)
+	}
+
+	// A hand-added node reached on a non-default node-info port, over TLS.
+	rows = mergeNodes(nodeFeeds{
+		manual: []manualNode{{
+			ID: "m2", Name: "tls-box", Address: "10.0.0.9", NodeInfoUp: true,
+			NodeInfoPort: 14319, TLSEnabled: true, TelemetryValid: true,
+			GPUs: []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}},
+		}},
+	})
+	tls := findRow(t, rows, "tls-box")
+	if tls.port != 14319 {
+		t.Errorf("port = %d, want the node-info port the probe reached", tls.port)
+	}
+	if !tls.nodeInfoTLS || tls.probedTelemetry == nil || len(tls.probedTelemetry.GPUs) != 1 {
+		t.Errorf("TLS node-info was not carried with the worker's reading: tls=%v telemetry=%+v",
+			tls.nodeInfoTLS, tls.probedTelemetry)
+	}
+}
+
+// TestTLSNodeInfoIsNotPolledInPlainText checks the detail screen shows the
+// worker's reading for a TLS node rather than polling it itself. That endpoint
+// needs the backend's cluster trust, and a plain-HTTP poll to it only fails.
+func TestTLSNodeInfoIsNotPolledInPlainText(t *testing.T) {
+	d := newNodeDetail(nil, nodeRow{
+		key: "manual:m2", name: "tls-box", address: "10.0.0.9", port: 14319,
+		presence: presenceOnline, nodeInfoTLS: true,
+		probedTelemetry: &nodeTelemetry{TelemetryValid: true,
+			GPUs: []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}}},
+	})
+	d.SetSize(100, 30)
+	if d.telemetryCmd() != nil {
+		t.Error("the detail screen polled a TLS node-info endpoint over plain HTTP")
+	}
+	if !contains(d.View(), "GPU 0") {
+		t.Errorf("the worker's hardware reading is not shown: %q", d.View())
 	}
 }
 
