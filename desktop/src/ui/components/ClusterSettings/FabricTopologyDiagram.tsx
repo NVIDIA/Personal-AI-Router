@@ -25,6 +25,14 @@ function shortName(value: string): string {
     return value.length > 18 ? `${value.slice(0, 17)}…` : value
 }
 
+/** The stretch of a link outside both node boxes, which are 128 by 50. */
+function exposedPath(from: { x: number; y: number }, to: { x: number; y: number }): string {
+    const dx = to.x - from.x
+    const dy = to.y - from.y
+    const t = Math.min(dx ? 64 / Math.abs(dx) : 1, dy ? 25 / Math.abs(dy) : 1)
+    return `M ${from.x + dx * t},${from.y + dy * t} L ${to.x - dx * t},${to.y - dy * t}`
+}
+
 function edgeColor(state: FabricTopologyCandidate['edges'][number]['state']): string {
     if (state === 'matched' || state === 'active') return '#76b900'
     if (state === 'pending') return '#8a8a8a'
@@ -76,18 +84,24 @@ export default function FabricTopologyDiagram({ candidate, nodeName }: Props) {
                             )}
                         </line>
                         {edge.state === 'active' &&
-                            [
-                                `M ${left.x},${left.y} L ${right.x},${right.y}`,
-                                `M ${right.x},${right.y} L ${left.x},${left.y}`
-                            ].map(path => (
-                                <circle key={path} r="3.5" fill="#c6f27a">
-                                    <animateMotion
-                                        dur="1.6s"
-                                        repeatCount="indefinite"
-                                        path={path}
-                                    />
-                                </circle>
-                            ))}
+                            [exposedPath(left, right), exposedPath(right, left)].flatMap(path =>
+                                ['0s', '-0.8s'].map(begin => (
+                                    <circle
+                                        key={`${path}${begin}`}
+                                        r="4.5"
+                                        fill="#ffffff"
+                                        stroke="#76b900"
+                                        strokeWidth="2"
+                                    >
+                                        <animateMotion
+                                            dur="1.6s"
+                                            begin={begin}
+                                            repeatCount="indefinite"
+                                            path={path}
+                                        />
+                                    </circle>
+                                ))
+                            )}
                         <rect
                             x={x - 37}
                             y={y - 10}
