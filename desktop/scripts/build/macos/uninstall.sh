@@ -4,7 +4,7 @@
 
 set -eu
 
-# Manual, user-run full uninstaller for Personal AI Router. Shipped inside
+# Manual, user-run full uninstaller for NVIDIA PAIR. Shipped inside
 # the app bundle at Contents/Resources/installer-tools/uninstall-macos.sh.
 #
 # macOS auto-update uses Squirrel.Mac (an in-place .app swap) and never runs this
@@ -15,7 +15,7 @@ set -eu
 # Removing the app and removing your data are separate steps, as they are on the
 # other platforms: the Windows uninstaller asks, and `apt remove` keeps data
 # while `apt purge` also discards it. So this keeps per-user data — settings,
-# logs, cluster identity and certificates, and engines Personal AI Router
+# logs, cluster identity and certificates, and engines NVIDIA PAIR
 # installed — unless --purge is passed. Downloaded model weights live outside
 # these roots (e.g. ~/.ollama) and are never touched either way.
 

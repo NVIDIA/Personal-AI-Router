@@ -18,7 +18,6 @@ export interface PathProvider {
     getUserData(): string
     getTemp(): string
     getResourcesPath(): string
-    getAppName(): string
 }
 
 const BASE_ROOT =
@@ -74,9 +73,9 @@ export const setPaths = async (): Promise<void> => {
  * resolve `getUserData()` to a per-worker tmpdir (see tests/fixtures).
  */
 export class ElectronPathProvider implements PathProvider {
-    private app: { getPath(name: string): string; getName(): string }
+    private app: { getPath(name: string): string }
 
-    constructor(electronApp: { getPath(name: string): string; getName(): string }) {
+    constructor(electronApp: { getPath(name: string): string }) {
         this.app = electronApp
     }
 
@@ -90,9 +89,5 @@ export class ElectronPathProvider implements PathProvider {
 
     getResourcesPath(): string {
         return process.resourcesPath ?? this.app.getPath('userData')
-    }
-
-    getAppName(): string {
-        return this.app.getName()
     }
 }

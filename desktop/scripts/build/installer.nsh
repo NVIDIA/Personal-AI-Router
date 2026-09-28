@@ -41,7 +41,7 @@
 ; of that section, so an appended customUnInstallSection would never execute.
 ;
 ; Per-user data here means settings, logs, cluster identity and certificates,
-; and engines Personal AI Router installed. Downloaded model weights live
+; and engines NVIDIA PAIR installed. Downloaded model weights live
 ; outside these roots and are never touched.
 ;
 ; UNINSTALLER SAFETY: only ever delete the three per-user AppData roots below.
@@ -126,6 +126,11 @@
 ; missing from "Available nodes"). Scoping to localsubnet keeps the ports
 ; closed to anything off the local link, so covering all profiles does not
 ; expose the node on untrusted public networks.
+;
+; The rule names keep the "Personal AI Router" prefix even though the product is
+; shown as NVIDIA PAIR: pairRemoveFirewallRules, including the copy inside every
+; already-installed uninstaller, deletes rules by exact name. Renaming them would
+; leave the old allow rules behind on upgraded machines.
 !macro pairAddFirewallRules
   DetailPrint "Adding NVIDIA PAIR firewall rules..."
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Engine Proxy" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-proxy.exe" enable=yes profile=any remoteip=localsubnet'
@@ -150,7 +155,7 @@
 !macroend
 
 !macro pairRemoveFirewallRules
-  DetailPrint "Removing Personal AI Router firewall rules..."
+  DetailPrint "Removing NVIDIA PAIR firewall rules..."
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Engine Proxy"'
   ; The per-engine rules a pre-unification install created. Deleting a rule
   ; that does not exist is a harmless no-op, and without these an upgrade

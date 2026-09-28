@@ -42,7 +42,7 @@ usage() {
   cat <<EOF
 Usage: scripts/wipe-app-data.sh [options]
 
-Delete all Personal AI Router-owned application data (settings, logs, cluster
+Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
 identity, chat history, PAIR-managed engines under the app data root).
 
 Does NOT delete third-party model libraries (e.g. ~/.ollama, ~/.lmstudio).
@@ -58,7 +58,7 @@ Options:
   --help             Show this help
 
 Interactive mode requires typing "${CONFIRM_PHRASE}" to proceed.
-Quit Personal AI Router before running unless --force-kill is set.
+Quit NVIDIA PAIR before running unless --force-kill is set.
 EOF
 }
 
@@ -198,7 +198,7 @@ for proc in "${PAIR_PROCS[@]}"; do
 done
 
 if [[ ${#running_procs[@]} -gt 0 && "$FORCE_KILL" -eq 0 ]]; then
-  echo "Personal AI Router appears to be running (${running_procs[*]})." >&2
+  echo "NVIDIA PAIR appears to be running (${running_procs[*]})." >&2
   echo "Quit the app first, or pass --force-kill to stop processes before wiping." >&2
   exit 1
 fi
@@ -217,7 +217,7 @@ if [[ "$CONFIRM" -eq 0 ]]; then
     exit 2
   fi
   echo ""
-  echo "WARNING: This permanently deletes all Personal AI Router app data."
+  echo "WARNING: This permanently deletes all NVIDIA PAIR app data."
   echo "Third-party model libraries (e.g. ~/.ollama, ~/.lmstudio) are NOT removed."
   echo ""
   echo "Paths to remove:"
@@ -273,5 +273,5 @@ if [[ -n "$RELAUNCH_EXEC" ]]; then
   exit 1
 fi
 
-echo "Done. Restart Personal AI Router to begin with a clean state."
+echo "Done. Restart NVIDIA PAIR to begin with a clean state."
 exit 0
