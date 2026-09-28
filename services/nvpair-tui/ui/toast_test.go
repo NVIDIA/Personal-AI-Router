@@ -549,6 +549,63 @@ func TestNodesFilterRetiresPinForAHiddenPeer(t *testing.T) {
 	}
 }
 
+// TestSecondInviteWaitsForTheFirst is the regression guard for two outbound
+// invites crossing.
+//
+// The view tracks one target and the status line carries one PIN, while the
+// replies do not say which request they answer. A second invite sent while the
+// first was pending could show one peer's PIN while watching for the other to
+// join, or have the older request's failure cancel the newer one.
+func TestSecondInviteWaitsForTheFirst(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(100, 30)
+	v.feeds.discovered = []availableNode{
+		{HostUUID: "a", Name: "alpha", IPAddress: "10.0.0.1", Port: 9000},
+		{HostUUID: "b", Name: "beta", IPAddress: "10.0.0.2", Port: 9000},
+	}
+	v.rebuild()
+	press := func(k string) tea.Cmd {
+		return v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
+	}
+	inviteKey := nodeInviteKey.Help().Key
+	addrKey := nodeInviteAddrKey.Help().Key
+
+	v.selectedKey = "a"
+	v.restoreSelection()
+	if press(inviteKey) == nil {
+		t.Fatal("the first invite was not sent")
+	}
+
+	// While the first is in flight, neither path may start another.
+	v.selectedKey = "b"
+	v.restoreSelection()
+	if press(inviteKey) != nil {
+		t.Error("a second invite was sent while the first was awaiting its reply")
+	}
+	press(addrKey)
+	if v.mode == nodesInputInviteAddress {
+		t.Error("invite-by-address opened while an invite was awaiting its reply")
+	}
+
+	// Once the PIN is showing, refusing must not take it off the screen.
+	v.Update(nodeInviteMsg{name: "alpha", inviteID: "inv-a", pin: "123456"})
+	if press(inviteKey) != nil {
+		t.Error("a second invite was sent while the first PIN was still open")
+	}
+	if !contains(v.status.render(), "123456") {
+		t.Errorf("refusing the second invite hid the first one's PIN: %q", v.status.render())
+	}
+	if v.invitedKey != "a" || v.outboundInviteID != "inv-a" {
+		t.Errorf("the pending invite changed target: key %q, id %q", v.invitedKey, v.outboundInviteID)
+	}
+
+	// Cancelling frees the way.
+	press(nodeCancelKey.Help().Key)
+	if press(inviteKey) == nil {
+		t.Error("an invite could not be sent after the pending one was cancelled")
+	}
+}
+
 // TestCancelInviteClearsThePinImmediately checks the inviter's half of decline.
 // Without it a PIN read to the wrong person could only be retired by waiting
 // for it to expire, staying answerable the whole time.

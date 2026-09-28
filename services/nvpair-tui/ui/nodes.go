@@ -80,6 +80,11 @@ type nodesView struct {
 	// pairings, so an event is only ours if the ids match — otherwise an
 	// unrelated invite's decline cleared this one's PIN.
 	outboundInviteID string
+	// inviteSending is an invite awaiting its reply, and outboundName and
+	// outboundPIN describe the one outstanding — see refuseSecondInvite.
+	inviteSending bool
+	outboundName  string
+	outboundPIN   string
 	// confirmLeave and confirmRemove gate the two trust teardowns behind a
 	// second keystroke. Both keys are lowercase and sit beside the navigation
 	// keys, so a single press is too easy to hit by accident — and removing a
@@ -469,6 +474,7 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 }
 
 func (v *nodesView) handleInviteResult(msg nodeInviteMsg) tea.Cmd {
+	v.inviteSending = false
 	switch {
 	case msg.err != nil:
 		v.clearOutboundInvite()
@@ -486,6 +492,7 @@ func (v *nodesView) handleInviteResult(msg nodeInviteMsg) tea.Cmd {
 		// node identity — can still recognise the peer once it joins.
 		v.outboundInviteID = msg.inviteID
 		v.invitedAddress = msg.address
+		v.outboundName, v.outboundPIN = msg.name, msg.pin
 		v.status.pin("invite sent to %s - PIN %s (read it to that node)", msg.name, msg.pin)
 	default:
 		v.status.ok("invite sent to %s", msg.name)
@@ -498,6 +505,31 @@ func (v *nodesView) clearOutboundInvite() {
 	v.invitedKey = ""
 	v.invitedAddress = ""
 	v.outboundInviteID = ""
+	v.outboundName = ""
+	v.outboundPIN = ""
+}
+
+// refuseSecondInvite turns away a new invite while one is outstanding, and
+// reports whether it did.
+//
+// One at a time, because the status line carries one PIN. The manager would
+// accept a second, but this view tracked a single target and its replies do
+// not say which request they answer, so out-of-order replies could show one
+// peer's PIN while watching for the other to join — or a failure of the older
+// request could cancel the newer one.
+func (v *nodesView) refuseSecondInvite() bool {
+	switch {
+	case v.inviteSending:
+		v.status.busy("still inviting %s - wait for the PIN", v.outboundName)
+	case v.outboundInviteID != "":
+		// Pinned again rather than replaced: the PIN is what the operator is
+		// reading out, and a refusal standing in its place would hide it.
+		v.status.pin("invite to %s is still open - PIN %s; press %s to cancel it first",
+			v.outboundName, v.outboundPIN, nodeCancelKey.Help().Key)
+	default:
+		return false
+	}
+	return true
 }
 
 func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
@@ -632,8 +664,15 @@ func (v *nodesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, nodeDetailKey):
 		return v.openDetail()
 	case key.Matches(msg, nodeInviteKey):
+		if v.refuseSecondInvite() {
+			return nil
+		}
 		return v.inviteSelected()
 	case key.Matches(msg, nodeInviteAddrKey):
+		// Refused before the field opens, not after an address has been typed.
+		if v.refuseSecondInvite() {
+			return nil
+		}
 		v.beginInput(nodesInputInviteAddress, "host (or host:port; default 14321)")
 		return textinput.Blink
 	case key.Matches(msg, nodeAddKey):
@@ -797,6 +836,7 @@ func (v *nodesView) inviteAddress(val string) tea.Cmd {
 		params["address"] = host
 		params["port"] = port
 	}
+	v.inviteSending, v.outboundName = true, val
 	v.status.busy("inviting %s...", val)
 	return inviteNodeCmd(v.client, params, func(res inviteNodeResult, err error) tea.Msg {
 		return inviteResultMsg(val, val, res, err)
@@ -836,6 +876,7 @@ func (v *nodesView) inviteSelected() tea.Cmd {
 	params := map[string]any{"address": row.address, "nodeId": row.key}
 	name := row.name
 	v.invitedKey = row.key
+	v.inviteSending, v.outboundName = true, name
 	v.status.busy("inviting %s...", name)
 	return inviteNodeCmd(v.client, params, func(res inviteNodeResult, err error) tea.Msg {
 		return inviteResultMsg(name, "", res, err)
