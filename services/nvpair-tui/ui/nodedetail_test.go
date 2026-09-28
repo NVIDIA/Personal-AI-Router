@@ -1048,6 +1048,62 @@ func TestSettingsWriteFollowsTheFieldNotTheCursor(t *testing.T) {
 	}
 }
 
+// TestLateSettingsReplyDoesNotOpenAnotherNodesEditor is the regression guard
+// for one machine's settings being written to another.
+//
+// A settings read is not cancelled when its screen closes. Its reply landed on
+// whichever detail screen was open by then, opened that node's field prefilled
+// with the first node's value, and cached the first node's revision against it.
+func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(100, 30)
+	open := func(key string) *nodeDetail {
+		d := newNodeDetail(nil, nodeRow{key: key, name: key, presence: presenceOnline})
+		d.SetSize(100, 30)
+		d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
+		d.refreshEngines()
+		v.detail = d
+		if d.editSetting(&d.engines[0], detailInputEnginePort) == nil {
+			t.Fatalf("%s did not start a settings read", key)
+		}
+		return d
+	}
+
+	open("node-a")
+	v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if v.detail != nil {
+		t.Fatal("node A's detail did not close while its settings read was pending")
+	}
+	second := open("node-b")
+
+	stale := ollamaSettings()
+	stale.NodeID = "node-a"
+	stale.Settings.ServerPort = 11500
+	v.Update(engineSettingsMsg{node: "node-a", snapshot: stale})
+	v.Update(engineSettingsMsg{node: "node-a", err: errors.New("node-a went away")})
+	v.Update(enginePreviewMsg{request: enginesettings.Request{NodeID: "node-a", Engine: "ollama"}})
+
+	if second.mode != detailInputNone {
+		t.Errorf("node A's reply opened node B's editor with port %q", second.input.Value())
+	}
+	if _, cached := second.settings["ollama"]; cached {
+		t.Error("node A's settings reply was cached on node B")
+	}
+	if second.settingsWanted == nil {
+		t.Error("node A's reply consumed node B's pending settings edit")
+	}
+
+	// And node B's own reply still does what it is for; without this the
+	// assertions above would pass if every reply were dropped.
+	own := ollamaSettings()
+	own.NodeID = "node-b"
+	v.Update(engineSettingsMsg{node: "node-b", snapshot: own})
+	if second.mode != detailInputEnginePort || second.input.Value() != "11434" {
+		t.Errorf("node B's own reply did not open its field (mode %v, value %q)",
+			second.mode, second.input.Value())
+	}
+}
+
 // TestEngineNameDoesNotDependOnTheEngineFetch is the regression guard for the
 // same engine reading "Ollama" on one machine and "ollama" on another.
 //
