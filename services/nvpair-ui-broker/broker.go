@@ -3403,7 +3403,56 @@ func (b *Broker) handleMessage(msg *Message) {
 // response asynchronously rather than fabricating a timeout — meanwhile
 // other client requests keep being served on the read-loop goroutine.
 func (b *Broker) relayToEngine(msg *Message) {
+	if downloadOrderedMethods[msg.Method] {
+		b.relayToEngineInOrder(msg)
+		return
+	}
 	go b.relayToEngineNow(msg)
+}
+
+// downloadOrderedMethods reach engine-manager in the order the client sent
+// them. Engine-manager orders a cancel behind the pull it names only from its
+// own read loop onward, so a cancel relayed ahead of its pull finds nothing to
+// stop and the download runs to completion.
+var downloadOrderedMethods = map[string]bool{
+	"engine:action":             true,
+	"engine:cancel-pull":        true,
+	"engine:remote-pull-model":  true,
+	"engine:remote-cancel-pull": true,
+}
+
+// relayToEngineInOrder writes the request on the calling read loop and relays
+// the response asynchronously. None of these methods is subject to the port
+// gates or the engine-config lock in relayToEngineNow.
+func (b *Broker) relayToEngineInOrder(msg *Message) {
+	em := b.getEngineMgr()
+	if em == nil {
+		if err := b.codec.RespondError(msg.ID, -32000, "engine-manager not available"); err != nil {
+			log.Printf("failed to respond to %s: %v", msg.Method, err)
+		}
+		return
+	}
+	id := msg.ID
+	method := msg.Method
+	respond := func(result json.RawMessage, rpcErr *RPCError, err error) {
+		switch {
+		case err != nil:
+			if e := b.codec.RespondError(id, -32000, fmt.Sprintf("engine call failed: %v", err)); e != nil {
+				log.Printf("failed to relay engine error for %s: %v", method, e)
+			}
+		case rpcErr != nil:
+			if e := b.codec.RespondError(id, rpcErr.Code, rpcErr.Message); e != nil {
+				log.Printf("failed to relay engine error for %s: %v", method, e)
+			}
+		default:
+			if e := b.codec.Respond(id, result); e != nil {
+				log.Printf("failed to relay engine result for %s: %v", method, e)
+			}
+		}
+	}
+	if err := em.RelayRequest(method, msg.Params, respond); err != nil {
+		respond(nil, nil, err)
+	}
 }
 
 func (b *Broker) relayToEngineNow(msg *Message) {
