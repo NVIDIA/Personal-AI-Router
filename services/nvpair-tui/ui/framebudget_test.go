@@ -12,6 +12,7 @@ import (
 	"nvpair-shared/noderec"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // These tests measure what a view *renders*, before the shell clamps it.
@@ -239,6 +240,40 @@ func TestEveryViewRendersWithinBudget(t *testing.T) {
 							v.Title(), got, budget, w, h, withStatus)
 					}
 				}()
+			}
+		}
+	}
+}
+
+// TestNarrowTerminalClipsRatherThanOverruns answers what happens when a table's
+// column minimums add up to more than the terminal is wide — which they do on
+// Nodes and Jobs anywhere near the 40-column floor.
+//
+// layoutColumns keeps every column at its minimum and lets the row run long,
+// on the reasoning that a readable left edge beats evenly unreadable columns.
+// That is only safe because the shell clamps the frame: a line longer than the
+// terminal would otherwise wrap, and every wrapped row pushes the footer one
+// row further off the screen. This proves the clamp holds for the real views,
+// not only for the stub the shell's own frame test uses.
+func TestNarrowTerminalClipsRatherThanOverruns(t *testing.T) {
+	const h = 24
+	for w := minTerminalWidth; w <= 100; w++ {
+		for _, withStatus := range []bool{false, true} {
+			for _, v := range populatedViews(t) {
+				if withStatus {
+					noteStatus(v)
+				}
+				m := newTestModel(v)
+				m.width, m.height = w, h
+				out := m.View()
+				if got := lipgloss.Width(out); got > w {
+					t.Errorf("%s at %d columns (status=%v): frame is %d columns wide",
+						v.Title(), w, withStatus, got)
+				}
+				if got := lipgloss.Height(out); got != h {
+					t.Errorf("%s at %d columns (status=%v): frame is %d rows, want %d",
+						v.Title(), w, withStatus, got, h)
+				}
 			}
 		}
 	}
