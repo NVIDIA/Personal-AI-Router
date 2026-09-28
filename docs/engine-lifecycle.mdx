@@ -90,7 +90,9 @@ If PAIR added an engine to your PATH, the uninstall confirmation includes
 entries it recorded adding. Pre-existing entries and user-edited shell blocks
 are preserved. Installations without an ownership record are left unchanged. If
 you clear the box, the entry stays and is yours from then on: PAIR no longer
-tracks it. Uninstalling PAIR itself releases any entries its engines still own.
+tracks it. Uninstalling PAIR itself releases any entries its engines still own
+when it also removes PAIR's data; on Linux that is `apt purge`, while a plain
+`apt remove` keeps both the engines and their PATH entries.
 
 When you install an engine, consider the following:
 

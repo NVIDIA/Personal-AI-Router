@@ -246,7 +246,7 @@ func writeJSONAtomic(path string, v any) error {
 	if err := writeAndSync(file, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := replaceFile(tmp, path); err != nil {
 		return fmt.Errorf("rename %s: %w", name, err)
 	}
 	return syncDir(filepath.Dir(path))

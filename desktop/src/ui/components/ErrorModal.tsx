@@ -188,7 +188,7 @@ function ErrorBanner({
     )
     const [askInstallPath, setAskInstallPath] = useState(false)
     const [askUninstallPath, setAskUninstallPath] = useState(false)
-    const [removePath, setRemovePath] = useState(true)
+    const [removePath, setRemovePath] = useState(false)
 
     // Clearing the error unmounts this banner, so it waits for any PATH answer.
     const rerun = (run: () => void) => {
@@ -210,10 +210,11 @@ function ErrorBanner({
             return
         }
         if (pathManaged) {
-            setRemovePath(true)
+            // Unchecked: the failed attempt may have been one that kept the entry.
+            setRemovePath(false)
             setAskUninstallPath(true)
         } else {
-            rerun(() => window.pairApi.engines.uninstall(engineType, nodeId, false))
+            rerun(() => window.pairApi.engines.uninstall(engineType, nodeId))
         }
     }
 

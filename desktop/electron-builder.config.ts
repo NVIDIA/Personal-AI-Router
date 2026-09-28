@@ -393,9 +393,9 @@ const config: Configuration = {
         afterInstall: 'scripts/build/linux/after-install.sh',
         afterRemove: 'scripts/build/linux/after-remove.sh',
         // prerm has no dedicated option, so it goes through the raw fpm passthrough.
-        // It has to be prerm rather than postrm because dpkg deletes the package's
-        // files before postrm runs, and the PATH cleanup runs a binary from /opt —
-        // see before-remove.sh. Unlike afterInstall/afterRemove, fpm arguments are
+        // It keeps a copy of the engine-manager for the purge-time PATH cleanup in
+        // after-remove, because dpkg deletes the package's files before postrm
+        // runs — see before-remove.sh. Unlike afterInstall/afterRemove, fpm arguments are
         // forwarded verbatim: no ${macro} expansion, and the path is resolved
         // against fpm's working directory rather than this file, so pass an
         // absolute one.

@@ -64,18 +64,25 @@ describe('engine PATH consent on local lifecycle commands', () => {
         ])
     })
 
-    it('treats an omitted answer as no consent', async () => {
-        await handleServiceBridgeInvoke('engine:command', {
-            command: 'uninstall',
-            engineType: 'ollama',
-            nodeId: 'local-node'
-        })
+    it('forwards the uninstall answer, and sends none when the user was not asked', async () => {
+        for (const path of [true, false, undefined]) {
+            await handleServiceBridgeInvoke('engine:command', {
+                command: 'uninstall',
+                engineType: 'ollama',
+                nodeId: 'local-node',
+                path
+            })
+        }
 
-        expect(sentParams('engine:uninstall')).toEqual([{ engine: 'ollama', path: false }])
+        expect(sentParams('engine:uninstall')).toEqual([
+            { engine: 'ollama', path: true },
+            { engine: 'ollama', path: false },
+            { engine: 'ollama' }
+        ])
     })
 
-    it('carries the existing PATH choice through both steps of an update', async () => {
-        mocks.state.localEnginePathManaged.mockReturnValue(true)
+    it('carries the fresh PATH state through both steps of an update', async () => {
+        mocks.supervisor.callProcess.mockResolvedValueOnce({ engine: 'ollama', path_managed: true })
 
         await handleServiceBridgeInvoke('engine:command', {
             command: 'update',
@@ -83,9 +90,32 @@ describe('engine PATH consent on local lifecycle commands', () => {
             nodeId: 'local-node'
         })
 
-        expect(sentParams('engine:uninstall')).toEqual([{ engine: 'ollama', path: true }])
-        expect(sentParams('engine:install')).toEqual([
-            { engine: 'ollama', start: true, path: true }
-        ])
+        await vi.waitFor(() => {
+            expect(sentParams('engine:uninstall')).toEqual([{ engine: 'ollama', path: true }])
+            expect(sentParams('engine:install')).toEqual([
+                { engine: 'ollama', start: true, path: true }
+            ])
+        })
+    })
+
+    it('updates an engine without a PATH entry without touching PATH', async () => {
+        mocks.state.localEnginePathManaged.mockReturnValue(true)
+        mocks.supervisor.callProcess.mockResolvedValueOnce({
+            engine: 'ollama',
+            path_managed: false
+        })
+
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'update',
+            engineType: 'ollama',
+            nodeId: 'local-node'
+        })
+
+        await vi.waitFor(() => {
+            expect(sentParams('engine:uninstall')).toEqual([{ engine: 'ollama' }])
+            expect(sentParams('engine:install')).toEqual([
+                { engine: 'ollama', start: true, path: false }
+            ])
+        })
     })
 })

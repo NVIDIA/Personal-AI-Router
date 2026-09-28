@@ -79,8 +79,14 @@ func (s *controlServer) handleEngines(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	engines := s.exec.GetInstalled()
+	// Whether this user's PATH carries an entry is local account configuration,
+	// and nothing a peer can do acts on it.
+	for i := range engines {
+		engines[i].PathManaged = false
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"engines": s.exec.GetInstalled()})
+	_ = json.NewEncoder(w).Encode(map[string]any{"engines": engines})
 }
 
 // serveControl runs the ec mTLS control surface on 0.0.0.0:port until ctx is

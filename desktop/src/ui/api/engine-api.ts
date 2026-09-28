@@ -51,10 +51,12 @@ export interface IEngineApi {
     /** Install an engine on a node, adding its command-line tools to PATH when the user agreed. */
     install(engineType: EngineType, nodeId: string, addToPath: boolean): void
     /**
-     * Uninstall an engine from a node without removing downloaded models,
-     * removing the PATH entry PAIR added when the user agreed.
+     * Uninstall an engine from a node without removing downloaded models.
+     * `removePath` is the user's answer about the PATH entry PAIR added: true
+     * removes it, false hands it to the user, and omitted (not asked) keeps
+     * PAIR's claim on it.
      */
-    uninstall(engineType: EngineType, nodeId: string, removePath: boolean): void
+    uninstall(engineType: EngineType, nodeId: string, removePath?: boolean): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
     /** Load a model into memory on a node. */

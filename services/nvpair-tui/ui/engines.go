@@ -196,10 +196,10 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		switch msg.String() {
 		case "y", "Y":
 			v.confirm = nil
-			return v.runLifecycle(p.method, p.what, p.engine, true)
+			return v.runLifecycle(p.method, p.what, p.engine, lifecycleParams(p.engine, true))
 		case "n", "N":
 			v.confirm = nil
-			return v.runLifecycle(p.method, p.what, p.engine, false)
+			return v.runLifecycle(p.method, p.what, p.engine, lifecycleParams(p.engine, false))
 		case "esc":
 			v.confirm = nil
 			v.status = p.what + " " + p.engine + " cancelled"
@@ -296,7 +296,13 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 		v.confirm = &pathPrompt{method: method, what: what, engine: engine, question: question}
 		return nil, true
 	}
-	return v.runLifecycle(method, what, engine, false), true
+	return v.runLifecycle(method, what, engine, unaskedParams(engine)), true
+}
+
+// unaskedParams carries no PATH answer because none was asked for, so an
+// uninstall keeps PAIR's claim on any entry instead of handing it over unasked.
+func unaskedParams(engine string) map[string]any {
+	return map[string]any{"engine": engine}
 }
 
 // pathQuestion is what to ask before a lifecycle op may change the user's
@@ -316,15 +322,16 @@ func pathQuestion(method string, e engineStatus) string {
 	return ""
 }
 
-// lifecycleParams carries the user's PATH answer; the engine-manager treats a
-// missing or false path as no consent.
+// lifecycleParams carries the user's PATH answer. The engine-manager reads a
+// false path as "leave PATH alone" on install and "keep the entries as mine" on
+// uninstall.
 func lifecycleParams(engine string, path bool) map[string]any {
 	return map[string]any{"engine": engine, "path": path}
 }
 
-func (v *enginesView) runLifecycle(method, what, engine string, path bool) tea.Cmd {
+func (v *enginesView) runLifecycle(method, what, engine string, params map[string]any) tea.Cmd {
 	v.status = what + " " + engine + "..."
-	return call(v.client, method, lifecycleParams(engine, path), func(_ *rpc.Message, err error) tea.Msg {
+	return call(v.client, method, params, func(_ *rpc.Message, err error) tea.Msg {
 		return engineOpMsg{what: what, engine: engine, err: err}
 	})
 }

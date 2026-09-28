@@ -36,7 +36,8 @@ type EngineStatus struct {
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port,omitempty"`
 	// PathManaged is true while PAIR owns a PATH entry for this engine on this
-	// machine, so a client asks about removing it only when there is one.
+	// machine, so a client asks about removing it only when there is one. Always
+	// false in what the control surface serves to peers.
 	PathManaged bool `json:"path_managed"`
 }
 

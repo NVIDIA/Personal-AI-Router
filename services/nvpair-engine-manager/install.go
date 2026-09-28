@@ -25,14 +25,28 @@ import (
 type installPathMode int
 
 const (
-	// pathUntouched leaves PATH and the ownership record alone.
-	pathUntouched installPathMode = iota
 	// pathRecordOnly records that PAIR ran the installer without publishing
 	// anything, so a later consented install can still re-adopt an engine whose
 	// vendor owns its location.
-	pathRecordOnly
+	pathRecordOnly installPathMode = iota
 	// pathPublish publishes the CLI directory on the user's PATH.
 	pathPublish
+)
+
+// uninstallPathMode says what an uninstall does with the PATH entries PAIR
+// published for the engine.
+type uninstallPathMode int
+
+const (
+	// pathKeepClaim is an uninstall whose client did not ask the user. The
+	// entries stay, and so does PAIR's claim on them, so a later uninstall or the
+	// application uninstaller can still remove them.
+	pathKeepClaim uninstallPathMode = iota
+	// pathRelease is a user who kept the entries: they stay, and the record that
+	// claims them goes, so they are the user's from here on.
+	pathRelease
+	// pathRemove is a user who asked for the entries to go.
+	pathRemove
 )
 
 // Install obtains the engine in user mode for a request that originated on this
@@ -53,8 +67,12 @@ func (e *Executor) Install(ctx context.Context, engine string, addToPath bool) e
 // convenience code, cluster membership is not proof of a vetted peer, and
 // nothing in the remote-install flow tells the person sitting at this machine
 // that their shell startup files are about to be rewritten.
+//
+// It still records that PAIR ran the installer. That publishes nothing, and it
+// is what lets a later consented local install adopt an engine whose vendor
+// owns its location.
 func (e *Executor) InstallForPeer(ctx context.Context, engine string) error {
-	return e.install(ctx, engine, pathUntouched)
+	return e.install(ctx, engine, pathRecordOnly)
 }
 
 func (e *Executor) install(ctx context.Context, engine string, pathMode installPathMode) error {
@@ -72,6 +90,11 @@ func (e *Executor) install(ctx context.Context, engine string, pathMode installP
 		}
 		e.reporter.clear(installFailedID(engine))
 		e.emitInstallProgress(engine, "already-installed", 100)
+		if pathMode == pathPublish {
+			// Nothing else about the engine changed, so without this no client
+			// learns that PAIR now owns a PATH entry it may later offer to remove.
+			e.emitState(engine)
+		}
 		return nil
 	}
 	st.mu.Lock()
@@ -259,6 +282,20 @@ func managedCLI(st *engineState) bool {
 // false the entries stay and PAIR gives up its claim on them, so they become
 // the user's and the application uninstaller leaves them alone too.
 func (e *Executor) Uninstall(ctx context.Context, engine string, removePath bool) error {
+	if removePath {
+		return e.uninstall(ctx, engine, pathRemove)
+	}
+	return e.uninstall(ctx, engine, pathRelease)
+}
+
+// UninstallKeepingPathClaim uninstalls for a client that did not ask the user
+// about PATH. Only an answer may remove the entries or hand them over, so both
+// stay exactly as they are.
+func (e *Executor) UninstallKeepingPathClaim(ctx context.Context, engine string) error {
+	return e.uninstall(ctx, engine, pathKeepClaim)
+}
+
+func (e *Executor) uninstall(ctx context.Context, engine string, pathMode uninstallPathMode) error {
 	st, err := e.state(engine)
 	if err != nil {
 		return err
@@ -269,7 +306,9 @@ func (e *Executor) Uninstall(ctx context.Context, engine string, removePath bool
 		// Joined rather than sequenced: this branch is the documented retry
 		// after the files are already gone, so a desired-state write that keeps
 		// failing must not be what makes PATH cleanup unreachable.
-		return errors.Join(e.setDesiredEnabled(engine, false), e.finishUninstallPath(engine, removePath))
+		err := errors.Join(e.setDesiredEnabled(engine, false), e.finishUninstallPath(engine, pathMode))
+		e.emitState(engine)
+		return err
 	}
 	un := st.plat.Uninstall
 	if un == nil || len(un.Run) == 0 {
@@ -338,18 +377,24 @@ func (e *Executor) Uninstall(ctx context.Context, engine string, removePath bool
 	st.mu.Lock()
 	st.binPath = ""
 	st.mu.Unlock()
-	e.emitState(engine)
 	// The engine is gone either way, so both steps run and both errors travel.
 	// Short-circuiting here left PATH published and the previous attempt's
 	// error card standing whenever the desired-state write failed.
-	return errors.Join(e.setDesiredEnabled(engine, false), e.finishUninstallPath(engine, removePath))
+	err = errors.Join(e.setDesiredEnabled(engine, false), e.finishUninstallPath(engine, pathMode))
+	// Emitted after the PATH step so the state carries the final path_managed.
+	e.emitState(engine)
+	return err
 }
 
-func (e *Executor) finishUninstallPath(engine string, removePath bool) error {
-	if removePath {
+func (e *Executor) finishUninstallPath(engine string, pathMode uninstallPathMode) error {
+	switch pathMode {
+	case pathRemove:
 		return e.uninstallPath(engine)
+	case pathRelease:
+		return e.releasePathOwnership(engine)
+	default:
+		return e.keepPathClaim(engine)
 	}
-	return e.releasePathOwnership(engine)
 }
 
 // maxDownloadBytes caps a single engine download (engine installers /

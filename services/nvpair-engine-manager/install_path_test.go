@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -312,7 +313,11 @@ func TestInstallRPCAddsCLIToPathOnlyWithConsent(t *testing.T) {
 	t.Run("path true publishes the CLI directory", func(t *testing.T) {
 		ex, cli := pathInstallExecutor(t, "ollama", "process")
 		var added string
-		ex.addToPath = func(dir string, _ *pathReceipt, _ func() error) error { added = dir; return nil }
+		ex.addToPath = func(dir string, receipt *pathReceipt, save func() error) error {
+			added = dir
+			receipt.ShellBlocks = []pathBlock{{Profile: "profile", Text: dir}}
+			return save()
+		}
 		status := runOpForTest(t, ex, "engine:install", `{"engine":"ollama","path":true}`)
 		if !status.Installed {
 			t.Error("install reported the engine as not installed")
@@ -412,9 +417,9 @@ func TestUninstallRPCRemovesPathOnlyWithConsent(t *testing.T) {
 			t.Error("status still claims the removed PATH entry")
 		}
 	})
-	t.Run("omitted path keeps the entry and gives up the claim", func(t *testing.T) {
+	t.Run("path false keeps the entry and gives up the claim", func(t *testing.T) {
 		ex, dir, profile := install(t)
-		status := runOpForTest(t, ex, "engine:uninstall", `{"engine":"ollama"}`)
+		status := runOpForTest(t, ex, "engine:uninstall", `{"engine":"ollama","path":false}`)
 		if !profileHas(t, profile, dir) {
 			t.Fatal("removed the PATH entry although the user kept it")
 		}
@@ -425,6 +430,110 @@ func TestUninstallRPCRemovesPathOnlyWithConsent(t *testing.T) {
 			t.Error("status still claims an entry that now belongs to the user")
 		}
 	})
+	// A client that never asked the user must not hand the entries over: that
+	// would leave them with no record the application uninstaller can act on.
+	t.Run("omitted path keeps the entry and the claim", func(t *testing.T) {
+		ex, dir, profile := install(t)
+		status := runOpForTest(t, ex, "engine:uninstall", `{"engine":"ollama"}`)
+		if !profileHas(t, profile, dir) {
+			t.Fatal("removed the PATH entry without the user's consent")
+		}
+		receipt, err := loadPathReceipt(ex.pathReceiptFile("ollama"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !receipt.ownsEntries() || receipt.Installed {
+			t.Fatalf("receipt after an unasked uninstall = %+v, want the entries without the installed flag", receipt)
+		}
+		if !status.PathManaged {
+			t.Error("status dropped the claim PAIR still holds")
+		}
+		runOpForTest(t, ex, "engine:uninstall", `{"engine":"ollama","path":true}`)
+		if profileHas(t, profile, dir) {
+			t.Fatal("the kept claim could not remove the entry later")
+		}
+	})
+}
+
+// A recorded directory is not an entry. The directory may already have been on
+// PATH, or the write may have failed, and there is then nothing to remove.
+func TestPathManagedRequiresAnEntryPAIRWrote(t *testing.T) {
+	ex, _ := pathInstallExecutor(t, "ollama", "process")
+	file := ex.pathReceiptFile("ollama")
+	if err := savePathReceipt(file, &pathReceipt{Dir: t.TempDir(), Installed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if ex.pathManaged("ollama") {
+		t.Error("a directory PAIR did not write an entry for counts as managed")
+	}
+	if err := savePathReceipt(file, &pathReceipt{Dir: "d", WindowsEntry: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	if !ex.pathManaged("ollama") {
+		t.Error("an entry PAIR wrote does not count as managed")
+	}
+}
+
+// The state a client renders its uninstall prompt from has to be the one after
+// the PATH step, not before it.
+func TestLifecycleStateCarriesTheFinalPathManaged(t *testing.T) {
+	// The ops below run synchronously, so every emit has landed before a read.
+	captureStates := func(ex *Executor) *[]EngineStatus {
+		var mu sync.Mutex
+		var states []EngineStatus
+		ex.emit = func(method string, params any) {
+			if status, ok := params.(EngineStatus); ok && method == "engine:state-changed" {
+				mu.Lock()
+				states = append(states, status)
+				mu.Unlock()
+			}
+		}
+		return &states
+	}
+	t.Run("uninstall", func(t *testing.T) {
+		ex, _, _ := pathLifecycleExecutor(t, "ollama", "process")
+		if err := ex.Install(context.Background(), "ollama", true); err != nil {
+			t.Fatal(err)
+		}
+		states := captureStates(ex)
+		if err := ex.Uninstall(context.Background(), "ollama", true); err != nil {
+			t.Fatal(err)
+		}
+		if len(*states) == 0 {
+			t.Fatal("uninstall emitted no state")
+		}
+		if last := (*states)[len(*states)-1]; last.PathManaged {
+			t.Error("the last state after uninstall still claims the removed entry")
+		}
+	})
+	t.Run("consented install of an engine already present", func(t *testing.T) {
+		ex, _, _ := pathLifecycleExecutor(t, "ollama", "process")
+		if err := ex.Install(context.Background(), "ollama", false); err != nil {
+			t.Fatal(err)
+		}
+		states := captureStates(ex)
+		if err := ex.Install(context.Background(), "ollama", true); err != nil {
+			t.Fatal(err)
+		}
+		if len(*states) == 0 || !(*states)[len(*states)-1].PathManaged {
+			t.Errorf("states after adopting the engine onto PATH = %+v, want one reporting the entry", *states)
+		}
+	})
+}
+
+// A consented uninstall removes the whole record, including a declined
+// install's installed flag, so a later vendor install is not mistaken for PAIR's.
+func TestConsentedUninstallDropsAnInstalledOnlyRecord(t *testing.T) {
+	ex, _, _ := pathLifecycleExecutor(t, "ollama", "process")
+	if err := ex.Install(context.Background(), "ollama", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.Uninstall(context.Background(), "ollama", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ex.pathReceiptFile("ollama")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the installed flag outlived the engine: %v", err)
+	}
 }
 
 // A pinned peer may install an engine here, but rewriting this user's login
@@ -459,7 +568,38 @@ func TestRemoteInstallDoesNotChangeTheTargetUsersPath(t *testing.T) {
 	if !fileExists(cli) {
 		t.Fatal("remote install did not install the engine")
 	}
-	if _, err := os.Stat(ex.pathReceiptFile("lmstudio")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("remote install claimed PATH ownership: %v", err)
+	if last.Status.PathManaged {
+		t.Error("the result frame reported this user's PATH state to the peer")
+	}
+	// Only the installed flag, so a later consented local install can adopt it.
+	receipt, err := loadPathReceipt(ex.pathReceiptFile("lmstudio"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.Installed || receipt.Dir != "" {
+		t.Fatalf("receipt after a remote install = %+v, want only the installed flag", receipt)
+	}
+}
+
+func TestPeerEngineListHidesPathManaged(t *testing.T) {
+	ex, _ := pathInstallExecutor(t, "ollama", "process")
+	if err := savePathReceipt(ex.pathReceiptFile("ollama"), &pathReceipt{Dir: "d", WindowsEntry: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	(&controlServer{exec: ex}).handleEngines(rec, httptest.NewRequest(http.MethodGet, controlEnginesPath, nil))
+	var body struct {
+		Engines []EngineStatus `json:"engines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Engines) == 0 {
+		t.Fatal("no engines served")
+	}
+	for _, e := range body.Engines {
+		if e.PathManaged {
+			t.Errorf("%s: served this user's PATH state to a peer", e.Engine)
+		}
 	}
 }

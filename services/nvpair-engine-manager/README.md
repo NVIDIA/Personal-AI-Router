@@ -52,8 +52,10 @@ Requests (caller → service):
 | `log/set-level` | `{ level }` | `{ level }` |
 
 `EngineStatus` = `{ engine, display_name, installed, running, healthy, port, path_managed }`.
-`path_managed` is true while PAIR owns a PATH entry for the engine on this
-machine, so a client asks about removing one only when there is one.
+`path_managed` is true while PAIR owns a PATH entry it wrote for the engine on
+this machine, so a client asks about removing one only when there is one. It is
+emitted after every PATH step, and always false in what the control surface
+serves to peers.
 
 PATH changes need the user's consent, carried as `path` on each request. A
 missing or false `path` never touches PATH, so a client that does not ask the
@@ -63,13 +65,14 @@ A locally-initiated install with `path:true` publishes the engine's CLI
 directory on this user's PATH. Without it the install still records that PAIR
 ran the installer, so a later consented install can re-adopt an engine whose
 vendor owns its location; an install over an engine already on disk records
-nothing. Windows updates `HKCU\Environment\Path`; Unix appends a block to the login
+nothing, and a claim already on record is kept. Windows updates `HKCU\Environment\Path`; Unix appends a block to the login
 shell's profiles, read from the passwd database rather than the inherited
 environment. Existing entries are preserved and repeated requests do not
 duplicate PAIR's entries. New terminals pick up the change.
 
-`InstallForPeer` — the path a cluster peer's remote install takes — skips this
-step entirely. A PATH failure is a dismissible warning, never an install error,
+`InstallForPeer` — the path a cluster peer's remote install takes — never
+publishes; like a declined install, it records only that PAIR ran the installer.
+A PATH failure is a dismissible warning, never an install error,
 so the engine stays installed and the caller's optional start step still runs.
 
 The directory comes from the manifest's `runtime.cli`. An engine that declares
@@ -81,15 +84,19 @@ Ownership is recorded under `engine-bin/engine-path/<engine>.json` in the user
 data directory, written before PATH is touched and guarded by a lock file in the
 same directory so a concurrent engine-manager — `nvpair-tui` starts its own —
 cannot clobber it. After a successful uninstall with `path:true` PAIR removes
-only recorded entries or unchanged shell snippets; pre-existing entries and
-unrecorded installations are preserved. Cleanup failures keep the receipt for a
-later uninstall retry, even after the executable is gone. An uninstall without
-`path:true` leaves the entries in place and deletes the receipt, so they become
-the user's and `--remove-user-path` no longer touches them.
+only recorded entries or unchanged shell snippets, then deletes the receipt;
+pre-existing entries and unrecorded installations are preserved. Cleanup
+failures keep the receipt for a later uninstall retry, even after the executable
+is gone. An uninstall with `path:false` leaves the entries in place and deletes
+the receipt, so they become the user's and `--remove-user-path` no longer
+touches them. An uninstall with no `path` — a client that did not ask — leaves
+the entries and keeps PAIR's claim on them, dropping only the installed flag.
 
 Those receipts live inside the tree the application uninstaller deletes, while
 the PATH entries do not, so `--remove-user-path` drains every one of them and
-exits. The uninstaller runs it before removing the data directory.
+exits. The uninstaller runs it before removing the data directory, and only
+when it is removing that directory: on Debian that is `purge`, from a copy of
+this binary the package's pre-remove script keeps under `/var/lib/<package>`.
 
 The LM Studio installer runs with `LMS_NO_MODIFY_PATH=1`, declared as
 `install.env` in its manifest, so every PATH change is one PAIR can remove.

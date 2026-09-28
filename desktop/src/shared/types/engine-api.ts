@@ -59,8 +59,9 @@ export interface EngineCommandPayload {
     expiry?: string
     /**
      * The user's answer to changing their PATH, for `install` (add the engine's
-     * command-line tools) and `uninstall` (remove what PAIR added). Absent means
-     * no consent, so PATH is left as it is.
+     * command-line tools) and `uninstall` (remove what PAIR added; false keeps
+     * the entry as the user's). Absent means the user was not asked: PATH is left
+     * as it is, and an uninstall keeps PAIR's claim on any entry it added.
      */
     path?: boolean
 }

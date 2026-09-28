@@ -65,6 +65,9 @@ func TestLifecycleParamsCarryThePathAnswer(t *testing.T) {
 			t.Errorf("lifecycleParams(ollama, %v) = %v", answer, p)
 		}
 	}
+	if _, ok := unaskedParams("ollama")["path"]; ok {
+		t.Error("an op the user was not asked about sent a PATH answer")
+	}
 }
 
 // TestPullParamsSendsBothKeys guards the LM Studio pull fix: the pull params

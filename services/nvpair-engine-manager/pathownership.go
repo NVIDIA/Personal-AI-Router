@@ -26,13 +26,19 @@ type pathReceipt struct {
 	// longer-lived fact than any individual PATH entry. It outlives the entries
 	// themselves: releasing PATH when the application is uninstalled keeps this
 	// flag, so a reinstall re-adopts an engine PAIR placed instead of mistaking
-	// it for one the user installed. Only an engine uninstall clears it, by
-	// deleting the whole record.
+	// it for one the user installed. Only an engine uninstall clears it.
 	//
 	// The directory is not a usable substitute. An engine whose vendor installer
 	// owns its location — LM Studio writes ~/.lmstudio — is indistinguishable
 	// from an external install by path alone.
 	Installed bool `json:"installed,omitempty"`
+}
+
+// ownsEntries reports whether PAIR wrote a PATH entry this record can remove.
+// A recorded Dir alone is not one: the directory may already have been on PATH,
+// the login shell may be unsupported, or the write may have failed.
+func (r *pathReceipt) ownsEntries() bool {
+	return r.WindowsEntry != "" || len(r.ShellBlocks) > 0
 }
 
 type pathBlock struct {
@@ -234,8 +240,13 @@ func (e *Executor) uninstallPath(engine string) error {
 	receipt, err := loadPathReceipt(file)
 	if err == nil && receipt.Dir != "" {
 		err = e.removeFromPath(receipt)
-		if err == nil {
-			err = os.Remove(file)
+	}
+	// The record goes even when it holds only the installed flag: the engine is
+	// uninstalled, and a flag left behind would make a later vendor install of
+	// the same engine look like one PAIR placed.
+	if err == nil {
+		if rmErr := os.Remove(file); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			err = rmErr
 		}
 	}
 	if err != nil {
@@ -254,6 +265,10 @@ func (e *Executor) uninstallPath(engine string) error {
 // recordInstalled notes that PAIR ran the engine's installer when the user
 // declined the PATH entry. Nothing is published; the flag only keeps a later
 // consented install able to re-adopt the engine.
+//
+// A claim already on record is kept, entries included. Declining is an answer
+// to "may PAIR change PATH", so it changes nothing; withdrawing an entry takes
+// an uninstall that asks.
 func (e *Executor) recordInstalled(engine string) error {
 	unlock, err := lockUserPath(e.baseDir)
 	if err != nil {
@@ -291,16 +306,47 @@ func (e *Executor) releasePathOwnership(engine string) error {
 	return nil
 }
 
+// keepPathClaim is the uninstall a client made without asking the user. The
+// engine is gone, so the installed flag goes with it, but PATH entries PAIR
+// wrote stay claimed: dropping the claim on an unasked uninstall would leave
+// entries nothing can identify, including the application uninstaller.
+func (e *Executor) keepPathClaim(engine string) error {
+	unlock, err := lockUserPath(e.baseDir)
+	if err != nil {
+		return fmt.Errorf("lock PATH ownership: %w", err)
+	}
+	defer unlock()
+	file := e.pathReceiptFile(engine)
+	receipt, err := loadPathReceipt(file)
+	if errors.Is(err, errUnreadableReceipt) {
+		// Left as it is: it may be the only evidence of an entry, and a later
+		// uninstall that asks reports it.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read PATH ownership: %w", err)
+	}
+	if receipt.ownsEntries() {
+		receipt.Installed = false
+		return savePathReceipt(file, receipt)
+	}
+	if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // pathManaged reports whether PAIR currently owns a PATH entry for the engine,
 // which is what decides whether an uninstall has anything to ask about.
 //
 // It reads the record on every call rather than caching it: nvpair-tui runs its
 // own engine-manager against the same records, so a cached answer goes stale
-// the moment the other one installs or uninstalls. Records are published by
-// atomic rename, so the read needs no lock.
+// the moment the other one installs or uninstalls. The read takes no lock,
+// because a status snapshot must not wait behind another process's PATH
+// update; records are replaced by rename, so it sees the old or the new one.
 func (e *Executor) pathManaged(engine string) bool {
 	receipt, err := loadPathReceipt(e.pathReceiptFile(engine))
-	return err == nil && receipt.Dir != ""
+	return err == nil && receipt.ownsEntries()
 }
 
 // removeAllUserPaths releases every PATH entry the engines under baseDir own.

@@ -60,7 +60,28 @@ case "${1:-}" in
       real_user="$(logname 2>/dev/null || true)"
     fi
 
-    if [ -n "$real_user" ]; then
+    # before-remove.sh kept this copy of nvpair-engine-manager, because the
+    # package's own is gone by now. It releases the PATH entries this user's
+    # engines own, which live in the login shell profiles rather than the data
+    # root, so they have to go before the records that identify them. A failed
+    # release keeps the data root, so the records survive for a later attempt.
+    stash_dir="/var/lib/$DPKG_MAINTSCRIPT_PACKAGE"
+    keep_data=0
+    if [ -n "$real_user" ] && [ "$real_user" != root ] && [ -n "$DPKG_MAINTSCRIPT_PACKAGE" ] \
+      && [ -x "$stash_dir/nvpair-engine-manager" ]; then
+      if command -v runuser >/dev/null 2>&1; then
+        runuser -u "$real_user" -- "$stash_dir/nvpair-engine-manager" --remove-user-path >/dev/null 2>&1 || keep_data=1
+      else
+        su -s /bin/sh -c "'$stash_dir/nvpair-engine-manager' --remove-user-path" "$real_user" >/dev/null 2>&1 || keep_data=1
+      fi
+    fi
+    if [ -n "$DPKG_MAINTSCRIPT_PACKAGE" ]; then
+      rm -rf "$stash_dir" 2>/dev/null || true
+    fi
+
+    if [ -n "$real_user" ] && [ "$keep_data" = 1 ]; then
+      echo "Personal AI Router: could not remove the PATH entries its engines added; keeping its data so they can still be removed after reinstalling." >&2
+    elif [ -n "$real_user" ]; then
       user_home="$(getent passwd "$real_user" 2>/dev/null | cut -d: -f6 || true)"
       [ -n "$user_home" ] || user_home="/home/$real_user"
 

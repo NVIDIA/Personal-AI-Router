@@ -92,6 +92,7 @@ func (s *controlServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return streamFrame{}, err
 		}
+		st.PathManaged = false // local account configuration; see handleEngines
 		return streamFrame{Type: "result", OpID: req.OpID, Engine: req.Engine, Op: "install", Status: &st}, nil
 	})
 }

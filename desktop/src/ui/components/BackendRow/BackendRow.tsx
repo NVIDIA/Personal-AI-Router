@@ -172,7 +172,7 @@ export function BackendRow({
     )
 
     const handleUninstall = useCallback(() => {
-        window.pairApi.engines.uninstall(backend.type, nodeId, pathManaged && removePath)
+        window.pairApi.engines.uninstall(backend.type, nodeId, pathManaged ? removePath : undefined)
     }, [backend.type, nodeId, pathManaged, removePath])
 
     const handleUpdate = useCallback(() => {

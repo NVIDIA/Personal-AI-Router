@@ -35,3 +35,7 @@ func syncDir(dir string) error {
 	}
 	return errors.Join(syncErr, f.Close())
 }
+
+// replaceFile renames tmp over path. POSIX rename replaces a file other
+// processes have open, so there is nothing to wait out.
+func replaceFile(tmp, path string) error { return os.Rename(tmp, path) }

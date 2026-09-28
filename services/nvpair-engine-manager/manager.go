@@ -36,15 +36,16 @@ type engineParam struct {
 // opParam is the lifecycle-op input. Port (start) and Start (install) are
 // optional, per-call overrides; no manifest mutation, no persistence.
 //
-// Path is the user's consent to change their PATH: on install, to publish the
-// engine's CLI directory; on uninstall, to remove what PAIR published. It is
-// absent unless a client asked the user, so an omitted field never touches it.
+// Path is the user's answer about their PATH: on install, whether to publish the
+// engine's CLI directory; on uninstall, whether to remove what PAIR published
+// (false keeps the entries and hands them to the user). It is absent unless a
+// client asked, and an absent answer changes neither PATH nor PAIR's claim.
 type opParam struct {
 	Engine string `json:"engine"`
 	Port   int    `json:"port,omitempty"`
 	Bind   string `json:"bind,omitempty"`
 	Start  bool   `json:"start,omitempty"`
-	Path   bool   `json:"path,omitempty"`
+	Path   *bool  `json:"path,omitempty"`
 }
 
 type actionParam struct {
@@ -312,11 +313,15 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 	var err error
 	switch msg.Method {
 	case "engine:install":
-		if err = m.exec.Install(ctx, p.Engine, p.Path); err == nil && p.Start {
+		if err = m.exec.Install(ctx, p.Engine, p.Path != nil && *p.Path); err == nil && p.Start {
 			err = start()
 		}
 	case "engine:uninstall":
-		err = m.exec.Uninstall(ctx, p.Engine, p.Path)
+		if p.Path == nil {
+			err = m.exec.UninstallKeepingPathClaim(ctx, p.Engine)
+		} else {
+			err = m.exec.Uninstall(ctx, p.Engine, *p.Path)
+		}
 	case "engine:start":
 		err = start()
 	case "engine:stop":
