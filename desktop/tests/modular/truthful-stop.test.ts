@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
     state: {
         getSelfId: vi.fn(() => 'local-node'),
+        isEngineCommandAllowed: vi.fn(() => true),
         beginLocalEngineOp: vi.fn(),
         clearPendingEngineOp: vi.fn()
     },
@@ -59,6 +60,38 @@ describe('truthful local stop', () => {
             'Failed to stop lmstudio: cannot stop an externally managed process',
             'error',
             'engine-cmd:toggle:lmstudio'
+        )
+    })
+
+    it('observes a rejected vLLM enable, clears pending state, and reports the reason', async () => {
+        mocks.supervisor.sendProcess.mockClear()
+        mocks.state.clearPendingEngineOp.mockClear()
+        mocks.supervisor.reportError.mockClear()
+        mocks.supervisor.callProcess.mockResolvedValue({ enabled: false, running: false })
+
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'toggle',
+            engineType: 'vllm',
+            nodeId: 'local-node'
+        })
+
+        await vi.waitFor(() => expect(mocks.supervisor.sendProcess).toHaveBeenCalledOnce())
+        const [name, method, params, onFailure, observeResponse] =
+            mocks.supervisor.sendProcess.mock.calls[0]
+        expect([name, method, params, observeResponse]).toEqual([
+            'broker',
+            'engine:start',
+            { engine: 'vllm' },
+            true
+        ])
+
+        onFailure('the active runtime is reserved for a serving group', true)
+
+        expect(mocks.state.clearPendingEngineOp).toHaveBeenCalledWith('vllm')
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Failed to enable vllm: the active runtime is reserved for a serving group',
+            'error',
+            'engine-cmd:toggle:vllm'
         )
     })
 })

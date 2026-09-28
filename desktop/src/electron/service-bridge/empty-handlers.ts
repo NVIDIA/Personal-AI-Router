@@ -181,9 +181,10 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
     const supervisor = getModularSupervisor()
     try {
         // `engine:status` is a fast detect (no lifecycle lock), so awaiting the
-        // read is fine. Lifecycle ops stay fire-and-forget to the renderer. A stop
-        // observes its eventual response because an ownership rejection has no
-        // resolving `engine:state-changed`; start keeps its existing push path.
+        // read is fine. Lifecycle ops stay fire-and-forget to the renderer. A stop,
+        // and a vLLM start, observe their eventual response: an ownership or
+        // runtime-admission rejection has no resolving `engine:state-changed`.
+        // Other starts keep their existing push path.
         const status = await supervisor.callProcess('broker', 'engine:status', { engine })
         const statusObject = objectValue(status)
         const running = booleanValue(statusObject?.running)
@@ -204,7 +205,7 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
             enabled ? 'engine:stop' : 'engine:start',
             { engine },
             error => {
-                // A send failure or rejected stop has no resolving
+                // A send failure or observed rejection has no resolving
                 // engine:state-changed — clear the optimistic spinner and report.
                 getModularBridgeState().clearPendingEngineOp(engineType)
                 supervisor.reportError(
@@ -213,7 +214,7 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
                     `engine-cmd:toggle:${engine}`
                 )
             },
-            enabled
+            enabled || engineType === 'vllm'
         )
     } catch (err) {
         supervisor.reportError(
