@@ -364,11 +364,20 @@ func (c *catalogService) lmStudioCatalog(ctx context.Context) ([]CatalogModel, t
 	// wait out the full timeout for the same stale answer.
 	haveList := len(c.lmStudio) > 0
 	fresh := haveList && time.Since(c.lmFetched) < catalogCacheTTL
-	backingOff := haveList && time.Since(c.lmFailed) < catalogRetryAfterFailure
-	if fresh || backingOff {
+	backingOff := !c.lmFailed.IsZero() && time.Since(c.lmFailed) < catalogRetryAfterFailure
+	if fresh || (haveList && backingOff) {
 		models, at := c.lmStudio, c.lmFetched
 		c.mu.Unlock()
 		return models, at, nil
+	}
+	// The backoff holds with nothing cached too. That is the likelier case for
+	// it — a machine that has never reached Hugging Face — and without it every
+	// caller in turn waited out the full timeout to learn the same thing.
+	if backingOff {
+		retry := catalogRetryAfterFailure - time.Since(c.lmFailed)
+		c.mu.Unlock()
+		return nil, time.Time{}, fmt.Errorf("lm studio catalog unavailable; retrying in %s",
+			retry.Round(time.Second))
 	}
 	// Coalesce concurrent callers onto one request.
 	if c.inflight != nil {

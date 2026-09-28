@@ -203,6 +203,41 @@ func TestLmStudioCatalogBacksOffAfterFailure(t *testing.T) {
 	}
 }
 
+// TestLmStudioCatalogBacksOffWithNothingCached is the same guard for a machine
+// that has never reached the upstream. The backoff was keyed on having a list
+// to serve, so with an empty cache every call started a fresh fetch and waited
+// out the full timeout — the warm-up, then each modal open, then the terminal
+// browser, each in turn.
+func TestLmStudioCatalogBacksOffWithNothingCached(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	for i := range 3 {
+		if _, _, err := c.lmStudioCatalog(context.Background()); err == nil {
+			t.Fatalf("call %d: a failing upstream with nothing cached returned no error", i)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Errorf("three calls against a failing upstream made %d requests, want 1 then backoff", got)
+	}
+
+	// Once the backoff has run out, the next call tries again.
+	c.mu.Lock()
+	c.lmFailed = time.Now().Add(-2 * catalogRetryAfterFailure)
+	c.mu.Unlock()
+	_, _, _ = c.lmStudioCatalog(context.Background())
+	if got := requests.Load(); got != 2 {
+		t.Errorf("after the backoff expired: %d requests, want a second attempt", got)
+	}
+}
+
 func TestNormalizeCatalogEngine(t *testing.T) {
 	cases := map[string]string{
 		"ollama":    "ollama",
