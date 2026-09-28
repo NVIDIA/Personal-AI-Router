@@ -149,13 +149,15 @@ func TestJobsRendersNodeNames(t *testing.T) {
 func TestJobsUnplacedWorkShowsPending(t *testing.T) {
 	v := newJobsView(nil)
 
-	v.upsert(workload{ID: "w1", State: "queued", OriginatedFrom: "o"})
-	if got := v.ranOn(v.byKey[workloadKey("o", "w1")]); got == unknownNodeLabel {
+	queued := workload{ID: "w1", State: "queued", OriginatedFrom: "o"}
+	v.upsert(queued)
+	if got := v.ranOn(v.byKey[workloadKey(queued)]); got == unknownNodeLabel {
 		t.Error("an active unplaced job should say a node is being chosen")
 	}
 
-	v.upsert(workload{ID: "w2", State: "completed", OriginatedFrom: "o"})
-	if got := v.ranOn(v.byKey[workloadKey("o", "w2")]); got != unknownNodeLabel {
+	done := workload{ID: "w2", State: "completed", OriginatedFrom: "o"}
+	v.upsert(done)
+	if got := v.ranOn(v.byKey[workloadKey(done)]); got != unknownNodeLabel {
 		t.Errorf("a finished job with no target = %q, want %q", got, unknownNodeLabel)
 	}
 }

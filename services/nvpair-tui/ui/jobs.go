@@ -23,7 +23,11 @@ type workload struct {
 	ID     string `json:"id"`
 	Model  string `json:"model"`
 	Engine string `json:"engine"`
-	State  string `json:"state"`
+	// RunID is the producing proxy's per-process nonce. ID is only a counter
+	// that every engine's facade starts at 1 and that resets on restart, so
+	// without it two different jobs routinely share an ID.
+	RunID string `json:"runId"`
+	State string `json:"state"`
 	// OriginatedFrom is the node the request arrived at.
 	OriginatedFrom string `json:"originatedFrom"`
 	// ScheduledOn is the node that actually ran it, absent until the backend
@@ -52,6 +56,12 @@ type jobsView struct {
 
 	order []string
 	byKey map[string]workload
+	// baselined is whether the snapshot has been merged. Until it has,
+	// removedEarly remembers each removal pushed ahead of it: the snapshot may
+	// have been taken before the job was removed, and merging it would put the
+	// job back for good, since nothing removes it a second time.
+	baselined    bool
+	removedEarly map[workloadRef]bool
 	// trimmed counts finished jobs dropped to stay inside maxFinishedJobs, so
 	// the tab can say the history is not complete. Every other list here
 	// discloses when it is showing less than everything; this one silently
@@ -127,12 +137,18 @@ func (v *jobsView) Title() string { return "Jobs" }
 // Init subscribes and fetches the baseline. Subscribing first means a workload
 // that changes state between the two calls arrives as a push and is merged by
 // key rather than lost.
+//
+// Sequenced, not batched. A batch runs its commands concurrently, so the
+// snapshot could be read before the subscription existed and a change landing
+// between the two was then in neither.
 func (v *jobsView) Init() tea.Cmd {
 	return tea.Batch(
-		call(v.client, "workloads:subscribe", nil, func(_ *rpc.Message, err error) tea.Msg {
-			return workloadsSubscribedMsg{err: err}
-		}),
-		v.loadCmd(),
+		tea.Sequence(
+			call(v.client, "workloads:subscribe", nil, func(_ *rpc.Message, err error) tea.Msg {
+				return workloadsSubscribedMsg{err: err}
+			}),
+			v.loadCmd(),
+		),
 		v.proxy.init(v.client),
 		nodeIdentityCmd(v.client, func(id clusterIdentity, err error) tea.Msg {
 			return jobsIdentityMsg{id: id, err: err}
@@ -175,12 +191,21 @@ func (v *jobsView) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		// Merged, not assigned: a push may already have landed for a workload
-		// in this snapshot, and the push is the fresher of the two.
+		// in this snapshot, and the push is the fresher of the two. The same
+		// holds for a removal, which leaves nothing behind to compare against.
+		//
+		// Sequencing the calls does not make this unnecessary. The reply and
+		// the pushes reach this loop by different paths, so a removal made
+		// after the snapshot was taken can still be handled before it.
 		for _, w := range msg.workloads {
-			if _, seen := v.byKey[workloadKey(w.OriginatedFrom, w.ID)]; !seen {
+			if v.removedEarly[workloadRef{origin: w.OriginatedFrom, id: w.ID}] {
+				continue
+			}
+			if _, seen := v.byKey[workloadKey(w)]; !seen {
 				v.upsert(w)
 			}
 		}
+		v.baselined, v.removedEarly = true, nil
 		return nil
 
 	case proxyStatusMsg:
@@ -261,7 +286,7 @@ func (v *jobsView) Update(msg tea.Msg) tea.Cmd {
 				OriginatedFrom string `json:"originatedFrom"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
-			v.remove(workloadKey(p.OriginatedFrom, p.WorkloadID))
+			v.remove(workloadRef{origin: p.OriginatedFrom, id: p.WorkloadID})
 		default:
 			v.proxy.handleNotification(msg.Msg)
 		}
@@ -300,7 +325,7 @@ const proxyPollTicks = 5
 const maxFinishedJobs = 200
 
 func (v *jobsView) upsert(w workload) {
-	key := workloadKey(w.OriginatedFrom, w.ID)
+	key := workloadKey(w)
 	if _, ok := v.byKey[key]; !ok {
 		v.order = append(v.order, key)
 	}
@@ -351,17 +376,27 @@ func (v *jobsView) trimFinished() {
 	v.order = kept
 }
 
-func (v *jobsView) remove(key string) {
-	if _, ok := v.byKey[key]; !ok {
-		return
-	}
-	delete(v.byKey, key)
-	for i, k := range v.order {
-		if k == key {
-			v.order = append(v.order[:i], v.order[i+1:]...)
-			break
+// remove drops every job a removal names.
+//
+// A removal carries only the origin and the ID, not the engine or run, so it
+// names every generation sharing that pair and all of them go — exactly as the
+// broker's own store treats it.
+func (v *jobsView) remove(ref workloadRef) {
+	if !v.baselined {
+		if v.removedEarly == nil {
+			v.removedEarly = map[workloadRef]bool{}
 		}
+		v.removedEarly[ref] = true
 	}
+	kept := v.order[:0]
+	for _, k := range v.order {
+		if w := v.byKey[k]; w.OriginatedFrom == ref.origin && w.ID == ref.id {
+			delete(v.byKey, k)
+			continue
+		}
+		kept = append(kept, k)
+	}
+	v.order = kept
 	v.refreshRows()
 }
 
@@ -496,4 +531,14 @@ func (v *jobsView) Help() []key.Binding {
 	return []key.Binding{jobsAllKey, demo}
 }
 
-func workloadKey(origin, id string) string { return origin + "/" + id }
+// workloadKey is a job's identity: the node it arrived at, the engine and proxy
+// run that minted it, and the ID within that run — the broker's own key.
+// Origin and ID alone collapsed a concurrent Ollama and LM Studio job, or a job
+// from before a proxy restart and one after it, into a single row.
+func workloadKey(w workload) string {
+	return w.OriginatedFrom + "\x00" + w.Engine + "\x00" + w.RunID + "\x00" + w.ID
+}
+
+// workloadRef is what a removal names: an origin and an ID, without the engine
+// or run that would narrow it to one generation.
+type workloadRef struct{ origin, id string }
