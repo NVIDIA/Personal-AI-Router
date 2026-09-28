@@ -402,9 +402,8 @@ func TestUnexpectedExitReported(t *testing.T) {
 	// The /exit route makes the fake engine os.Exit(1) — a crash.
 	_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/exit", st.Port))
 	waitFor(t, 6*time.Second, func() bool { s, _ := ex.Status("fake"); return !s.Running })
-	if !hasErr(ex.Errors(), exitedID("fake")) {
-		t.Fatalf("expected an 'exited' error after a crash, got %+v", ex.Errors())
-	}
+	// The watcher publishes the stopped state before it reports the exit.
+	waitFor(t, 2*time.Second, func() bool { return hasErr(ex.Errors(), exitedID("fake")) })
 }
 
 func TestNormalStopIsSilent(t *testing.T) {
