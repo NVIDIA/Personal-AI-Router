@@ -6,6 +6,7 @@ package ui
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"time"
 
 	"nvpair-shared/enginesettings"
 	"nvpair-tui/rpc"
@@ -133,11 +134,27 @@ func previewEngineSettingsCmd(client *rpc.Client, req enginesettings.Request) te
 // see judgeSettingsPreview, which both substitutes the normalized settings and
 // drops the resolution. This does not re-check either, because a commit that
 // quietly repaired its own request would hide the bug that produced it.
+//
+// The broker replies only once the change is carried out, which can mean an
+// engine stopping, rebinding, and passing a readiness probe that Ollama allows
+// ten minutes. The budget is the one the backend works to, from the shared
+// ladder, rather than a number restated here: restating it is how this path
+// ended up with the thirty-five seconds sized for control calls.
 func applyEngineSettingsCmd(client *rpc.Client, req enginesettings.Request) tea.Cmd {
-	return call(client, "engine:apply-settings", req,
+	return callWithin(client, settingsApplyBudget(req), "engine:apply-settings", req,
 		func(_ *rpc.Message, err error) tea.Msg {
 			return engineSettingsAppliedMsg{engine: req.Engine, err: err}
 		})
+}
+
+// settingsApplyBudget is how long an apply is allowed before this screen stops
+// waiting for its reply.
+func settingsApplyBudget(req enginesettings.Request) time.Duration {
+	if req.NodeID != "" {
+		// Relayed to a peer, whose own call budget sits one rung below.
+		return enginesettings.RelayBudget
+	}
+	return enginesettings.CallBudget
 }
 
 // settingsUnavailableReason explains why an engine cannot be configured, or is
