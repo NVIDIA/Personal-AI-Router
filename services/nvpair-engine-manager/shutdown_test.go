@@ -131,9 +131,12 @@ func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
 	ex.StopAll()
 	waited := time.Since(second)
 
+	// Both callers return when the sweep ends, but the first goroutine's deferred
+	// close can land a moment later. The grace is far shorter than the probe an
+	// early return would have skipped.
 	select {
 	case <-sweepDone:
-	default:
+	case <-time.After(100 * time.Millisecond):
 		t.Fatal("the second caller returned while the first sweep was still running")
 	}
 	if waited < 100*time.Millisecond {
