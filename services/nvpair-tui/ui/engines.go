@@ -76,6 +76,9 @@ type engineOpMsg struct {
 type enginePullDoneMsg struct {
 	pull enginePull
 	err  error
+	// canceled marks a cancel the engine-manager acknowledged, which only
+	// happens once the transfer has stopped.
+	canceled bool
 }
 
 var (
@@ -218,8 +221,11 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 
 	case enginePullDoneMsg:
 		v.retire(msg.pull)
-		if msg.err != nil {
+		switch {
+		case msg.err != nil:
 			v.status = fmt.Sprintf("pull %s %s failed: %s", msg.pull.engine, msg.pull.model, msg.err.Error())
+		case msg.canceled:
+			v.status = fmt.Sprintf("pull %s %s: canceled", msg.pull.engine, msg.pull.model)
 		}
 		return nil
 
@@ -340,7 +346,7 @@ func (v *enginesView) decodeCancel(pull enginePull) func(*rpc.Message, error) te
 		if err != nil {
 			return engineOpMsg{what: "cancel " + pull.model, engine: pull.engine, err: err}
 		}
-		return enginePullDoneMsg{pull: pull}
+		return enginePullDoneMsg{pull: pull, canceled: true}
 	}
 }
 

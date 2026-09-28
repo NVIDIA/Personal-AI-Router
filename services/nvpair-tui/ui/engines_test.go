@@ -148,6 +148,15 @@ func TestConfirmedCancelRetiresTheDownload(t *testing.T) {
 	if _, ok := v.newestPull("ollama"); ok {
 		t.Error("a confirmed cancel left the download offered as a cancel target")
 	}
+	if want := "pull ollama llama3.2: canceled"; v.status != want {
+		t.Errorf("status = %q, want %q", v.status, want)
+	}
+	// The pull's own reply settles after the cancel and carries no error; it
+	// must not replace the outcome the cancel reported.
+	v.Update(enginePullDoneMsg{pull: pull})
+	if want := "pull ollama llama3.2: canceled"; v.status != want {
+		t.Errorf("status after the pull settled = %q, want %q", v.status, want)
+	}
 }
 
 // A non-terminal frame says the download is still going, so it must leave the
