@@ -147,6 +147,27 @@ describe('app data migration', () => {
 
         expect(fs.readFileSync(path.join(directory, 'state.json'), 'utf8')).toBe('state')
     })
+
+    it('reports what it moved and what it kept', () => {
+        const root = createRoot()
+        const previousRoot = path.join(root, 'NVIDIA Corporation')
+        const sharedRoot = path.join(root, 'Nvidia Corporation')
+        const source = path.join(previousRoot, 'PAIR')
+        fs.mkdirSync(source, { recursive: true })
+        fs.mkdirSync(path.join(sharedRoot, 'NVIDIA PAIR'), { recursive: true })
+        fs.writeFileSync(path.join(source, 'moved.json'), 'moved')
+        fs.writeFileSync(path.join(source, 'conflict.json'), 'old')
+        fs.writeFileSync(path.join(sharedRoot, 'NVIDIA PAIR', 'conflict.json'), 'current')
+
+        const result = migrateAppDataDirectory(previousRoot, 'PAIR', sharedRoot, 'NVIDIA PAIR')
+
+        expect(result).toEqual({
+            source,
+            moved: 1,
+            kept: [path.join(source, 'conflict.json')],
+            failed: []
+        })
+    })
 })
 
 describe('app data migration lock', () => {
@@ -154,47 +175,116 @@ describe('app data migration lock', () => {
         const lockPath = path.join(createRoot(), 'vendor', APP_DATA_MIGRATION_LOCK_NAME)
         let ran = false
 
-        const acquired = withAppDataMigrationLock(lockPath, () => {
+        const outcome = withAppDataMigrationLock(lockPath, () => {
             ran = fs.existsSync(lockPath)
         })
 
-        expect(acquired).toBe(true)
+        expect(outcome).toEqual({ acquired: true })
         expect(ran).toBe(true)
         expect(fs.existsSync(lockPath)).toBe(false)
     })
 
     it('breaks a lock left by a crashed holder', () => {
         const lockPath = path.join(createRoot(), APP_DATA_MIGRATION_LOCK_NAME)
-        fs.writeFileSync(lockPath, '')
+        fs.writeFileSync(lockPath, 'crashed-holder')
         const stale = new Date(Date.now() - 5 * 60_000)
         fs.utimesSync(lockPath, stale, stale)
         let ran = false
 
-        const acquired = withAppDataMigrationLock(lockPath, () => {
+        const outcome = withAppDataMigrationLock(lockPath, () => {
             ran = true
         })
 
-        expect(acquired).toBe(true)
+        expect(outcome).toEqual({ acquired: true })
         expect(ran).toBe(true)
+    })
+
+    it('gives up instead of spinning on a stale lock it cannot remove', () => {
+        const lockPath = path.join(createRoot(), APP_DATA_MIGRATION_LOCK_NAME)
+        // A non-empty directory is a lock no platform lets it delete.
+        fs.mkdirSync(lockPath)
+        fs.writeFileSync(path.join(lockPath, 'held'), '')
+        const stale = new Date(Date.now() - 5 * 60_000)
+        fs.utimesSync(lockPath, stale, stale)
+        let ran = false
+
+        const outcome = withAppDataMigrationLock(lockPath, () => {
+            ran = true
+        })
+
+        expect(outcome.acquired).toBe(false)
+        expect(ran).toBe(false)
+        expect(fs.existsSync(`${lockPath}.break`)).toBe(false)
+    })
+
+    it('leaves a lock that another holder took over in place', () => {
+        const lockPath = path.join(createRoot(), APP_DATA_MIGRATION_LOCK_NAME)
+
+        withAppDataMigrationLock(lockPath, () => {
+            fs.writeFileSync(lockPath, 'someone-else')
+        })
+
+        expect(fs.readFileSync(lockPath, 'utf8')).toBe('someone-else')
     })
 })
 
 describe('app data directory constants', () => {
     // The broker migrates the same directories under the same lock for launches
     // that never start Electron; a drift would split one node's state in two.
+    const repoRoot = path.join(__dirname, '..', '..', '..')
     const appdirSource = fs.readFileSync(
-        path.join(__dirname, '..', '..', '..', 'services', 'shared', 'appdir', 'appdir.go'),
+        path.join(repoRoot, 'services', 'shared', 'appdir', 'appdir.go'),
+        'utf8'
+    )
+    const locateSource = fs.readFileSync(
+        path.join(repoRoot, 'scripts', 'collectlogs', 'locate.go'),
+        'utf8'
+    )
+    const migrationSource = fs.readFileSync(
+        path.join(repoRoot, 'desktop', 'src', 'electron', 'app-data-migration.ts'),
         'utf8'
     )
 
-    function goStringConstant(name: string): string | undefined {
-        return new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(appdirSource)?.[1]
+    function goStringConstant(source: string, name: string): string | undefined {
+        return new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(source)?.[1]
+    }
+
+    const goUnitMs: Record<string, number> = { Millisecond: 1, Second: 1000, Minute: 60_000 }
+
+    function goDurationMs(name: string): number | undefined {
+        const match = new RegExp(`\\b${name}\\s*=\\s*(\\d+)\\s*\\*\\s*time\\.(\\w+)`).exec(
+            appdirSource
+        )
+        return match ? Number(match[1]) * goUnitMs[match[2]] : undefined
+    }
+
+    function tsDurationMs(name: string): number | undefined {
+        const match = new RegExp(`\\b${name}\\s*=\\s*([\\d_ *]+)\\r?\\n`).exec(migrationSource)
+        return match
+            ? match[1]
+                  .split('*')
+                  .map(factor => Number(factor.trim().replace(/_/g, '')))
+                  .reduce((product, factor) => product * factor, 1)
+            : undefined
     }
 
     it('matches the Go data directory and lock file names', () => {
-        expect(goStringConstant('orgDir')).toBe(APP_ORG)
-        expect(goStringConstant('appDir')).toBe(APP_DATA_DIR_NAME)
-        expect(goStringConstant('migrationLockName')).toBe(APP_DATA_MIGRATION_LOCK_NAME)
+        expect(goStringConstant(appdirSource, 'orgDir')).toBe(APP_ORG)
+        expect(goStringConstant(appdirSource, 'appDir')).toBe(APP_DATA_DIR_NAME)
+        expect(goStringConstant(appdirSource, 'migrationLockName')).toBe(
+            APP_DATA_MIGRATION_LOCK_NAME
+        )
+    })
+
+    it('matches the collectlogs data directory', () => {
+        expect(goStringConstant(locateSource, 'appOrg')).toBe(APP_ORG)
+        expect(goStringConstant(locateSource, 'appDataDir')).toBe(APP_DATA_DIR_NAME)
+    })
+
+    it('matches the Go lock timings', () => {
+        expect(tsDurationMs('LOCK_STALE_MS')).toBe(goDurationMs('lockStaleAfter'))
+        expect(tsDurationMs('LOCK_POLL_MS')).toBe(goDurationMs('lockPoll'))
+        expect(goDurationMs('lockStaleAfter')).toBe(120_000)
     })
 
     it('matches the Go previous directories in order', () => {

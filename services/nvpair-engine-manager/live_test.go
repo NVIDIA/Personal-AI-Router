@@ -30,6 +30,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"nvpair-shared/appdir"
 )
 
 // TestLiveOllamaCleanRoom installs NVPAIR's own standalone Ollama — the
@@ -198,7 +200,7 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 
 	// Empty config dir so only the bundled lmstudio manifest is loaded.
 	cfg := t.TempDir()
-	frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg})
 	defer stop()
 
 	send(t, stdin, 1, "engine:get-installed", nil)
@@ -275,7 +277,15 @@ func startManager(t *testing.T, env map[string]string) (chan frame, io.WriteClos
 func startManagerWithManifest(t *testing.T, m Manifest) (chan frame, io.WriteCloser, func()) {
 	t.Helper()
 	cfg := t.TempDir()
-	engdir := filepath.Join(cfg, configSubdir, "engines")
+	env := map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg}
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	root, err := appdir.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engdir := filepath.Join(root, "engines")
 	if err := os.MkdirAll(engdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +293,7 @@ func startManagerWithManifest(t *testing.T, m Manifest) (chan frame, io.WriteClo
 	if err := os.WriteFile(filepath.Join(engdir, m.Engine+".json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	return startManager(t, env)
 }
 
 func sha256File(t *testing.T, path string) string {

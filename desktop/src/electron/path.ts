@@ -12,7 +12,12 @@ import {
     APP_ORG,
     APP_PREVIOUS_DATA_DIRS
 } from '@/shared/constants/app'
-import { migrateAppDataDirectory, withAppDataMigrationLock } from '@/electron/app-data-migration'
+import {
+    migrateAppDataDirectory,
+    withAppDataMigrationLock,
+    type AppDataDirectoryMigration
+} from '@/electron/app-data-migration'
+import { createStructuredLogger } from '@/shared/utils/log'
 
 export interface PathProvider {
     getUserData(): string
@@ -29,25 +34,63 @@ const BASE_ROOT =
 const ROOT = path.join(BASE_ROOT, APP_ORG)
 const APP_DIR = path.join(ROOT, APP_DATA_DIR_NAME)
 
-/**
- * Merges every earlier data directory into the current one. Must run before
- * anything creates files under userData — the file logger and Chromium's
- * single-instance lock both do — so migrated files are not shadowed by fresh
- * ones.
- */
-export const migrateAppData = (): void => {
-    withAppDataMigrationLock(path.join(ROOT, APP_DATA_MIGRATION_LOCK_NAME), () => {
-        for (const previous of APP_PREVIOUS_DATA_DIRS) {
-            migrateAppDataDirectory(
-                path.join(BASE_ROOT, previous.org),
-                previous.name,
-                ROOT,
-                APP_DATA_DIR_NAME,
-                APP_DATA_MIGRATION_SKIP_ENTRIES
-            )
-        }
-    })
+interface AppDataMigrationReport {
+    skipped: string | null
+    directories: AppDataDirectoryMigration[]
 }
+
+/**
+ * Merges every earlier data directory into the current one. Must run before the
+ * file logger creates files under userData, so migrated logs are not shadowed
+ * by fresh ones; log the report once the logger exists.
+ */
+export const migrateAppData = (): AppDataMigrationReport => {
+    const directories: AppDataDirectoryMigration[] = []
+    const lock = withAppDataMigrationLock(
+        path.join(ROOT, APP_DATA_MIGRATION_LOCK_NAME),
+        heartbeat => {
+            for (const previous of APP_PREVIOUS_DATA_DIRS) {
+                directories.push(
+                    migrateAppDataDirectory(
+                        path.join(BASE_ROOT, previous.org),
+                        previous.name,
+                        ROOT,
+                        APP_DATA_DIR_NAME,
+                        APP_DATA_MIGRATION_SKIP_ENTRIES,
+                        heartbeat
+                    )
+                )
+            }
+        }
+    )
+    return { skipped: lock.acquired ? null : lock.reason, directories }
+}
+
+export const logAppDataMigration = (report: AppDataMigrationReport): void => {
+    const log = createStructuredLogger('app')
+    if (report.skipped) {
+        log.warn({
+            sublevel: 'migration',
+            message: `App data migration skipped: ${report.skipped}`
+        })
+    }
+    for (const directory of report.directories) {
+        if (directory.moved === 0 && directory.failed.length === 0) continue
+        log.info({
+            sublevel: 'migration',
+            message: `Migrated app data from ${directory.source}`,
+            data: { moved: directory.moved, kept: directory.kept, failed: directory.failed }
+        })
+    }
+}
+
+/**
+ * `bin` directories the launcher lived in before the data directory moved. They
+ * stay on disk for terminals already holding the old PATH, but new terminals
+ * should find only the current one.
+ */
+export const previousLauncherDirs = (): string[] =>
+    APP_PREVIOUS_DATA_DIRS.map(previous => path.join(BASE_ROOT, previous.org, previous.name, 'bin'))
 
 export const setPaths = async (): Promise<void> => {
     // make it stick even in dev

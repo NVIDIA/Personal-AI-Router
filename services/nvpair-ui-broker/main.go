@@ -62,14 +62,18 @@ func main() {
 
 	applog.Init("nvpair-ui-broker", resolveLevel())
 
-	if migrateErr != nil {
-		slog.Warn("app data migration did not run", "err", migrateErr)
-	}
 	for _, m := range migrations {
-		slog.Info("migrated app data directory", "from", m.Source, "kept", len(m.Kept))
+		slog.Info("migrated app data directory", "from", m.Source, "moved", m.Moved, "kept", len(m.Kept), "failed", len(m.Failed))
 		for _, kept := range m.Kept {
 			slog.Debug("app data entry left in previous directory", "path", kept)
 		}
+	}
+	// Starting a worker now would mint a node identity and cluster state that no
+	// later migration could replace, so exit instead; the next start retries.
+	if migrateErr != nil {
+		slog.Error("app data migration failed; not starting workers", "err", migrateErr)
+		sink.Close()
+		os.Exit(1)
 	}
 
 	// Fatal paths must not return through the async queue. applog bridges the

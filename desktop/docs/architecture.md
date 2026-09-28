@@ -346,11 +346,26 @@ NVIDIA PAIR and the Go services share one current per-user root:
 Data under the earlier roots, `Nvidia Corporation/Personal AI Router` and then
 `NVIDIA Corporation/PAIR`, is merged into it without overwriting anything
 already present. Both entry points run the same merge under one lock file in
-the org directory: Electron before it writes to user data, and
-`nvpair-ui-broker` before it starts a worker, so the `nvpair` terminal command
-and headless installs migrate too. The Windows `bin/` launcher directory stays
-in its earlier root because the user's PATH names it. `services/shared/appdir`
-and `src/shared/constants/app.ts` hold the names; a unit test keeps them equal.
+the org directory, whose holder refreshes it while it works:
+
+- Electron, in the instance that holds the single-instance lock, before the
+  file logger writes to user data. It waits at most ten seconds and logs what
+  it moved, kept, or could not move once the logger starts.
+- `nvpair-ui-broker`, before it starts a worker, so the `nvpair` terminal
+  command and headless installs migrate too. It waits for as long as the lock
+  is held, and exits without starting a worker when an entry cannot be moved:
+  a worker would otherwise mint a node identity that no later retry could
+  replace.
+
+The Windows `bin/` launcher directory stays in its earlier root because open
+terminals' PATH names it; the app drops that entry from the user PATH when it
+adds the current one. `services/shared/appdir`, `src/shared/constants/app.ts`,
+and `scripts/collectlogs` hold the names, and a unit test keeps them, the lock
+file name, and the lock timings equal.
+
+There is no reverse migration. Installing a release from before the move
+finds its old root empty and starts as a new node, with no cluster membership
+or installed engines.
 
 Uninstalling keeps user data by default or requires an explicit removal action.
 The Electron updater cache is separate from the shared root.

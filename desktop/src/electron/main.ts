@@ -27,7 +27,7 @@ import { isAppDataWipeScheduled } from '@/electron/app-data-wipe-orchestrator'
 import { destroyInferenceDemoSync, stopInferenceDemo } from '@/electron/inference-demo'
 import { startEventLoopMonitor } from '@/electron/event-loop-monitor'
 
-const gotTheLock = app.requestSingleInstanceLock()
+const gotTheLock = app.hasSingleInstanceLock()
 const exitRequested = process.argv.includes(APP_EXIT_ARGUMENT)
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')

@@ -82,9 +82,8 @@
 ; Best-effort: stop any process whose executable lives UNDER one of the data
 ; roots (e.g. an engine like Ollama running from
 ; %LOCALAPPDATA%\Nvidia Corporation\NVIDIA PAIR\engine-bin\). The uninstaller
-; runs it before RMDir /r; the installer runs it so an engine left running by
-; the previous version cannot hold its engine-bin open while the broker moves
-; that data into the current root. Scoped by ExecutablePath, so an external
+; runs it before RMDir /r; the installer runs it through
+; pairKillBeforeDataMigration. Scoped by ExecutablePath, so an external
 ; Ollama installed elsewhere is never touched. nsExec::ExecToLog never aborts the (un)installer,
 ; PowerShell swallows its own errors (-ErrorAction SilentlyContinue), and a
 ; missing powershell.exe just logs a failure — every failure mode lets the
@@ -95,6 +94,21 @@
   nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and ($$_.ExecutablePath -like \"$$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\NVIDIA PAIR\*\") } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   ; Give the OS a moment to release the file handles before RMDir /r.
   Sleep 1000
+!macroend
+
+; An engine an earlier version left running would hold its engine-bin open, so
+; the move into the current root fails and the broker refuses to start until it
+; succeeds. Only an earlier root that still has an engine-bin needs that, so
+; later updates skip the force-kill; pairCloseRunningProcesses has already
+; stopped the engine manager and the engines it owns.
+!macro pairKillBeforeDataMigration
+  Push $0
+  ReadEnvStr $0 LOCALAPPDATA
+  ${If} ${FileExists} "$0\Nvidia Corporation\Personal AI Router\engine-bin\*.*"
+  ${OrIf} ${FileExists} "$0\NVIDIA Corporation\PAIR\engine-bin\*.*"
+    !insertmacro pairKillProcessesInDataDirs
+  ${EndIf}
+  Pop $0
 !macroend
 
 ; Non-fatal fallback: if something still held a binary open under a data root
@@ -235,7 +249,7 @@
     StrCpy $INSTDIR "$PROGRAMFILES64\${APP_FILENAME}"
   ${endif}
   !insertmacro pairCloseRunningProcesses
-  !insertmacro pairKillProcessesInDataDirs
+  !insertmacro pairKillBeforeDataMigration
 !macroend
 
 ; Refuse to report success when the payload's executables are not on disk.

@@ -29,6 +29,7 @@ import { modularBinaryFileName } from '@/shared/constants/modular-binaries'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
+import { previousLauncherDirs } from '@/electron/path'
 
 const log = createStructuredLogger('app')
 
@@ -62,7 +63,7 @@ function ensureWindows(tui: string): void {
     const launcher = path.join(binDir, 'nvpair.cmd')
     const contents = '@echo off\r\n' + `"${tui}" %*\r\n`
     writeIfChanged(launcher, contents)
-    addToWindowsUserPath(binDir)
+    setWindowsUserPathEntry(binDir, previousLauncherDirs())
 }
 
 function ensurePosix(tui: string): void {
@@ -108,21 +109,26 @@ function writeIfChanged(file: string, contents: string): void {
     fs.writeFileSync(file, contents)
 }
 
+const powerShellString = (value: string): string => `'${value.replace(/'/g, "''")}'`
+
 /**
- * Append `dir` to the current user's PATH (HKCU) via PowerShell, idempotently.
+ * Append `dir` to the current user's PATH (HKCU) via PowerShell, idempotently,
+ * and drop `staleDirs` (launcher directories from earlier data locations) so
+ * PATH does not keep one entry per rename. Terminals that are already open keep
+ * their own copy of PATH, so their `nvpair` still resolves.
  * `[Environment]::SetEnvironmentVariable(..., 'User')` persists it and broadcasts
  * WM_SETTINGCHANGE so new shells pick it up without a reboot.
  */
-function addToWindowsUserPath(dir: string): void {
-    const escaped = dir.replace(/'/g, "''")
+function setWindowsUserPathEntry(dir: string, staleDirs: readonly string[]): void {
     const script = [
-        `$d = '${escaped}'`,
+        `$d = ${powerShellString(dir)}`,
+        `$stale = @(${staleDirs.map(powerShellString).join(', ')})`,
         `$p = [Environment]::GetEnvironmentVariable('Path','User')`,
         `if ($null -eq $p) { $p = '' }`,
-        `if (-not ($p.Split(';') -contains $d)) {`,
-        `  $np = if ($p -eq '') { $d } else { $p.TrimEnd(';') + ';' + $d }`,
-        `  [Environment]::SetEnvironmentVariable('Path', $np, 'User')`,
-        `}`
+        `$entries = @($p.Split(';') | Where-Object { $_ -ne '' -and $stale -notcontains $_.TrimEnd('\\') })`,
+        `if ($entries -notcontains $d) { $entries += $d }`,
+        `$np = $entries -join ';'`,
+        `if ($np -ne $p.TrimEnd(';')) { [Environment]::SetEnvironmentVariable('Path', $np, 'User') }`
     ].join('; ')
     execFile(
         'powershell',

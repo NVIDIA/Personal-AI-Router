@@ -24,7 +24,8 @@ export const APP_PREVIOUS_DATA_DIRS: readonly AppDataDirectory[] = [
 /**
  * The generated `nvpair` launcher directory (see `src/electron/nvpair-command.ts`)
  * is referenced by absolute path from the user's PATH on Windows, so it stays in
- * its previous directory; the app regenerates it in the current one.
+ * its previous directory for terminals that are already open. The app
+ * regenerates it in the current directory and replaces the old PATH entry.
  */
 export const APP_DATA_MIGRATION_SKIP_ENTRIES: readonly string[] = ['bin']
 export const APP_DATA_MIGRATION_LOCK_NAME = '.nvpair-data-migration.lock'
