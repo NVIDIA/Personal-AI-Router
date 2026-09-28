@@ -207,6 +207,11 @@ waitForPredecessors:
 
 // joinPull reports the outcome of a download already in flight, so a duplicate
 // request is idempotent instead of a failure.
+//
+// The download keeps running on the context of the request that started it, so
+// a joined request shares that request's lifetime: if the owner's connection
+// drops or its action timeout elapses, the joined request fails with it. The
+// partial files survive that failure, so the next attempt resumes them.
 func joinPull(ctx context.Context, p *activePull) (json.RawMessage, error) {
 	select {
 	case <-p.done:

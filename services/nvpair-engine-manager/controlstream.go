@@ -115,12 +115,9 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 	if model := modelFromParams(req.Params); model != "" {
 		req.Model = model
 	}
-	// Resolve the model before validating, because the model is what scopes
-	// everything below. Params that name none used to pass this check and
-	// leave it empty, which made claimPull a no-op and emptied streamOp's
-	// modelFilter — and an empty filter disables filtering, so the initiator
-	// received every other model's pull progress on this engine stamped with
-	// its own opID.
+	// Resolve the model before validating: it scopes claimPull and streamOp's
+	// modelFilter, and an empty filter disables filtering, which would stamp
+	// every other model's pull progress on this engine with this opID.
 	if req.Model == "" {
 		http.Error(w, `"model", or "params" naming one, is required`, http.StatusBadRequest)
 		return

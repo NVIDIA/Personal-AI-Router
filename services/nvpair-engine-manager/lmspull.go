@@ -42,12 +42,21 @@ type lmsDownloadOutput struct {
 	// confirmation, so state reports no cancellation once it is set, and a
 	// "Download canceled." arriving afterwards cannot re-arm file deletion.
 	disowned bool
+	// named holds the model files the CLI's output has mentioned. Without a
+	// pinned quantization it is the only evidence of which file `lms get`
+	// chose, and so of which partial is this download's. It is collected as
+	// the output arrives because text only keeps a bounded tail.
+	named    map[string]bool
 	stdin    io.Writer
 	progress func(int)
 }
 
 var lmsPercentPattern = regexp.MustCompile(`\]\s+(\d+(?:\.\d+)?)%`)
 var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]")
+var lmsModelFilePattern = regexp.MustCompile(`[^\s/\\"'` + "`" + `]+\.gguf\b`)
+
+// lmsNamedFilesMax bounds named against a CLI that prints a whole catalog.
+const lmsNamedFilesMax = 256
 
 func (w *lmsDownloadOutput) Write(data []byte) (int, error) {
 	w.mu.Lock()
@@ -56,6 +65,14 @@ func (w *lmsDownloadOutput) Write(data []byte) (int, error) {
 	answer := strings.Contains(clean, "Continue to download in the background?") && !w.answered
 	w.cancelled = w.cancelled || strings.Contains(clean, "Download canceled.")
 	w.completed = w.completed || strings.Contains(clean, "Download completed.")
+	for _, name := range lmsModelFilePattern.FindAllString(clean, -1) {
+		if w.named == nil {
+			w.named = make(map[string]bool)
+		}
+		if len(w.named) < lmsNamedFilesMax {
+			w.named[name] = true
+		}
+	}
 	percent := -1
 	matches := lmsPercentPattern.FindAllStringSubmatch(clean, -1)
 	if len(matches) > 0 {
@@ -99,6 +116,17 @@ func (w *lmsDownloadOutput) state() (cancelled, completed bool, text string) {
 	return w.cancelled && !w.disowned, w.completed, w.text
 }
 
+// namedFiles returns a copy of the model files the output has mentioned.
+func (w *lmsDownloadOutput) namedFiles() map[string]bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	named := make(map[string]bool, len(w.named))
+	for name := range w.named {
+		named[name] = true
+	}
+	return named
+}
+
 // reset clears the previous run's output. It is called before the process
 // starts, where nothing is writing yet, but takes the lock anyway: an earlier
 // disowned process may still hold this writer.
@@ -110,6 +138,7 @@ func (w *lmsDownloadOutput) reset(stdin io.Writer) {
 	w.cancelled = false
 	w.completed = false
 	w.answered = false
+	w.named = nil
 }
 
 // disown withdraws this writer's cancellation confirmation for good, for a
@@ -123,9 +152,13 @@ func (w *lmsDownloadOutput) disown() {
 }
 
 func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, model string) (json.RawMessage, error) {
+	// A snapshot that could not be taken stays nil, so cancelling this
+	// download deletes nothing; the download itself does not depend on it.
 	before, err := lmsPartialFiles(lmstudioModelsDir(), model)
 	if err != nil {
-		return nil, fmt.Errorf("inspect partial downloads: %w", err)
+		slog.Warn("could not snapshot partial downloads; cancelling this download will not remove its files",
+			"engine", engine, "model", model, "err", err)
+		before = nil
 	}
 	st.mu.Lock()
 	port := st.port
@@ -149,7 +182,7 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 	if err != nil && cancelRequested(ctx) && cancelled {
 		// Cleanup outlives the cancellation that triggered it, so it runs on a
 		// context that keeps this one's values without its deadline.
-		if cleanupErr := cleanupLMSPartials(context.WithoutCancel(ctx), lmstudioModelsDir(), model, before); cleanupErr != nil {
+		if cleanupErr := cleanupLMSAfterCancel(context.WithoutCancel(ctx), lmstudioModelsDir(), model, before, output.namedFiles()); cleanupErr != nil {
 			// The download did stop, which is what was asked for. Leftover
 			// bytes are the vendor's to resume, so reporting a failed cancel
 			// here would deny the one outcome that did happen and leave the
@@ -190,11 +223,19 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
+	unpin, err := pinDownloadProcess(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		go func() { _ = cmd.Wait() }()
+		return "", fmt.Errorf("hold download process: %w", err)
+	}
+	defer unpin()
 	finished := make(chan error, 1)
 	// reaped is set before the result is published, so a reader that sees it
-	// knows the PID is already free for the OS to reissue. cmd.ProcessState
-	// cannot serve here: Wait writes it on this goroutine while the
-	// cancelling one would be reading it.
+	// knows the process is gone. cmd.ProcessState cannot serve here: Wait
+	// writes it on this goroutine while the cancelling one would be reading
+	// it. Wait can return up to downloadWaitDelay after the reap itself, and
+	// pinDownloadProcess is what keeps a signal in that gap off a reissued PID.
 	var reaped atomic.Bool
 	go func() {
 		err := cmd.Wait()
@@ -353,12 +394,26 @@ func lmsErrorDetail(text string) string {
 	return "…" + string(runes[len(runes)-lmsErrorDetailMax:])
 }
 
-// Remove only the partial files this `lms get` created, preserving completed
-// shards. The LM Studio app and any other client download into the same
-// repository directory, so a file is deleted only when it carries the requested
-// quantization, was absent from the snapshot taken before this download
-// started, and has stopped moving. Never delete a model directory or follow a
-// symlink outside the cache.
+// cleanupLMSAfterCancel retries until every partial this pull created is
+// removed or confirmed to be another client's.
+func cleanupLMSAfterCancel(ctx context.Context, root, model string, before map[string]os.FileInfo, named map[string]bool) error {
+	return retryPartialCleanup(func(steady partialSteadyPasses) (bool, error) {
+		return cleanupLMSPartials(ctx, root, model, before, named, steady)
+	})
+}
+
+// cleanupLMSPartials runs one pass over the partial files this `lms get`
+// created, preserving completed shards. The LM Studio app and any other client
+// download into the same repository directory, so a file is deleted only when
+// it is this download's file, was absent from the snapshot taken before this
+// download started, and has stopped moving. Never delete a model directory or
+// follow a symlink outside the cache.
+//
+// Which file is this download's comes from the pinned quantization when the
+// request names one, and otherwise from the files the CLI's output named. An
+// unpinned request whose output named none has no candidates, because any
+// partial appearing in the repository could be the app fetching another
+// quantization beside it.
 //
 // Presence in the snapshot is disqualifying on its own; what the file has done
 // since is not consulted. Bytes gained during this pull look identical whether
@@ -367,29 +422,51 @@ func lmsErrorDetail(text string) string {
 // resumed download therefore keeps its partial through a cancellation, which
 // costs disk the vendor reuses on the next attempt; the alternative costs
 // another client its transfer.
-func cleanupLMSPartials(ctx context.Context, root, model string, before map[string]os.FileInfo) error {
+func cleanupLMSPartials(
+	ctx context.Context,
+	root, model string,
+	before map[string]os.FileInfo,
+	named map[string]bool,
+	steady partialSteadyPasses,
+) (busy bool, err error) {
 	// No snapshot means the inspection failed, not that the directory was
 	// empty, and nothing is attributable without one.
 	if before == nil {
-		return nil
+		return false, nil
 	}
 	files, err := lmsPartialFiles(root, model)
 	if err != nil {
-		return err
+		return false, err
 	}
+	pinned := lmsModelQuant(model) != ""
 	created := make([]string, 0, len(files))
 	for path := range files {
-		if _, existed := before[path]; !existed {
-			created = append(created, path)
+		if _, existed := before[path]; existed {
+			continue
 		}
-	}
-	stable, _ := quiescentPaths(ctx, created)
-	for _, candidate := range stable {
-		if _, err := removeIfUnchanged(candidate); err != nil {
-			return err
+		if !pinned && !named[lmsPartialTarget(path)] {
+			continue
 		}
+		created = append(created, path)
 	}
-	return nil
+	return removeSettledPartials(ctx, created, steady)
+}
+
+// lmsPartialTarget is the model file a `downloading_<file>.part` partial is
+// becoming.
+func lmsPartialTarget(path string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "downloading_"), ".part")
+}
+
+// lmsModelQuant is the quantization a model reference pins with "@quant", or
+// empty when it pins none.
+func lmsModelQuant(model string) string {
+	_, repo, ok := lmsOwnerName(model)
+	if !ok {
+		return ""
+	}
+	_, quant, _ := strings.Cut(repo, "@")
+	return quant
 }
 
 // lmsPartialFiles lists the in-progress downloads in a model's repository
@@ -440,9 +517,9 @@ func lmsPartialFiles(root, model string) (map[string]os.FileInfo, error) {
 		// LM Studio names a GGUF after its quantization, so when the request
 		// pinned one, only files carrying it can be this download's — pulling
 		// @Q4_K_M must not touch a @Q8_0 the LM Studio app is fetching beside
-		// it. Without a pinned quantization the CLI picks its own and every
-		// partial here stays a candidate, left to the snapshot and settle
-		// checks in cleanupLMSPartials.
+		// it. Without a pinned quantization the CLI picks its own, so every
+		// partial is listed here and cleanupLMSPartials narrows them to the
+		// files the CLI named.
 		if quant != "" && !strings.Contains(strings.ToUpper(entry.Name()), strings.ToUpper(quant)) {
 			continue
 		}

@@ -90,3 +90,25 @@ func TestRemoveIfUnchangedSkipsAFileClaimedSinceItWasObserved(t *testing.T) {
 		}
 	}, true, false)
 }
+
+// One partial that cannot be removed must not strand the others behind it.
+func TestRemoveSettledPartialsContinuesPastAFailedRemoval(t *testing.T) {
+	blocked := writeBlob(t, t.TempDir(), blobA+"-partial")
+	free := writeBlob(t, t.TempDir(), blobB+"-partial")
+	blockPartialRemoval(t, blocked)
+
+	steady := make(partialSteadyPasses)
+	var busy bool
+	var err error
+	for range partialCleanupSteadyPasses {
+		busy, err = removeSettledPartials(settledContext(), []string{blocked, free}, steady)
+	}
+	if err == nil {
+		t.Error("a removal that failed was not reported")
+	}
+	if !busy {
+		t.Error("a partial left behind was not reported busy")
+	}
+	assertPresent(t, blocked)
+	assertRemoved(t, free)
+}

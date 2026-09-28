@@ -324,12 +324,22 @@ when the cancel RPC's own budget elapses first — the backend is still working,
 so the row is not dropped back to "Downloading". Ollama closes the pull request
 and removes partial blobs named by its progress digests; LM Studio receives
 Ctrl+C and a negative answer to its background-download prompt, and after
-acknowledgement the partial files carrying the requested quantization are
-removed. Completed model files, other quantizations, and unrelated downloads are
-retained, and a cancellation the CLI never confirmed deletes nothing. Only a
-cancellation someone requested removes files: a pull interrupted by app
-shutdown, a dropped remote connection, or the action timeout leaves its partial
-data resumable.
+acknowledgement the partial files of the model file it was fetching are
+removed. That file is identified by the requested quantization when the request
+pins one, and otherwise by the file names the CLI printed; an unpinned pull
+whose output named no file removes nothing. Completed model files, other
+quantizations, and unrelated downloads are retained, and a cancellation the CLI
+never confirmed deletes nothing. Only a cancellation someone requested removes
+files: a pull interrupted by app shutdown, a dropped remote connection, or the
+action timeout leaves its partial data resumable.
+
+Cleanup looks for partial files only in the default model directories:
+`~/.lmstudio/models` for LM Studio, and for Ollama the `OLLAMA_MODELS` the
+engine-manager launches it with (`~/.ollama/models` by default). A cancellation
+on an install whose models live elsewhere — a relocated LM Studio models
+directory, or an adopted Ollama daemon started with a different
+`OLLAMA_MODELS` — stops the download but leaves its partial files for the
+engine to resume or remove.
 
 Both engines funnel every client on the machine into one cache, so naming a file
 is not the same as owning it — Ollama blobs are content-addressed, and the LM
@@ -362,7 +372,7 @@ flowchart TD
 
     Engine -- LM Studio --> LMSStop["Send Ctrl+C"]
     LMSStop --> LMSPrompt["Answer no to background download"]
-    LMSPrompt --> LMSCandidates[".part files carrying the<br/>requested quantization"]
+    LMSPrompt --> LMSCandidates[".part files of the pinned<br/>quantization or a file the CLI named"]
 
     OllamaCandidates --> Owned{"Absent from<br/>the snapshot?"}
     LMSCandidates --> Owned

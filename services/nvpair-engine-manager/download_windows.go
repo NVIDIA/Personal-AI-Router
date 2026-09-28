@@ -33,6 +33,20 @@ func configureDownloadProcess(cmd *exec.Cmd) error {
 
 func killDownload(cmd *exec.Cmd) error { return taskkill(cmd, true) }
 
+// pinDownloadProcess holds a handle to the launcher so Windows cannot reissue
+// its PID while this worker may still signal it. The handle os.Process owns is
+// released once the launcher is reaped, but cmd.Wait then blocks for up to
+// downloadWaitDelay on pipes a grandchild still holds, and both the interrupt
+// helper and taskkill address the launcher by PID in that gap. Call it before
+// cmd.Wait can reap the launcher.
+func pinDownloadProcess(cmd *exec.Cmd) (func(), error) {
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = windows.CloseHandle(handle) }, nil
+}
+
 // runDownloadProcess owns the CLI in a private hidden console. Reset only this
 // launcher's inherited Ctrl+C setting, leaving the broker and worker untouched.
 func runDownloadProcess(argv []string) int {

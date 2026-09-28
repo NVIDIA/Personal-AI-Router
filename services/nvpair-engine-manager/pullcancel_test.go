@@ -372,6 +372,29 @@ func TestStopLMSDownloadWhenTheInterruptCannotBeDelivered(t *testing.T) {
 	test("the interrupt went nowhere", false, "", "could not confirm LM Studio cancellation")
 }
 
+// lmsCleanupRun drives the consecutive passes a candidate must hold still
+// through before cleanup will remove it, which is what cleanupLMSAfterCancel
+// does inside its budget, and reports the last pass's busy result.
+func lmsCleanupRun(
+	t *testing.T,
+	ctx context.Context,
+	root, model string,
+	before map[string]os.FileInfo,
+	named map[string]bool,
+) bool {
+	t.Helper()
+	steady := make(partialSteadyPasses)
+	var busy bool
+	for pass := range partialCleanupSteadyPasses {
+		var err error
+		busy, err = cleanupLMSPartials(ctx, root, model, before, named, steady)
+		if err != nil {
+			t.Fatalf("cleanup pass %d: %v", pass, err)
+		}
+	}
+	return busy
+}
+
 func TestLMSPartialCleanupPreservesCompletedShards(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "owner", "repo")
@@ -386,9 +409,7 @@ func TestLMSPartialCleanupPreservesCompletedShards(t *testing.T) {
 	partial := filepath.Join(target, "downloading_model-Q4_K_M.gguf.part")
 	writePartial(t, partial, "data")
 
-	if err := cleanupLMSPartials(settledContext(), root, model, before); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	lmsCleanupRun(t, settledContext(), root, model, before, nil)
 	assertRemoved(t, partial)
 	assertPresent(t, complete)
 }
@@ -406,11 +427,59 @@ func TestLMSPartialCleanupPreservesUntouchedDownloads(t *testing.T) {
 	newPartial := filepath.Join(target, "downloading_selected.gguf.part")
 	writePartial(t, newPartial, "new download")
 
-	if err := cleanupLMSPartials(settledContext(), root, "owner/repo", before); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	named := map[string]bool{"selected.gguf": true, "other.gguf": true}
+	lmsCleanupRun(t, settledContext(), root, "owner/repo", before, named)
 	assertPresent(t, oldPartial)
 	assertRemoved(t, newPartial)
+}
+
+// An unpinned request lets the CLI choose the quantization, so a partial that
+// appeared since the snapshot is only this download's when the CLI named its
+// file. One it did not name can be the LM Studio app fetching another
+// quantization of the same repository, even though it is new and holding still.
+func TestLMSPartialCleanupUnpinnedKeepsFilesTheCLIDidNotName(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "lmstudio-community", "Qwen3-8B-GGUF")
+	const model = "lmstudio-community/Qwen3-8B-GGUF"
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatalf("create %s: %v", target, err)
+	}
+	before, err := lmsPartialFiles(root, model)
+	if err != nil {
+		t.Fatalf("snapshot partials: %v", err)
+	}
+	mine := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M.gguf.part")
+	theirs := filepath.Join(target, "downloading_Qwen3-8B-Q8_0.gguf.part")
+	writePartial(t, mine, "our download")
+	writePartial(t, theirs, "the app's download, stalled")
+
+	t.Run("named file is removed and the other kept", func(t *testing.T) {
+		lmsCleanupRun(t, settledContext(), root, model, before, map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true})
+		assertRemoved(t, mine)
+		assertPresent(t, theirs)
+	})
+	t.Run("nothing named deletes nothing", func(t *testing.T) {
+		writePartial(t, mine, "our download")
+		lmsCleanupRun(t, settledContext(), root, model, before, nil)
+		assertPresent(t, mine)
+		assertPresent(t, theirs)
+	})
+}
+
+func TestLMSDownloadOutputCollectsNamedModelFiles(t *testing.T) {
+	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
+	for _, chunk := range []string{
+		"Downloading lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4",
+		"_K_M.gguf\r\x1b[2K[====>    ] 12.5%",
+	} {
+		if _, err := output.Write([]byte(chunk)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	named := output.namedFiles()
+	if !named["Qwen3-8B-Q4_K_M.gguf"] || len(named) != 1 {
+		t.Fatalf("named files = %v, want only Qwen3-8B-Q4_K_M.gguf", named)
+	}
 }
 
 // The LM Studio app downloads into the same repository directory PAIR does, so
@@ -436,9 +505,7 @@ func TestLMSPartialCleanupPreservesOtherQuantizations(t *testing.T) {
 	writePartial(t, appeared, "app started this one after our snapshot")
 	writePartial(t, mine, "our download")
 
-	if err := cleanupLMSPartials(settledContext(), root, model, before); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	lmsCleanupRun(t, settledContext(), root, model, before, nil)
 	assertPresent(t, growing)
 	assertPresent(t, appeared)
 	assertRemoved(t, mine)
@@ -463,8 +530,8 @@ func TestLMSPartialCleanupPreservesTheRequestedQuantizationWhileItGrows(t *testi
 	writePartial(t, shared, "shared download")
 	ctx := withPartialSettle(context.Background(), func() { growFile(t, shared) })
 
-	if err := cleanupLMSPartials(ctx, root, model, before); err != nil {
-		t.Fatalf("cleanup: %v", err)
+	if !lmsCleanupRun(t, ctx, root, model, before, nil) {
+		t.Error("a partial another client was still writing was not reported busy")
 	}
 	assertPresent(t, shared)
 }
@@ -494,9 +561,7 @@ func TestLMSPartialCleanupPreservesAPreexistingPartialThatGrew(t *testing.T) {
 	// perfectly still by the time cleanup observes it.
 	growFile(t, theirs)
 
-	if err := cleanupLMSPartials(settledContext(), root, model, before); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	lmsCleanupRun(t, settledContext(), root, model, before, map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true})
 	assertPresent(t, theirs)
 }
 
@@ -520,9 +585,8 @@ func TestLMSPartialCleanupLeavesAResumedDownloadsPartial(t *testing.T) {
 	fresh := filepath.Join(target, "downloading_Qwen3-8B-Q6_K.gguf.part")
 	writePartial(t, fresh, "a shard this pull started from nothing")
 
-	if err := cleanupLMSPartials(settledContext(), root, model, before); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	named := map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true, "Qwen3-8B-Q6_K.gguf": true}
+	lmsCleanupRun(t, settledContext(), root, model, before, named)
 	assertPresent(t, resuming)
 	assertRemoved(t, fresh)
 }
@@ -536,9 +600,7 @@ func TestLMSPartialCleanupDeletesNothingWithoutASnapshot(t *testing.T) {
 	partial := filepath.Join(target, "downloading_model-Q4_K_M.gguf.part")
 	writePartial(t, partial, "data")
 
-	if err := cleanupLMSPartials(settledContext(), root, "owner/repo@Q4_K_M", nil); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	lmsCleanupRun(t, settledContext(), root, "owner/repo@Q4_K_M", nil, nil)
 	assertPresent(t, partial)
 }
 

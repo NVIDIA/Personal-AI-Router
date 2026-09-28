@@ -27,6 +27,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"time"
@@ -52,7 +53,7 @@ type partialSettleKey struct{}
 // settlePartials waits out one observation window. Cleanup runs after the pull's
 // own context is already cancelled, so this deliberately does not observe
 // ctx.Done: callers hand it a context.WithoutCancel of the pull's, and the
-// bounded retry in cleanupOllamaAfterCancel is what limits the total wait.
+// bounded retry in retryPartialCleanup is what limits the total wait.
 func settlePartials(ctx context.Context) {
 	if settle, ok := ctx.Value(partialSettleKey{}).(func()); ok {
 		settle()
@@ -166,4 +167,92 @@ func removeIfUnchanged(candidate stablePath) (removed bool, err error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// partialSteadyPasses counts, per path, how many cleanup passes in a row have
+// found the file holding still. One cancellation's retry loop keeps one of
+// these; it must not be nil, since a pass records into it.
+type partialSteadyPasses map[string]int
+
+// partialCleanupSteadyPasses is how many consecutive passes must find a
+// candidate unchanged before it is deleted.
+//
+// Each pass observes its own window, so every extra pass is another chance for
+// a writer that merely paused to look finished. Requiring a run means any
+// movement resets the count, so a file has to hold still across the whole run
+// to qualify.
+const partialCleanupSteadyPasses = 2
+
+// removeSettledPartials runs one cleanup pass over the files a pull created,
+// deleting those that have now held still for partialCleanupSteadyPasses in a
+// row. busy reports that something is left for another pass to look at. A
+// failed removal does not stop the pass: the remaining candidates are still
+// tried, and the first error is returned once they have been.
+func removeSettledPartials(ctx context.Context, created []string, steady partialSteadyPasses) (busy bool, err error) {
+	stable, busy := quiescentPaths(ctx, created)
+	held := make(map[string]bool, len(stable))
+	for _, candidate := range stable {
+		held[candidate.path] = true
+	}
+	// Anything that moved, vanished, or stopped being a candidate this pass
+	// starts its run over.
+	for path := range steady {
+		if !held[path] {
+			delete(steady, path)
+		}
+	}
+	for _, candidate := range stable {
+		steady[candidate.path]++
+		if steady[candidate.path] < partialCleanupSteadyPasses {
+			busy = true
+			continue
+		}
+		removed, removeErr := removeIfUnchanged(candidate)
+		if removeErr != nil {
+			busy = true
+			if err == nil {
+				err = removeErr
+			}
+			continue
+		}
+		if !removed {
+			// Claimed between the last observation and the unlink.
+			delete(steady, candidate.path)
+			busy = true
+		}
+	}
+	return busy, err
+}
+
+// partialCleanupRetryInterval spaces the cleanup passes after a cancellation
+// and partialCleanupBudget bounds them. Engines release their writers
+// asynchronously once a transfer stops, so a Windows sharing violation and a
+// file that has not stopped moving yet both tend to resolve within a few
+// passes. The budget holds several full settle windows, and a file still busy
+// when it runs out belongs to someone else.
+const (
+	partialCleanupRetryInterval = 100 * time.Millisecond
+	partialCleanupBudget        = 5 * time.Second
+)
+
+// retryPartialCleanup repeats pass until nothing is left busy or the budget
+// runs out. A file still busy at the deadline is left in place; that is the
+// only safe outcome, and is not a cleanup failure. A removal error still
+// standing at the deadline is.
+func retryPartialCleanup(pass func(partialSteadyPasses) (busy bool, err error)) error {
+	steady := make(partialSteadyPasses)
+	deadline := time.Now().Add(partialCleanupBudget)
+	for {
+		time.Sleep(partialCleanupRetryInterval)
+		busy, err := pass(steady)
+		if err == nil && !busy {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err == nil {
+				return nil
+			}
+			return fmt.Errorf("download stopped, but partial-file cleanup failed: %w", err)
+		}
+	}
 }

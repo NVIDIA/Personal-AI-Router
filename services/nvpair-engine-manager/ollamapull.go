@@ -10,12 +10,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var ollamaDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -54,24 +52,6 @@ func ollamaPartialSnapshot(root string) (ollamaPartialsBefore, error) {
 	return before, nil
 }
 
-// ollamaSteadyPasses counts, per path, how many cleanup passes in a row have
-// found the file holding still. One cancellation's retry loop keeps one of
-// these; it must not be nil, since a pass records into it.
-type ollamaSteadyPasses map[string]int
-
-// partialCleanupSteadyPasses is how many consecutive passes must find a
-// candidate unchanged before it is deleted.
-//
-// A single pass is not enough once there are several of them. Each observes
-// its own window, so every extra pass is another independent chance for a
-// writer that merely paused to look finished, and a transfer does pause. That
-// makes the retry loop — there to catch up with Ollama's asynchronous blob
-// release — likeliest to delete a shared file exactly when it tries hardest,
-// which is backwards. Requiring a run instead means any movement resets the
-// count, so a file has to hold still across the whole run to qualify, while
-// this pull's own released partial pays one extra pass.
-const partialCleanupSteadyPasses = 2
-
 // cleanupOllamaPartials removes the partial blobs this pull both reported and
 // created. Completed blobs may be shared by installed models, and a partial
 // that predates this download belongs to someone else; both are deliberately
@@ -87,7 +67,7 @@ func cleanupOllamaPartials(
 	root string,
 	digests map[string]bool,
 	before ollamaPartialsBefore,
-	steady ollamaSteadyPasses,
+	steady partialSteadyPasses,
 ) (busy bool, err error) {
 	if before == nil {
 		return false, nil
@@ -102,37 +82,7 @@ func cleanupOllamaPartials(
 			created = append(created, path)
 		}
 	}
-	stable, busy := quiescentPaths(ctx, created)
-	held := make(map[string]bool, len(stable))
-	for _, candidate := range stable {
-		held[candidate.path] = true
-	}
-	// Anything that moved, vanished, or stopped being a candidate this pass
-	// starts its run over.
-	for path := range steady {
-		if !held[path] {
-			delete(steady, path)
-		}
-	}
-	for _, candidate := range stable {
-		steady[candidate.path]++
-		if steady[candidate.path] < partialCleanupSteadyPasses {
-			// Still enough for now, but not for long enough to act on.
-			busy = true
-			continue
-		}
-		removed, err := removeIfUnchanged(candidate)
-		if err != nil {
-			return true, err
-		}
-		if !removed {
-			// Claimed between the last observation and the unlink. Leave it
-			// and let the retry decide.
-			delete(steady, candidate.path)
-			busy = true
-		}
-	}
-	return busy, nil
+	return removeSettledPartials(ctx, created, steady)
 }
 
 // ollamaPartialPaths lists the blob files matching any digest this pull
@@ -181,39 +131,15 @@ func ollamaBlobsDir(st *engineState) string {
 	return filepath.Join(expandPath(root), "blobs")
 }
 
-// partialCleanupRetryInterval spaces the cleanup passes after a cancellation
-// and partialCleanupBudget bounds them. Ollama releases its background blob
-// writers asynchronously once the pull request closes, so a Windows sharing
-// violation and a file that has not stopped moving yet both tend to resolve
-// within a few passes. The budget holds several full settle windows, and a file
-// still busy when it runs out belongs to someone else.
-const (
-	partialCleanupRetryInterval = 100 * time.Millisecond
-	partialCleanupBudget        = 5 * time.Second
-)
-
 // cleanupOllamaAfterCancel retries until every partial this pull created is
-// removed or confirmed to be another client's. One still busy at the deadline
-// is left in place; that is the only safe outcome, and is not a cleanup failure.
+// removed or confirmed to be another client's.
 func cleanupOllamaAfterCancel(
 	ctx context.Context,
 	root string,
 	digests map[string]bool,
 	before ollamaPartialsBefore,
 ) error {
-	steady := make(ollamaSteadyPasses)
-	deadline := time.Now().Add(partialCleanupBudget)
-	for {
-		time.Sleep(partialCleanupRetryInterval)
-		busy, err := cleanupOllamaPartials(ctx, root, digests, before, steady)
-		if err == nil && !busy {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			if err == nil {
-				return nil
-			}
-			return fmt.Errorf("download stopped, but partial-file cleanup failed: %w", err)
-		}
-	}
+	return retryPartialCleanup(func(steady partialSteadyPasses) (bool, error) {
+		return cleanupOllamaPartials(ctx, root, digests, before, steady)
+	})
 }

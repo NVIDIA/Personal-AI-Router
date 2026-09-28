@@ -19,7 +19,7 @@ func cleanupRun(
 	before ollamaPartialsBefore,
 ) bool {
 	t.Helper()
-	steady := make(ollamaSteadyPasses)
+	steady := make(partialSteadyPasses)
 	var busy bool
 	for pass := range partialCleanupSteadyPasses {
 		var err error
@@ -134,7 +134,7 @@ func TestOllamaPartialCleanupKeepsAPartialSharedByAnIntermittentWriter(t *testin
 			growFile(t, shared)
 		}
 	})
-	steady := make(ollamaSteadyPasses)
+	steady := make(partialSteadyPasses)
 	for pass := range 4 {
 		writing = pass%2 == 0
 		if _, err := cleanupOllamaPartials(ctx, root, map[string]bool{digestC: true}, before, steady); err != nil {
