@@ -34,7 +34,7 @@ one, and both report live GPU and memory use throughout.
 
 | | |
 | --- | --- |
-| **Operating systems** | Windows 11; Linux; macOS |
+| **Operating systems** | Windows 10 (version 1709 or newer); Windows 11; Linux; macOS |
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
