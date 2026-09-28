@@ -337,8 +337,10 @@ Inference prompts, messages, chunks, and response bodies must not be logged.
 
 `npm run build:modular-binaries` compiles the sibling `services/` tree for the
 selected platform and architecture. The `cli-bin/manifest.json` it writes records
-the source path and fingerprint, the product and component versions, the target,
-and per-file hashes. The build rejects unexpected files in `cli-bin/`.
+the source path and fingerprint, the product and component versions, the release
+version stamped into `nvpair-tui`, the target, and per-file hashes. A change to
+any of them makes `cli-bin/` stale. The build rejects unexpected files in
+`cli-bin/`.
 
 Electron Builder produces:
 
