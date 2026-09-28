@@ -93,6 +93,10 @@ type Manager struct {
 	activeMu    sync.Mutex
 	activeLocal map[workloadKey]workloadEvent
 
+	// broadcastMu keeps snapshot enqueueing ordered with local lifecycle and
+	// removal updates. Always acquire it before activeMu.
+	broadcastMu sync.Mutex
+
 	// broadcastCh serializes outbound inter-node frames in the order the
 	// read loop produced them. broadcastFrame only enqueues (never blocks on
 	// network I/O), and a single worker drains the queue in order — so a
@@ -345,6 +349,8 @@ func (m *Manager) handleLocalLifecycle(msg *Message) {
 		return
 	}
 	key := workloadKey{origin: wl.OriginatedFrom, engine: wl.Engine, runID: wl.RunID, id: wl.ID}
+	m.broadcastMu.Lock()
+	defer m.broadcastMu.Unlock()
 	m.trackActive(key, msg.Method, msg.Params, wl.State)
 	slog.Debug("broadcasting local lifecycle", "method", msg.Method, "id", wl.ID, "state", wl.State, "peers", m.peers.count())
 	m.broadcastFrame(msg.Method, msg.Params)
@@ -360,6 +366,8 @@ func (m *Manager) handleLocalRemove(msg *Message) {
 	// is preserved for peers' dedup. The removal wire carries only
 	// (workloadId, originatedFrom) — no engine/runId — so drop every composite
 	// key matching that pair.
+	m.broadcastMu.Lock()
+	defer m.broadcastMu.Unlock()
 	m.untrackActive(nodeID, workloadID)
 	slog.Debug("broadcasting local removal", "workloadId", workloadID, "node", nodeID, "peers", m.peers.count())
 	m.broadcastFrame(msg.Method, msg.Params)
@@ -501,6 +509,8 @@ func (m *Manager) resyncLoop(ctx context.Context) {
 // broadcastSnapshot re-broadcasts the current re-sync set, one per-event frame
 // each. Shared by the discovery backfill and the heartbeat.
 func (m *Manager) broadcastSnapshot(reason string) {
+	m.broadcastMu.Lock()
+	defer m.broadcastMu.Unlock()
 	snapshot := m.activeSnapshot()
 	if len(snapshot) == 0 {
 		return
