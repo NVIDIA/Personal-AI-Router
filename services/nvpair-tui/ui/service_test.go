@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"nvpair-shared/engines"
 	svcerrors "nvpair-shared/errors"
+	"nvpair-tui/rpc"
 )
 
 // The Service tab's proxy row must key on the identity the broker actually
@@ -88,6 +89,30 @@ func TestRebuildCrashesBeforeIdentity(t *testing.T) {
 	})
 	if _, down := v.crashed["scanner"]; !down {
 		t.Fatal("crashes should be kept until the local UUID is known")
+	}
+}
+
+// TestServiceShowsACrashFromBeforeItStarted is the regression guard for a
+// worker that had already crashed reading "ok".
+//
+// errors:update fires only on change, so a tab that learns crashes from pushes
+// alone knew nothing of one recorded before it subscribed.
+func TestServiceShowsACrashFromBeforeItStarted(t *testing.T) {
+	crash := svcerrors.ServiceError{ID: crashPrefix + "scanner", Message: "scanner crashed"}
+
+	v := newServiceView(nil)
+	v.Update(serviceErrorsLoadedMsg{errs: []svcerrors.ServiceError{crash}})
+	if _, down := v.crashed["scanner"]; !down {
+		t.Fatal("a crash in the initial errors snapshot was not shown")
+	}
+
+	// A push is a full snapshot and newer than any read in flight, so a late
+	// initial reply must not bring back a crash the push has since cleared.
+	v = newServiceView(nil)
+	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "errors:update", Params: []byte(`[]`)}})
+	v.Update(serviceErrorsLoadedMsg{errs: []svcerrors.ServiceError{crash}})
+	if _, down := v.crashed["scanner"]; down {
+		t.Error("a late initial read overwrote a newer errors:update")
 	}
 }
 

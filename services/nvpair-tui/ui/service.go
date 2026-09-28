@@ -124,6 +124,10 @@ type serviceView struct {
 	// lastErrs is the most recent snapshot, retained so the crash table can be
 	// re-filtered once the local UUID resolves.
 	lastErrs []svcerrors.ServiceError
+	// errsPushed is whether an errors:update has arrived. Each one is a full
+	// snapshot, so once one has, the initial read is older than what is
+	// already shown and must not replace it.
+	errsPushed bool
 
 	input   textinput.Model
 	editing bool
@@ -153,6 +157,12 @@ type servicePingMsg struct {
 type serviceNodeIDMsg struct {
 	nodeUUID string
 	err      error
+}
+
+// serviceErrorsLoadedMsg carries this tab's own errors:get-initial read.
+type serviceErrorsLoadedMsg struct {
+	errs []svcerrors.ServiceError
+	err  error
 }
 
 type settingLoadedMsg struct {
@@ -240,7 +250,7 @@ func serviceWorkerColumns(w int) []table.Column {
 func (v *serviceView) Title() string { return "Service" }
 
 func (v *serviceView) Init() tea.Cmd {
-	cmds := []tea.Cmd{v.pingCmd(), v.tickCmd(), v.nodeIDCmd()}
+	cmds := []tea.Cmd{v.pingCmd(), v.tickCmd(), v.nodeIDCmd(), v.errorsCmd()}
 	for i := range v.items {
 		if c := v.loadCmd(i); c != nil {
 			cmds = append(cmds, c)
@@ -273,6 +283,23 @@ func (v *serviceView) nodeIDCmd() tea.Cmd {
 		var id clusterIdentity
 		_ = decodeParams(msg.Result, &id)
 		return serviceNodeIDMsg{nodeUUID: id.NodeUUID}
+	})
+}
+
+// errorsCmd reads the errors snapshot the crash table is built from.
+//
+// errors:update fires only on change, so without a read of its own this tab
+// knew nothing of a worker that crashed before it subscribed: the worker read
+// "ok" until something unrelated changed. Its own read rather than the Errors
+// tab's, so the worker table does not depend on another tab being present.
+func (v *serviceView) errorsCmd() tea.Cmd {
+	return call(v.client, "errors:get-initial", nil, func(msg *rpc.Message, err error) tea.Msg {
+		if err != nil {
+			return serviceErrorsLoadedMsg{err: err}
+		}
+		var errs []svcerrors.ServiceError
+		_ = decodeParams(msg.Result, &errs)
+		return serviceErrorsLoadedMsg{errs: errs}
 	})
 }
 
@@ -359,6 +386,14 @@ func (v *serviceView) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
+	case serviceErrorsLoadedMsg:
+		// A failed read is left unsaid: the Errors tab reports the same read
+		// failing, and the next push repairs this table either way.
+		if msg.err == nil && !v.errsPushed {
+			v.rebuildCrashes(msg.errs)
+		}
+		return nil
+
 	case settingLoadedMsg:
 		if msg.err == nil {
 			v.items[msg.idx].strV = msg.strV
@@ -386,6 +421,7 @@ func (v *serviceView) Update(msg tea.Msg) tea.Cmd {
 		if msg.Msg.Method == "errors:update" {
 			var errs []svcerrors.ServiceError
 			_ = decodeParams(msg.Msg.Params, &errs)
+			v.errsPushed = true
 			v.rebuildCrashes(errs)
 		}
 		return nil
