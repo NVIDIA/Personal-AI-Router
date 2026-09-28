@@ -185,6 +185,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 				return err
 			}
 		} else if !opts.allowOwnedVLLMRecovery {
+			if err := e.leaveQwen38ForManagedVLLM(ctx, st); err != nil {
+				return err
+			}
 			if err := validateManagedVLLMStartAdmission(st); err != nil {
 				return err
 			}

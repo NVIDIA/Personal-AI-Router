@@ -986,6 +986,55 @@ func startVLLMRecovery(control vllmRuntimeControl, ctx context.Context) error {
 	return control.start(ctx)
 }
 
+// retainedVLLMEnvironment returns the previous runtime, then the newest retired
+// one, whose environment still validates and satisfies want.
+func retainedVLLMEnvironment(st *engineState, record vllmRuntimeRecord, want func(vllmRuntimeReceipt) bool) string {
+	ids := append([]string{}, record.Retired...)
+	slices.Reverse(ids)
+	if record.Previous != "" {
+		ids = append([]string{record.Previous}, ids...)
+	}
+	for _, id := range ids {
+		if _, receipt, err := validateVLLMEnvironment(st, id); err == nil && want(receipt) {
+			return id
+		}
+	}
+	return ""
+}
+
+// activateRetainedVLLM swaps a kept environment in through the ordinary
+// activation, whose rollback returns it to the retired runtimes on failure.
+func (e *Executor) activateRetainedVLLM(ctx context.Context, st *engineState, record vllmRuntimeRecord, id string, control vllmRuntimeControl) error {
+	candidate := record
+	candidate.Retired = slices.DeleteFunc(append([]string{}, record.Retired...), func(retired string) bool { return retired == id })
+	if candidate.Previous == id {
+		candidate.Previous = ""
+	}
+	candidate.Staged = id
+	st.mu.Lock()
+	wasRunning := st.running && !st.adopted
+	st.mu.Unlock()
+	return e.activateManagedVLLM(ctx, st, candidate, id, wasRunning, control)
+}
+
+// leaveQwen38ForManagedVLLM lets a one-node start switch from the group-only
+// Qwen3.8 runtime to a kept environment of the current managed recipe.
+func (e *Executor) leaveQwen38ForManagedVLLM(ctx context.Context, st *engineState) error {
+	record, err := readVLLMRuntimeRecord(st)
+	if err != nil || record.Active == "" || record.Activating != nil || record.Staged != "" {
+		return err
+	}
+	_, active, err := validateVLLMEnvironment(st, record.Active)
+	if err != nil || active.RecipeID != vllmQwen38RecipeID {
+		return err
+	}
+	id := retainedVLLMEnvironment(st, record, func(receipt vllmRuntimeReceipt) bool { return currentManagedVLLMReceipt(st, receipt) })
+	if id == "" {
+		return nil
+	}
+	return e.activateRetainedVLLM(ctx, st, record, id, e.managedVLLMRuntimeControl(st))
+}
+
 func (e *Executor) activateManagedVLLM(ctx context.Context, st *engineState, old vllmRuntimeRecord, id string, wasRunning bool, control vllmRuntimeControl) error {
 	if old.Staged != id {
 		return fmt.Errorf("vLLM staged ownership changed before activation")
@@ -1380,6 +1429,15 @@ func (e *Executor) installManagedVLLM(parent context.Context, st *engineState, u
 		}
 	} else if update {
 		return fmt.Errorf("vLLM is not installed; use Install before Update")
+	}
+	if id := retainedVLLMEnvironment(st, record, func(receipt vllmRuntimeReceipt) bool { return currentManagedVLLMReceipt(st, receipt) }); id != "" {
+		if err := e.activateRetainedVLLM(ctx, st, record, id, e.managedVLLMRuntimeControl(st)); err != nil {
+			return err
+		}
+		e.reporter.clear(installFailedID("vllm"))
+		e.emitInstallProgress("vllm", "done", 100)
+		e.emitState("vllm")
+		return nil
 	}
 	e.emitInstallProgress("vllm", "downloading", 0)
 	download, err := e.download(ctx, "vllm", st.plat.Install.Fetch)

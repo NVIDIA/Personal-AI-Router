@@ -506,6 +506,27 @@ func (e *Executor) PrepareQwen38Runtime(parent context.Context, request vllmQwen
 		result.Message = "target provider closure is outside the closed qualified Spark profiles; update the node through DGX Dashboard before preparation"
 		return result, nil
 	}
+	kept := retainedVLLMEnvironment(st, record, func(receipt vllmRuntimeReceipt) bool {
+		if !currentPreparedQwen38Receipt(receipt) {
+			return false
+		}
+		bundle, _, receiptErr := preparedQwen38Receipts(st, receipt.Environment, receipt)
+		return receiptErr == nil && validateCurrentQwen38Provider(&vllmQwen38GroupFacts{ProviderClosureSHA256: bundle.Provider.ObservedClosureSHA256}, result.Provider) == nil
+	})
+	if kept != "" {
+		if err = e.activateRetainedVLLM(ctx, st, record, kept, e.managedVLLMRuntimeControl(st)); err != nil {
+			return result, err
+		}
+		committed, readErr := readVLLMRuntimeRecord(st)
+		if readErr != nil || committed.Active != kept || committed.Activating != nil {
+			return result, errors.Join(errors.New("kept Qwen3.8 runtime activation did not commit"), readErr)
+		}
+		result.State, result.ActiveRuntime, result.PreviousRuntime = "ready", committed.Active, committed.Previous
+		result.Message = "kept exact Qwen3.8 runtime is active and stopped; serving requires a reviewed group"
+		e.emitInstallProgress("vllm", "qwen38-runtime-ready", 100)
+		e.emitState("vllm")
+		return result, nil
+	}
 	bundleRoot, bundleReceipt, resumed, err := e.ensureQwen38RuntimeBundle(ctx, st, recipe, result.Provider)
 	result.Resumed = resumed
 	if err != nil {

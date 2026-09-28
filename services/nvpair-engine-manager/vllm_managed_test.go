@@ -255,6 +255,63 @@ func TestManagedVLLMUninstallRemovesThePackageCache(t *testing.T) {
 	})
 }
 
+func TestRetainedVLLMEnvironmentPrefersPreviousThenNewestRetired(t *testing.T) {
+	st := managedVLLMTestState(t)
+	for _, id := range []string{"v0-active", "v0-retired-a", "v0-retired-b", "v0-previous"} {
+		writeManagedVLLMTestEnvironment(t, st, id, managedVLLMVersion)
+	}
+	writeManagedVLLMTestEnvironment(t, st, "v0-stale", "0.28.0")
+	current := func(receipt vllmRuntimeReceipt) bool { return currentManagedVLLMReceipt(st, receipt) }
+	record := vllmRuntimeRecord{Schema: vllmRuntimeRecordSchema, Active: "v0-active", Previous: "v0-previous", Retired: []string{"v0-retired-a", "v0-retired-b"}}
+	if got := retainedVLLMEnvironment(st, record, current); got != "v0-previous" {
+		t.Fatalf("kept runtime = %q, want the previous runtime", got)
+	}
+	record.Previous = "v0-stale"
+	if got := retainedVLLMEnvironment(st, record, current); got != "v0-retired-b" {
+		t.Fatalf("kept runtime = %q, want the newest matching retired runtime", got)
+	}
+	record.Retired = []string{"v0-missing"}
+	if got := retainedVLLMEnvironment(st, record, current); got != "" {
+		t.Fatalf("kept runtime = %q, want none when nothing kept validates and matches", got)
+	}
+}
+
+func TestActivatingAKeptRuntimeReusesItAndNeverDropsIt(t *testing.T) {
+	st := managedVLLMTestState(t)
+	oldID, keptID := "v0-old", "v0-kept"
+	writeManagedVLLMTestEnvironment(t, st, oldID, "0.28.0")
+	keptDir := writeManagedVLLMTestEnvironment(t, st, keptID, managedVLLMVersion)
+	record := vllmRuntimeRecord{Schema: vllmRuntimeRecordSchema, Active: oldID, Previous: keptID}
+	if err := writeVLLMRuntimeRecord(st, record); err != nil {
+		t.Fatal(err)
+	}
+	control := func(detect error) vllmRuntimeControl {
+		return vllmRuntimeControl{
+			stop: func() error { return nil }, start: func(context.Context) error { return nil },
+			recoveryStart: func(context.Context) error { return nil }, detect: func(bool) error { return detect },
+			write: func(record vllmRuntimeRecord) error { return writeVLLMRuntimeRecord(st, record) },
+		}
+	}
+	ex := &Executor{reporter: NewReporter(nil)}
+	if err := ex.activateRetainedVLLM(context.Background(), st, record, keptID, control(errors.New("injected detect failure"))); err == nil {
+		t.Fatal("a failed activation of a kept runtime was reported as success")
+	}
+	restored, err := readVLLMRuntimeRecord(st)
+	if err != nil || restored.Active != oldID || !containsString(restored.Retired, keptID) || restored.Staged != "" {
+		t.Fatalf("failed activation record = %+v, err=%v; want the old runtime active and the kept one retired", restored, err)
+	}
+	if _, err := os.Stat(keptDir); err != nil {
+		t.Fatalf("a failed activation removed the kept runtime: %v", err)
+	}
+	if err := ex.activateRetainedVLLM(context.Background(), st, restored, keptID, control(nil)); err != nil {
+		t.Fatal(err)
+	}
+	active, err := readVLLMRuntimeRecord(st)
+	if err != nil || active.Active != keptID || active.Previous != oldID || containsString(active.Retired, keptID) || active.Staged != "" || active.Activating != nil {
+		t.Fatalf("reactivated record = %+v, err=%v", active, err)
+	}
+}
+
 func TestManagedVLLMPointerWriteFailureRetainsCandidateOwnership(t *testing.T) {
 	st := managedVLLMTestState(t)
 	oldID, newID := "v0-old", "v0-new"
