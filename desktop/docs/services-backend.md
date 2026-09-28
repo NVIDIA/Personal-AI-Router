@@ -192,12 +192,12 @@ startup cleanup and orphan reclaim use the same stop policy. On Windows,
 windowless managed engines cannot receive a graceful (non-`/F`) close, so
 stopping uses immediate `taskkill /T /F`.
 
-Personal AI Router calls `engine:prepare-shutdown` before broker teardown so local processes
-stop without clearing their persisted desired state. The broker also
-self-initiates `engine:prepare-shutdown` before tearing down its workers and
-waits for each worker to exit without force-killing the worker, so engines are
-not orphaned even if Personal AI Router does not call it first. The broker restores enabled
-engines on the next startup.
+Shutdown ordering belongs to the broker. Personal AI Router sends the broker `shutdown` and
+does not stop the engines itself. The broker stops the proxy first, so no new
+inference arrives, then calls `engine:prepare-shutdown`, which stops local
+engine processes without clearing their persisted desired state, then waits for
+each worker to exit without force-killing it, so engines are not orphaned. The
+broker restores enabled engines on the next startup.
 
 ## Discovery and models
 

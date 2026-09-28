@@ -68,7 +68,10 @@ Inference HTTP endpoints are for local client-compatible traffic.
 
 - Engine server ports and proxy ports are persisted by their backend owners.
 - Desired engine state is restored by the backend.
-- Call `engine:prepare-shutdown` before broker teardown.
+- Leave shutdown ordering to the broker. Its shutdown stops the proxy, then the
+  engines through `engine:prepare-shutdown`, then the workers. Clients do not
+  call `engine:prepare-shutdown` themselves: doing so stops the engines while
+  the proxy is still routing requests to them.
 - Hide operations the backend cannot perform.
 
 Routing is owned by the proxies, broker, and `nvpair-job-scheduler`. The backend
