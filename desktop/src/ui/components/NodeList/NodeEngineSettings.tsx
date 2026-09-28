@@ -107,6 +107,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                     acceleration: status.acceleration,
                     devices: status.devices,
                     selectedModel: status.selectedModel,
+                    servingGroup: status.servingGroup,
                     // Engine Manager refuses a one-node vLLM start without a selected
                     // retained model; surface that as the Start prerequisite it is.
                     prerequisites:

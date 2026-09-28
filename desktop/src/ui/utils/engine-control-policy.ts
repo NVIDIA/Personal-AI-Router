@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { EngineProcessStatus, EngineType } from '@/shared/types/engines'
+import type { VllmServingGroupRoute } from '@/shared/types/vllm-group-status'
 
 interface EngineControlFacts {
     type: EngineType
@@ -11,12 +12,18 @@ interface EngineControlFacts {
     adopted?: boolean
     installSupported?: boolean
     installReason?: string
+    servingGroup?: VllmServingGroupRoute
 }
 
+/** A serving-group rank runs vLLM on the node without the one-node enable. */
 export function engineEnabled(facts: EngineControlFacts): boolean {
-    return facts.type === 'vllm'
-        ? facts.enabled === true
-        : (facts.enabled ?? facts.processStatus === 'running')
+    if (facts.type !== 'vllm') return facts.enabled ?? facts.processStatus === 'running'
+    const groupState = facts.servingGroup?.state
+    return (
+        facts.enabled === true ||
+        (facts.processStatus === 'running' &&
+            (groupState === 'starting' || groupState === 'started' || groupState === 'ready'))
+    )
 }
 
 export function engineLifecycleAllowed(facts: EngineControlFacts): boolean {

@@ -21,6 +21,34 @@ describe('vLLM control policy', () => {
         expect(engineInstallAllowed(facts)).toBe(false)
     })
 
+    it('reads on while the node runs a live serving-group rank', () => {
+        const route = {
+            runId: 'run',
+            generation: 72,
+            model: 'model',
+            coordinator: 'node-a',
+            role: 'participant' as const,
+            members: ['node-a', 'node-b']
+        }
+        const facts = {
+            type: 'vllm' as const,
+            processStatus: 'running' as const,
+            enabled: false,
+            managed: true
+        }
+        for (const state of ['starting', 'started', 'ready'] as const)
+            expect(engineEnabled({ ...facts, servingGroup: { ...route, state } })).toBe(true)
+        for (const state of ['stopping', 'stopped', 'failed', 'cleanup-required'] as const)
+            expect(engineEnabled({ ...facts, servingGroup: { ...route, state } })).toBe(false)
+        expect(
+            engineEnabled({
+                ...facts,
+                processStatus: 'stopped',
+                servingGroup: { ...route, state: 'ready' }
+            })
+        ).toBe(false)
+    })
+
     it('requires explicit managed facts for lifecycle controls', () => {
         const facts = {
             type: 'vllm' as const,

@@ -8,6 +8,7 @@ import type {
     ModelExpiry,
     EngineProcessStatus
 } from '@/shared/types/engines'
+import type { VllmServingGroupRoute } from '@/shared/types/vllm-group-status'
 
 export interface ModelItem {
     name: string
@@ -107,6 +108,7 @@ export interface BackendInfo {
     devices?: string[]
     /** Canonical retained model PAIR will serve on the next owned vLLM start; reported, never inferred. */
     selectedModel?: string
+    servingGroup?: VllmServingGroupRoute
     /** Models on this backend with per-model status */
     models: ModelItem[]
     /** System-level dependencies required before install/run (local node only) */
