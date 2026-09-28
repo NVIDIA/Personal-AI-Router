@@ -79,6 +79,8 @@ interface BuildManifest {
     source: 'services-build'
     sourceFingerprint: string
     services: string
+    /** The release version stamped into `nvpair-tui` — see `manifestIsCurrent`. */
+    release: string
     platform: SupportedPlatform
     arch: ModularPackageArch
     components: Record<string, string>
@@ -307,6 +309,7 @@ function parseManifest(text: string): BuildManifest | null {
         source: 'services-build',
         sourceFingerprint,
         services: typeof parsed['services'] === 'string' ? parsed['services'] : '',
+        release: typeof parsed['release'] === 'string' ? parsed['release'] : '',
         platform,
         arch,
         components: stringRecord(parsed['components']),
@@ -359,6 +362,10 @@ function manifestIsCurrent(
     // stale version is what the UI reports in dev.
     if (manifest.services !== versions.services) return false
     if (JSON.stringify(manifest.components) !== JSON.stringify(versions.components)) return false
+    // The release version is stamped into nvpair-tui but lives in package.json,
+    // outside everything the source fingerprint covers, so a release-only bump
+    // otherwise left the old version in the binary and its update check.
+    if (manifest.release !== pkg.version) return false
 
     const expected = new Set(expectedFileNames(options.platform))
     if (
@@ -547,6 +554,7 @@ function main(): void {
         source: 'services-build',
         sourceFingerprint,
         services: versions.services,
+        release: pkg.version,
         platform: options.platform,
         arch: options.arch,
         components: versions.components,
