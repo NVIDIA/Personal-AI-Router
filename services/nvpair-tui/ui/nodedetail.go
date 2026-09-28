@@ -442,6 +442,18 @@ func (d *nodeDetail) CapturingInput() bool {
 		// to be confirmed by whatever the operator pressed on returning.
 		return true
 	}
+	if d.settingsConfirm != nil {
+		// The same, for a settings change that restarts the engine: q would
+		// quit instead of answering, and tab would leave the restart armed
+		// behind a prompt no longer on screen.
+		return true
+	}
+	if d.settingsWanted != nil {
+		// A settings read is in flight and will open a field for the engine it
+		// was asked about. Letting the cursor move meanwhile is how a value
+		// typed for one engine came to be written to the next row down.
+		return true
+	}
 	return d.mode != detailInputNone
 }
 
@@ -822,6 +834,7 @@ func (d *nodeDetail) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return d.submitInput(), true
 		case "esc":
 			d.mode = detailInputNone
+			d.settingsEngine = ""
 			d.input.Blur()
 			return nil, true
 		}
@@ -933,6 +946,7 @@ func (d *nodeDetail) openSettingsField(snap enginesettings.Snapshot, mode detail
 		return nil
 	}
 	d.mode = mode
+	d.settingsEngine = snap.Engine
 	switch mode {
 	case detailInputEnginePort:
 		d.input.Placeholder = "port"
@@ -1072,13 +1086,20 @@ func (d *nodeDetail) submitInput() tea.Cmd {
 // not, because whitespace is significant to a tokenizer and normalizing it is
 // the backend's job.
 func (d *nodeDetail) submitSettings(mode detailInputMode, raw, trimmed string) tea.Cmd {
-	engine := d.selectedEngine()
-	if engine == nil {
+	// The engine the field was opened for, not the one under the cursor. A
+	// field can open after a settings read, and the cursor is free to move
+	// while that read is in flight — so reading the selection here wrote a
+	// value typed for Ollama into LM Studio's settings when the operator had
+	// pressed down in the meantime.
+	engine := d.settingsEngine
+	d.settingsEngine = ""
+	label := d.engineLabel(engine)
+	if engine == "" {
 		return nil
 	}
-	snap, ok := d.settings[engine.Engine]
+	snap, ok := d.settings[engine]
 	if !ok {
-		d.status.error("settings for %s are no longer loaded; press the key again", engine.label())
+		d.status.error("settings for %s are no longer loaded; press the key again", label)
 		return nil
 	}
 	value := trimmed
@@ -1089,7 +1110,7 @@ func (d *nodeDetail) submitSettings(mode detailInputMode, raw, trimmed string) t
 	if !ok {
 		return nil
 	}
-	d.status.busy("checking %s settings...", engine.label())
+	d.status.busy("checking %s settings...", label)
 	return previewEngineSettingsCmd(d.client, req)
 }
 
