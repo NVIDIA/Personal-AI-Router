@@ -353,9 +353,11 @@ Electron Builder produces:
 - Linux `.deb` packages;
 - macOS `.dmg` installers and `.zip` update payloads.
 
-`npm run build:tools` compiles the `inference-dispatcher` client into `tools/`,
-which is packaged as a separate `extraResources` directory with its own manifest
-and packaging assertion.
+The same build compiles the Inference Demo's `inference-dispatcher` client from
+`scripts/inference-dispatcher` at the monorepo root into `cli-bin/`, beside the
+binaries it is not one of, so the desktop app and `nvpair-tui` resolve it the
+same way. It is not a worker: it has no entry in `services/versions.json` or
+`modular-binaries.ts`, and carries the services version.
 
 The macOS build also compiles the `SMAppService` privileged helper used to
 configure Application Firewall rules. Firewall membership comes from
