@@ -13,10 +13,10 @@ import (
 // session-scoped volume at ~dozen-node scale (spec §5).
 const defaultDedupCapacity = 10000
 
-// dedupIndex is a bounded LRU set of keys. It answers a single question:
-// "have I seen this key before?" and records it if not, evicting the
-// least-recently-seen key once capacity is exceeded. It is safe for
-// concurrent use — the inter-node HTTP handler runs one goroutine per
+// dedupIndex is a bounded LRU set of successfully emitted keys. It records a
+// key only after the broker emit succeeds, and serializes concurrent emits for
+// the same key. Completed keys are evicted least-recently-used first. It is
+// safe for concurrent use — the inter-node HTTP handler runs one goroutine per
 // request.
 //
 // Keys are opaque strings built by the caller: lifecycle events key on
@@ -46,20 +46,6 @@ func newDedupIndex(capacity int) *dedupIndex {
 		items:    make(map[string]*list.Element, capacity),
 		inFlight: make(map[string]chan struct{}),
 	}
-}
-
-// seenOrAdd returns true if the key was already present (a duplicate). On a
-// first sighting it records the key and returns false. Either way the key is
-// promoted to most-recently-seen.
-func (d *dedupIndex) seenOrAdd(key string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if el, ok := d.items[key]; ok {
-		d.ll.MoveToFront(el)
-		return true
-	}
-	d.addLocked(key)
-	return false
 }
 
 // emitOnce serializes the check, broker emit, and record for one key. Other
