@@ -239,20 +239,19 @@ func TestLmStudioCatalogBacksOffWithNothingCached(t *testing.T) {
 }
 
 func TestNormalizeCatalogEngine(t *testing.T) {
-	cases := map[string]string{
-		"ollama":    "ollama",
-		"Ollama":    "ollama",
-		"  ollama ": "ollama",
-		"lmstudio":  "lmstudio",
-		"LM Studio": "lmstudio",
-		"lm-studio": "lmstudio",
-		"vllm":      "vllm",
-	}
-	for in, want := range cases {
+	expectNormalized := func(in, want string) {
+		t.Helper()
 		if got := normalizeCatalogEngine(in); got != want {
 			t.Errorf("normalizeCatalogEngine(%q) = %q, want %q", in, got, want)
 		}
 	}
+	expectNormalized("ollama", "ollama")
+	expectNormalized("Ollama", "ollama")
+	expectNormalized("  ollama ", "ollama")
+	expectNormalized("lmstudio", "lmstudio")
+	expectNormalized("LM Studio", "lmstudio")
+	expectNormalized("lm-studio", "lmstudio")
+	expectNormalized("vllm", "vllm")
 }
 
 // TestCatalogRejectsUnknownEngine checks an engine with no curated source errors
