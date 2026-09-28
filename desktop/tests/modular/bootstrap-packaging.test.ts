@@ -524,9 +524,8 @@ describe('bootstrap packaging', () => {
         }
     })
 
-    test('detects a cli-bin manifest left stale by post-build signing', () => {
-        const root = createRoot()
-        const cliBin = path.join(root, 'cli-bin')
+    function writeCliBin(): { cliBin: string; binary: string } {
+        const cliBin = path.join(createRoot(), 'cli-bin')
         mkdirSync(cliBin)
         const binary = path.join(cliBin, 'nvpair-host-bootstrap.exe')
         writeFileSync(binary, 'unsigned')
@@ -536,7 +535,7 @@ describe('bootstrap packaging', () => {
             `${JSON.stringify({
                 source: 'services-build',
                 sourceFingerprint: sha256('source'),
-                product: '1.2.3',
+                services: '1.2.3',
                 platform: 'win32',
                 arch: 'x64',
                 components: { 'nvpair-host-bootstrap': '1.2.3' },
@@ -551,6 +550,19 @@ describe('bootstrap packaging', () => {
             })}\n`,
             'utf8'
         )
+        return { cliBin, binary }
+    }
+
+    test('verifies a cli-bin manifest in the modular build shape', () => {
+        const { cliBin } = writeCliBin()
+
+        const result = runScript('verify-cli-manifest', '--cli-bin', cliBin)
+        expect(result.status).toBe(0)
+        expect(result.stdout).toContain('verified final cli-bin manifest')
+    })
+
+    test('detects a cli-bin manifest left stale by post-build signing', () => {
+        const { cliBin, binary } = writeCliBin()
         writeFileSync(binary, 'signed bytes are different')
 
         const result = runScript('verify-cli-manifest', '--cli-bin', cliBin)

@@ -77,7 +77,7 @@ for filename in old_paths:
     write_fixture(filename, bytes(image), 0o755)
 write_fixture(tui, b"new-tui-fixture", 0o755)
 old_manifest_data = {
-    "source": "services-build", "sourceFingerprint": "f" * 64, "product": "0.91.7", "platform": "linux", "arch": "arm64",
+    "source": "services-build", "sourceFingerprint": "f" * 64, "services": "0.91.7", "platform": "linux", "arch": "arm64",
     "components": {name: "0.1.0" for name in names},
     "files": [{"fileName": name, "size": len(image), "sha256": hashlib.sha256(image).hexdigest()} for name in names],
     "builtAt": "2026-09-12T00:00:00Z",
@@ -460,7 +460,7 @@ def managed_inspection_case(case):
         filename = os.path.join(bundle, "bin", name)
         write_fixture(filename, bytes(image), 0o755)
         files.append({"fileName": name, "size": len(image), "sha256": hashlib.sha256(image).hexdigest()})
-    installed_manifest = {"source": "services-build", "sourceFingerprint": "f" * 64, "product": "0.92.0", "platform": "linux", "arch": "arm64", "components": {name: "0.1.0" for name in installed_names}, "files": files}
+    installed_manifest = {"source": "services-build", "sourceFingerprint": "f" * 64, "services": "0.92.0", "platform": "linux", "arch": "arm64", "components": {name: "0.1.0" for name in installed_names}, "files": files}
     manifest_path = os.path.join(bundle, "bin", "manifest.json")
     write_fixture(manifest_path, json.dumps(installed_manifest).encode(), 0o644)
     identityroot = os.path.join(config, "Nvidia Corporation", "Personal AI Router")

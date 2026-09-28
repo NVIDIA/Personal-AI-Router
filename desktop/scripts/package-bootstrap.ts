@@ -205,7 +205,7 @@ interface CliManifestFile {
 interface CliManifest {
     source: string
     sourceFingerprint: string
-    product: string
+    services: string
     platform: string
     arch: string
     components: { [name: string]: string }
@@ -1887,7 +1887,7 @@ function parseCliManifest(filePath: string): CliManifest {
     exactKeys(object, 'cli-bin manifest', [
         'source',
         'sourceFingerprint',
-        'product',
+        'services',
         'platform',
         'arch',
         'components',
@@ -1916,7 +1916,7 @@ function parseCliManifest(filePath: string): CliManifest {
     return {
         source: jsonString(object['source'], 'cli-bin source'),
         sourceFingerprint: jsonString(object['sourceFingerprint'], 'cli-bin sourceFingerprint'),
-        product: jsonString(object['product'], 'cli-bin product'),
+        services: jsonString(object['services'], 'cli-bin services'),
         platform: jsonString(object['platform'], 'cli-bin platform'),
         arch: jsonString(object['arch'], 'cli-bin arch'),
         components,

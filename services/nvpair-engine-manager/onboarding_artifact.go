@@ -59,7 +59,7 @@ type onboardingPackage struct {
 type onboardingBuildManifest struct {
 	Source            string            `json:"source"`
 	SourceFingerprint string            `json:"sourceFingerprint"`
-	Product           string            `json:"product"`
+	Services          string            `json:"services"`
 	Platform          string            `json:"platform"`
 	Arch              string            `json:"arch"`
 	Components        map[string]string `json:"components"`
@@ -144,7 +144,7 @@ func (s *onboardingService) importArtifact(ctx context.Context, file string) (on
 	if err != nil {
 		return onboardingArtifact{}, err
 	}
-	artifact := onboardingArtifact{ArtifactID: "import-" + hex.EncodeToString(hash.Sum(nil))[:24], Version: manifest.Product, Platform: manifest.Platform, Arch: onboardingArch(manifest.Arch), SHA256: hex.EncodeToString(hash.Sum(nil)), Provenance: "engineering", SourceFingerprint: manifest.SourceFingerprint}
+	artifact := onboardingArtifact{ArtifactID: "import-" + hex.EncodeToString(hash.Sum(nil))[:24], Version: manifest.Services, Platform: manifest.Platform, Arch: onboardingArch(manifest.Arch), SHA256: hex.EncodeToString(hash.Sum(nil)), Provenance: "engineering", SourceFingerprint: manifest.SourceFingerprint}
 	if !onboardingToken.MatchString(artifact.Version) || artifact.Platform != "linux" || (artifact.Arch != "arm64" && artifact.Arch != "amd64") {
 		return onboardingArtifact{}, errors.New("selected package has no supported native Linux identity")
 	}
@@ -379,7 +379,7 @@ func verifyOnboardingArchive(file string, artifact onboardingArtifact) (string, 
 		}
 	}
 	var manifest onboardingBuildManifest
-	if len(manifestData) == 0 || json.Unmarshal(manifestData, &manifest) != nil || manifest.Source != "services-build" || manifest.Platform != artifact.Platform || onboardingArch(manifest.Arch) != artifact.Arch || manifest.Product != artifact.Version || len(manifest.Files) != len(onboardingBinaries) {
+	if len(manifestData) == 0 || json.Unmarshal(manifestData, &manifest) != nil || manifest.Source != "services-build" || manifest.Platform != artifact.Platform || onboardingArch(manifest.Arch) != artifact.Arch || manifest.Services != artifact.Version || len(manifest.Files) != len(onboardingBinaries) {
 		return "", 0, errors.New("PAIR package lacks a matching normal build manifest")
 	}
 	manifestNames := map[string]bool{}
@@ -470,7 +470,7 @@ func onboardingPackageBundle(base, bundle, platform, arch string) (onboardingArt
 		return result, errors.New("the installed bundle has no verified build manifest")
 	}
 	var manifest onboardingBuildManifest
-	if len(data) > 128<<10 || json.Unmarshal(data, &manifest) != nil || manifest.Source != "services-build" || manifest.Platform != "linux" || platform != "linux" || onboardingArch(manifest.Arch) != onboardingArch(arch) || !onboardingToken.MatchString(manifest.Product) {
+	if len(data) > 128<<10 || json.Unmarshal(data, &manifest) != nil || manifest.Source != "services-build" || manifest.Platform != "linux" || platform != "linux" || onboardingArch(manifest.Arch) != onboardingArch(arch) || !onboardingToken.MatchString(manifest.Services) {
 		return result, errors.New("the installed manifest is not a matching complete Linux bundle")
 	}
 	expected := map[string]bool{}
@@ -496,7 +496,7 @@ func onboardingPackageBundle(base, bundle, platform, arch string) (onboardingArt
 	hash := sha256.New()
 	gz := gzip.NewWriter(io.MultiWriter(tmp, hash))
 	tw := tar.NewWriter(gz)
-	archiveRoot := "NVIDIA-Personal-AI-Router-" + manifest.Product
+	archiveRoot := "NVIDIA-Personal-AI-Router-" + manifest.Services
 	for _, file := range manifest.Files {
 		if seen[file.FileName] || (!expected[file.FileName] && !allowedBundledTools[file.FileName]) || file.Size <= 0 || file.Size > 256<<20 || !onboardingSHA.MatchString(file.SHA256) {
 			return result, errors.New("installed binary inventory is invalid")
@@ -566,5 +566,5 @@ func onboardingPackageBundle(base, bundle, platform, arch string) (onboardingArt
 			return result, e
 		}
 	}
-	return onboardingArtifactSource{onboardingArtifact: onboardingArtifact{ArtifactID: "installed-" + sum[:16], Version: manifest.Product, Platform: "linux", Arch: onboardingArch(manifest.Arch), SHA256: sum, Provenance: "engineering", SourceFingerprint: manifest.SourceFingerprint}, File: destination}, nil
+	return onboardingArtifactSource{onboardingArtifact: onboardingArtifact{ArtifactID: "installed-" + sum[:16], Version: manifest.Services, Platform: "linux", Arch: onboardingArch(manifest.Arch), SHA256: sum, Provenance: "engineering", SourceFingerprint: manifest.SourceFingerprint}, File: destination}, nil
 }

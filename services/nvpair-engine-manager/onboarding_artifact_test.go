@@ -57,7 +57,7 @@ func onboardingFixtureEntries(machine uint16) []onboardingArchiveFixtureEntry {
 		files = append(files, map[string]any{"fileName": name, "size": len(entry.body), "sha256": hex.EncodeToString(sum[:])})
 		components[name] = "test"
 	}
-	manifest, err := json.Marshal(map[string]any{"source": "services-build", "sourceFingerprint": strings.Repeat("1", 64), "product": "test", "platform": "linux", "arch": arch, "components": components, "files": files, "builtAt": "2026-01-01T00:00:00Z"})
+	manifest, err := json.Marshal(map[string]any{"source": "services-build", "sourceFingerprint": strings.Repeat("1", 64), "services": "test", "platform": "linux", "arch": arch, "components": components, "files": files, "builtAt": "2026-01-01T00:00:00Z"})
 	if err != nil {
 		panic(err)
 	}
@@ -246,6 +246,9 @@ func TestOnboardingArtifactSelfBundlePreservesManifestForNextPeer(t *testing.T) 
 			root, _, err := verifyOnboardingArchive(artifact.File, artifact.onboardingArtifact)
 			if err != nil {
 				t.Fatalf("self package rejected by receiver-side contract: %v", err)
+			}
+			if artifact.Version != "test" || root != "NVIDIA-Personal-AI-Router-test" {
+				t.Fatalf("self package identity is not the build manifest services version: version=%q root=%q", artifact.Version, root)
 			}
 			file, err := os.Open(artifact.File)
 			if err != nil {
