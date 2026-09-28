@@ -56,11 +56,12 @@ const osSegment =
               : null
 
 const output = osSegment ? `release/${pkg.version}/${osSegment}` : `release/${pkg.version}`
-// Only Windows uses the display name as the packaging product name (drives NSIS
-// branding; the install dir and executable are pinned to APP_EXECUTABLE_NAME via
-// win.executableName). macOS and Linux keep the technical name so the app bundle
-// (`PAIR.app`) and Linux install dir (`/opt/PAIR`) stay stable across the rename
-// — existing generated CLI launchers embed those absolute paths.
+// Only Windows uses the display name as the packaging product name. It drives NSIS
+// branding and the fresh-install directory; upgrades reuse the registered install
+// location, and the executable is pinned by win.executableName. macOS and Linux
+// keep the technical name so the app bundle (`PAIR.app`) and Linux install dir
+// (`/opt/PAIR`) stay stable — existing generated CLI launchers embed those
+// absolute paths.
 const packagingProductName = osSegment === 'windows' ? APP_DISPLAY_NAME : APP_EXECUTABLE_NAME
 
 function packagingPlatform(): SupportedPlatform {

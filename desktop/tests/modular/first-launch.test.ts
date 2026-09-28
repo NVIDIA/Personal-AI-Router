@@ -73,7 +73,7 @@ describe('first launch', () => {
             getUserData: () => userData,
             getTemp: () => userData,
             getResourcesPath: () => process.cwd(),
-            getAppName: () => 'Personal AI Router'
+            getAppName: () => 'NVIDIA PAIR'
         })
         loadUiConfig()
         expect(isFirstRun()).toBe(true)

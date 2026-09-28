@@ -49,7 +49,7 @@ fi
 
 APP_SUPPORT="$target_home/Library/Application Support"
 
-echo "Stopping Personal AI Router processes..."
+echo "Stopping NVIDIA PAIR processes..."
 # Keep this list in sync with MODULAR_RUNTIME_BINARIES and
 # MODULAR_BUNDLED_BINARIES in src/shared/constants/modular-binaries.ts, plus the
 # Electron app process.
@@ -107,7 +107,7 @@ rm -f /usr/local/bin/nvpair 2>/dev/null || true
 
 if [ "$PURGE_DATA" != "1" ]; then
   echo "User data preserved. Re-run with --purge to remove it."
-  echo "Personal AI Router has been removed."
+  echo "NVIDIA PAIR has been removed."
   exit 0
 fi
 
@@ -131,5 +131,5 @@ rm -rf "$target_home/Library/HTTPStorages/$PACKAGE_ID" 2>/dev/null || true
 rm -rf "$target_home/Library/HTTPStorages/$PACKAGE_ID.binarycookies" 2>/dev/null || true
 rm -rf "$target_home/Library/WebKit/$PACKAGE_ID" 2>/dev/null || true
 
-echo "Personal AI Router has been fully removed."
+echo "NVIDIA PAIR has been fully removed."
 exit 0

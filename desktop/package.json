@@ -1,13 +1,13 @@
 {
     "name": "nvpair",
     "version": "0.1.5",
-    "description": "Personal AI Router",
+    "description": "NVIDIA PAIR",
     "engines": {
         "node": ">=25.5.0"
     },
     "main": "./out/main/index.js",
     "author": {
-        "name": "NVIDIA",
+        "name": "NVIDIA Corporation",
         "email": "nvpair@nvidia.com"
     },
     "license": "Apache-2.0",

@@ -91,7 +91,7 @@ describe('service startup failure handling', () => {
 
     it('surfaces a readiness timeout and recovers if readiness arrives later', async () => {
         const timeout = new mocks.StartupTimeoutError(
-            'Personal AI Router service did not become ready within 15 seconds'
+            'NVIDIA PAIR service did not become ready within 15 seconds'
         )
         mocks.supervisor.waitUntilReady.mockRejectedValueOnce(timeout)
 
@@ -101,7 +101,7 @@ describe('service startup failure handling', () => {
         expect(didWeSpawnCli()).toBe(true)
         expect(getConnectorError()).toContain('service did not become ready')
         expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledWith(
-            'Personal AI Router service did not become ready within 15 seconds'
+            'NVIDIA PAIR service did not become ready within 15 seconds'
         )
 
         mocks.invokeReady()

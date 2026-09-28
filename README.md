@@ -75,7 +75,7 @@ Release downloads include:
 - a macOS disk image.
 
 **On Windows and macOS,** double-click the download and follow the installer's
-usual prompts — on macOS that means dragging NVIDIA Personal AI Router to your
+usual prompts — on macOS that means dragging **NVIDIA PAIR** to your
 **Applications** folder.
 
 **On Linux,** install the package from the directory you downloaded it into:
