@@ -32,10 +32,13 @@ const (
 	vllmLegacyReceiptSchema       = 1
 	vllmRuntimeRecordSchema       = 2
 	vllmEnvironmentReceiptSchema  = 2
-	vllmInstallTimeout            = 60 * time.Minute
-	vllmDependencyReportMaxBytes  = 16 << 20
-	managedVLLMRecipeID           = "vllm-0.29.0-py312-cu130-uv0.12.17-v1"
-	managedVLLMDependencyReport   = `import importlib.metadata,json
+	// Covers the multi-gigabyte wheel set over a slow link.
+	vllmInstallTimeout = 3 * time.Hour
+	// Must stay well inside the desktop's 30-minute idle window for a quiet install.
+	vllmInstallHeartbeat         = time.Minute
+	vllmDependencyReportMaxBytes = 16 << 20
+	managedVLLMRecipeID          = "vllm-0.29.0-py312-cu130-uv0.12.17-v1"
+	managedVLLMDependencyReport  = `import importlib.metadata,json
 packages=[]
 for distribution in importlib.metadata.distributions():
  files=[]
@@ -716,10 +719,36 @@ func managedVLLMInstallEnv(st *engineState, runtimeDir string) []string {
 		"PATH=/usr/bin:/bin",
 		"HOME=" + filepath.Join(runtimeDir, "home"),
 		"UV_PYTHON_INSTALL_DIR=" + filepath.Join(runtimeDir, "python"),
-		"UV_CACHE_DIR=" + filepath.Join(runtimeDir, "uv-cache"),
+		"UV_CACHE_DIR=" + managedVLLMCacheDir(st),
 		"PYTHONNOUSERSITE=1",
 		"PYTHONDONTWRITEBYTECODE=1",
 	}
+}
+
+// managedVLLMCacheDir sits outside every staged environment, so a failed or
+// timed-out install keeps the wheels it finished downloading for the next
+// attempt.
+func managedVLLMCacheDir(st *engineState) string {
+	return filepath.Join(st.installDir, "uv-cache")
+}
+
+func managedVLLMPipInstallArgs(python string) []string {
+	return []string{"pip", "install", "--python", python, "--only-binary=:all:", "vllm==" + managedVLLMVersion, "--torch-backend=cu130"}
+}
+
+func removeManagedVLLMCache(st *engineState, remove func(string) error) error {
+	dir := managedVLLMCacheDir(st)
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to remove a non-directory vLLM package cache path")
+	}
+	return remove(dir)
 }
 
 func runManagedVLLMCommand(ctx context.Context, dir, bin string, args, env []string) ([]byte, error) {
@@ -820,7 +849,10 @@ func (e *Executor) stageManagedVLLM(ctx context.Context, st *engineState, downlo
 	}
 	e.emitInstallProgress("vllm", "installing", 75)
 	reportPath := filepath.Join(dir, "pip-report.json")
-	if _, err = runManagedVLLMCommand(ctx, dir, uv, []string{"pip", "install", "--python", filepath.Join(dir, "venv", "bin", "python"), "--no-cache", "--only-binary=:all:", "vllm==" + managedVLLMVersion, "--torch-backend=cu130"}, env); err != nil {
+	stopHeartbeat := e.repeatInstallProgress("vllm", "installing", 75, vllmInstallHeartbeat)
+	_, err = runManagedVLLMCommand(ctx, dir, uv, managedVLLMPipInstallArgs(filepath.Join(dir, "venv", "bin", "python")), env)
+	stopHeartbeat()
+	if err != nil {
 		return "", err
 	}
 	python := filepath.Join(dir, "venv", "bin", "python")
@@ -860,7 +892,7 @@ func (e *Executor) stageManagedVLLM(ctx context.Context, st *engineState, downlo
 	if err = writeManagedVLLMJSON(st.installDir, filepath.Join(dir, vllmEnvironmentReceiptFile), receipt); err != nil {
 		return "", err
 	}
-	_ = os.RemoveAll(filepath.Join(dir, "uv-cache"))
+	_ = removeManagedVLLMCache(st, os.RemoveAll)
 	_ = os.Remove(uv)
 	return id, nil
 }
@@ -1460,7 +1492,7 @@ func (e *Executor) uninstallManagedVLLMWithIO(ctx context.Context, st *engineSta
 	}
 	ids := vllmRecordedIDs(record)
 	if len(ids) == 0 {
-		return nil
+		return removeManagedVLLMCache(st, remove)
 	}
 	if !record.Removing {
 		proofs := make(map[string]vllmRuntimeReceipt, len(ids))
@@ -1520,7 +1552,7 @@ func (e *Executor) uninstallManagedVLLMWithIO(ctx context.Context, st *engineSta
 	st.mu.Lock()
 	st.installed, st.binPath, st.version = false, "", ""
 	st.mu.Unlock()
-	return nil
+	return removeManagedVLLMCache(st, remove)
 }
 
 func removeManagedVLLMEnvironment(st *engineState, id string, remove func(string) error) error {

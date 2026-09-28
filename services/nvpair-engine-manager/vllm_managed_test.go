@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,105 @@ func TestManagedVLLMStageFailureCleansExactCandidate(t *testing.T) {
 	if err != nil || record.Staged != "" {
 		t.Fatalf("staged ownership was not cleared: record=%+v err=%v", record, err)
 	}
+}
+
+func TestManagedVLLMFailedStageKeepsThePackageCacheForTheNextAttempt(t *testing.T) {
+	st := &engineState{installDir: t.TempDir()}
+	id := "v0.29.0-fixture"
+	dir, err := vllmEnvironmentPath(st, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wheel := filepath.Join(managedVLLMCacheDir(st), "archive-v0", "fixture", "METADATA")
+	for _, path := range []string{dir, filepath.Dir(wheel)} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(wheel, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeVLLMRuntimeRecord(st, vllmRuntimeRecord{Schema: vllmRuntimeRecordSchema, Staged: id}); err != nil {
+		t.Fatal(err)
+	}
+	if env := managedVLLMInstallEnv(st, dir); !slices.Contains(env, "UV_CACHE_DIR="+managedVLLMCacheDir(st)) {
+		t.Fatalf("install env = %q; uv must keep its cache outside the staged environment", env)
+	}
+	if args := managedVLLMPipInstallArgs(filepath.Join(dir, "venv", "bin", "python")); slices.Contains(args, "--no-cache") {
+		t.Fatalf("pip install args = %q; --no-cache discards every completed download", args)
+	}
+	resultErr := error(context.DeadlineExceeded)
+	cleanupFailedManagedVLLMStage(st, id, &resultErr)
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("failed candidate was not removed: %v", err)
+	}
+	if got, err := os.ReadFile(wheel); err != nil || string(got) != "fixture" {
+		t.Fatalf("a timed-out attempt discarded the package cache: %q %v", got, err)
+	}
+}
+
+func TestManagedVLLMUninstallRemovesThePackageCache(t *testing.T) {
+	t.Run("with an installed runtime", func(t *testing.T) {
+		st := managedVLLMTestState(t)
+		id := "v0-active"
+		environment := writeManagedVLLMTestEnvironment(t, st, id, managedVLLMVersion)
+		cache := managedVLLMCacheDir(st)
+		if err := os.MkdirAll(filepath.Join(cache, "archive-v0"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeVLLMRuntimeRecord(st, vllmRuntimeRecord{Schema: vllmRuntimeRecordSchema, Active: id}); err != nil {
+			t.Fatal(err)
+		}
+		ex := &Executor{reporter: NewReporter(nil), client: newEngineHTTPClient(time.Second)}
+		var removed []string
+		err := ex.uninstallManagedVLLMWithIO(context.Background(), st, func(path string) error {
+			removed = append(removed, path)
+			return os.RemoveAll(path)
+		}, func(record vllmRuntimeRecord) error {
+			return writeVLLMRuntimeRecord(st, record)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(removed, []string{environment, cache}) {
+			t.Fatalf("removed paths = %v", removed)
+		}
+	})
+	t.Run("left by a failed install", func(t *testing.T) {
+		st := &engineState{installDir: t.TempDir()}
+		cache := managedVLLMCacheDir(st)
+		if err := os.MkdirAll(filepath.Join(cache, "archive-v0"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeVLLMRuntimeRecord(st, vllmRuntimeRecord{Schema: vllmRuntimeRecordSchema}); err != nil {
+			t.Fatal(err)
+		}
+		ex := &Executor{reporter: NewReporter(nil)}
+		write := func(record vllmRuntimeRecord) error { return writeVLLMRuntimeRecord(st, record) }
+		if err := ex.uninstallManagedVLLMWithIO(context.Background(), st, os.RemoveAll, write); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(cache); !os.IsNotExist(err) {
+			t.Fatalf("uninstall left the package cache behind: %v", err)
+		}
+	})
+	t.Run("never follows a replaced cache path", func(t *testing.T) {
+		st := &engineState{installDir: t.TempDir()}
+		outside := t.TempDir()
+		sentinel := filepath.Join(outside, "keep")
+		if err := os.WriteFile(sentinel, []byte("foreign"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, managedVLLMCacheDir(st)); err != nil {
+			t.Skipf("symlinks are unavailable: %v", err)
+		}
+		if err := removeManagedVLLMCache(st, os.RemoveAll); err == nil {
+			t.Fatal("a symlinked package cache path was removed")
+		}
+		if _, err := os.Stat(sentinel); err != nil {
+			t.Fatalf("the symlink target was touched: %v", err)
+		}
+	})
 }
 
 func TestManagedVLLMPointerWriteFailureRetainsCandidateOwnership(t *testing.T) {

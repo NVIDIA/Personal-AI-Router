@@ -332,6 +332,30 @@ func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
 	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct})
 }
 
+// repeatInstallProgress re-emits one install step every interval until stop
+// returns, for a step that reports nothing while it runs. Clients expire an
+// install that stays quiet, although it is still running.
+func (e *Executor) repeatInstallProgress(engine, stage string, pct int, interval time.Duration) (stop func()) {
+	done, exited := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(exited)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				e.emitInstallProgress(engine, stage, pct)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-exited
+	}
+}
+
 // emitPullProgress reports one model-pull step to both consumers: the local
 // engine:pull-progress notification (this node's UI) and the progress hub (so an
 // ec streaming handler can relay it to a remote initiator). It mirrors

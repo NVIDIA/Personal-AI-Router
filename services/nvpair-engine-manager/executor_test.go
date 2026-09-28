@@ -1118,3 +1118,43 @@ func rmCmd(path string) []string {
 	}
 	return []string{"rm", "-f", path}
 }
+
+func TestRepeatInstallProgressKeepsAQuietStepVisibleUntilStopped(t *testing.T) {
+	ex := newTestExecutor(t, &Manifest{Engine: "vllm", DisplayName: "vLLM", ManifestVersion: 1})
+	var mu sync.Mutex
+	var stages []string
+	ex.emit = func(method string, value any) {
+		if method != "engine:install-progress" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		stages = append(stages, value.(map[string]any)["stage"].(string))
+	}
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(stages)
+	}
+	stop := ex.repeatInstallProgress("vllm", "installing", 75, 5*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for count() < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+	stopped := count()
+	if stopped < 3 {
+		t.Fatalf("a quiet install step repeated its progress %d times; want at least 3", stopped)
+	}
+	time.Sleep(30 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stages) != stopped {
+		t.Fatalf("progress continued after stop: %d then %d", stopped, len(stages))
+	}
+	for _, stage := range stages {
+		if stage != "installing" {
+			t.Fatalf("repeated stage = %q, want installing", stage)
+		}
+	}
+}
