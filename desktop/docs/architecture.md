@@ -339,13 +339,18 @@ configure Application Firewall rules. Firewall membership comes from
 
 ## Data locations
 
-Personal AI Router and the Go services share one current per-user root:
+NVIDIA PAIR and the Go services share one current per-user root:
 
-- `Nvidia Corporation/Personal AI Router`.
+- `Nvidia Corporation/NVIDIA PAIR`.
 
-On first launch after the rename, Electron data under
-`NVIDIA Corporation/PAIR` is merged into the shared directory without
-overwriting backend files already present there.
+Data under the earlier roots, `Nvidia Corporation/Personal AI Router` and then
+`NVIDIA Corporation/PAIR`, is merged into it without overwriting anything
+already present. Both entry points run the same merge under one lock file in
+the org directory: Electron before it writes to user data, and
+`nvpair-ui-broker` before it starts a worker, so the `nvpair` terminal command
+and headless installs migrate too. The Windows `bin/` launcher directory stays
+in its earlier root because the user's PATH names it. `services/shared/appdir`
+and `src/shared/constants/app.ts` hold the names; a unit test keeps them equal.
 
 Uninstalling keeps user data by default or requires an explicit removal action.
 The Electron updater cache is separate from the shared root.

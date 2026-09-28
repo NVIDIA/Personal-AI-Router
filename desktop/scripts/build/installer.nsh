@@ -58,19 +58,20 @@
 ; targets the invoking user's profile, not the admin shell context.
 ;
 ; Per-user data roots (kept in sync with src/shared/constants/app.ts
-; APP_ORG/APP_DATA_DIR_NAME and the Go appdir
-; "Nvidia Corporation/Personal AI Router"):
-;   - Shared app data:    %LOCALAPPDATA%\Nvidia Corporation\Personal AI Router
-;   - Previous app data:  %LOCALAPPDATA%\NVIDIA Corporation\PAIR
+; APP_ORG/APP_DATA_DIR_NAME/APP_PREVIOUS_DATA_DIRS, the Go appdir, and the
+; append-only inventory in repo-root scripts/wipe-app-data.ps1 / wipe-app-data.sh):
+;   - Shared app data:    %LOCALAPPDATA%\Nvidia Corporation\NVIDIA PAIR
+;   - Previous app data:  %LOCALAPPDATA%\Nvidia Corporation\Personal AI Router
+;                         %LOCALAPPDATA%\NVIDIA Corporation\PAIR
 ;   - electron-updater:   %LOCALAPPDATA%\nvpair-updater
 ; On Windows the "NVIDIA Corporation" / "Nvidia Corporation" casing resolves to
-; the same case-insensitive folder.
-; Per-user data roots. Keep in sync with src/shared/constants/app.ts and the
-; append-only inventory in repo-root scripts/wipe-app-data.ps1 / wipe-app-data.sh.
+; the same case-insensitive folder. The previous roots survive migration when
+; they hold the `nvpair` launcher (bin) or a file the current root already had.
 !macro pairRemoveUserData
   DetailPrint "Removing NVIDIA PAIR user data..."
   ClearErrors
   ReadEnvStr $0 LOCALAPPDATA
+  RMDir /r "$0\Nvidia Corporation\NVIDIA PAIR"
   RMDir /r "$0\Nvidia Corporation\Personal AI Router"
   RMDir /r "$0\NVIDIA Corporation\PAIR"
   RMDir "$0\NVIDIA Corporation"
@@ -78,10 +79,12 @@
   ClearErrors
 !macroend
 
-; Best-effort: when the user opts to remove data, stop any process whose
-; executable lives UNDER one of the data roots (e.g. an engine like Ollama
-; running from %LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\)
-; so RMDir /r can then delete it. Scoped by ExecutablePath, so an external
+; Best-effort: stop any process whose executable lives UNDER one of the data
+; roots (e.g. an engine like Ollama running from
+; %LOCALAPPDATA%\Nvidia Corporation\NVIDIA PAIR\engine-bin\). The uninstaller
+; runs it before RMDir /r; the installer runs it so an engine left running by
+; the previous version cannot hold its engine-bin open while the broker moves
+; that data into the current root. Scoped by ExecutablePath, so an external
 ; Ollama installed elsewhere is never touched. nsExec::ExecToLog never aborts the (un)installer,
 ; PowerShell swallows its own errors (-ErrorAction SilentlyContinue), and a
 ; missing powershell.exe just logs a failure — every failure mode lets the
@@ -89,18 +92,20 @@
 ; containing spaces need no extra quoting.
 !macro pairKillProcessesInDataDirs
   DetailPrint "Stopping any processes running from NVIDIA PAIR data folders..."
-  nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and ($$_.ExecutablePath -like \"$$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*\") } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
+  nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and ($$_.ExecutablePath -like \"$$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\NVIDIA PAIR\*\") } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   ; Give the OS a moment to release the file handles before RMDir /r.
   Sleep 1000
 !macroend
 
 ; Non-fatal fallback: if something still held a binary open under a data root
-; (e.g. %LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\) and the kill above
+; (e.g. %LOCALAPPDATA%\Nvidia Corporation\NVIDIA PAIR\engine-bin\) and the kill above
 ; didn't catch it in time, RMDir /r leaves it behind. List whatever survived and
 ; continue — the uninstall must never abort over locked user data.
 !macro pairWarnIfDataRemains
   ReadEnvStr $0 LOCALAPPDATA
   StrCpy $9 ""
+  IfFileExists "$0\Nvidia Corporation\NVIDIA PAIR\*.*" 0 +2
+    StrCpy $9 "$9$\n$0\Nvidia Corporation\NVIDIA PAIR"
   IfFileExists "$0\Nvidia Corporation\Personal AI Router\*.*" 0 +2
     StrCpy $9 "$9$\n$0\Nvidia Corporation\Personal AI Router"
   IfFileExists "$0\NVIDIA Corporation\PAIR\*.*" 0 +2
@@ -225,6 +230,7 @@
     StrCpy $INSTDIR "$PROGRAMFILES64\${APP_FILENAME}"
   ${endif}
   !insertmacro pairCloseRunningProcesses
+  !insertmacro pairKillProcessesInDataDirs
 !macroend
 
 ; Refuse to report success when the payload's executables are not on disk.

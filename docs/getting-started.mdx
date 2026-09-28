@@ -360,18 +360,18 @@ with its own command-line interface (CLI). Two things make that less obvious:
 
 | Platform | Path |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\ollama\ollama.exe` |
-| Linux | `~/.config/Nvidia Corporation/Personal AI Router/engine-bin/ollama/bin/ollama` |
+| Windows | `%LOCALAPPDATA%\Nvidia Corporation\NVIDIA PAIR\engine-bin\ollama\ollama.exe` |
+| Linux | `~/.config/Nvidia Corporation/NVIDIA PAIR/engine-bin/ollama/bin/ollama` |
 
 On Linux it needs its bundled libraries on the library path:
 
 ```bash
-ENGINE="$HOME/.config/Nvidia Corporation/Personal AI Router/engine-bin/ollama"
+ENGINE="$HOME/.config/Nvidia Corporation/NVIDIA PAIR/engine-bin/ollama"
 LD_LIBRARY_PATH="$ENGINE/lib/ollama" OLLAMA_HOST=127.0.0.1:11435 "$ENGINE/bin/ollama" list
 ```
 
 ```powershell
-$ollama = "$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\engine-bin\ollama\ollama.exe"
+$ollama = "$env:LOCALAPPDATA\Nvidia Corporation\NVIDIA PAIR\engine-bin\ollama\ollama.exe"
 $env:OLLAMA_HOST = "127.0.0.1:11435"
 & $ollama list
 ```

@@ -21,7 +21,7 @@ import (
 // alternative layouts.
 const (
 	appOrg         = "Nvidia Corporation"
-	appDataDir     = "Personal AI Router"
+	appDataDir     = "NVIDIA PAIR"
 	logDirName     = "logs"
 	activeLogName  = "nvpair.jsonl"
 	rotatedLogName = "nvpair.1.jsonl"

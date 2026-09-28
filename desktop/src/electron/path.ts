@@ -7,11 +7,12 @@ import path from 'path'
 import { currentPlatform } from '@/shared/utils/platform'
 import {
     APP_DATA_DIR_NAME,
+    APP_DATA_MIGRATION_LOCK_NAME,
+    APP_DATA_MIGRATION_SKIP_ENTRIES,
     APP_ORG,
-    APP_PREVIOUS_DATA_DIR_NAME,
-    APP_PREVIOUS_ORG
+    APP_PREVIOUS_DATA_DIRS
 } from '@/shared/constants/app'
-import { migrateAppDataDirectory } from '@/electron/app-data-migration'
+import { migrateAppDataDirectory, withAppDataMigrationLock } from '@/electron/app-data-migration'
 
 export interface PathProvider {
     getUserData(): string
@@ -27,31 +28,26 @@ const BASE_ROOT =
           ? (process.env.XDG_CONFIG_HOME ?? app.getPath('appData'))
           : path.join(app.getPath('home'), 'Library', 'Application Support')
 const ROOT = path.join(BASE_ROOT, APP_ORG)
-const PREVIOUS_ROOT = path.join(BASE_ROOT, APP_PREVIOUS_ORG)
 const APP_DIR = path.join(ROOT, APP_DATA_DIR_NAME)
 
 /**
- * The generated `nvpair` launcher directory (see `src/electron/nvpair-command.ts`)
- * lives under userData on Windows and is referenced by absolute path from the
- * user's PATH. Leave it in the previous directory so `nvpair` keeps resolving
- * in already-open terminals; the app regenerates it in the new location on the
- * next launch.
- */
-const MIGRATION_SKIP_ENTRIES = ['bin'] as const
-
-/**
- * One-time merge of the pre-rename Electron app data into the shared directory.
- * Must run for a single instance only — callers invoke it after acquiring the
- * single-instance lock so two launches cannot migrate concurrently.
+ * Merges every earlier data directory into the current one. Must run before
+ * anything creates files under userData — the file logger and Chromium's
+ * single-instance lock both do — so migrated files are not shadowed by fresh
+ * ones.
  */
 export const migrateAppData = (): void => {
-    migrateAppDataDirectory(
-        PREVIOUS_ROOT,
-        APP_PREVIOUS_DATA_DIR_NAME,
-        ROOT,
-        APP_DATA_DIR_NAME,
-        MIGRATION_SKIP_ENTRIES
-    )
+    withAppDataMigrationLock(path.join(ROOT, APP_DATA_MIGRATION_LOCK_NAME), () => {
+        for (const previous of APP_PREVIOUS_DATA_DIRS) {
+            migrateAppDataDirectory(
+                path.join(BASE_ROOT, previous.org),
+                previous.name,
+                ROOT,
+                APP_DATA_DIR_NAME,
+                APP_DATA_MIGRATION_SKIP_ENTRIES
+            )
+        }
+    })
 }
 
 export const setPaths = async (): Promise<void> => {

@@ -17,7 +17,6 @@ import {
 } from '@/electron/config/ui-config'
 import { currentPlatform } from '@/shared/utils/platform'
 import { APP_DISPLAY_NAME, APP_EXIT_ARGUMENT, APP_ID } from '@/shared/constants/app'
-import { migrateAppData } from '@/electron/path'
 import { macPrivilege } from '@/electron/services/mac-privilege-service'
 
 import { registerAllIpc } from '@/electron/ipc'
@@ -72,11 +71,6 @@ if (!gotTheLock || exitRequested) {
     // all covered — a stall during any of them makes every other timing in the log
     // untrustworthy.
     startEventLoopMonitor()
-
-    // Only the single-instance lock owner migrates the pre-rename app data, so
-    // two concurrent launches can never move the same directory. Runs before any
-    // user-data read (loadUiConfig below).
-    migrateAppData()
 
     loadUiConfig()
 

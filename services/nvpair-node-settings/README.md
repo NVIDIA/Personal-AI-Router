@@ -51,13 +51,13 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 | Flag | Default | Description |
 |---|---|---|
 | `--ipc <path>` | _(stdio)_ | IPC endpoint: Unix socket or Windows named pipe |
-| `--settings <path>` | `settings.json` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) | Override settings file location |
+| `--settings <path>` | `settings.json` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\NVIDIA PAIR` on Windows, `~/.config/Nvidia Corporation/NVIDIA PAIR` on Linux) | Override settings file location |
 | `--log-level <level>` | `info` | One of `error`/`warn`/`info`/`debug` |
 | `--version` | | Print version and exit |
 
 ## Persistence
 
-- File: `settings.json` in the per-user data dir — `%LocalAppData%\Nvidia Corporation\Personal AI Router` (Windows), `~/.config/Nvidia Corporation/Personal AI Router` (Linux) — same directory as `manual-nodes.json`.
+- File: `settings.json` in the per-user data dir — `%LocalAppData%\Nvidia Corporation\NVIDIA PAIR` (Windows), `~/.config/Nvidia Corporation/NVIDIA PAIR` (Linux) — same directory as `manual-nodes.json`.
 - Writes go to `settings.json.tmp` first, then `os.Rename` over the destination. A crash mid-save leaves either the previous file intact or the new one fully written, never a half-file.
 - File mode is pinned to `0o600` (parent directory `0o700`) regardless of umask. The previous cluster-secret rationale is gone, but per-user settings still shouldn't be world-readable on shared hosts.
 - A malformed file on load is renamed aside as `settings.json.corrupt-<unix-ts>` and the subprocess starts with product defaults — refusing to start used to wedge every UI settings call behind a parse error.

@@ -43,12 +43,15 @@ rm -rf /path/to/NVIDIA-Personal-AI-Router-<version>
 ```
 
 The workers store configuration in
-`~/Library/Application Support/Nvidia Corporation/Personal AI Router/` (manual-node list,
+`~/Library/Application Support/Nvidia Corporation/NVIDIA PAIR/` (manual-node list,
 log-level preference, cluster identity/pins, etc.). Remove that directory too if
-you want a fully clean slate:
+you want a fully clean slate, along with any directory an earlier release left
+behind:
 
 ```bash
+rm -rf "$HOME/Library/Application Support/Nvidia Corporation/NVIDIA PAIR"
 rm -rf "$HOME/Library/Application Support/Nvidia Corporation/Personal AI Router"
+rm -rf "$HOME/Library/Application Support/NVIDIA Corporation/PAIR"
 ```
 
 ## Requirements

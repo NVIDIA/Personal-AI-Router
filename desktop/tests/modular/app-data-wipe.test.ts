@@ -32,6 +32,7 @@ describe('repo-root wipe scripts', () => {
         const psText = fs.readFileSync(ps1, 'utf8')
         for (const text of [shText, psText]) {
             expect(text).toContain('Nvidia Corporation')
+            expect(text).toContain('NVIDIA PAIR')
             expect(text).toContain('Personal AI Router')
             expect(text).toContain('NVIDIA Corporation')
             expect(text).toContain('PAIR')
@@ -53,6 +54,7 @@ describe('repo-root wipe scripts', () => {
         const result = spawnSync('bash', [sh, '--dry-run'], { encoding: 'utf8' })
         expect(result.status).toBe(0)
         expect(result.stdout).toContain('[dry-run]')
+        expect(result.stdout).toContain('NVIDIA PAIR')
         expect(result.stdout).toContain('Personal AI Router')
     })
 

@@ -35,7 +35,7 @@ func defaultSettingsPath() string {
 func main() {
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	settingsPath := flag.String("settings", "", "path to settings.json (default: the per-user Nvidia Corporation/Personal AI Router data dir)")
+	settingsPath := flag.String("settings", "", "path to settings.json (default: the per-user Nvidia Corporation/NVIDIA PAIR data dir)")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
 

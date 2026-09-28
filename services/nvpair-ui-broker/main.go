@@ -35,7 +35,7 @@ func main() {
 	settingsPath := flag.String("settings-path", "", "path to nvpair-node-settings binary (default: ./nvpair-node-settings in the current working directory)")
 	clusterMgrPath := flag.String("cluster-manager-path", "", "path to nvpair-cluster-manager binary (default: ./nvpair-cluster-manager in the current working directory)")
 	schedulerPath := flag.String("scheduler-path", "", "path to nvpair-job-scheduler binary (default: ./nvpair-job-scheduler in the current working directory)")
-	clusterDirFlag := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/) the broker passes to its mDNS workers (nvpair-errors, nvpair-workload-manager, nvpair-node-info, nvpair-node-scanner, nvpair-manual-nodes) to enable cluster-scoped inter-node mTLS; defaults to the per-user Nvidia Corporation/Personal AI Router cluster/ dir, where nvpair-cluster-manager mints them")
+	clusterDirFlag := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/) the broker passes to its mDNS workers (nvpair-errors, nvpair-workload-manager, nvpair-node-info, nvpair-node-scanner, nvpair-manual-nodes) to enable cluster-scoped inter-node mTLS; defaults to the per-user Nvidia Corporation/NVIDIA PAIR cluster/ dir, where nvpair-cluster-manager mints them")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -44,6 +44,13 @@ func main() {
 		fmt.Println(Version)
 		os.Exit(0)
 	}
+
+	// Before anything touches the data directory — the stderr spill file below
+	// lives in it, and every worker reads it — so a first start after the rename
+	// keeps its node identity, cluster membership, and installed engines. The
+	// broker is the one entry point shared by the desktop app, the nvpair TUI, and
+	// headless installs.
+	migrations, migrateErr := appdir.Migrate()
 
 	// Route this process's logs, and every worker's, through one non-blocking
 	// sink so the parent's read rate can never hold a write open. Installed
@@ -54,6 +61,16 @@ func main() {
 	defer sink.Close()
 
 	applog.Init("nvpair-ui-broker", resolveLevel())
+
+	if migrateErr != nil {
+		slog.Warn("app data migration did not run", "err", migrateErr)
+	}
+	for _, m := range migrations {
+		slog.Info("migrated app data directory", "from", m.Source, "kept", len(m.Kept))
+		for _, kept := range m.Kept {
+			slog.Debug("app data entry left in previous directory", "path", kept)
+		}
+	}
 
 	// Fatal paths must not return through the async queue. applog bridges the
 	// stdlib log package into slog, which now writes into the sink, and os.Exit
