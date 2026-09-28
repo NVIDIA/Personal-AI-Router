@@ -116,6 +116,13 @@ type nodeRow struct {
 	// manualID is the handle node/remove needs. Empty unless the entry was
 	// added by hand.
 	manualID string
+	// nodeInfoTLS is a hand-added node that serves node-info over TLS. That
+	// endpoint needs the backend's cluster trust, which this client does not
+	// hold, so it is never polled from here: probedTelemetry, the manual-node
+	// worker's own reading, is shown instead, and is nil while the worker has
+	// none.
+	nodeInfoTLS     bool
+	probedTelemetry *nodeTelemetry
 
 	models         []string
 	modelsByEngine map[string][]string
@@ -210,9 +217,25 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 		if row.name == "" {
 			row.name = m.Address
 		}
+		// Where the probe actually reached node-info, for a row discovery has
+		// not already given a port to.
+		if row.port == 0 {
+			row.port = m.NodeInfoPort
+		}
+		if m.TLSEnabled {
+			row.nodeInfoTLS = true
+			if m.NodeInfoUp {
+				row.probedTelemetry = &nodeTelemetry{
+					GPUs: m.GPUs, CPU: m.CPU, Memory: m.Memory,
+					TelemetryValid: m.TelemetryValid, MSSince: m.MSSince,
+				}
+			}
+		}
 		// A probe is direct evidence and outranks discovery silence: a node on
 		// a network that filters multicast is reachable but never announced.
-		if m.NodeInfoUp || m.OllamaUp {
+		// Any service answering counts — a host running only LM Studio is as
+		// reachable as one running Ollama.
+		if m.NodeInfoUp || m.OllamaUp || m.LMStudioUp {
 			row.presence = presenceOnline
 		} else if row.presence == presenceUnknown {
 			row.presence = presenceOffline
@@ -287,15 +310,25 @@ func candidateAddresses(d availableNode) []string {
 	return out
 }
 
-// matchManual finds the existing row a manual entry describes. Manual entries
-// carry no host UUID, so address is the only join available.
-// The comparison is normalised, and considers every address a node published.
+// matchManual finds the existing row a manual entry describes.
+//
+// The host UUID comes first, once the worker's probe has read one from the
+// node's node-info. It is the only join that works when the operator typed a
+// hostname and discovery reports the same machine by IP.
+//
+// Otherwise it falls back to the address. That comparison is normalised, and
+// considers every address a node published.
 // The manual address was typed by an operator while the discovered one comes off
 // the wire, so an exact string match on the primary address missed a host typed
 // with different case or with its port, and missed a multi-homed node entirely
 // when the operator used its second address — listing the same machine twice,
 // once discovered and once manual.
 func matchManual(byKey map[string]*nodeRow, order []string, m manualNode) *nodeRow {
+	if m.HostUUID != "" {
+		if row, ok := byKey[m.HostUUID]; ok {
+			return row
+		}
+	}
 	want := normalizeHost(m.Address)
 	if want == "" {
 		return nil

@@ -3,6 +3,8 @@
 
 package ui
 
+import "nvpair-shared/noderec"
+
 // The wire shapes behind the Nodes tab. One machine is described by three
 // different services, so their payloads are collected here and folded into the
 // single nodeRow the view renders (see mergeNodes).
@@ -79,11 +81,27 @@ type clusterInvite struct {
 
 // manualNode is the subset of nvpair-manual-nodes' ManualNodeStatus shown.
 type manualNode struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Address    string `json:"address"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	// HostUUID is the machine's own identity, read from its node-info. It is
+	// what joins a hand-typed hostname to the same machine discovered by IP.
+	HostUUID   string `json:"hostUuid"`
 	OllamaUp   bool   `json:"ollama_up"`
+	LMStudioUp bool   `json:"lmstudio_up"`
 	NodeInfoUp bool   `json:"node_info_up"`
+	// NodeInfoPort is the port the probe reached node-info on, and TLSEnabled
+	// whether that was over TLS.
+	NodeInfoPort int  `json:"node_info_port"`
+	TLSEnabled   bool `json:"tls_enabled"`
+	// The worker's own hardware reading from that probe. For a TLS node it is
+	// the only one to be had: the worker holds the backend's trust to reach
+	// it, and this client holds none.
+	GPUs           []noderec.GPUInfo   `json:"gpus"`
+	CPU            *noderec.CPUInfo    `json:"cpu"`
+	Memory         *noderec.MemoryInfo `json:"memory"`
+	TelemetryValid bool                `json:"telemetryValid"`
+	MSSince        int64               `json:"msSince"`
 }
 
 // rejectReason renders a machine reason from a rejected invite as human text.

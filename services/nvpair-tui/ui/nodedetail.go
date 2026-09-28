@@ -222,7 +222,24 @@ func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 		LoadedByEngine: node.loadedByEngine,
 	}
 	d.refreshModels()
+	d.adoptProbedTelemetry()
 	return d
+}
+
+// adoptProbedTelemetry shows the manual-node worker's hardware reading for a
+// node this screen does not poll itself.
+func (d *nodeDetail) adoptProbedTelemetry() {
+	if !d.node.nodeInfoTLS {
+		return
+	}
+	was := d.hardwareHeight()
+	d.telemetryOK = d.node.probedTelemetry != nil
+	if d.telemetryOK {
+		d.telemetry = *d.node.probedTelemetry
+	}
+	if d.hardwareHeight() != was {
+		d.sizeEngineTable()
+	}
 }
 
 // detailEngineColumns is the engine table's layout.
@@ -297,6 +314,12 @@ func detailEnginesTickCmd(gen int) tea.Cmd {
 }
 
 func (d *nodeDetail) telemetryCmd() tea.Cmd {
+	if d.node.nodeInfoTLS {
+		// Not polled from here; see nodeRow.nodeInfoTLS. A plain-HTTP poll to
+		// a TLS listener only ever fails, and it was made anyway.
+		d.telemetryRunning = false
+		return nil
+	}
 	cmd := pollTelemetryCmd(d.node.key, d.telemetryGen, telemetryHosts(d.node), d.node.port)
 	// Whether a chain is running, so a node whose address is not known yet can
 	// have one started later. Nothing schedules a tick when there is nothing to
@@ -346,6 +369,14 @@ func (d *nodeDetail) followNode(row nodeRow, found bool) {
 		d.node.name = row.name
 		d.node.presence = row.presence
 		d.node.membership = row.membership
+		// A hand-added node's node-info port and TLS setting arrive with the
+		// worker's first probe, which can land after the screen opened.
+		if d.node.port == 0 {
+			d.node.port = row.port
+		}
+		d.node.nodeInfoTLS = row.nodeInfoTLS
+		d.node.probedTelemetry = row.probedTelemetry
+		d.adoptProbedTelemetry()
 	} else {
 		d.node.presence = presenceOffline
 		d.node.membership = membershipNone
@@ -632,6 +663,12 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		// schedules the next poll, so accepting a superseded one would leave two
 		// chains running against the same node.
 		if msg.nodeKey != d.node.key || msg.gen != d.telemetryGen {
+			return nil, true
+		}
+		// A chain started before the worker reported TLS ends here, rather than
+		// overwriting the worker's reading with its own failure every poll.
+		if d.node.nodeInfoTLS {
+			d.telemetryRunning = false
 			return nil, true
 		}
 		// A failed poll is expected for an unreachable node and is recorded
