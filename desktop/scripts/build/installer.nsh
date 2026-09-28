@@ -325,9 +325,14 @@
   RMDir "$PROGRAMFILES64\NVIDIA Corporation\PAIR\installer-inputs"
   ; Only remove an inert package-staged helper. operation.json proves the helper
   ; belongs to bootstrap state and must be removed by marker-bound uninstall.
-  ${ifNot} ${FileExists} "$PROGRAMDATA\NVIDIA Corporation\Personal AI Router\host-bootstrap\operation.json"
+  ; NSIS has no ProgramData constant; an unreadable path keeps the helper.
+  Push $R9
+  ReadEnvStr $R9 PROGRAMDATA
+  ${if} $R9 != ""
+  ${andIfNot} ${FileExists} "$R9\NVIDIA Corporation\Personal AI Router\host-bootstrap\operation.json"
     Delete "$PROGRAMFILES64\NVIDIA Corporation\PAIR\nvpair-host-helper.exe"
   ${endif}
+  Pop $R9
   RMDir "$PROGRAMFILES64\NVIDIA Corporation\PAIR"
   RMDir "$PROGRAMFILES64\NVIDIA Corporation"
 !macroend
