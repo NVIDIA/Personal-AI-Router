@@ -6,6 +6,7 @@ package tests
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -60,7 +61,7 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 		"port": port,
 		"ready": map[string]any{
 			"http":      fmt.Sprintf("http://127.0.0.1:%d/", port),
-			"status":    200,
+			"status":    http.StatusOK,
 			"timeout_s": 10,
 		},
 		"stop": map[string]any{"signal": "term", "grace_s": 3},
@@ -75,7 +76,7 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("encode foreign engine manifest: %v", err)
 	}
 	// The per-user manifest dir differs by platform, and the broker points every
 	// worker at one disposable root, so write both candidates rather than
@@ -86,10 +87,10 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 		filepath.Join(configDir, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
+			t.Fatalf("create engine manifest dir: %v", err)
 		}
 		if err := os.WriteFile(filepath.Join(dir, "foreign.json"), data, 0o644); err != nil {
-			t.Fatal(err)
+			t.Fatalf("write foreign engine manifest: %v", err)
 		}
 	}
 }
@@ -146,7 +147,7 @@ func TestQuitSweepsEnginesOnce(t *testing.T) {
 // countStderrUntilClosed closes the broker's stdin once (completing the quit
 // sequence) and counts matching stderr lines until the stream closes with the
 // process. Returns the count.
-func countStderrUntilClosed(t *testing.T, lines <-chan string, re *regexp.Regexp, stdin interface{ Close() error }, timeout time.Duration) int {
+func countStderrUntilClosed(t *testing.T, lines <-chan string, re *regexp.Regexp, stdin io.Closer, timeout time.Duration) int {
 	t.Helper()
 	closed := false
 	count := 0
