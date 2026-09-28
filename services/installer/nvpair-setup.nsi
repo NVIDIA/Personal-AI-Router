@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-; NVIDIA Personal AI Router - NSIS Installer Script
+; NVIDIA PAIR - NSIS Installer Script
 ; Requires NSIS 3.x with MUI2
 ;
 ; REFERENCE FILE. This is the NSIS definition NVIDIA builds the Windows services
@@ -17,7 +17,11 @@
 ;---------------------------------------
 ; General
 ;---------------------------------------
+; PRODUCT_NAME keys the uninstall registry entry, the default install directory,
+; and the Start menu folder, all of which an earlier install's uninstaller finds
+; by this exact string. User-visible text uses PRODUCT_DISPLAY_NAME instead.
 !define PRODUCT_NAME "NVIDIA Personal AI Router"
+!define PRODUCT_DISPLAY_NAME "NVIDIA PAIR"
 !define PRODUCT_PUBLISHER "NVIDIA Corporation"
 !define PRODUCT_URL "https://github.com/NVIDIA/Personal-AI-Router"
 
@@ -33,7 +37,7 @@
 ; users whose profile paths contain non-ASCII characters.
 Unicode true
 
-Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
+Name "${PRODUCT_DISPLAY_NAME} ${PRODUCT_VERSION}"
 OutFile "..\dist\NVIDIA-Personal-AI-Router-${PRODUCT_VERSION}-Setup.exe"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "${ARP_KEY}" "InstallLocation"
@@ -85,7 +89,7 @@ Function .onInit
   ; installs just proceed.
   IfSilent done 0
   MessageBox MB_OKCANCEL|MB_ICONQUESTION \
-    "${PRODUCT_NAME} is already installed.$\n$\nClick OK to continue - the previous version will be removed when you click Install on the next screen. Click Cancel to abort." \
+    "${PRODUCT_DISPLAY_NAME} is already installed.$\n$\nClick OK to continue - the previous version will be removed when you click Install on the next screen. Click Cancel to abort." \
     /SD IDOK IDOK done
   Abort
 
@@ -106,7 +110,7 @@ FunctionEnd
 ; return code.
 ;---------------------------------------
 !macro CloseRunningInstance
-  DetailPrint "Checking for running ${PRODUCT_NAME} processes..."
+  DetailPrint "Checking for running ${PRODUCT_DISPLAY_NAME} processes..."
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-proxy.exe"'
   ; Pre-unification names. An orphan still holding 11434 or 1234 is exactly
   ; what the managed-facade planner has to block on, so kill it here too.
@@ -226,7 +230,7 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
   ; Add/Remove Programs registry
-  WriteRegStr   HKLM "${ARP_KEY}" "DisplayName"     "${PRODUCT_NAME}"
+  WriteRegStr   HKLM "${ARP_KEY}" "DisplayName"     "${PRODUCT_DISPLAY_NAME}"
   WriteRegStr   HKLM "${ARP_KEY}" "DisplayVersion"  "${PRODUCT_VERSION}"
   WriteRegStr   HKLM "${ARP_KEY}" "Publisher"        "${PRODUCT_PUBLISHER}"
   WriteRegStr   HKLM "${ARP_KEY}" "URLInfoAbout"     "${PRODUCT_URL}"

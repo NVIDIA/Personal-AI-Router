@@ -512,7 +512,7 @@ func TestBundleFormatIsPreservedAsOneFile(t *testing.T) {
 	if !res.bundle {
 		t.Fatal("fixture is an exported bundle but was not detected as one")
 	}
-	if !strings.HasPrefix(res.output, "# Personal AI Router Logs (sanitized)") {
+	if !strings.HasPrefix(res.output, "# NVIDIA PAIR Logs (sanitized)") {
 		t.Error("bundle header missing from output")
 	}
 	for _, name := range []string{"Metadata", "Current Modular State"} {

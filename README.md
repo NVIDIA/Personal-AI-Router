@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/security-policy-green.svg)](SECURITY.md)
 
-NVIDIA Personal AI Router (PAIR) is a local inference router for a group of
-compatible computers on the same network. It discovers participating nodes,
+NVIDIA Personal AI Router (PAIR), shown as **NVIDIA PAIR** once installed, is a
+local inference router for a group of compatible computers on the same network. It discovers participating nodes,
 manages supported inference engines, and presents local proxy endpoints for
 Ollama-compatible, OpenAI-compatible, and Anthropic Messages API requests.
 Independent requests can be routed to eligible nodes according to engine
@@ -75,7 +75,7 @@ Release downloads include:
 - a macOS disk image.
 
 **On Windows and macOS,** double-click the download and follow the installer's
-usual prompts — on macOS that means dragging **NVIDIA PAIR** to your
+usual prompts — on macOS that means dragging **PAIR** to your
 **Applications** folder.
 
 **On Linux,** install the package from the directory you downloaded it into:

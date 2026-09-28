@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Collect Personal AI Router logs and rewrite the identifiers in them so the
+# Collect NVIDIA PAIR logs and rewrite the identifiers in them so the
 # result can be shared.
 #
 # Runnable from anywhere:

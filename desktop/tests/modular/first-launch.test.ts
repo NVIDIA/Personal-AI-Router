@@ -72,8 +72,7 @@ describe('first launch', () => {
         initPlatform({
             getUserData: () => userData,
             getTemp: () => userData,
-            getResourcesPath: () => process.cwd(),
-            getAppName: () => 'NVIDIA PAIR'
+            getResourcesPath: () => process.cwd()
         })
         loadUiConfig()
         expect(isFirstRun()).toBe(true)
