@@ -30,9 +30,6 @@ func TestDiagnosticMPILaunchRevalidatesTheFabricAfterEveryParticipantPrepares(t 
 	for _, changed := range []bool{true, false} {
 		t.Run("changed="+strconv.FormatBool(changed), func(t *testing.T) {
 			d := diagnosticTestService(t)
-			ctx, cancel := context.WithCancel(context.Background())
-			t.Cleanup(cancel)
-			d.ctx = ctx
 			dir := t.TempDir()
 			clustertrusttest.Join(t, dir, "cluster", "node-a", "node-b")
 			d.m.mesh = clustertrust.Open(dir)
