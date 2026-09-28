@@ -308,6 +308,3 @@
 | `workloads:remove` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 
-**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `ctx (var)  (manager.go)`
-
