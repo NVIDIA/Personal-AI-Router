@@ -33,10 +33,6 @@ export function EnginePathConsentModal({
     onCancel: () => void
 }) {
     const names = engineList.format(engines.map(engine => EngineDisplayNames[engine]))
-    const edited =
-        window.windowApi.platform === 'Windows'
-            ? 'your user environment variables'
-            : 'your shell profile'
 
     return (
         <ModalRoot
@@ -52,8 +48,7 @@ export function EnginePathConsentModal({
                         <Text kind="body/regular/sm" asChild>
                             <div>
                                 Add the {names} command-line tools to your PATH so you can run them
-                                from a terminal? PAIR will update {edited}. Open a new terminal
-                                afterward for the change to take effect.
+                                from a terminal?
                             </div>
                         </Text>
                         <Flex justify="end" gap="2">
