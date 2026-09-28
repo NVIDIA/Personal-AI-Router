@@ -987,6 +987,67 @@ func TestSettingsApplyBudgetIsTheBackends(t *testing.T) {
 	}
 }
 
+// TestSettingsPromptsHoldTheKeyboard checks the two settings waiting states
+// keep the shell's global keys away.
+//
+// With a restart confirmation armed, q quit instead of answering it and tab
+// left the restart armed behind a prompt no longer on screen. With a settings
+// read in flight, the shell was free to act on keys that belong to the field
+// about to open.
+func TestSettingsPromptsHoldTheKeyboard(t *testing.T) {
+	d := localDetail()
+	d.settingsConfirm = &enginesettings.Request{Engine: "ollama"}
+	if !d.CapturingInput() {
+		t.Error("an armed restart confirmation does not hold the keyboard")
+	}
+
+	d = localDetail()
+	d.settingsWanted = &pendingSettingsEdit{engine: "ollama", mode: detailInputEnginePort}
+	if !d.CapturingInput() {
+		t.Error("a settings read in flight does not hold the keyboard")
+	}
+}
+
+// TestSettingsWriteFollowsTheFieldNotTheCursor is the regression guard for a
+// value typed for one engine being written to another.
+//
+// A field can open after a settings read, and the cursor is free to move while
+// the read is in flight. Building the request from the selection wrote the
+// value typed into Ollama's field into LM Studio's settings.
+func TestSettingsWriteFollowsTheFieldNotTheCursor(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{
+		{Engine: "ollama", DisplayName: "Ollama", Installed: true, Port: 11435},
+		{Engine: "lmstudio", DisplayName: "LM Studio", Installed: true, Port: 1235},
+	}
+	d.refreshEngines()
+	seedSettings(d, ollamaSettings())
+	lms := ollamaSettings()
+	lms.Engine = "lmstudio"
+	lms.Revision = 3
+	seedSettings(d, lms)
+
+	// Open Ollama's engine port field, then move the cursor to LM Studio.
+	d.openSettingsField(d.settings["ollama"], detailInputEnginePort)
+	d.engineTable.SetCursor(1)
+	if sel := d.selectedEngine(); sel == nil || sel.Engine != "lmstudio" {
+		t.Fatalf("setup: cursor is not on LM Studio (%+v)", sel)
+	}
+
+	if d.submitSettings(detailInputEnginePort, "11600", "11600") == nil {
+		t.Fatal("the submit issued no preview")
+	}
+	// The submit names the engine it built the request for. Resolved from the
+	// cursor, this read "checking LM Studio settings".
+	got := d.status.render()
+	if !strings.Contains(got, "Ollama") || strings.Contains(got, "LM Studio") {
+		t.Errorf("status %q: the write was aimed at the cursor, not the field", got)
+	}
+	if d.settingsEngine != "" {
+		t.Error("the field's engine outlived the submit")
+	}
+}
+
 // TestEngineNameDoesNotDependOnTheEngineFetch is the regression guard for the
 // same engine reading "Ollama" on one machine and "ollama" on another.
 //
