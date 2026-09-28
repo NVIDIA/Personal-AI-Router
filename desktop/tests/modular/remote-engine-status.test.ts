@@ -1,10 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import type { SupportedPlatform } from '@/shared/types/platform'
+
+const host = vi.hoisted((): { platform: SupportedPlatform } => ({ platform: 'linux' }))
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
+vi.mock('@/shared/utils/platform', async importOriginal => ({
+    ...(await importOriginal<typeof import('@/shared/utils/platform')>()),
+    currentPlatform: () => host.platform
+}))
 
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 
@@ -254,6 +261,10 @@ describe('remote engine status', () => {
     })
 
     it('does not let an unsupported local host over-hold an unrelated remote Linux target', () => {
+        host.platform = 'win32'
+        onTestFinished(() => {
+            host.platform = 'linux'
+        })
         const state = getModularBridgeState()
         const localNodeId = 'windows-controller'
         const remoteNodeId = 'remote-linux-vllm'
