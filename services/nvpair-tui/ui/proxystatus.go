@@ -159,14 +159,18 @@ func (p *proxyTracker) apply(msg proxyStatusMsg) {
 // a proxy that died stayed green with its old port on screen, pointing clients
 // at an endpoint that had stopped listening — the one thing this strip exists to
 // tell them.
+//
+// The broker forwards every facade's pushes under that facade's own prefix, so
+// the facade is found by prefix rather than by a position in the table.
 func (p *proxyTracker) handleNotification(msg *rpc.Message) {
 	idx := -1
-	switch {
-	case strings.HasPrefix(msg.Method, "lmstudio-proxy:"):
-		idx = 1
-	case strings.HasPrefix(msg.Method, "proxy:"):
-		idx = 0
-	default:
+	for i, e := range p.engines {
+		if strings.HasPrefix(msg.Method, e.prefix+":") {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
 		return
 	}
 	switch {

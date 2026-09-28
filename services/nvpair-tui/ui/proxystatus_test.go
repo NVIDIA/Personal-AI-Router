@@ -16,14 +16,14 @@ import (
 func TestProxyErrorTakesProxyDown(t *testing.T) {
 	p := newProxyTracker()
 	p.handleNotification(&rpc.Message{
-		Method: "proxy:ready",
+		Method: "ollama-proxy:ready",
 		Params: []byte(`{"port":11434}`),
 	})
 	if port, ready := p.portForEngine("ollama"); !ready || port != 11434 {
 		t.Fatalf("after ready: port=%d ready=%v", port, ready)
 	}
 
-	p.handleNotification(&rpc.Message{Method: "proxy:error", Params: []byte(`{}`)})
+	p.handleNotification(&rpc.Message{Method: "ollama-proxy:error", Params: []byte(`{}`)})
 	port, ready := p.portForEngine("ollama")
 	if ready {
 		t.Error("proxy still reads ready after an error frame")
@@ -43,8 +43,8 @@ func TestProxyErrorTakesProxyDown(t *testing.T) {
 }
 
 // TestProxyNotificationsAreScopedByPrefix checks the two proxies are told apart.
-// Their methods share a suffix and "lmstudio-proxy:" would match a naive
-// "proxy:" test, so a mix-up would report one proxy's state against the other.
+// Their methods share a suffix, so a mix-up would report one proxy's state
+// against the other.
 func TestProxyNotificationsAreScopedByPrefix(t *testing.T) {
 	p := newProxyTracker()
 	p.handleNotification(&rpc.Message{
@@ -57,6 +57,32 @@ func TestProxyNotificationsAreScopedByPrefix(t *testing.T) {
 	}
 	if _, ready := p.portForEngine("ollama"); ready {
 		t.Error("an lmstudio-proxy frame marked the ollama proxy ready")
+	}
+}
+
+// TestProxyPushesUseTheFacadePrefix is the regression guard for the Ollama
+// proxy's pushes being dropped.
+//
+// The broker forwards each facade's pushes as <engine>-proxy:<method>. Routing
+// still looked for the bare "proxy:" of the single-engine proxy this replaced,
+// so Ollama readiness and failure only ever reached the screen through the
+// periodic status poll — and a proxy that died read as up until the next one.
+func TestProxyPushesUseTheFacadePrefix(t *testing.T) {
+	p := newProxyTracker()
+	for _, e := range p.engines {
+		p.handleNotification(&rpc.Message{Method: e.prefix + ":ready", Params: []byte(`{"port":4000}`)})
+		if port, ready := p.portForEngine(e.engine); !ready || port != 4000 {
+			t.Errorf("%s: a ready push under %q was not applied (port=%d ready=%v)",
+				e.engine, e.prefix, port, ready)
+		}
+	}
+
+	p = newProxyTracker()
+	p.handleNotification(&rpc.Message{Method: "proxy:ready", Params: []byte(`{"port":4000}`)})
+	for _, e := range p.engines {
+		if _, ready := p.portForEngine(e.engine); ready {
+			t.Errorf("%s: an unaddressed push was attributed to it", e.engine)
+		}
 	}
 }
 
