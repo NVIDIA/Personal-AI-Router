@@ -107,7 +107,7 @@
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
 | `engine:models` | request (we call) | ✅ yes |
-| `engine:prepare-shutdown` | request (we call) | ✅ yes |
+| `engine:prepare-shutdown` | request (we call) | ➖ ignored |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |

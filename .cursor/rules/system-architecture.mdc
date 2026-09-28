@@ -214,7 +214,8 @@ operations.
 - Remote lifecycle uses the engine manager's remote control methods where
   available.
 - `engine:prepare-shutdown` stops processes without clearing persisted desired
-  state.
+  state. The broker calls it during its own shutdown, after stopping the proxy;
+  clients leave it to the broker.
 - Engine and proxy ports are persisted by their backend owners.
 - Running adopted engines reject operations that require process ownership.
 - Per-engine launch arguments and environment are editable through
