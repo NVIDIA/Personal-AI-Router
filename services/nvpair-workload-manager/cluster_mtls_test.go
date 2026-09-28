@@ -81,6 +81,17 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 	return dir
 }
 
+// newPinnedPeerDirs builds two mutually pinned nodes. Tests that construct a
+// Manager need selfDir because NewManager opens its own mesh from that path.
+func newPinnedPeerDirs(t *testing.T) (selfDir, peerDir string) {
+	t.Helper()
+	selfCert, selfKey := genLeaf(t, "uuid-self")
+	peerCert, peerKey := genLeaf(t, "uuid-peer")
+	selfDir = setupNode(t, selfCert, selfKey, map[string][]byte{"uuid-peer": peerCert})
+	peerDir = setupNode(t, peerCert, peerKey, map[string][]byte{"uuid-self": selfCert})
+	return selfDir, peerDir
+}
+
 // newPinnedPeerMeshes builds the two sides of a minimal two-node cluster: self
 // pins peer and peer pins self, so a test can drive the real inter-node path
 // (cluster mTLS from a pinned caller) rather than a plaintext shortcut. There is
@@ -88,10 +99,7 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 // receiver test goes through here.
 func newPinnedPeerMeshes(t *testing.T) (self, peer *clustertrust.Mesh) {
 	t.Helper()
-	selfCert, selfKey := genLeaf(t, "uuid-self")
-	peerCert, peerKey := genLeaf(t, "uuid-peer")
-	selfDir := setupNode(t, selfCert, selfKey, map[string][]byte{"uuid-peer": peerCert})
-	peerDir := setupNode(t, peerCert, peerKey, map[string][]byte{"uuid-self": selfCert})
+	selfDir, peerDir := newPinnedPeerDirs(t)
 	self, peer = clustertrust.Open(selfDir), clustertrust.Open(peerDir)
 	if !self.Clustered() || !peer.Clustered() {
 		t.Fatal("a dir holding a keypair and a pin must read as clustered")

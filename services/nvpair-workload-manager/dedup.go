@@ -33,6 +33,7 @@ type dedupIndex struct {
 	capacity int
 	ll       *list.List               // front = most recently seen
 	items    map[string]*list.Element // key -> element in ll
+	inFlight map[string]chan struct{} // one broker emit at a time per key
 }
 
 func newDedupIndex(capacity int) *dedupIndex {
@@ -43,6 +44,7 @@ func newDedupIndex(capacity int) *dedupIndex {
 		capacity: capacity,
 		ll:       list.New(),
 		items:    make(map[string]*list.Element, capacity),
+		inFlight: make(map[string]chan struct{}),
 	}
 }
 
@@ -50,38 +52,60 @@ func newDedupIndex(capacity int) *dedupIndex {
 // first sighting it records the key and returns false. Either way the key is
 // promoted to most-recently-seen.
 func (d *dedupIndex) seenOrAdd(key string) bool {
-	if d.seen(key) {
-		d.mu.Lock()
-		d.ll.MoveToFront(d.items[key])
-		d.mu.Unlock()
-		return true
-	}
-	d.add(key)
-	return false
-}
-
-// seen reports whether the key is already recorded, without recording it.
-// Split from add so a caller can record the key only after the work the key
-// guards has actually succeeded (e.g. the inter-node server records a peer
-// event's dedup key only once the broker emit succeeded, so a failed emit's
-// retry isn't mistaken for a duplicate).
-func (d *dedupIndex) seen(key string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	_, ok := d.items[key]
-	return ok
-}
-
-// add records the key, promoting it to most-recently-seen and evicting the
-// least-recently-seen key past capacity. Recording an already-present key is a
-// no-op recency promotion.
-func (d *dedupIndex) add(key string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if el, ok := d.items[key]; ok {
 		d.ll.MoveToFront(el)
-		return
+		return true
 	}
+	d.addLocked(key)
+	return false
+}
+
+// emitOnce serializes the check, broker emit, and record for one key. Other
+// keys can emit concurrently. If emit fails, the key stays absent and a waiting
+// request can retry it. A completed key is reported as a duplicate.
+func (d *dedupIndex) emitOnce(key string, emit func() error) (bool, error) {
+	for {
+		d.mu.Lock()
+		if el, ok := d.items[key]; ok {
+			d.ll.MoveToFront(el)
+			d.mu.Unlock()
+			return true, nil
+		}
+		if done, ok := d.inFlight[key]; ok {
+			d.mu.Unlock()
+			<-done
+			continue
+		}
+		done := make(chan struct{})
+		d.inFlight[key] = done
+		d.mu.Unlock()
+
+		// Release waiters even if an emitter panics and net/http recovers the
+		// request. A panicking emit has not completed successfully.
+		err := func() (err error) {
+			completed := false
+			defer func() {
+				d.mu.Lock()
+				if completed && err == nil {
+					d.addLocked(key)
+				}
+				delete(d.inFlight, key)
+				close(done)
+				d.mu.Unlock()
+			}()
+			err = emit()
+			completed = true
+			return err
+		}()
+		return false, err
+	}
+}
+
+// addLocked records a new key and evicts the least-recently-seen key past
+// capacity. The caller holds d.mu and has checked that key is absent.
+func (d *dedupIndex) addLocked(key string) {
 	el := d.ll.PushFront(key)
 	d.items[key] = el
 	if d.ll.Len() > d.capacity {

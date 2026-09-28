@@ -24,10 +24,11 @@ import (
 const discoveryInterval = 5 * time.Second
 
 // resyncInterval is how often each node re-asserts its own active + recently-
-// terminal workloads to peers (the anti-entropy heartbeat), so a dropped
-// delivery or a peer's wrong node-loss guess reconciles within a couple of
-// intervals. terminalRetention keeps a finished workload in the re-sync set for
-// two intervals — so it is re-asserted ~twice before ageing out.
+// terminal workloads to peers (the anti-entropy heartbeat). A later
+// re-assertion can repair a missed lifecycle event or a peer's wrong node-loss
+// guess if it is queued and delivered. terminalRetention keeps a finished
+// workload in the re-sync set for two intervals, allowing roughly two
+// re-assertions before it ages out. Removals are not kept in that set.
 //
 // resyncInterval is load-bearing OUTSIDE this binary. nvpair-ui-broker's
 // staleness sweep (workloadOriginSilenceTimeout in its broker.go) retires a
@@ -56,9 +57,9 @@ type workloadKey struct {
 
 // workloadEvent is a stored lifecycle notification (method + params) for a
 // workloadKey. A terminal event is retained until expiresAt so the heartbeat
-// re-asserts it a couple of times (covering a dropped delivery / a peer's wrong
-// node-loss guess); an active event has a zero expiresAt and is retained until
-// it terminates or is removed.
+// can re-assert it a couple of times (offering another chance after a missed
+// delivery or a peer's wrong node-loss guess); an active event has a zero
+// expiresAt and is retained until it terminates or is removed.
 type workloadEvent struct {
 	method    string
 	params    json.RawMessage
@@ -87,15 +88,15 @@ type Manager struct {
 	// activeLocal is this node's re-sync set: the latest event per local-origin
 	// (origin,id) — active workloads plus recently-terminal ones (retained
 	// until they expire). It backfills a newly-discovered peer (pushActiveSnapshot)
-	// and is re-asserted on the heartbeat (resyncLoop) so peers reconcile to this
-	// node's authoritative state. Guarded by activeMu.
+	// and is re-asserted on the heartbeat (resyncLoop) to help peers reconcile
+	// to this node's authoritative state. Guarded by activeMu.
 	activeMu    sync.Mutex
 	activeLocal map[workloadKey]workloadEvent
 
 	// broadcastCh serializes outbound inter-node frames in the order the
 	// read loop produced them. broadcastFrame only enqueues (never blocks on
 	// network I/O), and a single worker drains the queue in order — so a
-	// remove can never overtake the lifecycle upsert it follows. Without
+	// queued remove cannot overtake the lifecycle upsert it follows. Without
 	// this, each frame fanned out in its own goroutine and a late upsert
 	// could resurrect a workload on peers that had already removed it.
 	broadcastCh chan []byte
@@ -167,8 +168,8 @@ func (m *Manager) Run(ctx context.Context) error {
 	go m.discoveryLoop(ctx)
 	go m.resyncLoop(ctx)
 	// The single ordered broadcast consumer: frames go out in the order the
-	// read loop produced them, so a remove can never overtake the lifecycle
-	// event it follows.
+	// read loop produced them, so a queued remove cannot overtake the
+	// lifecycle event it follows.
 	go m.broadcastLoop(ctx)
 	// Follow this node into and out of a cluster. Every gate already reads live
 	// membership, so the watch exists to notice a change with no traffic flowing
@@ -365,20 +366,18 @@ func (m *Manager) handleLocalRemove(msg *Message) {
 }
 
 // broadcastQueueDepth bounds how many outbound frames can wait for the
-// ordered broadcast worker. Frames are small JSON notifications; 1024 is far
-// beyond steady-state volume and only binds memory during a peer outage, when
-// overflow frames are dropped (with a warning) rather than wedging the read
-// loop — the heartbeat and peer backfill re-sync state, so a dropped frame
-// degrades to delayed convergence.
+// ordered broadcast worker. This bounds queued memory without blocking the
+// read loop: a full queue drops each new frame with a warning. Heartbeat and
+// backfill can reassert tracked lifecycle state, but neither replays removals.
+// If this is too small, we can make it bigger or configurable.
 const broadcastQueueDepth = 1024
 
 // broadcastFrame re-marshals a single notification and enqueues it for the
 // ordered broadcast worker. Delivery is still asynchronous — a slow peer never
 // blocks the read loop — but frames now go out in the order they were produced
 // (no batching/conflation): the origin's own view already updated
-// synchronously in the broker, and peers must see each transition promptly and
-// individually — a batching window would add latency and drop intermediate
-// states, skewing each node's independent scheduling view.
+// synchronously in the broker. Each queued frame is sent separately, but
+// delivery remains best-effort and a full queue drops the new frame.
 func (m *Manager) broadcastFrame(method string, params json.RawMessage) {
 	frame, err := json.Marshal(&Message{JSONRPC: "2.0", Method: method, Params: params})
 	if err != nil {
@@ -399,10 +398,10 @@ func (m *Manager) broadcastFrame(method string, params json.RawMessage) {
 }
 
 // broadcastLoop is the single ordered consumer of broadcastCh. One worker (not
-// a goroutine per frame) is what guarantees a remove never overtakes the
-// lifecycle event it follows. Broadcast aborts in-flight attempts on ctx
-// cancellation, so at shutdown the loop just exits; frames still queued are
-// dropped with the process.
+// a goroutine per frame) preserves queue order, so a queued remove cannot
+// overtake the lifecycle event it follows. It does not guarantee delivery.
+// Broadcast aborts in-flight attempts on ctx cancellation, so at shutdown the
+// loop just exits; frames still queued are dropped with the process.
 func (m *Manager) broadcastLoop(ctx context.Context) {
 	for {
 		select {
@@ -483,8 +482,9 @@ func (m *Manager) pushActiveSnapshot() {
 // resyncLoop is the anti-entropy heartbeat: every resyncInterval it re-asserts
 // this node's own active + recently-terminal workloads to all peers. Because the
 // origin is the single writer for its workloads, a peer that missed a delivery
-// or made a wrong node-loss guess reconciles to the origin's authoritative state
-// within a couple of intervals.
+// or made a wrong node-loss guess may reconcile to the origin's authoritative
+// state when later reassertions are queued and delivered. A full queue can drop
+// those reassertions, and removals are not part of the re-sync set.
 func (m *Manager) resyncLoop(ctx context.Context) {
 	ticker := time.NewTicker(resyncInterval)
 	defer ticker.Stop()

@@ -171,33 +171,28 @@ func (s *Server) handleLifecycle(w http.ResponseWriter, msg *Message) {
 	// reach the broker so its store can reconcile (e.g. un-stick a wrongly
 	// inferred failed). The store is idempotent, so bypassing dedup here is safe.
 	//
-	// The key is recorded only after the broker emit succeeds: a failed emit
-	// answers 500 so the peer's retry budget kicks in, and that retry must not
-	// be mistaken for a duplicate (the old code recorded the key first, so a
-	// failed emit permanently dropped the event with no anti-entropy repair).
-	// A concurrent duplicate that passes seen() before either emit runs just
-	// emits twice, which the idempotent store absorbs.
+	// The key is recorded only after the broker emit succeeds. A failed emit
+	// leaves the key available for a retry; concurrent requests for the same key
+	// wait for that result rather than both emitting to the broker.
 	resync := isResyncFrame(msg.Params)
-	lifecycleKey := ""
+	var duplicate bool
 	if !resync {
-		lifecycleKey = keyLifecycle(wl)
-		if s.dedup.seen(lifecycleKey) {
-			slog.Debug("inter-node lifecycle deduplicated", "method", msg.Method, "id", wl.ID, "state", wl.State)
-			s.ok(w)
-			return
-		}
+		duplicate, err = s.dedup.emitOnce(keyLifecycle(wl), func() error { return s.emitUpsert(wl) })
+	} else {
+		err = s.emitUpsert(wl)
 	}
-
-	if err := s.emitUpsert(wl); err != nil {
+	if duplicate {
+		slog.Debug("inter-node lifecycle deduplicated", "method", msg.Method, "id", wl.ID, "state", wl.State)
+		s.ok(w)
+		return
+	}
+	if err != nil {
 		// A failed stdout write means the broker is gone; report a server
 		// error so the peer's retry budget can kick in, but the local
 		// interface severing is handled as a shutdown signal elsewhere.
 		slog.Error("failed to emit workloads:upsert", "id", wl.ID, "err", err)
 		http.Error(w, "broker unavailable", http.StatusInternalServerError)
 		return
-	}
-	if !resync {
-		s.dedup.add(lifecycleKey)
 	}
 	slog.Info("relayed remote lifecycle as upsert", "method", msg.Method, "id", wl.ID, "state", wl.State, "node", wl.OriginatedFrom)
 	s.ok(w)
@@ -219,22 +214,21 @@ func (s *Server) handleRemove(w http.ResponseWriter, msg *Message) {
 		return
 	}
 
-	// The removal key, like the lifecycle key, is recorded only after the
-	// broker emit succeeds, so a failed emit's retry isn't swallowed as a
-	// duplicate.
-	removeKey := keyRemove(nodeID, workloadID)
-	if s.dedup.seen(removeKey) {
+	// A failed emit leaves the key available for a retry. Concurrent requests
+	// for the same removal wait, so only one successful emit reaches the broker.
+	duplicate, err := s.dedup.emitOnce(keyRemove(nodeID, workloadID), func() error {
+		return s.emitRemove(workloadID, nodeID)
+	})
+	if duplicate {
 		slog.Debug("inter-node removal deduplicated", "workloadId", workloadID, "node", nodeID)
 		s.ok(w)
 		return
 	}
-
-	if err := s.emitRemove(workloadID, nodeID); err != nil {
+	if err != nil {
 		slog.Error("failed to emit workloads:remove", "workloadId", workloadID, "node", nodeID, "err", err)
 		http.Error(w, "broker unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.dedup.add(removeKey)
 	slog.Info("relayed remote removal", "workloadId", workloadID, "node", nodeID)
 	s.ok(w)
 }
