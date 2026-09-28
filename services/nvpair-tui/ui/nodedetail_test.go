@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -502,7 +503,7 @@ func TestFailedSaveReloadsTheSnapshot(t *testing.T) {
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 	d.refreshEngines()
 	seedSettings(d, ollamaSettings())
-	d.settingsAwaited = "ollama"
+	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "req-1"}
 
 	cmd, _ := d.update(engineSettingsAppliedMsg{
 		engine: "ollama",
@@ -732,6 +733,7 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 			name: "the endpoint could not take the port",
 			snapshot: enginesettings.Snapshot{
 				Engine:              "lmstudio",
+				Phase:               settingsPhaseSucceeded,
 				Settings:            enginesettings.Config{ProxyPort: 1235, ServerPort: 1236},
 				EffectiveProxyPort:  1234,
 				EffectiveServerPort: 1236,
@@ -764,6 +766,7 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 			name: "the engine port reading lags a successful move",
 			snapshot: enginesettings.Snapshot{
 				Engine:              "ollama",
+				Phase:               settingsPhaseSucceeded,
 				Settings:            enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
 				EffectiveProxyPort:  11434,
 				EffectiveServerPort: 11435,
@@ -776,6 +779,7 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 			name: "honoured",
 			snapshot: enginesettings.Snapshot{
 				Engine:              "ollama",
+				Phase:               settingsPhaseSucceeded,
 				Settings:            enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
 				EffectiveProxyPort:  11434,
 				EffectiveServerPort: 11500,
@@ -787,6 +791,7 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 			name: "nothing bound yet",
 			snapshot: enginesettings.Snapshot{
 				Engine:   "ollama",
+				Phase:    settingsPhaseSucceeded,
 				Settings: enginesettings.Config{ProxyPort: 11434, ServerPort: 11500},
 			},
 			// A stopped engine has no port in force. Saying it "stayed on :0"
@@ -799,8 +804,10 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := localDetail()
-			d.settingsAwaited = tc.snapshot.Engine
-			d.reportSettingsOutcome(tc.snapshot)
+			snap := tc.snapshot
+			snap.RequestID = "req-1"
+			d.settingsAwaited = &awaitedSettings{engine: snap.Engine, requestID: "req-1"}
+			d.reportSettingsOutcome(snap)
 
 			if d.status.kind != tc.wantKind {
 				t.Errorf("toast kind = %v, want %v", d.status.kind, tc.wantKind)
@@ -830,6 +837,8 @@ func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
 	d := localDetail()
 	snap := enginesettings.Snapshot{
 		Engine:             "ollama",
+		RequestID:          "ours",
+		Phase:              settingsPhaseSucceeded,
 		Settings:           enginesettings.Config{ProxyPort: 11434},
 		EffectiveProxyPort: 11999,
 	}
@@ -839,8 +848,21 @@ func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
 		t.Errorf("reported %q for a change this screen did not make", got)
 	}
 
+	// The same engine, changed by someone else while this screen waits: the
+	// desktop app, say. Matching on the engine alone consumed the await and
+	// reported their result as ours.
+	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "ours"}
+	theirs := snap
+	theirs.RequestID = "theirs"
+	d.reportSettingsOutcome(theirs)
+	if got := d.status.render(); got != "" {
+		t.Errorf("reported another client's change as this screen's: %q", got)
+	}
+	if d.settingsAwaited == nil {
+		t.Fatal("another client's snapshot spent this screen's await")
+	}
+
 	// And it speaks exactly once for a change it did make.
-	d.settingsAwaited = "ollama"
 	d.reportSettingsOutcome(snap)
 	if d.status.render() == "" {
 		t.Fatal("said nothing about this screen's own change")
@@ -849,6 +871,119 @@ func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
 	d.reportSettingsOutcome(snap)
 	if got := d.status.render(); got != "" {
 		t.Errorf("repeated the outcome as %q on a later snapshot", got)
+	}
+}
+
+// TestAcceptedIsNotApplied is the regression guard for a verdict reported
+// before the backend had one.
+//
+// The broker publishes a snapshot the moment it accepts a write — "applying",
+// new settings saved, old port still in force — and only then stops the
+// engine and does the work. Reading that as the outcome reported "saved"
+// immediately; on a proxy change it reported a healthy move as a failure,
+// since accepted and effective ports differ by definition at that point; and
+// it spent the await, so the real verdict was never reported.
+func TestAcceptedIsNotApplied(t *testing.T) {
+	d := localDetail()
+	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "req-1"}
+
+	applying := enginesettings.Snapshot{
+		Engine:    "ollama",
+		RequestID: "req-1",
+		Phase:     settingsPhaseApplying,
+		Settings:  enginesettings.Config{ProxyPort: 11500, ServerPort: 11435},
+		// Still where it was: the change has been accepted, not carried out.
+		EffectiveProxyPort: 11434,
+	}
+	d.reportSettingsOutcome(applying)
+	if got := d.status.render(); got != "" {
+		t.Errorf("reported %q while the change was still applying", got)
+	}
+	if d.settingsAwaited == nil {
+		t.Fatal("the applying snapshot spent the await, so the real verdict will be ignored")
+	}
+
+	// A never-configured engine reports no phase at all; that is not a verdict
+	// either.
+	idle := applying
+	idle.Phase = ""
+	d.reportSettingsOutcome(idle)
+	if d.settingsAwaited == nil {
+		t.Fatal("an empty phase was read as a verdict")
+	}
+
+	// The terminal snapshot for the same request is the one that speaks.
+	done := applying
+	done.Phase = settingsPhaseSucceeded
+	done.EffectiveProxyPort = 11500
+	d.reportSettingsOutcome(done)
+	if got := d.status.render(); !strings.Contains(got, "saved") {
+		t.Errorf("the terminal snapshot reported %q, want a save", got)
+	}
+
+	// And a genuine failure after "applying" is reported, not lost.
+	d = localDetail()
+	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "req-2"}
+	applying.RequestID = "req-2"
+	d.reportSettingsOutcome(applying)
+	failed := applying
+	failed.Phase = settingsPhaseFailed
+	failed.Error = "engine did not become ready"
+	d.reportSettingsOutcome(failed)
+	if got := d.status.render(); !strings.Contains(got, "did not become ready") {
+		t.Errorf("the failure after applying reported %q", got)
+	}
+}
+
+// TestSlowApplyIsStillApplying checks a deadline on the apply reply is not
+// reported as a failure.
+//
+// Accepted work is target-owned: the broker finishes a port swap whether or
+// not anyone is still listening. Treating the deadline as a rejection reported
+// failure on the path where the change was working, then dropped the await and
+// the cached snapshot, so the real verdict that followed went unreported.
+func TestSlowApplyIsStillApplying(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
+	d.refreshEngines()
+	seedSettings(d, ollamaSettings())
+	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "req-1"}
+
+	cmd, _ := d.update(engineSettingsAppliedMsg{engine: "ollama", err: context.DeadlineExceeded})
+	if cmd != nil {
+		t.Error("a deadline triggered a re-read, as though the write had been rejected")
+	}
+	if d.settingsAwaited == nil {
+		t.Fatal("a deadline cleared the await, so the verdict that follows will be ignored")
+	}
+	if _, kept := d.settings["ollama"]; !kept {
+		t.Error("a deadline discarded the snapshot the in-flight write was based on")
+	}
+	if got := d.status.render(); strings.Contains(got, "fail") || !strings.Contains(got, "applying") {
+		t.Errorf("status %q does not say the change is still applying", got)
+	}
+
+	d.reportSettingsOutcome(enginesettings.Snapshot{
+		Engine: "ollama", RequestID: "req-1", Phase: settingsPhaseSucceeded,
+	})
+	if got := d.status.render(); !strings.Contains(got, "saved") {
+		t.Errorf("the verdict after a deadline reported %q", got)
+	}
+}
+
+// TestSettingsApplyBudgetIsTheBackends checks the apply call is given the time
+// the backend works to, not the one sized for control calls.
+func TestSettingsApplyBudgetIsTheBackends(t *testing.T) {
+	if got := settingsApplyBudget(enginesettings.Request{Engine: "ollama"}); got != enginesettings.CallBudget {
+		t.Errorf("a local apply is allowed %v, want the shared call budget %v",
+			got, enginesettings.CallBudget)
+	}
+	if got := settingsApplyBudget(enginesettings.Request{NodeID: "peer", Engine: "ollama"}); got != enginesettings.RelayBudget {
+		t.Errorf("a relayed apply is allowed %v, want the shared relay budget %v",
+			got, enginesettings.RelayBudget)
+	}
+	if settingsApplyBudget(enginesettings.Request{}) <= callTimeout {
+		t.Error("an apply is no longer allowed more than a control call")
 	}
 }
 

@@ -4,6 +4,8 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -100,10 +102,13 @@ type nodeDetail struct {
 	// settingsConfirm is an applied change waiting on "y" because the backend
 	// said it would restart the engine.
 	settingsConfirm *enginesettings.Request
-	// settingsAwaited is the engine whose saved state this screen is waiting to
-	// see, so the outcome is reported for a change made here and not for one
-	// another client made.
-	settingsAwaited string
+	// settingsAwaited is the write whose outcome this screen is waiting to see,
+	// so the outcome reported is this screen's and not another client's.
+	settingsAwaited *awaitedSettings
+	// settingsEngine is the engine the open settings field was opened for. The
+	// write goes to it rather than to wherever the cursor now sits, which is
+	// not necessarily the same row.
+	settingsEngine string
 
 	telemetry   nodeTelemetry
 	telemetryOK bool
@@ -123,6 +128,19 @@ type nodeDetail struct {
 	status toast
 
 	width, height int
+}
+
+// awaitedSettings identifies one write, by engine and by the request id it
+// carried.
+//
+// The engine alone is not enough. Snapshots for an engine arrive whenever
+// anyone changes it — the desktop app, another operator — and one of those
+// arriving mid-apply would otherwise be reported as this screen's result. The
+// broker stamps every snapshot with the request that produced it, so the pair
+// picks out this screen's write and nobody else's.
+type awaitedSettings struct {
+	engine    string
+	requestID string
 }
 
 // pendingSettingsEdit is an edit waiting for the snapshot it needs.
@@ -520,8 +538,18 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		return d.applySettingsPreview(msg), true
 
 	case engineSettingsAppliedMsg:
+		if errors.Is(msg.err, context.DeadlineExceeded) {
+			// Not a rejection. Accepted work is target-owned — the broker does
+			// not abandon a half-finished port swap because this screen stopped
+			// listening — so the verdict will still arrive, as a snapshot.
+			// Stay armed for it, and keep the cached snapshot: unlike a
+			// revision mismatch, it is still exactly the basis the in-flight
+			// write was made against.
+			d.status.busy("%s settings are still applying...", d.engineLabel(msg.engine))
+			return nil, true
+		}
 		if msg.err != nil {
-			d.settingsAwaited = ""
+			d.settingsAwaited = nil
 			// The snapshot this write was based on is no longer one the
 			// backend will accept, whoever moved it on. Drop it and re-read,
 			// or every later attempt fails identically against the same stale
@@ -1134,7 +1162,7 @@ func (d *nodeDetail) applySettingsPreview(msg enginePreviewMsg) tea.Cmd {
 		d.status.arm("applying this restarts %s - press y to confirm", label)
 		return nil
 	}
-	d.settingsAwaited = req.Engine
+	d.settingsAwaited = &awaitedSettings{engine: req.Engine, requestID: req.RequestID}
 	d.status.busy("applying %s settings...", label)
 	return applyEngineSettingsCmd(d.client, req)
 }
@@ -1285,31 +1313,61 @@ func (d *nodeDetail) arm(prompt string, run func() tea.Cmd) tea.Cmd {
 // Only after this screen's own write, and only once. These snapshots also
 // arrive unprompted whenever anyone else changes settings, and a note firing on
 // each would be noise about something the operator did not do.
+//
+// Only a terminal phase is an answer. The broker publishes a snapshot the
+// moment it accepts a write — phase "applying", with the new settings saved and
+// the old port still in force — and only then stops the engine and does the
+// work. Treating that first snapshot as the outcome reported "saved" before
+// anything had been applied, and on a proxy port change reported a healthy
+// move as a failure, because an accepted-but-unapplied port differs from the
+// effective one by definition. It also spent the await, so the real verdict
+// that followed was ignored and a genuine failure was never reported.
 func (d *nodeDetail) reportSettingsOutcome(snap enginesettings.Snapshot) {
-	if d.settingsAwaited != snap.Engine {
+	awaited := d.settingsAwaited
+	if awaited == nil || snap.Engine != awaited.engine {
 		return
 	}
-	d.settingsAwaited = ""
+	// The broker stamps each snapshot with the request that produced it, so
+	// somebody else's change to this same engine is distinguishable rather
+	// than being consumed as this screen's result.
+	if snap.RequestID != awaited.requestID {
+		return
+	}
+	// Matched positively rather than by excluding "applying", so a phase added
+	// later cannot be read as a verdict — and nor can the empty phase an engine
+	// that was never configured reports.
+	if snap.Phase != settingsPhaseSucceeded && snap.Phase != settingsPhaseFailed {
+		return
+	}
+	d.settingsAwaited = nil
 	label := d.engineLabel(snap.Engine)
-	switch {
-	case snap.Phase == settingsPhaseFailed:
+
+	if snap.Phase == settingsPhaseFailed {
 		// The backend's own words. It knows why; this screen would be guessing.
 		if snap.Error != "" {
 			d.status.error("%s settings: %s", label, snap.Error)
 			return
 		}
 		d.status.error("%s settings were not applied", label)
-	case snap.EffectiveProxyPort != 0 && snap.EffectiveProxyPort != snap.Settings.ProxyPort:
+		return
+	}
+	// Only now is the effective port a reading of where the proxy landed,
+	// rather than of where it still was when the write was accepted.
+	if snap.EffectiveProxyPort != 0 && snap.EffectiveProxyPort != snap.Settings.ProxyPort {
 		d.status.error("%s endpoint is on :%d, not the :%d you asked for",
 			label, snap.EffectiveProxyPort, snap.Settings.ProxyPort)
-	default:
-		d.status.ok("%s settings saved", label)
+		return
 	}
+	d.status.ok("%s settings saved", label)
 }
 
-// settingsPhaseFailed is the snapshot phase for an apply the backend refused or
-// could not complete.
-const settingsPhaseFailed = "failed"
+// The snapshot phases the broker reports for a write. Only the last two are a
+// verdict; "applying" means accepted and still being carried out.
+const (
+	settingsPhaseApplying  = "applying"
+	settingsPhaseSucceeded = "succeeded"
+	settingsPhaseFailed    = "failed"
+)
 
 // resolveSettingsConfirm answers the restart prompt raised by a settings
 // change, applying it on "y" and discarding it on anything else.
@@ -1317,7 +1375,7 @@ func (d *nodeDetail) resolveSettingsConfirm(msg tea.KeyMsg) tea.Cmd {
 	req := d.settingsConfirm
 	d.settingsConfirm = nil
 	if key.Matches(msg, detailConfirmKey) {
-		d.settingsAwaited = req.Engine
+		d.settingsAwaited = &awaitedSettings{engine: req.Engine, requestID: req.RequestID}
 		d.status.busy("applying %s settings...", d.engineLabel(req.Engine))
 		return applyEngineSettingsCmd(d.client, *req)
 	}

@@ -77,8 +77,20 @@ func waitForNotification(client *rpc.Client) tea.Cmd {
 // outcome back into the update loop via decode, which maps the response
 // (or error) to a view-specific message.
 func call(client *rpc.Client, method string, params any, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
+	return callWithin(client, callTimeout, method, params, decode)
+}
+
+// callWithin is call with an explicit budget, for a request whose duration is
+// set by the work it starts rather than by the round trip.
+//
+// callTimeout was reasoned about for control calls, whose slowest leg is a
+// thirty-second relay. A request that waits on an engine restarting is not one
+// of those, and giving it the same deadline reported a working change as a
+// failure half a minute in, while the backend carried on and finished it.
+func callWithin(client *rpc.Client, budget time.Duration, method string, params any,
+	decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 		msg, err := client.Call(ctx, method, params)
 		return decode(msg, err)
