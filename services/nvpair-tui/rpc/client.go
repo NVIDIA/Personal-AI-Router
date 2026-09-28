@@ -126,6 +126,19 @@ func (c *Client) shutdown() {
 // ctx is cancelled, or the connection closes. A JSON-RPC error response
 // is returned as a non-nil error (*RPCError).
 func (c *Client) Call(ctx context.Context, method string, params any) (*Message, error) {
+	// Refused before it is written, not after. A request whose caller has
+	// already given up is still carried out once the broker has it, and for a
+	// mutation that means the work happens while the caller reports that it
+	// did not.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-c.done:
+		return nil, fmt.Errorf("connection closed before %q was sent", method)
+	default:
+	}
+
 	id := c.nextID.Add(1)
 	ch := make(chan *Message, 1)
 
