@@ -31,7 +31,7 @@ func TestJobsHistoryIsBounded(t *testing.T) {
 	}
 
 	// Eviction is oldest-first, so the most recent job must survive.
-	newest := workloadKey("node", fmt.Sprintf("job-%d", maxFinishedJobs+49))
+	newest := workloadKey(workload{OriginatedFrom: "node", ID: fmt.Sprintf("job-%d", maxFinishedJobs+49)})
 	if _, ok := v.byKey[newest]; !ok {
 		t.Error("the newest finished job was evicted; eviction is not oldest-first")
 	}
@@ -51,7 +51,7 @@ func TestJobsNeverEvictsActiveWork(t *testing.T) {
 		})
 	}
 
-	if _, ok := v.byKey[workloadKey("node", "live")]; !ok {
+	if _, ok := v.byKey[workloadKey(workload{OriginatedFrom: "node", ID: "live"})]; !ok {
 		t.Error("a running job was evicted by history trimming")
 	}
 }
@@ -67,7 +67,7 @@ func TestJobsUpsertReplacesRatherThanDuplicating(t *testing.T) {
 	if len(v.order) != 1 {
 		t.Errorf("one job produced %d rows across its state changes", len(v.order))
 	}
-	if got := v.byKey[workloadKey("node", "j1")].State; got != "completed" {
+	if got := v.byKey[workloadKey(workload{OriginatedFrom: "node", ID: "j1"})].State; got != "completed" {
 		t.Errorf("state = %q, want the latest", got)
 	}
 }
@@ -81,6 +81,75 @@ func TestJobsKeyIsScopedByOrigin(t *testing.T) {
 
 	if len(v.order) != 2 {
 		t.Errorf("same id from two nodes collapsed into %d row(s)", len(v.order))
+	}
+}
+
+// TestJobsKeyIsScopedByEngineAndRun is the same guard one level down. The ID
+// is a counter each engine's facade starts at 1 and every proxy restart resets,
+// so a concurrent Ollama and LM Studio job, or a job from before a restart and
+// one after it, share an origin and an ID while being different work.
+func TestJobsKeyIsScopedByEngineAndRun(t *testing.T) {
+	v := newJobsView(nil)
+	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "running"})
+	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "lmstudio", RunID: "r2", State: "running"})
+	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r3", State: "queued"})
+
+	if len(v.order) != 3 {
+		t.Errorf("three distinct jobs sharing an id collapsed into %d row(s)", len(v.order))
+	}
+}
+
+// TestJobsRemovalDropsEveryGeneration checks a removal takes out every job it
+// names. It carries only the origin and ID, so it cannot say which engine or
+// run it meant — the broker's own store drops them all, and so must this.
+func TestJobsRemovalDropsEveryGeneration(t *testing.T) {
+	v := newJobsView(nil)
+	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "completed"})
+	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "lmstudio", RunID: "r2", State: "completed"})
+	v.upsert(workload{ID: "2", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "completed"})
+
+	v.remove(workloadRef{origin: "node", id: "1"})
+
+	if len(v.order) != 1 || len(v.byKey) != 1 {
+		t.Fatalf("after removing id 1: %d ordered, %d indexed, want only id 2 left",
+			len(v.order), len(v.byKey))
+	}
+	if w := v.byKey[v.order[0]]; w.ID != "2" {
+		t.Errorf("the surviving job is %q, want 2", w.ID)
+	}
+}
+
+// TestRemovedJobStaysRemovedWhenTheSnapshotLandsLater is the regression guard
+// for a job coming back from the dead at startup.
+//
+// The snapshot reply and the pushes reach the view by different paths, so a
+// removal can be handled before a snapshot taken while the job still existed.
+// Merging that snapshot re-added the job, and nothing would ever remove it
+// again.
+func TestRemovedJobStaysRemovedWhenTheSnapshotLandsLater(t *testing.T) {
+	v := newJobsView(nil)
+	gone := workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "completed"}
+	kept := workload{ID: "2", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "running"}
+
+	v.remove(workloadRef{origin: "node", id: "1"})
+	v.Update(workloadsLoadedMsg{workloads: []workload{gone, kept}})
+
+	if _, back := v.byKey[workloadKey(gone)]; back {
+		t.Error("a job removed before the snapshot landed was restored by it")
+	}
+	if _, ok := v.byKey[workloadKey(kept)]; !ok {
+		t.Error("the snapshot's other job was not merged")
+	}
+
+	// Once the baseline is in, the list is live and a new job with a reused
+	// id is simply new work.
+	again := workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r2", State: "running"}
+	v.upsert(again)
+	if _, ok := v.byKey[workloadKey(again)]; !ok {
+		t.Error("a later job reusing a removed id was refused")
+	}
+	if v.removedEarly != nil {
+		t.Error("removals were still being remembered after the baseline landed")
 	}
 }
 
