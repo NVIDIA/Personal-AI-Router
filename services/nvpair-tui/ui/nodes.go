@@ -1042,6 +1042,7 @@ func (v *nodesView) rebuild() {
 	v.all = mergeNodes(v.feeds)
 	v.rows = filterNodeRows(v.all, v.filter)
 	v.retirePendingInvite()
+	v.followDetail()
 
 	rows := make([]table.Row, 0, len(v.rows))
 	for _, n := range v.rows {
@@ -1063,6 +1064,34 @@ func (v *nodesView) rebuild() {
 	}
 	v.table.SetRows(rows)
 	v.restoreSelection()
+}
+
+// followDetail hands an open detail screen its node's freshly merged row.
+//
+// Looked up in the full set rather than the filtered view, since a filter
+// hiding a node does not make it any less present. A hand-added host is also
+// looked for by its manual entry: once discovery finds it, its row takes the
+// host's own key, and the screen opened on the manual one must not read that
+// as the node vanishing.
+func (v *nodesView) followDetail() {
+	if v.detail == nil {
+		return
+	}
+	for _, n := range v.all {
+		if n.key == v.detail.node.key {
+			v.detail.followNode(n, true)
+			return
+		}
+	}
+	if id := v.detail.node.manualID; id != "" {
+		for _, n := range v.all {
+			if n.manualID == id {
+				v.detail.followNode(n, true)
+				return
+			}
+		}
+	}
+	v.detail.followNode(nodeRow{}, false)
 }
 
 // restoreSelection puts the cursor back on the node it was on before the merge
