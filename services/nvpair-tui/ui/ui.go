@@ -20,18 +20,22 @@ func Run(client *rpc.Client, stderr io.Reader) (Outcome, error) {
 	logCh := make(chan string, 2000)
 	go scanLines(stderr, logCh)
 
-	p := tea.NewProgram(
-		New(client, logCh, defaultViews(client)),
-		tea.WithAltScreen(),
-	)
+	views := defaultViews(client)
+	p := tea.NewProgram(New(client, logCh, views), tea.WithAltScreen())
 	final, err := p.Run()
+	// Before returning, so a demo still inside its window does not leave
+	// dispatcher processes behind for the shell to inherit.
+	//
+	// Released through the views rather than the model Run hands back. Bubble
+	// Tea recovers a panic in its loop and returns without a model at all, and
+	// a panic is exactly when nothing else is going to clean up. The views are
+	// pointers, so they are the objects any model would have held.
+	closeViews(views)
+	var outcome Outcome
 	if m, ok := final.(Model); ok {
-		// Before returning, so a demo still inside its window does not leave
-		// dispatcher processes behind for the shell to inherit.
-		m.close()
-		return Outcome{WipeData: m.wipeOnExit}, err
+		outcome.WipeData = m.wipeOnExit
 	}
-	return Outcome{}, err
+	return outcome, err
 }
 
 // scanLines forwards each line of r onto out, closing out at EOF. The
