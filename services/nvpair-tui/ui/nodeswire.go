@@ -103,20 +103,3 @@ type manualNode struct {
 	TelemetryValid bool                `json:"telemetryValid"`
 	MSSince        int64               `json:"msSince"`
 }
-
-// rejectReason renders a machine reason from a rejected invite as human text.
-// reasonIncorrectPIN is the cluster manager's reason code for a PIN that failed
-// verification, as opposed to a transport or protocol failure. It is the one
-// outcome with a specific remedy, so it gets specific copy.
-const reasonIncorrectPIN = "incorrect-pin"
-
-func rejectReason(reason string) string {
-	switch reason {
-	case "already-clustered":
-		return "already in a cluster"
-	case "":
-		return "rejected by peer"
-	default:
-		return reason
-	}
-}
