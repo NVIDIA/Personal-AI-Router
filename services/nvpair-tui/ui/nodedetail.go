@@ -350,7 +350,7 @@ func (d *nodeDetail) enginesCmd() tea.Cmd {
 		var r struct {
 			Engines []engineStatus `json:"engines"`
 		}
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog(method, msg.Result, &r)
 		return detailEnginesMsg{engines: r.Engines}
 	})
 }
@@ -420,7 +420,7 @@ func (d *nodeDetail) modelsCmd() tea.Cmd {
 			return detailModelsMsg{err: err}
 		}
 		var r modelsResult
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog("engine:models", msg.Result, &r)
 		return detailModelsMsg{models: r}
 	})
 }
@@ -736,7 +736,7 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 	switch msg.Method {
 	case "engine:state-changed":
 		var e engineStatus
-		_ = decodeParams(msg.Params, &e)
+		decodeOrLog(msg.Method, msg.Params, &e)
 		if e.Engine == "" || d.remote() {
 			return nil
 		}
@@ -758,7 +758,7 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		// against a revision the backend will still accept, and so a field
 		// opened afterwards shows what is actually saved.
 		var snap enginesettings.Snapshot
-		_ = decodeParams(msg.Params, &snap)
+		decodeOrLog(msg.Method, msg.Params, &snap)
 		// Matched on the row's key, which is the node's UUID, not on nodeArg:
 		// that is empty for this machine because the local RPCs take no node,
 		// while the broker stamps every snapshot with the real UUID. Comparing
@@ -800,7 +800,7 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			return nil
 		}
 		var nodes []availableNode
-		_ = decodeParams(msg.Params, &nodes)
+		decodeOrLog(msg.Method, msg.Params, &nodes)
 		for _, n := range nodes {
 			if n.HostUUID != d.node.key && n.ID != d.node.key {
 				continue
@@ -835,7 +835,7 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			Stage   string `json:"stage"`
 			Percent int    `json:"percent"`
 		}
-		_ = decodeParams(msg.Params, &p)
+		decodeOrLog(msg.Method, msg.Params, &p)
 		// Sticky for the same reason the pull feed is: an engine install is a
 		// multi-hundred-megabyte download, and between two frames more than six
 		// seconds apart an expiring line leaves the screen looking idle.
@@ -870,7 +870,7 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			Percent int    `json:"percent"`
 			Message string `json:"message"`
 		}
-		_ = decodeParams(msg.Params, &p)
+		decodeOrLog(msg.Method, msg.Params, &p)
 		if p.Node == d.node.key {
 			d.status.busy("%s %s: %s (%d%%)", p.Op, d.engineLabel(p.Engine), p.Stage, p.Percent)
 		}
@@ -897,7 +897,7 @@ func progressToast(params []byte, label func(string) string) (toastKind, string,
 		Percent int    `json:"percent"`
 		Message string `json:"message"`
 	}
-	_ = decodeParams(params, &p)
+	decodeOrLog("engine:pull-progress", params, &p)
 	switch p.Stage {
 	case "success":
 		return toastOK, "download %s: done", []any{label(p.Engine)}

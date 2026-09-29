@@ -155,7 +155,7 @@ func (b *catalogBrowser) Init() tea.Cmd {
 				Platform  string         `json:"platform"`
 				Arch      string         `json:"arch"`
 			}
-			_ = decodeParams(msg.Result, &r)
+			decodeOrLog("engine:catalog", msg.Result, &r)
 			// The architecture is half of the answer: an Intel Mac and an
 			// Apple Silicon one are offered different lists.
 			target := r.Platform

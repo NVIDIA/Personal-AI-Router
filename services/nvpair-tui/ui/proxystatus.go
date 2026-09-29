@@ -133,7 +133,7 @@ func (p *proxyTracker) statusCmd(client *rpc.Client, idx int) tea.Cmd {
 			Ready bool `json:"ready"`
 			Port  int  `json:"port"`
 		}
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog(e.prefix+":get-status", msg.Result, &r)
 		return proxyStatusMsg{idx: idx, ready: r.Ready, port: r.Port}
 	})
 }
@@ -178,7 +178,7 @@ func (p *proxyTracker) handleNotification(msg *rpc.Message) {
 		var r struct {
 			Port int `json:"port"`
 		}
-		_ = decodeParams(msg.Params, &r)
+		decodeOrLog(msg.Method, msg.Params, &r)
 		p.engines[idx].ready = true
 		if r.Port != 0 {
 			p.engines[idx].port = r.Port

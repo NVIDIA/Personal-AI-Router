@@ -90,7 +90,7 @@ func (v *errorsView) Init() tea.Cmd {
 				return errorsLoadedMsg{err: err}
 			}
 			var errs []svcerrors.ServiceError
-			_ = decodeParams(msg.Result, &errs)
+			decodeOrLog("errors:get-initial", msg.Result, &errs)
 			return errorsLoadedMsg{errs: errs}
 		}),
 		nodeIdentityCmd(v.client, func(id clusterIdentity, err error) tea.Msg {
@@ -163,13 +163,13 @@ func (v *errorsView) Update(msg tea.Msg) tea.Cmd {
 		switch msg.Msg.Method {
 		case "errors:update":
 			var errs []svcerrors.ServiceError
-			_ = decodeParams(msg.Msg.Params, &errs)
+			decodeOrLog(msg.Msg.Method, msg.Msg.Params, &errs)
 			v.pushed = true
 			v.setErrors(errs)
 		case "discovery:nodes-changed":
 			// The only source of the UUID-to-name mapping for the NODE column.
 			var nodes []availableNode
-			_ = decodeParams(msg.Msg.Params, &nodes)
+			decodeOrLog(msg.Msg.Method, msg.Msg.Params, &nodes)
 			v.namer.learnDiscovered(nodes)
 			v.repaint()
 		}

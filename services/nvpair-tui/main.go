@@ -56,6 +56,10 @@ func main() {
 	}
 	appearanceSettled := ui.StartAppearance(chosen)
 
+	// Before Init, which builds its handler from the output it finds. While the
+	// full-screen program runs this sends the log to the Logs tab, where it can
+	// be read; stderr is hidden behind the program then.
+	applog.SetOutput(ui.LogOutput())
 	applog.Init("nvpair-tui", resolveLevel())
 
 	resolvedBroker, err := resolveBrokerPath(*brokerPath)

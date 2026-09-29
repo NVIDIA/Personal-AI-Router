@@ -47,7 +47,7 @@ func nodeIdentityCmd(client *rpc.Client, finish func(clusterIdentity, error) tea
 			return finish(clusterIdentity{}, err)
 		}
 		var id clusterIdentity
-		_ = decodeParams(msg.Result, &id)
+		decodeOrLog("cluster:get-node-id", msg.Result, &id)
 		return finish(id, nil)
 	})
 }

@@ -69,7 +69,7 @@ func inviteNodeCmd(client *rpc.Client, params map[string]any, finish func(res in
 			return finish(inviteNodeResult{}, err)
 		}
 		var r inviteNodeResult
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog("cluster:invite-node", msg.Result, &r)
 		return finish(r, nil)
 	})
 }

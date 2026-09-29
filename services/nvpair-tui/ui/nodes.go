@@ -306,7 +306,7 @@ func (v *nodesView) clusterNameCmd() tea.Cmd {
 			var r struct {
 				Value string `json:"value"`
 			}
-			_ = decodeParams(msg.Result, &r)
+			decodeOrLog("settings/get-cluster-friendly-name", msg.Result, &r)
 			return clusterNameMsg{name: r.Value}
 		})
 }
@@ -317,7 +317,7 @@ func (v *nodesView) identityCmd() tea.Cmd {
 			return clusterIdentityMsg{err: err}
 		}
 		var id clusterIdentity
-		_ = decodeParams(msg.Result, &id)
+		decodeOrLog("cluster:get-node-id", msg.Result, &id)
 		return clusterIdentityMsg{id: id}
 	})
 }
@@ -330,7 +330,7 @@ func (v *nodesView) membersCmd() tea.Cmd {
 		var r struct {
 			Nodes []clusterNode `json:"nodes"`
 		}
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog("nodes:get-initial", msg.Result, &r)
 		return clusterMembersMsg{nodes: r.Nodes}
 	})
 }
@@ -343,7 +343,7 @@ func (v *nodesView) manualCmd() tea.Cmd {
 		var r struct {
 			Nodes []manualNode `json:"nodes"`
 		}
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog("nodes/list", msg.Result, &r)
 		return manualNodesMsg{nodes: r.Nodes}
 	})
 }
@@ -546,7 +546,7 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 	switch msg.Method {
 	case "discovery:nodes-changed":
 		var nodes []availableNode
-		_ = decodeParams(msg.Params, &nodes)
+		decodeOrLog(msg.Method, msg.Params, &nodes)
 		v.feeds.discovered = nodes
 		v.rebuild()
 
@@ -554,7 +554,7 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 		var r struct {
 			Nodes []clusterNode `json:"nodes"`
 		}
-		_ = decodeParams(msg.Params, &r)
+		decodeOrLog(msg.Method, msg.Params, &r)
 		v.feeds.members = r.Nodes
 		v.rebuild()
 
@@ -563,13 +563,13 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 			ClusterID           string `json:"clusterId"`
 			ClusterFriendlyName string `json:"clusterFriendlyName"`
 		}
-		_ = decodeParams(msg.Params, &r)
+		decodeOrLog(msg.Method, msg.Params, &r)
 		v.identity.ClusterID = r.ClusterID
 		v.clusterName = r.ClusterFriendlyName
 
 	case "cluster:invite-received":
 		var inv clusterInvite
-		_ = decodeParams(msg.Params, &inv)
+		decodeOrLog(msg.Method, msg.Params, &inv)
 		v.inbound = &inv
 		// The prompt is a row of the frame, not a status line — see
 		// inboundPrompt. Pinning it here as well said the same thing twice, in
@@ -620,7 +620,7 @@ func (v *nodesView) inboundPrompt() string {
 
 func (v *nodesView) retireInvite(params []byte, outcome inviteResolution) {
 	var ref inviteRef
-	_ = decodeParams(params, &ref)
+	decodeOrLog("invite outcome", params, &ref)
 	if ref.InviteID == "" {
 		return
 	}
@@ -950,7 +950,7 @@ func (v *nodesView) respondToInvite(accept bool, pin string) tea.Cmd {
 			// just been rejected — and since the prompt is already gone by then,
 			// nothing later corrected it.
 			var res inviteNodeResult
-			_ = decodeParams(msg.Result, &res)
+			decodeOrLog("cluster:respond-to-invite", msg.Result, &res)
 			return pairingResultMsg{from: from, state: res.State, reason: res.Reason}
 		})
 }

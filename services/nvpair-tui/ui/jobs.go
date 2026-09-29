@@ -169,7 +169,7 @@ func (v *jobsView) loadCmd() tea.Cmd {
 		var r struct {
 			Workloads []workload `json:"workloads"`
 		}
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog("workloads:get-initial", msg.Result, &r)
 		return workloadsLoadedMsg{workloads: r.Workloads}
 	})
 }
@@ -269,29 +269,33 @@ func (v *jobsView) Update(msg tea.Msg) tea.Cmd {
 			// Not a job event, but the only place the UUID-to-name mapping for
 			// the FROM and RAN ON columns comes from.
 			var nodes []availableNode
-			_ = decodeParams(msg.Msg.Params, &nodes)
+			decodeOrLog(msg.Msg.Method, msg.Msg.Params, &nodes)
 			v.namer.learnDiscovered(nodes)
 			v.refreshRows()
 		case "nodes:changed":
 			var r struct {
 				Nodes []clusterNode `json:"nodes"`
 			}
-			_ = decodeParams(msg.Msg.Params, &r)
+			decodeOrLog(msg.Msg.Method, msg.Msg.Params, &r)
 			v.namer.learnMembers(r.Nodes)
 			v.refreshRows()
 		case "workloads:upsert":
 			var p struct {
 				WorkloadInfo workload `json:"workloadInfo"`
 			}
-			_ = decodeParams(msg.Msg.Params, &p)
-			v.upsert(p.WorkloadInfo)
+			// Skipped rather than folded in: a job that did not decode would
+			// be a row with no identity.
+			if decodeOrLog(msg.Msg.Method, msg.Msg.Params, &p) {
+				v.upsert(p.WorkloadInfo)
+			}
 		case "workloads:remove":
 			var p struct {
 				WorkloadID     string `json:"workloadId"`
 				OriginatedFrom string `json:"originatedFrom"`
 			}
-			_ = decodeParams(msg.Msg.Params, &p)
-			v.remove(workloadRef{origin: p.OriginatedFrom, id: p.WorkloadID})
+			if decodeOrLog(msg.Msg.Method, msg.Msg.Params, &p) {
+				v.remove(workloadRef{origin: p.OriginatedFrom, id: p.WorkloadID})
+			}
 		default:
 			v.proxy.handleNotification(msg.Msg)
 		}
