@@ -86,6 +86,34 @@ func TestProxyPushesUseTheFacadePrefix(t *testing.T) {
 	}
 }
 
+// TestFailedStatusReadTakesTheProxyDown checks a status read that failed is not
+// ignored. Ignoring it left the strip showing the last good answer — a green
+// port nothing may be listening on — for as long as the reads kept failing.
+func TestFailedStatusReadTakesTheProxyDown(t *testing.T) {
+	p := newProxyTracker()
+	p.apply(proxyStatusMsg{idx: 0, ready: true, port: 11434})
+	p.apply(proxyStatusMsg{idx: 0, err: errFake{}})
+	port, ready := p.portForEngine("ollama")
+	if ready {
+		t.Error("the proxy still reads ready after its status read failed")
+	}
+	if port != 11434 {
+		t.Errorf("port = %d; the last known port should stay, shown as down", port)
+	}
+}
+
+// TestNotRunningKeepsTheLastKnownPort checks the broker's {ready:false, port:0}
+// for a facade it is not running does not blank the port — the same rule the
+// error push already followed, so the two paths no longer disagree.
+func TestNotRunningKeepsTheLastKnownPort(t *testing.T) {
+	p := newProxyTracker()
+	p.apply(proxyStatusMsg{idx: 0, ready: true, port: 11434})
+	p.apply(proxyStatusMsg{idx: 0, ready: false, port: 0})
+	if port, ready := p.portForEngine("ollama"); ready || port != 11434 {
+		t.Errorf("port=%d ready=%v, want 11434 shown as down", port, ready)
+	}
+}
+
 // TestPortForEngineDistinguishesDownFromUnknown checks a port is not treated as
 // usable just because it is known: an engine with no proxy and a proxy that is
 // down both have to read as unusable.

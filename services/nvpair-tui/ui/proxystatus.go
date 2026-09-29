@@ -5,6 +5,7 @@ package ui
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"nvpair-shared/engines"
@@ -115,8 +116,18 @@ func (p *proxyTracker) portForEngine(engine string) (int, bool) {
 func (p *proxyTracker) init(client *rpc.Client) tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(p.engines)*2)
 	for i, e := range p.engines {
+		method := e.prefix + ":subscribe"
 		cmds = append(cmds,
-			call(client, e.prefix+":subscribe", nil, func(_ *rpc.Message, _ error) tea.Msg { return nil }),
+			// Logged rather than shown: without the subscription the strip
+			// still follows the broker through the periodic status read, only
+			// more slowly, so there is nothing for the operator to do about it.
+			call(client, method, nil, func(_ *rpc.Message, err error) tea.Msg {
+				if err != nil {
+					slog.Warn("proxy status subscription failed; relying on polling",
+						"method", method, "err", err)
+				}
+				return nil
+			}),
 			p.statusCmd(client, i),
 		)
 	}
@@ -144,12 +155,27 @@ func (p *proxyTracker) statusCmd(client *rpc.Client, idx int) tea.Cmd {
 // arguments. This tracker only reads: readiness, and the port in force.
 
 // apply folds a status reply into the tracker.
+//
+// A failed read marks the facade down. It is not known to be listening, and
+// the strip exists to tell clients where they can connect.
+//
+// The last known port is kept whenever the facade is down, from a failed read
+// or from the broker's {ready:false, port:0} for a facade it is not running,
+// as the error push keeps it: the configured port, shown as down, says more
+// than a blank.
 func (p *proxyTracker) apply(msg proxyStatusMsg) {
-	if msg.err != nil || msg.idx < 0 || msg.idx >= len(p.engines) {
+	if msg.idx < 0 || msg.idx >= len(p.engines) {
 		return
 	}
-	p.engines[msg.idx].ready = msg.ready
-	p.engines[msg.idx].port = msg.port
+	e := p.engines[msg.idx]
+	if msg.err != nil {
+		e.ready = false
+		return
+	}
+	e.ready = msg.ready
+	if msg.port != 0 {
+		e.port = msg.port
+	}
 }
 
 // handleNotification consumes a proxy push. A ready frame carries the port
@@ -159,6 +185,11 @@ func (p *proxyTracker) apply(msg proxyStatusMsg) {
 // a proxy that died stayed green with its old port on screen, pointing clients
 // at an endpoint that had stopped listening — the one thing this strip exists to
 // tell them.
+//
+// Pushes and the periodic status read describe the same thing: the broker's
+// record of each facade, which it updates from the facade's own ready
+// announcement. The pushes make a change visible at once; the read is there
+// because a crashed proxy announces nothing. Whichever arrives later wins.
 //
 // The broker forwards every facade's pushes under that facade's own prefix, so
 // the facade is found by prefix rather than by a position in the table.
