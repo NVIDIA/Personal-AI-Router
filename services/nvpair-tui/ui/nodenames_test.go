@@ -136,11 +136,11 @@ func TestJobsRendersNodeNames(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows", len(rows))
 	}
-	if rows[0][3] != "laptop" {
-		t.Errorf("FROM = %q, want laptop", rows[0][3])
+	if rows[0][4] != "laptop" {
+		t.Errorf("FROM = %q, want laptop", rows[0][4])
 	}
-	if rows[0][4] != "gpu-box" {
-		t.Errorf("RAN ON = %q, want gpu-box", rows[0][4])
+	if rows[0][5] != "gpu-box" {
+		t.Errorf("RAN ON = %q, want gpu-box", rows[0][5])
 	}
 }
 
