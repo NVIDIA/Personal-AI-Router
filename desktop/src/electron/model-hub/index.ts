@@ -8,7 +8,7 @@ import {
     lmStudioCatalogCache,
     type LmStudioCatalogModel
 } from '@/electron/model-hub/lmstudio-catalog'
-import { loadLlamaCppModels } from './llamacpp-catalog'
+import { llamaCppCatalogCache } from './llamacpp-catalog'
 
 function ollamaToHubModel(m: OllamaTagsModel): EngineHubModel {
     const base = m.name.includes(':') ? m.name.slice(0, m.name.indexOf(':')) : m.name
@@ -41,9 +41,8 @@ function lmStudioToHubModel(m: LmStudioCatalogModel): EngineHubModel {
 }
 
 /**
- * Serve an engine's model hub. Ollama and llama.cpp use committed locked lists,
- * so they return instantly with no network access. LM Studio still fetches its
- * live `lmstudio-community` catalog and awaits a cold cache's initial load.
+ * Serve an engine's model hub. Ollama uses a committed locked list. LM Studio
+ * and llama.cpp await their cached live Hugging Face catalogs on a cold load.
  */
 export async function getEngineHubModels(engineType: EngineType): Promise<EngineHubSearchResponse> {
     switch (engineType) {
@@ -53,7 +52,8 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
             await lmStudioCatalogCache.ensureLoaded()
             return { models: lmStudioCatalogCache.list().map(lmStudioToHubModel) }
         case 'llama-cpp':
-            return { models: loadLlamaCppModels() }
+            await llamaCppCatalogCache.ensureLoaded()
+            return { models: llamaCppCatalogCache.list() }
         default:
             return { models: [] }
     }
@@ -61,9 +61,8 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
 
 /**
  * Kick a background refresh of the live engine hub caches so the first modal
- * open is instant. The committed Ollama and llama.cpp lists need no warming;
- * only LM Studio fetches from the network. Fire-and-forget; failures are logged
- * inside its cache.
+ * open is instant. The committed Ollama list needs no warming. Fire-and-forget;
+ * failures are logged inside each cache.
  *
  * Called once the Overview renderer reports ready, deliberately not on service
  * connect: a network fetch started before the window has painted competes with
@@ -71,4 +70,5 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
  */
 export function warmEngineHubs(): void {
     lmStudioCatalogCache.refresh()
+    llamaCppCatalogCache.refresh()
 }
