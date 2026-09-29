@@ -187,15 +187,31 @@ func TestJumpDigitsMatchTheTabsExactly(t *testing.T) {
 // TestJumpDigitsLabelDegenerateCounts covers the label at the edges, since it is
 // assembled rather than written out.
 func TestJumpDigitsLabelDegenerateCounts(t *testing.T) {
-	cases := map[int]string{1: "1", 2: "1-2", 5: "1-5", 9: "1-9", 12: "1-9"}
+	cases := map[int]string{1: "1", 2: "1-2", 5: "1-5", 9: "1-9"}
 	for tabs, want := range cases {
 		if got := tabDigitsHelp(tabs); got != want {
 			t.Errorf("%d tabs labelled %q, want %q", tabs, got, want)
 		}
-		// A twelfth tab must not produce a tenth key that cannot be typed.
-		if got := len(tabDigits(tabs)); got > 9 {
-			t.Errorf("%d tabs produced %d keys, want at most 9", tabs, got)
+	}
+}
+
+// TestMoreTabsThanDigitsIsRefused checks a tenth tab fails loudly instead of
+// quietly having no key. The tab set is fixed at build time, so this is a
+// mistake in how the shell was put together, found on the first run.
+func TestMoreTabsThanDigitsIsRefused(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("a tenth tab was accepted without a key to select it")
 		}
+	}()
+	newGlobalKeyMap(maxTabs + 1)
+}
+
+// TestTheShellFitsItsDigitKeys keeps the real tab set inside that limit, so the
+// panic above is never what finds it.
+func TestTheShellFitsItsDigitKeys(t *testing.T) {
+	if n := len(defaultViews(nil)); n > maxTabs {
+		t.Errorf("%d tabs, but only %d have a digit key", n, maxTabs)
 	}
 }
 
