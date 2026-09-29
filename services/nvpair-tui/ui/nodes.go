@@ -64,10 +64,10 @@ type nodesView struct {
 
 	identity clusterIdentity
 	// clusterName is the cluster's display label. It is a separate field because
-	// cluster:get-node-id does not return it: it is a node setting, and arrives
-	// either from settings/get-cluster-friendly-name or on the
-	// cluster:identity-changed push. Without showing it here the setting was
-	// write-only — you could name a cluster and never see the name again.
+	// cluster:get-node-id does not return it: it is a node setting, read at
+	// startup, carried on the cluster:identity-changed push, and taken from the
+	// Service tab's save when it is renamed there, since the settings worker
+	// sends no push of its own.
 	clusterName string
 	// inbound is the most recent pairing request awaiting our answer.
 	inbound *clusterInvite
@@ -298,7 +298,7 @@ func (v *nodesView) Init() tea.Cmd {
 }
 
 func (v *nodesView) clusterNameCmd() tea.Cmd {
-	return call(v.client, "settings/get-cluster-friendly-name", nil,
+	return call(v.client, getClusterNameMethod, nil,
 		func(msg *rpc.Message, err error) tea.Msg {
 			if err != nil {
 				return clusterNameMsg{err: err}
@@ -306,7 +306,7 @@ func (v *nodesView) clusterNameCmd() tea.Cmd {
 			var r struct {
 				Value string `json:"value"`
 			}
-			decodeOrLog("settings/get-cluster-friendly-name", msg.Result, &r)
+			decodeOrLog(getClusterNameMethod, msg.Result, &r)
 			return clusterNameMsg{name: r.Value}
 		})
 }
@@ -435,6 +435,14 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 		v.noteFeed(feedClusterName, msg.err)
 		if msg.err == nil {
 			v.clusterName = msg.name
+		}
+		return nil
+
+	case settingSavedMsg:
+		// A rename on the Service tab. The settings worker sends no push, so
+		// without this the name read at startup stayed on screen here.
+		if msg.err == nil && msg.method == setClusterNameMethod {
+			v.clusterName = msg.value
 		}
 		return nil
 

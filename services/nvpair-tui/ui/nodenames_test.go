@@ -195,6 +195,39 @@ func TestClusterLabelFromIdentityPush(t *testing.T) {
 	}
 }
 
+// TestRenameOnServiceTabReachesNodesTab is the regression guard for a rename
+// that looked unsaved. The settings worker sends no push when the name
+// changes, and the Nodes tab read it once at startup, so flipping back after a
+// rename showed the old name.
+func TestRenameOnServiceTabReachesNodesTab(t *testing.T) {
+	nodes := newNodesView(nil)
+	nodes.Update(clusterNameMsg{name: "old name"})
+
+	svc := newServiceView(nil)
+	idx := -1
+	for i, it := range svc.items {
+		if it.setMethod == setClusterNameMethod {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatal("the Service tab has no cluster-name row")
+	}
+	saved := settingSavedMsg{idx: idx, method: setClusterNameMethod, value: "new name"}
+	svc.Update(saved)
+	nodes.Update(saved)
+
+	if nodes.clusterName != "new name" {
+		t.Errorf("Nodes tab shows %q after the rename, want %q", nodes.clusterName, "new name")
+	}
+
+	// A failed save changes nothing.
+	nodes.Update(settingSavedMsg{idx: idx, method: setClusterNameMethod, value: "bad", err: errFake{}})
+	if nodes.clusterName != "new name" {
+		t.Errorf("a failed save changed the name to %q", nodes.clusterName)
+	}
+}
+
 // TestServiceHidesUnusedSettings checks the two settings nothing acts on are not
 // offered, so the list does not imply an effect they do not have.
 func TestServiceHidesUnusedSettings(t *testing.T) {
