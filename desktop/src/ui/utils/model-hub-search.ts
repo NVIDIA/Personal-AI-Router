@@ -38,6 +38,16 @@ function hubModelToEntry(m: EngineHubModel): ModelEntry {
     }
 }
 
+export function mergeModelHubResults(
+    populated: readonly ModelEntry[],
+    searched: readonly ModelEntry[]
+): ModelEntry[] {
+    const byId = new Map<string, ModelEntry>()
+    for (const model of populated) byId.set(model.id, model)
+    for (const model of searched) byId.set(model.id, model)
+    return Array.from(byId.values())
+}
+
 /**
  * Fetch an engine's populated catalog or submit an explicit upstream query.
  * Electron main owns every upstream source; the renderer only maps display rows.
