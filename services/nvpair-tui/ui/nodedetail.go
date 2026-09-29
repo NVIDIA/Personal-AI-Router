@@ -567,6 +567,11 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 
 	case engineOpMsg:
+		// Another machine's outcome, from a screen since closed. Reported here
+		// it read as this machine's: "start failed" on a node nobody started.
+		if msg.node != d.nodeArg() {
+			return nil, true
+		}
 		// The engine is named in the outcome as well as in the request. On a
 		// host running two, "start failed" alone does not say which one.
 		what := msg.what
