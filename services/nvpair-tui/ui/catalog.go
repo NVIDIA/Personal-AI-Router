@@ -69,6 +69,7 @@ var (
 	// typed. Not esc, which already closes the browser here — a filter matching
 	// nothing otherwise left throwing the whole catalogue away as the only exit.
 	catalogClearKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear filter"))
+	catalogRetryKey = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry"))
 )
 
 // catalogBrowser lists the models an engine can download, with a filter.
@@ -99,7 +100,9 @@ type catalogBrowser struct {
 	input     textinput.Model
 	searching bool
 
-	loading   bool
+	loading bool
+	// failed is whether the last load failed, which is what offers a retry.
+	failed    bool
 	fetchedAt string
 	// target is the machine the catalogue was filtered for, and remote marks a
 	// browse aimed at a peer. Together they say whether the list applies to the
@@ -188,6 +191,7 @@ func (b *catalogBrowser) update(msg tea.Msg) (tea.Cmd, string, bool) {
 			return nil, "", true
 		}
 		b.loading = false
+		b.failed = msg.err != nil
 		if msg.err != nil {
 			b.status.error("could not load the %s catalog: %s", b.engineLabel, msg.err)
 			return nil, "", true
@@ -235,6 +239,10 @@ func (b *catalogBrowser) handleKey(msg tea.KeyMsg) (tea.Cmd, string, bool) {
 		b.filter = ""
 		b.refresh()
 		return nil, "", true
+	case key.Matches(msg, catalogRetryKey) && b.failed:
+		b.failed = false
+		b.loading = true
+		return b.Init(), "", true
 	case key.Matches(msg, catalogSortKey):
 		b.sortBy = (b.sortBy + 1) % 3
 		b.refresh()
@@ -349,6 +357,10 @@ func (b *catalogBrowser) View() string {
 	switch {
 	case b.loading:
 		body = footerStyle.Render("  Loading the catalog...")
+	case b.failed:
+		// Said in the body as well as the status line, which expires and
+		// would leave a list that reads as this engine having nothing.
+		body = footerStyle.Render("  The catalog could not be loaded. Press r to try again, or esc to close.")
 	case len(b.all) == 0:
 		body = footerStyle.Render("  No catalog available for this engine.")
 	case len(b.shown) == 0:
@@ -402,6 +414,9 @@ func (b *catalogBrowser) Help() []key.Binding {
 	bindings := []key.Binding{catalogCloseKey, catalogSearchKey, catalogSortKey, catalogGetKey}
 	if b.filter != "" {
 		bindings = append(bindings, catalogClearKey)
+	}
+	if b.failed {
+		bindings = append(bindings, catalogRetryKey)
 	}
 	return bindings
 }

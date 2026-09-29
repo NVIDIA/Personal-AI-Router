@@ -190,6 +190,33 @@ func TestCatalogLoadFailureExplainsItself(t *testing.T) {
 	}
 }
 
+// TestCatalogLoadFailureCanBeRetried is the regression guard for a failed load
+// with no way forward but closing the browser and opening it again.
+func TestCatalogLoadFailureCanBeRetried(t *testing.T) {
+	b := newCatalogBrowser(nil, "ollama", "Ollama", "this-host", false)
+	b.SetSize(100, 24)
+	if cmd, _, _ := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}); cmd != nil {
+		t.Error("r reloaded a catalog that had not failed")
+	}
+
+	b.update(catalogLoadedMsg{engine: "ollama", err: errFake{}})
+	if !strings.Contains(b.View(), "Press r to try again") {
+		t.Errorf("a failed load did not offer a retry: %q", b.View())
+	}
+	cmd, _, open := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil || !open {
+		t.Fatal("r did not ask for the catalog again")
+	}
+	if !b.loading || b.failed {
+		t.Error("the retry did not show the catalog as loading")
+	}
+
+	loaded := loadedBrowser()
+	if loaded.failed {
+		t.Error("a successful load was counted as a failure")
+	}
+}
+
 // TestCatalogIgnoresOtherEnginesReply checks a late reply for an engine the
 // operator has moved on from does not populate this browser.
 func TestCatalogIgnoresOtherEnginesReply(t *testing.T) {
