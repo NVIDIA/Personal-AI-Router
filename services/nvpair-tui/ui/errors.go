@@ -26,6 +26,10 @@ type errorsView struct {
 	client *rpc.Client
 	table  table.Model
 	errs   []svcerrors.ServiceError
+	// pushed is whether an errors:update has arrived. Each is a full snapshot,
+	// so once one has, the initial read is older than what is shown and must
+	// not replace it.
+	pushed bool
 	// namer resolves the node UUID the broker stamps on each report. Without it
 	// the NODE column showed the same random-looking id the jobs list did.
 	namer         *nodeNamer
@@ -96,13 +100,16 @@ func (v *errorsView) SetSize(w, h int) {
 	v.table.SetColumns(v.columns())
 }
 
+// columns lays the table out so its minimums fit the narrowest supported
+// terminal. The message is why the tab exists, so it takes most of any width
+// beyond that; a node name gives way first. SEV fits the longest severity the
+// producers send, "warning".
 func (v *errorsView) columns() []table.Column {
-	// Fixed columns first; MESSAGE takes whatever width is left.
 	return layoutColumns(v.width, []column{
-		fixedCol("SEV", 9),
+		fixedCol("SEV", 7),
 		fixedCol("AGE", 6),
-		fixedCol("NODE", 16),
-		flexCol("MESSAGE", 10, 1),
+		flexCol("NODE", 8, 1),
+		flexCol("MESSAGE", 10, 4),
 	})
 }
 
@@ -113,7 +120,12 @@ func (v *errorsView) Update(msg tea.Msg) tea.Cmd {
 			v.status.error("failed to load errors: %s", msg.err)
 			return nil
 		}
-		v.setErrors(msg.errs)
+		// The reply and the pushes reach this loop by different paths, so an
+		// update can land first. It is the newer full snapshot, and the reply
+		// would otherwise overwrite it with an older one.
+		if !v.pushed {
+			v.setErrors(msg.errs)
+		}
 		return nil
 
 	case errorsClearedMsg:
@@ -129,7 +141,7 @@ func (v *errorsView) Update(msg tea.Msg) tea.Cmd {
 	case errorsIdentityMsg:
 		if msg.err == nil {
 			v.namer.setSelf(msg.id)
-			v.setErrors(v.errs)
+			v.repaint()
 		}
 		return nil
 
@@ -137,7 +149,7 @@ func (v *errorsView) Update(msg tea.Msg) tea.Cmd {
 		// AGE is relative and errors:update only fires on change, so without
 		// this a sticky error shows the age it had when first reported for the
 		// rest of the session — reading as a brand-new failure.
-		v.setErrors(v.errs)
+		v.repaint()
 		return nil
 
 	case NotificationMsg:
@@ -145,13 +157,14 @@ func (v *errorsView) Update(msg tea.Msg) tea.Cmd {
 		case "errors:update":
 			var errs []svcerrors.ServiceError
 			_ = decodeParams(msg.Msg.Params, &errs)
+			v.pushed = true
 			v.setErrors(errs)
 		case "discovery:nodes-changed":
 			// The only source of the UUID-to-name mapping for the NODE column.
 			var nodes []availableNode
 			_ = decodeParams(msg.Msg.Params, &nodes)
 			v.namer.learnDiscovered(nodes)
-			v.setErrors(v.errs)
+			v.repaint()
 		}
 		return nil
 
@@ -187,6 +200,10 @@ func (v *errorsView) clearSelected() tea.Cmd {
 	// by the next sync from the node that owns it. Refusing beats reporting a
 	// success that undoes itself a second later; the operator's real option is
 	// to clear it where it came from.
+	if v.namer.selfUUID == "" {
+		v.status.info("still identifying this machine - try again in a moment")
+		return nil
+	}
 	if !v.clearable(e) {
 		v.status.error("%s reported this - clear it there; clearing here would not stick",
 			v.namer.name(e.NodeID))
@@ -200,18 +217,26 @@ func (v *errorsView) clearSelected() tea.Cmd {
 
 // clearable reports whether clearing this entry will stick.
 //
+// Nothing is clearable until this machine's identity has arrived, because
+// which errors are this machine's is exactly what is not yet known — and
+// guessing "all of them" let a peer's error be cleared here and restored by
+// the next sync. The read lands within the first moment of a session.
+//
 // An error with no node id predates attribution or comes from a producer that
 // does not stamp one; it is treated as local, which is where it almost
 // certainly came from and keeps the key working rather than refusing on a
-// missing field. Before identity arrives the namer has no self, and everything
-// is clearable — the alternative is disabling the key for the first second of
-// every session.
+// missing field.
 func (v *errorsView) clearable(e svcerrors.ServiceError) bool {
-	if e.NodeID == "" || v.namer.selfUUID == "" {
-		return true
+	if v.namer.selfUUID == "" {
+		return false
 	}
-	return e.NodeID == v.namer.selfUUID
+	return e.NodeID == "" || e.NodeID == v.namer.selfUUID
 }
+
+// repaint rebuilds the rows from the errors already held, for a change in how
+// they render rather than in what they are: a node's name learned, the clock
+// moving on.
+func (v *errorsView) repaint() { v.setErrors(v.errs) }
 
 func (v *errorsView) setErrors(errs []svcerrors.ServiceError) {
 	selected := v.selectedErrorID()
