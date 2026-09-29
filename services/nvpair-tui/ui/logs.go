@@ -23,9 +23,13 @@ import (
 // grow without limit.
 const maxLogLines = 5000
 
-// logsView shows the service tree's stderr — the broker's own logs plus every
-// worker's, prefixed — with a substring filter, a follow toggle, and a way to
-// write the buffer out.
+// logsView is the Logs tab: the service tree's stderr — the broker's own logs
+// plus every worker's, prefixed — with a substring filter, a follow toggle, and
+// a way to write the buffer out.
+//
+// The usual path: after something goes wrong elsewhere, come here, / to filter
+// down to the worker or engine concerned, scroll back, and s to save the
+// buffer to a file to attach to a report. t returns to following new lines.
 //
 // Saving matters more here than in a desktop app. The graphical UI can open a
 // log file in a file manager; over SSH there is no file manager, and the
