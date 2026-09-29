@@ -105,7 +105,7 @@ func TestOllamaUnloadSendsKeepAlive(t *testing.T) {
 // was too, leaving the operator unable to tell a started download from a
 // keystroke that missed.
 func TestPullDeadlineReportsDetachedNotSilence(t *testing.T) {
-	msg := classifyOpResult("", "download big-model", "ollama", "pull", context.DeadlineExceeded)
+	msg := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
 	if msg == nil {
 		t.Fatal("a pull that outran its deadline produced no message at all")
 	}
@@ -138,7 +138,7 @@ func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
 	// manifests allow up to ten minutes, so a deadline on either is a slow
 	// reply rather than a failed start.
 	for _, op := range []string{"pull", "load", "install", "uninstall", "start", "restart"} {
-		result, ok := classifyOpResult("", "x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
+		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
 		if !ok {
 			t.Fatalf("%s: unexpected message type", op)
 		}
@@ -151,7 +151,7 @@ func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
 	}
 
 	for _, op := range []string{"unload", "delete", "stop"} {
-		result, ok := classifyOpResult("", "x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
+		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
 		if !ok {
 			t.Fatalf("%s: unexpected message type", op)
 		}
@@ -165,7 +165,7 @@ func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
 	}
 
 	// A real error is still an error, however long the operation usually takes.
-	result, _ := classifyOpResult("", "x", "ollama", "pull", errors.New("no such model")).(engineOpMsg)
+	result, _ := classifyOpResult("x", "ollama", "pull", errors.New("no such model")).(engineOpMsg)
 	if result.detached || result.err == nil {
 		t.Errorf("a genuine pull error was not reported: %+v", result)
 	}

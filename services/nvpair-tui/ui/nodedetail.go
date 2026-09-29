@@ -343,7 +343,7 @@ func (d *nodeDetail) enginesCmd() tea.Cmd {
 		method = "engine:remote-get-installed"
 		params["node"] = d.node.key
 	}
-	return call(d.client, method, params, func(msg *rpc.Message, err error) tea.Msg {
+	return d.own(call(d.client, method, params, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {
 			return detailEnginesMsg{err: err}
 		}
@@ -352,7 +352,34 @@ func (d *nodeDetail) enginesCmd() tea.Cmd {
 		}
 		decodeOrLog(method, msg.Result, &r)
 		return detailEnginesMsg{engines: r.Engines}
-	})
+	}))
+}
+
+// detailReply is the reply to a command a detail screen sent, addressed to the
+// node that screen shows. Every broker call the screen makes goes out through
+// own, so a reply that outlives its screen is recognised in one place rather
+// than by a check on each kind of message.
+type detailReply struct {
+	node string
+	msg  tea.Msg
+}
+
+// own addresses the reply of a single broker call to this screen's node.
+//
+// For one call only, not a batch or a sequence: those return a message Bubble
+// Tea itself has to unpack, and wrapped they would never run.
+func (d *nodeDetail) own(cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return nil
+	}
+	node := d.node.key
+	return func() tea.Msg {
+		msg := cmd()
+		if msg == nil {
+			return nil
+		}
+		return detailReply{node: node, msg: msg}
+	}
 }
 
 // followNode brings the screen's copy of its node up to date with the Nodes
@@ -415,14 +442,14 @@ func (d *nodeDetail) modelsCmd() tea.Cmd {
 	if d.remote() {
 		return nil
 	}
-	return call(d.client, "engine:models", nil, func(msg *rpc.Message, err error) tea.Msg {
+	return d.own(call(d.client, "engine:models", nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {
 			return detailModelsMsg{err: err}
 		}
 		var r modelsResult
 		decodeOrLog("engine:models", msg.Result, &r)
 		return detailModelsMsg{models: r}
-	})
+	}))
 }
 
 func (d *nodeDetail) SetSize(w, h int) {
@@ -541,6 +568,16 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 	}
 
 	switch msg := msg.(type) {
+	case detailReply:
+		// Replies are not cancelled when a screen closes, so one sent from
+		// another node's screen can land here. Taken, a late engine list or
+		// outcome was reported as this machine's, and a late settings read
+		// opened this machine's field with the other's value and revision.
+		if msg.node != d.node.key {
+			return nil, true
+		}
+		return d.update(msg.msg)
+
 	case detailEnginesMsg:
 		if msg.err != nil {
 			// Said once, not once every five seconds. A peer that has gone away
@@ -567,11 +604,6 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 
 	case engineOpMsg:
-		// Another machine's outcome, from a screen since closed. Reported here
-		// it read as this machine's: "start failed" on a node nobody started.
-		if msg.node != d.nodeArg() {
-			return nil, true
-		}
 		// The engine is named in the outcome as well as in the request. On a
 		// host running two, "start failed" alone does not say which one.
 		what := msg.what
@@ -589,13 +621,6 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 
 	case engineSettingsMsg:
-		// Replies are not cancelled when the screen closes, so one sent from
-		// another node's screen can land here. Taken, it opened this node's
-		// field prefilled with that node's value and cached its revision here,
-		// so the next save wrote one machine's settings against another's.
-		if msg.node != d.nodeArg() {
-			return nil, true
-		}
 		if msg.err != nil {
 			d.settingsWanted = nil
 			d.status.error("read engine settings failed: %s", msg.err)
@@ -620,15 +645,9 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 
 	case enginePreviewMsg:
-		if msg.request.NodeID != d.nodeArg() {
-			return nil, true
-		}
 		return d.applySettingsPreview(msg), true
 
 	case engineSettingsAppliedMsg:
-		if msg.node != d.nodeArg() {
-			return nil, true
-		}
 		if errors.Is(msg.err, context.DeadlineExceeded) {
 			// Not a rejection. Accepted work is target-owned — the broker does
 			// not abandon a half-finished port swap because this screen stopped
@@ -647,7 +666,7 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 			// revision and the only way out is to leave the screen.
 			delete(d.settings, msg.engine)
 			d.status.error("%s settings: %s", d.engineLabel(msg.engine), settingsFailure(msg.err))
-			return getEngineSettingsCmd(d.client, d.nodeArg(), msg.engine), true
+			return d.own(getEngineSettingsCmd(d.client, d.nodeArg(), msg.engine)), true
 		}
 		// Deliberately silent on success. This reply says the write was
 		// accepted, not what the engine ended up with, and the difference is
@@ -1019,7 +1038,7 @@ func (d *nodeDetail) editSetting(engine *engineStatus, mode detailInputMode) tea
 		// which is how an edit silently overwrites someone else's.
 		d.settingsWanted = &pendingSettingsEdit{engine: engine.Engine, mode: mode}
 		d.status.busy("reading %s settings...", engine.label())
-		return getEngineSettingsCmd(d.client, d.nodeArg(), engine.Engine)
+		return d.own(getEngineSettingsCmd(d.client, d.nodeArg(), engine.Engine))
 	}
 	return d.openSettingsField(snap, mode)
 }
@@ -1150,7 +1169,7 @@ func (d *nodeDetail) submitInput() tea.Cmd {
 			return nil
 		}
 		d.status.busy("download %s: %s...", d.engineLabel(engine), val)
-		return modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], val)
+		return d.own(modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], val))
 
 	case detailInputEnginePort, detailInputProxyPort, detailInputLaunchArgs:
 		return d.submitSettings(mode, d.input.Value(), val)
@@ -1196,7 +1215,7 @@ func (d *nodeDetail) submitSettings(mode detailInputMode, raw, trimmed string) t
 		return nil
 	}
 	d.status.busy("checking %s settings...", label)
-	return previewEngineSettingsCmd(d.client, req)
+	return d.own(previewEngineSettingsCmd(d.client, req))
 }
 
 // settingsVerdict is what a preview reply decided about a draft.
@@ -1270,7 +1289,7 @@ func (d *nodeDetail) applySettingsPreview(msg enginePreviewMsg) tea.Cmd {
 	}
 	d.settingsAwaited = &awaitedSettings{engine: req.Engine, requestID: req.RequestID}
 	d.status.busy("applying %s settings...", label)
-	return applyEngineSettingsCmd(d.client, req)
+	return d.own(applyEngineSettingsCmd(d.client, req))
 }
 
 // settingsFailure puts a failed save in terms of what the operator should do.
@@ -1330,7 +1349,7 @@ func (d *nodeDetail) lifecycle(engine *engineStatus, op string) tea.Cmd {
 		return nil
 	}
 	d.status.busy("%s %s...", spec.what, engine.label())
-	return engineCmd(d.client, d.nodeArg(), engine.Engine, spec.method, op, spec.what)
+	return d.own(engineCmd(d.client, d.nodeArg(), engine.Engine, spec.method, op, spec.what))
 }
 
 // openCatalog opens the download browser for the engine a download would go
@@ -1357,7 +1376,7 @@ func (d *nodeDetail) openCatalog() tea.Cmd {
 // downloadFromCatalog starts the download the operator picked in the browser.
 func (d *nodeDetail) downloadFromCatalog(engine, model string) tea.Cmd {
 	d.status.busy("download %s: %s...", d.engineLabel(engine), model)
-	return modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], model)
+	return d.own(modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], model))
 }
 
 func (d *nodeDetail) modelOp(op string) tea.Cmd {
@@ -1377,7 +1396,7 @@ func (d *nodeDetail) modelOp(op string) tea.Cmd {
 		return nil
 	}
 	d.status.busy("%s %s...", act.what, row.model)
-	return modelCmd(d.client, d.nodeArg(), row.engine, act, row.model)
+	return d.own(modelCmd(d.client, d.nodeArg(), row.engine, act, row.model))
 }
 
 // pendingDestructive is an armed action bound to the exact target it was armed
@@ -1483,7 +1502,7 @@ func (d *nodeDetail) resolveSettingsConfirm(msg tea.KeyMsg) tea.Cmd {
 	if key.Matches(msg, detailConfirmKey) {
 		d.settingsAwaited = &awaitedSettings{engine: req.Engine, requestID: req.RequestID}
 		d.status.busy("applying %s settings...", d.engineLabel(req.Engine))
-		return applyEngineSettingsCmd(d.client, *req)
+		return d.own(applyEngineSettingsCmd(d.client, *req))
 	}
 	d.status.info("cancelled")
 	return nil
@@ -1514,7 +1533,7 @@ func (d *nodeDetail) deleteSelectedModel() tea.Cmd {
 	target := *row
 	return d.arm(fmt.Sprintf("delete %s from %s?", target.model, d.engineLabel(target.engine)), func() tea.Cmd {
 		d.status.busy("delete %s...", target.model)
-		return modelCmd(d.client, d.nodeArg(), target.engine, modelActions["delete"], target.model)
+		return d.own(modelCmd(d.client, d.nodeArg(), target.engine, modelActions["delete"], target.model))
 	})
 }
 
