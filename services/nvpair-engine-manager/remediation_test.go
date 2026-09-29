@@ -404,6 +404,7 @@ func TestExpandPathForms(t *testing.T) {
 		{"unix dollar", "linux", "a/$NVPAIR_TEST_VAR/b", "a/xyz/b"},
 		{"unix braced dollar", "linux", "a/${NVPAIR_TEST_VAR}/b", "a/xyz/b"},
 		{"unix percent", "linux", "a/%NVPAIR_TEST_VAR%/b", "a/%NVPAIR_TEST_VAR%/b"},
+		{"unix shell parameters", "linux", `tar -xzf "$1" -C "$3"`, `tar -xzf "$1" -C "$3"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := expandPathForOS(tc.input, tc.goos); got != tc.want {

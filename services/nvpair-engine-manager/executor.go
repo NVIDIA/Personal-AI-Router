@@ -19,7 +19,12 @@ import (
 	"time"
 )
 
-var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
+var (
+	winEnvRe = regexp.MustCompile(`%([^%]+)%`)
+	// Match named variables only so shell parameters such as $1 and $@ reach
+	// manifest commands unchanged.
+	unixEnvRe = regexp.MustCompile(`\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)`)
+)
 
 const (
 	engineResponseHeaderTimeout     = 30 * time.Second
@@ -255,7 +260,13 @@ func expandPathForOS(s, goos string) string {
 			return os.Getenv(tok[1 : len(tok)-1])
 		})
 	} else {
-		s = os.ExpandEnv(s)
+		s = unixEnvRe.ReplaceAllStringFunc(s, func(tok string) string {
+			name := tok[1:]
+			if name[0] == '{' {
+				name = name[1 : len(name)-1]
+			}
+			return os.Getenv(name)
+		})
 	}
 	switch {
 	case s == "~":
