@@ -87,6 +87,11 @@ When you install an engine, consider the following:
   driver-aware; llama.cpp retains CPU fallback when GPU acceleration is
   unavailable.
 
+PAIR-managed llama.cpp models sleep after five minutes without inference work.
+This releases model and KV-cache memory, and the next request wakes the model
+automatically. The llama.cpp worker remains running and may retain some GPU
+memory.
+
 To download models:
 
 1. Use **Add model**.

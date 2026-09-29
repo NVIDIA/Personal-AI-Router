@@ -155,6 +155,9 @@ router model ids, stream model downloads over SSE, and load or unload a model.
 It declares no delete action, so persistent downloads currently require manual
 cache cleanup. Its `LLAMA_CACHE` directory is a sibling of the install directory
 and survives uninstall and reinstall.
+Loaded models enter llama.cpp sleep mode after five idle minutes, release model
+and KV-cache memory, and wake on the next request. The router child remains alive
+and can retain a residual backend GPU context.
 
 Windows and Linux installs use checksum-pinned server and CUDA-runtime archive
 pairs; macOS uses the standard Metal-capable archive. The on-demand download is
@@ -243,7 +246,8 @@ Personal AI Router uses:
 
 All three engines expose Load and Eject in the model manager. Ollama and LM
 Studio also expose Delete; llama.cpp cache deletion is not yet implemented.
-Keep-alive / expiry controls remain unsupported.
+User-configurable keep-alive / expiry controls remain unsupported; managed
+llama.cpp uses its fixed five-minute idle sleep.
 
 LM Studio's `delete_model` declares `restart_after`, so the engine manager
 restarts a running LM Studio once the files are removed — its `/v1/models` is

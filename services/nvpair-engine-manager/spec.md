@@ -41,6 +41,10 @@ extensibility story for an open-source product.
   `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
   `GET /api/v1/models`, and llama.cpp matches nested `status.value == loaded`
   records from `GET /models`.
+- The bundled llama.cpp launch fixes `--sleep-idle-seconds 300`: after five
+  minutes without inference work, a loaded model releases its model and
+  KV-cache memory and wakes on the next request. The router child remains alive
+  and can retain a residual backend GPU context.
 - Per-engine stdout/stderr log capture and structured operational error records, surfaced via the errors pipeline.
 - A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls the loaded set and pushes `engine:models-changed` when it changes (explicit load/unload, JIT auto-load, TTL/idle eviction).
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).

@@ -6,14 +6,14 @@
   "install": { "mode": "user" },
   "runtime": {
     "editable_launch": {
-      "fixed_args": [],
+      "fixed_args": ["--sleep-idle-seconds", "300"],
       "controls": [
         { "flags": ["--host"], "value": "{server.host}" },
         { "flags": ["--port"], "value": "{server.port}" },
         { "flags": ["--cors-origins"], "value": "{cors.origins}" }
       ]
     },
-    "args": ["--host", "{host}", "--port", "{port}"],
+    "args": ["--sleep-idle-seconds", "300", "--host", "{host}", "--port", "{port}"],
     "env": { "LLAMA_CACHE": "{install_dir}-models" },
     "bind": "127.0.0.1",
     "port": 8081,

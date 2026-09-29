@@ -21,6 +21,9 @@ The `llamacpp` manifest runs `llama-server` in router mode on loopback port
 `owner/repository:Q4_K_M`; deletion is not declared. Downloads use `/models/sse`
 for progress, and `LLAMA_CACHE` points to a managed sibling directory so models
 survive engine uninstall and reinstall. Remove that cache manually when needed.
+After five minutes without inference work, a loaded model enters llama.cpp sleep
+mode and releases its model and KV-cache memory; the next request wakes it. The
+router child remains alive and can retain a residual backend GPU context.
 
 Windows and Linux installs download checksum-pinned server and CUDA-runtime
 archive pairs (CUDA 12.x for x64 and CUDA 13.4 for arm64); macOS uses the

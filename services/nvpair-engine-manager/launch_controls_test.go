@@ -134,6 +134,9 @@ func TestBundledNetworkingControls(t *testing.T) {
 					valid = []string{"--port 23456", "--port=23456", "-p 23456", "-p23456", "-p=23456", `"-p" "23456"`, "--port 23456 -p23456", "-- -p23456"}
 					invalid = []string{"-p0", "-p65536", "-p", "-pno", "--port 23456 -p23457", "-vp23456", "-vp=23456", "--bind 0.0.0.0", "--bind=::", "LMS_SERVER_HOST=0.0.0.0", "--cors=false", "--cors=true", "--cors=", "-- --bind 0.0.0.0"}
 				case "llamacpp":
+					if !slices.Equal(policy.FixedArgs, []string{"--sleep-idle-seconds", "300"}) {
+						t.Fatal("llama.cpp idle sleep policy is not fixed")
+					}
 					if !reflect.DeepEqual(policy.Controls, []LaunchControl{{Value: "{server.host}", Flags: []string{"--host"}}, {Value: "{server.port}", Flags: []string{"--port"}}, {Value: "{cors.origins}", Flags: []string{"--cors-origins"}}}) {
 						t.Fatal("incomplete llama.cpp controls")
 					}
