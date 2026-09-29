@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"nvpair-tui/rpc"
 
@@ -82,38 +81,6 @@ func TestSetReplacesPinned(t *testing.T) {
 	s.at = time.Now().Add(-toastTTL - time.Second)
 	if s.render() != "" {
 		t.Error("message set after a pin inherited its stickiness")
-	}
-}
-
-// TestTruncateIsRuneSafe is the regression guard for a byte-based cut. GPU and
-// CPU model names reach truncate, and a slice landing inside a multi-byte
-// sequence emits an invalid rune; the callers also pair it with %-Ns, which pads
-// by rune count, so a byte cut narrowed the column too.
-func TestTruncateIsRuneSafe(t *testing.T) {
-	// 10 runes, 20 bytes.
-	const wide = "ααααααααα™"
-	got := truncate(wide, 5)
-
-	if !utf8.ValidString(got) {
-		t.Errorf("truncate produced invalid UTF-8: %q", got)
-	}
-	if n := utf8.RuneCountInString(got); n != 5 {
-		t.Errorf("truncate(%q, 5) is %d runes, want 5", wide, n)
-	}
-
-	// Short input is returned untouched even when its byte length exceeds max.
-	if got := truncate("ααα", 5); got != "ααα" {
-		t.Errorf("truncate shortened a string that already fits: %q", got)
-	}
-	// Degenerate widths must not panic.
-	if got := truncate("abc", 1); got != "…" {
-		t.Errorf("truncate(_, 1) = %q", got)
-	}
-	if got := truncate("abc", 0); got != "" {
-		t.Errorf("truncate(_, 0) = %q", got)
-	}
-	if got := truncate("abc", -1); got != "" {
-		t.Errorf("truncate(_, -1) = %q", got)
 	}
 }
 

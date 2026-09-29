@@ -5,11 +5,45 @@ package ui
 
 import (
 	"testing"
+	"unicode/utf8"
 
 	svcerrors "nvpair-shared/errors"
 
 	"github.com/charmbracelet/bubbles/table"
 )
+
+// TestTruncate covers the cut and its edges. It counts runes, not bytes: GPU
+// and CPU model names reach it, a byte slice can land inside a multi-byte
+// sequence, and its callers pad with %-Ns, which counts runes too.
+func TestTruncate(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"fits", "abc", 5, "abc"},
+		{"exactly fits", "abcde", 5, "abcde"},
+		{"cut with an ellipsis", "abcdef", 5, "abcd…"},
+		{"multi-byte cut stays on a rune boundary", "ααααααααα™", 5, "αααα…"},
+		{"multi-byte that fits is untouched", "ααα", 5, "ααα"},
+		{"one column is only the ellipsis", "abc", 1, "…"},
+		{"zero columns is empty", "abc", 0, ""},
+		{"negative columns is empty", "abc", -1, ""},
+		{"empty stays empty", "", 5, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncate(tc.in, tc.max)
+			if got != tc.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncate(%q, %d) produced invalid UTF-8: %q", tc.in, tc.max, got)
+			}
+		})
+	}
+}
 
 // rendered is the terminal width a laid-out row actually consumes: every column
 // costs its declared width plus the padding bubbles wraps each cell in.
