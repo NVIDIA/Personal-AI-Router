@@ -18,10 +18,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// errorsView shows the broker's service-error datastore: the initial
-// snapshot from errors:get-initial plus every full-snapshot errors:update
-// push. The user can clear the selected entry; note clears are in-memory
-// in nvpair-errors and a fresh producer emit resurrects the entry.
+// errorsView is the Errors tab: the service errors active across the cluster,
+// by severity, age, and the machine that reported them.
+//
+// The usual path: the tab's label carries the count, so an error is noticed
+// from any tab; open it, select an error to read its full message and the
+// engine, operation, and model it concerns, and fix the cause. c clears this
+// machine's own errors — a peer's is cleared on the machine that reported it —
+// and an error still true is reported again by its producer.
+//
+// The rows are the broker's error datastore: the errors:get-initial snapshot,
+// then each full-snapshot errors:update push.
 type errorsView struct {
 	client *rpc.Client
 	table  table.Model

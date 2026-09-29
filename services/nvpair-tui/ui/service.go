@@ -92,17 +92,18 @@ type serviceItem struct {
 	strV string
 }
 
-// serviceView is the service-wide surface: is the service healthy, where are its
-// endpoints, and the settings and maintenance actions that apply to the whole
-// node.
+// serviceView is the Service tab: the state of the service on this machine and
+// the settings that apply to all of it.
 //
-// It absorbs the former Overview, Proxies port control, and Settings tabs. Those
-// were three tabs describing one thing — the state of the service on this
-// machine, and splitting them meant worker health lived nowhere near the log
-// level you would raise to diagnose it.
+// The usual path: glance at the worker table — one row per worker, ok, DOWN,
+// or ? when the service is not answering — and, when one is down, raise the
+// log level here and read the Logs tab. Below the table, enter changes a
+// setting (the log level, this machine's label for its cluster) or starts the
+// data reset, which asks for y first.
 //
-// Proxy ports are the exception: they moved on to each machine's node detail
-// screen, beside the engine each one fronts.
+// Health and the log level sit together because the one is what you raise when
+// the other goes wrong. Engine and proxy ports are not here: they belong to
+// each machine's detail screen, beside the engine each one serves.
 type serviceView struct {
 	client *rpc.Client
 

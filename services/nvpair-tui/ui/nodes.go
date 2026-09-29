@@ -34,15 +34,20 @@ const (
 	nodesInputFilter
 )
 
-// nodesView is the machine-centric surface: every node PAIR knows about,
-// whether discovered, added by hand, or paired into our cluster, in one table
-// with a detail pane for the selected row.
+// nodesView is the Nodes tab: every machine PAIR knows about — discovered on
+// the network, added by hand, or paired into this cluster — one row each, with
+// whether it is reachable and where it stands in the cluster.
 //
-// It replaces the separate Nodes, Manual, and Cluster tabs. Those split one
-// machine's story across three places — its address in one, its membership in
-// another, its reachability in a third — and gave pairing two entry points with
-// different guards. A node is the unit an operator thinks in, so it is the unit
-// the tab is built around.
+// The usual path: find the machine (/ filters by name or address, f adds one
+// discovery cannot see), pair with it (p, or n by address) and read the PIN to
+// whoever is at the other machine, then press enter for its detail screen —
+// engines, models, hardware, and their controls. A pairing request from
+// another machine appears above the table, answered with a or d.
+//
+// One row per machine because a machine is the unit an operator reasons about:
+// its address, reachability, and membership read together, and pairing has
+// one entry point with one set of guards. The user-facing guide is
+// docs/terminal-interface.mdx.
 type nodesView struct {
 	client *rpc.Client
 	table  table.Model

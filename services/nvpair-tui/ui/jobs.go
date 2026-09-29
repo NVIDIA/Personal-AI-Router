@@ -37,8 +37,13 @@ type workload struct {
 	CreatedAt   int64  `json:"createdAt"` // Unix millis
 }
 
-// jobsView shows inference work across the cluster, headed by where local
-// clients should send it.
+// jobsView is the Jobs tab: inference work across the cluster, headed by the
+// local endpoints clients should send it to.
+//
+// The usual path: point a client at an endpoint on the first line, then watch
+// its requests appear — which model, which engine, which machine it arrived at
+// and which one ran it. Active work is shown by default; a includes finished
+// jobs. t sends a minute of test traffic when there is nothing real to watch.
 //
 // The two belong together: a job list is the answer to "is my traffic being
 // served", and the proxy endpoints are the answer to "where do I send it". The
