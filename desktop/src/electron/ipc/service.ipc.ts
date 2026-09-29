@@ -7,7 +7,7 @@ import { app, shell } from 'electron'
 import { safeHandle } from '@/electron/ipc/safe-handle'
 import { getStructuredLogFilePath } from '@/shared/utils/log'
 import { detectLicenseType } from '@/shared/utils/detect-license'
-import type { ServiceStatus, ServiceVersions } from '@/shared/types/ipc-channels'
+import type { ServiceStatus, ServiceVersions, StartupState } from '@/shared/types/ipc-channels'
 import {
     getConnectorStatus,
     getConnectorError,
@@ -16,7 +16,13 @@ import {
     destroyConnector,
     restartConnector
 } from '@/electron/connector'
-import { getModularLogLevel, setModularLogLevel } from '@/electron/config/ui-config'
+import {
+    getModularLogLevel,
+    getStartupSettings,
+    setModularLogLevel,
+    setStartupSettings
+} from '@/electron/config/ui-config'
+import { applyLoginItem, isLoginItemSupported } from '@/electron/login-item'
 import {
     getModularSupervisor,
     readCliBinManifest
@@ -34,6 +40,11 @@ const THIRD_PARTY_LICENSE_FILE = 'THIRD_PARTY_NOTICES.md'
 function resolveShippedFile(name: string): string {
     const base = app.isPackaged ? process.resourcesPath : app.getAppPath()
     return path.join(base, name)
+}
+
+/** Persisted startup preferences plus whether this OS has a login item to write. */
+function startupState(): StartupState {
+    return { ...getStartupSettings(), supported: isLoginItemSupported() }
 }
 
 /** Open a shipped file in the OS default handler, falling back to revealing it. */
@@ -96,6 +107,22 @@ export function registerServiceIpc(): void {
         // so the change applies without a restart.
         setModularLogLevel(payload.level)
         getModularSupervisor().setLogLevel(payload.level)
+    })
+
+    safeHandle('service:get-startup', async (): Promise<StartupState> => {
+        return startupState()
+    })
+
+    safeHandle('service:set-startup', async (_event, payload): Promise<StartupState> => {
+        // Persist first, then write the login item from the merged result: the
+        // config is what the next launch reconciles from, so a login item that
+        // matched a payload the config never took would be undone on restart.
+        // `applyLoginItem` no-ops where the OS has no login item, which leaves
+        // the preference stored for a platform that does.
+        setStartupSettings(payload)
+        const state = startupState()
+        applyLoginItem(state)
+        return state
     })
 
     safeHandle('service:open-log-file', async () => {
