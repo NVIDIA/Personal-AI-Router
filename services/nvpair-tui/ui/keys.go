@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -44,7 +45,14 @@ func inputHelp(submitLabel string) []key.Binding {
 // The count is a parameter because the digit binding has to match the tab bar
 // exactly: it advertised "1-9 go to tab" against five tabs, promising four
 // shortcuts that did nothing.
+//
+// More tabs than digits is a mistake in how the shell was assembled, not a
+// state to render around, so it panics: the tab set is fixed at build time and
+// every run of the program would hit it at once.
 func newGlobalKeyMap(tabs int) globalKeyMap {
+	if tabs > maxTabs {
+		panic(fmt.Sprintf("the shell has %d tabs, but only %d can have a digit key", tabs, maxTabs))
+	}
 	return globalKeyMap{
 		// Deliberately not h/l or the arrows. Those are how you move *within*
 		// content, and a view with a horizontal axis — switching between the
@@ -89,14 +97,12 @@ func newGlobalKeyMap(tabs int) globalKeyMap {
 	}
 }
 
+// maxTabs is how many tabs the shell can give a digit key. A tenth would need a
+// two-key sequence.
+const maxTabs = 9
+
 // tabDigits is the digit keys that select a tab, one per tab.
-//
-// Capped at nine because a tenth tab would need a two-key sequence, and the tab
-// bar has no room for ten labels at eighty columns anyway.
 func tabDigits(tabs int) []string {
-	if tabs > 9 {
-		tabs = 9
-	}
 	keys := make([]string, 0, tabs)
 	for i := 1; i <= tabs; i++ {
 		keys = append(keys, strconv.Itoa(i))
@@ -106,9 +112,6 @@ func tabDigits(tabs int) []string {
 
 // tabDigitsHelp labels those keys: "1" alone, or "1-N".
 func tabDigitsHelp(tabs int) string {
-	if tabs > 9 {
-		tabs = 9
-	}
 	if tabs <= 1 {
 		return "1"
 	}
