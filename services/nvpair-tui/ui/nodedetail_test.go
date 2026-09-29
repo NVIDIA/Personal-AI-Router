@@ -1079,9 +1079,9 @@ func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
 	stale := ollamaSettings()
 	stale.NodeID = "node-a"
 	stale.Settings.ServerPort = 11500
-	v.Update(engineSettingsMsg{node: "node-a", snapshot: stale})
-	v.Update(engineSettingsMsg{node: "node-a", err: errors.New("node-a went away")})
-	v.Update(enginePreviewMsg{request: enginesettings.Request{NodeID: "node-a", Engine: "ollama"}})
+	v.Update(detailReply{node: "node-a", msg: engineSettingsMsg{snapshot: stale}})
+	v.Update(detailReply{node: "node-a", msg: engineSettingsMsg{err: errors.New("node-a went away")}})
+	v.Update(detailReply{node: "node-a", msg: enginePreviewMsg{request: enginesettings.Request{NodeID: "node-a", Engine: "ollama"}}})
 
 	if second.mode != detailInputNone {
 		t.Errorf("node A's reply opened node B's editor with port %q", second.input.Value())
@@ -1097,7 +1097,7 @@ func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
 	// assertions above would pass if every reply were dropped.
 	own := ollamaSettings()
 	own.NodeID = "node-b"
-	v.Update(engineSettingsMsg{node: "node-b", snapshot: own})
+	v.Update(detailReply{node: "node-b", msg: engineSettingsMsg{snapshot: own}})
 	if second.mode != detailInputEnginePort || second.input.Value() != "11434" {
 		t.Errorf("node B's own reply did not open its field (mode %v, value %q)",
 			second.mode, second.input.Value())
@@ -1115,14 +1115,34 @@ func TestLateOperationReplyStaysWithItsNode(t *testing.T) {
 	b.engines = []engineStatus{{Engine: "ollama", DisplayName: "Ollama", Installed: true}}
 	b.refreshEngines()
 
-	b.update(classifyOpResult("node-a", "start", "ollama", "start", errors.New("engine did not come up")))
+	failed := classifyOpResult("start", "ollama", "start", errors.New("engine did not come up"))
+	b.update(detailReply{node: "node-a", msg: failed})
 	if got := b.status.render(); strings.Contains(got, "failed") {
 		t.Errorf("node A's outcome was reported on node B: %q", got)
 	}
 
-	b.update(classifyOpResult("node-b", "start", "ollama", "start", errors.New("engine did not come up")))
+	b.update(detailReply{node: "node-b", msg: failed})
 	if got := b.status.render(); !strings.Contains(got, "start (Ollama) failed") {
 		t.Errorf("node B's own outcome was not reported: %q", got)
+	}
+}
+
+// TestDetailRepliesCarryTheirNode checks the other half of the envelope: a
+// reply leaves addressed to the screen that asked, whatever screen is open by
+// the time it lands.
+func TestDetailRepliesCarryTheirNode(t *testing.T) {
+	a := newNodeDetail(nil, nodeRow{key: "node-a", name: "A", presence: presenceOnline})
+	reply := engineOpMsg{what: "start", engine: "ollama"}
+	got := a.own(func() tea.Msg { return reply })()
+	tagged, ok := got.(detailReply)
+	if !ok || tagged.node != "node-a" || tagged.msg != reply {
+		t.Errorf("reply left as %#v, want it addressed to node-a", got)
+	}
+	if a.own(nil) != nil {
+		t.Error("no command was turned into one")
+	}
+	if msg := a.own(func() tea.Msg { return nil })(); msg != nil {
+		t.Errorf("a command with nothing to say was given an envelope: %#v", msg)
 	}
 }
 

@@ -74,13 +74,7 @@ const (
 )
 
 // engineSettingsMsg carries a fetched snapshot.
-//
-// node is the node argument the read was sent with, so a reply that lands after
-// the operator has moved to another node's screen is recognisable as not
-// belonging to it. The snapshot's own NodeID cannot do that job: a failed read
-// has no snapshot.
 type engineSettingsMsg struct {
-	node     string
 	snapshot enginesettings.Snapshot
 	err      error
 }
@@ -96,10 +90,8 @@ type enginePreviewMsg struct {
 	err     error
 }
 
-// engineSettingsAppliedMsg is the outcome of a commit, addressed by node as
-// engineSettingsMsg is.
+// engineSettingsAppliedMsg is the outcome of a commit.
 type engineSettingsAppliedMsg struct {
-	node   string
 	engine string
 	err    error
 }
@@ -111,13 +103,13 @@ func getEngineSettingsCmd(client *rpc.Client, nodeID, engine string) tea.Cmd {
 		enginesettings.Request{NodeID: nodeID, Engine: engine},
 		func(msg *rpc.Message, err error) tea.Msg {
 			if err != nil {
-				return engineSettingsMsg{node: nodeID, err: err}
+				return engineSettingsMsg{err: err}
 			}
 			var snap enginesettings.Snapshot
 			if derr := decodeParams(msg.Result, &snap); derr != nil {
-				return engineSettingsMsg{node: nodeID, err: derr}
+				return engineSettingsMsg{err: derr}
 			}
-			return engineSettingsMsg{node: nodeID, snapshot: snap}
+			return engineSettingsMsg{snapshot: snap}
 		})
 }
 
@@ -151,7 +143,7 @@ func previewEngineSettingsCmd(client *rpc.Client, req enginesettings.Request) te
 func applyEngineSettingsCmd(client *rpc.Client, req enginesettings.Request) tea.Cmd {
 	return callWithin(client, settingsApplyBudget(req), "engine:apply-settings", req,
 		func(_ *rpc.Message, err error) tea.Msg {
-			return engineSettingsAppliedMsg{node: req.NodeID, engine: req.Engine, err: err}
+			return engineSettingsAppliedMsg{engine: req.Engine, err: err}
 		})
 }
 
