@@ -65,7 +65,7 @@ var (
 	// view whose whole purpose is scrolling back through a buffer — so f threw
 	// the operator to the bottom on the first press of the standard paging key.
 	// tail is also the vocabulary anyone reaching for this already has.
-	logFollowKey = key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "follow"))
+	logFollowKey = key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "tail (follow)"))
 	logSaveKey   = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save to file"))
 	logClearKey  = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear filter"))
 )
