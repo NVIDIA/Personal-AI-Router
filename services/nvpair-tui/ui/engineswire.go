@@ -6,7 +6,9 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"nvpair-shared/engines"
 	"nvpair-tui/rpc"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -88,53 +90,68 @@ var modelActions = map[string]modelAction{
 	"pull":   {op: "pull", remote: "engine:remote-pull-model", what: "download"},
 }
 
-// modelActionWire builds the local engine:action name and params for a model
+// modelWire is how one engine spells each model operation: the engine:action
+// name, and the params that action takes for a given model.
+type modelWire map[string]func(model string) (action string, params map[string]any)
+
+// modelWires is every engine's spelling of the model operations, keyed by
+// engine id.
+//
+// The engines do not share a contract here, so one spelling for both is wrong
+// in ways that fail quietly. This mirrors nvpair-engine-manager's own
+// modelActionWire, which is authoritative for the remote path. An engine is
+// supported by adding its entry; one without an entry is refused rather than
+// sent another engine's vocabulary, and TestEveryEngineHasAModelWire fails
+// until the entry exists.
+var modelWires = map[string]modelWire{
+	engines.NameOllama: {
+		// Ollama has no load action at all. Warming a model is run_model with
+		// streaming off; sending load_model just errors.
+		"load": func(model string) (string, map[string]any) {
+			return "run_model", map[string]any{"model": model, "stream": false}
+		},
+		// Ollama only frees a model when keep_alive is 0. Without it the
+		// request succeeds and the model stays resident.
+		"unload": func(model string) (string, map[string]any) {
+			return "unload_model", map[string]any{"model": model, "keep_alive": 0}
+		},
+		"delete": nameAndModel("delete_model"),
+		"pull":   nameAndModel("pull_model"),
+	},
+	engines.NameLMStudio: {
+		"load": func(model string) (string, map[string]any) {
+			return "load_model", map[string]any{"model": model}
+		},
+		"unload": func(model string) (string, map[string]any) {
+			return "unload_model", map[string]any{"model": model}
+		},
+		"delete": nameAndModel("delete_model"),
+		"pull":   nameAndModel("pull_model"),
+	},
+}
+
+// nameAndModel is an action that takes the model under both keys. The engines
+// name it differently — Ollama's delete and pull take "name", LM Studio's take
+// "model" — so both are sent where a name is all the action needs.
+func nameAndModel(action string) func(string) (string, map[string]any) {
+	return func(model string) (string, map[string]any) {
+		return action, map[string]any{"name": model, "model": model}
+	}
+}
+
+// modelActionWire builds the local engine:action envelope for a model
 // operation on a specific engine.
-//
-// The engines do not share a contract here, so one action name for both is
-// wrong in ways that fail quietly. This mirrors nvpair-engine-manager's own
-// modelActionWire, which is authoritative:
-//
-//   - Ollama has no load action at all. Warming a model is run_model with
-//     streaming off; sending load_model just errors.
-//   - Ollama only frees a model when keep_alive is 0. Without it the request
-//     succeeds and the model stays resident.
-//   - The two engines key the model differently — Ollama's delete takes "name",
-//     LM Studio's takes "model" — so both are sent where a name is all that is
-//     needed, which is also why a pull works on either engine.
-func modelActionWire(engine, op, model string) map[string]any {
-	both := map[string]string{"name": model, "model": model}
-	switch op {
-	case "load":
-		if engine == "ollama" {
-			return actionParams(engine, "run_model",
-				map[string]any{"model": model, "stream": false})
-		}
-		return actionParams(engine, "load_model", map[string]any{"model": model})
-	case "unload":
-		if engine == "ollama" {
-			return actionParams(engine, "unload_model",
-				map[string]any{"model": model, "keep_alive": 0})
-		}
-		return actionParams(engine, "unload_model", map[string]any{"model": model})
-	case "delete":
-		return actionParams(engine, "delete_model", anyMap(both))
-	default: // pull
-		return actionParams(engine, "pull_model", anyMap(both))
+func modelActionWire(engine, op, model string) (map[string]any, error) {
+	wire, ok := modelWires[engine]
+	if !ok {
+		return nil, fmt.Errorf("model operations are not supported for engine %q", engine)
 	}
-}
-
-// actionParams wraps an engine:action envelope around per-action params.
-func actionParams(engine, action string, params map[string]any) map[string]any {
-	return map[string]any{"engine": engine, "action": action, "params": params}
-}
-
-func anyMap(in map[string]string) map[string]any {
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
+	build, ok := wire[op]
+	if !ok {
+		return nil, fmt.Errorf("unknown model operation %q", op)
 	}
-	return out
+	action, params := build(model)
+	return map[string]any{"engine": engine, "action": action, "params": params}, nil
 }
 
 // engineOpMsg is the outcome of a lifecycle or model command.
@@ -184,15 +201,19 @@ func engineCmd(client *rpc.Client, node, engine, method, op, what string) tea.Cm
 // download had started at all, and nothing to distinguish it from a keystroke
 // that missed.
 func modelCmd(client *rpc.Client, node, engine string, act modelAction, model string) tea.Cmd {
-	method := "engine:action"
-	params := modelActionWire(engine, act.op, model)
-	if node != "" {
-		// The remote methods take the operation in the method name, so the
-		// engine's own action vocabulary stays on the target's side.
-		method = act.remote
-		params = map[string]any{"node": node, "engine": engine, "model": model}
-	}
 	what := act.what + " " + model
+	// The remote methods take the operation in the method name, so the
+	// engine's own action vocabulary stays on the target's side.
+	method := act.remote
+	params := map[string]any{"node": node, "engine": engine, "model": model}
+	if node == "" {
+		method = "engine:action"
+		local, err := modelActionWire(engine, act.op, model)
+		if err != nil {
+			return func() tea.Msg { return engineOpMsg{node: node, what: what, engine: engine, err: err} }
+		}
+		params = local
+	}
 	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
 		return classifyOpResult(node, what, engine, act.op, err)
 	})
