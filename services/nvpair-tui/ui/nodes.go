@@ -479,10 +479,15 @@ func (v *nodesView) handleInviteResult(msg nodeInviteMsg) tea.Cmd {
 	case msg.err != nil:
 		v.clearOutboundInvite()
 		v.status.error("invite failed: %s", msg.err)
+	case msg.rejected && msg.reason == reasonAlreadyClustered:
+		// The one rejection with a remedy on the other side: that machine has
+		// to leave the cluster it is in before it can join this one.
+		v.clearOutboundInvite()
+		v.status.error("%s is already in a cluster - it has to leave that cluster before it can pair",
+			msg.name)
 	case msg.rejected:
 		v.clearOutboundInvite()
-		v.status.error("%s rejected the invite (%s) - remove the existing relationship first",
-			msg.name, rejectReason(msg.reason))
+		v.status.error("%s rejected the invite (%s)", msg.name, rejectReason(msg.reason))
 	case msg.pin != "":
 		// Pinned, not expiring: the operator reads this PIN to someone at the
 		// other machine. It clears when the invite resolves.
@@ -943,6 +948,26 @@ func (v *nodesView) respondToInvite(accept bool, pin string) tea.Cmd {
 			_ = decodeParams(msg.Result, &res)
 			return pairingResultMsg{from: from, state: res.State, reason: res.Reason}
 		})
+}
+
+// The cluster manager's reason codes that get their own wording, because each
+// has a specific remedy: a PIN that failed verification is the operator's typo,
+// and an already-clustered peer has to leave its cluster first.
+const (
+	reasonIncorrectPIN     = "incorrect-pin"
+	reasonAlreadyClustered = "already-clustered"
+)
+
+// rejectReason renders the reason a peer gave for refusing as human text.
+func rejectReason(reason string) string {
+	switch reason {
+	case reasonAlreadyClustered:
+		return "already in a cluster"
+	case "":
+		return "rejected by peer"
+	default:
+		return reason
+	}
 }
 
 // pairingResultMsg is the outcome of answering an inbound pairing request.

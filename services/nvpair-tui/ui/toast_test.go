@@ -606,6 +606,31 @@ func TestSecondInviteWaitsForTheFirst(t *testing.T) {
 	}
 }
 
+// TestRejectionAdviceMatchesTheReason checks a refused invite only suggests
+// the remedy for the reason actually given. "Remove the existing relationship
+// first" was attached to every rejection, including ones with no relationship
+// to remove.
+func TestRejectionAdviceMatchesTheReason(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+
+	v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reasonAlreadyClustered})
+	if got := v.status.render(); !contains(got, "leave that cluster") {
+		t.Errorf("an already-clustered peer is not told what to do: %q", got)
+	}
+
+	for _, reason := range []string{"", "evil-arbitrary-text"} {
+		v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reason})
+		got := v.status.render()
+		if contains(got, "leave that cluster") || contains(got, "relationship") {
+			t.Errorf("reason %q got advice meant for an already-clustered peer: %q", reason, got)
+		}
+		if !contains(got, "rejected the invite") {
+			t.Errorf("reason %q: the rejection is not reported: %q", reason, got)
+		}
+	}
+}
+
 // TestCancelInviteClearsThePinImmediately checks the inviter's half of decline.
 // Without it a PIN read to the wrong person could only be retired by waiting
 // for it to expire, staying answerable the whole time.
