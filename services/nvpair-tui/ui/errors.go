@@ -475,24 +475,3 @@ func ageLabel(tsMillis int64) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
 }
-
-// truncate shortens s to at most max characters, marking a cut with an ellipsis.
-//
-// Counted and sliced in runes, not bytes. A byte slice can land inside a
-// multi-byte sequence and emit an invalid rune, and every caller pairs this with
-// a %-Ns field — fmt pads by rune count — so a byte-based cut also made the
-// column narrower than intended for any non-ASCII name. GPU and CPU model names
-// and hostnames all reach here.
-func truncate(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	if max == 1 {
-		return "…"
-	}
-	return string(r[:max-1]) + "…"
-}
