@@ -69,8 +69,16 @@ type nodesView struct {
 	// Service tab's save when it is renamed there, since the settings worker
 	// sends no push of its own.
 	clusterName string
-	// inbound is the most recent pairing request awaiting our answer.
+	// inbound is the pairing request on screen, awaiting our answer, and queued
+	// the ones that arrived while it was up, oldest first. Each is a live
+	// session another machine is waiting on, so a newer one waits its turn
+	// rather than replacing the one being read.
 	inbound *clusterInvite
+	queued  []clusterInvite
+	// answering is the inbound request whose answer is in flight. It stays on
+	// screen until the cluster manager settles it: a PIN it refuses as
+	// malformed leaves the session open for another try.
+	answering string
 	// invitedKey is the node an outbound invite is pending against, held so the
 	// pinned PIN can be retired once that node turns up trusted. Empty for an
 	// invite sent by address, which has no node identity to key on — see
@@ -477,6 +485,9 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 	case pairingResultMsg:
 		return v.handlePairingResult(msg)
 
+	case inviteCancelledMsg:
+		return v.handleInviteCancelled(msg)
+
 	case NotificationMsg:
 		return v.handleNotification(msg.Msg)
 
@@ -577,13 +588,9 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 
 	case "cluster:invite-received":
 		var inv clusterInvite
-		decodeOrLog(msg.Method, msg.Params, &inv)
-		v.inbound = &inv
-		// The prompt is a row of the frame, not a status line — see
-		// inboundPrompt. Pinning it here as well said the same thing twice, in
-		// two wordings, and left the status line unable to report what
-		// happened next because the pin outranked it.
-		v.SetSize(v.width, v.height)
+		if decodeOrLog(msg.Method, msg.Params, &inv) {
+			v.receiveInvite(inv)
+		}
 
 	default:
 		// Terminal invite events retire a pinned PIN or an inbound prompt that
@@ -596,6 +603,98 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 	return nil
 }
 
+// receiveInvite puts an inbound pairing request on screen, or behind the one
+// already there. A request delivered twice is kept once.
+//
+// The prompt is a row of the frame, not a status line — see inboundPrompt.
+func (v *nodesView) receiveInvite(inv clusterInvite) {
+	if v.inbound == nil {
+		v.inbound = &inv
+		return
+	}
+	if v.inbound.InviteID == inv.InviteID {
+		return
+	}
+	for _, q := range v.queued {
+		if q.InviteID == inv.InviteID {
+			return
+		}
+	}
+	v.queued = append(v.queued, inv)
+}
+
+// dropInbound forgets an inbound request that is settled, bringing the next
+// one waiting on screen if it was the one showing.
+func (v *nodesView) dropInbound(id string) bool {
+	if v.inbound != nil && v.inbound.InviteID == id {
+		v.inbound = nil
+		if v.answering == id {
+			v.answering = ""
+		}
+		if len(v.queued) > 0 {
+			next := v.queued[0]
+			v.queued = v.queued[1:]
+			v.inbound = &next
+		}
+		return true
+	}
+	for i, q := range v.queued {
+		if q.InviteID == id {
+			v.queued = append(v.queued[:i], v.queued[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// inboundPrompt is the standing line for a pairing request someone sent us,
+// or empty when there is none.
+//
+// It follows the request through its states rather than describing only the
+// first. Pressing "a" does not finish anything — it opens the PIN field — so a
+// prompt that went on offering "a to accept" after the field was already up
+// told the operator to do the thing they had just done, while the answer it
+// actually wanted was on the line below.
+func (v *nodesView) inboundPrompt() string {
+	if v.inbound == nil {
+		return ""
+	}
+	var line string
+	switch {
+	case v.answering == v.inbound.InviteID:
+		line = fmt.Sprintf("answering the pairing request from %s...", v.inbound.FromNodeName)
+	case v.mode == nodesInputPin:
+		line = fmt.Sprintf("accepting %s - enter the PIN shown on that machine",
+			v.inbound.FromNodeName)
+	default:
+		line = fmt.Sprintf("pairing request from %s - %s to accept, %s to decline",
+			v.inbound.FromNodeName, nodePairKey.Help().Key, nodeDeclineKey.Help().Key)
+	}
+	if n := len(v.queued); n > 0 {
+		line += fmt.Sprintf(" (%d more waiting)", n)
+	}
+	return statusOKStyle.Render(line)
+}
+
+// pairingLine is the pairing state that stays in view over a node's detail
+// screen: a request waiting on this machine, or the PIN of one sent from it.
+// Both are sessions someone at another machine is waiting on, and the detail
+// screen replaces the list where they are otherwise shown.
+func (v *nodesView) pairingLine() string {
+	switch {
+	case v.inbound != nil && v.answering == v.inbound.InviteID:
+		return statusOKStyle.Render(fmt.Sprintf(
+			"answering the pairing request from %s...", v.inbound.FromNodeName))
+	case v.inbound != nil:
+		return statusOKStyle.Render(fmt.Sprintf(
+			"pairing request from %s - esc to the node list to answer it", v.inbound.FromNodeName))
+	case v.outboundInviteID != "":
+		return statusOKStyle.Render(fmt.Sprintf(
+			"invite to %s is open - PIN %s", v.outboundName, v.outboundPIN))
+	}
+	return ""
+}
+
 // retireInvite clears whichever pairing session a terminal event belongs to.
 //
 // Matched on inviteId, because concurrent pairings are supported: an outbound
@@ -604,28 +703,6 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 // manager emits carries the invite it refers to, so an event without one
 // belongs to no session this view is tracking and is ignored rather than
 // applied to both.
-// inboundPrompt is the standing line for a pairing request someone sent us,
-// or empty when there is none.
-//
-// It follows the request through its two states rather than describing only
-// the first. Pressing "a" does not finish anything — it opens the PIN field —
-// so a prompt that went on offering "a to accept" after the field was already
-// up told the operator to do the thing they had just done, while the answer it
-// actually wanted was on the line below.
-func (v *nodesView) inboundPrompt() string {
-	if v.inbound == nil {
-		return ""
-	}
-	if v.mode == nodesInputPin {
-		return statusOKStyle.Render(fmt.Sprintf(
-			"accepting %s - enter the PIN shown on that machine",
-			v.inbound.FromNodeName))
-	}
-	return statusOKStyle.Render(fmt.Sprintf(
-		"pairing request from %s - %s to accept, %s to decline",
-		v.inbound.FromNodeName, nodePairKey.Help().Key, nodeDeclineKey.Help().Key))
-}
-
 func (v *nodesView) retireInvite(params []byte, outcome inviteResolution) {
 	var ref inviteRef
 	decodeOrLog("invite outcome", params, &ref)
@@ -637,11 +714,9 @@ func (v *nodesView) retireInvite(params []byte, outcome inviteResolution) {
 		v.clearOutboundInvite()
 		v.status.set(outcome.kind, "invite %s", outcome.label)
 	}
-	if v.inbound != nil && ref.InviteID == v.inbound.InviteID {
-		v.inbound = nil
+	if v.dropInbound(ref.InviteID) {
 		v.status.set(outcome.kind, "pairing request %s", outcome.label)
 	}
-	v.SetSize(v.width, v.height)
 }
 
 func (v *nodesView) handleKey(msg tea.KeyMsg) tea.Cmd {
@@ -703,9 +778,12 @@ func (v *nodesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 			v.status.info("no pairing request to accept")
 			return nil
 		}
+		if v.answering != "" {
+			return nil
+		}
 		v.beginInput(nodesInputPin, "PIN from the inviting node")
 		return textinput.Blink
-	case key.Matches(msg, nodeDeclineKey) && v.inbound != nil:
+	case key.Matches(msg, nodeDeclineKey) && v.inbound != nil && v.answering == "":
 		// Gated on there being something to decline, so that with no pairing
 		// request pending the key falls through to the table, where d is the
 		// standard half-page-down. Unconditionally intercepting it meant paging
@@ -901,13 +979,76 @@ func (v *nodesView) inviteSelected() tea.Cmd {
 	})
 }
 
+// inviteNodeResult is the decoded cluster:invite-node result the UI acts on: a
+// PIN to display on success, or an explicit rejection (e.g. the target is
+// already clustered) carrying its reason. No PIN accompanies a rejection.
+type inviteNodeResult struct {
+	// InviteID identifies this pairing session. The manager mints one per
+	// invite and stamps it on every terminal notification, so it is what lets a
+	// view tell its own invite's outcome from a concurrent one's.
+	InviteID string  `json:"inviteId"`
+	State    string  `json:"state"`
+	Pin      *string `json:"pin"`
+	Reason   string  `json:"reason"`
+}
+
+// inviteResolution is how the UI reports an invite that is no longer pending.
+type inviteResolution struct {
+	kind  toastKind
+	label string
+}
+
+// inviteRef is the invite a terminal notification refers to. The manager
+// supports concurrent pairings, so an event has to be matched against the
+// session it belongs to.
+type inviteRef struct {
+	InviteID string `json:"inviteId"`
+}
+
+// inviteOutcome maps a cluster-manager terminal invite event to its report.
+// These notifications are the only signal that a sent invite has stopped being
+// pending — the synchronous cluster:invite-node result only covers the handoff —
+// so a view that displays a PIN must consume them or leave a dead invite on
+// screen looking live.
+func inviteOutcome(method string) (inviteResolution, bool) {
+	switch method {
+	case "cluster:invite-declined":
+		return inviteResolution{kind: toastError, label: "declined by the other node"}, true
+	case "cluster:invite-expired":
+		return inviteResolution{kind: toastError, label: "expired before it was accepted"}, true
+	case "cluster:invite-canceled":
+		return inviteResolution{kind: toastInfo, label: "canceled"}, true
+	case "cluster:invite-failed":
+		return inviteResolution{kind: toastError, label: "failed - check the Logs tab"}, true
+	default:
+		return inviteResolution{}, false
+	}
+}
+
+// inviteNodeCmd issues a single cluster:invite-node request and maps the
+// decoded result (or error) into the caller's view message.
+//
+// There is no separate "create cluster" step: the backend auto-founds a
+// cluster of one when this node isn't clustered yet, so the invite is the one
+// authoritative call and the UI carries no membership orchestration.
+func inviteNodeCmd(client *rpc.Client, params map[string]any, finish func(res inviteNodeResult, err error) tea.Msg) tea.Cmd {
+	return call(client, "cluster:invite-node", params, func(msg *rpc.Message, err error) tea.Msg {
+		if err != nil {
+			return finish(inviteNodeResult{}, err)
+		}
+		var r inviteNodeResult
+		decodeOrLog("cluster:invite-node", msg.Result, &r)
+		return finish(r, nil)
+	})
+}
+
 // inviteResultMsg maps a cluster:invite-node outcome onto the view message.
 // address is empty for an invite aimed at a discovered node.
 func inviteResultMsg(name, address string, res inviteNodeResult, err error) tea.Msg {
 	if err != nil {
 		return nodeInviteMsg{name: name, address: address, err: err}
 	}
-	if res.State == "rejected" {
+	if res.State == inviteStateRejected {
 		return nodeInviteMsg{
 			name: name, address: address, rejected: true, reason: res.Reason,
 		}
@@ -927,41 +1068,45 @@ func (v *nodesView) respondToInvite(accept bool, pin string) tea.Cmd {
 		v.status.info("no pairing request to answer")
 		return nil
 	}
-	params := map[string]any{"inviteId": v.inbound.InviteID, "accept": accept}
+	if v.answering != "" {
+		return nil
+	}
+	id, from := v.inbound.InviteID, v.inbound.FromNodeName
+	params := map[string]any{"inviteId": id, "accept": accept}
 	if accept && pin != "" {
 		params["pin"] = pin
 	}
-	from := v.inbound.FromNodeName
-	v.inbound = nil
-	v.SetSize(v.width, v.height)
-
-	if !accept {
-		v.status.busy("declining the pairing request...")
-		return call(v.client, "cluster:respond-to-invite", params,
-			func(_ *rpc.Message, err error) tea.Msg {
-				return nodeActionMsg{what: "decline pairing", err: err}
-			})
-	}
-	// The handshake crosses to another machine and is the slowest call this tab
-	// makes; the inbound prompt has already been cleared, so without this the
-	// screen is blank until it answers.
-	v.status.busy("pairing with %s...", from)
+	// Held on screen, not cleared, until the answer settles. The prompt says
+	// the answer is in flight — the handshake crosses to another machine and
+	// is the slowest call this tab makes — and the request stays answerable
+	// if the cluster manager hands it back.
+	v.answering = id
 	return call(v.client, "cluster:respond-to-invite", params,
 		func(msg *rpc.Message, err error) tea.Msg {
 			if err != nil {
-				return pairingResultMsg{from: from, err: err}
+				return pairingResultMsg{inviteID: id, from: from, err: err}
 			}
 			// A wrong PIN is NOT a JSON-RPC error. The cluster manager tears the
 			// session down and replies successfully with the invite, whose state
 			// is "failed" and whose reason says why. Reading only the transport
-			// error reported a green "accept pairing ok" for a pairing that had
-			// just been rejected — and since the prompt is already gone by then,
-			// nothing later corrected it.
+			// error would report success for a pairing that had just been
+			// rejected.
 			var res inviteNodeResult
 			decodeOrLog("cluster:respond-to-invite", msg.Result, &res)
-			return pairingResultMsg{from: from, state: res.State, reason: res.Reason}
+			return pairingResultMsg{inviteID: id, from: from, state: res.State, reason: res.Reason}
 		})
 }
+
+// The pairing session states nvpair-cluster-manager reports, spelled as its
+// InviteState values (services/nvpair-cluster-manager/membership.go).
+// cluster:invite-node answers pending, with a PIN, or rejected; any other
+// failure comes back as an error. Answering a request settles it as paired,
+// declined, or failed.
+const (
+	inviteStatePaired   = "paired"
+	inviteStateDeclined = "declined"
+	inviteStateRejected = "rejected"
+)
 
 // The cluster manager's reason codes that get their own wording, because each
 // has a specific remedy: a PIN that failed verification is the operator's typo,
@@ -985,24 +1130,36 @@ func rejectReason(reason string) string {
 
 // pairingResultMsg is the outcome of answering an inbound pairing request.
 type pairingResultMsg struct {
-	from   string
-	state  string
-	reason string
-	err    error
+	inviteID string
+	from     string
+	state    string
+	reason   string
+	err      error
 }
 
 // handlePairingResult reports whether this machine actually joined.
 func (v *nodesView) handlePairingResult(msg pairingResultMsg) tea.Cmd {
+	if v.answering == msg.inviteID {
+		v.answering = ""
+	}
+	if msg.err != nil {
+		// Kept on screen. An error reply settles nothing: the cluster manager
+		// answers a malformed PIN this way and leaves the session open, so the
+		// request can be answered again — and if it is in fact gone, its
+		// expiry retires it.
+		v.status.error("could not answer the pairing request from %s: %s - answer it again",
+			msg.from, msg.err)
+		return nil
+	}
+	v.dropInbound(msg.inviteID)
 	switch {
-	case msg.err != nil:
-		v.status.error("could not answer the pairing request: %s", msg.err)
-	case msg.state == "paired":
+	case msg.state == inviteStatePaired:
 		v.status.ok("paired with %s", msg.from)
 	case msg.reason == reasonIncorrectPIN:
 		// The specific case worth naming: it is the operator's typo, and the
 		// remedy is a fresh invite because the PIN is single-use.
 		v.status.error("wrong PIN - ask %s to send a new invite, then try again", msg.from)
-	case msg.state == "declined":
+	case msg.state == inviteStateDeclined:
 		v.status.info("pairing request declined")
 	default:
 		v.status.error("pairing with %s failed (%s) - ask for a new invite",
@@ -1064,16 +1221,51 @@ func (v *nodesView) cancelInvite() tea.Cmd {
 		v.status.info("no invite is waiting")
 		return nil
 	}
-	id := v.outboundInviteID
-	// Cleared optimistically: the PIN must stop being displayed the moment the
-	// operator asks, not when the round trip finishes. A failure restores
-	// nothing because the invite is either already gone or about to expire.
+	sent := sentInvite{
+		id: v.outboundInviteID, key: v.invitedKey, address: v.invitedAddress,
+		name: v.outboundName, pin: v.outboundPIN,
+	}
+	// Cleared at once: the PIN must stop being displayed the moment the
+	// operator asks, not when the round trip finishes.
 	v.clearOutboundInvite()
 	v.status.busy("cancelling invite...")
-	return call(v.client, "cluster:cancel-invite", map[string]string{"inviteId": id},
+	return call(v.client, "cluster:cancel-invite", map[string]string{"inviteId": sent.id},
 		func(_ *rpc.Message, err error) tea.Msg {
-			return nodeActionMsg{what: "cancel invite", err: err}
+			return inviteCancelledMsg{invite: sent, err: err}
 		})
+}
+
+// sentInvite is an outbound invite's tracking state, set aside while a cancel
+// is in flight so a failed cancel can put it back.
+type sentInvite struct{ id, key, address, name, pin string }
+
+// inviteCancelledMsg is the outcome of cluster:cancel-invite.
+type inviteCancelledMsg struct {
+	invite sentInvite
+	err    error
+}
+
+// handleInviteCancelled reports a cancel, and puts the invite back if the
+// cancel failed.
+//
+// A failed cancel leaves the session live and its PIN answerable, so it is
+// tracked and shown again, and c can be pressed again — unless another invite
+// has been sent in the meantime, which has the one slot now.
+func (v *nodesView) handleInviteCancelled(msg inviteCancelledMsg) tea.Cmd {
+	if msg.err == nil {
+		v.status.ok("invite to %s cancelled", msg.invite.name)
+		return tea.Batch(v.membersCmd(), v.manualCmd())
+	}
+	if v.outboundInviteID != "" || v.inviteSending {
+		v.status.error("could not cancel the invite to %s: %s", msg.invite.name, msg.err)
+		return nil
+	}
+	s := msg.invite
+	v.outboundInviteID, v.invitedKey, v.invitedAddress = s.id, s.key, s.address
+	v.outboundName, v.outboundPIN = s.name, s.pin
+	v.status.pin("could not cancel the invite to %s (%s) - PIN %s is still live; %s to try again",
+		s.name, msg.err, s.pin, nodeCancelKey.Help().Key)
+	return nil
 }
 
 // removeMember un-pairs a confirmed peer.
@@ -1254,7 +1446,17 @@ func (v *nodesView) selectedRow() *nodeRow {
 
 func (v *nodesView) View() string {
 	if v.detail != nil {
-		return v.detail.View()
+		// Pairing stays in view over the detail screen, which replaces the
+		// list where it is otherwise shown. Sized here, from the line actually
+		// rendered, because it comes and goes with events the detail screen
+		// never sees.
+		line := v.pairingLine()
+		h := v.height
+		if line != "" {
+			h -= countLines(line)
+		}
+		v.detail.SetSize(v.width, h)
+		return joinLines(line, v.detail.View())
 	}
 
 	// Everything that is not the table, gathered before the table is sized so
@@ -1374,7 +1576,7 @@ func (v *nodesView) Help() []key.Binding {
 	if v.filter != "" {
 		bindings = append(bindings, nodeClearKey)
 	}
-	if v.inbound != nil {
+	if v.inbound != nil && v.answering == "" {
 		bindings = append(bindings, nodePairKey, nodeDeclineKey)
 	}
 	// Only while there is something to cancel: a key offered with nothing

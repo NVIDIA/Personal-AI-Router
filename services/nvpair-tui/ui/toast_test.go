@@ -573,6 +573,120 @@ func TestSecondInviteWaitsForTheFirst(t *testing.T) {
 	}
 }
 
+// TestMalformedPINKeepsTheRequest is the regression guard for a pairing request
+// lost to a typo. The cluster manager refuses a PIN that is not six digits with
+// an error and leaves the session open, but the prompt was cleared before the
+// answer went out, so there was nothing left to answer again.
+func TestMalformedPINKeepsTheRequest(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(inviteReceived("inv-1", "peer"))
+
+	if v.respondToInvite(true, "12345") == nil {
+		t.Fatal("the answer was not sent")
+	}
+	if v.inbound == nil {
+		t.Fatal("the request left the screen before it was settled")
+	}
+	if v.respondToInvite(true, "123456") != nil {
+		t.Error("a second answer was sent while the first was in flight")
+	}
+
+	v.Update(pairingResultMsg{inviteID: "inv-1", from: "peer", err: errors.New("pin must be six digits")})
+	if v.inbound == nil || v.inbound.InviteID != "inv-1" {
+		t.Fatal("an answer the cluster manager refused took the request away")
+	}
+	if !contains(v.inboundPrompt(), "to accept") {
+		t.Errorf("the request cannot be answered again: %q", v.inboundPrompt())
+	}
+
+	// A settled answer does take it away.
+	v.respondToInvite(true, "123456")
+	v.Update(pairingResultMsg{inviteID: "inv-1", from: "peer", state: inviteStatePaired})
+	if v.inbound != nil {
+		t.Error("a settled request stayed on screen")
+	}
+}
+
+// TestInboundRequestsWaitTheirTurn is the regression guard for a pairing
+// request being replaced by the next. Both are live sessions another machine
+// is waiting on; the newer one used to overwrite the one being read, leaving
+// no way back to it.
+func TestInboundRequestsWaitTheirTurn(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(inviteReceived("first", "alpha"))
+	v.Update(inviteReceived("second", "beta"))
+	v.Update(inviteReceived("second", "beta")) // delivered twice
+
+	if v.inbound.InviteID != "first" {
+		t.Fatalf("the newer request replaced the one on screen: %q", v.inbound.InviteID)
+	}
+	if got := v.inboundPrompt(); !contains(got, "1 more waiting") {
+		t.Errorf("the prompt does not say another request is waiting: %q", got)
+	}
+
+	v.Update(inviteEvent("cluster:invite-expired", "first"))
+	if v.inbound == nil || v.inbound.InviteID != "second" {
+		t.Fatalf("the waiting request did not come up next: %#v", v.inbound)
+	}
+	if contains(v.inboundPrompt(), "more waiting") {
+		t.Errorf("a request delivered twice was queued twice: %q", v.inboundPrompt())
+	}
+}
+
+// TestPairingStaysVisibleOverTheDetailScreen is the regression guard for a
+// pairing request or a live PIN disappearing while a node's detail screen was
+// open, which replaces the list they are shown on.
+func TestPairingStaysVisibleOverTheDetailScreen(t *testing.T) {
+	const height = 30
+	v := newNodesView(nil)
+	v.SetSize(120, height)
+	v.feeds.discovered = []availableNode{{HostUUID: "u1", Name: "host", IPAddress: "10.0.0.1", Port: 1}}
+	v.rebuild()
+	v.openDetail()
+
+	v.Update(nodeInviteMsg{name: "peer", inviteID: "out", pin: "123456"})
+	if got := v.View(); !contains(got, "PIN 123456") {
+		t.Errorf("a live PIN is hidden behind the detail screen")
+	}
+
+	v.Update(inviteReceived("in", "other peer"))
+	got := v.View()
+	if !contains(got, "pairing request from other peer") {
+		t.Errorf("an inbound request is hidden behind the detail screen")
+	}
+	if rows := renderedRows(got); rows > height {
+		t.Errorf("the pairing line pushed the frame to %d rows of %d", rows, height)
+	}
+}
+
+// TestFailedCancelCanBeRetried checks a cancel that did not reach the cluster
+// manager leaves a way to try again. The PIN was cleared before the call went
+// out, so a failure left a live invite with nothing on screen and nothing to
+// press.
+func TestFailedCancelCanBeRetried(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(nodeInviteMsg{name: "peer", inviteID: "inv", pin: "123456"})
+
+	cmd := v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(nodeCancelKey.Help().Key)})
+	if cmd == nil || v.outboundInviteID != "" {
+		t.Fatal("cancel was not sent, or the PIN stayed tracked while it was")
+	}
+
+	v.Update(inviteCancelledMsg{invite: sentInvite{id: "inv", name: "peer", pin: "123456"}, err: errFake{}})
+	if v.outboundInviteID != "inv" {
+		t.Fatal("a failed cancel left the still-live invite untracked")
+	}
+	if !contains(v.status.render(), "123456") {
+		t.Errorf("the still-live PIN is not shown again: %q", v.status.render())
+	}
+	if v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(nodeCancelKey.Help().Key)}) == nil {
+		t.Error("the cancel cannot be tried again")
+	}
+}
+
 // TestRejectionAdviceMatchesTheReason checks a refused invite only suggests
 // the remedy for the reason actually given. "Remove the existing relationship
 // first" was attached to every rejection, including ones with no relationship
