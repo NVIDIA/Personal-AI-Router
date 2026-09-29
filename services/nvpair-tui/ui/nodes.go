@@ -228,7 +228,10 @@ type nodeInviteMsg struct {
 	pin      string
 	rejected bool
 	reason   string
-	err      error
+	// ended is the terminal state the manager answered with instead of a
+	// PIN, when no invite went out.
+	ended string
+	err   error
 }
 
 // Key labels distinguish the two things an address can be used for, which are
@@ -525,6 +528,9 @@ func (v *nodesView) handleInviteResult(msg nodeInviteMsg) tea.Cmd {
 	case msg.rejected:
 		v.clearOutboundInvite()
 		v.status.error("%s rejected the invite (%s)", msg.name, rejectReason(msg.reason))
+	case msg.ended != "":
+		v.clearOutboundInvite()
+		v.status.error("the invite to %s did not go out (%s) - check the Logs tab", msg.name, msg.ended)
 	case msg.pin != "":
 		// Pinned, not expiring: the operator reads this PIN to someone at the
 		// other machine. It clears when the invite resolves.
@@ -1063,16 +1069,20 @@ func inviteResultMsg(name, address string, res inviteNodeResult, err error) tea.
 	if err != nil {
 		return nodeInviteMsg{name: name, address: address, err: err}
 	}
-	if res.State == inviteStateRejected {
+	switch res.State {
+	case inviteStatePending:
+		pin := ""
+		if res.Pin != nil {
+			pin = *res.Pin
+		}
+		return nodeInviteMsg{name: name, address: address, inviteID: res.InviteID, pin: pin}
+	case inviteStateRejected:
 		return nodeInviteMsg{
 			name: name, address: address, rejected: true, reason: res.Reason,
 		}
+	default:
+		return nodeInviteMsg{name: name, address: address, ended: res.State}
 	}
-	pin := ""
-	if res.Pin != nil {
-		pin = *res.Pin
-	}
-	return nodeInviteMsg{name: name, address: address, inviteID: res.InviteID, pin: pin}
 }
 
 func (v *nodesView) respondToInvite(accept bool, pin string) tea.Cmd {
@@ -1114,10 +1124,12 @@ func (v *nodesView) respondToInvite(accept bool, pin string) tea.Cmd {
 
 // The pairing session states nvpair-cluster-manager reports, spelled as its
 // InviteState values (services/nvpair-cluster-manager/membership.go).
-// cluster:invite-node answers pending, with a PIN, or rejected; any other
-// failure comes back as an error. Answering a request settles it as paired,
-// declined, or failed.
+// cluster:invite-node answers pending with a PIN, rejected when the peer
+// refused, or failed when the first exchange did not complete — or whatever
+// state a cancel or teardown recorded first. Only pending means an invite went
+// out. Answering a request settles it as paired, declined, or failed.
 const (
+	inviteStatePending  = "pending"
 	inviteStatePaired   = "paired"
 	inviteStateDeclined = "declined"
 	inviteStateRejected = "rejected"

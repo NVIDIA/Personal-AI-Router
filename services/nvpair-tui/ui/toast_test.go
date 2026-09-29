@@ -738,6 +738,35 @@ func TestRejectionAdviceMatchesTheReason(t *testing.T) {
 	}
 }
 
+// TestInviteThatDidNotGoOutIsNotReportedSent is the regression guard for a
+// failed invite read as a sent one. The manager answers "failed", with no PIN,
+// when the first exchange does not complete, and anything short of "rejected"
+// was reported as "invite sent" and left pending.
+func TestInviteThatDidNotGoOutIsNotReportedSent(t *testing.T) {
+	for _, state := range []string{"failed", "canceled"} {
+		v := newNodesView(nil)
+		v.SetSize(120, 30)
+		v.invitedKey, v.inviteSending = "peer-uuid", true
+
+		v.Update(inviteResultMsg("peer", "", inviteNodeResult{InviteID: "inv", State: state}, nil))
+		got := v.status.render()
+		if contains(got, "invite sent") || !contains(got, "did not go out") {
+			t.Errorf("a %q reply was reported as %q", state, got)
+		}
+		if v.invitedKey != "" || v.outboundInviteID != "" {
+			t.Errorf("a %q reply left the invite pending", state)
+		}
+	}
+
+	pin := "123456"
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(inviteResultMsg("peer", "", inviteNodeResult{InviteID: "inv", State: "pending", Pin: &pin}, nil))
+	if got := v.status.render(); !contains(got, "PIN 123456") {
+		t.Errorf("a pending invite did not show its PIN: %q", got)
+	}
+}
+
 // TestCancelInviteClearsThePinImmediately checks the inviter's half of decline.
 // Without it a PIN read to the wrong person could only be retired by waiting
 // for it to expire, staying answerable the whole time.
