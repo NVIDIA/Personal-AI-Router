@@ -6,7 +6,10 @@
 package main
 
 import (
+	"encoding/json"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -76,5 +79,131 @@ func TestMemoryStatusExSize(t *testing.T) {
 	const expected = 64
 	if got := unsafe.Sizeof(memoryStatusEx{}); got != expected {
 		t.Fatalf("memoryStatusEx size = %d, want %d", got, expected)
+	}
+}
+
+// testAdapter builds a Windows-shaped GPUInfo: statsKey is the PDH instance
+// name for that LUID, which is the key the dynamic counters join on.
+func testAdapter(name string, low uint32) GPUInfo {
+	return GPUInfo{Name: name, VramBytes: 8 << 30, statsKey: luidKey(low, 0)}
+}
+
+// startTestInventoryCollector runs only the inventory loop, at millisecond
+// cadence, with an injected detect function — no PDH query, no pollers.
+func startTestInventoryCollector(t *testing.T, detect func() []GPUInfo) *statsCollector {
+	t.Helper()
+	c := newStatsCollector(detect)
+	c.inventoryRecoverEvery = time.Millisecond
+	c.inventoryRefreshEvery = time.Millisecond
+	c.startGPUInventory()
+	t.Cleanup(func() {
+		close(c.stop)
+		c.wg.Wait()
+	})
+	return c
+}
+
+func waitForStats(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestWindowsCollectorRecoversEmptyGPUInventory is the defect: adapter
+// detection at boot came up empty (the DirectX registry still held the
+// previous boot's LUIDs) and nothing ever looked again, so the node served an
+// empty GPU list until it was restarted. The collector now re-detects until
+// adapters appear, publishes them through the snapshot, and buildResponse
+// lists them with the dynamic numbers joined on their statsKey — and a
+// re-detection that finds the same set republishes nothing.
+func TestWindowsCollectorRecoversEmptyGPUInventory(t *testing.T) {
+	recovered := []GPUInfo{
+		testAdapter("Test Adapter A", 0x54f0),
+		testAdapter("Test Adapter B", 0x6a10),
+	}
+	var calls atomic.Int64
+	c := startTestInventoryCollector(t, func() []GPUInfo {
+		if calls.Add(1) == 1 {
+			return nil // the startup enumeration that came up empty
+		}
+		return recovered
+	})
+
+	waitForStats(t, "the recovered inventory", func() bool {
+		return len(c.Snapshot().GPUInventory) == 2
+	})
+
+	snap := c.Snapshot()
+	if snap.GPUInventory[0].Name != "Test Adapter A" || snap.GPUInventory[1].Name != "Test Adapter B" {
+		t.Fatalf("GPUInventory = %+v", snap.GPUInventory)
+	}
+
+	// The PDH decoders key every adapter they see by the same LUID instance
+	// name, whether or not the inventory knew about it at startup.
+	snap.GPU = map[string]gpuStat{
+		recovered[1].statsKey: {VRAMUsed: 1 << 30, UtilizationPct: 42},
+	}
+	var got struct {
+		GPUs []GPUInfo `json:"GPUs"`
+	}
+	if err := json.Unmarshal(buildResponse(nil, nil, 0, snap, "host-uuid", nil), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got.GPUs) != 2 {
+		t.Fatalf("response listed %d GPUs: %+v", len(got.GPUs), got.GPUs)
+	}
+	if got.GPUs[0].Name != "Test Adapter A" || got.GPUs[0].VramBytes != 8<<30 {
+		t.Fatalf("first GPU = %+v", got.GPUs[0])
+	}
+	if got.GPUs[1].VramUsedBytes != 1<<30 ||
+		got.GPUs[1].UtilizationPercent != 42 {
+		t.Fatalf("recovered adapter did not pick up its dynamic stats: %+v", got.GPUs[1])
+	}
+
+	// Steady state: further detections return the same statsKeys, so the
+	// published inventory pointer must stay exactly as it is.
+	published := c.gpuInventory.Load()
+	settled := calls.Load() + 3
+	waitForStats(t, "three more detections", func() bool { return calls.Load() >= settled })
+	if c.gpuInventory.Load() != published {
+		t.Fatal("an unchanged adapter set was republished")
+	}
+}
+
+// TestWindowsCollectorRepublishesChangedGPUInventory covers the other half of
+// the refresh: a set that really changed (an adapter hot-plugged after
+// startup, or a clone a remote session brought in) is published without a
+// restart.
+func TestWindowsCollectorRepublishesChangedGPUInventory(t *testing.T) {
+	first := []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}
+	second := append(append([]GPUInfo{}, first...), testAdapter("Test Adapter B", 0x6a10))
+	var plugged atomic.Bool
+	c := startTestInventoryCollector(t, func() []GPUInfo {
+		if plugged.Load() {
+			return second
+		}
+		return first
+	})
+
+	waitForStats(t, "the first inventory", func() bool {
+		return len(c.Snapshot().GPUInventory) == 1
+	})
+	published := c.gpuInventory.Load()
+
+	plugged.Store(true)
+	waitForStats(t, "the changed inventory", func() bool {
+		return len(c.Snapshot().GPUInventory) == 2
+	})
+	if c.gpuInventory.Load() == published {
+		t.Fatal("the changed adapter set reused the previous publication")
+	}
+	if keys := gpuStatsKeys(c.Snapshot().GPUInventory); len(keys) != 2 || keys[0] == keys[1] {
+		t.Fatalf("statsKeys = %v", keys)
 	}
 }
