@@ -41,8 +41,10 @@ type nodeTelemetry struct {
 	Memory *noderec.MemoryInfo `json:"memory"`
 	// TelemetryValid reports whether the dynamic sample is usable at all; a node
 	// with no GPU telemetry source still answers, with this false.
-	TelemetryValid bool  `json:"telemetryValid"`
-	MSSince        int64 `json:"msSince"`
+	TelemetryValid bool `json:"telemetryValid"`
+	// HostUUID is the answering machine's own identity, empty when it could
+	// not resolve one.
+	HostUUID string `json:"hostUuid"`
 }
 
 // nodeTelemetryMsg carries a poll result. A failure is not surfaced as an error
@@ -56,7 +58,9 @@ type nodeTelemetryMsg struct {
 	// second chain alongside the current one, doubling the poll rate on every
 	// close-and-reopen. Matching on the node alone is not enough — it is the
 	// same node.
-	gen       int
+	gen int
+	// address is the one that answered, tried first on the next poll.
+	address   string
 	telemetry nodeTelemetry
 	err       error
 }
@@ -100,9 +104,10 @@ var telemetryClient = &http.Client{
 // sweep of every known node. The terminal shows one machine's detail at a time,
 // so a sweep would put N requests on the network to render one panel — and this
 // runs on the headless hosts least able to spare that.
-// addresses is tried in the order the node ranked them, since a multi-homed
-// node's first address may be a link only some peers can reach.
-func pollTelemetryCmd(key string, gen int, addresses []string, port int) tea.Cmd {
+// addresses is tried in order, since a multi-homed node's first address may be
+// a link only some peers can reach. expect is the machine that must answer, or
+// empty when there is nothing to check against (see telemetryIdentity).
+func pollTelemetryCmd(key string, gen int, addresses []string, port int, expect string) tea.Cmd {
 	if len(addresses) == 0 {
 		return nil
 	}
@@ -110,13 +115,43 @@ func pollTelemetryCmd(key string, gen int, addresses []string, port int) tea.Cmd
 		var lastErr error
 		for _, address := range addresses {
 			t, err := fetchTelemetry(nodeInfoURL(address, port))
+			if err == nil && expect != "" && t.HostUUID != "" && t.HostUUID != expect {
+				// An address outlives the machine it was published for. Taken,
+				// this showed another machine's hardware under this one's name.
+				err = fmt.Errorf("%s answered as another machine", address)
+			}
 			if err == nil {
-				return nodeTelemetryMsg{nodeKey: key, gen: gen, telemetry: t}
+				return nodeTelemetryMsg{nodeKey: key, gen: gen, address: address, telemetry: t}
 			}
 			lastErr = err
 		}
 		return nodeTelemetryMsg{nodeKey: key, gen: gen, err: lastErr}
 	}
+}
+
+// preferAddress puts the address that answered last first, keeping the node's
+// order for the rest. Walking from the top every time spent a full poll timeout
+// on each unreachable address ahead of the one that works, every two seconds.
+func preferAddress(addresses []string, last string) []string {
+	for i, address := range addresses {
+		if i > 0 && address == last {
+			ordered := make([]string, 0, len(addresses))
+			ordered = append(ordered, address)
+			ordered = append(ordered, addresses[:i]...)
+			return append(ordered, addresses[i+1:]...)
+		}
+	}
+	return addresses
+}
+
+// telemetryIdentity is the machine a node's readings must come from, or empty
+// when there is nothing to check an answer against: a row keyed by a stand-in
+// rather than a UUID, or this machine, which is reached over loopback.
+func telemetryIdentity(node nodeRow) string {
+	if node.self || !hasHostIdentity(node.key) {
+		return ""
+	}
+	return node.key
 }
 
 // fetchTelemetry reads one node-info endpoint.

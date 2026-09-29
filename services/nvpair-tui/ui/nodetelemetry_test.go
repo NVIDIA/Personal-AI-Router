@@ -5,6 +5,7 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -123,7 +124,7 @@ func TestPollTelemetryWalksEveryAddress(t *testing.T) {
 
 	// An unreachable address first — the reserved TEST-NET-1 block — then the
 	// one that answers.
-	cmd := pollTelemetryCmd("n1", 1, []string{"192.0.2.1", host}, p)
+	cmd := pollTelemetryCmd("n1", 1, []string{"192.0.2.1", host}, p, "")
 	msg, ok := cmd().(nodeTelemetryMsg)
 	if !ok {
 		t.Fatalf("got %T, want nodeTelemetryMsg", cmd())
@@ -182,7 +183,7 @@ func TestPollTelemetryDecodesResponse(t *testing.T) {
 	defer srv.Close()
 
 	host, port := splitTestServer(t, srv.URL)
-	msg, ok := pollTelemetryCmd("key", 1, []string{host}, port)().(nodeTelemetryMsg)
+	msg, ok := pollTelemetryCmd("key", 1, []string{host}, port, "")().(nodeTelemetryMsg)
 	if !ok {
 		t.Fatal("poll produced the wrong message type")
 	}
@@ -218,7 +219,7 @@ func TestPollTelemetryReportsFailure(t *testing.T) {
 	defer srv.Close()
 
 	host, port := splitTestServer(t, srv.URL)
-	msg := pollTelemetryCmd("key", 1, []string{host}, port)().(nodeTelemetryMsg)
+	msg := pollTelemetryCmd("key", 1, []string{host}, port, "")().(nodeTelemetryMsg)
 	if msg.err == nil {
 		t.Error("a 403 was treated as a successful reading")
 	}
@@ -227,8 +228,67 @@ func TestPollTelemetryReportsFailure(t *testing.T) {
 // TestPollTelemetrySkipsUnknownAddress checks a node with no address issues no
 // request at all.
 func TestPollTelemetrySkipsUnknownAddress(t *testing.T) {
-	if cmd := pollTelemetryCmd("key", 1, nil, 14318); cmd != nil {
+	if cmd := pollTelemetryCmd("key", 1, nil, 14318, ""); cmd != nil {
 		t.Error("polled a node with no known address")
+	}
+}
+
+// TestTelemetryFromAnotherMachineIsRefused is the regression guard for an
+// address that has passed to another machine. Its readings were shown under the
+// name of the machine that used to hold it.
+func TestTelemetryFromAnotherMachineIsRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
+	}))
+	defer srv.Close()
+	host, port := splitTestServer(t, srv.URL)
+
+	if msg := pollTelemetryCmd("uuid-a", 1, []string{host}, port, "uuid-a")().(nodeTelemetryMsg); msg.err == nil {
+		t.Error("another machine's readings were accepted for this one")
+	}
+	if msg := pollTelemetryCmd("uuid-b", 1, []string{host}, port, "uuid-b")().(nodeTelemetryMsg); msg.err != nil {
+		t.Errorf("the machine's own readings were refused: %v", msg.err)
+	}
+	// A row with nothing to check against takes whichever machine answers.
+	if msg := pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg); msg.err != nil {
+		t.Errorf("an unchecked poll was refused: %v", msg.err)
+	}
+
+	if got := telemetryIdentity(nodeRow{key: "uuid-a"}); got != "uuid-a" {
+		t.Errorf("a discovered node is checked against %q, want its UUID", got)
+	}
+	for _, row := range []nodeRow{{key: "manual:1"}, {key: "name:lab"}, {key: "uuid-self", self: true}} {
+		if got := telemetryIdentity(row); got != "" {
+			t.Errorf("%q is checked against %q, but has nothing to check", row.key, got)
+		}
+	}
+}
+
+// TestTelemetryTriesTheAddressThatAnswered is the regression guard for a poll
+// that walked every unreachable address, each to its full timeout, before the
+// one that had answered last time.
+func TestTelemetryTriesTheAddressThatAnswered(t *testing.T) {
+	addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	if got := strings.Join(preferAddress(addresses, "10.0.0.3"), ","); got != "10.0.0.3,10.0.0.1,10.0.0.2" {
+		t.Errorf("order = %s, want the address that answered first", got)
+	}
+	for _, last := range []string{"", "10.0.0.1", "10.9.9.9"} {
+		if got := strings.Join(preferAddress(addresses, last), ","); got != "10.0.0.1,10.0.0.2,10.0.0.3" {
+			t.Errorf("after %q the order = %s, want the node's own", last, got)
+		}
+	}
+	if strings.Join(addresses, ",") != "10.0.0.1,10.0.0.2,10.0.0.3" {
+		t.Error("the node's own address list was reordered in place")
+	}
+
+	d := newNodeDetail(nil, nodeRow{key: "peer", addresses: addresses, presence: presenceOnline})
+	d.update(nodeTelemetryMsg{nodeKey: "peer", gen: d.telemetryGen, address: "10.0.0.3"})
+	if d.telemetryAddress != "10.0.0.3" {
+		t.Errorf("the address that answered was not kept: %q", d.telemetryAddress)
+	}
+	d.update(nodeTelemetryMsg{nodeKey: "peer", gen: d.telemetryGen, err: errors.New("unreachable")})
+	if d.telemetryAddress != "" {
+		t.Error("an address that stopped answering was still tried first")
 	}
 }
 

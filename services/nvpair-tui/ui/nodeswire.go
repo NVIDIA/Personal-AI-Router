@@ -102,7 +102,6 @@ type manualNode struct {
 	CPU            *noderec.CPUInfo    `json:"cpu"`
 	Memory         *noderec.MemoryInfo `json:"memory"`
 	TelemetryValid bool                `json:"telemetryValid"`
-	MSSince        int64               `json:"msSince"`
 }
 
 // answered reports whether any service on the host responded to the worker's
