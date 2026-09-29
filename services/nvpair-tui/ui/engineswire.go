@@ -138,7 +138,12 @@ func anyMap(in map[string]string) map[string]any {
 }
 
 // engineOpMsg is the outcome of a lifecycle or model command.
+//
+// node is the node argument the request was sent with. A slow operation's reply
+// outlives the screen that asked for it, and without this an outcome from one
+// machine was reported on whichever machine's screen was open by then.
 type engineOpMsg struct {
+	node   string
 	what   string
 	engine string
 	err    error
@@ -157,7 +162,7 @@ func engineCmd(client *rpc.Client, node, engine, method, op, what string) tea.Cm
 		remote, ok := remoteEngineMethods[method]
 		if !ok {
 			return func() tea.Msg {
-				return engineOpMsg{what: what, engine: engine,
+				return engineOpMsg{node: node, what: what, engine: engine,
 					err: errors.New("not supported on a remote node")}
 			}
 		}
@@ -165,7 +170,7 @@ func engineCmd(client *rpc.Client, node, engine, method, op, what string) tea.Cm
 		params["node"] = node
 	}
 	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
-		return classifyOpResult(what, engine, op, err)
+		return classifyOpResult(node, what, engine, op, err)
 	})
 }
 
@@ -189,7 +194,7 @@ func modelCmd(client *rpc.Client, node, engine string, act modelAction, model st
 	}
 	what := act.what + " " + model
 	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
-		return classifyOpResult(what, engine, act.op, err)
+		return classifyOpResult(node, what, engine, act.op, err)
 	})
 }
 
@@ -225,9 +230,9 @@ var longRunningOps = map[string]bool{
 }
 
 // classifyOpResult reports an operation as done, failed, or still running.
-func classifyOpResult(what, engine, op string, err error) tea.Msg {
+func classifyOpResult(node, what, engine, op string, err error) tea.Msg {
 	if err != nil && longRunningOps[op] && errors.Is(err, context.DeadlineExceeded) {
-		return engineOpMsg{what: what, engine: engine, detached: true}
+		return engineOpMsg{node: node, what: what, engine: engine, detached: true}
 	}
-	return engineOpMsg{what: what, engine: engine, err: err}
+	return engineOpMsg{node: node, what: what, engine: engine, err: err}
 }

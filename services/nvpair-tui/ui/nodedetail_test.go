@@ -1104,6 +1104,28 @@ func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
 	}
 }
 
+// TestLateOperationReplyStaysWithItsNode is the regression guard for one
+// machine's outcome being reported on another's screen.
+//
+// A slow operation's reply outlives the screen that sent it. Start something
+// on node A, open node B, and A's "start failed" landed on B.
+func TestLateOperationReplyStaysWithItsNode(t *testing.T) {
+	b := newNodeDetail(nil, nodeRow{key: "node-b", name: "B", presence: presenceOnline})
+	b.SetSize(100, 30)
+	b.engines = []engineStatus{{Engine: "ollama", DisplayName: "Ollama", Installed: true}}
+	b.refreshEngines()
+
+	b.update(classifyOpResult("node-a", "start", "ollama", "start", errors.New("engine did not come up")))
+	if got := b.status.render(); strings.Contains(got, "failed") {
+		t.Errorf("node A's outcome was reported on node B: %q", got)
+	}
+
+	b.update(classifyOpResult("node-b", "start", "ollama", "start", errors.New("engine did not come up")))
+	if got := b.status.render(); !strings.Contains(got, "start (Ollama) failed") {
+		t.Errorf("node B's own outcome was not reported: %q", got)
+	}
+}
+
 // TestOpenDetailFollowsPresenceAndMembership is the regression guard for a
 // detail screen that kept describing a peer as it was when the screen opened.
 //
