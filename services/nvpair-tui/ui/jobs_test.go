@@ -6,6 +6,8 @@ package ui
 import (
 	"fmt"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestJobsHistoryIsBounded is the guard for a leak in a program meant to be left
@@ -150,6 +152,71 @@ func TestRemovedJobStaysRemovedWhenTheSnapshotLandsLater(t *testing.T) {
 	}
 	if v.removedEarly != nil {
 		t.Error("removals were still being remembered after the baseline landed")
+	}
+}
+
+// TestNewestJobsLead checks new work is at the top of the table. In arrival
+// order, a backlog of older queued jobs pushed each new one below the fold.
+func TestNewestJobsLead(t *testing.T) {
+	v := newJobsView(nil)
+	v.upsert(workload{ID: "old", OriginatedFrom: "n", State: "queued", CreatedAt: 1000})
+	v.upsert(workload{ID: "new", OriginatedFrom: "n", State: "queued", CreatedAt: 3000})
+	v.upsert(workload{ID: "mid", OriginatedFrom: "n", State: "queued", CreatedAt: 2000})
+
+	rows := v.table.Rows()
+	got := []string{rows[0][0], rows[1][0], rows[2][0]}
+	if got[0] != "new" || got[1] != "mid" || got[2] != "old" {
+		t.Errorf("row order %v, want newest first", got)
+	}
+}
+
+// TestJobIDTellsSimultaneousJobsApart checks two jobs for the same model, from
+// the same node, started at the same moment, do not read as one row twice.
+func TestJobIDTellsSimultaneousJobsApart(t *testing.T) {
+	cases := map[string]string{"1": "1", "123456": "123456", "burst-1042": "…-1042"}
+	for id, want := range cases {
+		if got := shortJobID(id); got != want {
+			t.Errorf("shortJobID(%q) = %q, want %q", id, got, want)
+		}
+	}
+
+	v := newJobsView(nil)
+	v.upsert(workload{ID: "7", Model: "m", OriginatedFrom: "n", State: "running", CreatedAt: 5})
+	v.upsert(workload{ID: "8", Model: "m", OriginatedFrom: "n", State: "running", CreatedAt: 5})
+	rows := v.table.Rows()
+	if rows[0][0] == rows[1][0] {
+		t.Errorf("two different jobs show the same ID %q", rows[0][0])
+	}
+}
+
+// TestFailedStartupReadsAreRetried checks a subscription or identity read that
+// failed is tried again, rather than leaving the table empty, or this
+// machine's jobs unnamed, for the rest of the session.
+func TestFailedStartupReadsAreRetried(t *testing.T) {
+	v := newJobsView(nil)
+	v.Update(workloadsSubscribedMsg{err: errFake{}})
+	v.Update(jobsIdentityMsg{err: errFake{}})
+
+	var cmd tea.Cmd
+	for range proxyPollTicks {
+		cmd = v.Update(TickMsg{})
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("the poll tick returned %T, want a batch", cmd())
+	}
+	// The proxy refresh, the feed retry, and the identity retry.
+	if len(batch) < 3 {
+		t.Errorf("the poll tick scheduled %d command(s), want the two retries alongside the proxy read", len(batch))
+	}
+
+	// Once both have succeeded, nothing is left to retry.
+	v.Update(workloadsSubscribedMsg{})
+	v.Update(workloadsLoadedMsg{})
+	v.Update(jobsIdentityMsg{id: clusterIdentity{NodeUUID: "self"}})
+	if !v.subscribed || !v.baselined || !v.identified {
+		t.Errorf("after both reads succeeded: subscribed=%v baselined=%v identified=%v",
+			v.subscribed, v.baselined, v.identified)
 	}
 }
 

@@ -5,6 +5,8 @@ package ui
 
 import (
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 
 	"nvpair-tui/rpc"
@@ -67,6 +69,10 @@ type jobsView struct {
 	// job back for good, since nothing removes it a second time.
 	baselined    bool
 	removedEarly map[workloadRef]bool
+	// subscribed and identified record the two startup reads that are retried
+	// until they succeed: without the first the table never fills, and without
+	// the second this machine's own jobs show a UUID where its name should be.
+	subscribed, identified bool
 	// trimmed counts finished jobs dropped to stay inside maxFinishedJobs, so
 	// the tab can say the history is not complete. Every other list here
 	// discloses when it is showing less than everything; this one silently
@@ -128,6 +134,7 @@ func newJobsView(client *rpc.Client) *jobsView {
 // so the two cannot drift.
 func workloadColumns(w int) []table.Column {
 	return layoutColumns(w, []column{
+		fixedCol("ID", jobIDWidth),
 		flexCol("MODEL", 10, 2),
 		fixedCol("ENGINE", 10),
 		fixedCol("STATE", 11),
@@ -139,26 +146,31 @@ func workloadColumns(w int) []table.Column {
 
 func (v *jobsView) Title() string { return "Jobs" }
 
-// Init subscribes and fetches the baseline. Subscribing first means a workload
-// that changes state between the two calls arrives as a push and is merged by
-// key rather than lost.
-//
-// Sequenced, not batched. A batch runs its commands concurrently, so the
-// snapshot could be read before the subscription existed and a change landing
-// between the two was then in neither.
+// Init subscribes to the job stream, fetches its baseline, and reads this
+// machine's identity for the FROM and RAN ON columns.
 func (v *jobsView) Init() tea.Cmd {
-	return tea.Batch(
-		tea.Sequence(
-			call(v.client, "workloads:subscribe", nil, func(_ *rpc.Message, err error) tea.Msg {
-				return workloadsSubscribedMsg{err: err}
-			}),
-			v.loadCmd(),
-		),
-		v.proxy.init(v.client),
-		nodeIdentityCmd(v.client, func(id clusterIdentity, err error) tea.Msg {
-			return jobsIdentityMsg{id: id, err: err}
+	return tea.Batch(v.feedCmd(), v.proxy.init(v.client), v.identityCmd())
+}
+
+// feedCmd subscribes and then fetches the baseline. Subscribing first means a
+// workload that changes state between the two calls arrives as a push and is
+// merged by key rather than lost.
+func (v *jobsView) feedCmd() tea.Cmd {
+	// Sequenced, not batched. A batch runs its commands concurrently, so the
+	// snapshot could be read before the subscription existed and a change
+	// landing between the two was then in neither.
+	return tea.Sequence(
+		call(v.client, "workloads:subscribe", nil, func(_ *rpc.Message, err error) tea.Msg {
+			return workloadsSubscribedMsg{err: err}
 		}),
+		v.loadCmd(),
 	)
+}
+
+func (v *jobsView) identityCmd() tea.Cmd {
+	return nodeIdentityCmd(v.client, func(id clusterIdentity, err error) tea.Msg {
+		return jobsIdentityMsg{id: id, err: err}
+	})
 }
 
 func (v *jobsView) loadCmd() tea.Cmd {
@@ -185,14 +197,15 @@ func (v *jobsView) SetSize(w, h int) {
 func (v *jobsView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case workloadsSubscribedMsg:
+		v.subscribed = msg.err == nil
 		if msg.err != nil {
-			v.status.error("workloads subscribe failed: %s", msg.err)
+			v.status.error("job updates unavailable: %s - retrying", msg.err)
 		}
 		return nil
 
 	case workloadsLoadedMsg:
 		if msg.err != nil {
-			v.status.error("load jobs failed: %s", msg.err)
+			v.status.error("load jobs failed: %s - retrying", msg.err)
 			return nil
 		}
 		// Merged, not assigned: a push may already have landed for a workload
@@ -218,10 +231,15 @@ func (v *jobsView) Update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case jobsIdentityMsg:
-		if msg.err == nil {
-			v.namer.setSelf(msg.id)
-			v.refreshRows()
+		v.identified = msg.err == nil
+		if msg.err != nil {
+			// Logged, not shown: the only cost is this machine's jobs naming
+			// it by UUID until the retry lands.
+			slog.Warn("could not read this machine's identity for the Jobs tab; retrying", "err", msg.err)
+			return nil
 		}
+		v.namer.setSelf(msg.id)
+		v.refreshRows()
 		return nil
 
 	case demoTargetsMsg:
@@ -260,6 +278,14 @@ func (v *jobsView) Update(msg tea.Msg) tea.Cmd {
 		if v.sinceProxyPoll >= proxyPollTicks {
 			v.sinceProxyPoll = 0
 			demoCmds = append(demoCmds, v.proxy.refreshCmd(v.client))
+			// A startup read that failed is tried again on the same cadence,
+			// rather than leaving the tab empty or unnamed for the session.
+			if !v.subscribed || !v.baselined {
+				demoCmds = append(demoCmds, v.feedCmd())
+			}
+			if !v.identified {
+				demoCmds = append(demoCmds, v.identityCmd())
+			}
 		}
 		return tea.Batch(demoCmds...)
 
@@ -421,6 +447,11 @@ func workloadActive(state string) bool {
 	}
 }
 
+// visible is the jobs the table shows, newest first.
+//
+// Newest first because the newest is what an operator is looking for: in
+// arrival order, a backlog of older queued work pushed each new job below the
+// fold. v.order keeps arrival order for trimming, which drops the oldest.
 func (v *jobsView) visible() []workload {
 	out := make([]workload, 0, len(v.order))
 	for _, k := range v.order {
@@ -429,7 +460,22 @@ func (v *jobsView) visible() []workload {
 			out = append(out, w)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	return out
+}
+
+// jobIDWidth is the ID column's width. IDs are per-process counters, so the
+// end of one is what tells two jobs apart; see shortJobID.
+const jobIDWidth = 6
+
+// shortJobID is the tail of a job's ID. Two jobs started at the same moment for
+// the same model differ only here.
+func shortJobID(id string) string {
+	r := []rune(id)
+	if len(r) <= jobIDWidth {
+		return id
+	}
+	return "…" + string(r[len(r)-(jobIDWidth-1):])
 }
 
 func (v *jobsView) refreshRows() {
@@ -437,6 +483,7 @@ func (v *jobsView) refreshRows() {
 	rows := make([]table.Row, 0, len(jobs))
 	for _, w := range jobs {
 		rows = append(rows, table.Row{
+			shortJobID(w.ID),
 			w.Model,
 			engineDisplayName(w.Engine),
 			w.State,
