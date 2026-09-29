@@ -245,6 +245,34 @@ func TestMergeUsesEveryFactTheManualWorkerReports(t *testing.T) {
 	}
 }
 
+// TestAReusedAddressDoesNotMergeTwoMachines checks an address is not taken for
+// an identity. A manual entry whose probe read one UUID must not fold into a
+// discovered row with a different UUID at the same address — that is another
+// machine now answering there. An entry the probe has not identified still
+// joins by address, as it must for a host discovery reports by IP.
+func TestAReusedAddressDoesNotMergeTwoMachines(t *testing.T) {
+	discovered := []availableNode{{HostUUID: "machine-b", Name: "b", IPAddress: "10.0.0.5", Port: 14318}}
+
+	rows := mergeNodes(nodeFeeds{
+		discovered: discovered,
+		manual:     []manualNode{{ID: "m1", Name: "a", Address: "10.0.0.5", HostUUID: "machine-a", NodeInfoUp: true}},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("two machines at one address produced %d row(s), want 2", len(rows))
+	}
+	if b := findRow(t, rows, "b"); b.manualID != "" {
+		t.Errorf("machine b took the manual entry for machine a (manualID %q)", b.manualID)
+	}
+
+	rows = mergeNodes(nodeFeeds{
+		discovered: discovered,
+		manual:     []manualNode{{ID: "m1", Address: "10.0.0.5"}},
+	})
+	if len(rows) != 1 || rows[0].manualID != "m1" {
+		t.Errorf("an unidentified entry did not join the machine at its address: %+v", rows)
+	}
+}
+
 // TestTLSNodeInfoIsNotPolledInPlainText checks the detail screen shows the
 // worker's reading for a TLS node rather than polling it itself. That endpoint
 // needs the backend's cluster trust, and a plain-HTTP poll to it only fails.

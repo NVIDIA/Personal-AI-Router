@@ -316,13 +316,15 @@ func candidateAddresses(d availableNode) []string {
 // node's node-info. It is the only join that works when the operator typed a
 // hostname and discovery reports the same machine by IP.
 //
-// Otherwise it falls back to the address. That comparison is normalised, and
-// considers every address a node published.
-// The manual address was typed by an operator while the discovered one comes off
-// the wire, so an exact string match on the primary address missed a host typed
-// with different case or with its port, and missed a multi-homed node entirely
-// when the operator used its second address — listing the same machine twice,
-// once discovered and once manual.
+// Otherwise it falls back to the address, normalised — the manual one was typed
+// by an operator, the discovered one comes off the wire — and compared against
+// every address a node published, so a multi-homed node matches on any of
+// them.
+//
+// An address is not an identity. Once the probe has read a UUID, the entry
+// never joins a row that has a different UUID of its own: that is another
+// machine now answering at the same address, and merging them would show one
+// machine's membership and models under the other's name.
 func matchManual(byKey map[string]*nodeRow, order []string, m manualNode) *nodeRow {
 	if m.HostUUID != "" {
 		if row, ok := byKey[m.HostUUID]; ok {
@@ -335,6 +337,9 @@ func matchManual(byKey map[string]*nodeRow, order []string, m manualNode) *nodeR
 	}
 	for _, key := range order {
 		row := byKey[key]
+		if m.HostUUID != "" && hasHostIdentity(key) {
+			continue
+		}
 		if normalizeHost(row.address) == want {
 			return row
 		}
@@ -345,6 +350,14 @@ func matchManual(byKey map[string]*nodeRow, order []string, m manualNode) *nodeR
 		}
 	}
 	return nil
+}
+
+// hasHostIdentity reports whether a row key is a machine's own UUID, rather
+// than a stand-in for a node that has not reported one: a discovered node
+// keyed by name, or a manual entry keyed by its id. mergeNodes builds both
+// stand-ins; everything else it keys by UUID.
+func hasHostIdentity(key string) bool {
+	return !strings.HasPrefix(key, "name:") && !strings.HasPrefix(key, "manual:")
 }
 
 // normalizeHost reduces an address to a comparable host: trimmed, lowercased,
