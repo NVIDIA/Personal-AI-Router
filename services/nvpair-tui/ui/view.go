@@ -13,6 +13,11 @@ import (
 // and pointer-based: Update mutates the receiver in place and returns any
 // follow-up command, so background tabs keep their state current from the
 // broker's notification stream even while another tab is on screen.
+//
+// Title, View, and Help run on every frame, and Help more than once per frame:
+// the shell measures the footer to size the content area. They have to be
+// cheap — no I/O, no blocking, nothing that grows with the session — so the
+// work belongs in Update, leaving these to render state already in hand.
 type View interface {
 	// Title is the short label shown in the tab bar.
 	Title() string
