@@ -311,6 +311,25 @@ func TestJumpDigitsLabelDegenerateCounts(t *testing.T) {
 	}
 }
 
+// closingView records being released.
+type closingView struct {
+	stubView
+	closed bool
+}
+
+func (c *closingView) close() { c.closed = true }
+
+// TestViewsAreReleasedWithoutTheFinalModel checks cleanup reaches the views
+// themselves. After a panic Bubble Tea's Run returns no model to release them
+// through, which left a running demo's dispatcher processes behind.
+func TestViewsAreReleasedWithoutTheFinalModel(t *testing.T) {
+	holding := &closingView{stubView: stubView{title: "Jobs"}}
+	closeViews([]View{&stubView{title: "Nodes"}, holding})
+	if !holding.closed {
+		t.Error("a view holding children was not released")
+	}
+}
+
 // TestMoreTabsThanDigitsIsRefused checks a tenth tab fails loudly instead of
 // quietly having no key. The tab set is fixed at build time, so this is a
 // mistake in how the shell was put together, found on the first run.

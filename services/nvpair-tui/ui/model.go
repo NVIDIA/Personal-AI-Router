@@ -62,10 +62,10 @@ type Model struct {
 // be released on the way out — a spawned child, a file handle.
 type closer interface{ close() }
 
-// close releases every view that holds one. Called once the program loop has
-// finished, so nothing can still be scheduled.
-func (m Model) close() {
-	for _, v := range m.views {
+// closeViews releases every view that holds one. Called once the program loop
+// has finished, so nothing can still be scheduled.
+func closeViews(views []View) {
+	for _, v := range views {
 		if c, ok := v.(closer); ok {
 			c.close()
 		}
