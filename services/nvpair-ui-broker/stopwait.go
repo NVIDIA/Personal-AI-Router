@@ -262,14 +262,6 @@ type workerJoin struct {
 // stdin closed and their exit reaped. The proxy is joined again here;
 // supervisor.Stop is idempotent, so its second join is free.
 //
-// One property of the old defer order does go away: nvpair-errors was
-// registered early and so torn down late, which let a worker dying alongside it
-// still reach the error sink. That only ever mattered for a worker that crashed
-// during teardown — a clean stop reports nothing, since the supervisor's stop
-// path does not fire onCrash — and such a report goes to a pipeline the process
-// is about to discard, where no user would see it. forwardErrorsReport's nil
-// guard already makes the losing race a no-op rather than a panic.
-//
 // Only workers whose first spawn succeeded are joined. supervisor.Stop blocks on
 // the monitor goroutine that Start launches, so calling it on a supervisor that
 // never started would wait forever on a goroutine that does not exist.
@@ -303,11 +295,11 @@ func (b *Broker) stopWorkers() {
 //
 // This logs at warn deliberately. The desktop runs the broker at --log-level
 // warn, so an info-level report is missing from exactly the logs that get
-// collected when a user complains that quitting is slow. A ten-second teardown
-// reached QA with every existing diagnostic silent for that reason: the
-// escalation warnings only fire for a worker that misses its grace,
-// supervisor.Stop only names one that takes longer than workerStopReportAfter,
-// and a teardown that is merely the sum of prompt exits trips neither. The
+// collected when a user complains that quitting is slow. The other teardown
+// diagnostics do not cover this case: the escalation warnings only fire for a
+// worker that misses its grace, supervisor.Stop only names one that takes longer
+// than workerStopReportAfter, and a teardown that is merely the sum of prompt
+// exits trips neither. The
 // breakdown is one line rather than one per worker, so a slow teardown is a
 // single grep away from its cause.
 func reportWorkerJoins(total time.Duration, joins []workerJoin) {
