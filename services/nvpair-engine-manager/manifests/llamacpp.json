@@ -17,7 +17,7 @@
     "env": { "LLAMA_CACHE": "{install_dir}-models" },
     "bind": "127.0.0.1",
     "port": 8081,
-    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 60 },
+    "ready": { "http": "http://127.0.0.1:{port}/props", "status": 200, "timeout_s": 60, "json_match": { "field": "role", "value": "router" } },
     "stop": { "signal": "term", "grace_s": 10 },
     "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5 }
   },

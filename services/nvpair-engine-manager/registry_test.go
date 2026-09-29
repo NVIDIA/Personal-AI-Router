@@ -598,6 +598,33 @@ func TestLMStudioManifestBindsLoopback(t *testing.T) {
 	}
 }
 
+func TestLlamaCPPManifestRequiresRouterIdentity(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := reg.Get("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp manifest not loaded")
+	}
+	for key, p := range m.Platforms {
+		ready := p.Runtime.Ready
+		if ready == nil || ready.JSONMatch == nil {
+			t.Errorf("%s: readiness JSON identity is missing", key)
+			continue
+		}
+		if ready.HTTP != "http://127.0.0.1:{port}/props" {
+			t.Errorf("%s: readiness URL = %q, want router /props", key, ready.HTTP)
+		}
+		if ready.JSONMatch.Field != "role" || ready.JSONMatch.Value != "router" {
+			t.Errorf("%s: readiness JSON identity = %+v, want role=router", key, ready.JSONMatch)
+		}
+		if health := p.Runtime.Health; health == nil || health.HTTP != "http://127.0.0.1:{port}/health" || health.JSONMatch != nil {
+			t.Errorf("%s: ongoing health probe changed unexpectedly: %+v", key, health)
+		}
+	}
+}
+
 func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
