@@ -235,7 +235,7 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 		// a network that filters multicast is reachable but never announced.
 		// Any service answering counts — a host running only LM Studio is as
 		// reachable as one running Ollama.
-		if m.NodeInfoUp || m.OllamaUp || m.LMStudioUp {
+		if m.answered() {
 			row.presence = presenceOnline
 		} else if row.presence == presenceUnknown {
 			row.presence = presenceOffline
@@ -365,14 +365,9 @@ func normalizeHost(address string) string {
 // node flapping out on one missed announcement, and inference traffic from the
 // node counting as evidence too. A node that survives all that is still in the
 // snapshot, and a client second-guessing it with a timer can only be wrong.
-//
-// It used to be wrong. This graded the record's age against a 45-second
-// threshold, on the theory that the scanner re-stamps every peer every fifteen
-// seconds. It does not: nvpair-node-scanner says outright that the timestamp is
-// not a liveness clock, because the mDNS browser reports a node only when its
-// record CHANGES — so a healthy peer with a stable advertisement stops producing
-// events and its timestamp freezes at first discovery. Three "missed refreshes"
-// that were never going to arrive marked a perfectly reachable peer Offline.
+// The record's timestamp is no substitute: nvpair-node-scanner writes it only
+// when a node's advertisement changes, so a healthy peer's stays at first
+// discovery.
 //
 // This is also what the desktop app does, which matters because the two should
 // not disagree about whether a machine is up. Its rule is

@@ -30,9 +30,8 @@ type availableNode struct {
 	// the local node's advances only when it republishes.
 	//
 	// Decoded because it is on the wire, and deliberately unused. Presence comes
-	// from whether the backend still lists the node (see discoveredPresence);
-	// grading this as an age marked reachable peers Offline and made the local
-	// row count upward forever. Do not reintroduce a threshold on it.
+	// from whether the backend still lists the node (see discoveredPresence),
+	// never from this value's age.
 	LastSeen int64 `json:"lastSeen"` // Unix seconds
 	// Trusted: this node is a paired cluster peer of ours. Clustered: it belongs
 	// to some cluster (advertises a cluster-uuid), whether or not we're paired
@@ -79,7 +78,9 @@ type clusterInvite struct {
 	State        string  `json:"state"`
 }
 
-// manualNode is the subset of nvpair-manual-nodes' ManualNodeStatus shown.
+// manualNode is the subset of nvpair-manual-nodes' ManualNodeStatus
+// (services/nvpair-manual-nodes/manager.go), the element of the broker's
+// nodes/list reply, that the Nodes tab uses.
 type manualNode struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -102,4 +103,11 @@ type manualNode struct {
 	Memory         *noderec.MemoryInfo `json:"memory"`
 	TelemetryValid bool                `json:"telemetryValid"`
 	MSSince        int64               `json:"msSince"`
+}
+
+// answered reports whether any service on the host responded to the worker's
+// last probe. The worker reports one flag per service, so an engine it starts
+// probing arrives as a new field here and joins this list.
+func (m manualNode) answered() bool {
+	return m.NodeInfoUp || m.OllamaUp || m.LMStudioUp
 }
