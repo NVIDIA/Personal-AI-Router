@@ -200,9 +200,12 @@ func TestClusterLabelFromIdentityPush(t *testing.T) {
 func TestServiceHidesUnusedSettings(t *testing.T) {
 	v := newServiceView(nil)
 	for _, it := range v.items {
-		switch it.suffix {
-		case "force-ports", "cluster-auto-sync":
-			t.Errorf("%q is shown but nothing acts on it", it.label)
+		for _, method := range []string{it.getMethod, it.setMethod} {
+			switch method {
+			case "settings/get-force-ports", "settings/set-force-ports",
+				"settings/get-cluster-auto-sync", "settings/set-cluster-auto-sync":
+				t.Errorf("%q is shown but nothing acts on it", it.label)
+			}
 		}
 	}
 	if len(v.items) == 0 {
