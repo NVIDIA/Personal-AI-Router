@@ -118,6 +118,9 @@ type nodeDetail struct {
 	// telemetryRunning is whether a chain is in flight. A node with no known
 	// address has nothing to poll and so no chain; one can start later.
 	telemetryRunning bool
+	// telemetryAddress is the address that answered the last poll, empty once
+	// a poll fails.
+	telemetryAddress string
 	// enginesStale marks the engine list as last-known rather than current,
 	// because the most recent read of it failed. Held as state rather than
 	// announced, since the read repeats on a timer.
@@ -325,7 +328,8 @@ func (d *nodeDetail) telemetryCmd() tea.Cmd {
 		d.telemetryRunning = false
 		return nil
 	}
-	cmd := pollTelemetryCmd(d.node.key, d.telemetryGen, telemetryHosts(d.node), d.node.port)
+	cmd := pollTelemetryCmd(d.node.key, d.telemetryGen,
+		preferAddress(telemetryHosts(d.node), d.telemetryAddress), d.node.port, telemetryIdentity(d.node))
 	// Whether a chain is running, so a node whose address is not known yet can
 	// have one started later. Nothing schedules a tick when there is nothing to
 	// poll, and the reply is what continues the chain — so without this a manual
@@ -705,6 +709,7 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		// error toast fires every two seconds.
 		was := d.hardwareHeight()
 		d.telemetryOK = msg.err == nil
+		d.telemetryAddress = msg.address
 		if msg.err == nil {
 			d.telemetry = msg.telemetry
 		}

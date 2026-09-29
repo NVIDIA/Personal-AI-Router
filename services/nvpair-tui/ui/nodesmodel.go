@@ -227,7 +227,7 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 			if m.NodeInfoUp {
 				row.probedTelemetry = &nodeTelemetry{
 					GPUs: m.GPUs, CPU: m.CPU, Memory: m.Memory,
-					TelemetryValid: m.TelemetryValid, MSSince: m.MSSince,
+					TelemetryValid: m.TelemetryValid,
 				}
 			}
 		}
