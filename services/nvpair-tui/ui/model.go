@@ -359,10 +359,23 @@ func (m Model) contentHeight() int {
 	if b := m.banner(); b != "" {
 		h -= lipgloss.Height(b)
 	}
+	// Reachable only below the minimum terminal size. Above it the footer is
+	// held to footerRoom, which always leaves the view a row; below it the
+	// frame is tooSmallView instead, so no view renders into this budget.
 	if h < 1 {
 		h = 1
 	}
 	return h
+}
+
+// footerRoom is the most rows the footer may take: whatever the header, tab
+// bar, and banner leave once the active view has kept one for itself.
+func (m Model) footerRoom() int {
+	room := m.height - headerHeight - tabBarHeight - 1
+	if b := m.banner(); b != "" {
+		room -= lipgloss.Height(b)
+	}
+	return room
 }
 
 // banner is the shell-wide notice row, or empty when there is nothing to say.
@@ -423,23 +436,65 @@ func (m Model) headerView() string {
 	return left + strings.Repeat(" ", gap) + status
 }
 
+// tabBarForm is how much of each tab's label the tab bar can afford.
+type tabBarForm int
+
+const (
+	// tabsPadded names every tab, each in its own padded cell.
+	tabsPadded tabBarForm = iota
+	// tabsTight names every tab, a single space apart.
+	tabsTight
+	// tabsNumbered names the active tab and numbers the rest, which is still
+	// enough to reach them: the digits are the tab keys.
+	tabsNumbered
+)
+
+// tabBarView is the tab bar in the widest form that fits.
+//
+// Assembled longest-first against the real width, as the banner is. The frame
+// is clamped to the terminal, so a bar wider than it lost tabs from the right:
+// at the forty-column minimum the padded bar is forty-six wide, and the last
+// tab simply was not there.
 func (m Model) tabBarView() string {
+	for _, form := range []tabBarForm{tabsPadded, tabsTight} {
+		if bar := m.tabBar(form); lipgloss.Width(bar) <= m.width {
+			return bar
+		}
+	}
+	return m.tabBar(tabsNumbered)
+}
+
+func (m Model) tabBar(form tabBarForm) string {
 	cells := make([]string, len(m.views))
 	for i, v := range m.views {
 		label := fmt.Sprintf("%d %s", i+1, v.Title())
-		if i == m.active {
-			cells[i] = tabActiveStyle.Render(label)
-		} else {
-			cells[i] = tabInactiveStyle.Render(label)
+		if form == tabsNumbered && i != m.active {
+			label = strconv.Itoa(i + 1)
 		}
+		style := tabInactiveStyle
+		if i == m.active {
+			style = tabActiveStyle
+		}
+		if form == tabsTight {
+			style = style.Padding(0)
+		}
+		cells[i] = style.Render(label)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, cells...)
+	sep := ""
+	if form == tabsTight {
+		sep = " "
+	}
+	return strings.Join(cells, sep)
 }
 
 func (m Model) footerView() string {
 	// JumpTab is included so the numbers on the tab bar are documented
 	// somewhere; the bar promises a shortcut and nothing else mentioned it.
-	global := []key.Binding{m.keys.NextTab, m.keys.PrevTab, m.keys.JumpTab, m.keys.Help, m.keys.Quit}
+	//
+	// Quit and help lead. The short footer is truncated from the right, and at
+	// the forty-column minimum even the shell's own keys overrun it, so the
+	// line ended "shift+tab prev …" with the way out cut off.
+	global := []key.Binding{m.keys.Quit, m.keys.Help, m.keys.NextTab, m.keys.PrevTab, m.keys.JumpTab}
 
 	// None of them while a view owns the keyboard. Each view narrows its own
 	// help to enter and esc in that state, and the footer used to prepend the
@@ -457,7 +512,9 @@ func (m Model) footerView() string {
 		viewKeys = v.Help()
 	}
 	if m.showFullHelp {
-		return m.help.FullHelpView([][]key.Binding{global, viewKeys})
+		if full, ok := m.fullHelp(global, viewKeys); ok {
+			return full
+		}
 	}
 	// Globals first. bubbles truncates the short help from the right once it
 	// exceeds the terminal width, so whatever is last is what disappears — and
@@ -466,6 +523,33 @@ func (m Model) footerView() string {
 	// because "?" lists them all; losing the way out, and the key that would
 	// have revealed it, is the one truncation that traps someone.
 	return m.help.ShortHelpView(append(global, viewKeys...))
+}
+
+// fullHelp lays the bindings out in columns no taller than footerRoom, and
+// reports whether there was room for it at all.
+//
+// One column per group made the footer as tall as the longest list. A node's
+// detail screen lists ten keys, so on a twelve-row terminal the footer took
+// ten, the view's budget bottomed out at its floor of one, and the frame came
+// out a row taller than the terminal. Shorter columns keep every key on screen
+// wherever there is width for them; with not even a row to spare, the short
+// footer is what fits.
+func (m Model) fullHelp(groups ...[]key.Binding) (string, bool) {
+	room := m.footerRoom()
+	if room < 1 {
+		return "", false
+	}
+	columns := make([][]key.Binding, 0, len(groups)*2)
+	for _, g := range groups {
+		for len(g) > room {
+			columns = append(columns, g[:room])
+			g = g[room:]
+		}
+		if len(g) > 0 {
+			columns = append(columns, g)
+		}
+	}
+	return m.help.FullHelpView(columns), true
 }
 
 func readyVersion(msg *rpc.Message) string {

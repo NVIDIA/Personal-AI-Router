@@ -49,6 +49,7 @@ func newTestModel(views ...View) Model {
 // columns as the terminal has, whatever the active view renders: an over-tall
 // frame scrolls the alt screen and leaves the previous frame's tail behind.
 func TestViewFrameIsExactlyTerminalSized(t *testing.T) {
+	const termWidth, termHeight = 80, 24
 	cases := []struct {
 		name string
 		view *stubView
@@ -61,15 +62,130 @@ func TestViewFrameIsExactlyTerminalSized(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := newTestModel(tc.view)
+			m := New(nil, nil, []View{tc.view})
+			m.width, m.height = termWidth, termHeight
 			out := m.View()
-			if got := lipgloss.Height(out); got != m.height {
-				t.Errorf("frame is %d rows, terminal is %d", got, m.height)
+			if got := lipgloss.Height(out); got != termHeight {
+				t.Errorf("frame is %d rows, terminal is %d", got, termHeight)
 			}
-			if got := lipgloss.Width(out); got > m.width {
-				t.Errorf("frame is %d columns wide, terminal is %d", got, m.width)
+			if got := lipgloss.Width(out); got > termWidth {
+				t.Errorf("frame is %d columns wide, terminal is %d", got, termWidth)
 			}
 		})
+	}
+}
+
+// TestFrameNeverOutgrowsTheTerminal pushes the view's budget as low as it goes
+// and checks nothing overflows when it gets there.
+//
+// The budget has a floor of one row, and a floor is only safe if the frame
+// never needs to go below it. It did: full help on a node's detail screen lists
+// ten keys in one column, so at the twelve-row minimum the footer took ten,
+// the budget hit the floor, and the frame came out thirteen rows tall. This
+// sweeps every height from one row up, at widths below, at, and above the
+// minimum, over every tab, the detail screen, full help, and the banner.
+func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
+	withReleaseVersion(t, "0.91.7")
+	screens := func() []struct {
+		name  string
+		build func() Model
+	} {
+		type screen = struct {
+			name  string
+			build func() Model
+		}
+		out := make([]screen, 0, 8)
+		for i, v := range defaultViews(nil) {
+			out = append(out, screen{v.Title(), func() Model {
+				m := New(nil, nil, defaultViews(nil))
+				m.selectTab(i)
+				return m
+			}})
+		}
+		for _, pane := range []detailPane{detailEngines, detailModels} {
+			out = append(out, screen{"node detail", func() Model {
+				nodes := newNodesView(nil)
+				nodes.feeds.discovered = []availableNode{{HostUUID: "u1", Name: "host", IPAddress: "10.0.0.1", Port: 1}}
+				nodes.feeds.selfUUID = "u1"
+				nodes.rebuild()
+				m := New(nil, nil, []View{nodes})
+				nodes.openDetail()
+				nodes.detail.pane = pane
+				return m
+			}})
+		}
+		return out
+	}
+
+	for _, s := range screens() {
+		for _, w := range []int{minTerminalWidth - 1, minTerminalWidth, 80, 160} {
+			for h := 1; h <= 44; h++ {
+				for _, fullHelp := range []bool{false, true} {
+					for _, banner := range []bool{false, true} {
+						m := s.build()
+						m.width, m.height = w, h
+						m.help.Width = w
+						m.showFullHelp = fullHelp
+						if banner {
+							m = send(m, updateCheckMsg{latest: "0.92.0"})
+						}
+						m.resizeViews()
+						out := m.View()
+						if got := lipgloss.Height(out); got != h {
+							t.Fatalf("%s at %dx%d (full help %v, banner %v): frame is %d rows",
+								s.name, w, h, fullHelp, banner, got)
+						}
+						if got := lipgloss.Width(out); got > w {
+							t.Fatalf("%s at %dx%d (full help %v, banner %v): frame is %d columns",
+								s.name, w, h, fullHelp, banner, got)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestMinimumWidthKeepsNavigationVisible checks the shell still shows how to
+// move between tabs and how to leave at the narrowest supported width.
+//
+// At forty columns the padded tab bar was forty-six wide and lost its last tab
+// off the right, and the footer, truncated from the right, ended at "shift+tab
+// prev" — with quit and help both cut off.
+func TestMinimumWidthKeepsNavigationVisible(t *testing.T) {
+	m := New(nil, nil, defaultViews(nil))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: minTerminalWidth, Height: minTerminalHeight})
+	m = updated.(Model)
+
+	lines := strings.Split(m.View(), "\n")
+	if !strings.Contains(lines[1], "Logs") {
+		t.Errorf("last tab is hidden at minimum width: %q", lines[1])
+	}
+	footer := lines[len(lines)-1]
+	for _, want := range []string{"quit", "help"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("footer hides %q at minimum width: %q", want, footer)
+		}
+	}
+
+	// With an error count the names no longer fit, and every tab must still be
+	// reachable by the number the bar shows for it.
+	for _, v := range m.views {
+		if e, ok := v.(*errorsView); ok {
+			e.setErrors([]svcerrors.ServiceError{{ID: "a", Message: "x", Severity: "error"}, {ID: "b", Message: "y", Severity: "error"}})
+		}
+	}
+	bar := strings.Split(m.View(), "\n")[1]
+	if got := lipgloss.Width(bar); got > minTerminalWidth {
+		t.Fatalf("tab bar is %d wide at %d columns: %q", got, minTerminalWidth, bar)
+	}
+	for i := range m.views {
+		if !strings.Contains(bar, strconv.Itoa(i+1)) {
+			t.Errorf("tab %d has no number on the bar at minimum width: %q", i+1, bar)
+		}
+	}
+	if !strings.Contains(bar, m.activeView().Title()) {
+		t.Errorf("the active tab is not named at minimum width: %q", bar)
 	}
 }
 
