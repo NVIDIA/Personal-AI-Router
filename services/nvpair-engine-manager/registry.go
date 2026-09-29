@@ -176,14 +176,23 @@ func (r *Runtime) hasCustomLaunch() bool {
 		(r.LaunchEnv != nil && len(*r.LaunchEnv) > 0)
 }
 
-// Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
-// should be set; HTTP wins if both are.
+// ProbeJSONMatch optionally identifies an HTTP service by a string field in
+// its JSON response body. Field supports the same validated dotted object path
+// syntax as action result filters.
+type ProbeJSONMatch struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+// Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP should be
+// set; HTTP wins if both are. JSONMatch is valid only for HTTP probes.
 type Probe struct {
-	HTTP      string `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
-	TCP       string `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
-	Status    int    `json:"status,omitempty"` // expected HTTP status (default 200)
-	TimeoutS  int    `json:"timeout_s,omitempty"`
-	IntervalS int    `json:"interval_s,omitempty"`
+	HTTP      string          `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
+	TCP       string          `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
+	Status    int             `json:"status,omitempty"` // expected HTTP status (default 200)
+	TimeoutS  int             `json:"timeout_s,omitempty"`
+	IntervalS int             `json:"interval_s,omitempty"`
+	JSONMatch *ProbeJSONMatch `json:"json_match,omitempty"`
 }
 
 // StopSpec is how to terminate the engine. Default is a graceful
@@ -711,6 +720,17 @@ func validateProbe(key, which string, p *Probe) error {
 	}
 	if strings.TrimSpace(p.HTTP) == "" && strings.TrimSpace(p.TCP) == "" {
 		return fmt.Errorf("platform %q: runtime.%s must set either http or tcp", key, which)
+	}
+	if p.JSONMatch != nil {
+		if strings.TrimSpace(p.HTTP) == "" {
+			return fmt.Errorf("platform %q: runtime.%s json_match requires http", key, which)
+		}
+		if !resultMatchFieldPathRe.MatchString(p.JSONMatch.Field) {
+			return fmt.Errorf("platform %q: runtime.%s json_match.field %q is not a valid object path", key, which, p.JSONMatch.Field)
+		}
+		if strings.TrimSpace(p.JSONMatch.Value) == "" {
+			return fmt.Errorf("platform %q: runtime.%s json_match.value is required", key, which)
+		}
 	}
 	return nil
 }

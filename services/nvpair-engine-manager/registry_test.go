@@ -95,6 +95,16 @@ func TestValidateAcceptsNestedResultMatch(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsProbeJSONMatch(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service.role", Value: "router"}
+	m.Platforms["linux/amd64"] = p
+	if err := m.Validate(); err != nil {
+		t.Fatalf("HTTP probe JSON match rejected: %v", err)
+	}
+}
+
 func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
@@ -213,6 +223,24 @@ func TestValidateRejects(t *testing.T) {
 			p.Runtime.Args = []string{"serve", "{bogus}"}
 			m.Platforms["linux/amd64"] = p
 		}, "unknown placeholder {bogus}"},
+		{"JSON match without HTTP", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Ready = &Probe{
+				TCP:       "127.0.0.1:{port}",
+				JSONMatch: &ProbeJSONMatch{Field: "role", Value: "router"},
+			}
+			m.Platforms["linux/amd64"] = p
+		}, "json_match requires http"},
+		{"invalid JSON match field path", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service..role", Value: "router"}
+			m.Platforms["linux/amd64"] = p
+		}, "is not a valid object path"},
+		{"missing JSON match value", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "role"}
+			m.Platforms["linux/amd64"] = p
+		}, "json_match.value is required"},
 		{"action without http or cmd", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {Description: "neither"}}
 		}, "exactly one of http, cmd, or remove_path"},
