@@ -4,7 +4,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     LlamaCppCatalogCache,
-    llamaCppPublisherRequestParams
+    llamaCppPublisherRequestParams,
+    llamaCppSearchRequestParams
 } from '@/electron/model-hub/llamacpp-catalog'
 import type { JsonValue } from '@/shared/types/json'
 
@@ -43,6 +44,17 @@ describe('llama.cpp populated catalog cache', () => {
     it('builds a bounded Hugging Face request for one publisher', () => {
         expect(llamaCppPublisherRequestParams('bartowski')).toEqual({
             author: 'bartowski',
+            filter: 'gguf',
+            sort: 'downloads',
+            direction: -1,
+            limit: 50,
+            full: true
+        })
+    })
+
+    it('builds a bounded all-publisher Hugging Face search request', () => {
+        expect(llamaCppSearchRequestParams('qwen coder')).toEqual({
+            search: 'qwen coder',
             filter: 'gguf',
             sort: 'downloads',
             direction: -1,
@@ -120,5 +132,68 @@ describe('llama.cpp populated catalog cache', () => {
             'Unable to load llama.cpp model catalog: offline'
         )
         expect(cache.list()).toEqual([])
+    })
+
+    it('searches every public publisher and caches normalized queries', async () => {
+        const fetchPublisher = vi.fn<(publisher: string) => Promise<JsonValue>>()
+        const fetchSearch = vi.fn<(query: string) => Promise<JsonValue>>()
+        fetchSearch.mockResolvedValue([
+            hubModel('community-author/Qwen-Coder-GGUF'),
+            hubModel('unsloth/Qwen-Coder-GGUF')
+        ])
+        const cache = new LlamaCppCatalogCache(fetchPublisher, fetchSearch)
+
+        const first = await cache.search('  Qwen Coder  ')
+        const second = await cache.search('qwen coder')
+
+        expect(fetchSearch).toHaveBeenCalledOnce()
+        expect(fetchSearch).toHaveBeenCalledWith('Qwen Coder')
+        expect(first.map(model => model.id)).toEqual([
+            'community-author/Qwen-Coder-GGUF:Q4_K_M',
+            'unsloth/Qwen-Coder-GGUF:Q4_K_M'
+        ])
+        expect(second).toBe(first)
+        expect(fetchPublisher).not.toHaveBeenCalled()
+    })
+
+    it('bounds the process-local search cache', async () => {
+        const fetchPublisher = vi.fn<(publisher: string) => Promise<JsonValue>>()
+        const fetchSearch = vi.fn<(query: string) => Promise<JsonValue>>()
+        fetchSearch.mockResolvedValue([hubModel('owner/Result-GGUF')])
+        const cache = new LlamaCppCatalogCache(fetchPublisher, fetchSearch)
+
+        for (let index = 0; index < 21; index += 1) {
+            await cache.search(`model-${index}`)
+        }
+        await cache.search('model-0')
+
+        expect(fetchSearch).toHaveBeenCalledTimes(22)
+    })
+
+    it('uses a stale search result when its refresh fails', async () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date('2026-09-20T00:00:00.000Z'))
+        const fetchPublisher = vi.fn<(publisher: string) => Promise<JsonValue>>()
+        const fetchSearch = vi.fn<(query: string) => Promise<JsonValue>>()
+        fetchSearch.mockResolvedValue([hubModel('owner/Result-GGUF')])
+        const cache = new LlamaCppCatalogCache(fetchPublisher, fetchSearch)
+        const initial = await cache.search('result')
+
+        fetchSearch.mockRejectedValue(new Error('offline'))
+        vi.setSystemTime(new Date('2026-09-20T07:00:00.000Z'))
+
+        await expect(cache.search('result')).resolves.toBe(initial)
+        expect(fetchSearch).toHaveBeenCalledTimes(2)
+    })
+
+    it('surfaces a cold search failure without logging the query', async () => {
+        const fetchPublisher = vi.fn<(publisher: string) => Promise<JsonValue>>()
+        const fetchSearch = vi.fn<(query: string) => Promise<JsonValue>>()
+        fetchSearch.mockRejectedValue(new Error('offline'))
+        const cache = new LlamaCppCatalogCache(fetchPublisher, fetchSearch)
+
+        await expect(cache.search('private model name')).rejects.toEqual(
+            new Error('Unable to search llama.cpp models: offline')
+        )
     })
 })
