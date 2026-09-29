@@ -41,22 +41,18 @@ type NotificationMsg struct{ Msg *rpc.Message }
 // (broker exited or the connection dropped).
 type DisconnectedMsg struct{}
 
-// LogLineMsg carries one line of the broker's (and its workers') stderr
-// into the update loop for the Logs view.
+// LogLineMsg carries one log line into the update loop for the Logs view: the
+// broker's and its workers' stderr, and this program's own log.
 type LogLineMsg struct{ Line string }
 
-// LogClosedMsg is emitted once the broker's stderr stream ends.
-type LogClosedMsg struct{}
-
-// waitForLog blocks on the next captured stderr line, re-arming itself
-// after each one. A closed channel yields LogClosedMsg.
+// waitForLog blocks on the next log line, re-arming itself after each one.
+//
+// The channel is never closed. The broker's stderr ending is not the end of
+// the log — this program still writes to it — and a close would make that next
+// write panic.
 func waitForLog(lines <-chan string) tea.Cmd {
 	return func() tea.Msg {
-		line, ok := <-lines
-		if !ok {
-			return LogClosedMsg{}
-		}
-		return LogLineMsg{Line: line}
+		return LogLineMsg{Line: <-lines}
 	}
 }
 

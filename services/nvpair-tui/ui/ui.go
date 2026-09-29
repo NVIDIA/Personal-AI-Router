@@ -19,6 +19,8 @@ import (
 func Run(client *rpc.Client, stderr io.Reader) (Outcome, error) {
 	logCh := make(chan string, 2000)
 	go scanLines(stderr, logCh)
+	logOut.attach(logCh)
+	defer logOut.detach()
 
 	views := defaultViews(client)
 	p := tea.NewProgram(New(client, logCh, views), tea.WithAltScreen())
@@ -38,16 +40,15 @@ func Run(client *rpc.Client, stderr io.Reader) (Outcome, error) {
 	return outcome, err
 }
 
-// scanLines forwards each line of r onto out, closing out at EOF. The
-// buffer matches the broker's so a long structured log line is never
-// split mid-record.
+// scanLines forwards each line of r onto out until EOF. The buffer matches the
+// broker's so a long structured log line is never split mid-record. out stays
+// open afterwards; see waitForLog.
 func scanLines(r io.Reader, out chan<- string) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		out <- sc.Text()
 	}
-	close(out)
 }
 
 // defaultViews lists the tabs in display order.

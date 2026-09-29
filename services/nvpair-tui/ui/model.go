@@ -215,9 +215,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, waitForLog(m.logCh))
 		return m, tea.Batch(cmds...)
 
-	case LogClosedMsg:
-		return m, nil
-
 	default:
 		// Background work (RPC results, ticks, spinner frames) goes to
 		// every view; each ignores messages it doesn't own.
@@ -556,6 +553,6 @@ func readyVersion(msg *rpc.Message) string {
 	var p struct {
 		Version string `json:"version"`
 	}
-	_ = decodeParams(msg.Params, &p)
+	decodeOrLog(msg.Method, msg.Params, &p)
 	return p.Version
 }
