@@ -169,8 +169,10 @@ The facade is in the default broker and TUI set: local OpenAI-compatible clients
 use the broker-reported listener (normally `8080`) while the managed router runs
 on `8081`. Desktop and TUI expose install, lifecycle, download progress,
 inventory, load/unload, endpoint, routed state, and inference-demo workflows.
-Desktop browsing uses a locked four-model catalog with one reviewed `Q4_K_M`
-pull ID per model and no runtime catalog request.
+Desktop browsing populates a six-hour cache from the 50 most-downloaded GGUF
+repositories for each approved publisher and can explicitly search up to 50
+public Hugging Face matches. Results are limited to pull-ready `Q4_K_M` IDs.
+The TUI keeps its direct exact-ID download prompt.
 
 Current limits are explicit: there is no llama.cpp model delete action, the
 manual-node worker does not probe llama.cpp, the catalog offers no alternate
@@ -479,7 +481,7 @@ provide an equivalent client-facing contract:
 | Persist and replay manual node entries                      | `manual-nodes-store.ts`, `modular-supervisor.ts` |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
-| Serve the model hub (Ollama/llama.cpp locked, LM Studio live) | `src/electron/model-hub/`                     |
+| Serve the model hub (Ollama locked, LM Studio/llama.cpp live) | `src/electron/model-hub/`                    |
 | Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
 | Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
 | Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |

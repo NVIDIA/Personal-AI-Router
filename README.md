@@ -109,9 +109,10 @@ you want by its full filename instead.
 
 - **Add a model.** Select **Add model** on the same card and download one.
   `qwen4:12b` is used for this example; it can be replaced with a model of your
-  choice. llama.cpp offers a small curated list of GGUF models whose exact IDs
-  include the repository and quantization, such as
-  `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`.
+  choice. llama.cpp populates this list from popular GGUF repositories on
+  Hugging Face. Type to filter the list, or press Enter to search the wider
+  public catalog. Its exact IDs include the repository and quantization, such
+  as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`.
 
   ![A node card with its engine expanded, one model pulling and the Add model button beside the list.](docs/assets/onboarding/getting-started/07-add-model.png)
 

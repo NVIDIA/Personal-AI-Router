@@ -100,10 +100,13 @@ They do not imply a WebSocket connection. Browser clients are not supported.
   became unreachable, so its cached snapshot is stale.
 
 `EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
-`searchHub()` serves a locked local catalog for Ollama and llama.cpp and a
-cached live catalog for LM Studio. llama.cpp pull IDs are exact
-`owner/repository:quantization` values; load and unload are supported, but
-`deleteModel` is hidden because its manifest declares no delete action.
+`searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
+live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
+query performs an explicit bounded search across public Hugging Face GGUF
+repositories; other calls return the populated engine catalog. llama.cpp pull
+IDs are exact `owner/repository:quantization` values; load and unload are
+supported, but `deleteModel` is hidden because its manifest declares no delete
+action.
 
 Port and launch changes work on a clustered peer as well as the local device,
 with one exception: **managed CORS origin settings** are local-only. The owning

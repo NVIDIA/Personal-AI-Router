@@ -266,8 +266,12 @@ The model hub is Electron-main functionality in `src/electron/model-hub/`:
   fetched live from Hugging Face and cached for six hours. The cache is warmed
   when the Overview renderer reports ready, not when the service connects, so a
   slow or hanging catalog fetch cannot compete with the window's first paint;
-- llama.cpp models come from a small locked catalog of reviewed exact
-  `owner/repository:Q4_K_M` pull IDs, with no runtime catalog fetch;
+- llama.cpp's six-hour in-memory cache queries the 50 most-downloaded GGUF
+  repositories from each approved publisher (`ggml-org`, `bartowski`, and
+  `unsloth`). Explicit Enter/Search requests query up to 50 public Hugging Face
+  matches across publishers. Both paths keep only public, generative
+  repositories with a primary `Q4_K_M` artifact and emit exact
+  `owner/repository:Q4_K_M` pull IDs;
 - model pulls still run through `nvpair-engine-manager`.
 
 ## Inference Demo

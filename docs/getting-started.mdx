@@ -164,9 +164,12 @@ running, and the requested model is available there. To test routing across
 multiple nodes, prepare the same model on each of those nodes.
 
 llama.cpp downloads use exact `owner/repository:quantization` IDs. Its Add model
-list offers one reviewed `Q4_K_M` option for each starter model. Load and Eject
-are supported; deleting an individual llama.cpp model is not, so reclaiming its
-persistent cache currently requires manual cleanup.
+list is populated from popular GGUF repositories published by `ggml-org`,
+`bartowski`, and `unsloth`. Typing filters those results locally; pressing
+Enter or the search button searches public Hugging Face repositories. PAIR
+offers one verified `Q4_K_M` option per result. Load and Eject are supported;
+deleting an individual llama.cpp model is not, so reclaiming its persistent
+cache currently requires manual cleanup.
 
 Refer to [Managing engines](engine-lifecycle.mdx) for details about:
 

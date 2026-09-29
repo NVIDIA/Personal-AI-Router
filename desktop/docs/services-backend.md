@@ -255,8 +255,9 @@ good metrics and never marks a node offline.
 
 The renderer model hub is not a backend search service. Electron main obtains
 curated Ollama, LM Studio, and llama.cpp catalogs, then sends pull-ready model
-IDs through the engine manager. Ollama and llama.cpp use locked bundled lists;
-LM Studio retains its cached live catalog.
+IDs through the engine manager. Ollama uses a locked bundled list. LM Studio
+and llama.cpp use cached live Hugging Face catalogs; explicit llama.cpp searches
+remain Electron-main requests and never become backend JSON-RPC methods.
 
 ## Pairing and security
 

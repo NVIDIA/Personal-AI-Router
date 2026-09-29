@@ -209,8 +209,10 @@ operations.
 
 The model hub is Electron-main functionality under `src/electron/model-hub/`.
 It provides curated Ollama, LM Studio, and llama.cpp catalogs; model operations
-still go through the engine manager. The locked llama.cpp starter catalog uses
-exact `owner/repository:Q4_K_M` pull IDs.
+still go through the engine manager. llama.cpp populates a cached catalog from
+approved Hugging Face publishers and supports explicit bounded searches across
+public publishers. Every result remains an exact
+`owner/repository:Q4_K_M` pull ID.
 
 Managed llama.cpp installation uses CUDA archives on Windows and Linux and
 standard Metal-capable archives on macOS. Package choice is based on platform
