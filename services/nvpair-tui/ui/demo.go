@@ -312,8 +312,7 @@ func (d *demoRunner) tick() (cmds []tea.Cmd, finished bool) {
 	for d.next < len(d.schedule) && d.schedule[d.next].at <= elapsed {
 		req := d.schedule[d.next]
 		d.next++
-		d.submitted++
-		cmds = append(cmds, submitDemoRequest(ctx, exe, req))
+		cmds = append(cmds, submitDemoRequest(ctx, exe, req, d.gen))
 	}
 	if d.next >= len(d.schedule) {
 		// Every planned request is away. The window is over as far as the
@@ -324,13 +323,25 @@ func (d *demoRunner) tick() (cmds []tea.Cmd, finished bool) {
 	return cmds, false
 }
 
+// demoSpawnedMsg reports that one request's dispatcher started, for the run
+// numbered gen.
+type demoSpawnedMsg struct{ gen int }
+
+// spawned counts a request that got away. Only a started dispatcher counts as
+// sent, as on the desktop, and only for the run still going.
+func (d *demoRunner) spawned(msg demoSpawnedMsg) {
+	if msg.gen == d.gen && d.status == demoRunning {
+		d.submitted++
+	}
+}
+
 // submitDemoRequest spawns one dispatcher and does not wait for it.
 //
 // The command is returned rather than run inline so the spawn happens off the
 // update loop. Nothing about demo state depends on when the child finishes: the
 // evidence it produces is a job on the table, which arrives over the workload
 // stream like any other.
-func submitDemoRequest(ctx context.Context, exe string, req demoRequest) tea.Cmd {
+func submitDemoRequest(ctx context.Context, exe string, req demoRequest, gen int) tea.Cmd {
 	stage := demoStages[req.stage]
 	args := []string{
 		"--backend", req.target.backend,
@@ -355,7 +366,8 @@ func submitDemoRequest(ctx context.Context, exe string, req demoRequest) tea.Cmd
 		cmd.Env = dispatcherEnv()
 		// No pipes: the child's output is inference content, and this process
 		// has no business reading it. Start rather than Run, and Wait in a
-		// goroutine purely to reap the child.
+		// goroutine purely to reap the child. Start itself refuses once ctx is
+		// done, so nothing is spawned after the client has begun to quit.
 		if err := cmd.Start(); err != nil {
 			// One request failing to spawn is not a demo failure. It is also not
 			// worth a message: the operator asked for traffic, not a per-request
@@ -363,7 +375,7 @@ func submitDemoRequest(ctx context.Context, exe string, req demoRequest) tea.Cmd
 			return nil
 		}
 		go func() { _ = cmd.Wait() }()
-		return nil
+		return demoSpawnedMsg{gen: gen}
 	}
 }
 

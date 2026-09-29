@@ -126,7 +126,8 @@ func tickAt(t *testing.T, d *demoRunner, elapsed time.Duration) (int, bool) {
 }
 
 // armedRunner is a runner mid-run, without spawning anything. The executable is
-// a path that does not exist, which is safe because no test here runs a command.
+// a path that does not exist, so a test that runs a submission only sees it fail
+// to start.
 func armedRunner(t *testing.T, targetCount int) *demoRunner {
 	t.Helper()
 	d := newDemoRunner()
@@ -154,16 +155,39 @@ func TestTickSubmitsEachRequestExactlyOnce(t *testing.T) {
 		if finished {
 			break
 		}
-		// The counter drives the progress note, so it has to agree with the
-		// spawns while the run is live. It is reset once the window closes,
-		// which is why this is checked here and not after the loop.
-		if d.submitted != total {
-			t.Fatalf("at %s the runner counted %d submitted, %d were spawned",
-				elapsed, d.submitted, total)
-		}
 	}
 	if total != planned {
 		t.Errorf("submitted %d of %d planned requests", total, planned)
+	}
+}
+
+// TestOnlyStartedRequestsCount is the regression guard for the progress note
+// counting a request as sent when its dispatcher never started. The desktop
+// counts on spawn, and so does this.
+func TestOnlyStartedRequestsCount(t *testing.T) {
+	d := armedRunner(t, 3)
+	d.started = time.Now()
+	cmds, _ := d.tick()
+	if len(cmds) == 0 {
+		t.Fatal("no requests were due at the start of the window")
+	}
+	if d.submitted != 0 {
+		t.Errorf("counted %d sent before any dispatcher started", d.submitted)
+	}
+	// armedRunner's executable does not exist, so every one of these fails.
+	for _, cmd := range cmds {
+		if msg := cmd(); msg != nil {
+			t.Errorf("a dispatcher that never started reported %#v", msg)
+		}
+	}
+
+	d.spawned(demoSpawnedMsg{gen: d.gen})
+	if d.submitted != 1 {
+		t.Errorf("a started dispatcher was counted %d times, want once", d.submitted)
+	}
+	d.spawned(demoSpawnedMsg{gen: d.gen - 1})
+	if d.submitted != 1 {
+		t.Error("an earlier run's request was counted in this one")
 	}
 }
 

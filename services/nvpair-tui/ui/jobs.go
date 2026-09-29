@@ -258,6 +258,10 @@ func (v *jobsView) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
+	case demoSpawnedMsg:
+		v.demo.spawned(msg)
+		return nil
+
 	case TickMsg:
 		// AGE is relative, so the table has to repaint on the clock.
 		v.refreshRows()
