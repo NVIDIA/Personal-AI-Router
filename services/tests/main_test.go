@@ -227,6 +227,39 @@ func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Durat
 	return jsonrpc.Message{}
 }
 
+// codeFacadeBindFailed mirrors the constant of the same name in nvpair-proxy:
+// facade/enable answers with it when the port was taken before it could bind.
+const codeFacadeBindFailed = -32010
+
+// requestOnFreePort sends the request that build makes for a free port and
+// returns the port the proxy accepted. freePort closes its probe before the
+// proxy binds, so another process can take the port first. A request refused
+// for that reason is retried on a new port; any other error fails the test.
+func requestOnFreePort(t *testing.T, w io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration, build func(port int) map[string]any) int {
+	t.Helper()
+	for attempt := 0; attempt < 8; attempt++ {
+		port := freePort(t)
+		req := build(port)
+		sendLine(t, w, req)
+		resp := waitForResponse(t, msgs, timeout)
+		if resp.Error == nil {
+			return port
+		}
+		if !isBindRace(resp.Error) {
+			t.Fatalf("%s failed: %v", req["method"], resp.Error)
+		}
+	}
+	t.Fatal("every probed port was taken before the proxy could bind it")
+	return 0
+}
+
+// isBindRace reports a request the proxy refused only because the port was
+// taken. facade/enable says so with codeFacadeBindFailed; set-port has no
+// dedicated code, so its bind error is matched by message.
+func isBindRace(e *jsonrpc.RPCError) bool {
+	return e.Code == codeFacadeBindFailed || strings.HasPrefix(e.Message, "failed to bind port")
+}
+
 // TestLMStudioFacadeChildPersistsUnderPrivateBase proves a real proxy child
 // writes its persisted LM Studio port under the TestMain config base, so no
 // cross-process test can clobber the developer's saved port.
@@ -250,30 +283,27 @@ func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
 	}()
 	msgs := startMsgReader(stdout)
 
-	sendLine(t, stdin, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "facade/enable",
-		"params": map[string]any{
-			"engine":              "lmstudio",
-			"port":                freePort(t),
-			"ignorePersistedPort": true,
-		},
+	requestOnFreePort(t, stdin, msgs, 10*time.Second, func(port int) map[string]any {
+		return map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "facade/enable",
+			"params": map[string]any{
+				"engine":              "lmstudio",
+				"port":                port,
+				"ignorePersistedPort": true,
+			},
+		}
 	})
-	if resp := waitForResponse(t, msgs, 10*time.Second); resp.Error != nil {
-		t.Fatalf("facade/enable failed: %v", resp.Error)
-	}
 
-	persistedPort := freePort(t)
-	sendLine(t, stdin, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      2,
-		"method":  engines.AddressMethod("lmstudio", "set-port"),
-		"params":  map[string]any{"port": persistedPort},
+	persistedPort := requestOnFreePort(t, stdin, msgs, 5*time.Second, func(port int) map[string]any {
+		return map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  engines.AddressMethod("lmstudio", "set-port"),
+			"params":  map[string]any{"port": port},
+		}
 	})
-	if resp := waitForResponse(t, msgs, 5*time.Second); resp.Error != nil {
-		t.Fatalf("lmstudio set-port failed: %v", resp.Error)
-	}
 
 	path, err := appdir.Path("lmstudio-proxy-port.json")
 	if err != nil {
