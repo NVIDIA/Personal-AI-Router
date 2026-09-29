@@ -4,11 +4,13 @@
 package ui
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"nvpair-shared/applog"
 	"nvpair-shared/engines"
 	svcerrors "nvpair-shared/errors"
 	"nvpair-tui/rpc"
@@ -80,15 +82,38 @@ func TestRebuildCrashesFiltersByUUID(t *testing.T) {
 	}
 }
 
-// TestRebuildCrashesBeforeIdentity: before the local UUID resolves, all crashes
-// are kept (fail-open) so the view isn't blank during startup.
-func TestRebuildCrashesBeforeIdentity(t *testing.T) {
+// TestWorkersAreUnknownUntilTheyCanBeKnown checks the table does not read "ok"
+// before there is evidence for it. A worker is ok only by the absence of its
+// crash from a snapshot read with this machine's UUID, so until the service has
+// answered, a snapshot has arrived, and the UUID is known, every row is "?".
+func TestWorkersAreUnknownUntilTheyCanBeKnown(t *testing.T) {
+	statuses := func(v *serviceView) map[string]bool {
+		seen := map[string]bool{}
+		for _, r := range v.workers.Rows() {
+			seen[r[1]] = true
+		}
+		return seen
+	}
+
 	v := newServiceView(nil)
-	v.rebuildCrashes([]svcerrors.ServiceError{
-		{ID: crashPrefix + "scanner", Message: "x", NodeID: "whatever-uuid"},
-	})
-	if _, down := v.crashed["scanner"]; !down {
-		t.Fatal("crashes should be kept until the local UUID is known")
+	v.refreshWorkers()
+	if got := statuses(v); got["ok"] || !got["?"] {
+		t.Errorf("before anything was known the table read %v", got)
+	}
+
+	// A peer's crash arrives before this machine's UUID does. It must not be
+	// taken for this machine's.
+	v.Update(servicePingMsg{version: "1"})
+	v.Update(serviceErrorsLoadedMsg{errs: []svcerrors.ServiceError{
+		{ID: crashPrefix + "scanner", Message: "x", NodeID: "peer-uuid"},
+	}})
+	if got := statuses(v); got["ok"] || got["DOWN"] {
+		t.Errorf("before the UUID was known the table read %v", got)
+	}
+
+	v.Update(serviceNodeIDMsg{nodeUUID: "self-uuid"})
+	if got := statuses(v); !got["ok"] || got["DOWN"] || got["?"] {
+		t.Errorf("once everything was known the table read %v; the crash was a peer's", got)
 	}
 }
 
@@ -101,6 +126,7 @@ func TestServiceShowsACrashFromBeforeItStarted(t *testing.T) {
 	crash := svcerrors.ServiceError{ID: crashPrefix + "scanner", Message: "scanner crashed"}
 
 	v := newServiceView(nil)
+	v.localNodeUUID = "self-uuid"
 	v.Update(serviceErrorsLoadedMsg{errs: []svcerrors.ServiceError{crash}})
 	if _, down := v.crashed["scanner"]; !down {
 		t.Fatal("a crash in the initial errors snapshot was not shown")
@@ -109,6 +135,7 @@ func TestServiceShowsACrashFromBeforeItStarted(t *testing.T) {
 	// A push is a full snapshot and newer than any read in flight, so a late
 	// initial reply must not bring back a crash the push has since cleared.
 	v = newServiceView(nil)
+	v.localNodeUUID = "self-uuid"
 	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "errors:update", Params: []byte(`[]`)}})
 	v.Update(serviceErrorsLoadedMsg{errs: []svcerrors.ServiceError{crash}})
 	if _, down := v.crashed["scanner"]; down {
@@ -206,7 +233,7 @@ func TestLogLevelOpensPicker(t *testing.T) {
 
 	// Every option must be visible while choosing.
 	row := v.choiceRow()
-	for _, level := range logLevels {
+	for _, level := range logLevelNames() {
 		if !contains(row, level) {
 			t.Errorf("picker row %q omits %q", row, level)
 		}
@@ -218,10 +245,10 @@ func TestLogLevelOpensPicker(t *testing.T) {
 func TestLogLevelPickerOpensOnCurrentValue(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
-	v.logLevel = "warn"
+	v.logLevel = slog.LevelWarn
 
 	press(v, "enter")
-	if got := logLevels[v.choiceIdx]; got != "warn" {
+	if got := logLevelNames()[v.choiceIdx]; got != "warn" {
 		t.Errorf("picker opened on %q, want the current level warn", got)
 	}
 }
@@ -231,22 +258,23 @@ func TestLogLevelPickerOpensOnCurrentValue(t *testing.T) {
 func TestLogLevelPickerNavigationClamps(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
-	v.logLevel = logLevels[0]
+	v.logLevel = applog.Levels[0]
 	press(v, "enter")
 
+	names := logLevelNames()
 	press(v, "h")
 	if v.choiceIdx != 0 {
 		t.Errorf("moved before the first option to %d", v.choiceIdx)
 	}
 	press(v, "l")
-	if got := logLevels[v.choiceIdx]; got != logLevels[1] {
-		t.Errorf("after one step right = %q, want %q", got, logLevels[1])
+	if got := names[v.choiceIdx]; got != names[1] {
+		t.Errorf("after one step right = %q, want %q", got, names[1])
 	}
 	// Walk past the end.
-	for range logLevels {
+	for range names {
 		press(v, "j")
 	}
-	if v.choiceIdx != len(logLevels)-1 {
+	if v.choiceIdx != len(names)-1 {
 		t.Errorf("walked past the last option to %d", v.choiceIdx)
 	}
 }
@@ -255,7 +283,7 @@ func TestLogLevelPickerNavigationClamps(t *testing.T) {
 func TestLogLevelPickerCancels(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
-	v.logLevel = "info"
+	v.logLevel = slog.LevelInfo
 	press(v, "enter")
 	press(v, "l") // highlight a different level
 
@@ -265,8 +293,8 @@ func TestLogLevelPickerCancels(t *testing.T) {
 	if v.choosing {
 		t.Error("esc left the picker open")
 	}
-	if v.logLevel != "info" {
-		t.Errorf("level changed to %q despite cancelling", v.logLevel)
+	if v.logLevel != slog.LevelInfo {
+		t.Errorf("level changed to %v despite cancelling", v.logLevel)
 	}
 }
 
@@ -275,7 +303,7 @@ func TestLogLevelPickerCancels(t *testing.T) {
 func TestLogLevelPickerAppliesSelection(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
-	v.logLevel = "info"
+	v.logLevel = slog.LevelInfo
 
 	press(v, "enter")
 	press(v, "l")
@@ -431,6 +459,7 @@ func TestStaticTableRowsAlignExactly(t *testing.T) {
 // unreachable. Failures must never be the rows that get cut.
 func TestWorkerTableOrdersCrashesFirst(t *testing.T) {
 	v := newServiceView(nil)
+	v.pinged, v.errsKnown, v.localNodeUUID = true, true, "self-uuid"
 	// Pick a worker deliberately late in the declared order.
 	lastWorker := serviceWorkers[len(serviceWorkers)-1]
 	v.rebuildCrashes([]svcerrors.ServiceError{

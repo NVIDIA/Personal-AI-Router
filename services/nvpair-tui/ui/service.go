@@ -5,6 +5,7 @@ package ui
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -60,8 +61,21 @@ var serviceWorkers = []string{
 // in the table so "ok" is not read as confirmed liveness.
 const errorSinkWorker = "errors"
 
-// logLevels are the fleet-wide log levels, ordered least to most severe.
-var logLevels = []string{"debug", "info", "warn", "error"}
+// The node-settings methods behind the cluster name, spelled out whole so each
+// can be found by searching for it. The Nodes tab shows the name too.
+const (
+	getClusterNameMethod = "settings/get-cluster-friendly-name"
+	setClusterNameMethod = "settings/set-cluster-friendly-name"
+)
+
+// logLevelNames are the picker's options: applog's levels by wire name.
+func logLevelNames() []string {
+	names := make([]string, len(applog.Levels))
+	for i, l := range applog.Levels {
+		names[i] = applog.LevelName(l)
+	}
+	return names
+}
 
 // serviceItemKind is what activating a row does.
 type serviceItemKind int
@@ -80,9 +94,9 @@ type serviceItem struct {
 	kind  serviceItemKind
 	label string
 	help  string
-	// suffix is the settings/get-*/set-* method pair for a persisted node
-	// setting. Empty for rows backed by something else.
-	suffix string
+	// getMethod and setMethod read and write a persisted node setting. Empty
+	// for rows backed by something else.
+	getMethod, setMethod string
 	// destructive rows require an explicit confirmation keystroke.
 	destructive bool
 	// options are the values an itemChoice row offers, in the order the picker
@@ -114,7 +128,13 @@ type serviceView struct {
 	brokerVersion string
 	uptime        time.Duration
 	pingErr       error
-	logLevel      string
+	// pinged is whether a ping has answered yet. Until one has, nothing is
+	// known about the service, and the worker table says so.
+	pinged bool
+	// logLevel is the fleet's level as this session knows it. applog has no
+	// getter, so it starts at the level the broker started at — it inherits
+	// this process's environment — and follows each set.
+	logLevel slog.Level
 
 	crashed map[string]svcerrors.ServiceError
 	// localNodeUUID is this host's stable UUID. The broker stamps local-origin
@@ -129,6 +149,9 @@ type serviceView struct {
 	// snapshot, so once one has, the initial read is older than what is
 	// already shown and must not replace it.
 	errsPushed bool
+	// errsKnown is whether any errors snapshot has arrived, read or pushed. A
+	// worker is "ok" only by the absence of a crash in one.
+	errsKnown bool
 
 	input   textinput.Model
 	editing bool
@@ -172,13 +195,18 @@ type settingLoadedMsg struct {
 	err  error
 }
 
+// settingSavedMsg is the outcome of writing a node setting. It carries the
+// method and value because other tabs show some settings too, and the settings
+// worker sends no push when one changes.
 type settingSavedMsg struct {
-	idx int
-	err error
+	idx    int
+	method string
+	value  string
+	err    error
 }
 
 type logLevelSetMsg struct {
-	level string
+	level slog.Level
 	err   error
 }
 
@@ -208,25 +236,22 @@ func newServiceView(client *rpc.Client) *serviceView {
 		crashed:    map[string]svcerrors.ServiceError{},
 		input:      textinput.New(),
 		confirming: -1,
-		logLevel:   "info",
+		logLevel:   applog.LevelFromEnv(slog.LevelInfo),
 		items: []serviceItem{
-			// The proxy ports are deliberately not here. They belong
-			// beside the engine each one fronts, on that machine's node detail
-			// screen — keeping them here meant the two ports an operator has to
-			// tell apart were configured in different places.
-			{kind: itemChoice, label: "Service log level", options: logLevels,
+			// Proxy ports are not here: they sit beside the engine each one
+			// fronts, on that machine's node detail screen, so the two ports
+			// an operator has to tell apart are configured in one place.
+			{kind: itemChoice, label: "Service log level", options: logLevelNames(),
 				help: "applies to the whole service fleet"},
-			// force-ports and cluster-auto-sync are deliberately absent. Both
-			// are persisted by nvpair-node-settings but nothing currently acts
-			// on them — the desktop app does not read them either — so offering
-			// them would imply an effect they do not have.
-			// Says "this machine" because it is stored per node and never
-			// propagates: nvpair-node-settings holds it as display-only sugar
-			// with no push and no peer sync, so each machine keeps its own
-			// label. Sitting unqualified under a setting that announces it
-			// "applies to the whole service fleet", it read as cluster-wide and
-			// silently was not.
-			{kind: itemText, label: "Cluster name", suffix: "cluster-friendly-name",
+			// force-ports and cluster-auto-sync are persisted by
+			// nvpair-node-settings but nothing acts on them, so they are not
+			// offered.
+			//
+			// "This machine", because nvpair-node-settings keeps the name per
+			// node with no push and no peer sync: each machine has its own
+			// label, and the log level above it does apply fleet-wide.
+			{kind: itemText, label: "Cluster name",
+				getMethod: getClusterNameMethod, setMethod: setClusterNameMethod,
 				help: "this machine's own label for the cluster - not shared with peers"},
 			{kind: itemAction, label: "Reset all data and quit", destructive: true,
 				help: "deletes settings, cluster identity, and pairing"},
@@ -269,7 +294,7 @@ func (v *serviceView) pingCmd() tea.Cmd {
 			Version  string `json:"version"`
 			UptimeMS int64  `json:"uptime_ms"`
 		}
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog("ping", msg.Result, &r)
 		return servicePingMsg{version: r.Version, uptime: time.Duration(r.UptimeMS) * time.Millisecond}
 	})
 }
@@ -282,24 +307,23 @@ func (v *serviceView) nodeIDCmd() tea.Cmd {
 			return serviceNodeIDMsg{err: err}
 		}
 		var id clusterIdentity
-		_ = decodeParams(msg.Result, &id)
+		decodeOrLog("cluster:get-node-id", msg.Result, &id)
 		return serviceNodeIDMsg{nodeUUID: id.NodeUUID}
 	})
 }
 
 // errorsCmd reads the errors snapshot the crash table is built from.
 //
-// errors:update fires only on change, so without a read of its own this tab
-// knew nothing of a worker that crashed before it subscribed: the worker read
-// "ok" until something unrelated changed. Its own read rather than the Errors
-// tab's, so the worker table does not depend on another tab being present.
+// errors:update fires only on change, so this read is what reports a worker
+// that crashed before this tab subscribed. It is this tab's own read rather
+// than the Errors tab's, so the worker table does not depend on another tab.
 func (v *serviceView) errorsCmd() tea.Cmd {
 	return call(v.client, "errors:get-initial", nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {
 			return serviceErrorsLoadedMsg{err: err}
 		}
 		var errs []svcerrors.ServiceError
-		_ = decodeParams(msg.Result, &errs)
+		decodeOrLog("errors:get-initial", msg.Result, &errs)
 		return serviceErrorsLoadedMsg{errs: errs}
 	})
 }
@@ -308,15 +332,10 @@ func (v *serviceView) tickCmd() tea.Cmd {
 	return tea.Tick(servicePollInterval, func(time.Time) tea.Msg { return serviceTickMsg{} })
 }
 
-// logLevelCmd reads the current level when level is empty, otherwise sets it.
-// The broker fans a set out to every worker.
-func (v *serviceView) logLevelCmd(level string) tea.Cmd {
-	if level == "" {
-		// There is no getter in the applog contract, so the displayed level is
-		// whatever this session last set, seeded from the service default.
-		return nil
-	}
-	return call(v.client, applog.SetLevelMethod, applog.SetLevelParams{Level: level},
+// logLevelCmd sets the fleet's log level. The broker applies it to itself and
+// forwards it to each worker, best effort.
+func (v *serviceView) logLevelCmd(level slog.Level) tea.Cmd {
+	return call(v.client, applog.SetLevelMethod, applog.SetLevelParams{Level: applog.LevelName(level)},
 		func(msg *rpc.Message, err error) tea.Msg {
 			if err != nil {
 				return logLevelSetMsg{err: err}
@@ -324,24 +343,28 @@ func (v *serviceView) logLevelCmd(level string) tea.Cmd {
 			var r struct {
 				Level string `json:"level"`
 			}
-			_ = decodeParams(msg.Result, &r)
-			return logLevelSetMsg{level: r.Level}
+			decodeOrLog(applog.SetLevelMethod, msg.Result, &r)
+			applied, perr := applog.ParseLevel(r.Level)
+			if perr != nil {
+				return logLevelSetMsg{err: perr}
+			}
+			return logLevelSetMsg{level: applied}
 		})
 }
 
 func (v *serviceView) loadCmd(idx int) tea.Cmd {
 	it := v.items[idx]
-	if it.suffix == "" {
+	if it.getMethod == "" {
 		return nil
 	}
-	return call(v.client, "settings/get-"+it.suffix, nil, func(msg *rpc.Message, err error) tea.Msg {
+	return call(v.client, it.getMethod, nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {
 			return settingLoadedMsg{idx: idx, err: err}
 		}
 		var r struct {
 			Value string `json:"value"`
 		}
-		_ = decodeParams(msg.Result, &r)
+		decodeOrLog(it.getMethod, msg.Result, &r)
 		return settingLoadedMsg{idx: idx, strV: r.Value}
 	})
 }
@@ -370,9 +393,10 @@ func (v *serviceView) Update(msg tea.Msg) tea.Cmd {
 	case servicePingMsg:
 		// Worker status is derived from reachability, so the table has to be
 		// rebuilt whenever that changes in either direction.
-		if (v.pingErr == nil) != (msg.err == nil) {
+		if !v.pinged || (v.pingErr == nil) != (msg.err == nil) {
 			defer v.refreshWorkers()
 		}
+		v.pinged = true
 		v.pingErr = msg.err
 		if msg.err == nil {
 			v.brokerVersion = msg.version
@@ -391,6 +415,7 @@ func (v *serviceView) Update(msg tea.Msg) tea.Cmd {
 		// A failed read is left unsaid: the Errors tab reports the same read
 		// failing, and the next push repairs this table either way.
 		if msg.err == nil && !v.errsPushed {
+			v.errsKnown = true
 			v.rebuildCrashes(msg.errs)
 		}
 		return nil
@@ -415,14 +440,16 @@ func (v *serviceView) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		v.logLevel = msg.level
-		v.status.ok("log level set to %s for every service", msg.level)
+		// Not "for every service": the broker forwards the level to each
+		// worker best effort, and a worker that missed it keeps its own.
+		v.status.ok("log level set to %s", applog.LevelName(msg.level))
 		return nil
 
 	case NotificationMsg:
 		if msg.Msg.Method == "errors:update" {
 			var errs []svcerrors.ServiceError
-			_ = decodeParams(msg.Msg.Params, &errs)
-			v.errsPushed = true
+			decodeOrLog(msg.Msg.Method, msg.Msg.Params, &errs)
+			v.errsPushed, v.errsKnown = true, true
 			v.rebuildCrashes(errs)
 		}
 		return nil
@@ -526,9 +553,9 @@ func (v *serviceView) submitEdit() tea.Cmd {
 	it := v.items[idx]
 	val := strings.TrimSpace(v.input.Value())
 
-	return call(v.client, "settings/set-"+it.suffix, map[string]string{"value": val},
+	return call(v.client, it.setMethod, map[string]string{"value": val},
 		func(_ *rpc.Message, err error) tea.Msg {
-			return settingSavedMsg{idx: idx, err: err}
+			return settingSavedMsg{idx: idx, method: it.setMethod, value: val, err: err}
 		})
 }
 
@@ -564,8 +591,12 @@ func (v *serviceView) commitChoice() tea.Cmd {
 	if v.choiceIdx < 0 || v.choiceIdx >= len(it.options) {
 		return nil
 	}
-	chosen := it.options[v.choiceIdx]
-	if chosen == v.itemValue(it) {
+	chosen, err := applog.ParseLevel(it.options[v.choiceIdx])
+	if err != nil {
+		v.status.error("%s", err)
+		return nil
+	}
+	if chosen == v.logLevel {
 		v.status.info("%s unchanged", it.label)
 		return nil
 	}
@@ -593,14 +624,21 @@ func indexOf(options []string, value string) int {
 	return 0
 }
 
+// rebuildCrashes classifies this machine's crash reports from a snapshot.
+//
+// Nothing is classified until this machine's UUID is known. errors:update is
+// the full cross-node snapshot in a cluster, so which crashes are this
+// machine's is exactly what the UUID decides; refreshWorkers shows the table
+// as unknown until then rather than guessing.
+//
+// A report with no node id counts as this machine's. The broker stamps every
+// crash it reports with its own UUID, and a peer's report keeps the id of the
+// peer that made it, so an unstamped one can only have come from here.
 func (v *serviceView) rebuildCrashes(errs []svcerrors.ServiceError) {
 	v.lastErrs = errs
 	crashed := map[string]svcerrors.ServiceError{}
 	for _, e := range errs {
-		// errors:update is the full cross-node snapshot in a cluster, so a
-		// peer's crashed worker would otherwise paint this host's same-named
-		// worker DOWN. An empty NodeID is treated as local.
-		if v.localNodeUUID != "" && e.NodeID != "" && e.NodeID != v.localNodeUUID {
+		if v.localNodeUUID == "" || (e.NodeID != "" && e.NodeID != v.localNodeUUID) {
 			continue
 		}
 		if strings.HasPrefix(e.ID, crashPrefix) {
@@ -626,12 +664,15 @@ func (v *serviceView) refreshWorkers() {
 			continue
 		}
 		// A worker is only known good because the crash stream says nothing
-		// about it — and that stream comes through the broker. With the broker
-		// unreachable there is no such evidence, so claiming "ok" would be a
-		// green wall directly under a red "service not responding", which reads
-		// as the answer and is worse than admitting ignorance.
-		if v.pingErr != nil {
+		// about it — and that stream comes through the broker. Without a
+		// reachable broker, a snapshot, and this machine's UUID to read it by,
+		// there is no such evidence, and "ok" would claim it anyway.
+		switch {
+		case v.pingErr != nil:
 			up = append(up, table.Row{workerLabel(w), "?", "unknown - the service is not responding"})
+			continue
+		case !v.pinged || !v.errsKnown || v.localNodeUUID == "":
+			up = append(up, table.Row{workerLabel(w), "?", "checking..."})
 			continue
 		}
 		detail := ""
@@ -799,7 +840,7 @@ func (v *serviceView) itemList() string {
 func (v *serviceView) itemValue(it serviceItem) string {
 	switch it.kind {
 	case itemChoice:
-		return v.logLevel
+		return applog.LevelName(v.logLevel)
 	case itemAction:
 		return ""
 	default:
