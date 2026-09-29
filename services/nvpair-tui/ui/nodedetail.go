@@ -122,6 +122,11 @@ type nodeDetail struct {
 	// because the most recent read of it failed. Held as state rather than
 	// announced, since the read repeats on a timer.
 	enginesStale bool
+	// enginesHidden and modelsHidden record that the last frame had no room
+	// for that list. Its keys are refused while it is off screen, or they act
+	// on a row the operator cannot see.
+	enginesHidden bool
+	modelsHidden  bool
 
 	input  textinput.Model
 	mode   detailInputMode
@@ -849,16 +854,32 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		}
 
 	case "engine:install-progress":
+		// Local installs only, for the reason given for engine:pull-progress
+		// below: the payload carries no node.
+		if d.remote() {
+			return nil
+		}
 		var p struct {
 			Engine  string `json:"engine"`
 			Stage   string `json:"stage"`
-			Percent int    `json:"percent"`
+			Percent *int   `json:"percent"`
+			Error   string `json:"error"`
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
+		if p.Stage == "failed" {
+			// An outcome, so it expires like one. An install that outlived its
+			// reply deadline has no other way to report that it failed.
+			detail := p.Error
+			if detail == "" {
+				detail = "no reason given"
+			}
+			d.status.error("install %s failed: %s", d.engineLabel(p.Engine), detail)
+			return nil
+		}
 		// Sticky for the same reason the pull feed is: an engine install is a
 		// multi-hundred-megabyte download, and between two frames more than six
 		// seconds apart an expiring line leaves the screen looking idle.
-		d.status.busy("install %s: %s (%d%%)", d.engineLabel(p.Engine), p.Stage, p.Percent)
+		d.status.busy("install %s: %s%s", d.engineLabel(p.Engine), p.Stage, progressPercent(p.Percent))
 
 	case "engine:pull-progress":
 		// Local pulls only. The engine manager emits this for its own downloads
@@ -886,12 +907,12 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			Engine  string `json:"engine"`
 			Op      string `json:"op"`
 			Stage   string `json:"stage"`
-			Percent int    `json:"percent"`
+			Percent *int   `json:"percent"`
 			Message string `json:"message"`
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
 		if p.Node == d.node.key {
-			d.status.busy("%s %s: %s (%d%%)", p.Op, d.engineLabel(p.Engine), p.Stage, p.Percent)
+			d.status.busy("%s %s: %s%s", p.Op, d.engineLabel(p.Engine), p.Stage, progressPercent(p.Percent))
 		}
 
 	default:
@@ -913,7 +934,7 @@ func progressToast(params []byte, label func(string) string) (toastKind, string,
 	var p struct {
 		Engine  string `json:"engine"`
 		Stage   string `json:"stage"`
-		Percent int    `json:"percent"`
+		Percent *int   `json:"percent"`
 		Message string `json:"message"`
 	}
 	decodeOrLog("engine:pull-progress", params, &p)
@@ -927,8 +948,19 @@ func progressToast(params []byte, label func(string) string) (toastKind, string,
 		}
 		return toastError, "download %s failed: %s", []any{label(p.Engine), detail}
 	default:
-		return toastInfo, "download %s: %s (%d%%)", []any{label(p.Engine), p.Stage, p.Percent}
+		return toastInfo, "download %s: %s%s", []any{label(p.Engine), p.Stage, progressPercent(p.Percent)}
 	}
+}
+
+// progressPercent renders a progress frame's percentage, or nothing when the
+// frame has none. The engine manager leaves it out while progress is
+// indeterminate and sends a negative one on failure, and printed as a number
+// either read as a download stuck at 0% or at -1%.
+func progressPercent(pct *int) string {
+	if pct == nil || *pct < 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d%%)", *pct)
 }
 
 func (d *nodeDetail) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -974,7 +1006,15 @@ func (d *nodeDetail) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	}
 
 	if d.pane == detailEngines {
+		if d.enginesHidden {
+			d.status.error("too little room to show the engines - make the terminal taller")
+			return nil, true
+		}
 		return d.handleEngineKey(msg), true
+	}
+	if d.modelsHidden {
+		d.status.error("too little room to show the models - make the terminal taller")
+		return nil, true
 	}
 	return d.handleModelKey(msg), true
 }
@@ -1029,6 +1069,13 @@ func (d *nodeDetail) handleEngineKey(msg tea.KeyMsg) tea.Cmd {
 func (d *nodeDetail) editSetting(engine *engineStatus, mode detailInputMode) tea.Cmd {
 	if engine == nil {
 		d.status.error("no engine selected")
+		return nil
+	}
+	if w := d.settingsAwaited; w != nil {
+		// One change at a time. The screen follows a single outstanding
+		// write, so a second one took its place and the first's verdict was
+		// never reported.
+		d.status.error("wait for the %s settings change to finish", d.engineLabel(w.engine))
 		return nil
 	}
 	snap, ok := d.settings[engine.Engine]
@@ -1790,6 +1837,7 @@ func (d *nodeDetail) View() string {
 		// a peer that has gone away, so comparing to the minimum let the section
 		// through at exactly the sizes where it did not fit.
 		if engineRoom < countLines(enginesBody) {
+			d.enginesHidden, d.modelsHidden = true, true
 			return joinLines(identity, hardware, enginesHeading,
 				footerStyle.Render(fmt.Sprintf(
 					"  (too little room to list %d engine(s))", len(d.engines))),
@@ -1811,15 +1859,19 @@ func (d *nodeDetail) View() string {
 	// nothing. The engine list and the status line are the better use of the
 	// last rows.
 	const sectionChrome = 2
+	d.enginesHidden = false
 	if room < sectionChrome+1 {
+		d.modelsHidden = true
 		return joinLines(identity, hardware, enginesHeading, enginesBody, editor, status)
 	}
 
+	d.modelsHidden = false
 	modelsBody := modelsEmpty
 	if modelsEmpty == "" {
 		if fitTable(&d.modelTable, room-sectionChrome) {
 			modelsBody = d.modelTable.View()
 		} else {
+			d.modelsHidden = true
 			modelsBody = footerStyle.Render("  (too little room to list models)")
 		}
 	}
