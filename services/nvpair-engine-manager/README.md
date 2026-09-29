@@ -21,6 +21,9 @@ The `llamacpp` manifest runs `llama-server` in router mode on loopback port
 `owner/repository:Q4_K_M`; deletion is not declared. Downloads use `/models/sse`
 for progress, and `LLAMA_CACHE` points to a managed sibling directory so models
 survive engine uninstall and reinstall. Remove that cache manually when needed.
+Readiness requires `/props` to report `role:"router"`, so model-selection
+arguments that switch `llama-server` to single-model mode and incompatible
+listeners already occupying the port are rejected rather than adopted.
 After five minutes without inference work, a loaded model enters llama.cpp sleep
 mode and releases its model and KV-cache memory; the next request wakes it. The
 router child remains alive and can retain a residual backend GPU context.
@@ -156,7 +159,8 @@ terminate is the only signal that actually stops them.
 ### Adoption — start may attach to an engine it didn't launch
 
 Before spawning, `engine:start` **probes the chosen port's readiness
-endpoint**. If something already answers there — the engine's own desktop
+endpoint**, including any manifest-declared JSON identity. If a compatible
+service answers there — the engine's own desktop
 app (e.g. the Ollama tray app on `11434`), or an instance left running from a
 previous session — the service **adopts** that instance: it marks the engine
 `running` without launching its own, rather than spawning a duplicate that

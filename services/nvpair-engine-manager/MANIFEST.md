@@ -163,7 +163,11 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 
 A **probe** is `{ "http": "<url>", "status": <int>, "timeout_s": <int>, "interval_s": <int> }`
 or `{ "tcp": "<host:port>", ... }`. `status` defaults to `200`. Prefer
-loopback URLs/addresses.
+loopback URLs/addresses. An HTTP probe may also set
+`"json_match":{"field":"service.role","value":"router"}` to require a JSON
+string at that dotted object path. Missing, malformed, oversized, or
+wrong-typed response data fails the probe. `json_match` is invalid on TCP
+probes.
 
 ### Actions
 
