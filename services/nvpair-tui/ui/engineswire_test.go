@@ -7,7 +7,20 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"nvpair-shared/engines"
 )
+
+// wireOf builds a model operation's envelope, failing the test if the engine
+// or operation is not known.
+func wireOf(t *testing.T, engine, op, model string) map[string]any {
+	t.Helper()
+	envelope, err := modelActionWire(engine, op, model)
+	if err != nil {
+		t.Fatalf("%s %s: %v", engine, op, err)
+	}
+	return envelope
+}
 
 // actionOf unwraps an engine:action envelope for assertions.
 func actionOf(t *testing.T, envelope map[string]any) (string, map[string]any) {
@@ -25,8 +38,8 @@ func actionOf(t *testing.T, envelope map[string]any) (string, map[string]any) {
 // `lms get {model}` CLI placeholder). Sending only "name" silently ran
 // `lms get "" --yes`, so the download never reached LM Studio.
 func TestPullSendsBothKeys(t *testing.T) {
-	for _, engine := range []string{"ollama", "lmstudio"} {
-		envelope := modelActionWire(engine, "pull", "owner/model")
+	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
+		envelope := wireOf(t, engine, "pull", "owner/model")
 		if envelope["engine"] != engine {
 			t.Fatalf("engine = %v, want %s", envelope["engine"], engine)
 		}
@@ -45,7 +58,7 @@ func TestPullSendsBothKeys(t *testing.T) {
 // so sending load_model errors, and the failure is quiet enough to look like the
 // model simply not loading.
 func TestOllamaLoadUsesRunModel(t *testing.T) {
-	envelope := modelActionWire("ollama", "load", "llama3.2")
+	envelope := wireOf(t, engines.NameOllama, "load", "llama3.2")
 	action, params := actionOf(t, envelope)
 
 	if action != "run_model" {
@@ -59,7 +72,7 @@ func TestOllamaLoadUsesRunModel(t *testing.T) {
 	}
 
 	// LM Studio does declare a real load action.
-	lmEnvelope := modelActionWire("lmstudio", "load", "owner/model")
+	lmEnvelope := wireOf(t, engines.NameLMStudio, "load", "owner/model")
 	if lmAction, _ := actionOf(t, lmEnvelope); lmAction != "load_model" {
 		t.Errorf("lmstudio load action = %q, want load_model", lmAction)
 	}
@@ -69,7 +82,7 @@ func TestOllamaLoadUsesRunModel(t *testing.T) {
 // model when keep_alive is 0. Without it the request succeeds and the model
 // stays resident, so eject appears to do nothing.
 func TestOllamaUnloadSendsKeepAlive(t *testing.T) {
-	envelope := modelActionWire("ollama", "unload", "llama3.2")
+	envelope := wireOf(t, engines.NameOllama, "unload", "llama3.2")
 	action, params := actionOf(t, envelope)
 
 	if action != "unload_model" {
@@ -80,7 +93,7 @@ func TestOllamaUnloadSendsKeepAlive(t *testing.T) {
 	}
 
 	// LM Studio's unload takes no keep_alive.
-	lmEnvelope := modelActionWire("lmstudio", "unload", "owner/model")
+	lmEnvelope := wireOf(t, engines.NameLMStudio, "unload", "owner/model")
 	if _, lmParams := actionOf(t, lmEnvelope); lmParams["keep_alive"] != nil {
 		t.Errorf("lmstudio unload sent keep_alive = %v, want absent", lmParams["keep_alive"])
 	}
@@ -161,8 +174,8 @@ func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
 // TestDeleteSendsBothKeys checks delete works on either engine, since Ollama
 // keys it as "name" and LM Studio as "model".
 func TestDeleteSendsBothKeys(t *testing.T) {
-	for _, engine := range []string{"ollama", "lmstudio"} {
-		envelope := modelActionWire(engine, "delete", "victim")
+	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
+		envelope := wireOf(t, engine, "delete", "victim")
 		action, params := actionOf(t, envelope)
 		if action != "delete_model" {
 			t.Errorf("%s: action = %q", engine, action)
@@ -170,6 +183,23 @@ func TestDeleteSendsBothKeys(t *testing.T) {
 		if params["name"] != "victim" || params["model"] != "victim" {
 			t.Errorf("%s: delete params = %v, want both keys", engine, params)
 		}
+	}
+}
+
+// TestEveryEngineHasAModelWire is what makes adding an engine a matter of
+// adding its entry: an engine in the shared table without a spelling for every
+// model operation fails here, rather than being sent another engine's action
+// names at runtime.
+func TestEveryEngineHasAModelWire(t *testing.T) {
+	for _, e := range engines.All() {
+		for op := range modelActions {
+			if _, err := modelActionWire(e.Name, op, "m"); err != nil {
+				t.Errorf("%s has no local wire for %s: %v", e.Name, op, err)
+			}
+		}
+	}
+	if _, err := modelActionWire("vllm", "load", "m"); err == nil {
+		t.Error("an engine with no wire was given one")
 	}
 }
 
