@@ -75,6 +75,9 @@ type nodesView struct {
 	// rather than replacing the one being read.
 	inbound *clusterInvite
 	queued  []clusterInvite
+	// membersPushes counts nodes:changed pushes, so a roster read can tell
+	// whether one has arrived since it was sent; see clusterMembersMsg.
+	membersPushes int
 	// answering is the inbound request whose answer is in flight. It stays on
 	// screen until the cluster manager settles it: a PIN it refuses as
 	// malformed leaves the session open for another try.
@@ -185,9 +188,12 @@ type clusterIdentityMsg struct {
 	err error
 }
 
+// clusterMembersMsg carries a nodes:get-initial read. pushes is how many
+// nodes:changed pushes had arrived when it was sent; see membersPushes.
 type clusterMembersMsg struct {
-	nodes []clusterNode
-	err   error
+	nodes  []clusterNode
+	pushes int
+	err    error
 }
 
 // clusterNameMsg carries the cluster's display label.
@@ -331,15 +337,16 @@ func (v *nodesView) identityCmd() tea.Cmd {
 }
 
 func (v *nodesView) membersCmd() tea.Cmd {
+	pushes := v.membersPushes
 	return call(v.client, "nodes:get-initial", nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {
-			return clusterMembersMsg{err: err}
+			return clusterMembersMsg{pushes: pushes, err: err}
 		}
 		var r struct {
 			Nodes []clusterNode `json:"nodes"`
 		}
 		decodeOrLog("nodes:get-initial", msg.Result, &r)
-		return clusterMembersMsg{nodes: r.Nodes}
+		return clusterMembersMsg{nodes: r.Nodes, pushes: pushes}
 	})
 }
 
@@ -433,7 +440,13 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 
 	case clusterMembersMsg:
 		v.noteFeed(feedMembers, msg.err)
-		if msg.err == nil {
+		// Taken only if no push has arrived since the read was sent. Reads and
+		// pushes are both whole rosters, but a reply and a push reach this
+		// loop by different paths, so arrival order says nothing about which
+		// is newer — except that a push arriving after the read was asked for
+		// is at least as new as its reply. Pushes carry every change, so a
+		// reply dropped here loses nothing they will not bring.
+		if msg.err == nil && msg.pushes == v.membersPushes {
 			v.feeds.members = msg.nodes
 			v.rebuild()
 		}
@@ -573,9 +586,11 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 		var r struct {
 			Nodes []clusterNode `json:"nodes"`
 		}
-		decodeOrLog(msg.Method, msg.Params, &r)
-		v.feeds.members = r.Nodes
-		v.rebuild()
+		if decodeOrLog(msg.Method, msg.Params, &r) {
+			v.membersPushes++
+			v.feeds.members = r.Nodes
+			v.rebuild()
+		}
 
 	case "cluster:identity-changed":
 		var r struct {

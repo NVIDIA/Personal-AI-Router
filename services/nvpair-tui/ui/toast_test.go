@@ -573,6 +573,32 @@ func TestSecondInviteWaitsForTheFirst(t *testing.T) {
 	}
 }
 
+// TestRosterReadDoesNotOverwriteANewerPush checks a roster read that crossed a
+// push does not replace it. Both are whole rosters, but the reply and the push
+// arrive by different paths, and a reply landing second put the older roster
+// back until the next change.
+func TestRosterReadDoesNotOverwriteANewerPush(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	// A read sent before the push, whose reply lands after it.
+	stale := clusterMembersMsg{nodes: []clusterNode{{NodeUUID: "gone", Name: "gone", State: "member"}}, pushes: v.membersPushes}
+
+	params := []byte(`{"nodes":[{"nodeUuid":"now","name":"now","state":"member"}]}`)
+	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "nodes:changed", Params: params}})
+	v.Update(stale)
+
+	if len(v.feeds.members) != 1 || v.feeds.members[0].NodeUUID != "now" {
+		t.Errorf("roster = %+v, want the pushed one kept", v.feeds.members)
+	}
+
+	// A read sent after the push is current, and is taken.
+	fresh := clusterMembersMsg{nodes: []clusterNode{{NodeUUID: "later", State: "member"}}, pushes: v.membersPushes}
+	v.Update(fresh)
+	if len(v.feeds.members) != 1 || v.feeds.members[0].NodeUUID != "later" {
+		t.Errorf("roster = %+v, want the read sent after the push", v.feeds.members)
+	}
+}
+
 // TestMalformedPINKeepsTheRequest is the regression guard for a pairing request
 // lost to a typo. The cluster manager refuses a PIN that is not six digits with
 // an error and leaves the session open, but the prompt was cleared before the
