@@ -96,6 +96,42 @@ The service no longer advertises itself over mDNS. Its parent (the broker) regis
 - **macOS**: CPU and system-memory usage come from Mach through gopsutil's purego bindings. GPU identity, mapped memory, and utilization come from the built-in, unprivileged `/usr/sbin/ioreg` command's `IOAccelerator` `PerformanceStatistics`; no sudo or private framework binding is required. Apple Silicon is supported directly. Intel/AMD fields are best-effort when their drivers expose the same dedicated-memory counters. The performance keys are undocumented and may change across macOS releases; a missing or changed key leaves only that metric out and does not stop CPU or memory collection.
 - **Other platforms**: GPU names come from `ghw`; VRAM and dynamic stats are not reported.
 
+### Linux AMD (amdgpu sysfs)
+
+AMD ships no `nvidia-smi` equivalent in a default install, so a Radeon host used to fall through to `ghw` and publish the PCI database's codename and nothing else (`{"name":"Barcelo"}`). The amdgpu driver already exposes everything needed under `/sys/class/drm/card<N>/device/`, world-readable, so the inventory and the per-tick sample are plain file reads — no daemon, no root, no cgo, no new dependency.
+
+What is read, per card:
+
+| attribute | use |
+| --- | --- |
+| `vendor`, `device` | vendor `0x1002` selects the card; the device id picks the marketing name |
+| `uevent` (`PCI_SLOT_NAME`) | join-key fallback when the `device` symlink cannot be resolved |
+| `mem_info_vram_total` | dedicated VRAM, or an APU's firmware carve-out |
+| `mem_info_gtt_total` | the GTT aperture — system memory the GPU may map |
+| `mem_info_vram_used`, `mem_info_gtt_used` | `vram_used_bytes`, sampled every collector tick |
+| `gpu_busy_percent` | `utilization_percent`, already the 0..100 figure `nvidia-smi`'s `utilization.gpu` reports |
+
+Only `card<N>` directories are enumerated. The DRM class also carries one `card<N>-<CONNECTOR>` entry per output (`card1-DP-1`, `card1-HDMI-A-1`, …) and `renderD<N>` nodes, all pointing back at the same device; listing them would publish the same GPU several times.
+
+**Unified-pool capacity rule.** On an APU `mem_info_vram_total` is only the carve-out the firmware reserved — 512 MiB on a Ryzen 5 5625U — while the real ceiling for a model is that carve-out plus the GTT aperture. So:
+
+- **APU** (a device id in the built-in table, or `mem_info_vram_total` under 1 GiB alongside a `mem_info_gtt_total`): `vram_bytes = mem_info_vram_total + mem_info_gtt_total`, and `vram_used_bytes = mem_info_vram_used + mem_info_gtt_used`.
+- **Discrete card**: `vram_bytes = mem_info_vram_total` and `vram_used_bytes = mem_info_vram_used` — a discrete card also exposes a GTT aperture, and counting it would inflate a 16 GiB card to 24 GiB.
+
+Capacity and usage always come from the same side of that rule, so `vram_used_bytes` can never exceed `vram_bytes`. A unified AMD row is *not* the unified-memory NVIDIA case: that one substitutes whole-system RAM usage for a GPU whose driver cannot report its own, while amdgpu reports its own usage precisely and is always believed.
+
+**Join key.** Each row's internal `statsKey` is `amd:<pci address>` — `amd:0000:04:00.0` — taken from resolving the `device` symlink into `/sys/bus/pci/devices`, or from `uevent`'s `PCI_SLOT_NAME`, or, as a last resort, the DRM node name (`amd:card1`). The key never reaches the wire; it exists so the static row and the collector's sample meet. The `amd:<pci>` spelling matches the upstream amdgpu inventory work, so both implementations key identically.
+
+**Names.** A small table maps the device id to a marketing name (`0x15e7` → `AMD Radeon Graphics (Vega 7, Barcelo)`; Cezanne, Lucienne, Renoir, Picasso, Raven, Rembrandt, Phoenix and Strix are listed too). An unlisted id publishes `AMD Radeon Graphics (0x<id>)` — never a bare codename, and never a dropped row.
+
+**Ceilings and caveats.**
+
+- Requires the `amdgpu` kernel driver. The older `radeon` driver and pre-Vega parts expose none of these attributes; such a card keeps the `ghw` name-only behavior.
+- `gpu_busy_percent` is the driver's own coarse busy figure, not per-engine and not per-process, and a few ASICs do not export it at all. A missing or out-of-range value is dropped rather than published as `0`, so a driver that cannot answer never looks idle — and never marks the node's telemetry fresh.
+- The GTT half of an APU's capacity is an aperture the GPU may map, not memory reserved for it: the CPU is using most of it, and `memory.total_bytes` counts the same RAM. Treat an APU's `vram_bytes` as a ceiling, not as free memory.
+- Temperature, power and clocks are exposed by the card's hwmon (`temp*_input`, `power1_input`) but are not part of this wire contract.
+- A host with no AMD card costs one `os.ReadDir` of `/sys/class/drm` per tick and logs nothing; a host without `/sys/class/drm` at all logs one `Debug` line for the process lifetime.
+
 ## Shutdown
 
 The service shuts down on:

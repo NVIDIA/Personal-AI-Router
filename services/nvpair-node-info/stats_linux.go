@@ -146,6 +146,7 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 	if c.decodeGPU(gpu) {
 		sampledAt = time.Now()
 	}
+	sampledAt = amdSampleAt(gpu, sampledAt)
 	applyGPUStats(previous, snap, gpu, sampledAt)
 	return snap
 }
