@@ -44,7 +44,10 @@ function lmStudioToHubModel(m: LmStudioCatalogModel): EngineHubModel {
  * Serve an engine's model hub. Ollama uses a committed locked list. LM Studio
  * and llama.cpp await their cached live Hugging Face catalogs on a cold load.
  */
-export async function getEngineHubModels(engineType: EngineType): Promise<EngineHubSearchResponse> {
+export async function getEngineHubModels(
+    engineType: EngineType,
+    query?: string
+): Promise<EngineHubSearchResponse> {
     switch (engineType) {
         case 'ollama':
             return { models: loadOllamaModels().map(ollamaToHubModel) }
@@ -52,6 +55,7 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
             await lmStudioCatalogCache.ensureLoaded()
             return { models: lmStudioCatalogCache.list().map(lmStudioToHubModel) }
         case 'llama-cpp':
+            if (query?.trim()) return { models: await llamaCppCatalogCache.search(query) }
             await llamaCppCatalogCache.ensureLoaded()
             return { models: llamaCppCatalogCache.list() }
         default:

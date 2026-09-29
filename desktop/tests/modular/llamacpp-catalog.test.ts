@@ -63,6 +63,27 @@ describe('live llama.cpp catalog', () => {
         expect(ensureLoaded).toHaveBeenCalledOnce()
     })
 
+    it('routes an explicit query through the bounded search cache', async () => {
+        const models: EngineHubModel[] = [
+            {
+                id: 'community/model:Q4_K_M',
+                name: 'community/model:Q4_K_M',
+                author: 'community',
+                url: 'https://huggingface.co/community/model',
+                downloads: 5,
+                likes: 1,
+                updatedAt: '2026-09-20T04:11:57.000Z',
+                tags: ['gguf', 'Q4_K_M']
+            }
+        ]
+        const search = vi.spyOn(llamaCppCatalogCache, 'search').mockResolvedValue(models)
+        const ensureLoaded = vi.spyOn(llamaCppCatalogCache, 'ensureLoaded')
+
+        await expect(getEngineHubModels('llama-cpp', 'coder')).resolves.toEqual({ models })
+        expect(search).toHaveBeenCalledWith('coder')
+        expect(ensureLoaded).not.toHaveBeenCalled()
+    })
+
     it('hides only an exact downloaded router model id', () => {
         const id = 'owner/model:Q4_K_M'
         const entry = modelEntry(id)
