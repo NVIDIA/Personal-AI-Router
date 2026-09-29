@@ -1146,6 +1146,138 @@ func TestDetailRepliesCarryTheirNode(t *testing.T) {
 	}
 }
 
+// TestSecondSettingsChangeWaitsForTheFirst is the regression guard for a
+// second save replacing the first before its verdict came back. The screen
+// follows one outstanding write, so the first outcome was never reported.
+func TestSecondSettingsChangeWaitsForTheFirst(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{
+		{Engine: "ollama", DisplayName: "Ollama", Installed: true},
+		{Engine: "lmstudio", DisplayName: "LM Studio", Installed: true},
+	}
+	d.refreshEngines()
+	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "first"}
+
+	if cmd := d.editSetting(&d.engines[1], detailInputEnginePort); cmd != nil {
+		t.Error("a second settings change started while the first was still applying")
+	}
+	if d.mode != detailInputNone || d.settingsWanted != nil {
+		t.Error("a second settings field was opened while the first change was applying")
+	}
+	if got := d.status.render(); !strings.Contains(got, "wait for the Ollama settings change") {
+		t.Errorf("the refusal did not say what to wait for: %q", got)
+	}
+}
+
+// progressPush builds a progress notification from its fields as sent.
+func progressPush(method string, fields map[string]any) NotificationMsg {
+	params, _ := json.Marshal(fields)
+	return NotificationMsg{Msg: &rpc.Message{Method: method, Params: params}}
+}
+
+// TestInstallProgressStaysOnThisMachine checks that a local install's progress
+// is not reported on a peer's screen. The payload carries no node, so shown
+// there it read as the peer installing something.
+func TestInstallProgressStaysOnThisMachine(t *testing.T) {
+	frame := progressPush("engine:install-progress",
+		map[string]any{"engine": "ollama", "stage": "downloading", "percent": 40})
+
+	peer := remoteDetail()
+	peer.update(frame)
+	if got := peer.status.render(); strings.Contains(got, "install") {
+		t.Errorf("this machine's install was reported on a peer's screen: %q", got)
+	}
+
+	local := localDetail()
+	local.update(frame)
+	if got := local.status.render(); !strings.Contains(got, "downloading (40%)") {
+		t.Errorf("this machine's install progress was not shown: %q", got)
+	}
+}
+
+// TestProgressWithoutAPercentShowsNone is the regression guard for progress
+// frames read as stuck downloads. The engine manager leaves the percent out
+// while progress is indeterminate and sends -1 on failure; printed, those read
+// "(0%)" and "(-1%)".
+func TestProgressWithoutAPercentShowsNone(t *testing.T) {
+	peer := remoteDetail()
+	peer.update(progressPush("engine:remote-progress",
+		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "pulling manifest"}))
+	if got := peer.status.render(); !strings.Contains(got, "pulling manifest") || strings.Contains(got, "%") {
+		t.Errorf("indeterminate remote progress rendered as %q", got)
+	}
+	peer.update(progressPush("engine:remote-progress",
+		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "downloading", "percent": 25}))
+	if got := peer.status.render(); !strings.Contains(got, "downloading (25%)") {
+		t.Errorf("a reported percent was dropped: %q", got)
+	}
+
+	local := localDetail()
+	local.update(progressPush("engine:pull-progress",
+		map[string]any{"engine": "ollama", "stage": "pulling manifest"}))
+	if got := local.status.render(); strings.Contains(got, "%") {
+		t.Errorf("indeterminate pull progress rendered as %q", got)
+	}
+
+	local.update(progressPush("engine:install-progress",
+		map[string]any{"engine": "ollama", "stage": "failed", "percent": -1, "error": "disk full"}))
+	got := local.status.render()
+	if strings.Contains(got, "%") || !strings.Contains(got, "install") || !strings.Contains(got, "failed: disk full") {
+		t.Errorf("a failed install rendered as %q", got)
+	}
+}
+
+// TestHiddenListsRefuseTheirKeys is the regression guard for keys acting on a
+// list the frame had no room to show: on a short terminal a delete could be
+// armed against a model the operator could not see.
+func TestHiddenListsRefuseTheirKeys(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "ollama", DisplayName: "Ollama", Installed: true, Running: true}}
+	models := []string{"model-a", "model-b", "model-c"}
+	d.models = modelsResult{Models: models, ModelsByEngine: map[string][]string{"ollama": models}}
+	d.refreshEngines()
+	d.refreshModels()
+
+	modelsOnly, both := 0, 0
+	for h := 30; h > 0; h-- {
+		d.SetSize(100, h)
+		d.View()
+		if d.modelsHidden && !d.enginesHidden && modelsOnly == 0 {
+			modelsOnly = h
+		}
+		if d.enginesHidden && both == 0 {
+			both = h
+		}
+	}
+	if modelsOnly == 0 || both == 0 {
+		t.Fatalf("no height hid the lists (models only at %d, both at %d)", modelsOnly, both)
+	}
+
+	d.SetSize(100, 30)
+	d.View()
+	if d.enginesHidden || d.modelsHidden {
+		t.Fatal("a tall screen still counted a list as hidden")
+	}
+
+	d.SetSize(100, modelsOnly)
+	d.View()
+	d.pane = detailModels
+	d.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if d.pending != nil {
+		t.Error("a delete was armed against a model list that was not on screen")
+	}
+	if got := d.status.render(); !strings.Contains(got, "too little room to show the models") {
+		t.Errorf("the refusal did not say why: %q", got)
+	}
+
+	d.SetSize(100, both)
+	d.View()
+	d.pane = detailEngines
+	if cmd, _ := d.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {
+		t.Error("an engine was started from an engine list that was not on screen")
+	}
+}
+
 // TestOpenDetailFollowsPresenceAndMembership is the regression guard for a
 // detail screen that kept describing a peer as it was when the screen opened.
 //
