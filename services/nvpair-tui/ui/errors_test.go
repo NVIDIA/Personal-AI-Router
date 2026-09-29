@@ -9,6 +9,7 @@ import (
 	"time"
 
 	svcerrors "nvpair-shared/errors"
+	"nvpair-tui/rpc"
 )
 
 // TestClearIsOfferedOnlyWhereItSticks is the guard for a clear that reported
@@ -62,6 +63,68 @@ func TestClearIsOfferedOnlyWhereItSticks(t *testing.T) {
 	}
 	if cmd := v.clearSelected(); cmd == nil {
 		t.Error("clearing this machine's own error issued no request")
+	}
+}
+
+// TestNothingIsClearedBeforeThisMachineIsKnown checks the clear waits for the
+// identity it depends on. Before it arrives there is no telling this machine's
+// errors from a peer's, so offering the key meant guessing.
+func TestNothingIsClearedBeforeThisMachineIsKnown(t *testing.T) {
+	v := newErrorsView(nil)
+	v.SetSize(100, 30)
+	v.setErrors([]svcerrors.ServiceError{{ID: "e", Message: "boom", NodeID: "some-uuid"}})
+
+	if v.clearable(v.errs[0]) {
+		t.Error("an error was clearable before this machine's identity was known")
+	}
+	if cmd := v.clearSelected(); cmd != nil {
+		t.Error("a clear was sent before this machine's identity was known")
+	}
+	if got := v.status.render(); !strings.Contains(got, "identifying") {
+		t.Errorf("the refusal does not say why: %q", got)
+	}
+
+	v.namer.setSelf(clusterIdentity{NodeUUID: "some-uuid"})
+	if cmd := v.clearSelected(); cmd == nil {
+		t.Error("this machine's own error could not be cleared once it was known")
+	}
+}
+
+// TestInitialReadDoesNotOverwriteANewerPush is the regression guard for an
+// errors:update lost at startup. The initial read's reply and the pushes arrive
+// by different paths, and a reply landing after a push replaced the newer
+// snapshot with an older one until the next change.
+func TestInitialReadDoesNotOverwriteANewerPush(t *testing.T) {
+	v := newErrorsView(nil)
+	v.SetSize(100, 30)
+	params := []byte(`[{"id":"new","message":"fresh","severity":"error"}]`)
+	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "errors:update", Params: params}})
+	v.Update(errorsLoadedMsg{errs: []svcerrors.ServiceError{{ID: "old", Message: "stale"}}})
+
+	if len(v.errs) != 1 || v.errs[0].ID != "new" {
+		t.Errorf("errors = %+v, want the pushed snapshot kept", v.errs)
+	}
+}
+
+// TestErrorColumnsFitTheNarrowestTerminal checks the table's minimums fit the
+// forty-column floor. They summed past it, and what was clipped off the right
+// was the message — the one column this tab exists to show.
+func TestErrorColumnsFitTheNarrowestTerminal(t *testing.T) {
+	v := newErrorsView(nil)
+	v.SetSize(minTerminalWidth, 20)
+	total := 0
+	var message int
+	for _, c := range v.columns() {
+		total += c.Width + cellPadding
+		if c.Title == "MESSAGE" {
+			message = c.Width
+		}
+	}
+	if total > minTerminalWidth {
+		t.Errorf("columns take %d of %d columns", total, minTerminalWidth)
+	}
+	if message < 10 {
+		t.Errorf("MESSAGE is %d wide at the minimum width", message)
 	}
 }
 
