@@ -8,11 +8,13 @@ import (
 	"testing"
 )
 
-// configEnvKeys are the variables os.UserConfigDir and appdir read on some
-// platform. All of them are set, not only the ones the current platform reads:
-// macOS roots its config under HOME, Linux uses XDG_CONFIG_HOME, and Windows
-// uses APPDATA and LOCALAPPDATA.
-var configEnvKeys = []string{"HOME", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA"}
+// configEnvKeys are the variables os.UserConfigDir, os.UserHomeDir and appdir
+// read on some platform. All of them are set, not only the ones the current
+// platform reads: macOS roots its config under HOME, Linux uses
+// XDG_CONFIG_HOME, and Windows uses APPDATA and LOCALAPPDATA, with USERPROFILE
+// as the home an engine manifest can name, such as LM Studio's
+// %USERPROFILE%\.lmstudio.
+var configEnvKeys = []string{"HOME", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "USERPROFILE"}
 
 // configEnv is this process's environment with every configEnvKeys variable
 // pointed at dir, followed by extra. os/exec keeps the last of a duplicated

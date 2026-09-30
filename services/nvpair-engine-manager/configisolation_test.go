@@ -12,10 +12,6 @@ import (
 // whichever base the platform resolves. Mirrored from nvpair-shared/appdir
 // (orgDir, appDir) because a test that plants a file where a child manager will
 // look has to reproduce that layout exactly.
-//
-// live_test.go has referenced this name since the repository's initial import
-// without anything defining it, so the live suite has never compiled. Defining
-// it here fixes that as a side effect of needing the same value.
 const configSubdir = "Nvidia Corporation/Personal AI Router"
 
 // isolatedConfig is a throwaway location for a child manager's per-user state.
@@ -36,21 +32,21 @@ func newIsolatedConfig(t *testing.T) isolatedConfig {
 	return isolatedConfig{cfg: t.TempDir(), home: t.TempDir()}
 }
 
-// env is the environment that points a child's appdir at this location.
+// env is the environment that points a child's appdir and home directory at
+// this location.
 //
-// Every variable os.UserConfigDir consults is set, not just the ones the current
-// platform happens to use. A missed variable is not weaker isolation — it is no
-// isolation at all on that platform, and the child then reads and writes the
-// developer's real PAIR data. HOME is the one that used to be missing here:
-// macOS ignores APPDATA and XDG_CONFIG_HOME entirely, so a live test spawning a
-// real engine manager pointed at the developer's actual engines and could
-// install or uninstall against them.
+// Every variable os.UserConfigDir, os.UserHomeDir and appdir read is set, not
+// just the ones the current platform uses, because a missed one is no isolation
+// at all on that platform: macOS derives its config from HOME, and on Windows
+// USERPROFILE is the home an engine manifest can name, such as LM Studio's
+// %USERPROFILE%\.lmstudio.
 func (c isolatedConfig) env() map[string]string {
 	return map[string]string{
 		"APPDATA":         c.cfg,
 		"LOCALAPPDATA":    c.cfg,
 		"XDG_CONFIG_HOME": c.cfg,
 		"HOME":            c.home,
+		"USERPROFILE":     c.home,
 	}
 }
 
