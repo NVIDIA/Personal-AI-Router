@@ -126,6 +126,15 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		if len(line) == 0 || !json.Valid(line) {
 			continue
 		}
+		// Ollama can report a failed pull in an error record after sending HTTP
+		// 200. Detect it before publishing progress or returning it as success
+		// so callers use their existing terminal error paths.
+		var frame struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &frame); err == nil && frame.Error != "" {
+			return nil, fmt.Errorf("pull %q: %s", model, frame.Error)
+		}
 		last = append(json.RawMessage(nil), line...)
 		ev := pullProgressFromLine(engine, line)
 		if ev.Stage == lastStage && ev.Percent == lastPct {
