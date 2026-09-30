@@ -90,9 +90,10 @@ func TestLivePoundFixesOllama(t *testing.T) {
 // listenAddrs returns every LocalAddress with a listener on port.
 func listenAddrs(t *testing.T, port int) []string {
 	t.Helper()
-	out, _ := exec.Command("powershell", "-NoProfile", "-Command",
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
 		"Get-NetTCPConnection -LocalPort "+strconv.Itoa(port)+" -State Listen -ErrorAction SilentlyContinue | "+
 			"Select-Object -ExpandProperty LocalAddress").Output()
+	assert.NoError(t, err)
 	var addrs []string
 	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if s := strings.TrimSpace(l); s != "" {

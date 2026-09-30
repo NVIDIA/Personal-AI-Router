@@ -98,11 +98,15 @@ func TestPairingAllSuitesAndDirections(t *testing.T) {
 					assert.Equal(t, pSecret, sSecret, "exported secret mismatch at length %d", n)
 				}
 
-				a, _ := srv.Export("label-a", nil, 32)
-				b, _ := srv.Export("label-b", nil, 32)
+				a, err := srv.Export("label-a", nil, 32)
+				assert.NoError(t, err, "export label-a")
+				b, err := srv.Export("label-b", nil, 32)
+				assert.NoError(t, err, "export label-b")
 				assert.NotEqual(t, b, a, "different labels produced identical secrets")
-				c1, _ := srv.Export("app", []byte("ctx1"), 32)
-				c2, _ := srv.Export("app", []byte("ctx2"), 32)
+				c1, err := srv.Export("app", []byte("ctx1"), 32)
+				assert.NoError(t, err, "export ctx1")
+				c2, err := srv.Export("app", []byte("ctx2"), 32)
+				assert.NoError(t, err, "export ctx2")
 				assert.NotEqual(t, c2, c1, "different contexts produced identical secrets")
 			})
 		}
@@ -126,7 +130,8 @@ func TestTamperedMACFails(t *testing.T) {
 
 	// Run the Completion handshake manually and corrupt MACp before the server
 	// verifies it.
-	req1, _ := srv.Start()
+	req1, err := srv.Start()
+	assert.NoError(t, err, "start completion discovery")
 	resp1, err := peer.Receive(req1) // Type=1 response
 	require.NoError(t, err, "peer discovery:")
 	req6, err := srv.Receive(resp1.Send) // Type=6 request (MACs)

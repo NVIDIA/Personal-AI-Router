@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,7 +75,8 @@ func TestHandleHTTP_WorkloadVisibleBeforeFirstByte(t *testing.T) {
 			}
 			<-release // no response byte until the test releases us
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		// Deferred order matters (LIFO): doRelease runs BEFORE slow.Close so
 		// the blocked upstream handler is unblocked before the server is torn

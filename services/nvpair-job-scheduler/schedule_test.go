@@ -46,7 +46,8 @@ func (r *capRW) String() string {
 }
 
 // priorities returns every schedule:priority snapshot emitted for an engine.
-func (r *capRW) priorities(engine string) []schedulePriorityParams {
+func (r *capRW) priorities(t *testing.T, engine string) []schedulePriorityParams {
+	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []schedulePriorityParams
@@ -56,11 +57,11 @@ func (r *capRW) priorities(engine string) []schedulePriorityParams {
 			continue
 		}
 		var msg Message
-		if json.Unmarshal([]byte(line), &msg) != nil || msg.Method != "schedule:priority" {
+		if !assert.NoError(t, json.Unmarshal([]byte(line), &msg), "decode scheduler frame") || msg.Method != "schedule:priority" {
 			continue
 		}
 		var p schedulePriorityParams
-		if json.Unmarshal(msg.Params, &p) != nil || p.Engine != engine {
+		if !assert.NoError(t, json.Unmarshal(msg.Params, &p), "decode scheduler priority") || p.Engine != engine {
 			continue
 		}
 		out = append(out, p)
@@ -69,8 +70,9 @@ func (r *capRW) priorities(engine string) []schedulePriorityParams {
 }
 
 // orders returns every schedule:priority node-order emitted for an engine.
-func (r *capRW) orders(engine string) [][]string {
-	priorities := r.priorities(engine)
+func (r *capRW) orders(t *testing.T, engine string) [][]string {
+	t.Helper()
+	priorities := r.priorities(t, engine)
 	out := make([][]string, 0, len(priorities))
 	for _, p := range priorities {
 		out = append(out, p.Nodes)
@@ -281,7 +283,7 @@ func TestRank_NodeWideMixedEngineSynthetic(t *testing.T) {
 
 	m.recomputeAll(false)
 	for _, engine := range schedulerEngines {
-		got := rec.orders(engine)
+		got := rec.orders(t, engine)
 		require.Len(t, got, 1, " (%v)", engine)
 		assertStrs(t, got[0], []string{"c", "b", "a"})
 	}
@@ -403,7 +405,7 @@ func TestHandleMessage_RebalancesImmediatelyAcrossEngines(t *testing.T) {
 	m.handleMessage(&Message{JSONRPC: "2.0", Method: "workloads:upsert", Params: upsertJSON(t, job)})
 
 	for _, engine := range schedulerEngines {
-		got := rec.orders(engine)
+		got := rec.orders(t, engine)
 		require.Len(t, got, 2, " (%v)", engine)
 		assertStrs(t, got[0], []string{"a", "b"})
 		assertStrs(t, got[1], []string{"b", "a"})
@@ -412,7 +414,7 @@ func TestHandleMessage_RebalancesImmediatelyAcrossEngines(t *testing.T) {
 	job.State = "completed"
 	m.handleMessage(&Message{JSONRPC: "2.0", Method: "workloads:upsert", Params: upsertJSON(t, job)})
 	for _, engine := range schedulerEngines {
-		got := rec.orders(engine)
+		got := rec.orders(t, engine)
 		require.Len(t, got, 3, " (%v)", engine)
 		assertStrs(t, got[2], []string{"a", "b"})
 	}
@@ -433,7 +435,7 @@ func TestHandleMessage_RebalancesOnFailoverRepoint(t *testing.T) {
 	m.handleMessage(&Message{JSONRPC: "2.0", Method: "workloads:upsert", Params: upsertJSON(t, job)})
 
 	for _, engine := range schedulerEngines {
-		got := rec.orders(engine)
+		got := rec.orders(t, engine)
 		require.Len(t, got, 3, " (%v)", engine)
 		assertStrs(t, got[1], []string{"b", "c", "a"})
 		assertStrs(t, got[2], []string{"a", "b", "c"})
@@ -471,7 +473,7 @@ func TestRecomputeAll_SerializesOlderAndNewerResults(t *testing.T) {
 		}
 	}
 	for _, engine := range schedulerEngines {
-		got := rw.recorder.orders(engine)
+		got := rw.recorder.orders(t, engine)
 		require.Len(t, got, 2, " (%v)", engine)
 		assertStrs(t, got[0], []string{"a", "b"})
 		assertStrs(t, got[1], []string{"b", "a"})
@@ -517,11 +519,11 @@ func TestEmit_OnChangeOnly(t *testing.T) {
 	m := mgrWith(rec, []string{"a", "b"})
 
 	m.recomputeAll(false)
-	require.Len(t, rec.orders("ollama"), 1, "first compute should emit once")
+	require.Len(t, rec.orders(t, "ollama"), 1, "first compute should emit once")
 	m.recomputeAll(false) // unchanged
-	require.Len(t, rec.orders("ollama"), 1, "unchanged order must not re-emit")
+	require.Len(t, rec.orders(t, "ollama"), 1, "unchanged order must not re-emit")
 	m.recomputeAll(true) // forced
-	require.Len(t, rec.orders("ollama"), 2, "forced tick must re-emit")
+	require.Len(t, rec.orders(t, "ollama"), 2, "forced tick must re-emit")
 }
 
 func TestEmit_IncludesPendingRanks(t *testing.T) {
@@ -531,7 +533,7 @@ func TestEmit_IncludesPendingRanks(t *testing.T) {
 	)
 
 	m.recomputeAll(false)
-	got := rec.priorities("ollama")
+	got := rec.priorities(t, "ollama")
 	require.Len(t, got, 1, "priority snapshots")
 	want := []NodeRank{
 		{ID: "a", Pending: 0, GPUPressure: unknownGPUPressure, Rank: 0},
@@ -553,7 +555,7 @@ func TestEmit_PendingOnlyChangeRefreshesSnapshot(t *testing.T) {
 	m.recomputeAll(false)
 	m.recomputeAll(false) // identical snapshot stays quiet
 
-	got := rec.priorities("ollama")
+	got := rec.priorities(t, "ollama")
 	require.Len(t, got, 2, "priority snapshots")
 	assertStrs(t, got[0].Nodes, []string{"a", "b"})
 	assertStrs(t, got[1].Nodes, []string{"a", "b"})
@@ -566,7 +568,7 @@ func TestEmit_EmptyUniverseSilent(t *testing.T) {
 	rec := &capRW{}
 	m := mgrWith(rec, nil)
 	m.recomputeAll(false)
-	require.Empty(t, rec.orders("ollama"), "empty universe should stay silent")
+	require.Empty(t, rec.orders(t, "ollama"), "empty universe should stay silent")
 }
 
 // TestSetInterval_Floor: a sub-floor interval is clamped to 200ms.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	settings "nvpair-shared/enginesettings"
@@ -50,7 +51,7 @@ func TestE2EOverStdio(t *testing.T) {
 	}()
 
 	frames := make(chan frame, 128)
-	go readFrames(stdout, frames)
+	go readFrames(t, stdout, frames)
 
 	waitNotify(t, frames, "engine:ready", 5*time.Second)
 
@@ -227,7 +228,7 @@ func startE2EManager(t *testing.T, cfg, home string, args ...string) *e2eManager
 			_ = manager.cmd.Wait()
 		}
 	})
-	go readFrames(stdout, manager.frames)
+	go readFrames(t, stdout, manager.frames)
 	waitNotify(t, manager.frames, "engine:ready", 5*time.Second)
 	return manager
 }
@@ -292,12 +293,12 @@ type frame struct {
 	Error  json.RawMessage `json:"error"`
 }
 
-func readFrames(r io.Reader, out chan<- frame) {
+func readFrames(t *testing.T, r io.Reader, out chan<- frame) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		var f frame
-		if err := json.Unmarshal(sc.Bytes(), &f); err != nil {
+		if !assert.NoError(t, json.Unmarshal(sc.Bytes(), &f), "decode frame") {
 			continue
 		}
 		out <- f
@@ -310,8 +311,9 @@ func send(t *testing.T, w io.Writer, id int, method string, params any) {
 	if params != nil {
 		msg["params"] = params
 	}
-	data, _ := json.Marshal(msg)
-	_, err := w.Write(append(data, '\n'))
+	data, err := json.Marshal(msg)
+	assert.NoError(t, err)
+	_, err = w.Write(append(data, '\n'))
 	require.NoError(t, err, "send (%v, %v)", method, err)
 }
 
@@ -321,8 +323,9 @@ func notify(t *testing.T, w io.Writer, method string, params any) {
 	if params != nil {
 		msg["params"] = params
 	}
-	data, _ := json.Marshal(msg)
-	_, err := w.Write(append(data, '\n'))
+	data, err := json.Marshal(msg)
+	assert.NoError(t, err)
+	_, err = w.Write(append(data, '\n'))
 	require.NoError(t, err, "notify (%v, %v)", method, err)
 }
 

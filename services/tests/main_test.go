@@ -6,6 +6,7 @@ package tests
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/appdir"
@@ -173,7 +175,8 @@ func goBuild(srcDir, output string) error {
 // nvpair-shared/jsonrpc types (jsonrpc.Message / jsonrpc.RPCError), so the
 // integration tests parse exactly what production emits.
 
-func startMsgReader(r io.Reader) <-chan jsonrpc.Message {
+func startMsgReader(t *testing.T, r io.Reader) <-chan jsonrpc.Message {
+	t.Helper()
 	ch := make(chan jsonrpc.Message, 64)
 	go func() {
 		defer close(ch)
@@ -181,9 +184,12 @@ func startMsgReader(r io.Reader) <-chan jsonrpc.Message {
 		scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
 		for scanner.Scan() {
 			var msg jsonrpc.Message
-			if json.Unmarshal(scanner.Bytes(), &msg) == nil {
+			if assert.NoError(t, json.Unmarshal(scanner.Bytes(), &msg)) {
 				ch <- msg
 			}
+		}
+		if err := scanner.Err(); !errors.Is(err, os.ErrClosed) {
+			assert.NoError(t, err)
 		}
 	}()
 	return ch
@@ -271,7 +277,7 @@ func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}()
-	msgs := startMsgReader(stdout)
+	msgs := startMsgReader(t, stdout)
 
 	requestOnFreePort(t, stdin, msgs, 10*time.Second, func(port int) map[string]any {
 		return map[string]any{

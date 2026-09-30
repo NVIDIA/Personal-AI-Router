@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,14 +28,17 @@ func newRoutingUpstream(t *testing.T, status int) *routingUpstream {
 	upstream := &routingUpstream{}
 	upstream.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstream.hits.Add(1)
-		_, _ = io.Copy(io.Discard, r.Body)
+		_, copyErr := io.Copy(io.Discard, r.Body)
+		assert.NoError(t, copyErr)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		if status == http.StatusOK {
-			_, _ = io.WriteString(w, `{"done":true,"choices":[]}`)
+			_, writeErr := io.WriteString(w, `{"done":true,"choices":[]}`)
+			assert.NoError(t, writeErr)
 			return
 		}
-		_, _ = io.WriteString(w, `{"error":"model not found"}`)
+		_, writeErr := io.WriteString(w, `{"error":"model not found"}`)
+		assert.NoError(t, writeErr)
 	}))
 	t.Cleanup(upstream.server.Close)
 	return upstream
@@ -124,7 +128,8 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			resp, err := client.Post(endpoint, "application/json",
 				bytes.NewBufferString(fmt.Sprintf(`{"model":%q,"messages":[]}`, targetModel)))
 			require.NoError(t, err, "target-model request failed")
-			body, _ := io.ReadAll(resp.Body)
+			body, readErr := io.ReadAll(resp.Body)
+			assert.NoError(t, readErr)
 			_ = resp.Body.Close()
 			require.Equal(t, http.StatusOK, resp.StatusCode, "target-model response (%v)", body)
 			after := snapshot()
@@ -134,7 +139,8 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			resp, err = client.Post(endpoint, "application/json",
 				bytes.NewBufferString(`{"model":"no-advertised-owner","messages":[]}`))
 			require.NoError(t, err, "ownerless request failed")
-			body, _ = io.ReadAll(resp.Body)
+			body, readErr = io.ReadAll(resp.Body)
+			assert.NoError(t, readErr)
 			_ = resp.Body.Close()
 			require.Equal(t, http.StatusBadGateway, resp.StatusCode, "ownerless response (%v)", body)
 			require.Contains(t, string(body), "no available node advertises the requested model", "ownerless response")

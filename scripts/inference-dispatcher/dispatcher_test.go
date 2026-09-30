@@ -56,11 +56,12 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[
+			_, err := w.Write([]byte(`{"models":[
 				{"name":"z-embed","capabilities":["embedding"]},
 				{"name":"b-chat","capabilities":["chat"]},
 				{"name":"a-completion","capabilities":["completion"]}
 			]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/generate":
 			var request struct {
 				Model string `json:"model"`
@@ -69,7 +70,8 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 				return
 			}
 			receivedModel = request.Model
-			_, _ = w.Write([]byte(`{"response":"hello"}`))
+			_, err := w.Write([]byte(`{"response":"hello"}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -96,7 +98,8 @@ func TestExplicitModelSkipsInventoryRequest(t *testing.T) {
 			assert.Fail(t, "explicit model unexpectedly queried inventory")
 			return
 		}
-		_, _ = w.Write([]byte(`{"response":"ok"}`))
+		_, err := w.Write([]byte(`{"response":"ok"}`))
+		assert.NoError(t, err, "write engine response")
 	}))
 	defer server.Close()
 
@@ -118,9 +121,11 @@ func TestLMStudioFallsBackToOpenAIInventory(t *testing.T) {
 		case "/api/v1/models":
 			http.Error(w, "not found", http.StatusNotFound)
 		case "/v1/models":
-			_, _ = w.Write([]byte(`{"data":[{"id":"live-model"}]}`))
+			_, err := w.Write([]byte(`{"data":[{"id":"live-model"}]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/v1/chat/completions":
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+			_, err := w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -199,16 +204,18 @@ func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
-			_, _ = w.Write([]byte(`{"data":[
+			_, err := w.Write([]byte(`{"data":[
 				{"id":"remote-chat"},
 				{"id":"local-embed"},
 				{"id":"local-chat"}
 			]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/v1/models":
-			_, _ = w.Write([]byte(`{"models":[
+			_, err := w.Write([]byte(`{"models":[
 				{"key":"local-embed","type":"embeddings"},
 				{"key":"local-chat","type":"llm"}
 			]}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -242,7 +249,8 @@ func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
 
 func TestListModelsEmitsJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"models":[{"name":"test-model"}]}`))
+		_, err := w.Write([]byte(`{"models":[{"name":"test-model"}]}`))
+		assert.NoError(t, err, "write engine response")
 	}))
 	defer server.Close()
 
@@ -281,7 +289,8 @@ func TestCancellationStopsInFlightRequestCleanly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			_, err := w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/generate":
 			once.Do(func() { close(requestStarted) })
 			<-releaseServer
@@ -350,9 +359,11 @@ func TestResponseTextNeverReachesStdout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			_, err := w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/generate":
-			_, _ = w.Write([]byte(`{"response":"` + secret + `"}`))
+			_, err := w.Write([]byte(`{"response":"` + secret + `"}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -376,7 +387,8 @@ func TestUpstreamErrorBodyNeverReachesLogs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			_, err := w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.Error(w, `{"error":{"message":"`+echoed+`"}}`, http.StatusBadRequest)
 		}

@@ -66,7 +66,7 @@ func startProxyWithLog(t *testing.T, level string) (stdin io.WriteCloser, msgs <
 	require.NoError(t, cmd.Start(), "start proxy")
 	t.Logf("proxy started: pid=%d log-level=%s", cmd.Process.Pid, level)
 
-	ch := startMsgReader(stdoutPipe)
+	ch := startMsgReader(t, stdoutPipe)
 
 	// Enable a facade so the process behaves like one the broker brought up:
 	// it binds, announces ready, and starts its background work, which is what
@@ -213,7 +213,7 @@ func TestLogLevelEnvFallback(t *testing.T) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	require.NoError(t, err, "stdout pipe")
 	require.NoError(t, cmd.Start(), "start")
-	msgs := startMsgReader(stdoutPipe)
+	msgs := startMsgReader(t, stdoutPipe)
 	t.Cleanup(func() {
 		stdinPipe.Close()
 		done := make(chan error, 1)

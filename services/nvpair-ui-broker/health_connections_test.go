@@ -29,9 +29,10 @@ func TestHealthChecksReuseConnections(t *testing.T) {
 						}
 						w.WriteHeader(status)
 						if chunked {
-							_ = http.NewResponseController(w).Flush()
+							assert.NoError(t, http.NewResponseController(w).Flush())
 						}
-						_, _ = io.WriteString(w, `{"models":[],"status":"responding"}`)
+						_, writeErr := io.WriteString(w, `{"models":[],"status":"responding"}`)
+						assert.NoError(t, writeErr)
 					}))
 					const rounds = 32
 					for i := 0; i < rounds; i++ {

@@ -71,7 +71,8 @@ func TestPeerClientPool_ReusesOneConnection(t *testing.T) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		_, _ = w.Write([]byte("ok"))
+		_, err := w.Write([]byte("ok"))
+		assert.NoError(t, err, "write peer response")
 	}))
 	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateNew {
@@ -94,8 +95,9 @@ func TestPeerClientPool_ReusesOneConnection(t *testing.T) {
 		require.NoError(t, err, "request %d", i)
 		// Drain before closing, exactly as a caller must: an undrained body
 		// leaves the connection unusable and it never returns to the idle pool.
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
+		assert.NoError(t, err, "drain peer response")
+		assert.NoError(t, resp.Body.Close(), "close peer response")
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "request %d", i)
 	}
 
@@ -328,7 +330,8 @@ func TestPeerClientPoolOpts_TimeoutZeroKeepsStreamingAlive(t *testing.T) {
 			f.Flush()
 		}
 		time.Sleep(150 * time.Millisecond)
-		_, _ = w.Write([]byte("ok"))
+		_, err := w.Write([]byte("ok"))
+		assert.NoError(t, err, "write streaming response")
 	}))
 	srv.TLS = peerMesh.ServerTLSConfig()
 	srv.StartTLS()
@@ -342,7 +345,8 @@ func TestPeerClientPoolOpts_TimeoutZeroKeepsStreamingAlive(t *testing.T) {
 	resp, err := client.Get(srv.URL)
 	require.NoError(t, err, "Timeout=0 must wait out a slow body")
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	assert.NoError(t, err, "read streaming response")
 	assert.Equal(t, "ok", string(body))
 }
 

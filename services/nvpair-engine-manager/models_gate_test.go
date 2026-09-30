@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/clustertrust"
@@ -34,8 +35,10 @@ func mintLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err, "genkey")
-	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	san, _ := url.Parse("urn:nvpair:node:" + uuid)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	require.NoError(t, err)
+	san, err := url.Parse("urn:nvpair:node:" + uuid)
+	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: uuid},
@@ -48,7 +51,8 @@ func mintLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
 	require.NoError(t, err, "create cert")
-	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	assert.NoError(t, err)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 }
@@ -60,20 +64,28 @@ func clusterDirFor(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte)
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
-	admission, _ := json.Marshal(map[string]any{"counter": 1, "activated": 1, "clusterId": "gate-test", "epoch": 1})
+	admission, err := json.Marshal(map[string]any{"counter": 1, "activated": 1, "clusterId": "gate-test", "epoch": 1})
+	assert.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "admission.json"), admission, 0o600))
 	trusted := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(trusted, 0o700))
 	for uuid, cert := range pins {
-		body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(cert)})
+		body, err := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(cert)})
+		assert.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(trusted, uuid+".json"), body, 0o600))
 	}
 	return dir
 }
 
-func okHandler() http.Handler {
+func writeTestResponse(t *testing.T, w http.ResponseWriter, body []byte) {
+	t.Helper()
+	_, err := w.Write(body)
+	assert.NoError(t, err)
+}
+
+func okHandler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"models":["llama"]}`))
+		writeTestResponse(t, w, []byte(`{"models":["llama"]}`))
 	})
 }
 
@@ -82,7 +94,7 @@ func okHandler() http.Handler {
 // a standalone machine reads its own inventory this way — and must refuse a LAN
 // caller, which is the leak this gate closes.
 func TestModelSurface_LoopbackOnlyForPlaintext(t *testing.T) {
-	h := loopbackOnly(okHandler())
+	h := loopbackOnly(okHandler(t))
 
 	for _, remote := range []string{"127.0.0.1:51234", "[::1]:51234"} {
 		rec := httptest.NewRecorder()
@@ -115,7 +127,7 @@ func TestModelSurface_PinGateIsUnconditional(t *testing.T) {
 	peerMesh := clustertrust.Open(clusterDirFor(t, peerCert, peerKey, map[string][]byte{"uuid-self": selfCert}))
 	strangerMesh := clustertrust.Open(clusterDirFor(t, strangerCert, strangerKey, map[string][]byte{"uuid-self": selfCert}))
 
-	srv := httptest.NewUnstartedServer(requirePinnedPeer(selfMesh, okHandler()))
+	srv := httptest.NewUnstartedServer(requirePinnedPeer(selfMesh, okHandler(t)))
 	srv.TLS = selfMesh.ServerTLSConfig()
 	srv.StartTLS()
 	defer srv.Close()
@@ -147,7 +159,7 @@ func TestModelSurface_PinGateIsUnconditional(t *testing.T) {
 			mesh = clustertrust.Open(t.TempDir())
 		}
 		rec := httptest.NewRecorder()
-		requirePinnedPeer(mesh, okHandler())(rec, httptest.NewRequest(http.MethodGet, modelsPath, nil))
+		requirePinnedPeer(mesh, okHandler(t))(rec, httptest.NewRequest(http.MethodGet, modelsPath, nil))
 		require.Equal(t, http.StatusForbidden, rec.Code, " (%v)", name)
 	}
 }

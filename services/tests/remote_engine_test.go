@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
@@ -39,7 +40,10 @@ func mintClusterIdentity(t *testing.T, dir, uuid string) string {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err, "generate key")
-	san, _ := url.Parse("urn:nvpair:node:" + uuid)
+	san, err := url.Parse("urn:nvpair:node:" + uuid)
+	if !assert.NoError(t, err) {
+		return ""
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
 		Subject:               pkix.Name{CommonName: uuid},
@@ -68,7 +72,8 @@ func writePin(t *testing.T, dir, peerUUID, peerCertPEM string) {
 	t.Helper()
 	trustedDir := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(trustedDir, 0o700), "mkdir trusted")
-	pin, _ := json.Marshal(map[string]string{"nodeUuid": peerUUID, "certPem": peerCertPEM})
+	pin, err := json.Marshal(map[string]string{"nodeUuid": peerUUID, "certPem": peerCertPEM})
+	assert.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(trustedDir, peerUUID+".json"), pin, 0o600), "write pin")
 }
 
@@ -205,7 +210,7 @@ func startEngineManagerStdio(t *testing.T, clusterDir string) (io.WriteCloser, <
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err, "engine-manager stdout pipe")
 	require.NoError(t, cmd.Start(), "start engine-manager (client)")
-	msgs := startMsgReader(stdout)
+	msgs := startMsgReader(t, stdout)
 	return stdin, msgs, func() {
 		_ = stdin.Close()
 		done := make(chan error, 1)

@@ -28,7 +28,8 @@ func TestSameNameDistinctUUIDPeersSurviveReplace(t *testing.T) {
 	}
 	src.set([]noderec.DirectoryNode{node("uuid-1", "10.0.0.1"), node("uuid-2", "10.0.0.2")})
 
-	nodes, _ := src.Nodes(context.Background())
+	nodes, err := src.Nodes(context.Background())
+	require.NoError(t, err)
 	require.Len(t, nodes, 2)
 	ids := map[string]bool{}
 	wantAddresses := map[string][]string{
@@ -65,7 +66,8 @@ func TestSelfFilteredByUUID(t *testing.T) {
 		{HostUUID: "self-uuid", Name: "host", IP: "10.0.0.1", Services: svc}, // us
 		{HostUUID: "peer-uuid", Name: "host", IP: "10.0.0.2", Services: svc}, // same name, different machine
 	})
-	nodes, _ := src.Nodes(context.Background())
+	nodes, err := src.Nodes(context.Background())
+	require.NoError(t, err)
 	require.Len(t, nodes, 1)
 	assert.Equal(t, "peer-uuid", nodes[0].ID, "self-filter should drop only our own UUID")
 }

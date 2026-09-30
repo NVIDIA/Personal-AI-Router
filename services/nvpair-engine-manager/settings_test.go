@@ -615,7 +615,7 @@ func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_ = proxy.Close()
+		assert.NoError(t, proxy.Close())
 		proxy = next
 		return nil
 	})

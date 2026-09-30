@@ -51,11 +51,11 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 			go func() {
 				codec := NewCodec(server)
 				msg, err := codec.Read()
-				if err != nil {
+				if !assertRPCRead(t, err) {
 					return
 				}
 				seen <- msg.Method
-				_ = codec.Respond(msg.ID, map[string][]string{"nodes": {}})
+				assert.NoError(t, codec.Respond(msg.ID, map[string][]string{"nodes": {}}))
 			}()
 
 			b := &Broker{codec: NewCodec(rwDiscard{})}

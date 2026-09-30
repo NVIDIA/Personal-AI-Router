@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/clustertrust"
@@ -49,7 +50,8 @@ func waitForTarget(t *testing.T, p *Proxy, n Node, want string) {
 // countingChooser installs a target chooser that records how many connection
 // attempts routing makes and whether they succeed, so a test can assert on
 // confirmation behaviour without opening sockets.
-func countingChooser(p *Proxy, accept bool) *atomic.Int32 {
+func countingChooser(t *testing.T, p *Proxy, accept bool) *atomic.Int32 {
+	t.Helper()
 	var dials atomic.Int32
 	p.soleFacade().targets = reach.NewChooser(reach.WithDial(
 		func(_, _ string, _ time.Duration) (net.Conn, error) {
@@ -58,7 +60,7 @@ func countingChooser(p *Proxy, accept bool) *atomic.Int32 {
 				return nil, net.ErrClosed
 			}
 			c1, c2 := net.Pipe()
-			_ = c2.Close()
+			assert.NoError(t, c2.Close())
 			return c1, nil
 		}))
 	return &dials
@@ -76,12 +78,13 @@ func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
 	p.soleFacade().targets = reach.NewChooser(reach.WithDial(
 		func(_, address string, _ time.Duration) (net.Conn, error) {
 			dials.Add(1)
-			host, _, _ := net.SplitHostPort(address)
+			host, _, err := net.SplitHostPort(address)
+			assert.NoError(t, err)
 			if host != reachable {
 				return nil, net.ErrClosed
 			}
 			c1, c2 := net.Pipe()
-			_ = c2.Close()
+			assert.NoError(t, c2.Close())
 			return c1, nil
 		}))
 
@@ -102,7 +105,7 @@ func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
 
 func TestChooseReachableProbesPlainMultiHomed(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
-	dials := countingChooser(p, true)
+	dials := countingChooser(t, p, true)
 	n := Node{
 		ID:        "manual-a",
 		Port:      11434,
@@ -124,12 +127,13 @@ func TestTargetURLFailsOverToAReachableAddress(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	p.soleFacade().targets = reach.NewChooser(reach.WithDial(
 		func(_, address string, _ time.Duration) (net.Conn, error) {
-			host, _, _ := net.SplitHostPort(address)
+			host, _, err := net.SplitHostPort(address)
+			assert.NoError(t, err)
 			if host != reachable {
 				return nil, net.ErrClosed
 			}
 			c1, c2 := net.Pipe()
-			_ = c2.Close()
+			assert.NoError(t, c2.Close())
 			return c1, nil
 		}))
 
@@ -175,11 +179,13 @@ func (f *fakeNetwork) accept(address string) {
 	f.accepting = address
 }
 
-func (f *fakeNetwork) install(p *Proxy) {
+func (f *fakeNetwork) install(t *testing.T, p *Proxy) {
+	t.Helper()
 	p.soleFacade().targets = reach.NewChooser(reach.WithDial(
 		func(_, address string, _ time.Duration) (net.Conn, error) {
 			f.dials.Add(1)
-			host, _, _ := net.SplitHostPort(address)
+			host, _, err := net.SplitHostPort(address)
+			assert.NoError(t, err)
 			f.mu.Lock()
 			accepting := f.accepting
 			f.mu.Unlock()
@@ -187,7 +193,7 @@ func (f *fakeNetwork) install(p *Proxy) {
 				return nil, net.ErrClosed
 			}
 			c1, c2 := net.Pipe()
-			_ = c2.Close()
+			assert.NoError(t, c2.Close())
 			return c1, nil
 		}))
 }
@@ -208,7 +214,7 @@ func confirmedDeadPeer(t *testing.T, replacement string) (*Proxy, Node, *fakeNet
 	disc.AddManual(n)
 	p := testProxy(anyProfile(t), disc, 11435)
 	fake := &fakeNetwork{accepting: confirmed}
-	fake.install(p)
+	fake.install(t, p)
 
 	waitForTarget(t, p, n, net.JoinHostPort(confirmed, strconv.Itoa(n.Port)))
 	return p, n, fake

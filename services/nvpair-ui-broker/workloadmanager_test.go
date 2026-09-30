@@ -16,12 +16,14 @@ import (
 	"nvpair-ui-broker/workloadstore"
 )
 
-func storeIncoming(id, origin, engine, runID, state, scheduledOn string) workloadstore.Incoming {
+func storeIncoming(t *testing.T, id, origin, engine, runID, state, scheduledOn string) workloadstore.Incoming {
+	t.Helper()
 	m := map[string]any{
 		"id": id, "originatedFrom": origin, "engine": engine, "runId": runID,
 		"state": state, "scheduledOn": scheduledOn, "createdAt": 1, "model": "m",
 	}
-	b, _ := json.Marshal(m)
+	b, err := json.Marshal(m)
+	assert.NoError(t, err)
 	in, _ := workloadstore.ParseIncoming(b)
 	return in
 }
@@ -35,11 +37,11 @@ func storeIncoming(id, origin, engine, runID, state, scheduledOn string) workloa
 func TestActiveLocalReplayFrames(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "host"}
 
-	b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "running", "peer"))   // local-origin active → replay
-	b.workloads.Apply(storeIncoming("2", "host", "ollama", "r1", "failed", "peer"))    // local-origin recent terminal → replay
-	b.workloads.Apply(storeIncoming("3", "peer", "ollama", "r2", "running", "host"))   // peer-origin (scheduled here) → skip
-	b.workloads.Apply(storeIncoming("4", "host", "lmstudio", "r3", "queued", "host"))  // local-origin active (other engine) → replay
-	b.workloads.Apply(storeIncoming("5", "host", "ollama", "r4", "completed", "host")) // local-origin recent terminal → replay
+	b.workloads.Apply(storeIncoming(t, "1", "host", "ollama", "r1", "running", "peer"))   // local-origin active → replay
+	b.workloads.Apply(storeIncoming(t, "2", "host", "ollama", "r1", "failed", "peer"))    // local-origin recent terminal → replay
+	b.workloads.Apply(storeIncoming(t, "3", "peer", "ollama", "r2", "running", "host"))   // peer-origin (scheduled here) → skip
+	b.workloads.Apply(storeIncoming(t, "4", "host", "lmstudio", "r3", "queued", "host"))  // local-origin active (other engine) → replay
+	b.workloads.Apply(storeIncoming(t, "5", "host", "ollama", "r4", "completed", "host")) // local-origin recent terminal → replay
 
 	frames := b.activeLocalReplayFrames()
 	require.Len(t, frames, 4)
@@ -75,7 +77,7 @@ func TestWorkloadHistoryFlusherFlushesOnShutdown(t *testing.T) {
 
 	// A terminal completes. With the default 5 s periodic flush and an immediate
 	// shutdown, only the flusher's shutdown (join) flush can have persisted it.
-	require.True(t, b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "completed", "host")), "terminal apply should be accepted")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "1", "host", "ollama", "r1", "completed", "host")), "terminal apply should be accepted")
 	stop() // cancels + joins the flusher; its final flush must have completed
 
 	// Restart: a fresh store loading the same file must see the terminal —
@@ -105,7 +107,7 @@ func TestWorkloadHistoryFlusherOutlivesParentCancel(t *testing.T) {
 	time.Sleep(150 * time.Millisecond) // give a (hypothetically coupled) flusher time to exit
 
 	// A producer emits a terminal during teardown — after parent cancel, before stop().
-	require.True(t, b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "failed", "host")), "terminal apply should be accepted")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "1", "host", "ollama", "r1", "failed", "host")), "terminal apply should be accepted")
 	stop() // now cancel + join the flusher; its final flush must include the terminal
 
 	s2 := workloadstore.New().WithPersistence(path)
@@ -121,7 +123,7 @@ func TestWorkloadHistoryFlusherOutlivesParentCancel(t *testing.T) {
 func TestFailWorkloadsForNodeMatchesByHostUUID(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
 	// A peer-origin running workload stamped with the peer's HostUUID.
-	require.True(t, b.workloads.Apply(storeIncoming("7", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "running apply should be accepted")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "7", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "running apply should be accepted")
 
 	// Sweeping by the display name must NOT match (it's not the workload's key).
 	b.failWorkloadsForNode("peer-friendly-name", "peer-friendly-name")

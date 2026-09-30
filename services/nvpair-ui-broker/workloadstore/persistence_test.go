@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +30,8 @@ func newStoreAt(path string, now int64) *Store {
 
 // mkTerm builds a terminal (failed) Incoming with a completedAt, via
 // ParseIncoming so Info and the projected fields stay consistent.
-func mkTerm(id, origin string, createdAt, completedAt int64) Incoming {
+func mkTerm(t *testing.T, id, origin string, createdAt, completedAt int64) Incoming {
+	t.Helper()
 	m := map[string]any{
 		"id":             id,
 		"originatedFrom": origin,
@@ -40,7 +42,8 @@ func mkTerm(id, origin string, createdAt, completedAt int64) Incoming {
 		"model":          "granite-embedding:latest",
 		"engine":         "ollama",
 	}
-	b, _ := json.Marshal(m)
+	b, err := json.Marshal(m)
+	assert.NoError(t, err)
 	in, _ := ParseIncoming(b)
 	return in
 }
@@ -48,9 +51,9 @@ func mkTerm(id, origin string, createdAt, completedAt int64) Incoming {
 func TestPersistenceRoundTripTerminalOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
-	s.Apply(mkTerm("1", "a", testNow-1000, testNow-150))
-	s.Apply(mkTerm("2", "b", testNow-1000, testNow-160))
-	s.Apply(mkIn("3", "c", "running", "c", testNow-1000)) // active — must not persist
+	s.Apply(mkTerm(t, "1", "a", testNow-1000, testNow-150))
+	s.Apply(mkTerm(t, "2", "b", testNow-1000, testNow-160))
+	s.Apply(mkIn(t, "3", "c", "running", "c", testNow-1000)) // active — must not persist
 	require.NoError(t, s.Flush(), "flush")
 
 	s2 := newStoreAt(path, testNow)
@@ -67,14 +70,14 @@ func TestFlushCoalescesOnDirty(t *testing.T) {
 	s := newStoreAt(path, testNow)
 
 	// A running-only store isn't dirty → flush writes nothing.
-	s.Apply(mkIn("1", "a", "running", "a", testNow-1000))
+	s.Apply(mkIn(t, "1", "a", "running", "a", testNow-1000))
 	require.False(t, s.dirty, "non-terminal apply must not mark dirty")
 	require.NoError(t, s.Flush(), "flush")
 	_, err := os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist, "no file should be written before any terminal record")
 
 	// A terminal transition marks dirty and flush writes it.
-	s.Apply(mkTerm("1", "a", testNow-1000, testNow-150))
+	s.Apply(mkTerm(t, "1", "a", testNow-1000, testNow-150))
 	require.True(t, s.dirty, "terminal apply should mark dirty")
 	require.NoError(t, s.Flush(), "flush")
 	require.False(t, s.dirty, "dirty should be cleared after a successful flush")
@@ -86,9 +89,9 @@ func TestCountCapEviction(t *testing.T) {
 	s := newStoreAt(path, testNow)
 	s.historyCap = 2
 
-	s.Apply(mkTerm("1", "a", testNow-1000, testNow-300))
-	s.Apply(mkTerm("2", "a", testNow-1000, testNow-200))
-	s.Apply(mkTerm("3", "a", testNow-1000, testNow-100))
+	s.Apply(mkTerm(t, "1", "a", testNow-1000, testNow-300))
+	s.Apply(mkTerm(t, "2", "a", testNow-1000, testNow-200))
+	s.Apply(mkTerm(t, "3", "a", testNow-1000, testNow-100))
 	// prune runs during flush
 	require.NoError(t, s.Flush(), "flush")
 	require.Equal(t, 2, s.Len())
@@ -104,8 +107,8 @@ func TestAgeCapEviction(t *testing.T) {
 	s.maxAgeMs = 1000
 	s.now = func() time.Time { return time.UnixMilli(10000) }
 
-	s.Apply(mkTerm("old", "a", 0, 8000)) // age 2000 > 1000 → evicted
-	s.Apply(mkTerm("new", "a", 0, 9500)) // age 500 → kept
+	s.Apply(mkTerm(t, "old", "a", 0, 8000)) // age 2000 > 1000 → evicted
+	s.Apply(mkTerm(t, "new", "a", 0, 9500)) // age 500 → kept
 	require.NoError(t, s.Flush(), "flush")
 	_, ok := s.Get("a", "old")
 	require.False(t, ok, "record older than maxAge should be pruned")
@@ -116,9 +119,9 @@ func TestAgeCapEviction(t *testing.T) {
 func TestCheckpointRotates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
-	s.Apply(mkTerm("1", "a", testNow-1000, testNow-100))
+	s.Apply(mkTerm(t, "1", "a", testNow-1000, testNow-100))
 	require.NoError(t, s.Flush(), "flush")
-	s.Apply(mkTerm("2", "a", testNow-1000, testNow-50))
+	s.Apply(mkTerm(t, "2", "a", testNow-1000, testNow-50))
 	require.NoError(t, s.Checkpoint(), "checkpoint")
 	require.FileExists(t, path, "primary should exist after checkpoint")
 	require.FileExists(t, path+".1", "rotation .1 should exist after checkpoint")
@@ -127,10 +130,10 @@ func TestCheckpointRotates(t *testing.T) {
 func TestLoadFallsBackOnCorruptPrimary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
-	s.Apply(mkTerm("1", "a", testNow-1000, testNow-100))
+	s.Apply(mkTerm(t, "1", "a", testNow-1000, testNow-100))
 	// primary = {1}
 	require.NoError(t, s.Flush(), "flush")
-	s.Apply(mkTerm("2", "a", testNow-1000, testNow-50))
+	s.Apply(mkTerm(t, "2", "a", testNow-1000, testNow-50))
 	// primary = {1,2}, .1 = {1}
 	require.NoError(t, s.Checkpoint(), "checkpoint")
 	require.NoError(t, os.WriteFile(path, []byte("not json"), 0o600), "corrupt primary")
@@ -150,8 +153,8 @@ func TestLoadMissingFileIsClean(t *testing.T) {
 func TestInferredTerminalNotPersisted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
-	s.Apply(mkTerm("2", "a", testNow-1000, testNow-100))         // authoritative terminal → persisted
-	s.ApplyInferred(mkTerm("1", "a", testNow-1000, testNow-100)) // inferred terminal → not persisted
+	s.Apply(mkTerm(t, "2", "a", testNow-1000, testNow-100))         // authoritative terminal → persisted
+	s.ApplyInferred(mkTerm(t, "1", "a", testNow-1000, testNow-100)) // inferred terminal → not persisted
 	require.NoError(t, s.Flush(), "flush")
 
 	s2 := newStoreAt(path, testNow)
@@ -164,7 +167,7 @@ func TestInferredTerminalNotPersisted(t *testing.T) {
 
 func TestDisabledPersistenceNoops(t *testing.T) {
 	s := New() // no path
-	s.Apply(mkTerm("1", "a", testNow-1000, testNow-100))
+	s.Apply(mkTerm(t, "1", "a", testNow-1000, testNow-100))
 	require.NoError(t, s.Flush(), "flush with persistence off should be a no-op")
 	require.NoError(t, s.Load(), "load with persistence off should be a no-op")
 }

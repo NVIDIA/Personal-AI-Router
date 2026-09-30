@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grandcat/zeroconf"
@@ -63,7 +64,8 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"GPUs":[],"hostUuid":"` + reported.Load().(string) + `"}`))
+		_, writeErr := w.Write([]byte(`{"GPUs":[],"hostUuid":"` + reported.Load().(string) + `"}`))
+		assert.NoError(t, writeErr)
 	}))
 	defer nodeInfo.Close()
 
@@ -92,7 +94,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 
 	// The scanner must see the peer before there is anything to evict. A slow
 	// or lossy multicast environment is an inconclusive run, not a failure.
-	if !awaitNodeEvent(events, noderec.NotifyNodeDiscovered, originalUUID, 30*time.Second) {
+	if !awaitNodeEvent(t, events, noderec.NotifyNodeDiscovered, originalUUID, 30*time.Second) {
 		t.Skip("peer record was never discovered; multicast is unavailable in this environment")
 	}
 
@@ -107,7 +109,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 	// inference load — so this deadline is generous by design. The identity probe
 	// runs on every scan from ~15s in, so the mismatch is detected long before the
 	// eviction it eventually authorizes.
-	require.True(t, awaitNodeEvent(events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute))
+	require.True(t, awaitNodeEvent(t, events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute))
 }
 
 // startScannerForGhostTest runs the scanner binary on stdio and returns its
@@ -134,13 +136,14 @@ func startScannerForGhostTest(t *testing.T) <-chan jsonrpc.Message {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	return startMsgReader(stdout)
+	return startMsgReader(t, stdout)
 }
 
 // awaitNodeEvent reports whether the named discovery:node-* event for hostUUID
 // arrives before the deadline. Other events (this node's own record, the peer's
 // enrichment updates) are ignored.
-func awaitNodeEvent(events <-chan jsonrpc.Message, method, hostUUID string, timeout time.Duration) bool {
+func awaitNodeEvent(t *testing.T, events <-chan jsonrpc.Message, method, hostUUID string, timeout time.Duration) bool {
+	t.Helper()
 	deadline := time.After(timeout)
 	for {
 		select {
@@ -152,7 +155,7 @@ func awaitNodeEvent(events <-chan jsonrpc.Message, method, hostUUID string, time
 				continue
 			}
 			var ev noderec.NodeEvent
-			if err := json.Unmarshal(msg.Params, &ev); err != nil {
+			if err := json.Unmarshal(msg.Params, &ev); !assert.NoError(t, err) {
 				continue
 			}
 			if ev.Node.HostUUID == hostUUID {

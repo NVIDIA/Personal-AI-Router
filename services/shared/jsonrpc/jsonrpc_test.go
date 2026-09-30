@@ -80,8 +80,7 @@ func (w *oneByteWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	_ = w.buf.WriteByte(p[0])
-	return 1, nil
+	return w.buf.Write(p[:1])
 }
 
 func TestShortWriteWritesFullFrame(t *testing.T) {
@@ -124,8 +123,11 @@ func TestRespondErrorDataRoundTrip(t *testing.T) {
 	assert.Equal(t, "port", data["field"], "error data round-trip failed")
 	// nil data omits the field entirely.
 	var buf2 bytes.Buffer
-	_ = writeCodec(&buf2).RespondErrorData(&id, -32603, "boom", nil)
-	m2, _ := readCodec(&buf2).Read()
+	assert.NoError(t, writeCodec(&buf2).RespondErrorData(&id, -32603, "boom", nil), "respond without data")
+	m2, err := readCodec(&buf2).Read()
+	assert.NoError(t, err, "read response without data")
+	require.NotNil(t, m2, "response without data")
+	require.NotNil(t, m2.Error, "error response without data")
 	require.Empty(t, m2.Error.Data, "expected empty data for nil")
 }
 

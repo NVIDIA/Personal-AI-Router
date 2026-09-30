@@ -114,7 +114,7 @@ func TestSetPortRebinds(t *testing.T) {
 		// New port is now serving.
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", portB), 2*time.Second)
 		require.NoError(t, err, "new port (%v, %v)", portB, err)
-		conn.Close()
+		assert.NoError(t, conn.Close())
 
 		// Old port stopped accepting.
 		if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", portA), 500*time.Millisecond); err == nil {
@@ -151,9 +151,9 @@ func TestSetPortPersistenceFailurePreservesListener(t *testing.T) {
 		require.Error(t, proxy.soleFacade().setPort(portB), "persistence failure reported success")
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", portA), time.Second)
 		require.NoError(t, err, "old listener lost")
-		_ = conn.Close()
+		assert.NoError(t, conn.Close())
 		next, err := net.Listen("tcp", fmt.Sprintf(":%d", portB))
 		require.NoError(t, err, "failed candidate listener leaked")
-		_ = next.Close()
+		assert.NoError(t, next.Close())
 	})
 }

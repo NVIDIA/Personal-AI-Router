@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +39,8 @@ func TestStreamedBytesReportNodeActivity(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"done":true}`))
+			_, err := w.Write([]byte(`{"done":true}`))
+			assert.NoError(t, err)
 		}))
 		defer upstream.Close()
 
@@ -118,7 +120,8 @@ func TestRepeatedChunksAreCoalescedIntoOneReport(t *testing.T) {
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			w.WriteHeader(http.StatusOK)
 			for i := 0; i < chunks; i++ {
-				_, _ = w.Write([]byte(`{"response":"x"}` + "\n"))
+				_, err := w.Write([]byte(`{"response":"x"}` + "\n"))
+				assert.NoError(t, err)
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}

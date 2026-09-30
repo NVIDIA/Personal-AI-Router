@@ -190,22 +190,22 @@ func TestDeselectedEngineIsNotPrepared(t *testing.T) {
 	go func() {
 		for {
 			msg, err := settingsCodec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			if msg.Method == "settings/get-force-ports" {
 				policyReads <- struct{}{}
 			}
-			_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": true})
+			assert.NoError(t, settingsCodec.Respond(msg.ID, map[string]bool{"value": true}))
 		}
 	}()
 	go func() {
 		for {
 			msg, err := engineCodec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
-			_ = engineCodec.Respond(msg.ID, json.RawMessage(`{}`))
+			assert.NoError(t, engineCodec.Respond(msg.ID, json.RawMessage(`{}`)))
 		}
 	}()
 

@@ -23,13 +23,13 @@ func TestFailStaleForeignWorkloadsRetiresSilentRemoteWork(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
 
 	// Remote-origin, executing on the origin: the sweep's business.
-	require.True(t, b.workloads.Apply(storeIncoming("7", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "remote running apply should be accepted")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "7", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "remote running apply should be accepted")
 	// Local-origin: our own proxies are the authority and never re-assert here.
-	require.True(t, b.workloads.Apply(storeIncoming("8", "self", "ollama", "r1", "running", "self")), "local running apply should be accepted")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "8", "self", "ollama", "r1", "running", "self")), "local running apply should be accepted")
 	// Remote-origin but executing HERE. Still the sweep's business: lifecycle
 	// events come from the origin's proxy, not from our engine, so nothing else
 	// will ever clear this record.
-	require.True(t, b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "running", "self")), "remote-origin local-executor apply should be accepted")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "9", "peer-uuid", "ollama", "r1", "running", "self")), "remote-origin local-executor apply should be accepted")
 
 	// Nothing is stale while the origin is still within its silence budget.
 	b.failStaleForeignWorkloads(time.Hour)
@@ -55,19 +55,19 @@ func TestFailStaleForeignWorkloadsRetiresSilentRemoteWork(t *testing.T) {
 func TestFailStaleForeignWorkloadsYieldsToTheOrigin(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
 	// Executing on the origin, so the sweep is entitled to judge it.
-	b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "running", "peer-uuid"))
+	b.workloads.Apply(storeIncoming(t, "9", "peer-uuid", "ollama", "r1", "running", "peer-uuid"))
 
 	b.failStaleForeignWorkloads(-time.Second)
 	r, _ := b.workloads.Get("peer-uuid", "9")
 	require.Equal(t, "failed", r.State)
 
-	require.True(t, b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "the origin's authoritative running must override the inferred failure")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "9", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "the origin's authoritative running must override the inferred failure")
 	r, _ = b.workloads.Get("peer-uuid", "9")
 	require.Equal(t, "running", r.State, "record (%v)", r)
 	require.False(t, r.Inferred, "record (%v)", r)
 
 	// And the origin's real terminal still lands afterwards.
-	require.True(t, b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "completed", "peer-uuid")), "the origin's terminal must apply")
+	require.True(t, b.workloads.Apply(storeIncoming(t, "9", "peer-uuid", "ollama", "r1", "completed", "peer-uuid")), "the origin's terminal must apply")
 	r, _ = b.workloads.Get("peer-uuid", "9")
 	require.Equal(t, "completed", r.State, "record (%v)", r)
 	require.False(t, r.Inferred, "record (%v)", r)

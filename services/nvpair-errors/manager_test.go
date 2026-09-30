@@ -67,15 +67,20 @@ func newTestManager(t *testing.T) (*Manager, *captureRW) {
 	return m, rw
 }
 
-func requestMessage(id int, method string, params any) *Message {
-	idData, _ := json.Marshal(id)
+func requestMessage(t *testing.T, id int, method string, params any) *Message {
+	t.Helper()
+	idData, err := json.Marshal(id)
+	assert.NoError(t, err, "marshal request ID")
 	idRaw := json.RawMessage(idData)
-	paramsRaw, _ := json.Marshal(params)
+	paramsRaw, err := json.Marshal(params)
+	assert.NoError(t, err, "marshal request params")
 	return &Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: paramsRaw}
 }
 
-func notificationMessage(method string, params any) *Message {
-	paramsRaw, _ := json.Marshal(params)
+func notificationMessage(t *testing.T, method string, params any) *Message {
+	t.Helper()
+	paramsRaw, err := json.Marshal(params)
+	assert.NoError(t, err, "marshal notification params")
 	return &Message{JSONRPC: "2.0", Method: method, Params: paramsRaw}
 }
 
@@ -141,13 +146,14 @@ func decodeResult[T any](t *testing.T, msg Message) T {
 	return result
 }
 
-func responseWithID(id int) func(Message) bool {
+func responseWithID(t *testing.T, id int) func(Message) bool {
+	t.Helper()
 	return func(msg Message) bool {
 		if msg.ID == nil {
 			return false
 		}
 		var got int
-		return json.Unmarshal(*msg.ID, &got) == nil && got == id
+		return assert.NoError(t, json.Unmarshal(*msg.ID, &got), "decode response ID") && got == id
 	}
 }
 
@@ -156,17 +162,17 @@ func responseWithID(id int) func(Message) bool {
 // Anything that produces an RPC error fails via decodeResult.
 func callAndDecode[T any](t *testing.T, m *Manager, rw *captureRW, id int, method string, params any) T {
 	t.Helper()
-	m.handleMessage(requestMessage(id, method, params))
+	m.handleMessage(requestMessage(t, id, method, params))
 	resp := readResponseFrame(t, rw)
-	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
+	require.True(t, responseWithID(t, id)(resp), "response id mismatch: (%v, %v)", resp, id)
 	return decodeResult[T](t, resp)
 }
 
 func callExpectError(t *testing.T, m *Manager, rw *captureRW, id int, method string, params any, wantCode int) *RPCError {
 	t.Helper()
-	m.handleMessage(requestMessage(id, method, params))
+	m.handleMessage(requestMessage(t, id, method, params))
 	resp := readResponseFrame(t, rw)
-	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
+	require.True(t, responseWithID(t, id)(resp), "response id mismatch: (%v, %v)", resp, id)
 	require.NotNil(t, resp.Error, "expected error (%v)", wantCode)
 	require.Equal(t, wantCode, resp.Error.Code, "error code")
 	return resp.Error
@@ -197,7 +203,7 @@ func TestReportRequestUpsertsAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := sampleError("ollama-proxy:upstream-unreachable:node-a", 1000, "node-a unreachable")
 
-	m.handleMessage(requestMessage(1, "errors:report", e))
+	m.handleMessage(requestMessage(t, 1, "errors:report", e))
 
 	resp := readResponseFrame(t, rw)
 	require.Nil(t, resp.Error, "errors:report returned error")
@@ -221,7 +227,7 @@ func TestReportNotificationUpsertsAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := sampleError("manual-nodes:probe-failed:peer-1", 5000, "peer-1 probe failed")
 
-	m.handleMessage(notificationMessage("errors:report", e))
+	m.handleMessage(notificationMessage(t, "errors:report", e))
 
 	expectNotification(t, rw, "errors:update")
 	assertNoResponse(t, rw)
@@ -241,15 +247,15 @@ func TestUpsertHighestTimestampWins(t *testing.T) {
 	id := "ollama-local:not-running"
 
 	// Initial report at ts=1000 wins.
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 1000, "v1")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 1000, "v1")))
 	expectNotification(t, rw, "errors:update")
 
 	// Older ts=500 must be dropped — no update push.
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 500, "v0-stale")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 500, "v0-stale")))
 	assertNoNotification(t, rw)
 
 	// Newer ts=2000 wins — update push fires.
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 2000, "v2")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 2000, "v2")))
 	expectNotification(t, rw, "errors:update")
 
 	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
@@ -266,10 +272,10 @@ func TestUpsertEqualTimestampReplaces(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-local:install-failed"
 
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 1000, "first")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 1000, "first")))
 	expectNotification(t, rw, "errors:update")
 
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 1000, "second")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 1000, "second")))
 	update := expectNotification(t, rw, "errors:update")
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
 	require.Len(t, got, 1, "equal-ts upsert")
@@ -283,10 +289,10 @@ func TestClearRemovesEntryAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "supervisor:subprocess-crashed:nvpair-node-info"
 
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 1000, "crashed")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 1000, "crashed")))
 	expectNotification(t, rw, "errors:update")
 
-	m.handleMessage(requestMessage(1, "errors:clear", ClearParams{ID: id, ClearedBy: "node-self"}))
+	m.handleMessage(requestMessage(t, 1, "errors:clear", ClearParams{ID: id, ClearedBy: "node-self"}))
 	resp := readResponseFrame(t, rw)
 	require.Nil(t, resp.Error, "errors:clear returned error")
 
@@ -316,14 +322,14 @@ func TestAckUntilReemit(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-proxy:upstream-unreachable:peer-x"
 
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 1000, "first")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 1000, "first")))
 	expectNotification(t, rw, "errors:update")
 
-	m.handleMessage(notificationMessage("errors:clear", ClearParams{ID: id}))
+	m.handleMessage(notificationMessage(t, "errors:clear", ClearParams{ID: id}))
 	expectNotification(t, rw, "errors:update")
 
 	// Re-emit must resurrect — newer timestamp.
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 2000, "still broken")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 2000, "still broken")))
 	update := expectNotification(t, rw, "errors:update")
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
 	require.Len(t, got, 1, "after clear+reemit, update payload")
@@ -345,7 +351,7 @@ func TestReportMissingFieldsRejected(t *testing.T) {
 		ServiceError{ID: "x:y", Timestamp: 1}, -32602)
 
 	// Notification form with no id: no response, no update push.
-	m.handleMessage(notificationMessage("errors:report", ServiceError{Message: "no id", Timestamp: 1}))
+	m.handleMessage(notificationMessage(t, "errors:report", ServiceError{Message: "no id", Timestamp: 1}))
 	assertNoNotification(t, rw)
 	assertNoResponse(t, rw)
 
@@ -361,7 +367,7 @@ func TestClearMissingIdRejected(t *testing.T) {
 
 	callExpectError(t, m, rw, 1, "errors:clear", ClearParams{}, -32602)
 
-	m.handleMessage(notificationMessage("errors:clear", ClearParams{}))
+	m.handleMessage(notificationMessage(t, "errors:clear", ClearParams{}))
 	assertNoNotification(t, rw)
 	assertNoResponse(t, rw)
 }
@@ -374,9 +380,9 @@ func TestUpdatePayloadIsFullSortedList(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	// Emit in non-sorted order.
-	m.handleMessage(notificationMessage("errors:report", sampleError("z:later", 1000, "z")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError("z:later", 1000, "z")))
 	expectNotification(t, rw, "errors:update")
-	m.handleMessage(notificationMessage("errors:report", sampleError("a:earlier", 2000, "a")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError("a:earlier", 2000, "a")))
 	update := expectNotification(t, rw, "errors:update")
 
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
@@ -400,10 +406,10 @@ func TestClearedByPassedThroughIgnored(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "manual-nodes:probe-failed:peer-q"
 
-	m.handleMessage(notificationMessage("errors:report", sampleError(id, 1000, "down")))
+	m.handleMessage(notificationMessage(t, "errors:report", sampleError(id, 1000, "down")))
 	expectNotification(t, rw, "errors:update")
 
-	m.handleMessage(notificationMessage("errors:clear", ClearParams{ID: id, ClearedBy: "node-other"}))
+	m.handleMessage(notificationMessage(t, "errors:clear", ClearParams{ID: id, ClearedBy: "node-other"}))
 	expectNotification(t, rw, "errors:update")
 
 	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil), "after foreign-clearedBy clear, list")
@@ -421,7 +427,7 @@ func TestNodeIdPreserved(t *testing.T) {
 		Timestamp: 1000,
 		NodeID:    "peer-node-id-123",
 	}
-	m.handleMessage(notificationMessage("errors:report", e))
+	m.handleMessage(notificationMessage(t, "errors:report", e))
 	expectNotification(t, rw, "errors:update")
 
 	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)

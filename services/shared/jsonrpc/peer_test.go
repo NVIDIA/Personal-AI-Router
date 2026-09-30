@@ -29,8 +29,9 @@ func pipePeers(t *testing.T) (a, b *Peer) {
 
 func TestPeerCallReturnsResult(t *testing.T) {
 	a, b := pipePeers(t)
+	writeErr := make(chan error, 1)
 	go b.Serve(func(req *Message) {
-		go b.Respond(req.ID, map[string]string{"echo": req.Method})
+		go func() { writeErr <- b.Respond(req.ID, map[string]string{"echo": req.Method}) }()
 	}, nil)
 	go a.Serve(nil, nil)
 
@@ -38,16 +39,20 @@ func TestPeerCallReturnsResult(t *testing.T) {
 	defer cancel()
 	res, rpcErr, err := a.Call(ctx, "ping", json.RawMessage(`{"x":1}`))
 	require.NoError(t, err, "Call err")
+	assert.NoError(t, <-writeErr, "respond to call")
 	require.Nil(t, rpcErr, "Call err")
 	var out map[string]string
-	json.Unmarshal(res, &out)
+	assert.NoError(t, json.Unmarshal(res, &out), "decode call result")
 	assert.Equal(t, "ping", out["echo"], "unexpected result")
 }
 
 func TestPeerCallReturnsRPCError(t *testing.T) {
 	a, b := pipePeers(t)
+	writeErr := make(chan error, 1)
 	go b.Serve(func(req *Message) {
-		go b.RespondError(req.ID, -32601, "method not found")
+		go func() {
+			writeErr <- b.RespondError(req.ID, -32601, "method not found")
+		}()
 	}, nil)
 	go a.Serve(nil, nil)
 
@@ -55,6 +60,7 @@ func TestPeerCallReturnsRPCError(t *testing.T) {
 	defer cancel()
 	_, rpcErr, err := a.Call(ctx, "nope", nil)
 	require.NoError(t, err, "transport err")
+	assert.NoError(t, <-writeErr, "respond with RPC error")
 	require.NotNil(t, rpcErr, "want rpc error -32601")
 	assert.Equal(t, -32601, rpcErr.Code)
 }
@@ -63,8 +69,13 @@ func TestPeerSimultaneousInboundRequest(t *testing.T) {
 	// Both peers Call each other while both are serving inbound requests. The
 	// read pump is separate from Call, so neither side deadlocks.
 	a, b := pipePeers(t)
+	writeErrs := make(chan error, 2)
 	handler := func(self *Peer) func(*Message) {
-		return func(req *Message) { go self.Respond(req.ID, map[string]string{"from": req.Method}) }
+		return func(req *Message) {
+			go func() {
+				writeErrs <- self.Respond(req.ID, map[string]string{"from": req.Method})
+			}()
+		}
 	}
 	go a.Serve(handler(a), nil)
 	go b.Serve(handler(b), nil)
@@ -85,6 +96,7 @@ func TestPeerSimultaneousInboundRequest(t *testing.T) {
 		select {
 		case r := <-ch:
 			require.NoError(t, r.err, "simultaneous call failed")
+			assert.NoError(t, <-writeErrs, "respond to simultaneous call")
 		case <-time.After(3 * time.Second):
 			require.FailNow(t, "simultaneous calls deadlocked")
 		}
@@ -152,8 +164,9 @@ func TestPeerCallAfterCloseFailsFast(t *testing.T) {
 
 func TestPeerRelayRequest(t *testing.T) {
 	a, b := pipePeers(t)
+	writeErr := make(chan error, 1)
 	go b.Serve(func(req *Message) {
-		go b.Respond(req.ID, map[string]int{"ok": 1})
+		go func() { writeErr <- b.Respond(req.ID, map[string]int{"ok": 1}) }()
 	}, nil)
 	go a.Serve(nil, nil)
 
@@ -168,8 +181,9 @@ func TestPeerRelayRequest(t *testing.T) {
 	select {
 	case r := <-done:
 		require.NoError(t, r.err, "relay err")
+		assert.NoError(t, <-writeErr, "respond to relay")
 		var out map[string]int
-		json.Unmarshal(r.res, &out)
+		assert.NoError(t, json.Unmarshal(r.res, &out), "decode relay result")
 		assert.Equal(t, 1, out["ok"], "unexpected relay result")
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "relay respond not invoked")

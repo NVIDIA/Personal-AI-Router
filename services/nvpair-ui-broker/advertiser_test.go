@@ -66,14 +66,14 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 	go func() {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var got proxyLocalBackend
-		if json.Unmarshal(msg.Params, &got) == nil {
+		if assert.NoError(t, json.Unmarshal(msg.Params, &got)) {
 			localBackend <- got
 		}
-		_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 	}()
 
 	b := &Broker{regCache: relay.NewRegistrationCache()}

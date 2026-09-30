@@ -14,9 +14,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func lifecycleFrame(id, state, method, origin string) json.RawMessage {
+func lifecycleFrame(t *testing.T, id, state, method, origin string) json.RawMessage {
+	t.Helper()
 	wl := &Workload{ID: id, Model: "m", Engine: "ollama", State: WorkloadState(state), OriginatedFrom: origin, CreatedAt: 1}
-	p, _ := json.Marshal(lifecycleParams{WorkloadInfo: wl})
+	p, err := json.Marshal(lifecycleParams{WorkloadInfo: wl})
+	assert.NoError(t, err)
 	return json.RawMessage(p)
 }
 
@@ -35,23 +37,28 @@ func TestResyncBypassesReceiverDedup(t *testing.T) {
 	emitCount := func() int { mu.Lock(); defer mu.Unlock(); return emits }
 
 	wl := &Workload{ID: "1", Model: "m", Engine: "ollama", RunID: "r1", State: StateRunning, OriginatedFrom: "a", CreatedAt: 1}
-	wiRaw, _ := json.Marshal(wl)
+	wiRaw, err := json.Marshal(wl)
+	assert.NoError(t, err)
 
 	// Normal frame: emitted once.
-	normal, _ := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: mustJSON(map[string]json.RawMessage{"workloadInfo": wiRaw})})
+	normal, err := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: mustJSON(t, map[string]json.RawMessage{"workloadInfo": wiRaw})})
+	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, post(normal))
 	assert.Equal(t, 1, emitCount(), "emits after first post")
 	// Same frame again: deduped, not re-emitted.
 	assert.Equal(t, http.StatusOK, post(normal))
 	assert.Equal(t, 1, emitCount(), "repeat post must dedup")
 	// Re-sync frame (same key + state): bypasses dedup, reaches the broker.
-	resync, _ := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: mustJSON(map[string]json.RawMessage{"workloadInfo": wiRaw, "resync": json.RawMessage("true")})})
+	resync, err := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: mustJSON(t, map[string]json.RawMessage{"workloadInfo": wiRaw, "resync": json.RawMessage("true")})})
+	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, post(resync))
 	assert.Equal(t, 2, emitCount(), "resync must bypass dedup")
 }
 
-func mustJSON(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	assert.NoError(t, err)
 	return b
 }
 
@@ -63,12 +70,12 @@ func TestActiveSnapshotTracking(t *testing.T) {
 	k1 := workloadKey{origin: "node-a", id: "1"}
 	k2 := workloadKey{origin: "node-a", id: "2"}
 
-	m.trackActive(k1, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "node-a"), StateRunning)
-	m.trackActive(k2, MethodStarted, lifecycleFrame("2", "running", MethodStarted, "node-a"), StateRunning)
+	m.trackActive(k1, MethodStarted, lifecycleFrame(t, "1", "running", MethodStarted, "node-a"), StateRunning)
+	m.trackActive(k2, MethodStarted, lifecycleFrame(t, "2", "running", MethodStarted, "node-a"), StateRunning)
 	assert.Len(t, m.activeSnapshot(), 2)
 
 	// A terminal is retained (for re-sync redundancy), not dropped.
-	m.trackActive(k1, MethodErrored, lifecycleFrame("1", "failed", MethodErrored, "node-a"), StateFailed)
+	m.trackActive(k1, MethodErrored, lifecycleFrame(t, "1", "failed", MethodErrored, "node-a"), StateFailed)
 	assert.Len(t, m.activeSnapshot(), 2, "terminal must be retained")
 
 	// A removal drops immediately (matches on origin+id).
@@ -91,9 +98,9 @@ func TestActiveSnapshotTracking(t *testing.T) {
 func TestActiveSnapshotDistinguishesEngineAndRun(t *testing.T) {
 	m := &Manager{activeLocal: make(map[workloadKey]workloadEvent)}
 
-	m.trackActive(workloadKey{origin: "a", engine: "ollama", runID: "r1", id: "1"}, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
-	m.trackActive(workloadKey{origin: "a", engine: "lmstudio", runID: "r2", id: "1"}, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
-	m.trackActive(workloadKey{origin: "a", engine: "ollama", runID: "r3", id: "1"}, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
+	m.trackActive(workloadKey{origin: "a", engine: "ollama", runID: "r1", id: "1"}, MethodStarted, lifecycleFrame(t, "1", "running", MethodStarted, "a"), StateRunning)
+	m.trackActive(workloadKey{origin: "a", engine: "lmstudio", runID: "r2", id: "1"}, MethodStarted, lifecycleFrame(t, "1", "running", MethodStarted, "a"), StateRunning)
+	m.trackActive(workloadKey{origin: "a", engine: "ollama", runID: "r3", id: "1"}, MethodStarted, lifecycleFrame(t, "1", "running", MethodStarted, "a"), StateRunning)
 	assert.Len(t, m.activeSnapshot(), 3, "engine and runId must keep workloads distinct")
 
 	m.untrackActive("a", "1")
@@ -108,8 +115,8 @@ func TestTrackActiveMonotonicTerminal(t *testing.T) {
 	m := &Manager{activeLocal: make(map[workloadKey]workloadEvent)}
 	k := workloadKey{origin: "a", engine: "ollama", runID: "r1", id: "1"}
 
-	m.trackActive(k, MethodCompleted, lifecycleFrame("1", "completed", MethodCompleted, "a"), StateCompleted)
-	m.trackActive(k, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
+	m.trackActive(k, MethodCompleted, lifecycleFrame(t, "1", "completed", MethodCompleted, "a"), StateCompleted)
+	m.trackActive(k, MethodStarted, lifecycleFrame(t, "1", "running", MethodStarted, "a"), StateRunning)
 
 	snap := m.activeSnapshot()
 	require.Len(t, snap, 1)

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/applog"
@@ -54,7 +55,8 @@ func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"GPUs":[],"telemetryValid":false,"msSince":0}`))
+		_, err := w.Write([]byte(`{"GPUs":[],"telemetryValid":false,"msSince":0}`))
+		assert.NoError(t, err)
 	})
 	server := &http.Server{
 		Handler:           mux,
@@ -77,8 +79,9 @@ func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot reach this host at %s: %v", listener.Addr(), err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
+	_, err = io.Copy(io.Discard, resp.Body)
+	assert.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
 	require.Equal(t, http.StatusOK, resp.StatusCode, "inventory status")
 
 	var out bytes.Buffer
@@ -138,7 +141,8 @@ func TestServerRecordsTheServingConnectionWhenARequestArrives(t *testing.T) {
 	observer := newAddressObserver()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"GPUs":[],"telemetryValid":false,"msSince":0}`))
+		_, err := w.Write([]byte(`{"GPUs":[],"telemetryValid":false,"msSince":0}`))
+		assert.NoError(t, err)
 	})
 	server := &http.Server{
 		Handler:           mux,
@@ -160,8 +164,9 @@ func TestServerRecordsTheServingConnectionWhenARequestArrives(t *testing.T) {
 	}}
 	resp, err := client.Get("http://10.172.54.70:14318/v1/node-info")
 	require.NoError(t, err, "inventory request")
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
+	_, err = io.Copy(io.Discard, resp.Body)
+	assert.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
 
 	require.Equal(t, []string{"10.172.54.70"}, observer.addresses(), "observed")
 }

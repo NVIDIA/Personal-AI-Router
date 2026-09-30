@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,11 +79,10 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"done":true}`))
+		writeTestResponse(t, w, []byte(`{"done":true}`))
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	m := testEngineManifest(fakeEngineBin)
 	m.Engine = "ollama"
@@ -214,7 +212,8 @@ func TestEngineLifecycle(t *testing.T) {
 	require.True(t, installed, "expected fake engine to be detected (bin (%v)", fakeEngineBin)
 
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
-	st, _ := ex.Status("fake")
+	st, err := ex.Status("fake")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "expected running+healthy (%v)", st)
 	require.True(t, st.Healthy, "expected running+healthy (%v)", st)
 	require.NotEqual(t, 0, st.Port, "expected a non-zero port (%v)", st)
@@ -224,7 +223,8 @@ func TestEngineLifecycle(t *testing.T) {
 	require.Contains(t, string(res), "llama3.2", "unexpected action result (%v)", res)
 
 	require.NoError(t, ex.Stop("fake"), "stop")
-	st, _ = ex.Status("fake")
+	st, err = ex.Status("fake")
+	assert.NoError(t, err)
 	require.False(t, st.Running, "expected stopped (%v)", st)
 }
 
@@ -243,7 +243,9 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
-	state, _ := ex.state(m.Engine)
+	state, err := ex.state(m.Engine)
+	assert.NoError(t, err)
+	require.NotNil(t, state)
 	waitFor(t, 5*time.Second, func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
@@ -258,7 +260,8 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 	go func() { _ = external.Serve(ln) }()
 	defer func() {
 		_ = external.Close()
-		_, _ = ex.Status(m.Engine)
+		_, err := ex.Status(m.Engine)
+		assert.NoError(t, err)
 	}()
 
 	require.NoError(t, ex.Start(context.Background(), m.Engine), "restart should adopt the external service")
@@ -290,7 +293,8 @@ func TestStartPortOverride(t *testing.T) {
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	const want = 17777
 	require.NoError(t, ex.StartWith(context.Background(), "fake", startOpts{Port: want}), "start with port override")
-	st, _ := ex.Status("fake")
+	st, err := ex.Status("fake")
+	assert.NoError(t, err)
 	require.Equal(t, want, st.Port, "expected port")
 }
 
@@ -316,8 +320,7 @@ func TestStatusReportsExternallyRunning(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -334,7 +337,8 @@ func TestStatusReportsExternallyRunning(t *testing.T) {
 		},
 	}
 	ex := newTestExecutor(t, m)
-	st, _ := ex.Status("ext") // never started via the executor
+	st, err := ex.Status("ext") // never started via the executor
+	assert.NoError(t, err)
 	require.True(t, st.Installed, "expected externally-running engine adopted as installed and healthy (%v)", st)
 	require.True(t, st.Running, "expected externally-running engine adopted as installed and healthy (%v)", st)
 	require.True(t, st.Healthy, "expected externally-running engine adopted as installed and healthy (%v)", st)
@@ -345,8 +349,7 @@ func TestStatusAtPortAdoptsLegacyListener(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	legacyPort, _ := strconv.Atoi(u.Port())
+	legacyPort := portOf(t, srv.URL)
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -376,8 +379,7 @@ func TestGetInstalledAdoptsExternallyRunningEngineWithoutDetectPath(t *testing.T
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -408,16 +410,15 @@ func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"version":"test"}`))
+		writeTestResponse(t, w, []byte(`{"version":"test"}`))
 	}))
 	defer engineSrv.Close()
-	engineURL, _ := url.Parse(engineSrv.URL)
-	enginePort, _ := strconv.Atoi(engineURL.Port())
+	enginePort := portOf(t, engineSrv.URL)
 
 	var downloads atomic.Int32
 	downloadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		downloads.Add(1)
-		_, _ = w.Write([]byte("must-not-download"))
+		writeTestResponse(t, w, []byte("must-not-download"))
 	}))
 	defer downloadSrv.Close()
 
@@ -461,13 +462,12 @@ func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer occupant.Close()
-	u, _ := url.Parse(occupant.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, occupant.URL)
 
 	var downloads atomic.Int32
 	downloadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		downloads.Add(1)
-		_, _ = w.Write([]byte("must-not-download"))
+		writeTestResponse(t, w, []byte("must-not-download"))
 	}))
 	defer downloadSrv.Close()
 
@@ -485,7 +485,8 @@ func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
 	ex := newTestExecutor(t, m)
 	require.ErrorContains(t, ex.Install(context.Background(), m.Engine), "occupied", "install over an unknown listener error")
 	require.Equal(t, int32(0), downloads.Load(), "unknown listener triggered")
-	st, _ := ex.Status(m.Engine)
+	st, err := ex.Status(m.Engine)
+	assert.NoError(t, err)
 	require.False(t, st.Installed, "unknown listener must not be adopted (%v)", st)
 	require.False(t, st.Running, "unknown listener must not be adopted (%v)", st)
 }
@@ -497,7 +498,7 @@ func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+		writeTestResponse(t, w, []byte(`{"object":"list","data":[]}`))
 	}))
 	defer srv.Close()
 	port := portOf(t, srv.URL)
@@ -527,7 +528,7 @@ func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
 func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
 	facade := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/version" {
-			_, _ = w.Write([]byte(`{"version":"facade"}`))
+			writeTestResponse(t, w, []byte(`{"version":"facade"}`))
 			return
 		}
 		http.NotFound(w, r)
@@ -561,8 +562,7 @@ func TestAdoptedExternalLivenessIsTruthful(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(int(status.Load()))
 	}))
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -575,17 +575,20 @@ func TestAdoptedExternalLivenessIsTruthful(t *testing.T) {
 		}},
 	}
 	ex := newTestExecutor(t, m)
-	st, _ := ex.Status(m.Engine)
+	st, err := ex.Status(m.Engine)
+	assert.NoError(t, err)
 	require.True(t, st.Running, "initial external status (%v)", st)
 	require.True(t, st.Healthy, "initial external status (%v)", st)
 
 	status.Store(http.StatusServiceUnavailable)
-	st, _ = ex.Status(m.Engine)
+	st, err = ex.Status(m.Engine)
+	assert.NoError(t, err)
 	require.True(t, st.Running, "HTTP 503 is live-but-unhealthy (%v)", st)
 	require.False(t, st.Healthy, "HTTP 503 is live-but-unhealthy (%v)", st)
 
 	srv.Close()
-	st, _ = ex.Status(m.Engine)
+	st, err = ex.Status(m.Engine)
+	assert.NoError(t, err)
 	require.False(t, st.Installed, "closed external listener remained present (%v)", st)
 	require.False(t, st.Running, "closed external listener remained present (%v)", st)
 	require.False(t, st.Healthy, "closed external listener remained present (%v)", st)
@@ -602,8 +605,7 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	m := testEngineManifest(fakeEngineBin)
 	m.Engine = "ollama"
@@ -622,7 +624,9 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 	require.False(t, st.Healthy, "proxy facade was adopted: status (%v, %v)", st, err)
 	require.ErrorContains(t, ex.Install(context.Background(), "ollama"), "occupied", "install over proxy facade error")
 	require.ErrorContains(t, ex.Start(context.Background(), "ollama"), "occupied", "start over proxy facade error")
-	state, _ := ex.state("ollama")
+	state, err := ex.state("ollama")
+	assert.NoError(t, err)
+	require.NotNil(t, state)
 	state.mu.Lock()
 	state.running = true // stale pre-transition state must not route an action through the facade
 	state.mu.Unlock()
@@ -646,8 +650,7 @@ func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	m := testEngineManifest(fakeEngineBin)
 	m.Engine = "ollama"
@@ -703,7 +706,8 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
 	require.NoError(t, ex.Uninstall(context.Background(), "fake"), "uninstall")
-	ok, _ := ex.Detect("fake")
+	ok, err := ex.Detect("fake")
+	assert.NoError(t, err)
 	require.False(t, ok, "engine still detected after uninstall")
 	require.False(t, portServing(port), "expected uninstall to stop the running instance")
 }
@@ -766,8 +770,7 @@ func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
 
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	m := testEngineManifest(managedBin)
 	key := runtime.GOOS + "/" + runtime.GOARCH
@@ -812,7 +815,7 @@ func TestDownloadVerify(t *testing.T) {
 	good := hex.EncodeToString(sum[:])
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(payload)
+		writeTestResponse(t, w, payload)
 	}))
 	defer srv.Close()
 
@@ -823,7 +826,8 @@ func TestDownloadVerify(t *testing.T) {
 	require.NoError(t, err, "download (ok)")
 	defer os.Remove(p)
 	require.Equal(t, ".ps1", filepath.Ext(p), "downloaded path (%v)", p)
-	got, _ := os.ReadFile(p)
+	got, err := os.ReadFile(p)
+	assert.NoError(t, err)
 	require.Equal(t, string(payload), string(got), "downloaded content mismatch")
 
 	_, err = ex.download(ctx, "fake", &Fetch{URL: srv.URL + "/installer.ps1", SHA256: "deadbeef"})
@@ -867,10 +871,12 @@ func TestEngineUninstall(t *testing.T) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
-	ok, _ := ex.Detect("fake")
+	ok, err := ex.Detect("fake")
+	assert.NoError(t, err)
 	require.True(t, ok, "expected installed before uninstall")
 	require.NoError(t, ex.Uninstall(context.Background(), "fake"), "uninstall")
-	ok, _ = ex.Detect("fake")
+	ok, err = ex.Detect("fake")
+	assert.NoError(t, err)
 	require.False(t, ok, "expected not-installed after uninstall")
 }
 
@@ -921,8 +927,7 @@ func TestCommandModeLifecycle(t *testing.T) {
 			}
 		}
 	}()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -945,13 +950,15 @@ func TestCommandModeLifecycle(t *testing.T) {
 
 	require.NoError(t, ex.Start(context.Background(), "daemon"), "start")
 	require.FileExists(t, startMarker, "expected the start command to have run")
-	st, _ := ex.Status("daemon")
+	st, err := ex.Status("daemon")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "expected running+healthy (%v)", st)
 	require.True(t, st.Healthy, "expected running+healthy (%v)", st)
 
 	require.NoError(t, ex.Stop("daemon"), "stop")
 	require.FileExists(t, stopMarker, "expected the stop command to have run")
-	st, _ = ex.Status("daemon")
+	st, err = ex.Status("daemon")
+	assert.NoError(t, err)
 	require.False(t, st.Running, "expected stopped (%v)", st)
 }
 
@@ -976,8 +983,7 @@ func TestStartAdoptsAlreadyRunning(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -995,11 +1001,14 @@ func TestStartAdoptsAlreadyRunning(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 	require.NoError(t, ex.Start(context.Background(), "adopt"), "expected adoption of the already-serving instance")
-	st, _ := ex.Status("adopt")
+	st, err := ex.Status("adopt")
+	assert.NoError(t, err)
 	require.True(t, st.Installed, "expected running via adoption (%v)", st)
 	require.True(t, st.Running, "expected running via adoption (%v)", st)
 	require.True(t, st.Healthy, "expected running via adoption (%v)", st)
-	state, _ := ex.state("adopt")
+	state, err := ex.state("adopt")
+	assert.NoError(t, err)
+	require.NotNil(t, state)
 	state.mu.Lock()
 	binPath := state.binPath
 	state.mu.Unlock()

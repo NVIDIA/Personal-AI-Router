@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/appdir"
@@ -234,7 +235,8 @@ func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
 
 	received := make(chan *Message, 1)
 	go func() {
-		msg, _ := NewCodec(server).Read()
+		msg, err := NewCodec(server).Read()
+		assert.NoError(t, err)
 		received <- msg
 	}()
 	b.replayOllamaHostAliasError()
@@ -324,16 +326,16 @@ func TestDisableAliasClearsEngineReservation(t *testing.T) {
 	go func() {
 		codec := NewCodec(server)
 		request, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var params struct {
 			Port int `json:"port"`
 		}
-		if request.Method == "internal:set-reserved-port" && json.Unmarshal(request.Params, &params) == nil {
+		if request.Method == "internal:set-reserved-port" && assert.NoError(t, json.Unmarshal(request.Params, &params)) {
 			reserved <- params.Port
 		}
-		_ = codec.Respond(request.ID, map[string]int{"port": params.Port})
+		assert.NoError(t, codec.Respond(request.ID, map[string]int{"port": params.Port}))
 	}()
 
 	b.disableOllamaHostAliasReservation()
@@ -360,40 +362,40 @@ func TestManagedAliasReservationSyncUsesReplacementEngineManager(t *testing.T) {
 	oldReservation := make(chan int, 1)
 	go func() {
 		msg, err := oldEngineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var request struct {
 			Port int `json:"port"`
 		}
-		_ = json.Unmarshal(msg.Params, &request)
+		assert.NoError(t, json.Unmarshal(msg.Params, &request))
 		oldReservation <- request.Port
-		_ = oldEngineCodec.Respond(msg.ID, map[string]int{"port": request.Port})
+		assert.NoError(t, oldEngineCodec.Respond(msg.ID, map[string]int{"port": request.Port}))
 	}()
 
 	replacementReservation := make(chan int, 1)
 	go func() {
 		for range 3 {
 			msg, err := replacementCodec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			switch msg.Method {
 			case "engine:status":
-				_ = replacementCodec.Respond(msg.ID, ollamaPortStatus{Port: 16000})
+				assert.NoError(t, replacementCodec.Respond(msg.ID, ollamaPortStatus{Port: 16000}))
 			case "engine:get-installed":
-				_ = replacementCodec.Respond(msg.ID, map[string]any{
+				assert.NoError(t, replacementCodec.Respond(msg.ID, map[string]any{
 					"engines": []map[string]any{{"engine": "ollama", "port": 16000}},
-				})
+				}))
 			case "internal:set-reserved-port":
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
 				replacementReservation <- request.Port
-				_ = replacementCodec.Respond(msg.ID, map[string]int{"port": request.Port})
+				assert.NoError(t, replacementCodec.Respond(msg.ID, map[string]int{"port": request.Port}))
 			default:
-				_ = replacementCodec.RespondError(msg.ID, -32601, "unexpected method")
+				assert.NoError(t, replacementCodec.RespondError(msg.ID, -32601, "unexpected method"))
 			}
 		}
 	}()
@@ -512,15 +514,15 @@ func TestAliasBindFailureReleasesReservationButKeepsWarning(t *testing.T) {
 	reservation := make(chan int, 1)
 	go func() {
 		msg, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var request struct {
 			Port int `json:"port"`
 		}
-		_ = json.Unmarshal(msg.Params, &request)
+		assert.NoError(t, json.Unmarshal(msg.Params, &request))
 		reservation <- request.Port
-		_ = engineCodec.Respond(msg.ID, map[string]int{"port": request.Port})
+		assert.NoError(t, engineCodec.Respond(msg.ID, map[string]int{"port": request.Port}))
 	}()
 
 	params, err := json.Marshal(errors.ServiceError{

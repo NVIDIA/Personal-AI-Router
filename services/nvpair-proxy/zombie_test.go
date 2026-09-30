@@ -78,7 +78,8 @@ func TestHandleHTTP_ClientWriteError_MarksCancelled(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `{"model":"llama","response":"partial tokens before the client vanished","done":false}`)
+		_, err := io.WriteString(w, `{"model":"llama","response":"partial tokens before the client vanished","done":false}`)
+		assert.NoError(t, err)
 	}))
 	defer upstream.Close()
 
@@ -123,7 +124,8 @@ func TestHandleHTTP_ClientDisconnect_TerminalOnce(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if f, ok := w.(http.Flusher); ok {
-			io.WriteString(w, `{"response":"first chunk","done":false}`+"\n")
+			_, err := io.WriteString(w, `{"response":"first chunk","done":false}`+"\n")
+			assert.NoError(t, err)
 			f.Flush()
 		}
 		select {
@@ -342,7 +344,7 @@ func TestHandleHTTP_RealSocketWriteDeadline(t *testing.T) {
 	// Read the status line only — enough to confirm the response committed and
 	// started streaming — then STOP reading so the proxy's send buffer backs
 	// up. A read deadline guards against a hang if the proxy never responds.
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	assert.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 	statusLine, err := bufio.NewReader(conn).ReadString('\n')
 	require.NoError(t, err, "read status line")
 	require.Contains(t, statusLine, "200", "unexpected status line")
@@ -430,7 +432,7 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 
 	// Read the status line only, then stop reading so the proxy's send buffer
 	// backs up and a Flush blocks.
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	assert.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 	statusLine, err := bufio.NewReader(conn).ReadString('\n')
 	require.NoError(t, err, "read status line")
 	require.Contains(t, statusLine, "200", "unexpected status line")
@@ -495,8 +497,10 @@ func TestHandleHTTP_UpstreamDiesMidStream_EmitsTerminal(t *testing.T) {
 					}
 				}
 				chunk := `{"response":"partial tokens","done":false}`
-				io.WriteString(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")
-				fmt.Fprintf(c, "%x\r\n%s\r\n", len(chunk), chunk)
+				_, err := io.WriteString(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")
+				assert.NoError(t, err)
+				_, err = fmt.Fprintf(c, "%x\r\n%s\r\n", len(chunk), chunk)
+				assert.NoError(t, err)
 				c.Close()
 			}(conn)
 		}

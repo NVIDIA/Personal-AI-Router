@@ -110,25 +110,25 @@ func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
 	go func() {
 		codec := NewCodec(engineServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		engineMethod <- msg.Method
-		_ = codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart})
+		assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart}))
 	}()
 
 	backend := make(chan proxyLocalBackend, 1)
 	go func() {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var got proxyLocalBackend
-		if json.Unmarshal(msg.Params, &got) == nil {
+		if assert.NoError(t, json.Unmarshal(msg.Params, &got)) {
 			backend <- got
 		}
-		_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 	}()
 
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"version":"test","port":1234}`))
@@ -175,23 +175,23 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 		setPortCount := 0
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			if msg.Method == lmstudioSetLocalBackend {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 				return
 			}
 			var p struct {
 				Port int `json:"port"`
 			}
-			_ = json.Unmarshal(msg.Params, &p)
+			assert.NoError(t, json.Unmarshal(msg.Params, &p))
 			requestedPorts <- p.Port
 			setPortCount++
 			if setPortCount == 1 {
-				_ = codec.RespondError(msg.ID, -32000, "occupied")
+				assert.NoError(t, codec.RespondError(msg.ID, -32000, "occupied"))
 			} else {
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: p.Port})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: p.Port}))
 			}
 		}
 	}()
@@ -203,11 +203,11 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 	warnings := make(chan warning, 1)
 	go func() {
 		msg, err := NewCodec(errorsServer).Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var got warning
-		if json.Unmarshal(msg.Params, &got) == nil {
+		if assert.NoError(t, json.Unmarshal(msg.Params, &got)) {
 			warnings <- got
 		}
 	}()
@@ -272,11 +272,11 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 			go func() {
 				codec := NewCodec(engineServer)
 				msg, err := codec.Read()
-				if err != nil {
+				if !assertRPCRead(t, err) {
 					return
 				}
 				method <- msg.Method
-				_ = codec.Respond(msg.ID, map[string]any{})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{}))
 			}()
 			response := make(chan error, 1)
 			go func() {
@@ -379,15 +379,15 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 		count := 0
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			count++
 			requests <- msg.Method
 			if msg.Method == lmstudioSetPort && count == 1 {
-				_ = codec.RespondError(msg.ID, -32000, "occupied")
+				assert.NoError(t, codec.RespondError(msg.ID, -32000, "occupied"))
 			} else {
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: managedLMStudioBackendStart + 1})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: managedLMStudioBackendStart + 1}))
 			}
 		}
 	}()
@@ -449,11 +449,11 @@ func TestManagedLMStudioExhaustedFallbacksFinishOnlyThatEngine(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			attempts <- msg.Method
-			_ = codec.RespondError(msg.ID, -32000, "occupied")
+			assert.NoError(t, codec.RespondError(msg.ID, -32000, "occupied"))
 		}
 	}()
 
@@ -481,15 +481,15 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 	calls := make(chan string, 3)
 	go func() {
 		msg, err := settingsCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		calls <- msg.Method
-		_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": true})
+		assert.NoError(t, settingsCodec.Respond(msg.ID, map[string]bool{"value": true}))
 	}()
 	go func() {
 		status, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		calls <- status.Method
@@ -497,12 +497,12 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 			Engine string `json:"engine"`
 			Port   int    `json:"port"`
 		}
-		assert.False(t, json.Unmarshal(status.Params, &statusRequest) != nil ||
+		assert.False(t, !assert.NoError(t, json.Unmarshal(status.Params, &statusRequest)) ||
 			statusRequest.Engine != "lmstudio" || statusRequest.Port != managedLMStudioFacadePort, "engine:status params")
-		_ = engineCodec.Respond(status.ID, ollamaPortStatus{Running: true, Port: managedLMStudioFacadePort})
+		assert.NoError(t, engineCodec.Respond(status.ID, ollamaPortStatus{Running: true, Port: managedLMStudioFacadePort}))
 
 		setPort, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		calls <- setPort.Method
@@ -510,8 +510,8 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 			Engine string `json:"engine"`
 			Port   int    `json:"port"`
 		}
-		assert.False(t, json.Unmarshal(setPort.Params, &request) != nil || request.Engine != "lmstudio" || request.Port != managedLMStudioBackendStart, "engine:set-port params")
-		_ = engineCodec.Respond(setPort.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart})
+		assert.False(t, !assert.NoError(t, json.Unmarshal(setPort.Params, &request)) || request.Engine != "lmstudio" || request.Port != managedLMStudioBackendStart, "engine:set-port params")
+		assert.NoError(t, engineCodec.Respond(setPort.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart}))
 	}()
 
 	b.prepareManagedLMStudioFacadeWithPortCheck(func(port int) bool {
@@ -542,13 +542,13 @@ func TestPrepareUnmanagedLMStudioPreservesPortsAndWaitsForProxy(t *testing.T) {
 	go func() {
 		msg, err := settingsCodec.Read()
 		if err == nil {
-			_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": false})
+			assert.NoError(t, settingsCodec.Respond(msg.ID, map[string]bool{"value": false}))
 		}
 	}()
 	go func() {
 		msg, err := engineCodec.Read()
 		if err == nil {
-			_ = engineCodec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400})
+			assert.NoError(t, engineCodec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400}))
 		}
 	}()
 
@@ -589,7 +589,7 @@ func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
 		if err == nil {
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+			assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 		}
 	}()
 
@@ -638,7 +638,7 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			methods <- msg.Method
@@ -647,16 +647,16 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
 				requestedFallback <- request.Port
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			case lmstudioSetLocalBackend:
 				var backend proxyLocalBackend
-				_ = json.Unmarshal(msg.Params, &backend)
+				assert.NoError(t, json.Unmarshal(msg.Params, &backend))
 				localBackend <- backend
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			default:
-				_ = codec.RespondError(msg.ID, -32601, "unexpected method")
+				assert.NoError(t, codec.RespondError(msg.ID, -32601, "unexpected method"))
 			}
 		}
 	}()
@@ -701,7 +701,7 @@ func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			order <- msg.Method
@@ -709,20 +709,20 @@ func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			} else {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			}
 		}
 	}()
 	go func() {
 		msg, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		order <- msg.Method
-		_ = engineCodec.Respond(msg.ID, ollamaPortStatus{Port: 12400})
+		assert.NoError(t, engineCodec.Respond(msg.ID, ollamaPortStatus{Port: 12400}))
 	}()
 
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":12400}`))
@@ -758,7 +758,7 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			order <- msg.Method
@@ -766,21 +766,21 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
 				fallbackPort <- request.Port
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			} else {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			}
 		}
 	}()
 	go func() {
 		msg, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		order <- msg.Method
-		_ = engineCodec.Respond(msg.ID, ollamaPortStatus{Port: managedLMStudioBackendStart})
+		assert.NoError(t, engineCodec.Respond(msg.ID, ollamaPortStatus{Port: managedLMStudioBackendStart}))
 	}()
 
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":1235}`))
@@ -809,11 +809,11 @@ func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
 	go func() {
 		for i := 0; i < 2; i++ {
 			msg, err := engineCodec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			statusCalls <- struct{}{}
-			_ = engineCodec.RespondError(msg.ID, -32000, "status unavailable")
+			assert.NoError(t, engineCodec.RespondError(msg.ID, -32000, "status unavailable"))
 		}
 	}()
 	// Let the pre-fix local-backend call finish so an incorrect gate close is
@@ -822,10 +822,10 @@ func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+			assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 		}
 	}()
 
@@ -867,7 +867,7 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 		msg, err := oldEngineCodec.Read()
 		if err == nil {
 			oldStatus <- struct{}{}
-			_ = oldEngineCodec.RespondError(msg.ID, -32000, "manager exiting")
+			assert.NoError(t, oldEngineCodec.RespondError(msg.ID, -32000, "manager exiting"))
 		}
 	}()
 	restoreDone := make(chan bool, 1)
@@ -886,11 +886,11 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 	order := make(chan string, 4)
 	go func() {
 		status, err := newEngineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		order <- status.Method
-		_ = newEngineCodec.Respond(status.ID, ollamaPortStatus{Port: 12400})
+		assert.NoError(t, newEngineCodec.Respond(status.ID, ollamaPortStatus{Port: 12400}))
 
 		restore, err := newEngineCodec.Read()
 		if err == nil {
@@ -901,7 +901,7 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			order <- msg.Method
@@ -909,10 +909,10 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			} else {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			}
 		}
 	}()

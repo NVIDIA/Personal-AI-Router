@@ -393,7 +393,7 @@ func TestBothFacadesAddressTheirNotifications(t *testing.T) {
 		var msg struct {
 			Method string `json:"method"`
 		}
-		if json.Unmarshal(line, &msg) != nil {
+		if !assert.NoError(t, json.Unmarshal(line, &msg)) {
 			continue
 		}
 		engine, bare := engines.SplitAddressedMethod(msg.Method)

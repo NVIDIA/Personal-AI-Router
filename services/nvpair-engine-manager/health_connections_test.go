@@ -30,9 +30,10 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 				}
 				w.WriteHeader(status)
 				if chunked {
-					_ = http.NewResponseController(w).Flush()
+					assert.NoError(t, http.NewResponseController(w).Flush())
 				}
-				_, _ = io.WriteString(w, `{"models":[],"status":"responding"}`)
+				_, err := io.WriteString(w, `{"models":[],"status":"responding"}`)
+				assert.NoError(t, err)
 			}))
 			ex := &Executor{client: client}
 			probe := &Probe{HTTP: "http://127.0.0.1:{port}/api/version"}

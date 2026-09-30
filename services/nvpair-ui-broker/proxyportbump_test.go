@@ -36,14 +36,14 @@ func brokerWithRunningEngines(t *testing.T, ports ...int) *Broker {
 	go func() {
 		codec := NewCodec(server)
 		request, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		engines := make([]map[string]any, 0, len(ports))
 		for _, port := range ports {
 			engines = append(engines, map[string]any{"running": true, "port": port})
 		}
-		_ = codec.Respond(request.ID, map[string]any{"engines": engines})
+		assert.NoError(t, codec.Respond(request.ID, map[string]any{"engines": engines}))
 	}()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -68,7 +68,7 @@ func observeErrors(t *testing.T, b *Broker) <-chan *Message {
 		codec := NewCodec(server)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			select {
@@ -115,18 +115,18 @@ func TestReconcileUnmanagedProxyPortBumpsOffRunningEngine(t *testing.T) {
 	go func() {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var params struct {
 			Port int `json:"port"`
 		}
-		_ = json.Unmarshal(msg.Params, &params)
+		assert.NoError(t, json.Unmarshal(msg.Params, &params))
 		select {
 		case setPort <- params.Port:
 		default:
 		}
-		_ = codec.Respond(msg.ID, map[string]any{"port": params.Port})
+		assert.NoError(t, codec.Respond(msg.ID, map[string]any{"port": params.Port}))
 	}()
 
 	b.reconcileProxyPortOnReady(11435)
@@ -233,23 +233,23 @@ func serveFacadeEnable(t *testing.T, conn net.Conn, reject map[int]bool, attempt
 		codec := NewCodec(conn)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			if msg.Method != "facade/enable" {
 				continue
 			}
 			var spec enableFacadeRequest
-			if err := json.Unmarshal(msg.Params, &spec); err != nil {
+			if err := json.Unmarshal(msg.Params, &spec); !assert.NoError(t, err) {
 				return
 			}
 			attempts <- spec
 			if reject[spec.Port] {
-				_ = codec.RespondError(msg.ID, codeFacadeBindFailed,
-					fmt.Sprintf("facade bind failed: port %d: address already in use", spec.Port))
+				assert.NoError(t, codec.RespondError(msg.ID, codeFacadeBindFailed,
+					fmt.Sprintf("facade bind failed: port %d: address already in use", spec.Port)))
 				continue
 			}
-			_ = codec.Respond(msg.ID, enableFacadeReply{Engine: spec.Engine, Port: spec.Port})
+			assert.NoError(t, codec.Respond(msg.ID, enableFacadeReply{Engine: spec.Engine, Port: spec.Port}))
 		}
 	}()
 }
@@ -315,16 +315,16 @@ func TestFacadeEnableRejectionIsNotRetried(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			var spec enableFacadeRequest
-			if json.Unmarshal(msg.Params, &spec) != nil {
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &spec)) {
 				return
 			}
 			attempts <- spec
 			// -32602 is what an unknown engine or an unsupported alias returns.
-			_ = codec.RespondError(msg.ID, -32602, "unknown engine \"nope\"")
+			assert.NoError(t, codec.RespondError(msg.ID, -32602, "unknown engine \"nope\""))
 		}
 	}()
 

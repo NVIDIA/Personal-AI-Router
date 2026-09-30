@@ -81,10 +81,12 @@ func TestHandleHTTP_HeadersWithoutContentFailsOver(t *testing.T) {
 
 		var servedBody string
 		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			b, _ := io.ReadAll(r.Body)
+			b, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
 			servedBody = string(b)
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err = io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		defer good.Close()
 
@@ -153,7 +155,8 @@ func TestHandleHTTP_FirstBytePreservedOnCommit(t *testing.T) {
 		const payload = `{"response":"whole body intact","done":true}`
 		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, payload)
+			_, err := io.WriteString(w, payload)
+			assert.NoError(t, err)
 		}))
 		defer good.Close()
 

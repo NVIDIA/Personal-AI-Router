@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +24,10 @@ func TestSettingsDerivesCORSGuardFromAuthenticatedCaller(t *testing.T) {
 	h := newSettingsHarness(t)
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	uri, _ := url.Parse("urn:nvpair:node:paired-caller")
+	uri, err := url.Parse("urn:nvpair:node:paired-caller")
+	if !assert.NoError(t, err) {
+		return
+	}
 	cert := &x509.Certificate{SerialNumber: big.NewInt(1), URIs: []*url.URL{uri}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
 	require.NoError(t, err)

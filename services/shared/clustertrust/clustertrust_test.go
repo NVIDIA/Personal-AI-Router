@@ -30,8 +30,10 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM, der []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err, "genkey")
-	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	uri, _ := url.Parse(nodeURISANPrefix + uuid)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	assert.NoError(t, err, "generate certificate serial")
+	uri, err := url.Parse(nodeURISANPrefix + uuid)
+	require.NoError(t, err, "parse certificate URI")
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: uuid},
@@ -44,7 +46,8 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM, der []byte) {
 	}
 	der, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
 	require.NoError(t, err, "create cert")
-	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	assert.NoError(t, err, "marshal private key")
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM, der
@@ -54,7 +57,8 @@ func writePin(t *testing.T, clusterDir, uuid, certPEM string) {
 	t.Helper()
 	dir := filepath.Join(clusterDir, "trusted")
 	require.NoError(t, os.MkdirAll(dir, 0o700), "mkdir trusted")
-	body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": certPEM})
+	body, err := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": certPEM})
+	assert.NoError(t, err, "marshal peer pin")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, uuid+".json"), body, 0o600), "write pin")
 }
 
@@ -77,8 +81,8 @@ func TestLoadIdentityAndUUID(t *testing.T) {
 func TestTrustPinMatchAndGate(t *testing.T) {
 	dir := t.TempDir()
 	selfCert, selfKey, _ := genLeaf(t, "uuid-self")
-	_ = os.WriteFile(filepath.Join(dir, "node.crt"), selfCert, 0o644)
-	_ = os.WriteFile(filepath.Join(dir, "node.key"), selfKey, 0o600)
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), selfCert, 0o644))
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), selfKey, 0o600))
 	id, err := LoadIdentity(dir)
 	require.NoError(t, err, "LoadIdentity")
 
@@ -181,8 +185,9 @@ func TestTrustReloadAndTamperSkip(t *testing.T) {
 
 	// A tampered file (filename UUID != cert principal) is skipped.
 	cPEM, _, _ := genLeaf(t, "uuid-c")
-	body, _ := json.Marshal(map[string]string{"nodeUuid": "uuid-wrong", "certPem": string(cPEM)})
-	_ = os.WriteFile(filepath.Join(dir, "trusted", "uuid-wrong.json"), body, 0o600)
+	body, err := json.Marshal(map[string]string{"nodeUuid": "uuid-wrong", "certPem": string(cPEM)})
+	assert.NoError(t, err, "marshal mismatched peer pin")
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, "trusted", "uuid-wrong.json"), body, 0o600))
 	tr.Reload()
 	assert.Equal(t, 2, tr.Count(), "tampered pin must be skipped, count")
 }

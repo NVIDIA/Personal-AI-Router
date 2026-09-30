@@ -38,7 +38,7 @@ func TestReloadKeepsPinsWhenDirUnreadable(t *testing.T) {
 
 	trusted := filepath.Join(clusterDir, "trusted")
 	require.NoError(t, os.Chmod(trusted, 0o000), "chmod trusted")
-	t.Cleanup(func() { _ = os.Chmod(trusted, 0o700) })
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(trusted, 0o700), "restore trusted directory permissions") })
 
 	trust.Reload()
 	_, ok = trust.DER("uuid-peer")

@@ -58,7 +58,7 @@ func TestFailedNotificationRetriesWithoutChangingRanks(t *testing.T) {
 			m.recomputeAll(false)
 			m.recomputeAll(false)
 			for _, engine := range schedulerEngines {
-				orders := writer.orders(engine)
+				orders := writer.orders(t, engine)
 				require.Len(t, orders, 1, " (%v)", engine)
 				assertStrs(t, orders[0], []string{"test-node-a", "test-node-b"})
 				assert.NotEqual(t, int64(0), m.status().Engines[engine].LastEmittedAt, "successful delivery was not recorded")
@@ -80,7 +80,7 @@ func TestFailedChangedNotificationRetainsDeliveredRanks(t *testing.T) {
 	assert.Equal(t, previous.Emitted, current.Emitted, "failed update replaced the last successfully delivered snapshot")
 	assert.Equal(t, previous.LastEmittedAt, current.LastEmittedAt, "failed update replaced the last successfully delivered snapshot")
 	m.recomputeAll(false)
-	orders := writer.orders(engine)
+	orders := writer.orders(t, engine)
 	require.Len(t, orders, 2, "received")
 	assertStrs(t, orders[1], []string{"test-node-a", "test-node-b", "test-node-c"})
 }
@@ -95,5 +95,5 @@ func TestFailedForcedNotificationRetainsDeliveredTimestamp(t *testing.T) {
 	m.recomputeAll(true)
 	assert.Equal(t, int64(1), m.status().Engines[engine].LastEmittedAt, "failed forced delivery advanced timestamp")
 	m.recomputeAll(false)
-	assert.Len(t, writer.orders(engine), 1, "previously delivered unchanged ranks were emitted")
+	assert.Len(t, writer.orders(t, engine), 1, "previously delivered unchanged ranks were emitted")
 }

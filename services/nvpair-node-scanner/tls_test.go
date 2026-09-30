@@ -78,13 +78,14 @@ func TestFetchNodeInfoTLSClientSelection(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(want)
+		assert.NoError(t, json.NewEncoder(w).Encode(want))
 	}))
 	defer srv.Close()
 
 	host, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
 	require.NoError(t, err)
-	port, _ := strconv.Atoi(portStr)
+	port, err := strconv.Atoi(portStr)
+	assert.NoError(t, err)
 
 	// With the TLS client (which trusts the test server), the HTTPS fetch works.
 	dTLS := &daemon{http: &http.Client{Timeout: nodeInfoFetchTimeout}, tlsHTTP: srv.Client()}

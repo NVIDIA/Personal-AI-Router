@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,7 +61,8 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 			rejoin: func(m *Manager, _ pinFixture) {
 				// The broker reflecting its still-persisted clusterId (same id)
 				// after the node has already been unclustered by the teardown.
-				params, _ := json.Marshal(map[string]string{"clusterId": "cluster-1", "clusterFriendlyName": "Restored"})
+				params, err := json.Marshal(map[string]string{"clusterId": "cluster-1", "clusterFriendlyName": "Restored"})
+				assert.NoError(t, err)
 				m.handleSetIdentity(&Message{Params: params})
 			},
 			assertDone: func(t *testing.T, m *Manager, p1, _ pinFixture) {
@@ -76,10 +78,10 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 			rejoin: func(m *Manager, p2 pinFixture) {
 				m.withClusterComposition(func() {
 					m.setClusterIdentity("cluster-2", "Rejoined")
-					_ = m.trust.Pin(&TrustedPin{
+					assert.NoError(t, m.trust.Pin(&TrustedPin{
 						NodeUUID: p2.uuid, NodeID: "peer-2", ClusterID: "cluster-2",
 						CertPem: p2.cert, CertFingerprint: p2.fp, PinnedAt: time.Now().UnixMilli(),
-					})
+					}))
 					m.upsertMember(&ClusterNode{NodeUUID: p2.uuid, ID: "peer-2", ClusterID: "cluster-2", State: stateMember})
 					m.addSelfMember()
 				})

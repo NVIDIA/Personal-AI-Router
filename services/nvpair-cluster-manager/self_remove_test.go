@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,18 +22,36 @@ import (
 // cluster, signed by the peer (whose cert the victim still pins). This mirrors
 // what handleRoster (rejectRosterReconcile) attaches on the not-pinned path, so
 // the victim's rejectionProvesRemoval accepts it as authenticated proof.
-func selfRemovalProof(peer, victim *Manager, cluster string) []byte {
+func selfRemovalProof(t *testing.T, peer, victim *Manager, cluster string) []byte {
+	t.Helper()
 	_, victimEpoch := victim.currentAdmission()
 	proof, err := peer.newRemovalProof(victim.identity.NodeUUID, victimEpoch)
 	if err != nil {
 		panic(err)
 	}
 	proof = peer.withLocalRelayEndorsement(proof)
-	b, _ := json.Marshal(rosterRejection{
+	b, err := json.Marshal(rosterRejection{
 		Tombstones:    []Tombstone{proof.Tombstone},
 		RemovalProofs: []RemovalProof{proof},
 	})
+	assert.NoError(t, err)
 	return b
+}
+
+func writeTestResponse(t *testing.T, w http.ResponseWriter, body []byte) {
+	t.Helper()
+	_, err := w.Write(body)
+	assert.NoError(t, err)
+}
+
+func serveTestHTTP(t *testing.T, srv *http.Server, ln net.Listener) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ln) }()
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Close())
+		assert.ErrorIs(t, <-done, http.ErrServerClosed)
+	})
 }
 
 // TestSelfRemoveGuardStaleVerdict is the regression for the TOCTOU flagged in
@@ -97,21 +116,19 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			// guard rather than the "no proof, stay put" path. In the rejoin case
 			// mA's current cluster no longer matches the tombstone, so the proof no
 			// longer applies — which the guard also (correctly) treats as staying.
-			proofBody := selfRemovalProof(peer, mA, "cluster-1")
+			proofBody := selfRemovalProof(t, peer, mA, "cluster-1")
 			mux := http.NewServeMux()
 			mux.HandleFunc(rosterPath, func(w http.ResponseWriter, r *http.Request) {
 				once.Do(func() { close(entered) })
 				<-release
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				_, _ = w.Write(proofBody)
+				writeTestResponse(t, w, proofBody)
 			})
 			ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
 			require.NoError(t, err, "listen")
-			defer ln.Close()
 			srv := &http.Server{Handler: mux}
-			go func() { _ = srv.Serve(ln) }()
-			defer srv.Close()
+			serveTestHTTP(t, srv, ln)
 
 			mA.upsertMember(&ClusterNode{
 				NodeUUID:  peer.identity.NodeUUID,
@@ -168,25 +185,23 @@ func startPeerStub(t *testing.T, m *Manager, id string, status int, proof bool) 
 	var proofBody []byte
 	if proof && status == http.StatusForbidden {
 		cid, _ := m.clusterIdentity()
-		proofBody = selfRemovalProof(peer, m, cid)
+		proofBody = selfRemovalProof(t, peer, m, cid)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(rosterPath, func(w http.ResponseWriter, r *http.Request) {
 		if status == http.StatusOK {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{}`))
+			writeTestResponse(t, w, []byte(`{}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write(proofBody) // nil body ⇒ a bare 403 with no removal proof
+		writeTestResponse(t, w, proofBody) // nil body ⇒ a bare 403 with no removal proof
 	})
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
 	require.NoError(t, err, "listen")
-	t.Cleanup(func() { _ = ln.Close() })
 	srv := &http.Server{Handler: mux}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
+	serveTestHTTP(t, srv, ln)
 
 	m.upsertMember(&ClusterNode{
 		NodeUUID:       peer.identity.NodeUUID,

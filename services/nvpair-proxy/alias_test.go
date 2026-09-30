@@ -49,7 +49,8 @@ func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 	rec := &recRW{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"message":"from-upstream"}`)
+		_, err := io.WriteString(w, `{"message":"from-upstream"}`)
+		assert.NoError(t, err)
 	}))
 	defer upstream.Close()
 
@@ -72,8 +73,9 @@ func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 		t.Helper()
 		resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/api/chat", port), "application/json", strings.NewReader(`{"model":"test"}`))
 		require.NoError(t, err, "POST through port (%v, %v)", port, err)
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err)
+		assert.NoError(t, resp.Body.Close())
 		require.Equal(t, http.StatusOK, resp.StatusCode, "port (%v, %v)", port, body)
 		require.Contains(t, string(body), "from-upstream", "port (%v, %v)", port, body)
 	}
@@ -96,7 +98,8 @@ func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 func TestOccupiedLoopbackAliasLeavesOwnerAndPrimaryRunning(t *testing.T) {
 	rec := &recRW{}
 	owner := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "owner")
+		_, err := io.WriteString(w, "owner")
+		assert.NoError(t, err)
 	}))
 	owner.Listener = mustLoopbackListener(t)
 	owner.Start()
@@ -117,13 +120,14 @@ func TestOccupiedLoopbackAliasLeavesOwnerAndPrimaryRunning(t *testing.T) {
 
 	resp, err := http.Get(owner.URL)
 	require.NoError(t, err, "existing owner was disrupted")
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
 	require.Equal(t, "owner", string(body), "existing owner response (%v)", body)
 	if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", primaryPort), time.Second); err != nil {
 		require.FailNow(t, fmt.Sprintf("primary stopped after alias conflict: %v", err))
 	} else {
-		_ = conn.Close()
+		assert.NoError(t, conn.Close())
 	}
 	if !rec.has(ollamaHostAliasBlockedID) || !rec.has(`"severity":"warning"`) || !rec.has(`"action":"none"`) || !rec.has("No process was stopped") {
 		rec.mu.Lock()
@@ -165,7 +169,7 @@ func TestAliasSelfTargetMatchesBoundLoopbackAddressNotPortAlone(t *testing.T) {
 		t.Skipf("no second loopback address available on this host: %v", err)
 	}
 	aliasPort := probe.Addr().(*net.TCPAddr).Port
-	_ = probe.Close()
+	assert.NoError(t, probe.Close())
 
 	disc := NewDiscovery()
 	disc.AddManual(Node{ID: "alias-self", Addresses: []string{"127.0.0.2"}, Port: aliasPort})
@@ -236,11 +240,11 @@ func TestLoopbackAliasOwnsBothLocalhostFamilies(t *testing.T) {
 			t.Skipf("IPv6 loopback unavailable: %v", err)
 		}
 		candidate := ipv6.Addr().(*net.TCPAddr).Port
-		_ = ipv6.Close()
+		assert.NoError(t, ipv6.Close())
 		ipv4, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", candidate))
 		if err == nil {
 			port = candidate
-			_ = ipv4.Close()
+			assert.NoError(t, ipv4.Close())
 		}
 	}
 	require.NotEqual(t, 0, port, "could not find a port free on both loopback families")
@@ -258,7 +262,7 @@ func TestLoopbackAliasOwnsBothLocalhostFamilies(t *testing.T) {
 	} {
 		conn, err := net.DialTimeout("tcp", address, time.Second)
 		require.NoError(t, err, "dial reserved alias (%v, %v)", address, err)
-		_ = conn.Close()
+		assert.NoError(t, conn.Close())
 	}
 }
 
@@ -273,7 +277,7 @@ func TestDualAliasBindIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Skipf("matching IPv4 loopback port unavailable: %v", err)
 	}
-	_ = probe.Close()
+	assert.NoError(t, probe.Close())
 
 	p := newTestProxy(ollamaOnlyProfile(t), NewCodec(rwNop{}), NewDiscovery(), freeTCPPort(t))
 	require.NoError(t, p.soleFacade().setLoopbackAlias(fmt.Sprintf("127.0.0.1:%d", port)))
@@ -283,7 +287,7 @@ func TestDualAliasBindIsAtomic(t *testing.T) {
 	require.Nil(t, p.soleFacade().aliasAltLn, "partial localhost ownership survived an alternate-family bind failure")
 	rebound, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	require.NoError(t, err, "IPv4 alias was not released after atomic bind failure")
-	_ = rebound.Close()
+	assert.NoError(t, rebound.Close())
 }
 
 func mustLoopbackListener(t *testing.T) net.Listener {

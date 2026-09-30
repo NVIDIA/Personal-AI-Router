@@ -77,7 +77,8 @@ func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		_, _ = w.Write([]byte("ok"))
+		_, err := w.Write([]byte("ok"))
+		assert.NoError(t, err, "write peer response")
 	}))
 	srv.TLS = selfMesh.ServerTLSConfig()
 	srv.StartTLS()
@@ -112,7 +113,8 @@ func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
 	require.NoError(t, err, "self->self")
 	assert.Equal(t, http.StatusOK, code, "self->self")
 	// Stranger completes the handshake (it pins self) but self doesn't pin it: 403.
-	code, _ = do(mustConfig(strangerMesh.ClientTLSConfig("uuid-self")))
+	code, err = do(mustConfig(strangerMesh.ClientTLSConfig("uuid-self")))
+	assert.NoError(t, err, "request as unpinned client")
 	assert.Equal(t, http.StatusForbidden, code, "stranger->self")
 	// self cannot even build a client to an unpinned stranger (client-side gate).
 	_, ok := selfMesh.ClientTLSConfig("uuid-stranger")
@@ -137,7 +139,8 @@ func TestMesh_ServerTLSConfig_FollowsMembershipOnOneListener(t *testing.T) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		_, _ = w.Write([]byte("ok"))
+		_, err := w.Write([]byte("ok"))
+		assert.NoError(t, err, "write peer response")
 	}))
 	srv.TLS = selfMesh.ServerTLSConfig()
 	srv.StartTLS()

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,7 +78,8 @@ func TestRunOpInstallAutostart(t *testing.T) {
 	id := json.RawMessage("1")
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:install",
 		Params: json.RawMessage(`{"engine":"fake","start":true}`)})
-	st, _ := ex.Status("fake")
+	st, err := ex.Status("fake")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "expected running after install+autostart (%v)", st)
 }
 
@@ -102,8 +104,10 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 			m := NewManager(NewCodec(managerConn), ex, nil)
 			id := json.RawMessage("1")
 			response := make(chan string, 1)
+			readErr := make(chan error, 1)
 			go func() {
-				line, _ := bufio.NewReader(clientConn).ReadString('\n')
+				line, err := bufio.NewReader(clientConn).ReadString('\n')
+				readErr <- err
 				response <- line
 			}()
 
@@ -133,6 +137,7 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 			st.opMu.Unlock()
 			select {
 			case line := <-response:
+				assert.NoError(t, <-readErr)
 				require.Contains(t, line, `"id":1`)
 			case <-time.After(2 * time.Second):
 				require.FailNowf(t, "no response after the engine operation completed", "method %s", tc.method)

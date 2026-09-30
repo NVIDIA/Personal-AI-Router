@@ -139,7 +139,8 @@ func TestHTTPIngestReconciles(t *testing.T) {
 		NodeID: "node-b",
 		Errors: []ServiceError{localErr("b:one", "node-b", 1000)},
 	}
-	body, _ := json.Marshal(env)
+	body, err := json.Marshal(env)
+	assert.NoError(t, err, "marshal sync envelope")
 	resp, err := client.Post(srv.URL+"/v1/errors", "application/json", bytes.NewReader(body))
 	require.NoError(t, err, "POST")
 	defer resp.Body.Close()
@@ -157,7 +158,8 @@ func TestHTTPIngestRejectsMissingNodeID(t *testing.T) {
 	m := managerForNode("node-a")
 	srv, client := servePinnedErrorsMux(t, m)
 
-	body, _ := json.Marshal(errors.SyncEnvelope{Errors: []ServiceError{localErr("x", "node-b", 1)}})
+	body, err := json.Marshal(errors.SyncEnvelope{Errors: []ServiceError{localErr("x", "node-b", 1)}})
+	assert.NoError(t, err, "marshal sync envelope without node ID")
 	resp, err := client.Post(srv.URL+"/v1/errors", "application/json", bytes.NewReader(body))
 	require.NoError(t, err, "POST")
 	defer resp.Body.Close()

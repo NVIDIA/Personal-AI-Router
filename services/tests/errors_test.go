@@ -6,6 +6,7 @@ package tests
 import (
 	"bufio"
 	"encoding/json"
+	stdErrors "errors"
 	"io"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/errors"
@@ -50,7 +52,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	out := startBrokerStream(stdout)
+	out := startBrokerStream(t, stdout)
 
 	// First frame: the subprocess emits "ready" right after startup.
 	waitForMethodOrTimeout(t, out, "ready", 5*time.Second)
@@ -61,7 +63,8 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	// scoped to local-origin entries for cross-node correctness)
 	// resolves against the reports — a fixed fake nodeId would no
 	// longer match the binary's real hostname.
-	localNode, _ := os.Hostname()
+	localNode, err := os.Hostname()
+	assert.NoError(t, err)
 
 	// 1. errors:report (REQUEST form, id=1). Expect a null response,
 	//    then an errors:update notification with the new entry.
@@ -146,7 +149,8 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 // startBrokerStream is a jsonrpc.Message-emitting version of
 // startMsgReader. Inline to avoid touching the shared helper, which
 // other tests use with the slimmer jsonrpc.Message shape.
-func startBrokerStream(r io.Reader) <-chan jsonrpc.Message {
+func startBrokerStream(t *testing.T, r io.Reader) <-chan jsonrpc.Message {
+	t.Helper()
 	ch := make(chan jsonrpc.Message, 64)
 	go func() {
 		defer close(ch)
@@ -154,17 +158,13 @@ func startBrokerStream(r io.Reader) <-chan jsonrpc.Message {
 		scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
 		for scanner.Scan() {
 			var msg jsonrpc.Message
-			if json.Unmarshal(scanner.Bytes(), &msg) == nil {
+			if assert.NoError(t, json.Unmarshal(scanner.Bytes(), &msg)) {
 				ch <- msg
 			}
 		}
-		// Scanner exits on EOF, ErrTooLong, or an underlying
-		// read error. Surface the read-error case so a hung
-		// subprocess doesn't masquerade as a clean close — but
-		// only as a log line, since failing the test from a
-		// goroutine on EOF-vs-error confusion would mask the
-		// real assertion failure.
-		_ = scanner.Err()
+		if err := scanner.Err(); !stdErrors.Is(err, os.ErrClosed) {
+			assert.NoError(t, err)
+		}
 	}()
 	return ch
 }

@@ -56,7 +56,7 @@ func relayHarness(t *testing.T) (*Broker, <-chan *Message) {
 	go func() {
 		codec := NewCodec(scannerSide)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		// Deliberately does NOT respond: a liveness report is a notification, so
@@ -210,7 +210,7 @@ func TestActivityIsNotForwardedToClients(t *testing.T) {
 	go func() {
 		codec := NewCodec(uiSide)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		toClient <- msg

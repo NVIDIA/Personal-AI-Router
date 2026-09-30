@@ -43,7 +43,8 @@ func (s *modelsStub) set(status int, body map[string]any) {
 	s.mu.Unlock()
 }
 
-func (s *modelsStub) handler() http.HandlerFunc {
+func (s *modelsStub) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -57,7 +58,7 @@ func (s *modelsStub) handler() http.HandlerFunc {
 		}
 		w.WriteHeader(status)
 		if body != nil {
-			_ = json.NewEncoder(w).Encode(body)
+			assert.NoError(t, json.NewEncoder(w).Encode(body))
 		}
 	}
 }
@@ -68,7 +69,7 @@ func startModelsStub(t *testing.T, status int, body map[string]any) (*modelsStub
 	t.Helper()
 	stub := &modelsStub{}
 	stub.set(status, body)
-	srv := httptest.NewServer(stub.handler())
+	srv := httptest.NewServer(stub.handler(t))
 	t.Cleanup(srv.Close)
 	return stub, portFromURL(t, srv.URL)
 }
@@ -420,7 +421,7 @@ func TestRefreshOnceConcurrentSlowPeers(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		entered <- struct{}{}
 		<-release // hold until both peers are concurrently in-flight
-		_ = json.NewEncoder(w).Encode(map[string]any{"models": []string{"m"}})
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"models": []string{"m"}}))
 	}
 	s1 := httptest.NewServer(http.HandlerFunc(handler))
 	s2 := httptest.NewServer(http.HandlerFunc(handler))

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/clustertrust"
@@ -49,7 +50,7 @@ func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"models": []string{"m"}})
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"models": []string{"m"}}))
 	})
 	ts := httptest.NewUnstartedServer(mux)
 	ts.Config.ConnState = func(_ net.Conn, state http.ConnState) {

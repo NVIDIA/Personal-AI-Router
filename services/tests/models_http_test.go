@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grandcat/zeroconf"
@@ -34,7 +35,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 		}
 		// Flat union + per-engine attribution, exactly the shape engine-manager's
 		// ModelsResult serializes. The daemon must enrich both onto the node.
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 			"models": []string{"llama3:8b", "qwen:0.5b", "org/router-model-GGUF:Q4_K_M"},
 			"modelsByEngine": map[string][]string{
 				"ollama":   {"llama3:8b"},
@@ -46,7 +47,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 				"lmstudio": {},
 				"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 			},
-		})
+		}))
 	}))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
@@ -79,7 +80,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 			require.True(t, ok, "broker stream closed unexpectedly")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
-				if json.Unmarshal(msg.Result, &res) == nil {
+				if assert.NoError(t, json.Unmarshal(msg.Result, &res)) {
 					if n, found := findNode(res.Nodes, instance); found &&
 						modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
 						loadedByEngineMatch(n.LoadedByEngine) {
