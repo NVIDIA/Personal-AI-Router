@@ -10,14 +10,19 @@ import (
 	"strings"
 )
 
+// lsof -F field output starts each line with a one-letter field identifier.
+const (
+	lsofFieldFD   = "f"   // a descriptor, e.g. "ftxt"
+	lsofFieldName = "n"   // the path of the descriptor before it
+	lsofTextFD    = "txt" // the running image and the libraries it loaded
+)
+
 // procImage resolves a PID's executable path with lsof.
 //
-// macOS has no /proc, and this is the check that decides whether a listener on
-// our managed port is our own engine binary. Returning "" unconditionally — as
-// this did before there was a macOS implementation — made that check fail closed
-// forever: an engine PAIR started but lost the handle to could never be
-// reclaimed, so the operator's stop was refused every time with "running under
-// external management", and uninstall failed with it.
+// macOS has no /proc, and this is what decides whether a listener on PAIR's
+// managed port is PAIR's own engine binary. An empty result makes that check
+// fail closed, so a stop or uninstall of an engine PAIR started but lost the
+// handle to is refused.
 //
 // The `txt` descriptor is the running image as the kernel records it, not argv,
 // so it is right even for a process launched through a PATH lookup and cannot be
@@ -39,7 +44,7 @@ func procImageVia(lsof string, pid int) string {
 	// -w suppresses the warnings that make lsof exit non-zero; runTool owns the
 	// rule about when a non-zero exit still carries a usable answer, so the two
 	// lookups on the path to a kill cannot drift apart on it.
-	out := runTool(lsof, "-w", "-p", strconv.Itoa(pid), "-Fn", "-a", "-d", "txt")
+	out := runTool(lsof, "-w", "-p", strconv.Itoa(pid), "-F"+lsofFieldName, "-a", "-d", lsofTextFD)
 	// No records: the process is not ours, or it has already gone. Fail closed.
 	if len(out) == 0 {
 		return ""
@@ -51,15 +56,15 @@ func procImageVia(lsof string, pid int) string {
 	inText := false
 	for _, line := range strings.Split(string(out), "\n") {
 		switch {
-		case strings.HasPrefix(line, "f"):
-			inText = line == "ftxt"
-		case inText && strings.HasPrefix(line, "n"):
+		case strings.HasPrefix(line, lsofFieldFD):
+			inText = line == lsofFieldFD+lsofTextFD
+		case inText && strings.HasPrefix(line, lsofFieldName):
 			// Only a stray CR is stripped. lsof treats space as printable
 			// outside the COMMAND column, so a path really ending in a space is
 			// reported verbatim; trimming it would let "/dir/engine " compare
 			// equal to the managed "/dir/engine" and widen a check that
 			// authorizes a kill.
-			return strings.TrimSuffix(line[1:], "\r")
+			return strings.TrimSuffix(line[len(lsofFieldName):], "\r")
 		}
 	}
 	return ""
