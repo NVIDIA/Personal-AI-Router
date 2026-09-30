@@ -209,15 +209,11 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		plat:     plat,
 		logs:     newLogBuffer(),
 		port:     plat.Runtime.Port,
-		// Resolved so the {install_dir} an uninstall command deletes names the
-		// same location the containment guard checks.
-		//
-		// Best-effort, not a guarantee: state() is usually first called before
-		// the engine is installed, when this directory does not exist and
-		// resolution is a no-op, and the value is then cached. The guard in
-		// isManagedInstallPath resolves again at call time, so correctness rests
-		// on that rather than on this being current.
-		installDir: resolveForCompare(filepath.Join(e.baseDir, engine)),
+		// Kept as configured, not resolved: manifest commands substitute it as
+		// {install_dir}, and an uninstall's rm -rf or rmdir /s /q must act on the
+		// path PAIR owns, never on a directory a symlink there points to.
+		// isManagedInstallPath resolves it when it compares.
+		installDir: filepath.Join(e.baseDir, engine),
 	}
 	e.engines[engine] = st
 	return st, nil

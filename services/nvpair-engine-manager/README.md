@@ -171,17 +171,14 @@ would only collide on the port. Consequences worth knowing:
   exercised somewhere (the Linux `services` job excludes it by build tag).
   `ss` is iproute2 and therefore Linux-only; macOS has no equivalent fallback,
   so `lsof` is the single mechanism there.
-- **A symlinked install directory is followed to its target.** If
-  `<baseDir>/<engine>` is a symlink, the containment guard resolves it, so a
-  binary under the target counts as managed and an uninstall removes the
-  engine's real files rather than leaving them behind a deleted link. That is
-  the useful answer for someone who symlinks `engine-bin` onto a larger disk,
-  and it is deliberately the opposite of the rule one level down: a symlink
+- **A symlinked install directory counts as managed; a symlink inside it does
+  not.** If `<baseDir>/<engine>` is a symlink, the containment guard resolves
+  it when it checks, so a binary under the target counts as managed. A symlink
   *inside* the install directory pointing outward is judged outside it, so a
-  planted link cannot nominate an unrelated file. `st.installDir` is resolved
-  when the engine's state is first built, which is usually before the directory
-  exists — the guard resolves again at call time, so it is the guard, not the
-  cached value, that decides.
+  planted link cannot nominate an unrelated file. Manifest commands receive
+  `{install_dir}` as configured, unresolved, so an uninstall's `rm -rf` or
+  `rmdir /s /q` removes a linked install directory's link, not the directory
+  it points to.
 - **`engine:stop` may return an error while still saving OFF.** When stop
   declines a foreign listener it returns an actionable error, but the user's
   OFF choice is persisted anyway — UI layers should treat the saved desired
