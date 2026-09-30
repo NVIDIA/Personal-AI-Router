@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,8 +68,12 @@ func TestHandleHTTPRejectsOversizedBody(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if !strings.Contains(rec.Body.String(), "request body exceeds") {
-		t.Errorf("413 body = %q, want it to name the limit", rec.Body.String())
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("413 body is not valid JSON: %v (body = %q)", err, rec.Body.String())
+	}
+	if payload["error"] != "request body exceeds 32 MiB limit" {
+		t.Errorf("413 error = %q, want %q", payload["error"], "request body exceeds 32 MiB limit")
 	}
 }
 
