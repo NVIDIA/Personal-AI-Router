@@ -50,7 +50,7 @@ func TestOwnerLookupIgnoresPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	if normalizeEngineImage(image) != normalizeEngineImage(want) {
+	if !isOurEngineImage(image, want) {
 		t.Errorf("image = %q, want the running binary %q", image, want)
 	}
 }

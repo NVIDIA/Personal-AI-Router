@@ -152,15 +152,12 @@ func terminatePID(pid int, grace time.Duration, stillOurs func(int) bool) {
 // resolveForCompare cleans a path and resolves symlinks so two names for one
 // location compare equal.
 //
-// Every path comparison here has one side that came from the OS and one that
-// came from configuration, and only the OS side is resolved. On macOS the
-// kernel reports /private/var/... where the configured path says /var/...,
-// because /var is a symlink; compared textually, one file looks like two. In
-// the ownership checks that reads as "some other process took our port" and
-// declines an action that should have been allowed.
-//
-// Both sides of a comparison must go through this, or the mismatch simply moves
-// from one check to the next.
+// Every ownership comparison here has one side the OS reported and one side
+// that came from configuration. The OS side is already canonical: macOS
+// reports /private/var/... where the configured path says /var/..., because
+// /var is a symlink. So the configured side goes through this, and the OS side
+// does not: resolving it too would let a symlink created after exec change
+// which configured binary a running process appears to be.
 //
 // Resolution is best-effort: a path that no longer exists on disk cannot be
 // resolved, and its cleaned form is still the most specific thing available.
@@ -177,11 +174,11 @@ func resolveForCompare(path string) string {
 	return filepath.Clean(path)
 }
 
-// normalizeEngineImage cleans an executable path for comparison. Linux
-// /proc/<pid>/exe can suffix " (deleted)" when the file was replaced while
-// the process still runs.
+// normalizeEngineImage cleans an OS-reported executable path for comparison.
+// It is not resolved; see resolveForCompare. Linux /proc/<pid>/exe can suffix
+// " (deleted)" when the file was replaced while the process still runs.
 func normalizeEngineImage(path string) string {
-	return resolveForCompare(strings.TrimSuffix(path, " (deleted)"))
+	return filepath.Clean(strings.TrimSuffix(path, " (deleted)"))
 }
 
 // isOurEngineImage reports whether the listener on our managed port is
@@ -194,7 +191,7 @@ func isOurEngineImage(image, binPath string) bool {
 	if image == "" || binPath == "" {
 		return false
 	}
-	return strings.EqualFold(normalizeEngineImage(image), normalizeEngineImage(binPath))
+	return strings.EqualFold(normalizeEngineImage(image), resolveForCompare(binPath))
 }
 
 // isManagedInstallPath reports whether binPath is inside this engine's
@@ -205,7 +202,7 @@ func isManagedInstallPath(binPath, installDir string) bool {
 	if binPath == "" || installDir == "" {
 		return false
 	}
-	binAbs, err := filepath.Abs(normalizeEngineImage(binPath))
+	binAbs, err := filepath.Abs(resolveForCompare(binPath))
 	if err != nil {
 		return false
 	}
