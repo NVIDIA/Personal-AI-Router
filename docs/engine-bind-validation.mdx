@@ -60,5 +60,6 @@ broker caller should be able to opt into per start.
   `192.168.1.5`, and `::` are rejected; `not-an-ip` is rejected as invalid;
   `127.0.0.1` and `::1` pass validation. Run with
   `go test -race ./...` from `services/nvpair-engine-manager`.
-- Component version bumped per `services/VERSIONING.md`:
-  `nvpair-engine-manager` 0.17.4 → 0.17.5.
+- Component bump declared in the PR's release-intent block
+  (`nvpair-engine-manager: patch`); `services/versions.json` is
+  automation-managed per `services/VERSIONING.md`.
