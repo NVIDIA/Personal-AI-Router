@@ -142,14 +142,13 @@ func lsofPID(port int) (int, bool) {
 // It is the PID-addressed kill used only by the orphan reclaim (a process we lost
 // the *exec.Cmd handle to), distinct from the normal graceful-only stop() path.
 //
-// The group is signalled only when the target leads it, so force still reaches
-// forked helpers (model runners and the like) of anything PAIR started —
-// configureSysProcAttr sets Setpgid, which makes every such process a group
-// leader. An adopted engine PAIR did not start is a different case: it may have
-// been launched from a shell wrapper or a pipeline, which puts unrelated
-// processes in its group, and the ownership check that authorized this kill
-// examined one PID. Signalling the group there would extend a single-process
-// decision across processes nothing verified.
+// The group is signalled only when the target leads it. Every engine PAIR
+// starts leads its own group (configureSysProcAttr sets Setpgid), so a forced
+// stop reaches the helpers it forks, such as model runners. A target that does
+// not lead its group was started by something else, and signalling that group
+// would reach processes the ownership check never examined. Leadership shows
+// where a group starts, not who started it: a leader started elsewhere, such as
+// the first command of a shell pipeline, still has its whole group signalled.
 func signalPID(pid int, force bool) error {
 	if pid <= 0 {
 		return nil

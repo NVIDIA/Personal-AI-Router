@@ -102,21 +102,22 @@ func (mp *managedProc) stop() {
 	<-mp.done
 }
 
-// terminatePID stops the process with the given PID (and its tree on
-// Windows, or its process group on Unix when available): a graceful signal
-// first, escalating to a forced kill if the process hasn't exited within
-// grace. It exists to reclaim a PAIR-managed engine orphan adopted on our
-// own port — an instance a prior run spawned and then lost the handle to, so
-// we can only address it by PID rather than through the *exec.Cmd handle
-// managedProc.stop needs. Best-effort: a process that's already gone counts
-// as success. The platform primitives (signalPID, pidAlive) live in
-// proc_windows.go / proc_unix.go.
-// stillOurs re-confirms the target before escalating. It is called again after
-// the grace period because the identity check that authorized this kill happened
-// before the graceful signal: if the confirmed process exits during the wait and
-// the OS recycles its PID, the forced kill would land on whatever now holds it —
-// and on Unix that is a signal to a whole process group. The window is small but
-// it is a kill, so it is re-checked rather than assumed.
+// terminatePID stops the process with the given PID (and its tree on Windows,
+// or its process group on Unix when it leads one): a graceful signal first,
+// escalating to a forced kill if the process hasn't exited within grace. It
+// exists to reclaim a PAIR-managed engine orphan adopted on our own port — an
+// instance a prior run spawned and then lost the handle to, so we can only
+// address it by PID rather than through the *exec.Cmd handle managedProc.stop
+// needs. Best-effort: a process that's already gone counts as success. The
+// platform primitives (signalPID, pidAlive) live in proc_windows.go /
+// proc_unix.go.
+//
+// stillOurs re-confirms the target before escalating, because the identity
+// check that authorized this kill ran before the graceful signal: if the
+// confirmed process exits during the wait and the OS recycles its PID, the
+// forced kill would land on whatever now holds it, and on Unix it can signal a
+// whole process group. The re-check compares the image, so a recycled PID
+// running the same managed binary would still pass it.
 func terminatePID(pid int, grace time.Duration, stillOurs func(int) bool) {
 	if pid <= 0 {
 		return
