@@ -297,9 +297,20 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "port must be between 0 and 65535")
 		return
 	}
-	if p.Bind != "" && net.ParseIP(p.Bind) == nil {
-		m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
-		return
+	if p.Bind != "" {
+		ip := net.ParseIP(p.Bind)
+		if ip == nil {
+			m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
+			return
+		}
+		// Local starts never expose the engine beyond loopback: engine APIs
+		// are unauthenticated, and remote starts hard-bind 127.0.0.1 (see
+		// controllifecycle.go). A non-loopback override would silently put
+		// them on the LAN.
+		if !ip.IsLoopback() {
+			m.codec.RespondError(msg.ID, -32602, "bind must be a loopback address")
+			return
+		}
 	}
 	start := func() error {
 		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind})
