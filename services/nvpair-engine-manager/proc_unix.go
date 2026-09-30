@@ -79,7 +79,10 @@ var lsofLocations = []string{"/usr/sbin/lsof", "/usr/bin/lsof"}
 // The fallback exists because Linux distributions disagree on where these live,
 // not as a convenience. Reaching it means none of the known locations exist, in
 // which case a PATH lookup is the only remaining chance of resolving the owner
-// at all — and failing to resolve declines the stop rather than widening it.
+// at all — and failing to resolve declines the stop rather than widening it. A
+// tool found on PATH can only nominate a PID there: the image that authorizes a
+// kill comes from /proc. macOS never reaches the fallback, because it always
+// ships /usr/sbin/lsof.
 func systemTool(name string, locations []string) string {
 	for _, path := range locations {
 		fi, err := os.Stat(path)

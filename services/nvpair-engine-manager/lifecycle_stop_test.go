@@ -19,15 +19,9 @@ import (
 )
 
 // spawnFakeListener starts a fake-engine copied to binPath, bound to
-// 127.0.0.1:port, and skips the test when this host can't resolve the PID and
-// image behind a listening port — the reclaim/decline behavior cannot be
-// exercised without that resolution.
-//
-// In practice that means a host with neither lsof nor ss. It used to include
-// every macOS host, because procImage had only a /proc implementation and so
-// returned "" there: these tests reported success by skipping, on the one
-// platform where the behavior they cover was broken. Treat a skip here as a
-// missing tool to install, not as normal.
+// 127.0.0.1:port. The reclaim and decline tests that use it need the PID and
+// image behind the port. On Linux, macOS and Windows a failure to resolve them
+// is the regression those tests cover, so it fails; elsewhere it skips.
 func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(binPath)
@@ -39,7 +33,13 @@ func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	waitPortServing(t, port)
 	if _, image, ok := pidOnPort(port); !ok || image == "" {
-		t.Skip("host cannot resolve the PID/image owning a port; skipping PID-precise stop test")
+		switch runtime.GOOS {
+		case "linux", "darwin", "windows":
+			t.Fatalf("cannot resolve the PID and image owning port %d (pid found: %v, image %q); "+
+				"on Linux install lsof or iproute2", port, ok, image)
+		default:
+			t.Skipf("the port-owner lookup is not implemented on %s", runtime.GOOS)
+		}
 	}
 	return cmd
 }
