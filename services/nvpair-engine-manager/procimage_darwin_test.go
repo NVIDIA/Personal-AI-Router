@@ -65,15 +65,6 @@ func TestSystemToolPrefersAnAbsoluteLocation(t *testing.T) {
 	}
 }
 
-// TestSystemToolFallsBackToTheBareName checks that with no candidate present the
-// bare name is returned, so a PATH lookup can still find a distribution that puts
-// the tool somewhere else.
-func TestSystemToolFallsBackToTheBareName(t *testing.T) {
-	if got := systemTool("lsof", []string{"/nonexistent/a", "/nonexistent/b"}); got != "lsof" {
-		t.Errorf("systemTool with no candidates = %q, want the bare name", got)
-	}
-}
-
 // TestProcImageRejectsAPlantedLsof is the other half: even a PATH entry that
 // shadows the real tool must not be consulted, because whatever answers here
 // decides which PID gets terminated.

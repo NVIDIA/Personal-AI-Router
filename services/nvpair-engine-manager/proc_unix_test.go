@@ -59,6 +59,15 @@ func waitForFile(path string, timeout time.Duration) bool {
 	return false
 }
 
+// TestSystemToolFallsBackToTheBareName checks that with no candidate present the
+// bare name is returned for a PATH lookup, for a Linux distribution that puts
+// the tool somewhere else.
+func TestSystemToolFallsBackToTheBareName(t *testing.T) {
+	if got := systemTool("lsof", []string{"/nonexistent/a", "/nonexistent/b"}); got != "lsof" {
+		t.Errorf("systemTool with no candidates = %q, want the bare name", got)
+	}
+}
+
 // ignoresTermScript is a process that survives SIGTERM, so terminatePID has to
 // decide whether to escalate. It prints once the disposition is in place.
 const ignoresTermScript = `trap '' TERM; echo ready; exec sleep 60`
