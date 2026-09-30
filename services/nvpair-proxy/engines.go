@@ -78,7 +78,10 @@ const (
 
 // route is one classified request path.
 type route struct {
-	Path         string
+	// Path is the client-facing path matched on the facade.
+	Path string
+
+	// UpstreamPath optionally rewrites Path for the engine; empty preserves it.
 	UpstreamPath string
 	Role         routeRole
 }
