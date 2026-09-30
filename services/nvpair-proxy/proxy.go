@@ -213,28 +213,36 @@ type workloadParams struct {
 	WorkloadInfo Workload `json:"workloadInfo"`
 }
 
+// errBodyTooLarge is returned by bufferBodyAndModel when the request body
+// exceeds maxInferenceBodyBytes.
+var errBodyTooLarge = stderrors.New("request body exceeds 32 MiB limit")
+
 // bufferBodyAndModel reads the request body once and returns the raw bytes
 // (so each failover attempt can replay it — see the loop in handleHTTP) along
 // with the JSON "model" field for workload tracking. Inference bodies are
-// small (prompt + model), so full buffering is cheap. Returns (nil, "") when
-// the body is absent and an empty model when none is parseable. The caller
-// restores r.Body from the returned bytes before each forward attempt.
-func bufferBodyAndModel(r *http.Request) ([]byte, string) {
+// small (prompt + model), so full buffering is cheap. Returns (nil, "", nil)
+// when the body is absent and an empty model when none is parseable. The
+// caller restores r.Body from the returned bytes before each forward attempt.
+// Bodies over maxInferenceBodyBytes are rejected with errBodyTooLarge.
+func bufferBodyAndModel(r *http.Request) ([]byte, string, error) {
 	if r.Body == nil {
-		return nil, ""
+		return nil, "", nil
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxInferenceBodyBytes+1))
 	_ = r.Body.Close()
 	if err != nil {
-		return body, ""
+		return body, "", err
+	}
+	if len(body) > maxInferenceBodyBytes {
+		return nil, "", errBodyTooLarge
 	}
 	var probe struct {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
-		return body, ""
+		return body, "", nil
 	}
-	return body, probe.Model
+	return body, probe.Model, nil
 }
 
 type statusCapture struct {
@@ -736,6 +744,12 @@ const (
 	proxyReadHeaderTimeout = 10 * time.Second
 	proxyServerIdleTimeout = 90 * time.Second
 	maxModelListBytes      = 16 << 20
+	// maxInferenceBodyBytes caps a single proxied request body. handleHTTP
+	// buffers the whole body to replay it across failover attempts, so an
+	// uncapped read lets any loopback client grow the proxy until it OOMs.
+	// Bodies over the cap are rejected with 413 before any routing work
+	// happens.
+	maxInferenceBodyBytes = 32 << 20
 )
 
 // idleClientWriteTimeout bounds how long a single write of streamed response
@@ -860,11 +874,11 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 		delete(p.peerTransports, peerUUID)
 	}
 	if p.mesh == nil {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	cfg, ok := p.mesh.ClientTLSConfig(peerUUID)
 	if !ok {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	tr := newProxyTransport(cfg)
 	if p.peerTransports == nil {
@@ -872,6 +886,22 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 	}
 	p.peerTransports[peerUUID] = tr
 	return tr
+}
+
+// errPeerUnpinned is the dial error of a fail-closed peer transport: the
+// peer's certificate pin was absent when the transport was built.
+var errPeerUnpinned = stderrors.New("peer is not a pinned cluster member")
+
+// unpinnedPeerTransport returns a transport that fails every dial. It is the
+// fail-closed answer when a peer has no live certificate pin — used instead
+// of an unpinned (plaintext-auth) transport so a vanished pin can never
+// silently downgrade a peer connection.
+func unpinnedPeerTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errPeerUnpinned
+		},
+	}
 }
 
 // dropUnpinnedPeerTransports closes idle conns for peer Transports whose pins
@@ -1161,7 +1191,24 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse the request's model before choosing a node. Model eligibility only
 	// applies to inference routes; control endpoints retain their existing
 	// routing behavior even when their JSON happens to contain a model field.
-	bodyBytes, model := bufferBodyAndModel(r)
+	bodyBytes, model, bodyErr := bufferBodyAndModel(r)
+	if bodyErr != nil {
+		// errBodyTooLarge (413) is answered here so the oversized body never
+		// reaches candidate selection or an engine. Any other read error
+		// leaves bodyBytes as whatever was read before the failure.
+		if stderrors.Is(bodyErr, errBodyTooLarge) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(`{"error":"request body exceeds 32 MiB limit"}`))
+			_ = f.notify("proxy/request", RequestEvent{
+				ID: reqID, Method: r.Method, Path: r.URL.Path, Target: "rejected",
+				Status: http.StatusRequestEntityTooLarge, Duration: time.Since(start).Milliseconds(),
+				Error: bodyErr.Error(),
+			})
+			return
+		}
+		slog.Warn("request body read error", "id", reqID, "err", bodyErr)
+	}
 	isInf := isInferenceRequest(f.profile, r.Method, r.URL.Path)
 	routingModel := ""
 	if isInf {
