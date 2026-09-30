@@ -14,7 +14,7 @@ export const WELCOME_STEP_SUB_HEADINGS = ['', 'You can update later by clicking 
 export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
     'lm-studio': true,
-    'llama-cpp': false
+    'llama-cpp': true
 }
 
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {

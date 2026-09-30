@@ -15,13 +15,20 @@ import { getWelcomeEngineCandidates, WELCOME_ENGINE_DEFAULT_SELECTED } from '@/u
 import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 
 describe('engine identity', () => {
-    it('enables llama.cpp workflows without preselecting its large install', () => {
+    it('enables llama.cpp workflows on every platform', () => {
         expect(EngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp'])
         expect(EnabledEngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp'])
         expect(getWelcomeEngineCandidates('Windows')).toContain('llama-cpp')
         expect(getWelcomeEngineCandidates('MacOS')).toContain('llama-cpp')
         expect(getWelcomeEngineCandidates('Linux')).toContain('llama-cpp')
-        expect(WELCOME_ENGINE_DEFAULT_SELECTED['llama-cpp']).toBe(false)
+    })
+
+    it('preselects every engine during onboarding', () => {
+        expect(WELCOME_ENGINE_DEFAULT_SELECTED).toEqual({
+            ollama: true,
+            'lm-studio': true,
+            'llama-cpp': true
+        })
     })
 
     it('maps the desktop id to the sole engine-manager wire id', () => {
