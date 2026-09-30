@@ -7,9 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
+
+	enginesettings "nvpair-shared/enginesettings"
 )
 
 // codecCapture is an io.ReadWriter that discards reads and accumulates writes
@@ -93,5 +96,98 @@ func TestRunOpAllowsNonLoopbackBindWhenSettingOn(t *testing.T) {
 	out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"not-an-ip"}`, true)
 	if reachedExec || !strings.Contains(out, "bind must be a valid IP address") {
 		t.Errorf("invalid bind with setting on: response %q (reachedExec=%v), want invalid-address rejection", out, reachedExec)
+	}
+}
+
+// runOpWithRelaySend drives Manager.runOp like runOpError, but leaves the
+// lanBindForTest stub unset so lanBindAllowed takes the real relay path, with
+// send standing in for the broker round-trip.
+func runOpWithRelaySend(t *testing.T, params string, send func(string, any) error) (out string, reachedExec bool) {
+	t.Helper()
+	cap := &codecCapture{}
+	m := NewManager(NewCodec(cap), &Executor{}, nil)
+	// Same fixture deal as runOpError: nil the executor out so a
+	// validation-passing call panics, which the recovery below reports.
+	m.exec = nil
+	m.settingsRelay.send = send
+	msg := &Message{Method: "engine:start", Params: json.RawMessage(params)}
+	id := json.RawMessage(`"test-1"`)
+	msg.ID = &id
+	defer func() {
+		if recover() != nil {
+			reachedExec = true
+		}
+	}()
+	m.runOp(context.Background(), msg)
+	return cap.buf.String(), false
+}
+
+// replyWith returns a relay send func that answers the settings read with the
+// given raw result, as the broker would.
+func replyWith(m *Manager, result json.RawMessage) func(string, any) error {
+	return func(_ string, value any) error {
+		rel, ok := value.(enginesettings.Relay)
+		if !ok {
+			return errors.New("unexpected relay payload")
+		}
+		m.settingsRelay.mu.Lock()
+		ch := m.settingsRelay.pending[rel.ID]
+		m.settingsRelay.mu.Unlock()
+		ch <- settingsReply{Result: result}
+		return nil
+	}
+}
+
+// TestRunOpFailsClosedWhenSettingUnreadable: the node-setting read must fail
+// closed. If the relay to the broker errors, or the broker answers something
+// that is not a setting value, a non-loopback bind is rejected instead of
+// being let through.
+func TestRunOpFailsClosedWhenSettingUnreadable(t *testing.T) {
+	// Broker unreachable: the relay send fails.
+	out, reachedExec := runOpWithRelaySend(t, `{"engine":"ollama","bind":"192.168.1.5"}`,
+		func(string, any) error { return errors.New("broker down") })
+	if reachedExec || !strings.Contains(out, "bind must be a loopback address") {
+		t.Errorf("relay error: response %q (reachedExec=%v), want loopback rejection", out, reachedExec)
+	}
+
+	// Broker answers garbage: the setting value cannot be decoded.
+	cap := &codecCapture{}
+	m := NewManager(NewCodec(cap), &Executor{}, nil)
+	m.exec = nil
+	m.settingsRelay.send = replyWith(m, json.RawMessage(`not-json`))
+	msg := &Message{Method: "engine:start", Params: json.RawMessage(`{"engine":"ollama","bind":"192.168.1.5"}`)}
+	id := json.RawMessage(`"test-1"`)
+	msg.ID = &id
+	func() {
+		defer func() { _ = recover() }()
+		m.runOp(context.Background(), msg)
+	}()
+	if out := cap.buf.String(); !strings.Contains(out, "bind must be a loopback address") {
+		t.Errorf("garbage reply: response %q, want loopback rejection", out)
+	}
+}
+
+// TestRunOpReadsLiveSettingThroughRelay: the real relay path (no test stub)
+// honors the broker's answer. A true value lets the bind through; this is the
+// path production takes on every start.
+func TestRunOpReadsLiveSettingThroughRelay(t *testing.T) {
+	cap := &codecCapture{}
+	m := NewManager(NewCodec(cap), &Executor{}, nil)
+	m.exec = nil
+	m.settingsRelay.send = replyWith(m, json.RawMessage(`{"value": true}`))
+	msg := &Message{Method: "engine:start", Params: json.RawMessage(`{"engine":"ollama","bind":"192.168.1.5"}`)}
+	id := json.RawMessage(`"test-1"`)
+	msg.ID = &id
+	reachedExec := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				reachedExec = true
+			}
+		}()
+		m.runOp(context.Background(), msg)
+	}()
+	if out := cap.buf.String(); !reachedExec || strings.Contains(out, "bind must be") {
+		t.Errorf("live setting true: response %q (reachedExec=%v), want validation to pass", out, reachedExec)
 	}
 }
