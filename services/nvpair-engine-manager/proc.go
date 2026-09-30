@@ -188,6 +188,16 @@ func isOurEngineImage(image, binPath string) bool {
 	return strings.EqualFold(normalizeEngineImage(image), resolveForCompare(binPath))
 }
 
+// declinedExecutable names a declined process's executable for an error that
+// can leave this node: the file name identifies the application, and the
+// directory, which can contain a username, is left out.
+func declinedExecutable(image string) string {
+	if image == "" {
+		return "unidentified executable"
+	}
+	return filepath.Base(image)
+}
+
 // isManagedInstallPath reports whether binPath is inside this engine's
 // NVPAIR-owned install directory. A matching executable name/path is not, by
 // itself, ownership: Detect intentionally recognizes vendor/user installs on
