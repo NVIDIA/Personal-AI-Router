@@ -141,3 +141,27 @@ func TestProcImageIgnoresNonTextDescriptors(t *testing.T) {
 		t.Errorf("procImageVia = %q, want the txt entry, not the cwd", got)
 	}
 }
+
+// TestProcImageReportsANonASCIIPathAsIs checks an executable under a non-ASCII
+// directory when this process has no locale set, as an app launched from
+// Finder does. lsof escapes those bytes in the C locale.
+func TestProcImageReportsANonASCIIPathAsIs(t *testing.T) {
+	t.Setenv("LANG", "")
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_CTYPE", "")
+	dir := filepath.Join(t.TempDir(), "jörg")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create non-ASCII directory: %v", err)
+	}
+	bin := filepath.Join(dir, "engine")
+	copyFile(t, fakeEngineBin, bin)
+	port, err := freePort()
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	cmd := spawnFakeListener(t, bin, port)
+
+	if got := procImage(cmd.Process.Pid); !isOurEngineImage(got, bin) {
+		t.Errorf("procImage = %q, want %q", got, bin)
+	}
+}

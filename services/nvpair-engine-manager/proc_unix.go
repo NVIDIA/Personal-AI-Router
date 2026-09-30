@@ -106,7 +106,12 @@ func runTool(tool string, args ...string) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, tool, args...).Output()
+	cmd := exec.CommandContext(ctx, tool, args...)
+	// A UTF-8 locale makes lsof print a non-ASCII path as-is. Without one, the
+	// usual case for an app launched from Finder, it escapes those bytes and the
+	// path can never match the managed binary.
+	cmd.Env = append(os.Environ(), "LC_ALL=en_US.UTF-8")
+	out, err := cmd.Output()
 	var exited *exec.ExitError
 	if err != nil && !errors.As(err, &exited) {
 		return nil
