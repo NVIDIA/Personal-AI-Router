@@ -23,7 +23,9 @@ func (c *codecCapture) Write(p []byte) (int, error) { return c.buf.Write(p) }
 // JSON-RPC error frame it emitted, or "" if it emitted none. reachedExec is
 // true when validation passed and runOp proceeded to the (nil, in tests)
 // executor — the test only cares that no -32602 bind rejection was emitted.
-func runOpError(t *testing.T, method, params string) (out string, reachedExec bool) {
+// lanBind sets the engine_allow_lan_bind node setting for the call; the relay
+// is stubbed so no broker round-trip happens.
+func runOpError(t *testing.T, method, params string, lanBind bool) (out string, reachedExec bool) {
 	t.Helper()
 	cap := &codecCapture{}
 	m := NewManager(NewCodec(cap), &Executor{}, nil)
@@ -31,6 +33,9 @@ func runOpError(t *testing.T, method, params string) (out string, reachedExec bo
 	// non-nil one at construction; nil it back out right after to keep the
 	// fixture's panic-on-reach signal for validation-passing calls.
 	m.exec = nil
+	// Stub the node-setting read: the real path goes through the relay to
+	// the broker, which has no test double here.
+	m.lanBindForTest = func() bool { return lanBind }
 	msg := &Message{Method: method, Params: json.RawMessage(params)}
 	id := json.RawMessage(`"test-1"`)
 	msg.ID = &id
@@ -45,20 +50,21 @@ func runOpError(t *testing.T, method, params string) (out string, reachedExec bo
 	return cap.buf.String(), false
 }
 
-// TestRunOpRejectsNonLoopbackBind: engine:start (and install+start) used to
-// accept any valid IP as a bind override, so a broker caller could put the
-// unauthenticated engine API on 0.0.0.0. Remote starts hard-bind 127.0.0.1
-// (controllifecycle.go); local starts now require loopback too.
+// TestRunOpRejectsNonLoopbackBind: with the node setting off (the default),
+// engine:start (and install+start) reject any non-loopback bind override, so
+// a broker caller cannot put the unauthenticated engine API on the LAN by
+// accident. Remote starts hard-bind 127.0.0.1 (controllifecycle.go); local
+// starts require loopback too unless the operator opts in.
 func TestRunOpRejectsNonLoopbackBind(t *testing.T) {
 	for _, bind := range []string{"0.0.0.0", "192.168.1.5", "::"} {
-		out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"`+bind+`"}`)
+		out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"`+bind+`"}`, false)
 		if reachedExec || !strings.Contains(out, "bind must be a loopback address") {
 			t.Errorf("bind %q: response %q (reachedExec=%v), want loopback rejection", bind, out, reachedExec)
 		}
 	}
 
 	// Invalid IPs are still rejected as invalid.
-	out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"not-an-ip"}`)
+	out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"not-an-ip"}`, false)
 	if reachedExec || !strings.Contains(out, "bind must be a valid IP address") {
 		t.Errorf("invalid bind: response %q (reachedExec=%v), want invalid-address rejection", out, reachedExec)
 	}
@@ -66,9 +72,26 @@ func TestRunOpRejectsNonLoopbackBind(t *testing.T) {
 	// Loopback binds pass validation and reach the executor (which is nil in
 	// this fixture — the panic-recovery reports reachedExec).
 	for _, bind := range []string{"127.0.0.1", "::1"} {
-		out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"`+bind+`"}`)
+		out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"`+bind+`"}`, false)
 		if !reachedExec || strings.Contains(out, "bind must be") {
 			t.Errorf("loopback bind %q: response %q (reachedExec=%v), want validation to pass", bind, out, reachedExec)
 		}
+	}
+}
+
+// TestRunOpAllowsNonLoopbackBindWhenSettingOn: flipping
+// engine_allow_lan_bind on is the deliberate opt-in. Non-loopback binds then
+// pass validation; invalid IPs are still rejected as invalid.
+func TestRunOpAllowsNonLoopbackBindWhenSettingOn(t *testing.T) {
+	for _, bind := range []string{"0.0.0.0", "192.168.1.5", "::", "127.0.0.1", "::1"} {
+		out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"`+bind+`"}`, true)
+		if !reachedExec || strings.Contains(out, "bind must be") {
+			t.Errorf("bind %q with setting on: response %q (reachedExec=%v), want validation to pass", bind, out, reachedExec)
+		}
+	}
+
+	out, reachedExec := runOpError(t, "engine:start", `{"engine":"ollama","bind":"not-an-ip"}`, true)
+	if reachedExec || !strings.Contains(out, "bind must be a valid IP address") {
+		t.Errorf("invalid bind with setting on: response %q (reachedExec=%v), want invalid-address rejection", out, reachedExec)
 	}
 }
