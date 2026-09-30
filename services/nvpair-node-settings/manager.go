@@ -64,6 +64,15 @@ type Settings struct {
 	// label is purely UI sugar and a getter call on first paint is
 	// enough.
 	ClusterFriendlyName string `json:"cluster_friendly_name"`
+
+	// EngineAllowLANBind lifts the loopback-only restriction on local
+	// engine starts. Default false: a non-loopback bind override on
+	// engine:start is rejected, because engine APIs are unauthenticated
+	// and a LAN bind is usually accidental. Flipping this on is the
+	// deliberate opt-in for operators who genuinely want an engine
+	// reachable beyond loopback. Read live by the engine-manager on
+	// every start, so no restart is needed after a change.
+	EngineAllowLANBind bool `json:"engine_allow_lan_bind"`
 }
 
 func defaultSettings() Settings {
@@ -432,7 +441,6 @@ func (m *Manager) handleMessage(msg *Message) {
 		v := m.settings.ClusterAutoSync
 		m.mu.RUnlock()
 		m.codec.Respond(msg.ID, map[string]bool{"value": v})
-
 	case "settings/set-cluster-auto-sync":
 		var p boolValueParams
 		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
@@ -455,6 +463,32 @@ func (m *Manager) handleMessage(msg *Message) {
 		if err := m.emitClusterAutoSync(); err != nil {
 			slog.Warn("failed to emit cluster-auto-sync notification after set", "err", err)
 		}
+
+	case "settings/get-engine-allow-lan-bind":
+		m.mu.RLock()
+		v := m.settings.EngineAllowLANBind
+		m.mu.RUnlock()
+		m.codec.Respond(msg.ID, map[string]bool{"value": v})
+
+	case "settings/set-engine-allow-lan-bind":
+		var p boolValueParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
+			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <bool>}`)
+			return
+		}
+		m.mu.RLock()
+		newSettings := m.settings
+		m.mu.RUnlock()
+		newSettings.EngineAllowLANBind = *p.Value
+		if err := m.saveSettings(newSettings); err != nil {
+			slog.Error("failed to persist engine-allow-lan-bind", "err", err)
+			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
+			return
+		}
+		m.mu.Lock()
+		m.settings = newSettings
+		m.mu.Unlock()
+		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
 
 	case "shutdown":
 		if err := m.codec.Respond(msg.ID, nil); err != nil {
