@@ -22,9 +22,18 @@ import (
 func main() {
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
+	responseHeaderTimeout := flag.String("response-header-timeout", "", "upstream response header timeout (Go duration, e.g. 5m); default: $NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT or 120s")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
+
+	// Resolve the upstream response-header timeout before any transport is
+	// built: transports are constructed lazily via newProxyTransport, so
+	// assigning ahead of serving is sufficient. firstBodyTimeout tracks the
+	// same budget (see proxy.go) because the two bound the same wait — how
+	// long we allow an engine to start its work.
+	proxyResponseTimeout = resolveResponseHeaderTimeout(*responseHeaderTimeout)
+	firstBodyTimeout = proxyResponseTimeout
 
 	if *showVersion {
 		fmt.Println(Version)

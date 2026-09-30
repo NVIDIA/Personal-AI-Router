@@ -67,6 +67,7 @@ parameter, because one flag cannot carry two engines' plans.
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
+| `--response-header-timeout` | *(`$NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT`, else `120s`)* | Upstream response-header timeout (Go duration, e.g. `5m`). A request whose engine has not sent response headers within this long fails with 502. Raise it for deep engine queues or slow model loads. |
 | `--version` | | Print version and exit |
 
 ### `facade/enable` parameters
