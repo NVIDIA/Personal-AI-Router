@@ -26,7 +26,11 @@ func (c *codecCapture) Write(p []byte) (int, error) { return c.buf.Write(p) }
 func runOpError(t *testing.T, method, params string) (out string, reachedExec bool) {
 	t.Helper()
 	cap := &codecCapture{}
-	m := NewManager(NewCodec(cap), nil, nil)
+	m := NewManager(NewCodec(cap), &Executor{}, nil)
+	// NewManager wires the executor into the settings relay, so it needs a
+	// non-nil one at construction; nil it back out right after to keep the
+	// fixture's panic-on-reach signal for validation-passing calls.
+	m.exec = nil
 	msg := &Message{Method: method, Params: json.RawMessage(params)}
 	id := json.RawMessage(`"test-1"`)
 	msg.ID = &id
