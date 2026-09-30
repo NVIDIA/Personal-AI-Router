@@ -60,8 +60,8 @@ type subscriptionResult struct {
 func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, cleanup func()) {
 	t.Helper()
 	cmd := exec.Command(brokerBin, "--scanner-path", scannerBin, "--cluster-dir", t.TempDir())
-	// The broker rewrites workloads-history.json through appdir regardless of
-	// --cluster-dir, so an inherited environment overwrites real user data.
+	// The broker persists workloads-history.json through appdir regardless of
+	// --cluster-dir, so each broker gets a config directory of its own.
 	cmd.Env = isolatedConfigEnv(t)
 	cmd.Stderr = os.Stderr
 
