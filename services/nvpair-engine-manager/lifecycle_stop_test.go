@@ -173,6 +173,9 @@ func TestStopDeclinesForeignListenerWithActionableError(t *testing.T) {
 	if !strings.Contains(err.Error(), filepath.Base(foreignBin)) {
 		t.Fatalf("decline error must name the offending image %q: %v", foreignBin, err)
 	}
+	if strings.Contains(err.Error(), filepath.Dir(foreignBin)) {
+		t.Fatalf("decline error reaches paired peers and must not carry the image's directory %q: %v", filepath.Dir(foreignBin), err)
+	}
 	if !portServing(port) {
 		t.Fatal("a genuinely foreign listener must be left running")
 	}

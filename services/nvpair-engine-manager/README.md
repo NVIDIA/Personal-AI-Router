@@ -208,8 +208,10 @@ would only collide on the port. Consequences worth knowing:
   genuine third-party listener on a *different* port (Ollama's own desktop app
   on `11434` while NVPAIR manages `11435`) is never touched. A listener whose
   image is **not** our managed binary is declined with an actionable error
-  naming the offending PID and image path — the user / desktop app owns that
-  process, and NVPAIR won't terminate it out from under them.
+  naming the offending PID and executable — the user / desktop app owns that
+  process, and NVPAIR won't terminate it out from under them. The error can
+  reach paired peers, so it carries the executable's file name only; the full
+  path is logged locally.
 - **Reclaim depends on an external tool on Unix.** Both halves of the check —
   which PID owns the port, and which executable that PID is running — shell out:
   `lsof` (with `ss` as a Linux alternative for the PID lookup), plus
