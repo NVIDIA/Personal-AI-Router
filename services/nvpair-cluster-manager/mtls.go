@@ -159,7 +159,7 @@ func (m *Manager) notifyPeerRemoval(addr, peerUUID string, proof RemovalProof) {
 		return
 	}
 	body, _ := json.Marshal(membersRemoveRequest{NodeUUID: m.identity.NodeUUID, Proof: proof})
-	resp, err := client.Post("https://"+addr+membersRemovePath, "application/json", bytes.NewReader(body))
+	resp, err := client.Post(peerURL("https", addr, membersRemovePath), "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("notify removal to %s (%s): %v", addr, peerUUID, err)
 		return
