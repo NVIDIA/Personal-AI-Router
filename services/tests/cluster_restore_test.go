@@ -27,12 +27,7 @@ func startBrokerInDir(t *testing.T, configDir string, extraArgs ...string) (io.W
 	t.Helper()
 	args := append([]string{"--scanner-path", scannerBin, "--cluster-dir", t.TempDir()}, extraArgs...)
 	cmd := exec.Command(brokerBin, args...)
-	cmd.Env = append(os.Environ(),
-		"HOME="+configDir,
-		"XDG_CONFIG_HOME="+configDir,
-		"APPDATA="+configDir,
-		"LOCALAPPDATA="+configDir,
-	)
+	cmd.Env = configEnv(configDir)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("broker stdin pipe: %v", err)

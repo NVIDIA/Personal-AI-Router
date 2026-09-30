@@ -64,9 +64,7 @@ func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc 
 	// The engine and its port arrive over facade/enable below; only the cluster
 	// dir is process-scoped enough to stay on argv.
 	cmd := exec.Command(proxyBin, "--cluster-dir", clusterDir)
-	cmd.Env = append(os.Environ(),
-		"HOME="+cfg, "XDG_CONFIG_HOME="+cfg, "APPDATA="+cfg, "LOCALAPPDATA="+cfg,
-	)
+	cmd.Env = configEnv(cfg)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("proxy stdin pipe: %v", err)

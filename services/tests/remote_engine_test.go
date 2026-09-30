@@ -199,8 +199,8 @@ func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) 
 		"--log-level", "warn",
 	)
 	// A real manager resolves its engines and engine-bin directories through
-	// appdir; --cluster-dir does not cover those. Without this the child loads
-	// the developer's manifest overrides and detects their real installs.
+	// appdir, which --cluster-dir does not cover, so each node gets a config
+	// directory of its own.
 	cmd.Env = isolatedConfigEnv(t)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
