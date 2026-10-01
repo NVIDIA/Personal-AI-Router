@@ -88,10 +88,9 @@ func adoptedEngineOnLivePort(t *testing.T, ex *Executor) {
 
 // TestStopAllSweepsOnce is the quit-latency guard. An ordinary quit asks for
 // StopAll three times — the desktop's engine:prepare-shutdown, the broker's own
-// teardown call, and the stdin-EOF path in Run — and every sweep used to re-pay
-// doStop's readiness probe for an engine whose stop it can only decline.
-// Measured against a real worker tree that had adopted an externally-managed
-// Ollama, that was 1068ms + 1052ms + 1040ms, essentially the whole quit.
+// teardown call, and the stdin-EOF path in Run. An engine whose stop can only
+// be declined stays running, so each repeat sweep would re-pay doStop's
+// readiness probe for it.
 func TestStopAllSweepsOnce(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	adoptedEngineOnLivePort(t, ex)
@@ -128,8 +127,15 @@ func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
 		ex.StopAll()
 	}()
 
-	// Let the first caller take the Once, then join behind it.
-	time.Sleep(100 * time.Millisecond)
+	// Join behind the first caller only once it owns the sweep: only the sweep
+	// sets shuttingDown, and it does so before probing anything.
+	deadline := time.Now().Add(5 * time.Second)
+	for !ex.shuttingDown.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the first StopAll caller never started the sweep")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	second := time.Now()
 	ex.StopAll()
 	waited := time.Since(second)
