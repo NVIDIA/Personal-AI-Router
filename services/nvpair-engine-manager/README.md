@@ -212,23 +212,21 @@ would only collide on the port. Consequences worth knowing:
   process, and NVPAIR won't terminate it out from under them. The error can
   reach paired peers, so it carries the executable's file name only; the full
   path is logged locally.
-- **Reclaim depends on an external tool on Unix.** Both halves of the check —
-  which PID owns the port, and which executable that PID is running — shell out:
-  `lsof` (with `ss` as a Linux alternative for the PID lookup), plus
-  `/proc/<pid>/exe` on Linux and the process-snapshot APIs on Windows. macOS has
-  no `/proc`, so `lsof` is the only mechanism there.
-  Known absolute locations are tried before any PATH lookup, for both halves,
-  because this process inherits whatever PATH the desktop app was launched with
-  and the result decides which process may be terminated.
-  If the tool cannot be run, the image comes back empty and the ownership check
-  **fails closed**: an adopted engine is declined with "running under external
-  management" rather than terminated on a guess. That is the safe direction, but
-  it also means a host without `lsof` cannot reclaim its own orphans — CI
-  installs `lsof` and `iproute2` on Linux for this reason, and the macOS leg of
-  the `build-script` job runs this module's tests natively so the `lsof` path is
-  exercised somewhere (the Linux `services` job excludes it by build tag).
-  `ss` is iproute2 and therefore Linux-only; macOS has no equivalent fallback,
-  so `lsof` is the single mechanism there.
+- **Reclaim needs the PID and the executable behind the port.** macOS gets
+  both from `lsof`: the PID from the listener and the executable from its `txt`
+  descriptor. Linux gets the PID from `lsof` or, failing that, `ss`, and the
+  executable from `/proc/<pid>/exe`. Windows uses `GetExtendedTcpTable` and
+  `QueryFullProcessImageName`. The Unix tools are tried at known absolute
+  locations before any PATH lookup, because this process inherits whatever PATH
+  the desktop app was launched with and the result decides which process may be
+  terminated.
+  If the owner cannot be resolved, the ownership check **fails closed**: an
+  adopted engine is declined with "running under external management" rather
+  than terminated on a guess. So a Linux host with neither `lsof` nor `ss`, or a
+  macOS host where `lsof` cannot run, cannot reclaim its own orphans. CI
+  installs `lsof` and `iproute2` on Linux for this reason, and a macOS job runs
+  this module's tests natively, since the Linux `services` job excludes the
+  macOS lookup by build tag.
 - **A symlinked install directory counts as managed; a symlink inside it does
   not.** If `<baseDir>/<engine>` is a symlink, the containment guard resolves
   it when it checks, so a binary under the target counts as managed. A symlink
@@ -369,9 +367,11 @@ with a loud warning.
 ## Cross-platform
 
 One binary compiles and runs on Windows, Linux, and macOS × amd64/arm64.
-Per-OS variance lives in the manifest first; OS primitives (process
-termination, console hiding) are the only build-tagged Go
-(`proc_windows.go` / `proc_unix.go`).
+Per-OS variance lives in the manifest first; OS primitives are the only
+build-tagged Go: process termination and console hiding (`proc_windows.go` /
+`proc_unix.go`), the executable behind a PID (`procimage_linux.go`,
+`procimage_darwin.go`, `procimage_other.go`), and the Linux `ss` port-owner
+lookup (`portowner_linux.go`, `portowner_other.go`).
 
 ## Shutdown
 

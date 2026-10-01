@@ -14,8 +14,5 @@ package main
 //
 // Returning "" makes the ownership check in isOurEngineImage fail closed, so
 // stop and uninstall decline an adopted engine here rather than terminating a
-// process they cannot identify. That is a real limitation, not a stub with
-// nothing behind it: orphan reclaim does not work on these hosts. It is stated
-// plainly because the same silent "" on macOS is the bug this file's siblings
-// exist to fix.
+// process they cannot identify. Orphan reclaim does not work on these hosts.
 func procImage(int) string { return "" }
