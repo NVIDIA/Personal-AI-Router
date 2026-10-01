@@ -12,17 +12,13 @@ import (
 	"testing"
 )
 
-// TestOwnerLookupIgnoresPath is the guard for the deployment shape rather than
-// the developer one. This worker inherits whatever PATH the desktop app was
-// launched with, and nothing between Electron, the broker and here sets one, so
-// a narrowed PATH must not disable orphan reclaim and a user-writable directory
-// must not be able to shadow the tool that decides which process gets killed.
-//
-// It exercises pidOnPort, not procImage alone. An earlier version of this test
-// checked only the image half and passed while the PID half still went through
-// PATH — so it certified a guarantee the system did not have, and the two tests
-// that actually cover reclaim skipped instead of failing. Both halves are on the
-// same path to a kill; testing one is testing neither.
+// TestOwnerLookupIgnoresPath checks the owner lookup with an empty PATH. This
+// worker inherits whatever PATH the desktop app was launched with, and nothing
+// between Electron, the broker and here sets one, so a narrowed PATH must not
+// disable orphan reclaim and a user-writable directory must not be able to
+// shadow the tool that decides which process gets killed. It drives pidOnPort,
+// so both halves of the lookup are covered: the PID behind the port and the
+// executable behind the PID.
 func TestOwnerLookupIgnoresPath(t *testing.T) {
 	// A real listener whose owner is this test process.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -36,8 +32,8 @@ func TestOwnerLookupIgnoresPath(t *testing.T) {
 
 	pid, image, ok := pidOnPort(port)
 	if !ok {
-		t.Fatal("pidOnPort resolved no owner with an empty PATH; the PID lookup must " +
-			"not depend on PATH or reclaim stays broken exactly where it was")
+		t.Fatal("pidOnPort resolved no owner with an empty PATH; the owner lookup " +
+			"must not depend on PATH")
 	}
 	if pid != os.Getpid() {
 		t.Errorf("pidOnPort = %d, want this process %d", pid, os.Getpid())

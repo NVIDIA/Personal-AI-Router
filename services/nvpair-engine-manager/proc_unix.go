@@ -44,9 +44,9 @@ func gracefulSignal(cmd *exec.Cmd) error {
 }
 
 // pidOnPort returns the PID listening on the given TCP port and that
-// process's executable path. Best-effort on the debug-only Unix targets: it
-// shells out to lsof, falling back to ss. ok is false when neither resolves
-// an owner, in which case the caller fails closed (declines the stop).
+// process's executable path. The PID comes from lsof, falling back to ss on
+// Linux, and the path from procImage. ok is false when no owner resolves, and
+// the caller then declines the stop.
 func pidOnPort(port int) (pid int, image string, ok bool) {
 	if p, found := lsofPID(port); found {
 		return p, procImage(p), true
@@ -57,17 +57,16 @@ func pidOnPort(port int) (pid int, image string, ok bool) {
 	return 0, "", false
 }
 
-// Absolute locations of the tools this file shells out to, tried in order
-// before falling back to a PATH lookup.
+// Absolute locations of lsof, tried in order before a PATH lookup.
 //
 // PATH is not ours to trust: this worker inherits whatever the desktop app was
 // launched with, and nothing between Electron, the broker and here sets one, so
 // a user-writable directory such as /opt/homebrew/bin can shadow a system tool.
 // What comes back decides which PID gets terminated.
 //
-// A single list covers every Unix because a path that does not exist is simply
-// skipped; macOS ships lsof in /usr/sbin, most Linux distributions in /usr/bin,
-// and ss moves around by distribution.
+// One list covers every Unix because a missing path is skipped: macOS ships
+// lsof in /usr/sbin and most Linux distributions in /usr/bin. The ss locations
+// are in portowner_linux.go.
 var lsofLocations = []string{"/usr/sbin/lsof", "/usr/bin/lsof"}
 
 // systemTool is the first usable location, or name for a PATH lookup.
@@ -100,8 +99,8 @@ func systemTool(name string, locations []string) string {
 // failure if it hit *any* error anywhere — a filesystem it could not stat, which
 // is routine with network or FUSE mounts — while printing correct records for
 // what was asked about. Treating that as total failure is not a harmless
-// conservatism here: it drops the owner lookup through to the next mechanism,
-// and on macOS that means resolving `ss` (which does not exist) through PATH.
+// conservatism here: it drops the owner lookup through to ss on Linux, and on
+// macOS, which has no other mechanism, it declines a stop that was legitimate.
 //
 // A failure to start the tool, or a deadline (the answer may be truncated
 // mid-record), yields nothing so the caller fails closed.
