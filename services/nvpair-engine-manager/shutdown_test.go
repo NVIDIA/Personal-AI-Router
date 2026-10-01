@@ -9,10 +9,13 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -141,6 +144,90 @@ func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
 	}
 	if waited < 100*time.Millisecond {
 		t.Fatalf("second caller waited only %v; it did not join the sweep in flight", waited)
+	}
+}
+
+// commandDaemon stands in for a command-mode engine's daemon: it serves the
+// readiness endpoint once startMarker exists and closes its listener once
+// stopMarker does, as a daemon told to stop by its control CLI would. It
+// returns the daemon's port.
+func commandDaemon(t *testing.T, startMarker, stopMarker string) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fileExists(startMarker) && !fileExists(stopMarker) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	var closeOnce sync.Once
+	closeServer := func() { closeOnce.Do(srv.Close) }
+	t.Cleanup(closeServer)
+	stopWatch := make(chan struct{})
+	t.Cleanup(func() { close(stopWatch) })
+	go func() {
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-time.After(50 * time.Millisecond):
+				if fileExists(stopMarker) {
+					closeServer()
+					return
+				}
+			}
+		}
+	}()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse daemon URL: %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse daemon port: %v", err)
+	}
+	return port
+}
+
+// TestStopAllRetriesAStopCommandThatFailed checks that a later StopAll caller
+// retries an engine whose stop command failed during the sweep, so a stop
+// command that errors once does not leave the engine running after quit.
+func TestStopAllRetriesAStopCommandThatFailed(t *testing.T) {
+	dir := t.TempDir()
+	startMarker := filepath.Join(dir, "started")
+	stopAttempt := filepath.Join(dir, "stop-attempted")
+	stopMarker := filepath.Join(dir, "stopped")
+	port := commandDaemon(t, startMarker, stopMarker)
+	ex := newTestExecutor(t, &Manifest{
+		Engine: "daemon", DisplayName: "Daemon Engine", ManifestVersion: 1,
+		Platforms: map[string]Platform{
+			hostKey(): {
+				Detect: []string{fakeEngineBin},
+				Runtime: Runtime{
+					Mode:  "command",
+					Port:  port,
+					Start: [][]string{{fakeEngineBin, "touch", startMarker}},
+					Stop:  &StopSpec{Cmd: []string{fakeEngineBin, "failoncethentouch", stopAttempt, stopMarker}},
+					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/", Status: http.StatusOK, TimeoutS: 10},
+				},
+			},
+		},
+	})
+	if err := ex.Start(context.Background(), "daemon"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ex.StopAll()
+	if st, err := ex.Status("daemon"); err != nil || !st.Running {
+		t.Fatalf("after the sweep, status = %+v, err = %v; want the failed stop to leave it running", st, err)
+	}
+
+	ex.StopAll()
+
+	if !fileExists(stopMarker) {
+		t.Fatal("the later StopAll did not run the stop command again")
+	}
+	if st, err := ex.Status("daemon"); err != nil || st.Running {
+		t.Fatalf("after the retry, status = %+v, err = %v; want stopped", st, err)
 	}
 }
 

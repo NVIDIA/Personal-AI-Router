@@ -752,31 +752,32 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
 //
-// Exactly one sweep runs per process, and every caller returns only once that
-// sweep has finished. Three separate entry points ask for it on an ordinary
-// quit — the engine:prepare-shutdown handler (which the desktop calls directly,
-// and the broker calls again from its own teardown) and the stdin-EOF path in
-// Run — because each is the right trigger for a different way of being shut
-// down: a desktop quit, a TUI or signal shutdown, and a parent that simply
-// severed the pipe.
+// Three entry points ask for it on an ordinary quit — the
+// engine:prepare-shutdown handler (which the desktop calls directly, and the
+// broker calls again from its own teardown) and the stdin-EOF path in Run —
+// because each is the right trigger for a different way of being shut down: a
+// desktop quit, a TUI or signal shutdown, and a parent that simply severed the
+// pipe.
 //
-// Left unguarded, all three ran the full sweep. That is free for an engine we
-// own, which is stopped by the first sweep and skipped by the rest at doStop's
-// !st.running check — but not for an adopted one, whose stop is refused, so
-// st.running stays true and each sweep re-pays doStop's readiness probe from
-// scratch. Measured against a real worker tree with an externally-managed
-// Ollama, the three sweeps cost 1068ms + 1052ms + 1040ms and were essentially
-// the entire 3.2s quit; the reclaim path's grace+2s wait can make a single
-// sweep cost ~7s, which is how quitting reached the ~15s the desktop waits
-// before it force-kills the tree.
+// One sweep runs per process, and every caller returns only once it has
+// finished. A caller that returned while the sweep was still running would
+// report engines stopped before they were: the broker would close stdin,
+// engine-manager would exit, and the engines it launched would be orphaned.
+// Repeating the sweep would re-pay doStop's readiness probe for every adopted
+// engine whose stop it declines, each time.
 //
-// Blocking the later callers rather than returning early is the important half.
-// A caller that returned while the first sweep was still running would report
-// engines stopped before they were: the broker would close stdin, engine-manager
-// would exit, and the engines it launched would be orphaned. sync.Once.Do gives
-// exactly this — the first caller runs it, the rest wait for it.
+// A later caller does retry the engines whose stop failed through a process
+// handle or a stop command, such as an `lms server stop` that errored, because
+// another attempt can succeed where a declined stop cannot.
 func (e *Executor) StopAll() {
-	e.stopAllOnce.Do(e.stopAllNow)
+	swept := false
+	e.stopAllOnce.Do(func() {
+		swept = true
+		e.stopAllNow()
+	})
+	if !swept {
+		e.retryFailedStops()
+	}
 }
 
 func (e *Executor) stopAllNow() {
@@ -787,14 +788,41 @@ func (e *Executor) stopAllNow() {
 		names = append(names, n)
 	}
 	e.mu.Unlock()
-	// Stop engines concurrently. Each doStop can wait up to the manifest grace
-	// (default 5s) for its engine to exit, so a sequential sweep would take
-	// sum(grace) across engines and let a slow first engine delay — or, if the
-	// parent severs us mid-sweep, entirely prevent — every later engine from
-	// even being signaled. Running them in parallel bounds the whole sweep to
-	// ~one grace and guarantees every engine gets its stop signal immediately.
-	// Each engine still serializes on its own opMu, so this is safe.
-	var wg sync.WaitGroup
+	failed := e.stopEngines(names)
+	e.retryMu.Lock()
+	e.failedStops = failed
+	e.retryMu.Unlock()
+}
+
+// retryFailedStops tries again to stop the engines whose stop failed in the
+// sweep. Callers take turns, so two retries never stop one engine at once.
+func (e *Executor) retryFailedStops() {
+	e.retryMu.Lock()
+	defer e.retryMu.Unlock()
+	if len(e.failedStops) == 0 {
+		return
+	}
+	e.failedStops = e.stopEngines(e.failedStops)
+}
+
+// stopEngines stops the named engines and returns those whose stop failed
+// through a process handle or a stop command, the failures a later attempt can
+// fix. Without either, doStop declines a foreign listener or has already
+// escalated against PAIR's own orphan, and a retry would only repeat that.
+//
+// Engines stop concurrently. Each doStop can wait up to the manifest grace
+// (default 5s) for its engine to exit, so a sequential sweep would take
+// sum(grace) across engines and let a slow first engine delay — or, if the
+// parent severs us mid-sweep, entirely prevent — every later engine from even
+// being signaled. Running them in parallel bounds the whole sweep to ~one grace
+// and guarantees every engine gets its stop signal immediately. Each engine
+// still serializes on its own opMu, so this is safe.
+func (e *Executor) stopEngines(names []string) []string {
+	var (
+		wg       sync.WaitGroup
+		failedMu sync.Mutex
+		failed   []string
+	)
 	for _, n := range names {
 		st, err := e.state(n)
 		if err != nil {
@@ -805,6 +833,7 @@ func (e *Executor) stopAllNow() {
 			defer wg.Done()
 			st.mu.Lock()
 			cancel := st.startCancel
+			retryable := st.plat.Runtime.modeOrDefault() == "command" || st.proc != nil
 			st.mu.Unlock()
 			if cancel != nil {
 				cancel()
@@ -813,10 +842,16 @@ func (e *Executor) stopAllNow() {
 			defer st.opMu.Unlock()
 			if err := e.doStop(st, n); err != nil {
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
+				if retryable {
+					failedMu.Lock()
+					failed = append(failed, n)
+					failedMu.Unlock()
+				}
 			}
 		}(st, n)
 	}
 	wg.Wait()
+	return failed
 }
 
 func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string, port int, gen int64) {

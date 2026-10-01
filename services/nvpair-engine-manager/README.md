@@ -358,10 +358,10 @@ three times: the desktop sends `engine:prepare-shutdown`, the broker sends it
 again from its own teardown, and then closing stdin reaches the EOF path. Each
 is the right trigger for a different way of being shut down, so all three stay.
 
-Repeating the sweep is free for an engine this service owns — the first sweep
-stops it and the rest skip it — but not for an adopted one, whose stop can only
-be declined, so the sweep re-pays its readiness probe every time. That was the
-bulk of the app's quit latency. Later callers **wait** for the sweep in flight
-rather than returning early: returning early would report engines stopped before
-they were, and the broker would close stdin and exit while they were still
-running.
+Later callers **wait** for the sweep in flight rather than returning early:
+returning early would report engines stopped before they were, and the broker
+would close stdin and exit while they were still running. They do not repeat
+the sweep, which would re-pay the readiness probe for every adopted engine whose
+stop is declined. They do retry any engine whose stop failed through a process
+handle or a stop command, such as an `lms server stop` that errored, because
+another attempt can succeed where a declined stop cannot.

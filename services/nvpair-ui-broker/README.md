@@ -554,7 +554,7 @@ If no cluster-manager is being supervised (or it has exited), the broker replies
 
 Acknowledges, then terminates the broker. Ingress is closed at the proxy and engine-manager is asked to stop its engines first (`engine:prepare-shutdown`), then every remaining worker subprocess is torn down by closing its stdin. Those joins run concurrently and are bounded by a shared teardown budget; see the shutdown bullet under [Worker subprocesses](#worker-subprocesses).
 
-`engine:prepare-shutdown` is safe to send more than once, which the desktop and the broker's own teardown both do. Engine-manager sweeps its engines exactly once and later callers wait for that sweep rather than starting another — repeating it used to re-pay the stop probe for any engine it can only decline, which is most of what made quitting slow.
+`engine:prepare-shutdown` is safe to send more than once, which the desktop and the broker's own teardown both do. Engine-manager sweeps its engines once; later callers wait for that sweep rather than starting another, and retry only an engine whose stop failed through a process handle or a stop command.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"shutdown"}

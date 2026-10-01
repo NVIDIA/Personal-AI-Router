@@ -200,9 +200,10 @@ before tearing down its workers, so engines are not orphaned during teardown.
 processes without changing the persisted desired state; the broker restores
 enabled engines on the next launch. Personal AI Router leaves that ordering to the broker
 rather than stopping the engines itself first. Engine-manager sweeps once per
-process, and later calls wait for that sweep. The broker joins its workers
-concurrently within one shared teardown budget and escalates a worker that
-misses its grace, except engine-manager on Windows. Stopping a managed engine itself sends one stop signal and
+process, and later calls wait for that sweep, retrying only an engine whose
+stop failed through a process handle or a stop command. The broker joins its
+workers concurrently within one shared teardown budget and escalates a worker
+that misses its grace, except engine-manager on Windows. Stopping a managed engine itself sends one stop signal and
 waits for it to exit with no timeout: SIGTERM to the process group on Unix
 (never escalated to SIGKILL) and `taskkill /T /F` on Windows (its windowless
 engines cannot receive a graceful close).

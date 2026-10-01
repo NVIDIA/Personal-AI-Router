@@ -130,6 +130,17 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, "Error: Failed to resolve artifact %q: The artifact does not exist or you do not have permission to read it\n", strings.ToLower(arg))
 			os.Exit(1)
+		case "failoncethentouch": // fail the first call, then write a marker — for stop-retry tests
+			// args: failoncethentouch <attemptfile> <marker>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			if _, err := os.Stat(os.Args[2]); err != nil {
+				_ = os.WriteFile(os.Args[2], []byte("1"), 0o644)
+				os.Exit(1)
+			}
+			_ = os.WriteFile(os.Args[3], []byte("ok"), 0o644)
+			return
 		case "noserve": // run but never bind — used to test readiness timeout
 			time.Sleep(time.Hour)
 			return
