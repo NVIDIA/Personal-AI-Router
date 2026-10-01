@@ -278,8 +278,42 @@
   ${endif}
 !macroend
 
+; Install the centrally serviced Microsoft runtime required by the managed
+; llama.cpp binaries. The x64 package also carries the ARM64 runtime, so both
+; Windows installer architectures intentionally use this one prerequisite.
+!macro pairInstallVcRuntime
+  DetailPrint "Installing Microsoft Visual C++ Runtime..."
+  ClearErrors
+  ExecWait '"$INSTDIR\resources\installer-tools\VC_redist.x64.exe" /install /quiet /norestart' $8
+  ${if} ${Errors}
+    ClearErrors
+    Delete "$INSTDIR\resources\installer-tools\VC_redist.x64.exe"
+    MessageBox MB_OK|MB_ICONSTOP "Personal AI Router could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+
+  Delete "$INSTDIR\resources\installer-tools\VC_redist.x64.exe"
+  ${if} $8 == 0
+    DetailPrint "Microsoft Visual C++ Runtime installed."
+  ${elseIf} $8 == 1638
+    DetailPrint "Microsoft Visual C++ Runtime is already installed."
+  ${elseIf} $8 == 1641
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart initiated."
+    SetRebootFlag true
+  ${elseIf} $8 == 3010
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart required."
+    SetRebootFlag true
+  ${else}
+    MessageBox MB_OK|MB_ICONSTOP "Personal AI Router could not install the Microsoft Visual C++ Runtime (exit code $8).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+!macroend
+
 !macro customInstall
   !insertmacro pairAssertPayloadInstalled
+  !insertmacro pairInstallVcRuntime
   !insertmacro pairAddFirewallRules
 !macroend
 
