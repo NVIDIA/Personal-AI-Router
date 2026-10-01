@@ -266,7 +266,7 @@ curl -N <PAIR_BASE_URL>/api/chat \
 
 Then confirm the request was routed: open **Overview**, use the **Jobs** filter in
 the left column, and read **Ran on** or **Running on** on the job card to identify
-the serving node.
+the serving node. A job that is still in flight shows **Sent to** until it starts.
 
 ![A job card under the Jobs filter naming the node that served the request.](assets/onboarding/getting-started/09-job-served-by-node.png)
 
@@ -487,7 +487,8 @@ A reply alone does not prove routing. To identify the serving node:
 
 1. Open **Overview**.
 2. Use the **Jobs** filter in the left column.
-3. Read **Ran on** or **Running on** on the job card.
+3. Read **Ran on** or **Running on** on the job card. A job that is still in
+   flight shows **Sent to**.
 
 ### 5. Verify Cluster Routing
 
