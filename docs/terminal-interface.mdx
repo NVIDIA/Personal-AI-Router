@@ -225,6 +225,10 @@ Press `d` instead to decline. After pairing, the peer's `CLUSTER` column reads
 `Member`. If the PIN was wrong, the status line says so and you will need a
 fresh invite — a PIN can only be used once.
 
+If more than one request arrives, they wait their turn and the prompt says how
+many are waiting. A machine can only be in one cluster, so once you accept one,
+the rest are declined and their senders are told.
+
 ![The terminal interface Nodes tab with a discovered machine selected and the pairing PIN on the status line.](assets/onboarding/terminal-interface/02-tui-pairing.png)
 
 | Key | Action |

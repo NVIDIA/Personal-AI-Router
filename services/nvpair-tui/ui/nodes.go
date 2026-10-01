@@ -5,6 +5,7 @@ package ui
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"sort"
 	"strconv"
@@ -500,6 +501,16 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 
 	case pairingResultMsg:
 		return v.handlePairingResult(msg)
+
+	case waitingDeclinedMsg:
+		if msg.err != nil {
+			// Logged, not shown. The outcome here is the same either way — the
+			// request could not have been accepted — and one that expired or
+			// was cancelled in the meantime fails this harmlessly.
+			slog.Warn("could not decline a pairing request after joining a cluster",
+				"from", msg.from, "err", msg.err)
+		}
+		return nil
 
 	case inviteCancelledMsg:
 		return v.handleInviteCancelled(msg)
@@ -1179,9 +1190,19 @@ func (v *nodesView) handlePairingResult(msg pairingResultMsg) tea.Cmd {
 		return nil
 	}
 	v.dropInbound(msg.inviteID)
+	// Membership is what actually changed, so re-read it rather than trusting
+	// this reply.
+	cmds := []tea.Cmd{v.membersCmd(), v.identityCmd()}
 	switch {
 	case msg.state == inviteStatePaired:
-		v.status.ok("paired with %s", msg.from)
+		declines := v.declineWaiting()
+		cmds = append(cmds, declines...)
+		if len(declines) > 0 {
+			v.status.ok("paired with %s - declined %d other pairing request(s), since a machine can only be in one cluster",
+				msg.from, len(declines))
+		} else {
+			v.status.ok("paired with %s", msg.from)
+		}
 	case msg.reason == reasonIncorrectPIN:
 		// The specific case worth naming: it is the operator's typo, and the
 		// remedy is a fresh invite because the PIN is single-use.
@@ -1192,9 +1213,39 @@ func (v *nodesView) handlePairingResult(msg pairingResultMsg) tea.Cmd {
 		v.status.error("pairing with %s failed (%s) - ask for a new invite",
 			msg.from, rejectReason(msg.reason))
 	}
-	// Membership is what actually changed, so re-read it rather than trusting
-	// this reply.
-	return tea.Batch(v.membersCmd(), v.identityCmd())
+	return tea.Batch(cmds...)
+}
+
+// waitingDeclinedMsg is the outcome of declining a request that could no
+// longer be accepted.
+type waitingDeclinedMsg struct {
+	from string
+	err  error
+}
+
+// declineWaiting declines every pairing request still waiting, once this
+// machine has joined a cluster through one of them.
+//
+// None of them can succeed now: the cluster manager refuses an accept on a
+// machine that is already in a cluster. Declined, each sender is told at once.
+// Left alone, they came up one by one looking answerable, and each sender went
+// on showing its PIN until the invite expired.
+func (v *nodesView) declineWaiting() []tea.Cmd {
+	waiting := v.queued
+	if v.inbound != nil {
+		waiting = append([]clusterInvite{*v.inbound}, waiting...)
+	}
+	v.inbound, v.queued = nil, nil
+	cmds := make([]tea.Cmd, 0, len(waiting))
+	for _, inv := range waiting {
+		from := inv.FromNodeName
+		cmds = append(cmds, call(v.client, "cluster:respond-to-invite",
+			map[string]any{"inviteId": inv.InviteID, "accept": false},
+			func(_ *rpc.Message, err error) tea.Msg {
+				return waitingDeclinedMsg{from: from, err: err}
+			}))
+	}
+	return cmds
 }
 
 // removeSelected drops the selected node's strongest relationship: cluster

@@ -4,8 +4,10 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -658,6 +660,94 @@ func TestInboundRequestsWaitTheirTurn(t *testing.T) {
 	}
 	if contains(v.inboundPrompt(), "more waiting") {
 		t.Errorf("a request delivered twice was queued twice: %q", v.inboundPrompt())
+	}
+}
+
+// TestJoiningDeclinesEveryOtherRequest is the regression guard for requests
+// left waiting after this machine joined a cluster. None could be accepted any
+// more, yet each came up in turn looking answerable, and each sender went on
+// showing its PIN until its invite expired.
+func TestJoiningDeclinesEveryOtherRequest(t *testing.T) {
+	c1, c2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		c1.Close()
+		c2.Close()
+	})
+	client := rpc.NewClient(c1, c1)
+	go client.Run(ctx)
+
+	// The broker's side: answer every call, recording each pairing answer.
+	type answer struct {
+		InviteID string `json:"inviteId"`
+		Accept   *bool  `json:"accept"`
+	}
+	answers := make(chan answer, 8)
+	broker := rpc.NewCodec(c2, c2)
+	go func() {
+		for {
+			req, err := broker.Read()
+			if err != nil {
+				return
+			}
+			if req.Method == "cluster:respond-to-invite" {
+				var a answer
+				_ = json.Unmarshal(req.Params, &a)
+				answers <- a
+			}
+			_ = broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{}`)})
+		}
+	}()
+
+	v := newNodesView(client)
+	v.SetSize(120, 30)
+	v.Update(inviteReceived("a", "alpha"))
+	v.Update(inviteReceived("b", "beta"))
+	v.Update(inviteReceived("c", "gamma"))
+
+	cmd := v.Update(pairingResultMsg{inviteID: "a", from: "alpha", state: inviteStatePaired})
+	if v.inbound != nil || len(v.queued) != 0 {
+		t.Fatalf("requests are still waiting after joining: %#v %v", v.inbound, v.queued)
+	}
+	if got := v.status.render(); !contains(got, "paired with alpha") || !contains(got, "declined 2 other") {
+		t.Errorf("the outcome does not say the others were declined: %q", got)
+	}
+
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("joining issued no commands")
+	}
+	for _, c := range batch {
+		go c()
+	}
+	declined := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for len(declined) < 2 {
+		select {
+		case a := <-answers:
+			if a.Accept == nil || *a.Accept {
+				t.Errorf("request %q was answered with accept=%v, want a decline", a.InviteID, a.Accept)
+			}
+			declined[a.InviteID] = true
+		case <-deadline:
+			t.Fatalf("only %v were declined", declined)
+		}
+	}
+	if !declined["b"] || !declined["c"] || declined["a"] {
+		t.Errorf("declined %v, want exactly the two still waiting", declined)
+	}
+}
+
+// TestJoiningWithNothingWaitingDeclinesNothing checks the ordinary case still
+// reads as it did: one request, accepted, and nothing else said.
+func TestJoiningWithNothingWaitingDeclinesNothing(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(inviteReceived("a", "alpha"))
+	v.Update(pairingResultMsg{inviteID: "a", from: "alpha", state: inviteStatePaired})
+	if got := v.status.render(); !contains(got, "paired with alpha") || contains(got, "declined") {
+		t.Errorf("a lone accept reported %q", got)
 	}
 }
 
