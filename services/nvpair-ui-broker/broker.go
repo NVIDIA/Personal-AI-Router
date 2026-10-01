@@ -289,9 +289,9 @@ type Broker struct {
 	workloadEmitMu sync.Mutex
 
 	// workloads is the broker's authoritative index of cluster workloads
-	// (current + historic), keyed by (originatedFrom, id). It applies an
-	// order-independent, monotonic merge so a stale/out-of-order event can't
-	// resurrect a finished workload, and it backs the node-loss sweep
+	// (current + historic), keyed by (originatedFrom, engine, runId, id). It
+	// applies an order-independent, monotonic merge so a stale/out-of-order event
+	// can't resurrect a finished workload, and it backs the node-loss sweep
 	// (failWorkloadsForNode). Written from the proxy / workload-manager reader
 	// goroutines (via emitWorkloadEvent) and the scanner-event goroutine (via
 	// failWorkloadsForNode); it is internally synchronized.

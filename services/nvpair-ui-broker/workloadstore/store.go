@@ -451,12 +451,11 @@ func (s *Store) ActiveForNode(node string) []Record {
 // on the one node that cannot learn otherwise.
 //
 // A candidate is also skipped when another non-terminal record shares its
-// (Origin, ID) pair. That pair is the coarser identity the desktop and the
-// removal wire key on, so a synthesized terminal for one generation would be
-// applied to whichever generation currently occupies that key — potentially a
-// live job. Suppressing the ambiguous case means two colliding generations that
-// both go silent are never swept; that is the safe direction, and the durable fix
-// is to carry engine and runId on the client contract (see open-issues N93).
+// (Origin, ID) pair. The terminal UI still keys workloads on that pair, so a
+// synthesized terminal for one generation would be shown against whichever
+// generation it holds under that key — potentially a live job. Suppressing the
+// ambiguous case means two colliding generations that both go silent are never
+// swept; that is the safe direction.
 //
 // The caller applies the result as INFERRED, so the origin's next authoritative
 // event reconciles it back if the guess was wrong.
