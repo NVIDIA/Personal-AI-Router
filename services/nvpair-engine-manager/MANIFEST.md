@@ -175,8 +175,10 @@ Each action is a config-declared operation exposed over `engine:action`.
 Exactly one of `http`, `cmd`, or `remove_path`:
 
 - **`http`** — call the engine's loopback control API. The caller's
-  `params` are sent as the JSON request body; `body_schema` is
-  informational. Requires the engine to be running.
+  `params` are sent as the JSON request body by default. Set
+  `params_in: "query"` to require a JSON object of string values and URL-encode
+  them into the query string instead. `body_schema` is informational. Requires
+  the engine to be running.
 - **`cmd`** — run a CLI command (e.g. `lms get`). The caller's `params`
   become placeholders (e.g. `{model}`); stdout is returned (parsed as
   JSON when it is valid JSON). Does **not** require the engine to be
@@ -311,8 +313,9 @@ validation at load:
 
 A `cmd` action additionally templates the action's own `params` as
 placeholders (e.g. `{model}`), resolved at call time. HTTP actions send
-`params` as the JSON request **body** — they are not substituted into
-`http.path`, which templates only `{port}`.
+`params` as the JSON request **body** by default; `params_in: "query"` sends
+their string fields as URL-encoded query parameters with no body. They are not
+substituted into `http.path`, which templates only `{port}`.
 
 ## Validation
 
@@ -323,7 +326,8 @@ field is missing, `manifest_version` is unsupported, a platform key isn't
 `install.script` is combined with `fetch`/`run`, `install.mode` or
 `runtime.mode` is invalid, an action sets none or more than one of
 `http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
-`path`, a `result` is set without both `array` and `field` (or a
+`path`, `http.params_in` is not `body` or `query`, a `result` is set without
+both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or
 a non-action templated string uses an unknown placeholder.
 
@@ -435,7 +439,7 @@ GPU selection, and auth.
 | Engine | Fit | Headless launch | Config surface | Control |
 |---|---|---|---|---|
 | **Ollama** | strong (env-first) | `ollama serve` (foreground) | env: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MAX_QUEUE`, `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_FLASH_ATTENTION` | HTTP `/api/tags`, `/api/pull`; CLI `ollama pull/ls/ps/stop` |
-| **llama.cpp** | strong (env+flags) — **reference design** | `llama-server --host 127.0.0.1 --port {port}` (foreground) | flags + `LLAMA_ARG_*` (host/port, ctx-size, n-parallel, cont-batching, flash-attn, device, n-gpu-layers, tensor-split, main-gpu, api-key, models-dir/max) | HTTP `/v1/models`, `/models/load`, `/models/unload`, `/health`, `/slots` |
+| **llama.cpp** | strong (env+flags) — **reference design** | `llama-server --host 127.0.0.1 --port {port}` (foreground) | flags + `LLAMA_ARG_*` (host/port, ctx-size, n-parallel, cont-batching, flash-attn, device, n-gpu-layers, tensor-split, main-gpu, api-key, models-dir/max) | HTTP `/v1/models`, `/models` download/delete, `/models/load`, `/models/unload`, `/health`, `/slots` |
 | **LM Studio** | command / daemon | `lms daemon up` → `lms server start --port {port}` | small env (`LMS_SERVER_HOST`, `LM_API_TOKEN`); most config is flags/API/settings (`lms load --context-length/--gpu/--ttl`) | HTTP `/api/v1/models[/download\|load\|unload]`; CLI `lms ls/get/load/unload/ps` |
 | **vLLM** | flags-first — **Linux/WSL only** | `vllm serve <model> --host 127.0.0.1 --port {port}` | flags (host/port/api-key); `HF_HOME` for cache. `VLLM_PORT`/`VLLM_HOST_IP` are **not** the API bind | OpenAI `/v1/models`; one model per process (unload = restart) |
 | **Jan** | hybrid (on llama.cpp router) | `jan serve <model> --port {port}` (CLI) | forwards `LLAMA_ARG_*`; perf settings are router-preset-driven | `jan serve` auto-downloads HF repos |

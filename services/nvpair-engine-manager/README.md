@@ -17,10 +17,11 @@ authoring.
 ### llama.cpp backend checkpoint
 
 The `llamacpp` manifest runs `llama-server` in router mode on loopback port
-`8081`. It can list, download, load, and unload exact model ids such as
-`owner/repository:Q4_K_M`; deletion is not declared. Downloads use `/models/sse`
-for progress, and `LLAMA_CACHE` points to a managed sibling directory so models
-survive engine uninstall and reinstall. Remove that cache manually when needed.
+`8081`. It can list, download, load, unload, and delete exact model ids such as
+`owner/repository:Q4_K_M`. Downloads use `/models/sse` for progress; deletion
+uses the router's native `DELETE /models` cache operation and does not restart
+the router. `LLAMA_CACHE` points to a managed sibling directory so models
+survive engine uninstall and reinstall.
 Readiness requires `/props` to report `role:"router"`, so model-selection
 arguments that switch `llama-server` to single-model mode and incompatible
 listeners already occupying the port are rejected rather than adopted.

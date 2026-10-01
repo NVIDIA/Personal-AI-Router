@@ -151,10 +151,9 @@ Personal AI Router consequences (all reflection, no security implementation):
 ### llama.cpp support
 
 The bundled backend manifest can install and start `llama-server`, list exact
-router model ids, stream model downloads over SSE, and load or unload a model.
-It declares no delete action, so persistent downloads currently require manual
-cache cleanup. Its `LLAMA_CACHE` directory is a sibling of the install directory
-and survives uninstall and reinstall.
+router model ids, stream model downloads over SSE, load or unload a model, and
+delete native cache entries by exact id. Its `LLAMA_CACHE` directory is a
+sibling of the install directory and survives uninstall and reinstall.
 Loaded models enter llama.cpp sleep mode after five idle minutes, release model
 and KV-cache memory, and wake on the next request. The router child remains alive
 and can retain a residual backend GPU context.
@@ -168,16 +167,16 @@ fallback; hardware acceptance is still required to confirm acceleration.
 The facade is in the default broker and TUI set: local OpenAI-compatible clients
 use the broker-reported listener (normally `8080`) while the managed router runs
 on `8081`. Desktop and TUI expose install, lifecycle, download progress,
-inventory, load/unload, endpoint, routed state, and inference-demo workflows.
+inventory, load/unload, endpoint, routed state, and inference-demo workflows;
+Desktop also exposes model deletion.
 Desktop browsing populates a six-hour cache from the 50 most-downloaded GGUF
 repositories for each approved publisher and can explicitly search up to 50
 public Hugging Face matches. Results are limited to pull-ready `Q4_K_M` IDs.
 The TUI keeps its direct exact-ID download prompt.
 
-Current limits are explicit: there is no llama.cpp model delete action, the
-manual-node worker does not probe llama.cpp, the catalog offers no alternate
-quantizations, and package selection is fixed rather than driver-aware or
-offline-repacked.
+Current limits are explicit: the manual-node worker does not probe llama.cpp,
+the catalog offers no alternate quantizations, and package selection is fixed
+rather than driver-aware or offline-repacked.
 
 ## Engine lifecycle
 
@@ -244,10 +243,10 @@ Personal AI Router uses:
 - `pull_model`;
 - Ollama `run_model`, `unload_model` (`keep_alive: 0`), and `delete_model`;
 - LM Studio `load_model`, `unload_model`, and `delete_model` (`remove_path`);
-- llama.cpp `load_model` and `unload_model`.
+- llama.cpp `load_model`, `unload_model`, and `delete_model` (`DELETE /models`
+  with URL-encoded query params).
 
-All three engines expose Load and Eject in the model manager. Ollama and LM
-Studio also expose Delete; llama.cpp cache deletion is not yet implemented.
+All three engines expose Load, Eject, and Delete in the model manager.
 User-configurable keep-alive / expiry controls remain unsupported; managed
 llama.cpp uses its fixed five-minute idle sleep.
 
@@ -261,11 +260,13 @@ restart is entirely backend-owned: PAIR sends the same `deleteModel` command as
 for any other engine and never issues `engine:restart` itself, so the bundled
 `nvpair` terminal UI and a remote peer's deletion get the same behavior.
 
-**This is LM Studio only.** Ollama reflects a deletion immediately, so its
-manifest omits `restart_after` and its capability entry omits
-`restartsOnModelDelete`: no bounce, no confirmation, no interrupted inference.
-Those two facts have to stay in step across a Go manifest and a TypeScript
-constant, which nothing in either type system enforces — so
+**The full engine restart is LM Studio only.** Ollama and llama.cpp reflect a
+deletion in-process, so their manifests omit `restart_after` and their capability
+entries omit `restartsOnModelDelete`: no engine bounce and no restart
+confirmation. llama.cpp may stop the selected model while removing its cache
+entry, but the router and its other models stay up. Those manifest and
+capability facts have to stay in step across Go and TypeScript, which nothing in
+either type system enforces — so
 `tests/modular/delete-model-restart.test.ts` reads the shipped manifests and
 asserts the pair agrees, and `TestBundledManifestsRestartOnlyLMStudio` guards the
 same thing from the Go side.

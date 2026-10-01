@@ -34,8 +34,8 @@ extensibility story for an open-source product.
   `list_models`/`list_downloaded`, `loaded_models`, `pull_model`, `load_model`,
   `chat`, `unload_model`, and `delete_model` (`remove_path` with
   `lms-disk-path` resolution);
-  llama.cpp declares list, loaded-list, pull, load, and unload with exact model
-  ids, and intentionally declares no delete action. `loaded_models` reports
+  llama.cpp declares list, loaded-list, pull, load, unload, and native cache
+  delete with exact model ids. `loaded_models` reports
   models currently resident in memory, name-extracted via the same declarative
   `result` spec with optional nested-path and row filters: Ollama uses
   `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
@@ -75,7 +75,7 @@ extensibility story for an open-source product.
 - **Risk — admin-only installers**: `mode: "admin"` is a flagged, refused exception, not the default; product direction is strictly user-mode.
 - **Risk — LAN-open inference bind (interim)**: inference engines default `runtime.bind` to `0.0.0.0` (ordinary engines stay loopback; a per-call `bind` re-pins). This is a deliberate, temporary exception to the loopback-only posture; narrow it once authenticated inference transport exists. The engine-manager `ec` control surface is already protected independently by pin-based mTLS.
 - **Future — declared/tunable env layer**: `runtime.env` is static today. A "declared tunables" layer (manifest-declared knobs, UI/broker-overridable per start) is worth adding; by env-richness the priority is Ollama → llama.cpp/Jan → vLLM (LM Studio / GPT4All are flags/settings-driven, not env). Related: `runtime.env` is process-mode-only — extending it to command-mode start commands is a deliberate, still-open choice. See `MANIFEST.md` → "Engine config reference".
-- **Model deletion where the vendor has no command (LM Studio)**: implemented via the generic **`remove_path`** action kind — a manifest-declared, param-templated path the runner removes with safety rails (must resolve under a declared allowed root, reject `..`/symlink escapes). LM Studio's `delete_model` uses `model_resolution: "lms-disk-path"` to map logical ids to on-disk files via `lms ls --json` before deleting under `{models_dir}`, then `restart_after` to bounce a running server: LM Studio answers `/v1/models` from an index built at startup and exposes no rescan, so clients keep being offered the deleted model until it restarts. Ollama deletes via `DELETE /api/delete` (no restart needed) and ejects via `unload_model` (`POST /api/generate` with `keep_alive: 0`).
+- **Model deletion where the vendor has no command (LM Studio)**: implemented via the generic **`remove_path`** action kind — a manifest-declared, param-templated path the runner removes with safety rails (must resolve under a declared allowed root, reject `..`/symlink escapes). LM Studio's `delete_model` uses `model_resolution: "lms-disk-path"` to map logical ids to on-disk files via `lms ls --json` before deleting under `{models_dir}`, then `restart_after` to bounce a running server: LM Studio answers `/v1/models` from an index built at startup and exposes no rescan, so clients keep being offered the deleted model until it restarts. Ollama deletes via `DELETE /api/delete` (no restart needed) and ejects via `unload_model` (`POST /api/generate` with `keep_alive: 0`). llama.cpp deletes native cache entries via `DELETE /models` with the exact model id in a URL-encoded query parameter; the router updates its inventory in-process, so it also needs no restart.
 
 ## 5. Requirements
 

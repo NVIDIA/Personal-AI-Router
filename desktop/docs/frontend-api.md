@@ -104,9 +104,8 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
 query performs an explicit bounded search across public Hugging Face GGUF
 repositories; other calls return the populated engine catalog. llama.cpp pull
-IDs are exact `owner/repository:quantization` values; load and unload are
-supported, but `deleteModel` is hidden because its manifest declares no delete
-action.
+IDs are exact `owner/repository:quantization` values; load, unload, and delete
+all use that same exact id.
 
 Port and launch changes work on a clustered peer as well as the local device,
 with one exception: **managed CORS origin settings** are local-only. The owning

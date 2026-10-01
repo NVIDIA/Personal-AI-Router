@@ -197,8 +197,7 @@ Your data means settings, logs, cluster identity and certificates, and any engin
 PAIR installed for you. **Model weights are not touched** — they live in the
 engine's own storage, such as `~/.ollama`, so removing PAIR does not delete the
 models you downloaded. Delete those through the engine, or by removing its
-directory. llama.cpp model deletion is not yet exposed; its managed model cache
-must be removed manually when you want to reclaim that space.
+directory.
 
 **To clear your data without uninstalling,** use **Settings → Service → Reset app
 data**. It removes the same set — settings, logs, cluster identity and
