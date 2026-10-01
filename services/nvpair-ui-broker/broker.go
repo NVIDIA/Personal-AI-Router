@@ -262,6 +262,11 @@ type Broker struct {
 	// same goroutine, so it needs no lock.
 	startedWorkers []*supervisor
 
+	// teardownPhases times the steps shutdownInferenceStack runs ahead of the
+	// worker joins, for stopWorkers' slow-teardown report. Both run on Serve's
+	// goroutine, so it needs no lock.
+	teardownPhases []teardownStep
+
 	// subMu guards subscribed. The discovery:nodes-changed stream is
 	// opt-in: emitNodesChanged (called on the scanner-event goroutine)
 	// reads this flag while the discovery:subscribe / discovery:unsubscribe
@@ -2086,10 +2091,10 @@ func (b *Broker) Serve(ctx context.Context) error {
 		defer stopFlusher()
 	}
 
-	// Join every started worker from one place, so the joins fan out instead of
-	// costing the sum of ten sequential defers (see stopWorkers). Registered
-	// after the flusher's stop so it runs BEFORE it (LIFO): the workers must be
-	// quiescent before the final workload-history flush.
+	// Join every started worker from one place, so the joins fan out (see
+	// stopWorkers). Registered after the flusher's stop so it runs BEFORE it
+	// (LIFO): the workers must be quiescent before the final workload-history
+	// flush.
 	defer b.stopWorkers()
 
 	// Bound how long a lost terminal event can keep a remote workload displaying
@@ -2288,12 +2293,22 @@ func (b *Broker) shutdownInferenceStack() {
 	// engine's facade, so this closes all of them at once — the child drains
 	// each facade before releasing the shared transport pool.
 	if b.proxySup != nil {
-		b.proxySup.Stop()
-		for _, profile := range engineProxyProfiles {
-			b.setEngineProxyHandle(profile, nil)
-		}
+		b.timeTeardownPhase("proxy", func() {
+			b.proxySup.Stop()
+			for _, profile := range engineProxyProfiles {
+				b.setEngineProxyHandle(profile, nil)
+			}
+		})
 	}
-	b.prepareEngineManagerShutdown()
+	b.timeTeardownPhase("engine-sweep", b.prepareEngineManagerShutdown)
+}
+
+// timeTeardownPhase runs one teardown step ahead of the worker joins and
+// records how long it took for the slow-teardown report.
+func (b *Broker) timeTeardownPhase(name string, phase func()) {
+	at := time.Now()
+	phase()
+	b.teardownPhases = append(b.teardownPhases, teardownStep{name: name, took: time.Since(at)})
 }
 
 // prepareEngineManagerShutdown requests a synchronous engine shutdown from
