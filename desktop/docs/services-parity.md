@@ -164,7 +164,8 @@ processes without changing the persisted desired state; the broker restores
 enabled engines on the next launch. The broker also self-initiates
 `engine:prepare-shutdown` before tearing down its workers, so engines are not
 orphaned during teardown; engine-manager sweeps once per process, and later
-calls wait for that sweep. The broker joins its workers concurrently within one
+calls wait for that sweep, retrying only an engine whose stop failed through a
+process handle or a stop command. The broker joins its workers concurrently within one
 shared teardown budget and escalates a worker that misses its grace, except
 engine-manager on Windows. Stopping a managed engine itself sends one stop signal and
 waits for it to exit with no timeout: SIGTERM to the process group on Unix
