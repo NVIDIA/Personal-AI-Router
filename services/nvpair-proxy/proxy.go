@@ -1272,14 +1272,8 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		proxyErr     string
 		finalStatus  int
 		started      bool
-		wl           *Workload
+		job          *jobEvents
 	)
-
-	// wlSeq numbers this workload's events. Every mutation of wl below happens
-	// either before the watcher goroutine exists or under wlMu, so a plain
-	// counter is enough; see Workload.Seq for why the sequence is needed.
-	var wlSeq int64
-	nextWlSeq := func() int64 { wlSeq++; return wlSeq }
 
 	// Emit workload:submitted the moment the request is admitted, before any
 	// dispatch. A burst of concurrent inference requests must surface as job
@@ -1294,57 +1288,14 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// not tried would inflate its load. Each dispatch and each gap between
 	// attempts re-points it.
 	if isInf && model != "" {
-		createdMs := start.UnixMilli()
-		wl = &Workload{
+		job = newJobEvents(Workload{
 			ID:        reqID,
 			Model:     model,
 			Engine:    f.profile.Name,
 			RunID:     p.runID,
 			State:     "queued",
-			CreatedAt: createdMs,
-			Seq:       nextWlSeq(),
-		}
-		p.emitWorkload(workloadSubmittedMethod, *wl)
-	}
-
-	// The terminal workload transition (completed/errored) can be reached from
-	// two places: the normal path after the stream copy unwinds below, and the
-	// disconnect watcher that fires while the copy is still blocked. terminalOnce
-	// guarantees exactly one is emitted; wlMu guards the shared wl fields the
-	// watcher (a separate goroutine) and ModifyResponse's failover re-point both
-	// touch; terminated suppresses a late started re-point once we've finalized.
-	var (
-		terminalOnce sync.Once
-		wlMu         sync.Mutex
-		terminated   bool
-	)
-	emitTerminal := func(state, errMsg string) {
-		if wl == nil {
-			return
-		}
-		terminalOnce.Do(func() {
-			now := time.Now().UnixMilli()
-			wlMu.Lock()
-			terminated = true
-			wl.CompletedAt = &now
-			wl.State = state
-			if errMsg != "" {
-				wl.Error = &errMsg
-			}
-			wl.Seq = nextWlSeq()
-			snapshot := *wl
-			wlMu.Unlock()
-			// Only "completed" gets its own method; every other terminal state,
-			// including "cancelled", rides workload:errored. The workload
-			// manager does not validate method against state and consumers read
-			// the state out of the payload, so a new terminal state needs no new
-			// method on the wire.
-			method := workloadCompletedMethod
-			if state != "completed" {
-				method = workloadErroredMethod
-			}
-			p.emitWorkload(method, snapshot)
-		})
+			CreatedAt: start.UnixMilli(),
+		}, p.emitWorkload)
 	}
 
 	// Watch for the client going away while the request is in flight. The
@@ -1353,17 +1304,17 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// emit the terminal here the moment r.Context() is cancelled instead of
 	// waiting for the unwind. Cancelling r.Context() (client close, or our own
 	// shutdown) also propagates to the ReverseProxy's upstream request, so the
-	// engine stops generating. terminalOnce keeps this from double-emitting
-	// with the normal path. The half-open case (no FIN, r.Context() never
-	// fires) is caught instead by statusCapture's write deadline below.
-	if wl != nil {
+	// engine stops generating. finish emits at most once, so this cannot
+	// double-emit with the normal path. The half-open case (no FIN, r.Context()
+	// never fires) is caught instead by statusCapture's write deadline below.
+	if job != nil {
 		reqCtx := r.Context()
 		finished := make(chan struct{})
 		defer close(finished)
 		go func() {
 			select {
 			case <-reqCtx.Done():
-				emitTerminal("cancelled", "client disconnected before completion")
+				job.finish("cancelled", "client disconnected before completion")
 			case <-finished:
 			}
 		}()
@@ -1440,9 +1391,9 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// failed client write (dead/half-open client), or any non-2xx status is
 		// a failure; a clean 2xx is a completion. The Workload carries the same
 		// id so the broker (and peers) can collapse the start/finish pair.
-		// Routed through emitTerminal so the disconnect watcher and this path
-		// emit exactly once.
-		if wl != nil {
+		// finish emits at most once, so this and the disconnect watcher never
+		// both report.
+		if job != nil {
 			switch {
 			case r.Context().Err() != nil:
 				// The request was cancelled before it finished — either the
@@ -1450,10 +1401,10 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// the in-flight inference. A mid-stream cancel never reaches
 				// ErrorHandler (the 200 headers are already sent), so without
 				// this branch it would be misreported as completed. (The
-				// watcher above usually beats us to it; emitTerminal makes that
-				// a no-op.) Cancelled rather than failed: nothing went wrong
-				// here, the requester stopped waiting.
-				emitTerminal("cancelled", "request cancelled before completion")
+				// watcher above usually beats us to it; finish makes that a
+				// no-op.) Cancelled rather than failed: nothing went wrong here,
+				// the requester stopped waiting.
+				job.finish("cancelled", "request cancelled before completion")
 			case committedSC != nil && committedSC.wroteErr != nil:
 				// The response committed but a write to (or flush toward) the
 				// client failed — typically the idle deadline tripping on a
@@ -1461,15 +1412,15 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// differing only in how we noticed: a client that vanished
 				// without a FIN never cancels the context, so the write
 				// deadline is what surfaces it. Classified identically.
-				emitTerminal("cancelled", "client connection lost: "+committedSC.wroteErr.Error())
+				job.finish("cancelled", "client connection lost: "+committedSC.wroteErr.Error())
 			case proxyErr != "" || finalStatus >= http.StatusBadRequest:
 				msg := proxyErr
 				if msg == "" {
 					msg = fmt.Sprintf("upstream returned HTTP %d", finalStatus)
 				}
-				emitTerminal("failed", msg)
+				job.finish("failed", msg)
 			default:
-				emitTerminal("completed", "")
+				job.finish("completed", "")
 			}
 		}
 
@@ -1481,28 +1432,6 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			panic(aborted)
 		}
 	}()
-
-	// repointWorkload records where the job is currently placed: a node id while
-	// an attempt is in flight, empty between attempts. The scheduler counts
-	// pending work by scheduledOn, so clearing it is what stops a node we have
-	// given up on from still looking busy. The state stays "queued" throughout,
-	// because "running" means the engine is generating and the broker's store
-	// would reject a return to "queued" as a backwards transition.
-	repointWorkload := func(nodeID string) {
-		if wl == nil {
-			return
-		}
-		wlMu.Lock()
-		if terminated || wl.ScheduledOn == nodeID {
-			wlMu.Unlock()
-			return
-		}
-		wl.ScheduledOn = nodeID
-		wl.Seq = nextWlSeq()
-		snapshot := *wl
-		wlMu.Unlock()
-		p.emitWorkload(workloadSubmittedMethod, snapshot)
-	}
 
 	// releaseHeld drops the capacity claim. Called before every backoff: the
 	// reservation map is process-wide and shared with the other engine's
@@ -1589,7 +1518,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			// Round exhausted, or no owner was available. Either way the job is
 			// on no node right now, so drop both the placement and the capacity
 			// claim before waiting.
-			repointWorkload("")
+			job.repoint("")
 			releaseHeld()
 			if !waitBeforeRetry(r.Context(), backoffFor(dispatches, time.Until(deadline))) {
 				break
@@ -1615,7 +1544,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		lastPermitted := dispatches >= maxDispatches ||
 			(retryRounds && !time.Now().Before(deadline))
 		last := lastPermitted
-		repointWorkload(cand.id)
+		job.repoint(cand.id)
 		// The claim follows the node we are about to try, not the one
 		// reserveCandidate happened to pick for the round — an attempt can hold
 		// a node for the whole first-content budget, and for that time it is
@@ -1797,24 +1726,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					// this is the first moment "running" is true. It also fixes
 					// the placement on the node that actually served, which may
 					// differ from the last node the queued updates named.
-					// Guarded by wlMu against the disconnect watcher, and
-					// skipped once terminated so a late transition cannot
-					// resurrect a workload we have already finalized.
-					if wl != nil {
-						wlMu.Lock()
-						if !terminated {
-							startedMs := time.Now().UnixMilli()
-							wl.State = "running"
-							wl.StartedAt = &startedMs
-							wl.ScheduledOn = cand.id
-							wl.Seq = nextWlSeq()
-							snapshot := *wl
-							wlMu.Unlock()
-							p.emitWorkload(workloadStartedMethod, snapshot)
-						} else {
-							wlMu.Unlock()
-						}
-					}
+					job.start(cand.id)
 				}
 				return nil
 			},
