@@ -15,12 +15,15 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"nvpair-shared/jsonrpc"
 )
 
-// engineStopDeclinedRe matches engine-manager's warning for an engine whose
-// stop it can only decline. One sweep logs it exactly once per such engine, so
-// counting the line counts the sweeps.
-var engineStopDeclinedRe = regexp.MustCompile(`engine stop during shutdown failed`)
+// foreignStopDeclinedRe matches engine-manager's warning for the foreign
+// engine, whose stop it can only decline. One sweep logs it exactly once, so
+// counting the line counts the sweeps. It names the engine because a real
+// engine on the host can be adopted and declined in the same sweep.
+var foreignStopDeclinedRe = regexp.MustCompile(`engine stop during shutdown failed.*engine=foreign`)
 
 // startForeignEngine serves an engine readiness endpoint on a free port without
 // engine-manager having launched it. That is what an externally-managed engine
@@ -106,11 +109,9 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 // once.
 //
 // This counts sweeps rather than milliseconds so it cannot flake on a loaded
-// CI machine. The cost is what makes it matter: an engine whose stop can only
-// be declined stays marked running, so every repeat sweep re-pays its readiness
-// probe. Field measurement with an externally-managed Ollama put the three
-// sweeps at 1068ms + 1052ms + 1040ms — essentially the entire quit. The elapsed
-// teardown is logged for reference.
+// CI machine. An engine whose stop can only be declined stays marked running,
+// so every repeat sweep would re-pay its readiness probe on the quit path. The
+// elapsed teardown is logged for reference.
 func TestQuitSweepsEnginesOnce(t *testing.T) {
 	configDir := t.TempDir()
 	port := startForeignEngine(t)
@@ -126,12 +127,14 @@ func TestQuitSweepsEnginesOnce(t *testing.T) {
 	// adopts the foreign listener as running. Without it there is nothing for a
 	// sweep to decline and the test would pass while covering nothing.
 	sendReq(t, stdin, 98, "engine:get-installed")
-	waitForResponseID(t, msgs, 98, 15*time.Second)
+	if resp := waitForResponseID(t, msgs, 98, 15*time.Second); resp.Error != nil {
+		t.Fatalf("engine:get-installed errored: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
+	}
 
 	// The desktop's quit sequence.
 	started := time.Now()
 	sendReq(t, stdin, 99, "engine:prepare-shutdown")
-	sweeps := countStderrUntilClosed(t, stderrLines, engineStopDeclinedRe, stdin, 30*time.Second)
+	sweeps := quitAndCountStderr(t, msgs, stderrLines, foreignStopDeclinedRe, stdin, 99, 30*time.Second)
 	elapsed := time.Since(started)
 
 	t.Logf("teardown took %s with %d declined-stop sweep(s)", elapsed, sweeps)
@@ -144,36 +147,46 @@ func TestQuitSweepsEnginesOnce(t *testing.T) {
 	}
 }
 
-// countStderrUntilClosed closes the broker's stdin once (completing the quit
-// sequence) and counts matching stderr lines until the stream closes with the
-// process. Returns the count.
-func countStderrUntilClosed(t *testing.T, lines <-chan string, re *regexp.Regexp, stdin io.Closer, timeout time.Duration) int {
+// quitAndCountStderr completes the desktop's quit sequence and counts stderr
+// lines matching re until the broker exits. Like the desktop, it closes stdin
+// only once the engine:prepare-shutdown reply (replyID) has arrived. Both
+// streams are drained throughout, so the broker never blocks writing to either.
+func quitAndCountStderr(t *testing.T, msgs <-chan jsonrpc.Message, lines <-chan string, re *regexp.Regexp, stdin io.Closer, replyID int, timeout time.Duration) int {
 	t.Helper()
-	closed := false
+	replied := false
 	count := 0
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	// Give prepare-shutdown a moment to be handled before EOF, matching the
-	// desktop, which awaits its reply first.
-	settle := time.NewTimer(2 * time.Second)
-	defer settle.Stop()
 	for {
 		select {
+		case msg, ok := <-msgs:
+			if !ok {
+				msgs = nil
+				continue
+			}
+			if replied || msg.Method != "" || !idEquals(msg.ID, replyID) {
+				continue
+			}
+			if msg.Error != nil {
+				t.Fatalf("engine:prepare-shutdown errored: code=%d msg=%s", msg.Error.Code, msg.Error.Message)
+			}
+			replied = true
+			if err := stdin.Close(); err != nil {
+				t.Fatalf("close broker stdin: %v", err)
+			}
 		case line, ok := <-lines:
 			if !ok {
+				if !replied {
+					t.Fatalf("broker exited before replying to engine:prepare-shutdown; counted %d sweep(s)", count)
+				}
 				return count
 			}
 			if re.MatchString(line) {
 				count++
 				t.Logf("declined stop #%d: %s", count, line)
 			}
-		case <-settle.C:
-			if !closed {
-				closed = true
-				_ = stdin.Close()
-			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for the broker to exit; counted %d sweep(s)", timeout, count)
+			t.Fatalf("timed out (%s) waiting for the broker to exit; replied=%t, counted %d sweep(s)", timeout, replied, count)
 		}
 	}
 }
