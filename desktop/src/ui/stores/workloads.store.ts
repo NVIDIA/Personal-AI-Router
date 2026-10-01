@@ -4,8 +4,13 @@
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import type { Workload } from '@/shared/types/workloads'
+import type { WsPushPayload } from '@/shared/types/ws-channels'
 import deepEqual from '@/ui/utils/deep-equal'
-import { workloadExecutionNodeId, workloadKey } from '@/shared/utils/workloads'
+import {
+    workloadExecutionNodeId,
+    workloadKey,
+    workloadKeysRemovedBy
+} from '@/shared/utils/workloads'
 import { stateOrder, MAX_HISTORY_ITEMS } from '@/ui/constants/app'
 
 interface WorkloadsStore {
@@ -24,7 +29,9 @@ let unsubs: Array<() => void> = []
 // own store commit clones the Map and re-runs every selector per event, which
 // fans out into the job list, the connector lines, and node cards. We instead
 // buffer pushes and flush them in a single commit on the next animation frame.
-type PendingOp = { kind: 'upsert'; workload: Workload } | { kind: 'remove'; key: string }
+type PendingOp =
+    | { kind: 'upsert'; workload: Workload }
+    | { kind: 'remove'; removal: WsPushPayload<'workloads:remove'> }
 let pendingOps: PendingOp[] = []
 let flushHandle = 0
 
@@ -45,15 +52,16 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
             for (const op of ops) {
                 const base = updated ?? prev
                 if (op.kind === 'upsert') {
-                    const key = workloadKey(op.workload.originatedFrom, op.workload.id)
+                    const key = workloadKey(op.workload)
                     const existing = base.get(key)
                     if (existing && deepEqual(existing, op.workload)) continue
                     if (!updated) updated = new Map(prev)
                     updated.set(key, op.workload)
                 } else {
-                    if (!base.has(op.key)) continue
+                    const keys = workloadKeysRemovedBy(base, op.removal)
+                    if (keys.length === 0) continue
                     if (!updated) updated = new Map(prev)
-                    updated.delete(op.key)
+                    for (const key of keys) updated.delete(key)
                 }
             }
 
@@ -69,7 +77,7 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
         // below would be silently undone by rebuilding the map from the baseline
         // snapshot, which still lists the now-retired job. Record such removes so
         // the merge can subtract them — these deltas are newer than the snapshot.
-        const removedDuringInit = new Set<string>()
+        const removedDuringInit: WsPushPayload<'workloads:remove'>[] = []
         let initializing = true
 
         // Subscribe BEFORE fetching the baseline so a `workloads:upsert` that
@@ -83,10 +91,9 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                     pendingOps.push({ kind: 'upsert', workload })
                     schedule()
                 }),
-                window.pairApi.workloads.onRemove(({ workloadId, originatedFrom }) => {
-                    const key = workloadKey(originatedFrom, workloadId)
-                    if (initializing) removedDuringInit.add(key)
-                    pendingOps.push({ kind: 'remove', key })
+                window.pairApi.workloads.onRemove(removal => {
+                    if (initializing) removedDuringInit.push(removal)
+                    pendingOps.push({ kind: 'remove', removal })
                     schedule()
                 })
             )
@@ -101,7 +108,9 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
             // Subtract jobs a `workloads:remove` retired during the fetch (that
             // delta is newer than the snapshot), before overlaying upserts — so a
             // remove-then-readd of the same key still surfaces the re-add.
-            for (const key of removedDuringInit) map.delete(key)
+            for (const removal of removedDuringInit) {
+                for (const key of workloadKeysRemovedBy(map, removal)) map.delete(key)
+            }
             // Overlay upserts that already landed during the fetch (also newer than
             // the baseline), so seeding never regresses a live transition.
             for (const [key, workload] of get().workloads) {

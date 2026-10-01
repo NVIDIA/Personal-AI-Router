@@ -10,12 +10,18 @@ export interface Workload {
     id: string
     model: string
     engine: EngineType
+    /**
+     * The origin proxy process's run nonce. Job ids restart from 1 in every
+     * run, so an id from an earlier run can repeat in a later one. Empty when
+     * the origin does not report one.
+     */
+    runId: string
     state: WorkloadState
     /**
      * Owner/origin node of the workload — the node whose proxy received the
-     * request. This is the identity half of the backend's `(originatedFrom, id)`
-     * global catalog key (workload ids are a per-node proxy counter, so they
-     * collide across nodes; `originatedFrom` disambiguates).
+     * request. Part of the `(originatedFrom, engine, runId, id)` identity that
+     * `workloadKey` and the broker's store share: each engine facade numbers
+     * its jobs from 1, so ids collide across nodes, engines and runs.
      */
     originatedFrom: string | null
     /**

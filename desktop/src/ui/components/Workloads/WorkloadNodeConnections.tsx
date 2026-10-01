@@ -50,12 +50,13 @@ function connectionsEqual(a: readonly Connection[], b: readonly Connection[]): b
     return true
 }
 
-// Build a key that uniquely identifies a workload's DOM anchor. Workload ids are
-// a per-node proxy counter and collide across nodes, so we key on the
-// (origin, id) pair the same way `workloadKey` does. The null byte can't appear
-// in either value, so it is a safe separator.
-function anchorKey(origin: string, id: string): string {
-    return `${origin}\u0000${id}`
+// Build a key that uniquely identifies a workload's DOM anchor from the same
+// four parts `workloadKey` uses: ids collide across nodes, engines and proxy
+// runs. These are the card's raw data-attribute strings, which is why this does
+// not call `workloadKey` itself. The null byte can't appear in any part, so it
+// is a safe separator.
+function anchorKey(origin: string, engine: string, runId: string, id: string): string {
+    return `${origin}\u0000${engine}\u0000${runId}\u0000${id}`
 }
 
 function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]): Connection[] {
@@ -69,7 +70,13 @@ function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]):
     for (const el of document.querySelectorAll('[data-workload-id]')) {
         const id = el.getAttribute('data-workload-id')
         if (id === null) continue
-        workloadElByKey.set(anchorKey(el.getAttribute('data-workload-origin') ?? '', id), el)
+        const key = anchorKey(
+            el.getAttribute('data-workload-origin') ?? '',
+            el.getAttribute('data-workload-engine') ?? '',
+            el.getAttribute('data-workload-run-id') ?? '',
+            id
+        )
+        workloadElByKey.set(key, el)
     }
     const nodeElById = new Map<string, Element>()
     for (const el of document.querySelectorAll('[data-node-id]')) {
@@ -82,7 +89,7 @@ function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]):
         if (!executionNodeId) continue
 
         const workloadEl = workloadElByKey.get(
-            anchorKey(workload.originatedFrom ?? '', workload.id)
+            anchorKey(workload.originatedFrom ?? '', workload.engine, workload.runId, workload.id)
         )
         const nodeEl = nodeElById.get(executionNodeId)
         if (!workloadEl || !nodeEl) continue
@@ -126,7 +133,7 @@ function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]):
 
         const color = getWorkloadStateColor(workload.state)
         result.push({
-            workloadId: workloadKey(workload.originatedFrom, workload.id),
+            workloadId: workloadKey(workload),
             nodeId: executionNodeId,
             color: `${WORKLOAD_COLOR_MAP[color]}${workload.state === 'running' ? 'FF' : '88'}`,
             path,

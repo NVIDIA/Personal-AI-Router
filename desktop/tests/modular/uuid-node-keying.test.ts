@@ -10,6 +10,7 @@ import {
     getModularBridgeState,
     parseWorkloadsInitial
 } from '@/electron/service-bridge/modular-state'
+import { workloadKey } from '@/shared/utils/workloads'
 
 // The bridge keys every node by the backend's stable per-host UUID; the hostname
 // is display only. These tests lock in the two behaviours that migration exists
@@ -176,6 +177,7 @@ describe('UUID node keying', () => {
             workloadInfo: {
                 id: 'job-live',
                 engine: 'ollama',
+                runId: 'run-seed',
                 state: 'running',
                 model: 'live-model',
                 originatedFrom: 'uuid-wl-seed',
@@ -189,6 +191,7 @@ describe('UUID node keying', () => {
                     {
                         id: 'job-live',
                         engine: 'ollama',
+                        runId: 'run-seed',
                         state: 'completed',
                         model: 'stale-model',
                         originatedFrom: 'uuid-wl-seed',
@@ -197,6 +200,7 @@ describe('UUID node keying', () => {
                     {
                         id: 'job-new',
                         engine: 'ollama',
+                        runId: 'run-seed',
                         state: 'queued',
                         model: 'new-model',
                         originatedFrom: 'uuid-wl-seed',
@@ -206,8 +210,18 @@ describe('UUID node keying', () => {
             })
         )
 
-        const liveKey = 'uuid-wl-seed\u0000job-live'
-        const newKey = 'uuid-wl-seed\u0000job-new'
+        const liveKey = workloadKey({
+            originatedFrom: 'uuid-wl-seed',
+            engine: 'ollama',
+            runId: 'run-seed',
+            id: 'job-live'
+        })
+        const newKey = workloadKey({
+            originatedFrom: 'uuid-wl-seed',
+            engine: 'ollama',
+            runId: 'run-seed',
+            id: 'job-new'
+        })
         // The live entry is preserved, not clobbered by the older baseline row.
         expect(seeded[liveKey]).toMatchObject({ state: 'running', model: 'live-model' })
         // A baseline job the stream had not delivered is filled in.

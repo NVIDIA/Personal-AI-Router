@@ -2,22 +2,54 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Workload } from '@/shared/types/workloads'
+import type { WsPushPayload } from '@/shared/types/ws-channels'
+
+type WorkloadIdentity = Pick<Workload, 'originatedFrom' | 'engine' | 'runId' | 'id'>
 
 /**
- * Stable catalog key for a workload.
- *
- * The backend's catalog is keyed by `(originatedFrom, engine, runId, id)`, but
- * the `workloads:remove` push carries only `(workloadId, originatedFrom)` — and
- * the broker's own `Store.Remove` drops every record matching that pair — so
- * `(originatedFrom, id)` is the only key a subscribe client can maintain
- * consistently across upsert and remove. Each node's proxy assigns workload ids
- * from its own monotonic counter, so ids collide across nodes; `originatedFrom`
- * (the origin node) disambiguates. Mirror that here so a remote node's job never
- * overwrites a local one that happens to share an id. The `\u0000` separator
- * cannot appear in a host id or proxy counter, so the key is unambiguous.
+ * Stable catalog key for a workload: `(originatedFrom, engine, runId, id)`, the
+ * identity the broker's store keys by. Each engine facade numbers its jobs from
+ * 1 and starts again in every proxy run, so an id alone collides across nodes,
+ * engines and runs. The `\u0000` separator cannot appear in any part, so the
+ * key is unambiguous.
  */
-export function workloadKey(originatedFrom: string | null, id: string): string {
-    return `${originatedFrom ?? ''}\u0000${id}`
+export function workloadKey(workload: WorkloadIdentity): string {
+    return [workload.originatedFrom ?? '', workload.engine, workload.runId, workload.id].join(
+        '\u0000'
+    )
+}
+
+/**
+ * Keys of the entries a `workloads:remove` push retires from a catalog keyed by
+ * `workloadKey`. A removal from the broker names only the origin and id, and
+ * retires every engine and run that shares them, as the broker's own
+ * `Store.Remove` does. One Electron sends for a job it dropped from its own
+ * catalog names all four parts and retires exactly that job.
+ *
+ * The exact form is a single lookup rather than a scan: Electron sends one per
+ * entry when it empties a catalog that can hold the broker's whole history.
+ */
+export function workloadKeysRemovedBy(
+    catalog: ReadonlyMap<string, WorkloadIdentity>,
+    removal: WsPushPayload<'workloads:remove'>
+): string[] {
+    if ('engine' in removal) {
+        const key = workloadKey({
+            originatedFrom: removal.originatedFrom,
+            engine: removal.engine,
+            runId: removal.runId,
+            id: removal.workloadId
+        })
+        return catalog.has(key) ? [key] : []
+    }
+    const origin = removal.originatedFrom ?? ''
+    const keys: string[] = []
+    for (const [key, workload] of catalog) {
+        if (workload.id === removal.workloadId && (workload.originatedFrom ?? '') === origin) {
+            keys.push(key)
+        }
+    }
+    return keys
 }
 
 /**
