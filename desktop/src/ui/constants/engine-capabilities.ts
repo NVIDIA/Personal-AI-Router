@@ -55,7 +55,8 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
-        hasDeleteModel: false,
+        // The router removes cached models in-process via DELETE /models.
+        hasDeleteModel: true,
         engineHub: {
             label: 'llama.cpp',
             url: 'https://huggingface.co/models?library=gguf'

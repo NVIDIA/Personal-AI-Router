@@ -58,7 +58,7 @@ describe('engine identity', () => {
             hasCrashAlert: false,
             hasModelSearchOnlyWhenRunning: true,
             modelOpsWhenStopped: false,
-            hasDeleteModel: false,
+            hasDeleteModel: true,
             engineHub: { label: 'llama.cpp' }
         })
         expect(gatewayEndpointDisplayUrl(8080, 'llama-cpp')).toBe('http://127.0.0.1:8080')
