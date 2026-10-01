@@ -13,9 +13,12 @@
 // unique across concurrent engines and successive runs. The merge rule (see
 // apply) delivers:
 //
-//   - Order-independence: within one identity, state only moves forward
-//     (queued < running < terminal), so a stale "running" arriving after a
-//     "failed" is rejected rather than resurrecting the workload.
+//   - Order-independence: the origin numbers each workload's events (seq), and
+//     within one identity a higher seq replaces a lower one while a terminal
+//     record is never replaced, so a delayed event can neither undo a later one
+//     nor resurrect a finished workload. Events without a seq fall back to
+//     state rank (queued < running < terminal), so a stale "running" arriving
+//     after a "failed" is still rejected.
 //   - Provenance: an authoritative event (from the origin) overrides a locally
 //     inferred guess (the node-loss sweep), while an inferred guess may only
 //     fail an authoritative non-terminal record — this lets a returning node
@@ -63,6 +66,9 @@ type Record struct {
 	CompletedAt int64
 	ScheduledOn string
 	Terminal    bool
+	// Seq is the origin's number for the event this record holds, 0 when the
+	// origin sent none. See applyLocked.
+	Seq int64
 	// Inferred marks a record set by a local guess (the broker's node-loss
 	// sweep) rather than an authoritative event from the origin. An inferred
 	// state always yields to the origin's authoritative truth on reconciliation,
@@ -105,6 +111,7 @@ type Incoming struct {
 	CreatedAt   int64
 	CompletedAt int64
 	ScheduledOn string
+	Seq         int64
 	Info        json.RawMessage
 }
 
@@ -151,6 +158,7 @@ func ParseIncoming(info json.RawMessage) (Incoming, bool) {
 		ScheduledOn    string `json:"scheduledOn"`
 		CreatedAt      int64  `json:"createdAt"`
 		CompletedAt    *int64 `json:"completedAt"`
+		Seq            int64  `json:"seq"`
 	}
 	if err := json.Unmarshal(info, &hdr); err != nil || hdr.ID == "" || hdr.OriginatedFrom == "" {
 		return Incoming{}, false
@@ -168,6 +176,7 @@ func ParseIncoming(info json.RawMessage) (Incoming, bool) {
 		CreatedAt:   hdr.CreatedAt,
 		CompletedAt: completedAt,
 		ScheduledOn: hdr.ScheduledOn,
+		Seq:         hdr.Seq,
 		Info:        append(json.RawMessage(nil), info...),
 	}, true
 }
@@ -219,10 +228,12 @@ func (s *Store) ApplyInferredUnchangedSince(in Incoming, seenAt time.Time) bool 
 // returning node un-stick a peer's wrongly-inferred "failed"), and an inferred
 // guess may only mark an authoritative *non-terminal* record failed (never
 // override the origin's terminal or otherwise rewrite its truth). Within the
-// same provenance: newer generation (createdAt) replaces, older is rejected, and
-// within a generation higher state rank wins, a lower rank is rejected, and an
-// equal rank is applied only on a meaningful delta (today: a changed
-// scheduledOn, e.g. a failover re-point).
+// same provenance: newer generation (createdAt) replaces, older is rejected.
+// Within a generation, two authoritative events that both carry a seq are
+// ordered by it: a higher seq replaces, an equal or lower one is rejected, and a
+// terminal record is never replaced. Otherwise higher state rank wins, a lower
+// rank is rejected, and an equal rank is applied only on a meaningful delta
+// (today: a changed scheduledOn, e.g. a failover re-point).
 func (s *Store) apply(in Incoming, inferred bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -277,6 +288,20 @@ func (s *Store) applyLocked(in Incoming, inferred bool) bool {
 			return false
 		}
 		s.putLocked(key, in, true)
+		return true
+	}
+
+	// Same generation + provenance, both sequenced: the origin numbers each
+	// workload's events in the order it made them, so a higher seq is newer even
+	// where state rank disagrees, and an equal or lower one is a duplicate or a
+	// delayed copy, such as a heartbeat re-assertion captured before a re-point
+	// but delivered after it. A terminal record stays final. An inferred guess
+	// copies the seq of the record it was made from, so it keeps the rank rule.
+	if !inferred && in.Seq > 0 && cur.Seq > 0 {
+		if cur.Terminal || in.Seq <= cur.Seq {
+			return false
+		}
+		s.putLocked(key, in, false)
 		return true
 	}
 
@@ -542,6 +567,7 @@ func recordFrom(in Incoming, now time.Time) Record {
 		CompletedAt: in.CompletedAt,
 		ScheduledOn: in.ScheduledOn,
 		Terminal:    isTerminal(in.State),
+		Seq:         in.Seq,
 		Info:        in.Info,
 		LastUpdated: now.UnixMilli(),
 		LastSeen:    now,
