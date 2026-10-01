@@ -56,7 +56,7 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 			if again := previewSettings(t, e, request); !reflect.DeepEqual(preview, again) {
 				t.Fatal("preview does not round-trip")
 			}
-			rt.LaunchArgs, rt.LaunchEnv = &preview.Args, &preview.Env
+			rt.LaunchArgs, rt.LaunchEnv = preview.Args, preview.Env
 			launch, err := launchForState(settingsState(t, e), 23456)
 			if err != nil {
 				t.Fatal(err)
