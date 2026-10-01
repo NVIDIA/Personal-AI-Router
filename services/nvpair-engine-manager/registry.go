@@ -25,6 +25,11 @@ import (
 // schema growth stays backward compatible.
 const ManifestSchemaVersion = 1
 
+const (
+	actionHTTPParamsBody  = "body"
+	actionHTTPParamsQuery = "query"
+)
+
 // allowedPlaceholders is the set of `{token}`s the runner can resolve
 // at execution time. Validation rejects any other token so a typo in
 // a manifest fails at load with a clear message rather than at run
@@ -207,8 +212,8 @@ type StopSpec struct {
 // Exactly one of HTTP (call the engine's loopback control API), Cmd
 // (run a CLI command, e.g. `lms get`), or RemovePath (guarded filesystem
 // delete) is set. Only a Cmd action templates the action's params as
-// placeholders (e.g. {model}); an HTTP action sends params as the JSON
-// request body.
+// placeholders (e.g. {model}); an HTTP action sends params in its declared
+// body or query location.
 type Action struct {
 	Description string            `json:"description,omitempty"`
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
@@ -271,12 +276,14 @@ type ActionRemovePath struct {
 	Root string `json:"root"`
 }
 
-// ActionHTTP is a templated call against the engine's loopback base
-// URL. The caller's params (engine:action params) are sent as the
-// JSON request body; BodySchema is informational only.
+// ActionHTTP is a templated call against the engine's loopback base URL.
+// ParamsIn selects whether the caller's params are sent as the JSON request
+// body (the default) or as URL-encoded query parameters. BodySchema is
+// informational only.
 type ActionHTTP struct {
 	Method     string          `json:"method"`
 	Path       string          `json:"path"`
+	ParamsIn   string          `json:"params_in,omitempty"`
 	BodySchema json.RawMessage `json:"body_schema,omitempty"`
 }
 
@@ -759,6 +766,13 @@ func (a *Action) validate(name string) error {
 	}
 	if hasHTTP && (strings.TrimSpace(a.HTTP.Method) == "" || strings.TrimSpace(a.HTTP.Path) == "") {
 		return fmt.Errorf("action %q: http.method and http.path are required", name)
+	}
+	if hasHTTP {
+		switch a.HTTP.ParamsIn {
+		case "", actionHTTPParamsBody, actionHTTPParamsQuery:
+		default:
+			return fmt.Errorf("action %q: http.params_in %q invalid (want %q or %q)", name, a.HTTP.ParamsIn, actionHTTPParamsBody, actionHTTPParamsQuery)
+		}
 	}
 	if a.ProgressProtocol != "" {
 		if name != pullModelAction || !hasHTTP {

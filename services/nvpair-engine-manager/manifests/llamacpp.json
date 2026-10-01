@@ -112,6 +112,10 @@
     "unload_model": {
       "description": "Unload a model from memory (params: {\"model\": \"<model>\"}).",
       "http": { "method": "POST", "path": "/models/unload", "body_schema": { "model": "string" } }
+    },
+    "delete_model": {
+      "description": "Delete a model from the managed cache (params: {\"model\": \"<model>\"}).",
+      "http": { "method": "DELETE", "path": "/models", "params_in": "query" }
     }
   }
 }

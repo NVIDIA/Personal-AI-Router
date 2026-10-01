@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -77,6 +78,38 @@ func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("llama.cpp model pull protocol rejected: %v", err)
+	}
+}
+
+func TestValidateAcceptsHTTPQueryParams(t *testing.T) {
+	m := validManifest()
+	m.Actions["delete_model"] = Action{
+		HTTP: &ActionHTTP{
+			Method:   http.MethodDelete,
+			Path:     "/models",
+			ParamsIn: actionHTTPParamsQuery,
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("HTTP query params rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidHTTPParamsLocation(t *testing.T) {
+	m := validManifest()
+	m.Actions["delete_model"] = Action{
+		HTTP: &ActionHTTP{
+			Method:   http.MethodDelete,
+			Path:     "/models",
+			ParamsIn: "headers",
+		},
+	}
+	err := m.Validate()
+	if err == nil {
+		t.Fatal("invalid HTTP params location accepted")
+	}
+	if !strings.Contains(err.Error(), "http.params_in") {
+		t.Fatalf("error = %q, want http.params_in", err)
 	}
 }
 
@@ -622,6 +655,30 @@ func TestLlamaCPPManifestRequiresRouterIdentity(t *testing.T) {
 		if health := p.Runtime.Health; health == nil || health.HTTP != "http://127.0.0.1:{port}/health" || health.JSONMatch != nil {
 			t.Errorf("%s: ongoing health probe changed unexpectedly: %+v", key, health)
 		}
+	}
+}
+
+func TestLlamaCPPManifestDeclaresNativeCacheDelete(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := reg.Get("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp manifest not loaded")
+	}
+	action, ok := m.Actions["delete_model"]
+	if !ok || action.HTTP == nil {
+		t.Fatalf("llamacpp delete_model action is incomplete: %+v", action)
+	}
+	if action.HTTP.Method != http.MethodDelete || action.HTTP.Path != "/models" {
+		t.Errorf("llamacpp delete_model HTTP = %s %s, want DELETE /models", action.HTTP.Method, action.HTTP.Path)
+	}
+	if action.HTTP.ParamsIn != actionHTTPParamsQuery {
+		t.Errorf("llamacpp delete_model params_in = %q, want %q", action.HTTP.ParamsIn, actionHTTPParamsQuery)
+	}
+	if action.RestartAfter {
+		t.Error("llamacpp delete_model must not restart the router")
 	}
 }
 
