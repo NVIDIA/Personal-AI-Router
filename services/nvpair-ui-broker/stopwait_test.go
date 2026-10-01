@@ -140,10 +140,10 @@ func TestWaitForStdinCloseKillsWorkerThatIgnoresShutdown(t *testing.T) {
 }
 
 // TestTeardownBudgetCapsAggregateWait is the guarantee that per-worker graces
-// cannot add up past the budget. stopWorkers joins concurrently, so this is no
-// longer the shape of an ordinary teardown; it is the backstop, and it is
-// exercised here in the worst shape it has to hold for — every grace charged one
-// after another. Without the clipping, eleven workers that each hang for their
+// cannot add up past the budget. stopWorkers joins concurrently, so an ordinary
+// teardown never charges graces one after another; the budget is the backstop,
+// and it is exercised here in the worst shape it has to hold for. Without the
+// clipping, eleven workers that each hang for their
 // own grace outlast what the parent waits before killing this process, and being
 // killed mid-teardown skips the rest of shutdown.
 func TestTeardownBudgetCapsAggregateWait(t *testing.T) {
@@ -200,12 +200,10 @@ func TestGraceForIgnoresBudgetOutsideTeardown(t *testing.T) {
 	}
 }
 
-// TestGraceForSharesTheRemainingBudget covers what replaced the engine-manager
-// reservation. While the joins were sequential, engine-manager was joined late
-// in the sequence and the workers ahead of it decided how long it got to stop
-// its engines, so its grace had to be withheld from everyone else. stopWorkers joins
-// them together, so they all see the same remaining budget — and the reservation
-// would now only starve healthy workers to the floor for no benefit.
+// TestGraceForSharesTheRemainingBudget checks that every worker, engine-manager
+// included, reads the same remaining budget with nothing reserved for anyone.
+// stopWorkers joins them together, so a reservation would only starve healthy
+// workers to the floor.
 func TestGraceForSharesTheRemainingBudget(t *testing.T) {
 	// Half the budget is left: enough for any single worker's own grace.
 	setTeardownStart(time.Now().Add(-teardownBudget / 2))
@@ -263,9 +261,9 @@ func TestGraceForClipsToRemainingBudget(t *testing.T) {
 	}
 }
 
-// slowStopHandle is a worker whose exit takes a while — the shape that made
-// sequential joins expensive. Kept under supervisor.Stop's own report threshold
-// so a healthy-but-unhurried worker isn't also being logged as stuck.
+// slowStopHandle is a worker whose exit takes a while. Kept under
+// supervisor.Stop's own report threshold so a healthy-but-unhurried worker isn't
+// also being logged as stuck.
 type slowStopHandle struct {
 	takes time.Duration
 	done  chan struct{}
@@ -284,11 +282,9 @@ func (h *slowStopHandle) Stop() {
 	})
 }
 
-// TestStopWorkersJoinsConcurrently is the reason stopWorkers exists. Ten
-// `defer sup.Stop()` statements are run one at a time by the Go runtime, so the
-// tree's teardown cost the sum of the per-worker exits. A healthy tree stops in
-// milliseconds either way; the sum is what a loaded one pays, since the proxy
-// and node-info both drain HTTP servers on their way out.
+// TestStopWorkersJoinsConcurrently checks that teardown costs the slowest
+// worker's exit rather than the sum. The proxy and node-info both drain HTTP
+// servers on their way out, so on a loaded tree the sum is several drains.
 func TestStopWorkersJoinsConcurrently(t *testing.T) {
 	resetTeardownClock()
 

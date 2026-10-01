@@ -157,7 +157,7 @@ Requests (caller → service):
 | `engine:remote-delete-model` | `{ node, engine, model }` | the remote action result |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (manifest `runtime.bind`; no per-call bind on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
-| `engine:prepare-shutdown` | — | `null` once every running engine has been stopped |
+| `engine:prepare-shutdown` | — | `null` once the shutdown sweep, and any retry of a failed stop, has finished; per-engine stop failures are logged, not returned |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
