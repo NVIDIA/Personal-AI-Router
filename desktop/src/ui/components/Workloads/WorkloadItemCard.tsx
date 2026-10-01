@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useMemo, memo } from 'react'
+import { useMemo, memo, type CSSProperties } from 'react'
 import { Card, Flex, Stack, Text } from '@nvidia/foundations-react-core'
-import type { Workload, WorkloadState } from '@/shared/types/workloads'
+import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
+import { WORKLOAD_COLOR_MAP } from '@/ui/constants/colors'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
 import { getWorkloadColorBar } from '@/ui/utils/colors'
+import { workloadNodeLabel } from '@/ui/utils/workload-labels'
 import EngineIcon from '@/ui/components/EngineIcon'
 
 const formatDate = (timestamp: number) => {
@@ -40,12 +42,11 @@ const formatDate = (timestamp: number) => {
     }
 }
 
-const NODE_LABEL: Record<WorkloadState, string> = {
-    queued: 'Sent to',
-    running: 'Running on',
-    completed: 'Ran on',
-    failed: 'Ran on',
-    cancelled: 'Ran on'
+// sheen.css paints the in-flight card's corner from this property, so the card
+// and its connection line share one color.
+const CARD_STYLE: CSSProperties & { '--workload-in-flight-color': string } = {
+    direction: 'ltr',
+    '--workload-in-flight-color': WORKLOAD_COLOR_MAP.yellow
 }
 
 function WorkloadItemCard({ workload }: { workload: Workload }) {
@@ -128,7 +129,7 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         <Card
             className={className}
             density="compact"
-            style={{ direction: 'ltr' }}
+            style={CARD_STYLE}
             data-workload-id={workload.id}
             data-workload-origin={workload.originatedFrom ?? ''}
             attributes={{ CardContent: { className: 'workload-card-content' } }}
@@ -157,7 +158,7 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                         {executionNodeText && (
                             <Flex align="center" wrap="wrap" gap="1">
                                 <Text kind="body/regular/sm" className="text-subtle-color">
-                                    {NODE_LABEL[workload.state]}
+                                    {workloadNodeLabel(workload)}
                                 </Text>
                                 <Text kind="body/regular/sm" className="text-subtle-color">
                                     {executionNodeText}

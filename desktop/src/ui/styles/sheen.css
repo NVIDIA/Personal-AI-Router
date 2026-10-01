@@ -144,13 +144,12 @@
     );
 }
 
-/* #f9b400 is GPU_COLOR_PALETTE[1] (ui/constants/colors.ts), the yellow the
-   connection lines use; CSS cannot import the constant. */
+/* WorkloadItemCard sets --workload-in-flight-color from WORKLOAD_COLOR_MAP. */
 .pair-paper.workload-card-queued {
     background-image: radial-gradient(
         143% 109% at 0% 73%,
         transparent 62%,
-        #f9b400 105%
+        var(--workload-in-flight-color) 105%
     );
 }
 

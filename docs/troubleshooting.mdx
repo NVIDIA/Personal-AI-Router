@@ -144,9 +144,10 @@ Routing confirmation happens on **Overview**:
 
 1. Use the **Jobs** filter in the left column to show active, completed, or
    failed requests.
-2. Open a job card and read **Ran on** or **Running on** to see which node
-   served the request. A job that is still in flight shows **Sent to** until it
-   starts.
+2. Open a job card and read **Running on** or **Ran on** to see which node
+   served the request. Once a job has been sent to a node, its card shows
+   **Sent to** until the job starts, and keeps it if the job ends without
+   starting.
 
 Send several independent requests to observe multi-node routing. One request
 runs on one selected node.
