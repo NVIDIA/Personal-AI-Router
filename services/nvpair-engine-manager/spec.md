@@ -25,6 +25,7 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - Config-declared **actions** covering the full model lifecycle — Ollama: `list_models`, `loaded_models`, `pull_model`, `run_model`, `unload_model`, `delete_model`; LM Studio: `list_models`/`list_downloaded`, `loaded_models`, `pull_model`, `load_model`, `chat`, `unload_model`, `delete_model` (`remove_path` with `lms-disk-path` resolution) — mapped to each engine's local control API. `loaded_models` reports the models currently resident in memory (Ollama `GET /api/ps`, LM Studio `GET /api/v1/models` filtered by nonempty `loaded_instances`), name-extracted via the same declarative `result` spec (with an optional `match` row filter).
 - Per-engine stdout/stderr log capture and structured operational error records, surfaced via the errors pipeline.
 - A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls the loaded set and pushes `engine:models-changed` when it changes (explicit load/unload, JIT auto-load, TTL/idle eviction).
+- **Slot counts** on `EngineStatus.slots` while an engine runs: how many requests it processes at once, from the manifest's `slots` block. Ollama reports `OLLAMA_NUM_PARALLEL` from the environment of a process engine-manager launched, and the manifest default of 1 when the variable is unset or the engine was adopted. LM Studio reports each loaded model's `config.parallel`, parsed from the same `loaded_models` response the loaded-model watcher already fetches, and the manifest default of 1 for any other model. The counts describe capacity only: the broker relays them to the engine's proxy, and they never decide where a request is routed.
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
 
 **Out of scope**
@@ -66,7 +67,7 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 
 ## 6. Inputs and Outputs
 
-**Inputs** — from the orchestrator (`nvpair-ui-broker`) over stdio / `--ipc`, plus engine manifests from disk. Newline-delimited JSON-RPC 2.0 `engine:*` requests; manifest JSON (`engine`, `display_name`, `manifest_version`, `platforms{<os/arch>{detect, install, runtime}}`, `actions`). Every manifest is validated on load and rejected with a specific, human-readable error if malformed; manifests are read-only to this service.
+**Inputs** — from the orchestrator (`nvpair-ui-broker`) over stdio / `--ipc`, plus engine manifests from disk. Newline-delimited JSON-RPC 2.0 `engine:*` requests; manifest JSON (`engine`, `display_name`, `manifest_version`, `platforms{<os/arch>{detect, install, runtime}}`, `actions`, `slots`). Every manifest is validated on load and rejected with a specific, human-readable error if malformed; manifests are read-only to this service.
 
 `EngineStatus` object (returned by `engine:status` and `engine:get-installed`):
 ```json
@@ -77,8 +78,13 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   running: boolean
   healthy: boolean
   port: number
+  slots?: { default: number, models?: { [model: string]: number } }
 }
 ```
+
+`slots` is present only while the engine runs and only when its manifest
+declares a `slots` block. `default` is at least 1, and every `models` count is
+at least 1.
 
 `LogLine` object (entry in `engine:logs`):
 ```json

@@ -287,14 +287,15 @@ func main() {
 	})
 	// LM Studio native REST v1 models API: /api/v1/models lists every model with
 	// a loaded_instances array, so the loaded_models nonempty-array row filter
-	// has something to match on.
+	// has something to match on. Each loaded instance reports LM Studio's
+	// default of 4 parallel requests.
 	mux.HandleFunc("/api/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		modelsMu.Lock()
 		data := make([]map[string]any, 0, len(models))
 		for n := range models {
 			instances := []any{}
 			if loaded[n] {
-				instances = []any{map[string]any{"id": n, "config": map[string]any{}}}
+				instances = []any{map[string]any{"id": n, "config": map[string]any{"parallel": 4}}}
 			}
 			data = append(data, map[string]any{"key": n, "type": "llm", "loaded_instances": instances})
 		}

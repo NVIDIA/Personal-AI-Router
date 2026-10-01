@@ -2719,7 +2719,7 @@ func (p *Proxy) handleMessage(msg *Message) {
 		}
 		var b localBackend
 		if err := json.Unmarshal(msg.Params, &b); err != nil {
-			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"engine\",\"host\",\"port\",\"healthy\"}")
+			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"engine\",\"host\",\"port\",\"healthy\",\"slots\"}")
 			return
 		}
 		// The address decides which facade this applies to, so a payload naming

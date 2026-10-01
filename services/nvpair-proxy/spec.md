@@ -543,6 +543,13 @@ One port per facade, demultiplexed on the connection's first byte:
 Membership and pins are re-derived per request and on a watch, so joining or
 leaving a cluster needs no restart.
 
+While the local engine is healthy, `node/set-local-backend` also carries its slot
+counts, `slots: { default, models? }`, which the broker relays from
+engine-manager's `engine:status`. The facade drops counts below 1 and keys the
+per-model counts by normalized model name; two names that normalize alike keep
+the smaller count. A backend without slots clears them. The counts describe how
+many requests the engine processes at once and do not affect routing.
+
 An engine with an inherited host variable (today Ollama alone) may also be given
 loopback-only **alias** addresses, so clients already using that variable enter
 the same routing path. An occupied alias is non-fatal: the existing owner is

@@ -132,6 +132,12 @@ reported by `node/set-local-backend`, and is never re-routed onward to another
 node. Membership and pins are re-derived per request, so joining or leaving a
 cluster needs no restart.
 
+**Engine slots.** While the local engine is healthy, `node/set-local-backend`
+also carries its slot counts, `slots: { default, models? }`, which the broker
+relays from engine-manager. The facade keeps counts of at least 1, keyed by
+normalized model name, and a backend without slots clears them. They describe
+how many requests the engine processes at once and do not affect routing.
+
 **Persisted port.** A port chosen at runtime via `set-port` is saved to the
 per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on
 Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) and

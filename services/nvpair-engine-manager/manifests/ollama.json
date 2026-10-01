@@ -117,5 +117,6 @@
       "description": "Delete a model by name (params: {\"name\": \"<model>\"}).",
       "http": { "method": "DELETE", "path": "/api/delete", "body_schema": { "name": "string" } }
     }
-  }
+  },
+  "slots": { "default": 1, "env": "OLLAMA_NUM_PARALLEL" }
 }

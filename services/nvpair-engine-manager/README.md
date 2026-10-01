@@ -51,7 +51,12 @@ Requests (caller → service):
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-`EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
+`EngineStatus` = `{ engine, display_name, installed, running, healthy, port, slots? }`.
+`slots` = `{ default, models? }` is how many requests the engine processes at
+once: `default` for any model and `models` per model where the engine reports
+it. It is present only while the engine runs, and only when its manifest
+declares a `slots` block ([MANIFEST.md](MANIFEST.md#slots)). The broker relays
+it to the engine's proxy.
 
 Notifications (service → caller): `engine:ready{version}`,
 `engine:state-changed{EngineStatus}`,

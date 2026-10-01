@@ -35,6 +35,9 @@ type EngineStatus struct {
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port,omitempty"`
+	// Slots is reported only while the engine runs, and only for an engine
+	// whose manifest declares slots.
+	Slots *EngineSlots `json:"slots,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -64,6 +67,12 @@ type engineState struct {
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
 	startCancel context.CancelFunc
+	// slotDefault is the per-model count a managed launch configured, or 0
+	// for the manifest default. slotModels holds the per-model counts from
+	// the last loaded_models response that parsed. Both describe the current
+	// run and are cleared when it ends.
+	slotDefault int
+	slotModels  map[string]int
 }
 
 // Executor owns engine lifecycle for every engine known on this host.

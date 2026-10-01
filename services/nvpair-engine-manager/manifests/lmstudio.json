@@ -102,5 +102,15 @@
       },
       "restart_after": true
     }
+  },
+  "slots": {
+    "default": 1,
+    "loaded": {
+      "array": "models",
+      "key": "key",
+      "instances": "loaded_instances",
+      "instance_id": "id",
+      "parallel": ["config", "parallel"]
+    }
   }
 }

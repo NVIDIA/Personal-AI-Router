@@ -464,3 +464,38 @@ func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
 	}
 	restored.stop(t)
 }
+
+// The broker reads an engine's slots from engine:status, so the real worker
+// must report them there while the engine runs and drop them once it stops.
+func TestE2EStatusReportsSlots(t *testing.T) {
+	cfg, home := t.TempDir(), t.TempDir()
+	manifest := testEngineManifest(fakeEngineBin)
+	manifest.Slots = &Slots{Default: 2}
+	for _, dir := range []string{
+		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
+		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
+	} {
+		writeE2EManifest(t, dir, manifest)
+	}
+	manager := startE2EManager(t, cfg, home)
+	status := func(id int, method string) EngineStatus {
+		t.Helper()
+		send(t, manager.stdin, id, method, map[string]any{"engine": "fake"})
+		var st EngineStatus
+		if err := json.Unmarshal(waitResult(t, manager.frames, strconv.Itoa(id), 20*time.Second), &st); err != nil {
+			t.Fatalf("decode %s result: %v", method, err)
+		}
+		return st
+	}
+
+	if started := status(1, "engine:start"); !started.Running || started.Slots == nil || started.Slots.Default != 2 {
+		t.Fatalf("engine:start result = %+v with slots %+v, want running with 2 slots", started, started.Slots)
+	}
+	if running := status(2, "engine:status"); !running.Running || running.Slots == nil || running.Slots.Default != 2 {
+		t.Fatalf("engine:status while running = %+v with slots %+v, want 2 slots", running, running.Slots)
+	}
+	if stopped := status(3, "engine:stop"); stopped.Running || stopped.Slots != nil {
+		t.Fatalf("engine:stop result = %+v with slots %+v, want stopped with no slots", stopped, stopped.Slots)
+	}
+	manager.stop(t)
+}

@@ -122,6 +122,7 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `manifest_version` | int | yes | Must be `1`. A higher value is rejected (asks for behavior this binary lacks). Unknown optional fields within a supported version are ignored, so the schema can grow additively. |
 | `platforms` | object | yes | Map of `"<goos>/<goarch>"` → platform block (e.g. `"windows/amd64"`, `"darwin/arm64"`, `"linux/amd64"`). At least one entry. The runner selects the block matching the host. |
 | `actions` | object | no | Map of action name → action (see below). |
+| `slots` | object | no | How many requests the engine processes at once (see [Slots](#slots)). |
 | `detect` / `install` / `uninstall` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
 
 **Shared defaults & per-platform overrides.** The platform-level fields `detect`, `install`, `uninstall`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
@@ -290,6 +291,49 @@ The rules the runner enforces:
 Actions target the engine's control plane — **not** inference endpoints
 (those stay with the proxy).
 
+## Slots
+
+The optional top-level `slots` block declares how many requests the engine
+processes at once for one model. `engine:status` reports the count as
+`EngineStatus.slots` while the engine runs, and the broker relays it to the
+engine's proxy. It describes capacity only and never decides where a request is
+routed.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `default` | int | yes | The count for any model. At least 1. |
+| `env` | string | no | An environment variable a launched process reads its count from. A positive integer there replaces `default`; surrounding spaces and quotes are ignored. The launch environment wins over the inherited one, as it does for the process. Command-mode and adopted engines report `default`, because their environment is not visible. |
+| `loaded` | object | no | Where the `loaded_models` response carries per-model counts. Requires an `http` `loaded_models` action. |
+
+`loaded` names paths in that response. `array` is the top-level array of
+models, `key` is a model's name, `instances` is a model's array of loaded
+instances, `instance_id` is an instance's id, and `parallel` is the field path
+to an instance's count. Each instance id gets its own count, since a request
+can name an instance. A model's count is that of the instance whose id equals
+its name, or otherwise the smallest among its instances. Counts below 1 and
+malformed rows are ignored.
+
+The counts come from the response the loaded-model watcher already fetches, so
+declaring `loaded` adds no polling. A response that does not parse keeps the
+last counts, and the counts are cleared when the engine stops.
+
+```json
+"slots": { "default": 1, "env": "OLLAMA_NUM_PARALLEL" }
+```
+
+```json
+"slots": {
+  "default": 1,
+  "loaded": {
+    "array": "models",
+    "key": "key",
+    "instances": "loaded_instances",
+    "instance_id": "id",
+    "parallel": ["config", "parallel"]
+  }
+}
+```
+
 ## Placeholders
 
 Resolved by the runner at execution time; any other `{token}` fails
@@ -319,7 +363,9 @@ field is missing, `manifest_version` is unsupported, a platform key isn't
 `runtime.mode` is invalid, an action sets none or more than one of
 `http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
 `path`, a `result` is set without both `array` and `field` (or a
-`result.match` without both `match.field` and a non-empty `match.in`), or
+`result.match` without both `match.field` and a non-empty `match.in`),
+`slots.default` is below 1, `slots.env` is not an environment variable name,
+`slots.loaded` has no `http` `loaded_models` action or leaves a path empty, or
 a non-action templated string uses an unknown placeholder.
 
 ---
