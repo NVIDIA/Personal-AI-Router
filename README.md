@@ -242,6 +242,8 @@ Each entry assumes the ones before it.
 9. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
+9. **[Engine bind validation](docs/engine-bind-validation.mdx)** — why local
+   engine starts require a loopback bind address.
 
 Component references, for when you already know what you are looking for:
 

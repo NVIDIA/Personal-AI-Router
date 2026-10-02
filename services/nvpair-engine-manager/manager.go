@@ -15,6 +15,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	enginesettings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
 )
@@ -67,6 +68,10 @@ type Manager struct {
 	peers         *peerDirectory
 	addrs         *reach.Chooser
 	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
+	// lanBindForTest overrides the engine_allow_lan_bind node-setting read
+	// in unit tests. Nil in production, where the live setting is read
+	// through the relay on every check.
+	lanBindForTest func() bool
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
@@ -282,6 +287,30 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	}
 }
 
+// lanBindAllowed reports the live value of the engine_allow_lan_bind node
+// setting. Engine starts are not hot-path, so this reads through on every
+// call: flipping the setting takes effect immediately, no restart needed.
+// Any read failure denies (fail closed). The loopback-only default holds
+// unless the setting is affirmatively on.
+func (m *Manager) lanBindAllowed(ctx context.Context) bool {
+	if m.lanBindForTest != nil {
+		return m.lanBindForTest()
+	}
+	raw, err := m.settingsRelay.call(ctx, "settings/get-engine-allow-lan-bind", enginesettings.Request{}, "engine:start")
+	if err != nil {
+		slog.Warn("failed to read engine-allow-lan-bind setting; denying LAN bind", "err", err)
+		return false
+	}
+	var r struct {
+		Value bool `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		slog.Warn("failed to decode engine-allow-lan-bind setting; denying LAN bind", "err", err)
+		return false
+	}
+	return r.Value
+}
+
 // runOp executes a lifecycle op asynchronously and responds with the
 // engine's resulting status (or an error).
 func (m *Manager) runOp(ctx context.Context, msg *Message) {
@@ -297,9 +326,22 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "port must be between 0 and 65535")
 		return
 	}
-	if p.Bind != "" && net.ParseIP(p.Bind) == nil {
-		m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
-		return
+	if p.Bind != "" {
+		ip := net.ParseIP(p.Bind)
+		if ip == nil {
+			m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
+			return
+		}
+		// Local starts stay on loopback unless the operator has
+		// deliberately opted in: engine APIs are unauthenticated, and
+		// remote starts hard-bind 127.0.0.1 (see controllifecycle.go).
+		// A non-loopback override without the node setting would
+		// silently put them on the LAN. The setting is read live, so
+		// flipping it takes effect on the next start, no restart.
+		if !ip.IsLoopback() && !m.lanBindAllowed(ctx) {
+			m.codec.RespondError(msg.ID, -32602, "bind must be a loopback address")
+			return
+		}
 	}
 	start := func() error {
 		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind})
