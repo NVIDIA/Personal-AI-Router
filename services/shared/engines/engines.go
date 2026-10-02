@@ -104,10 +104,6 @@ type Engine struct {
 	// broker reads it when reserving ports away from the OLLAMA_HOST alias,
 	// so the two must agree — which is why it lives here.
 	PortFile string
-
-	// ProxyEnabledByDefault controls whether broker and TUI startup includes
-	// this engine's facade without an explicit --proxy-engines selection.
-	ProxyEnabledByDefault bool
 }
 
 // ProxyComponent is the proxy *process* identity, as distinct from the
@@ -132,31 +128,28 @@ func (e Engine) ComponentName() string { return e.Name + "-proxy" }
 // all is the ordered engine set. Ollama is first; see the package comment.
 var all = []Engine{
 	{
-		Name:                  "ollama",
-		DisplayName:           "Ollama",
-		DiscoveryService:      noderec.ServiceOllama,
-		FacadePort:            11434,
-		EnginePortBase:        11435,
-		PortFile:              "proxy-port.json",
-		ProxyEnabledByDefault: true,
+		Name:             "ollama",
+		DisplayName:      "Ollama",
+		DiscoveryService: noderec.ServiceOllama,
+		FacadePort:       11434,
+		EnginePortBase:   11435,
+		PortFile:         "proxy-port.json",
 	},
 	{
-		Name:                  "lmstudio",
-		DisplayName:           "LM Studio",
-		DiscoveryService:      noderec.ServiceLMStudio,
-		FacadePort:            1234,
-		EnginePortBase:        1235,
-		PortFile:              "lmstudio-proxy-port.json",
-		ProxyEnabledByDefault: true,
+		Name:             "lmstudio",
+		DisplayName:      "LM Studio",
+		DiscoveryService: noderec.ServiceLMStudio,
+		FacadePort:       1234,
+		EnginePortBase:   1235,
+		PortFile:         "lmstudio-proxy-port.json",
 	},
 	{
-		Name:                  "llamacpp",
-		DisplayName:           "llama.cpp",
-		DiscoveryService:      noderec.ServiceLlamaCPP,
-		FacadePort:            8080,
-		EnginePortBase:        8081,
-		PortFile:              "llamacpp-proxy-port.json",
-		ProxyEnabledByDefault: true,
+		Name:             "llamacpp",
+		DisplayName:      "llama.cpp",
+		DiscoveryService: noderec.ServiceLlamaCPP,
+		FacadePort:       8080,
+		EnginePortBase:   8081,
+		PortFile:         "llamacpp-proxy-port.json",
 	},
 }
 
@@ -165,18 +158,6 @@ var all = []Engine{
 func All() []Engine {
 	out := make([]Engine, len(all))
 	copy(out, all)
-	return out
-}
-
-// ProxyDefaults returns the engines whose facades start without an explicit
-// selection, preserving the shared preparation order.
-func ProxyDefaults() []Engine {
-	out := make([]Engine, 0, len(all))
-	for _, e := range all {
-		if e.ProxyEnabledByDefault {
-			out = append(out, e)
-		}
-	}
 	return out
 }
 
