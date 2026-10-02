@@ -26,7 +26,7 @@ func TestBuildProxyEnginesUsesSelectedEngines(t *testing.T) {
 		})
 	}
 
-	test("shared defaults", engines.ProxyDefaults())
+	test("all shared engines", engines.All())
 	llamacpp, ok := engines.ByName("llamacpp")
 	if !ok {
 		t.Fatal("shared engine table has no llamacpp")

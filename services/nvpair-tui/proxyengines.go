@@ -11,7 +11,7 @@ import (
 )
 
 func defaultProxyEngineCSV() string {
-	return proxyEngineCSV(engines.ProxyDefaults())
+	return strings.Join(engines.Names(), ",")
 }
 
 func proxyEngineCSV(selected []engines.Engine) string {

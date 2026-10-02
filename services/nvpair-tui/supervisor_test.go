@@ -74,7 +74,7 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sup, err := Spawn(ctx, os.Args[0], engines.ProxyDefaults())
+	sup, err := Spawn(ctx, os.Args[0], engines.All())
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

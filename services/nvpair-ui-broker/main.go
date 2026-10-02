@@ -27,7 +27,7 @@ func main() {
 	scannerPath := flag.String("scanner-path", "", "path to nvpair-node-scanner binary (default: ./nvpair-node-scanner in the current working directory)")
 	nodeInfoPath := flag.String("node-info-path", "", "path to nvpair-node-info binary (default: ./nvpair-node-info in the current working directory)")
 	proxyPath := flag.String("proxy-path", "", "path to nvpair-proxy binary (default: ./nvpair-proxy in the current working directory)")
-	proxyEngines := flag.String("proxy-engines", strings.Join(defaultProxyEngineNames(), ","), "comma-separated engines to front with a proxy; one nvpair-proxy process hosts a facade for each entry")
+	proxyEngines := flag.String("proxy-engines", strings.Join(engines.Names(), ","), "comma-separated engines to front with a proxy; one nvpair-proxy process hosts a facade for each entry")
 	workloadMgrPath := flag.String("workload-manager-path", "", "path to nvpair-workload-manager binary (default: ./nvpair-workload-manager in the current working directory)")
 	errorsPath := flag.String("errors-path", "", "path to nvpair-errors binary (default: ./nvpair-errors in the current working directory)")
 	engineMgrPath := flag.String("engine-manager-path", "", "path to nvpair-engine-manager binary (default: ./nvpair-engine-manager in the current working directory)")
@@ -308,15 +308,6 @@ func resolveNodeInfoPath(override string) (string, error) {
 // to "no local engine proxies" rather than aborting the broker.
 func resolveProxyPath(override string) (string, error) {
 	return resolveSiblingBinary(override, "nvpair-proxy", "--proxy-path")
-}
-
-func defaultProxyEngineNames() []string {
-	defaults := engines.ProxyDefaults()
-	names := make([]string, len(defaults))
-	for i, engine := range defaults {
-		names[i] = engine.Name
-	}
-	return names
 }
 
 // parseProxyEngines narrows the --proxy-engines list against the shared engine
