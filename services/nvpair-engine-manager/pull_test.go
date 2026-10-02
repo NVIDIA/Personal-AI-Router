@@ -32,14 +32,28 @@ func TestPullProgressFromLine(t *testing.T) {
 	}
 }
 
+// The model is what scopes a pull: it keys the claim a cancel is matched
+// against, and it is streamOp's progress filter. A request that does not name
+// one has to be refused rather than run unscoped — an empty filter disables
+// filtering, so the initiator would receive every other model's pull progress
+// on that engine stamped with its own opID.
 func TestHandlePullRejectsMissingTarget(t *testing.T) {
-	s := &controlServer{exec: &Executor{progress: newProgressHub()}}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(`{"opId":"x","engine":"ollama"}`))
-	s.handlePull(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 when neither model nor params set, got %d", rec.Code)
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			s := &controlServer{exec: &Executor{progress: newProgressHub()}}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(body))
+			s.handlePull(rec, req)
+			if rec.Code != 400 {
+				t.Fatalf("code = %d, want 400 for a pull that names no model", rec.Code)
+			}
+		})
 	}
+	test("neither model nor params", `{"opId":"x","engine":"ollama"}`)
+	// Params carrying no recognisable model name used to satisfy the check
+	// purely by being non-empty.
+	test("params naming no model", `{"opId":"x","engine":"ollama","params":{"insecure":true}}`)
+	test("params with an empty model", `{"opId":"x","engine":"ollama","params":{"name":""}}`)
 }
 
 func TestModelFromParams(t *testing.T) {
@@ -117,7 +131,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 	}
 }
 
-// TestActionPullModelCmdMarkerAndResult covers the CLI (LM Studio `lms get`)
+// TestActionPullModelCmdMarkerAndResult covers the CLI fallback
 // pull path through the same engine:action routing: a Cmd-based pull_model can't
 // expose structured line progress, so it emits a single "pulling" marker and
 // returns the command's terminal result — the counterpart to the HTTP streaming
@@ -140,6 +154,9 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 		mu.Unlock()
 	}, t.TempDir())
 
+	progress, unsubscribe := ex.progress.subscribe(m.Engine)
+	defer unsubscribe()
+
 	// A Cmd action just runs a binary; the engine need not be started.
 	var out bytes.Buffer
 	mgr := NewManager(NewCodec(&out), ex, nil)
@@ -158,6 +175,17 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 	}
 	if pulls[0]["op"] != "pull" || pulls[0]["stage"] != "pulling" || pulls[0]["message"] != "demo:1b" {
 		t.Fatalf("unexpected CLI pull marker: %+v", pulls[0])
+	}
+	if pulls[0]["model"] != "demo:1b" {
+		t.Fatalf("CLI pull marker model = %v, want demo:1b", pulls[0]["model"])
+	}
+	select {
+	case event := <-progress:
+		if event.Model != "demo:1b" {
+			t.Fatalf("CLI pull hub model = %q, want demo:1b", event.Model)
+		}
+	default:
+		t.Fatal("CLI pull did not publish progress to the hub")
 	}
 	if _, hasPercent := pulls[0]["percent"]; hasPercent {
 		t.Fatalf("CLI pull marker must omit indeterminate percent, got %+v", pulls[0])

@@ -13,12 +13,14 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +72,28 @@ func bstr(m map[string]any, k string) string {
 	return ""
 }
 
+// reportDownloadProgress renders one `lms get` progress redraw at the
+// percentage named in os.Args[2], in the CLI's own two-decimal shape.
+func reportDownloadProgress() {
+	if len(os.Args) < 3 {
+		os.Exit(2)
+	}
+	percent, err := strconv.ParseFloat(os.Args[2], 64)
+	if err != nil {
+		os.Exit(2)
+	}
+	fmt.Printf("\r[====    ] %.2f%%", percent)
+}
+
+// awaitInterrupt blocks until this process is interrupted, the way `lms get`
+// waits while it downloads.
+func awaitInterrupt() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
+	<-signals
+}
+
 func main() {
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
@@ -99,6 +123,43 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		// The four download subcommands stand in for `lms get` and cover the
+		// ways it can answer an interrupt. Each takes the percentage to report
+		// so the caller owns that number and can assert on the same constant it
+		// passed in.
+		case "canceldownload": // answers the prompt and confirms the cancellation
+			reportDownloadProgress()
+			awaitInterrupt()
+			fmt.Fprint(os.Stderr, "Continue to download in the background? (Y/N): ")
+			answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+			if err != nil || strings.TrimSpace(answer) != "n" {
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stderr, "Download canceled.")
+			os.Exit(1)
+		case "downloadcompletes": // finishes as the interrupt lands
+			reportDownloadProgress()
+			awaitInterrupt()
+			fmt.Fprintln(os.Stderr, "Download completed.")
+			return
+		case "downloadsilent": // exits without answering the prompt
+			reportDownloadProgress()
+			awaitInterrupt()
+			os.Exit(1)
+		case "downloadignoresinterrupt": // never acknowledges, so it has to be killed
+			// Take delivery of the interrupt and do nothing with it. Calling
+			// signal.Ignore instead is worse than a no-op on Windows: the
+			// runtime's console handler exits the process for an event no
+			// receiver wants, which is the opposite of what this stands for.
+			swallowed := make(chan os.Signal, 1)
+			signal.Notify(swallowed, os.Interrupt)
+			defer signal.Stop(swallowed)
+			reportDownloadProgress()
+			// Sleeping rather than blocking forever: a bare receive is the
+			// runtime's deadlock condition, and that panic would exit the very
+			// process this case needs to outlive its interrupt.
+			time.Sleep(time.Hour)
+			os.Exit(2)
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)

@@ -188,6 +188,71 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 	t.Logf("unpinned caller correctly refused: %+v", resp.Error)
 }
 
+// TestRemoteEngineCancelPull drives engine:remote-cancel-pull from node A to
+// node B across the same pin-gated ec surface a download is started over.
+// Nothing is downloading on B, which is the case worth pinning: the gate that
+// holds a cancel behind the pull it names has no attempt to wait for, so it
+// must let the cancel through instead of parking it for its whole window, and
+// B must answer a cancel for nothing as a no-op rather than an error.
+func TestRemoteEngineCancelPull(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	const uuidA, uuidB = "cancel-node-a", "cancel-node-b"
+	certA := mintClusterIdentity(t, dirA, uuidA)
+	certB := mintClusterIdentity(t, dirB, uuidB)
+	writePin(t, dirA, uuidB, certB) // A trusts B
+	writePin(t, dirB, uuidA, certA) // B trusts A
+
+	portB := freePort(t)
+	_, bCleanup := startEngineManagerServer(t, dirB, portB)
+	t.Cleanup(bCleanup)
+	waitForPort(t, "127.0.0.1", portB, 10*time.Second)
+
+	aStdin, aMsgs, aCleanup := startEngineManagerStdio(t, dirA)
+	t.Cleanup(aCleanup)
+	waitForMethod(t, aMsgs, "engine:ready", 10*time.Second)
+
+	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
+		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
+	writeRawFrame(t, aStdin, snapshot)
+
+	t.Run("a cancel for a download nobody started is answered, not stalled", func(t *testing.T) {
+		writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-cancel-pull",`+
+			`"params":{"node":"nodeB","engine":"ollama","model":"demo"}}`)
+
+		// Comfortably inside the gate's window: were an absent pull to park the
+		// cancel there, this would time out rather than return.
+		resp := waitForResponse(t, aMsgs, 30*time.Second)
+		if resp.Error != nil {
+			t.Fatalf("remote-cancel-pull errored: %+v", resp.Error)
+		}
+		var res struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(resp.Result, &res); err != nil {
+			t.Fatalf("decode result %s: %v", resp.Result, err)
+		}
+		if !res.OK {
+			t.Fatalf("expected B to acknowledge the cancel, got %s", resp.Result)
+		}
+	})
+
+	// The model is what names the download, so a cancel without one has no
+	// target. It is refused before anything is sent to the peer.
+	t.Run("a cancel naming no model is refused", func(t *testing.T) {
+		writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":2,"method":"engine:remote-cancel-pull",`+
+			`"params":{"node":"nodeB","engine":"ollama"}}`)
+
+		resp := waitForResponse(t, aMsgs, 15*time.Second)
+		if resp.Error == nil {
+			t.Fatalf("expected a cancel with no model to be refused, got result %s", resp.Result)
+		}
+		if resp.Error.Code != -32602 {
+			t.Fatalf("expected an invalid-params code, got %+v", resp.Error)
+		}
+	})
+}
+
 // startEngineManagerServer launches an engine-manager serving the ec surface on
 // controlPort with the given cluster dir. It keeps stdin open (so the process
 // stays alive) and drains stdout. Returns stdin and a cleanup.

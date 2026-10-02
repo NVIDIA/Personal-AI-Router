@@ -22,7 +22,7 @@ func TestStreamOpEmitsProgressThenResult(t *testing.T) {
 	req := httptest.NewRequest("POST", controlInstallPath, nil)
 
 	st := EngineStatus{Engine: "ollama", Installed: true, Running: true}
-	s.streamOp(rec, req, "op1", "ollama", "install", func(ctx context.Context) (streamFrame, error) {
+	s.streamOp(rec, req, "op1", "ollama", "install", "", func(ctx context.Context) (streamFrame, error) {
 		exec.progress.publish(ProgressEvent{Engine: "ollama", Op: "install", Stage: "downloading", Percent: 42})
 		return streamFrame{Type: "result", OpID: "op1", Engine: "ollama", Op: "install", Status: &st}, nil
 	})
@@ -51,13 +51,44 @@ func TestStreamOpEmitsErrorFrame(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", controlInstallPath, nil)
 
-	s.streamOp(rec, req, "op2", "ollama", "install", func(ctx context.Context) (streamFrame, error) {
+	s.streamOp(rec, req, "op2", "ollama", "install", "", func(ctx context.Context) (streamFrame, error) {
 		return streamFrame{}, context.DeadlineExceeded
 	})
 
 	frames := decodeFrames(t, rec.Body.String())
 	if len(frames) != 1 || frames[0].Type != "error" || frames[0].Message == "" {
 		t.Fatalf("expected one error frame, got %+v", frames)
+	}
+}
+
+// A subscription is per engine, so a pull stream also sees the engine's
+// install steps and any other model's pull. Only the requested model's
+// download belongs to the initiator that asked for it.
+func TestStreamOpScopedToAModelDropsEveryOtherOperation(t *testing.T) {
+	exec := &Executor{progress: newProgressHub()}
+	s := &controlServer{exec: exec}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", controlPullPath, nil)
+
+	s.streamOp(rec, req, "op3", "ollama", "pull", "demo", func(ctx context.Context) (streamFrame, error) {
+		// An install carries no model, so matching on the model alone let it
+		// through and stamped it with this pull's opID.
+		exec.progress.publish(ProgressEvent{Engine: "ollama", Op: "install", Stage: "downloading", Percent: 10})
+		exec.progress.publish(ProgressEvent{Engine: "ollama", Model: "other", Op: "pull", Stage: "downloading", Percent: 20})
+		exec.progress.publish(ProgressEvent{Engine: "ollama", Model: "demo", Op: "pull", Stage: "downloading", Percent: 30})
+		return streamFrame{Type: "result", OpID: "op3", Engine: "ollama", Op: "pull"}, nil
+	})
+
+	frames := decodeFrames(t, rec.Body.String())
+	if len(frames) != 2 {
+		t.Fatalf("expected the requested model's progress and the result, got %d frames: %s", len(frames), rec.Body.String())
+	}
+	if frames[0].Type != "progress" || frames[0].Model != "demo" || frames[0].Percent != 30 {
+		t.Fatalf("bad progress frame: %+v", frames[0])
+	}
+	if frames[1].Type != "result" {
+		t.Fatalf("bad result frame: %+v", frames[1])
 	}
 }
 

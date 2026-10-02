@@ -14,13 +14,18 @@ import (
 )
 
 const (
-	controlLoadPath   = "/v1/models/load"
-	controlUnloadPath = "/v1/models/unload"
-	controlDeletePath = "/v1/models/delete"
+	controlCancelPullPath = "/v1/models/cancel-pull"
+	controlLoadPath       = "/v1/models/load"
+	controlUnloadPath     = "/v1/models/unload"
+	controlDeletePath     = "/v1/models/delete"
 )
 
 func (s *controlServer) handleLoad(w http.ResponseWriter, r *http.Request) {
 	s.handleModelAction(w, r, "load")
+}
+
+func (s *controlServer) handleCancelPull(w http.ResponseWriter, r *http.Request) {
+	s.handleModelAction(w, r, "cancel-pull")
 }
 
 func (s *controlServer) handleUnload(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +60,8 @@ func (s *controlServer) handleModelAction(w http.ResponseWriter, r *http.Request
 		err error
 	)
 	switch op {
+	case "cancel-pull":
+		err = s.exec.CancelModelPull(r.Context(), req.Engine, req.Model)
 	case "load":
 		res, err = s.exec.ModelLoad(r.Context(), req.Engine, req.Model)
 	case "unload":

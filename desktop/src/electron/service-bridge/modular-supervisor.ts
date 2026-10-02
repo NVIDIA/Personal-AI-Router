@@ -7,6 +7,7 @@ import { app } from 'electron'
 import {
     JsonRpcResponseError,
     JsonRpcSubprocess,
+    JsonRpcTimeoutError,
     type JsonObject,
     type JsonRpcInboundRequest,
     type JsonRpcNotification,
@@ -34,6 +35,7 @@ import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
+    MODULAR_CANCEL_PULL_TIMEOUT_MS,
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
@@ -342,6 +344,12 @@ class ModularSupervisor {
     private modelRefreshGenerations = new Map<EngineType, number>()
     private discoveryModelRetryTimers = new Map<ProxyEngine, ReturnType<typeof setTimeout>>()
     private discoveryModelRetryAttempts = new Map<ProxyEngine, number>()
+
+    // Download cancellations this is currently awaiting a broker reply for,
+    // keyed by node, engine and model. Held only for the duration of the await
+    // so a cancel that outlives its budget can be re-issued; see
+    // {@link ModularSupervisor.cancelModelPull}.
+    private cancelsInFlight = new Set<string>()
     // Authoritative value is the persisted ui-config `modularLogLevel`; the
     // connector seeds it via setLogLevel() before start() so spawn args use it.
     // This default only applies if start() runs before the connector seeds.
@@ -1721,6 +1729,79 @@ class ModularSupervisor {
             }
         } finally {
             state.finishModelPull(engineType, model)
+        }
+    }
+
+    /**
+     * Stop a model download. The backend acknowledges only after the transfer
+     * has stopped and its partial files are cleaned up, so the row stays in
+     * "Canceling" for the whole of that — see
+     * {@link MODULAR_CANCEL_PULL_TIMEOUT_MS} for what bounds it.
+     *
+     * A timeout is not a failure: the backend is still cancelling, and dropping
+     * the row back to "downloading" seconds before it finishes would be a lie
+     * the user acts on. Only a real rejection restores the previous status, and
+     * either way the pull's own settling event clears the entry.
+     *
+     * It does not make the cancel one-shot, though. A request that outlives
+     * its budget has stopped being awaited, and the row it left in "Canceling"
+     * is the user's only handle on a download that may still be running, so
+     * asking again has to reach the backend. Only a cancel this is currently
+     * waiting on is refused, which is what keeps a mashed button from fanning
+     * out duplicate requests.
+     */
+    async cancelModelPull(
+        engine: string,
+        engineType: EngineType,
+        model: string,
+        nodeId?: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        const active = nodeId
+            ? state.isRemoteModelPullActive(nodeId, engineType, model)
+            : state.isModelPullActive(engineType, model)
+        if (!active) return
+        const inFlight = `${nodeId ?? 'local'}:${engineType}:${model}`
+        if (this.cancelsInFlight.has(inFlight)) return
+        if (!state.setModelPullCanceling(engineType, model, true, nodeId)) return
+        this.cancelsInFlight.add(inFlight)
+        try {
+            if (nodeId) {
+                await this.callProcess(
+                    'broker',
+                    'engine:remote-cancel-pull',
+                    {
+                        node: nodeId,
+                        engine,
+                        model
+                    },
+                    MODULAR_CANCEL_PULL_TIMEOUT_MS
+                )
+            } else {
+                await this.callProcess(
+                    'broker',
+                    'engine:cancel-pull',
+                    { engine, model },
+                    MODULAR_CANCEL_PULL_TIMEOUT_MS
+                )
+            }
+        } catch (err) {
+            if (err instanceof JsonRpcTimeoutError) {
+                log.warn({
+                    sublevel: 'broker',
+                    message: `cancel of ${engine} download is still running after ${MODULAR_CANCEL_PULL_TIMEOUT_MS}ms`
+                })
+                return
+            }
+            state.setModelPullCanceling(engineType, model, false, nodeId)
+            this.reportError(
+                `Failed to cancel download of ${model}: ${getErrorString(err)}`,
+                'error',
+                `engine-cancel-pull:${nodeId ?? 'local'}:${engine}:${model}`,
+                { engineType, nodeId, operation: 'pull', modelName: model }
+            )
+        } finally {
+            this.cancelsInFlight.delete(inFlight)
         }
     }
 

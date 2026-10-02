@@ -84,6 +84,13 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 		{controlDeletePath, "lmstudio", true},
 		{controlLoadPath, "ollama", true},
 		{controlLoadPath, "lmstudio", false},
+		// Cancelling is the peer stopping a live transfer, not answering a
+		// question: it interrupts the CLI, waits for the acknowledgement, and
+		// cleans up before writing a header. Both engines can outlast the
+		// ordinary budget, and being cut off there reports a cancel that
+		// succeeded as failed.
+		{controlCancelPullPath, "lmstudio", true},
+		{controlCancelPullPath, "ollama", true},
 		{controlStopPath, "ollama", false},
 		{controlUnloadPath, "ollama", false},
 		{controlEnginesPath, "", false},
