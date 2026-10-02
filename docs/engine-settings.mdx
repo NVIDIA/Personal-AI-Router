@@ -56,11 +56,13 @@ Other environment assignments can also be edited from a paired device.
 Origin lists need a scheme and a specific host, so bare `localhost` and `*` are
 rejected, including wildcards hidden inside extra quotes. Wildcard subdomains
 such as `https://*.example.com` and ports such as `http://localhost:*` are supported.
-List the origins you want to allow. This is
-how you give a web page access to your models: PAIR's local endpoints add no
-permissive default of their own, so a browser reaches a model through PAIR only
-where the engine would have allowed it directly. For a request that spans the
-cluster, every engine that answers has to allow the origin.
+Managed llama.cpp starts with an empty origin list, so cross-origin browser
+access is disabled until specific origins are added locally. List only the
+origins you want to allow. This is how you give a web page access to your models:
+PAIR's local endpoints add no permissive default of their own, so a browser
+reaches a model through PAIR only where the engine would have allowed it directly.
+For a request that spans the cluster, every engine that answers has to allow the
+origin.
 
 An engine does not need a CORS launch option to work with PAIR. The proxy follows
 the engine's HTTP responses regardless of how its CORS policy is configured.

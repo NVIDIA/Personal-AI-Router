@@ -106,6 +106,31 @@ func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
 	}
 }
 
+func TestBundledLlamaCPPDisablesCORSByDefault(t *testing.T) {
+	reg := loadWithOverrides(t, t.TempDir())
+	manifest, ok := reg.Get("llamacpp")
+	if !ok {
+		t.Fatal("llama.cpp manifest not loaded")
+	}
+	for platform, config := range manifest.Platforms {
+		t.Run(platform, func(t *testing.T) {
+			e := settingsExecutor(t, false)
+			settingsState(t, e).plat.Runtime = config.Runtime
+			state, err := e.LaunchSettings("fake")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := launchCORSAssignments(state.LaunchText, config.Runtime.EditableLaunch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{"cors.origins="}; !slices.Equal(got, want) {
+				t.Fatalf("default CORS policy = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestBundledNetworkingControls(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	// Adding a bundled engine requires an explicit networking review and cases.

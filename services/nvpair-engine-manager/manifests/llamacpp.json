@@ -13,7 +13,7 @@
         { "flags": ["--cors-origins"], "value": "{cors.origins}" }
       ]
     },
-    "args": ["--sleep-idle-seconds", "300", "--host", "{host}", "--port", "{port}"],
+    "args": ["--sleep-idle-seconds", "300", "--host", "{host}", "--port", "{port}", "--cors-origins", ""],
     "env": { "LLAMA_CACHE": "{install_dir}-models" },
     "bind": "127.0.0.1",
     "port": 8081,
