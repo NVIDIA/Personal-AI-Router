@@ -94,6 +94,12 @@ UI converges even if its synchronous call already timed out),
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
 
+Streaming HTTP pulls have a 30-minute **inactivity** watchdog. Each increase in
+an Ollama layer's or llama.cpp file's completed byte count refreshes that
+watchdog, so an active download may run longer than 30 minutes; duplicate
+progress frames and heartbeats do not extend a stalled pull. CLI-driven pulls
+without structured byte progress retain the fixed 30-minute action timeout.
+
 The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
