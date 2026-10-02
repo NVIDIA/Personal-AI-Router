@@ -59,7 +59,7 @@ export const MODULAR_NODE_INFO_SELF_HOST = '127.0.0.1'
 // Maximum wait for the broker's app:ready notification. A live process that
 // never reports ready is treated as a stalled startup so the UI can direct the
 // user to Service settings instead of loading indefinitely.
-export const MODULAR_STARTUP_READY_TIMEOUT_MS = 15_000
+export const MODULAR_STARTUP_READY_TIMEOUT_MS = 90_000
 
 // Awaited engine lifecycle calls can include the bundled Ollama manifest's
 // 10-minute readiness probe and the broker's combined settings operation. The
