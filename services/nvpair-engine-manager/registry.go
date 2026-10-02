@@ -818,35 +818,35 @@ func (a *Action) validate(name string) error {
 	return nil
 }
 
-// validatePlaceholders rejects any `{token}` outside allowedPlaceholders
-// across every templated string in the manifest.
+// validatePlaceholders rejects any `{token}` outside the placeholders
+// available to the platform or manifest-global action that contains it.
 func (m *Manifest) validatePlaceholders() error {
-	allowed := make(map[string]bool, len(allowedPlaceholders))
-	for name := range allowedPlaceholders {
-		allowed[name] = true
-	}
-	for _, platform := range m.Platforms {
-		if platform.Install == nil {
-			continue
+	for key, platform := range m.Platforms {
+		allowed := make(map[string]bool, len(allowedPlaceholders))
+		for name := range allowedPlaceholders {
+			allowed[name] = true
 		}
-		for _, artifact := range platform.Install.Artifacts {
-			allowed["download_"+artifact.Name] = true
+		if platform.Install != nil {
+			for _, artifact := range platform.Install.Artifacts {
+				allowed["download_"+artifact.Name] = true
+			}
+		}
+		if err := validatePlaceholderStrings(platform.templatedStrings(), allowed); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
 		}
 	}
-	for _, s := range m.templatedStrings() {
-		for _, match := range placeholderRe.FindAllStringSubmatch(s, -1) {
+	return validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders)
+}
+
+func validatePlaceholderStrings(templates []string, allowed map[string]bool) error {
+	for _, template := range templates {
+		for _, match := range placeholderRe.FindAllStringSubmatch(template, -1) {
 			if !allowed[match[1]] {
 				return fmt.Errorf("unknown placeholder {%s} (allowed: %s)", match[1], strings.Join(placeholderList(allowed), ", "))
 			}
 		}
 	}
 	return nil
-}
-
-// allowedPlaceholderList returns the allowed placeholder names, sorted,
-// so error messages can't drift from the actual allow-set.
-func allowedPlaceholderList() []string {
-	return placeholderList(allowedPlaceholders)
 }
 
 func placeholderList(placeholders map[string]bool) []string {
@@ -858,33 +858,36 @@ func placeholderList(placeholders map[string]bool) []string {
 	return out
 }
 
-// templatedStrings collects every string the runner resolves
-// placeholders in, so validatePlaceholders can scan them all.
-func (m *Manifest) templatedStrings() []string {
+// templatedStrings collects every platform-local string the runner resolves
+// placeholders in, so artifact placeholders stay scoped to their platform.
+func (p Platform) templatedStrings() []string {
 	var out []string
-	for _, p := range m.Platforms {
-		out = append(out, p.Detect...)
-		if p.Install != nil {
-			out = append(out, p.Install.Run...)
-			out = append(out, p.Install.Script...)
-		}
-		if p.Uninstall != nil {
-			out = append(out, p.Uninstall.Run...)
-		}
-		out = append(out, p.Runtime.Bin)
-		out = append(out, p.Runtime.Args...)
-		for _, cmd := range p.Runtime.Start {
-			out = append(out, cmd...)
-		}
-		for _, v := range p.Runtime.Env {
-			out = append(out, v)
-		}
-		out = append(out, probeStrings(p.Runtime.Ready)...)
-		out = append(out, probeStrings(p.Runtime.Health)...)
-		if p.Runtime.Stop != nil {
-			out = append(out, p.Runtime.Stop.Cmd...)
-		}
+	out = append(out, p.Detect...)
+	if p.Install != nil {
+		out = append(out, p.Install.Run...)
+		out = append(out, p.Install.Script...)
 	}
+	if p.Uninstall != nil {
+		out = append(out, p.Uninstall.Run...)
+	}
+	out = append(out, p.Runtime.Bin)
+	out = append(out, p.Runtime.Args...)
+	for _, cmd := range p.Runtime.Start {
+		out = append(out, cmd...)
+	}
+	for _, v := range p.Runtime.Env {
+		out = append(out, v)
+	}
+	out = append(out, probeStrings(p.Runtime.Ready)...)
+	out = append(out, probeStrings(p.Runtime.Health)...)
+	if p.Runtime.Stop != nil {
+		out = append(out, p.Runtime.Stop.Cmd...)
+	}
+	return out
+}
+
+func (m *Manifest) actionTemplatedStrings() []string {
+	var out []string
 	for _, act := range m.Actions {
 		if act.RemovePath != nil {
 			out = append(out, act.RemovePath.Root)

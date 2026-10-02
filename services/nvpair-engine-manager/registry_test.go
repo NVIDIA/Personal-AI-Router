@@ -156,6 +156,33 @@ func TestValidateAcceptsNamedInstallArtifacts(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsArtifactPlaceholderFromAnotherPlatform(t *testing.T) {
+	m := validManifest()
+	setInstallArtifacts(&m, validInstallArtifacts())
+	mac := Platform{
+		Install: &Install{
+			Fetch: &Fetch{URL: "https://example/server.tar.gz"},
+			Run:   []string{"extract", "{download}"},
+		},
+		Runtime: Runtime{Bin: "{install_dir}/llama-server"},
+	}
+	m.Platforms["darwin/arm64"] = mac
+	if err := m.Validate(); err != nil {
+		t.Fatalf("valid multi-platform fixture rejected: %v", err)
+	}
+
+	mac.Install.Run = []string{"extract", "{download_cudart}"}
+	m.Platforms["darwin/arm64"] = mac
+	err := m.Validate()
+	if err == nil {
+		t.Fatal("macOS install references {download_cudart}, but only Linux declares cudart; want validation error")
+	}
+	const want = `platform "darwin/arm64": unknown placeholder {download_cudart}`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err, want)
+	}
+}
+
 func validInstallArtifacts() []InstallArtifact {
 	return []InstallArtifact{
 		{Name: "server", URL: "https://example/server.zip", SHA256: strings.Repeat("a", 64)},
