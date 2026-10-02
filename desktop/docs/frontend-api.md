@@ -203,8 +203,9 @@ Commands return no state. Renderer stores update from
 typed in `IpcPushChannelMap` (`shared/types/ipc-channels.ts`) instead of the
 logical push table above.
 
-Service status remains `connecting` until both the broker and required Ollama
-proxy report ready. `ServiceStatus.error` carries the latest startup or runtime
+Service status remains `connecting` until the broker reports `app:ready`. Ollama
+and LM Studio proxy readiness is an asynchronous capability signal and does not
+gate the connection. `ServiceStatus.error` carries the latest startup or runtime
 failure; successful readiness and deliberate stops clear it, which is how a
 crash is told apart from a stop the user asked for.
 
