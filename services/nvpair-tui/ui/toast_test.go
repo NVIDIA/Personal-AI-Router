@@ -663,6 +663,35 @@ func TestInboundRequestsWaitTheirTurn(t *testing.T) {
 	}
 }
 
+// TestDroppedRequestTakesItsPINWithIt is the regression guard for a PIN typed
+// for one request answering the next. The request on screen expired while its
+// PIN field was open, the next one came up under the same field, and enter
+// sent the first request's PIN as the answer to the second.
+func TestDroppedRequestTakesItsPINWithIt(t *testing.T) {
+	v := newNodesView(nil)
+	v.SetSize(120, 30)
+	v.Update(inviteReceived("first", "alpha"))
+	v.Update(inviteReceived("second", "beta"))
+
+	v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1234")})
+	if v.mode != nodesInputPin || v.input.Value() != "1234" {
+		t.Fatalf("the PIN field did not take the digits (mode %v, value %q)", v.mode, v.input.Value())
+	}
+
+	v.Update(inviteEvent("cluster:invite-expired", "first"))
+	if v.inbound == nil || v.inbound.InviteID != "second" {
+		t.Fatalf("the waiting request did not come up next: %#v", v.inbound)
+	}
+	if v.mode == nodesInputPin || v.input.Value() != "" {
+		t.Errorf("the PIN field outlived its request (mode %v, value %q)", v.mode, v.input.Value())
+	}
+	v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if v.answering != "" {
+		t.Errorf("enter answered %q with a PIN typed for another request", v.answering)
+	}
+}
+
 // TestJoiningDeclinesEveryOtherRequest is the regression guard for requests
 // left waiting after this machine joined a cluster. None could be accepted any
 // more, yet each came up in turn looking answerable, and each sender went on

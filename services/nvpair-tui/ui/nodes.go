@@ -659,6 +659,7 @@ func (v *nodesView) receiveInvite(inv clusterInvite) {
 // one waiting on screen if it was the one showing.
 func (v *nodesView) dropInbound(id string) bool {
 	if v.inbound != nil && v.inbound.InviteID == id {
+		v.forgetPIN()
 		v.inbound = nil
 		if v.answering == id {
 			v.answering = ""
@@ -677,6 +678,16 @@ func (v *nodesView) dropInbound(id string) bool {
 		}
 	}
 	return false
+}
+
+// forgetPIN closes the PIN field and clears what was typed in it, for when the
+// request it was opened for is gone. Left open, the digits typed for one
+// request answered whichever came up next.
+func (v *nodesView) forgetPIN() {
+	if v.mode == nodesInputPin {
+		v.input.SetValue("")
+		v.cancelInput()
+	}
 }
 
 // inboundPrompt is the standing line for a pairing request someone sent us,
@@ -1233,6 +1244,7 @@ type waitingDeclinedMsg struct {
 func (v *nodesView) declineWaiting() []tea.Cmd {
 	waiting := v.queued
 	if v.inbound != nil {
+		v.forgetPIN()
 		waiting = append([]clusterInvite{*v.inbound}, waiting...)
 	}
 	v.inbound, v.queued = nil, nil
