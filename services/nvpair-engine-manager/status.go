@@ -122,6 +122,7 @@ func (e *Executor) Errors() []serviceError {
 }
 
 func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
+	pathManaged := e.pathManaged(engine)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return EngineStatus{
@@ -131,6 +132,7 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Running:     st.running,
 		Healthy:     st.healthy,
 		Port:        st.port,
+		PathManaged: pathManaged,
 	}
 }
 

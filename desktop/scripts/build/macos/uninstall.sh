@@ -98,6 +98,45 @@ if [ -x "$CTL" ]; then
   fi
 fi
 
+# Release the PATH entries this user's engines own, while the binary that owns
+# the ownership records still exists.
+#
+# Engine-manager records what it added under the data root
+# (engine-bin/engine-path/), while the entries themselves live in the login
+# shell's profiles — which the purge below never touches. Removing the records
+# first would strand those entries with no way left to identify them, pointing
+# at engine directories this script is about to delete. Only needed when data is
+# going away: keeping it keeps the engines, the records, and a reinstall's
+# ability to clean up later.
+#
+# Runs as the invoking user for the same reason as the helper above: the
+# profiles and the records are theirs, not root's.
+#
+# Unlike every other step here, a failure is not shrugged off. The binary
+# removes what it can and reports the rest, and the records that could still
+# identify whatever it left are inside the data root the purge is about to
+# delete — so a failed release cancels the purge rather than making those
+# entries unidentifiable. The app bundle still goes; a reinstall retries.
+if [ "$PURGE_DATA" = "1" ]; then
+  EM="$APP_PATH/Contents/Resources/cli-bin/nvpair-engine-manager"
+  if [ -x "$EM" ]; then
+    echo "Releasing engine PATH entries..."
+    # `|| released=$?` rather than a bare call: set -e is on, so a failure would
+    # otherwise abort before the check below could keep the data.
+    released=0
+    if [ -n "$real_user" ] && [ "$real_user" != "root" ]; then
+      sudo -u "$real_user" "$EM" --remove-user-path >/dev/null 2>&1 || released=$?
+    else
+      "$EM" --remove-user-path >/dev/null 2>&1 || released=$?
+    fi
+    if [ "$released" -ne 0 ]; then
+      echo "Warning: could not release every engine PATH entry." >&2
+      echo "Keeping user data so a reinstall can finish the cleanup; re-run with --purge afterwards." >&2
+      PURGE_DATA=0
+    fi
+  fi
+fi
+
 echo "Removing $APP_PATH ..."
 rm -rf "$APP_PATH" 2>/dev/null || true
 

@@ -37,6 +37,11 @@ func main() {
 	reservedPort := flag.Int("reserved-port", 0, "local engine port reserved by the parent proxy; 0 disables the reservation")
 	clusterDir := flag.String("cluster-dir", "", "cluster identity/pin directory; when set and this node holds a cluster identity, the ec remote-control surface (--control-port) turns on with pin-based mTLS")
 	loadedPollSec := flag.Int("loaded-poll-interval", defaultLoadedPollSeconds, "seconds between loaded-model polls that drive engine:models-changed pushes; 0 disables the watcher")
+	userPath := flag.Bool("user-path", true, "publish an installed engine's command-line directory on the current user's PATH; --user-path=false leaves HKCU\\Environment and the shell profiles alone")
+	// Not named removeUserPath: that is the package-level function this flag
+	// ultimately reaches, and shadowing it for the whole of main() sets a trap
+	// for the next person who needs the function here.
+	releaseUserPath := flag.Bool("remove-user-path", false, "release every PATH entry this user's engines own, then exit; the application uninstaller runs this before deleting the data directory that holds the ownership records")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -47,6 +52,18 @@ func main() {
 	}
 
 	applog.Init("nvpair-engine-manager", resolveLevel())
+
+	if *releaseUserPath {
+		_, installBase := userPaths()
+		if installBase == "" {
+			log.Fatal("no user data directory: cannot locate the PATH ownership records")
+		}
+		if err := removeAllUserPaths(installBase); err != nil {
+			log.Fatalf("release user PATH entries: %v", err)
+		}
+		log.Print("released the PATH entries owned by this user's engines")
+		return
+	}
 
 	var transport io.ReadWriteCloser
 	if *ipcPath != "" {
@@ -90,6 +107,13 @@ func main() {
 	// engine:set-port persists the chosen port as a manifest override in the
 	// same per-user engines/ dir that buildRegistry overlays.
 	exec.overrideDir = manifestDir
+	if !*userPath {
+		// The opt-in live tests drive a real install against a temporary home,
+		// so they must not reach the developer's registry value or dotfiles.
+		exec.addToPath = func(string, *pathReceipt, func() error) error { return nil }
+		exec.removeFromPath = func(*pathReceipt) error { return nil }
+		log.Print("user PATH updates are disabled (--user-path=false)")
+	}
 	// Loaded-model watcher cadence. Integer seconds keeps parity with the other
 	// flags, so the smallest positive interval is 1s; <=0 disables the watcher.
 	if *loadedPollSec <= 0 {

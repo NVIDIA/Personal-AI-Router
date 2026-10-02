@@ -903,7 +903,7 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; port: number }
+        { installed: boolean; running: boolean; port: number; pathManaged: boolean }
     >()
     /**
      * Local model lists pulled from `nvpair-engine-manager`'s `list_models` action by
@@ -1368,7 +1368,8 @@ class ModularBridgeState {
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            pathManaged: booleanValue(obj.path_managed)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -1376,6 +1377,11 @@ class ModularBridgeState {
         // already carries the resolved, fact-derived status.
         this.discardPendingOp(engineType)
         this.emitLocalEngineStatus(engineType)
+    }
+
+    /** Whether PAIR owns a PATH entry for a local engine, per the engine-manager. */
+    localEnginePathManaged(engineType: EngineType): boolean {
+        return this.engineManagerFacts.get(engineType)?.pathManaged ?? false
     }
 
     /**
@@ -2068,7 +2074,8 @@ class ModularBridgeState {
                 nodeId,
                 processStatus: pending,
                 enginePort: facts && facts.running && facts.port > 0 ? facts.port : null,
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                pathManaged: facts?.pathManaged ?? false
             }
         }
 
@@ -2091,7 +2098,8 @@ class ModularBridgeState {
                 // Each proxy-fronted engine has its own broker proxy
                 // (`ollama-proxy` / `lmstudio-proxy`); report that engine's bound
                 // proxy port. Loopback-only engines get null.
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                pathManaged: facts.pathManaged
             }
         }
 

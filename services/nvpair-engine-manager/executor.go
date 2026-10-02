@@ -35,6 +35,10 @@ type EngineStatus struct {
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port,omitempty"`
+	// PathManaged is true while PAIR owns a PATH entry for this engine on this
+	// machine, so a client asks about removing it only when there is one. Always
+	// false in what the control surface serves to peers.
+	PathManaged bool `json:"path_managed"`
 }
 
 // engineState is the per-engine runtime state.
@@ -93,6 +97,9 @@ type Executor struct {
 	// detectTimeout bounds the post-install/uninstall detect poll
 	// (installers finish their file work asynchronously). Overridable.
 	detectTimeout time.Duration
+	// addToPath persists the CLI directory in the current user's PATH.
+	addToPath      func(string, *pathReceipt, func() error) error
+	removeFromPath func(*pathReceipt) error
 	// actionTimeout bounds a single engine:action call (HTTP or CLI) so a
 	// hung engine can't park the goroutine or starve the caller forever.
 	actionTimeout time.Duration
@@ -124,6 +131,8 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 		baseDir:            baseDir,
 		desired:            newDesiredStateStore(baseDir),
 		detectTimeout:      30 * time.Second,
+		addToPath:          addToUserPath,
+		removeFromPath:     removeUserPath,
 		actionTimeout:      30 * time.Minute,
 		loadedPollInterval: defaultLoadedPollSeconds * time.Second,
 		loadedPoke:         make(chan struct{}, 1),
@@ -271,6 +280,10 @@ func expandPathForOS(s, goos string) string {
 }
 
 func installFailedID(engine string) string { return "engine-manager:install-failed:" + engine }
+
+// pathFailedID is deliberately separate from install-failed: the engine did
+// install, so the two states have to be able to coexist and clear independently.
+func pathFailedID(engine string) string { return "engine-manager:path-failed:" + engine }
 
 func uninstallFailedID(engine string) string { return "engine-manager:uninstall-failed:" + engine }
 

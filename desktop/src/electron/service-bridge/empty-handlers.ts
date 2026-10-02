@@ -156,6 +156,46 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
 }
 
 /**
+ * Update is an uninstall followed by an install. The engine-manager serializes
+ * per-engine ops via its lifecycle lock, so the queued install waits for the
+ * uninstall to finish; the uninstall's engine:state-changed briefly clears the
+ * pending status, then the install's progress re-establishes `installing`.
+ *
+ * It carries the user's earlier PATH answer through both steps rather than
+ * asking again. That answer is read fresh, because `nvpair-tui` runs its own
+ * engine-manager against the same PATH records and its changes never reach this
+ * bridge as a push.
+ */
+async function updateLocalEngine(
+    engine: string,
+    engineType: EngineType,
+    failPendingOp: (action: string, operation: 'install' | 'uninstall') => (error: string) => void
+): Promise<void> {
+    const supervisor = getModularSupervisor()
+    let pathManaged = getModularBridgeState().localEnginePathManaged(engineType)
+    try {
+        const status = await supervisor.callProcess('broker', 'engine:status', { engine })
+        pathManaged = booleanValue(objectValue(status)?.path_managed)
+    } catch {
+        // The last pushed state is the best answer left.
+    }
+    supervisor.sendProcess(
+        'broker',
+        'engine:uninstall',
+        pathManaged ? { engine, path: true } : { engine },
+        failPendingOp('update', 'uninstall'),
+        true
+    )
+    supervisor.sendProcess(
+        'broker',
+        'engine:install',
+        { engine, start: true, path: pathManaged },
+        failPendingOp('update', 'install'),
+        true
+    )
+}
+
+/**
  * Dispatch a UI engine command to the local `nvpair-engine-manager`. Lifecycle and
  * model operations are **fire-and-forget**: the engine-manager runs each in its
  * own goroutine and reports progress (`engine:install-progress`), completion
@@ -203,41 +243,26 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             supervisor.sendProcess(
                 'broker',
                 'engine:install',
-                { engine, start: true },
+                { engine, start: true, path: payload.path === true },
                 failPendingOp('install', 'install'),
                 true
             )
             break
         case 'uninstall':
             state.beginLocalEngineOp(payload.engineType, 'uninstalling')
+            // An absent answer is forwarded as absent: the engine-manager then
+            // keeps its claim on PATH entries instead of handing them over.
             supervisor.sendProcess(
                 'broker',
                 'engine:uninstall',
-                { engine },
+                payload.path === undefined ? { engine } : { engine, path: payload.path },
                 failPendingOp('uninstall', 'uninstall'),
                 true
             )
             break
         case 'update':
-            // The engine-manager serializes per-engine ops via its lifecycle
-            // lock, so the queued install waits for the uninstall to finish. The
-            // uninstall's engine:state-changed briefly clears this, then the
-            // install's progress re-establishes `installing`.
             state.beginLocalEngineOp(payload.engineType, 'installing')
-            supervisor.sendProcess(
-                'broker',
-                'engine:uninstall',
-                { engine },
-                failPendingOp('update', 'uninstall'),
-                true
-            )
-            supervisor.sendProcess(
-                'broker',
-                'engine:install',
-                { engine, start: true },
-                failPendingOp('update', 'install'),
-                true
-            )
+            void updateLocalEngine(engine, payload.engineType, failPendingOp)
             break
         case 'toggle':
             void toggleLocalEngine(engine, payload.engineType)

@@ -177,7 +177,8 @@ sign the OFF choice was discarded.
 
 For ease of use, Personal AI Router issues starts in two additional cases and
 keeps no auto-start list of its own: every install sends `engine:install` with
-`start: true`, so a successful install (or managed update) starts the engine;
+`start: true` (and `path` set to the user's PATH answer), so a successful
+install (or managed update) starts the engine;
 and on the first app open Personal AI Router starts every already-installed local
 engine once. Both paths rely on the backend recording desired-enabled as a side
 effect of start, so `nvpair-engine-manager` remains the single owner of

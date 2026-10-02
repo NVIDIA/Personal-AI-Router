@@ -144,6 +144,21 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `run` | string[] | no | Argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. Requires a `fetch` (the artifact it unpacks). |
 | `script` | string[] | no | **Escape hatch** for vendors that only ship a script installer. Runs **without** checksum verification (logged as unpinned) and replaces `fetch`+`run`. Prefer `fetch`+`run` whenever the vendor publishes a script or artifact: download it first, then execute the local file. **Make failures loud:** a piped bootstrap such as `curl … \| bash` can mask a failed fetch, while a separate fetch prevents the run and reports the error. |
 | `mode` | string | no | `"user"` (default) or `"admin"`. The runner **refuses** `"admin"` (engine-manager is user-mode only); it is a deliberate, flagged exception, not a default. |
+| `env` | object | no | Literal `KEY: "value"` overrides layered onto the inherited environment of the **installer subprocess only** — not this service's environment and not the engine's runtime (that is `runtime.env`). Values are used verbatim: no placeholders, no OS env expansion. |
+
+`install.env` exists so a vendor quirk stays in the manifest. LM Studio's
+installer edits the user's PATH unless `LMS_NO_MODIFY_PATH=1` is set, and PAIR
+publishes that directory itself with an ownership record it can later remove —
+two writers, one removable. Declaring it keeps the runner engine-agnostic, so a
+third-party engine with the same quirk needs no Go change:
+
+```json
+"install": {
+  "env": { "LMS_NO_MODIFY_PATH": "1" },
+  "fetch": { "url": "https://lmstudio.ai/install.sh" },
+  "run": ["bash", "{download}"]
+}
+```
 
 ### Runtime
 

@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,9 +109,29 @@ func main() {
 				os.Exit(1)
 			}
 			return
-		case "touch": // write a marker file so a test can assert the command ran
-			if len(os.Args) > 2 {
-				_ = os.WriteFile(os.Args[2], []byte("ok"), 0o644)
+		case "remove": // delete every named file, standing in for an uninstaller
+			for _, path := range os.Args[2:] {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					log.Fatal(err)
+				}
+			}
+			return
+		case "write-env": // record an environment variable's value, to prove the
+			// installer subprocess received a manifest-declared override
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "write-env: need <variable> <file>")
+				os.Exit(2)
+			}
+			if err := os.WriteFile(os.Args[3], []byte(os.Getenv(os.Args[2])), 0o644); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "touch": // write marker files so a test can assert the command ran
+			for _, path := range os.Args[2:] {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					log.Fatal(err)
+				}
+				_ = os.WriteFile(path, []byte("ok"), 0o644)
 			}
 			return
 		case "echo": // print args to stdout so a cmd-action can capture output

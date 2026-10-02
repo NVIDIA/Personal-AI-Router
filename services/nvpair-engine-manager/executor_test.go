@@ -56,7 +56,10 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	t.Helper()
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	// Lifecycle tests must not modify the developer's persistent PATH.
+	ex.addToPath = func(string, *pathReceipt, func() error) error { return nil }
+	return ex
 }
 
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
@@ -403,8 +406,9 @@ func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
 	reg.engines[m.Engine] = m
 	var methods []string
 	ex := NewExecutor(reg, NewReporter(nil), func(method string, _ any) { methods = append(methods, method) }, t.TempDir())
+	ex.addToPath = func(string, *pathReceipt, func() error) error { return nil }
 
-	if err := ex.Install(context.Background(), m.Engine); err != nil {
+	if err := ex.Install(context.Background(), m.Engine, true); err != nil {
 		t.Fatalf("install should adopt the external service: %v", err)
 	}
 	if got := downloads.Load(); got != 0 {
@@ -456,7 +460,7 @@ func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
 		}},
 	}
 	ex := newTestExecutor(t, m)
-	err := ex.Install(context.Background(), m.Engine)
+	err := ex.Install(context.Background(), m.Engine, true)
 	if err == nil || !strings.Contains(err.Error(), "occupied") {
 		t.Fatalf("install over an unknown listener error = %v, want occupied", err)
 	}
@@ -498,7 +502,7 @@ func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
 	if st, err := ex.Status(m.Engine); err != nil || st.Installed || st.Running {
 		t.Fatalf("live API without CLI status = %+v, err=%v; want not installed", st, err)
 	}
-	if err := ex.Install(context.Background(), m.Engine); err != nil {
+	if err := ex.Install(context.Background(), m.Engine, true); err != nil {
 		t.Fatalf("install missing command-mode CLI: %v", err)
 	}
 	if !fileExists(cli) {
@@ -605,7 +609,7 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 	if st, err := ex.Status("ollama"); err != nil || st.Installed || st.Running || st.Healthy {
 		t.Fatalf("proxy facade was adopted: status=%+v err=%v", st, err)
 	}
-	if err := ex.Install(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
+	if err := ex.Install(context.Background(), "ollama", true); err == nil || !strings.Contains(err.Error(), "occupied") {
 		t.Fatalf("install over proxy facade error = %v", err)
 	}
 	if err := ex.Start(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
@@ -662,7 +666,7 @@ func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
 	if err := ex.Start(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
 		t.Fatalf("Start accepted foreign replacement: %v", err)
 	}
-	if err := ex.Install(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
+	if err := ex.Install(context.Background(), "ollama", true); err == nil || !strings.Contains(err.Error(), "occupied") {
 		t.Fatalf("Install accepted foreign replacement: %v", err)
 	}
 }
@@ -702,7 +706,7 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
-	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
+	if err := ex.Uninstall(context.Background(), "fake", true); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	if ok, _ := ex.Detect("fake"); ok {
@@ -749,7 +753,7 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
 
-	err = ex.Uninstall(context.Background(), m.Engine)
+	err = ex.Uninstall(context.Background(), m.Engine, true)
 	if err == nil || !strings.Contains(err.Error(), "external management") {
 		t.Fatalf("uninstall external same-name owner error = %v", err)
 	}
@@ -772,7 +776,7 @@ func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
 	m.Platforms[key] = p
 
 	ex := newTestExecutor(t, m) // managed base is a different temp directory
-	err := ex.Uninstall(context.Background(), m.Engine)
+	err := ex.Uninstall(context.Background(), m.Engine, true)
 	if err == nil || !strings.Contains(err.Error(), "outside NVPAIR's managed install directory") {
 		t.Fatalf("external uninstall error = %v", err)
 	}
@@ -806,7 +810,7 @@ func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
-	err := ex.Uninstall(context.Background(), m.Engine)
+	err := ex.Uninstall(context.Background(), m.Engine, true)
 	if err == nil || !strings.Contains(err.Error(), "occupied by an unidentified service") {
 		t.Fatalf("uninstall unidentified listener error = %v", err)
 	}
@@ -884,7 +888,7 @@ func TestInstallRefusesAdmin(t *testing.T) {
 	m.Platforms[key] = p
 
 	ex := newTestExecutor(t, m)
-	err := ex.Install(context.Background(), "fake")
+	err := ex.Install(context.Background(), "fake", true)
 	if err == nil || !strings.Contains(err.Error(), "refused") {
 		t.Fatalf("expected admin-install refusal, got %v", err)
 	}
@@ -913,7 +917,7 @@ func TestEngineUninstall(t *testing.T) {
 	if ok, _ := ex.Detect("fake"); !ok {
 		t.Fatal("expected installed before uninstall")
 	}
-	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
+	if err := ex.Uninstall(context.Background(), "fake", true); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	if ok, _ := ex.Detect("fake"); ok {
@@ -924,7 +928,7 @@ func TestEngineUninstall(t *testing.T) {
 func TestUninstallNoOpWhenAbsent(t *testing.T) {
 	m := testEngineManifest(filepath.Join(t.TempDir(), "absent"+exeExt()))
 	ex := newTestExecutor(t, m)
-	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
+	if err := ex.Uninstall(context.Background(), "fake", true); err != nil {
 		t.Fatalf("uninstall of an absent engine should be a no-op, got %v", err)
 	}
 }

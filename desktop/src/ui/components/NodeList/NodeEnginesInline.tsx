@@ -10,7 +10,8 @@ import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
 import { Button, Flex, Switch, Text } from '@nvidia/foundations-react-core'
 import { Download } from '@/ui/components/icons'
-import { useCallback, useMemo } from 'react'
+import { EnginePathConsentModal } from '@/ui/components/EnginePathConsentModal'
+import { useCallback, useMemo, useState } from 'react'
 
 export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
@@ -64,15 +65,33 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
         [nodeId]
     )
 
+    const [askPathFor, setAskPathFor] = useState<EngineType | null>(null)
+
+    // PATH is a change to this machine's user, so only a local install asks.
     const handleInstall = useCallback(
         (engineType: EngineType) => {
-            window.pairApi.engines.install(engineType, nodeId)
+            if (isRemote) window.pairApi.engines.install(engineType, nodeId, false)
+            else setAskPathFor(engineType)
         },
-        [nodeId]
+        [isRemote, nodeId]
+    )
+
+    const handlePathAnswer = useCallback(
+        (addToPath: boolean) => {
+            if (askPathFor) window.pairApi.engines.install(askPathFor, nodeId, addToPath)
+            setAskPathFor(null)
+        },
+        [askPathFor, nodeId]
     )
 
     return (
         <>
+            <EnginePathConsentModal
+                open={askPathFor !== null}
+                engines={askPathFor ? [askPathFor] : []}
+                onAnswer={handlePathAnswer}
+                onCancel={() => setAskPathFor(null)}
+            />
             {allBackends.map(b => {
                 const pending = Boolean(
                     usePendingActionsStore.getState().getLifecyclePending(nodeId, b.type)

@@ -17,6 +17,7 @@ import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import type { EngineCommandType } from '@/shared/types/engine-api'
 
 import { ConfirmModal } from '@/ui/components/ConfirmModal'
+import { EnginePathConsentModal } from '@/ui/components/EnginePathConsentModal'
 import { ModelSection } from '@/ui/components/ModelManager/ModelSection'
 import { BackendHeader } from './BackendHeader'
 import { BackendFooter } from './BackendFooter'
@@ -62,6 +63,11 @@ export function BackendRow({
 }) {
     const [expanded, setExpanded] = useState(false)
     const [confirmUninstall, setConfirmUninstall] = useState(false)
+    const [askPath, setAskPath] = useState(false)
+    const [removePath, setRemovePath] = useState(true)
+    const pathManaged = useEngineStatusStore(
+        s => s.statusByNode.get(nodeId)?.get(backend.type)?.pathManaged === true
+    )
     const installProgress = useEngineProgressStore(s => {
         const installKey = engineProgressKey({
             nodeId,
@@ -151,19 +157,30 @@ export function BackendRow({
         window.pairApi.engines.toggle(backend.type, nodeId)
     }, [backend.type, nodeId])
 
+    // PATH is a change to this machine's user, so only a local install asks.
     const handleInstall = useCallback(() => {
-        window.pairApi.engines.install(backend.type, nodeId)
-    }, [backend.type, nodeId])
+        if (isLocalNode) setAskPath(true)
+        else window.pairApi.engines.install(backend.type, nodeId, false)
+    }, [backend.type, nodeId, isLocalNode])
+
+    const handlePathAnswer = useCallback(
+        (addToPath: boolean) => {
+            setAskPath(false)
+            window.pairApi.engines.install(backend.type, nodeId, addToPath)
+        },
+        [backend.type, nodeId]
+    )
 
     const handleUninstall = useCallback(() => {
-        window.pairApi.engines.uninstall(backend.type, nodeId)
-    }, [backend.type, nodeId])
+        window.pairApi.engines.uninstall(backend.type, nodeId, pathManaged ? removePath : undefined)
+    }, [backend.type, nodeId, pathManaged, removePath])
 
     const handleUpdate = useCallback(() => {
         window.pairApi.engines.update(backend.type, nodeId)
     }, [backend.type, nodeId])
 
     const requestUninstall = useCallback(() => {
+        setRemovePath(true)
         setConfirmUninstall(true)
     }, [])
 
@@ -235,7 +252,23 @@ export function BackendRow({
                 message={`Are you sure you want to uninstall ${backend.displayName}?`}
                 confirmLabel="Uninstall"
                 confirmColor="danger"
+                option={
+                    pathManaged
+                        ? {
+                              label: `Also remove ${backend.displayName} from my PATH`,
+                              checked: removePath,
+                              onCheckedChange: setRemovePath
+                          }
+                        : undefined
+                }
                 onConfirm={handleUninstall}
+            />
+
+            <EnginePathConsentModal
+                open={askPath}
+                engines={[backend.type]}
+                onAnswer={handlePathAnswer}
+                onCancel={() => setAskPath(false)}
             />
         </>
     )

@@ -33,8 +33,8 @@ Requests (caller → service):
 | `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine }` | `EngineStatus` |
-| `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
-| `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
+| `engine:install` | `{ engine, start?, port?, bind?, path? }` | `EngineStatus` (after install; also starts it if `start:true`; publishes the CLI on PATH only if `path:true`) |
+| `engine:uninstall` | `{ engine, path? }` | `EngineStatus` (after removal; removes PAIR's PATH entries only if `path:true`) |
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
@@ -51,7 +51,55 @@ Requests (caller → service):
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-`EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
+`EngineStatus` = `{ engine, display_name, installed, running, healthy, port, path_managed }`.
+`path_managed` is true while PAIR owns a PATH entry it wrote for the engine on
+this machine, so a client asks about removing one only when there is one. It is
+emitted after every PATH step, and always false in what the control surface
+serves to peers.
+
+PATH changes need the user's consent, carried as `path` on each request. A
+missing or false `path` never touches PATH, so a client that does not ask the
+user changes nothing.
+
+A locally-initiated install with `path:true` publishes the engine's CLI
+directory on this user's PATH. Without it the install still records that PAIR
+ran the installer, so a later consented install can re-adopt an engine whose
+vendor owns its location; an install over an engine already on disk records
+nothing, and a claim already on record is kept. Windows updates `HKCU\Environment\Path`; Unix appends a block to the login
+shell's profiles, read from the passwd database rather than the inherited
+environment. Existing entries are preserved and repeated requests do not
+duplicate PAIR's entries. New terminals pick up the change.
+
+`InstallForPeer` — the path a cluster peer's remote install takes — never
+publishes; like a declined install, it records only that PAIR ran the installer.
+A PATH failure is a dismissible warning, never an install error,
+so the engine stays installed and the caller's optional start step still runs.
+
+The directory comes from the manifest's `runtime.cli`. An engine that declares
+none falls back to its detected executable, and only from inside the directory
+PAIR installed into: `detect` deliberately matches vendor layouts PAIR does not
+own. An installation PAIR did not place gets no PATH entry and no warning.
+
+Ownership is recorded under `engine-bin/engine-path/<engine>.json` in the user
+data directory, written before PATH is touched and guarded by a lock file in the
+same directory so a concurrent engine-manager — `nvpair-tui` starts its own —
+cannot clobber it. After a successful uninstall with `path:true` PAIR removes
+only recorded entries or unchanged shell snippets, then deletes the receipt;
+pre-existing entries and unrecorded installations are preserved. Cleanup
+failures keep the receipt for a later uninstall retry, even after the executable
+is gone. An uninstall with `path:false` leaves the entries in place and deletes
+the receipt, so they become the user's and `--remove-user-path` no longer
+touches them. An uninstall with no `path` — a client that did not ask — leaves
+the entries and keeps PAIR's claim on them, dropping only the installed flag.
+
+Those receipts live inside the tree the application uninstaller deletes, while
+the PATH entries do not, so `--remove-user-path` drains every one of them and
+exits. The uninstaller runs it before removing the data directory, and only
+when it is removing that directory: on Debian that is `purge`, from a copy of
+this binary the package's pre-remove script keeps under `/var/lib/<package>`.
+
+The LM Studio installer runs with `LMS_NO_MODIFY_PATH=1`, declared as
+`install.env` in its manifest, so every PATH change is one PAIR can remove.
 
 Notifications (service → caller): `engine:ready{version}`,
 `engine:state-changed{EngineStatus}`,
@@ -238,6 +286,8 @@ its own.
 | `--reserved-port <port>` | `0` (off) | Refuse local or remote engine starts and persisted port changes on a parent-owned proxy alias; the broker configures this from `OLLAMA_HOST` |
 | `--cluster-dir <dir>` | _(none)_ | Cluster identity/pin directory; gates the `ec` surface on and supplies the leaf/pins used to serve it and to dial peers |
 | `--loaded-poll-interval <sec>` | `5` | Seconds between loaded-model polls that drive `engine:models-changed`; `0` disables the watcher |
+| `--user-path` | `true` | Publish an installed engine's CLI directory on the current user's PATH. `--user-path=false` leaves `HKCU\Environment` and the shell profiles alone; used by live tests so a run cannot edit the developer's own account |
+| `--remove-user-path` | `false` | Release every PATH entry this user's engines own, then exit. Not a debug affordance: the Windows, macOS, and Debian uninstallers all invoke it before deleting the data directory that holds the ownership records, and gate that deletion on it succeeding |
 | `--log-level <level>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
 | `--version` | | Print version and exit |
 
@@ -285,9 +335,20 @@ with a loud warning.
 ## Cross-platform
 
 One binary compiles and runs on Windows, Linux, and macOS × amd64/arm64.
-Per-OS variance lives in the manifest first; OS primitives (process
-termination, console hiding) are the only build-tagged Go
-(`proc_windows.go` / `proc_unix.go`).
+Per-OS variance lives in the manifest first; the build-tagged Go is limited to
+OS primitives:
+
+| Pair | Primitive |
+|---|---|
+| `proc_windows.go` / `proc_unix.go` | Process termination, console hiding |
+| `userpath_windows.go` / `userpath_unix.go` | User PATH persistence — the registry vs. the login shell's profiles |
+| `pathlock_windows.go` / `pathlock_unix.go` | Cross-process file locking |
+| `syncdir_windows.go` / `syncdir_unix.go` | Flushing a directory entry after a rename |
+
+`userpath.go` states the two-function contract those PATH pairs implement.
+`userpath_shell.go` and `userpath_windows_entries.go` are deliberately
+**untagged** so the profile-editing and PATH-parsing rules stay testable on
+every platform, not only on the one CI runs.
 
 ## Shutdown
 

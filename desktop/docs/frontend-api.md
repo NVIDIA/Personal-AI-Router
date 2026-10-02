@@ -117,6 +117,15 @@ environment assignments pass through without an engine-option catalog.
 - `deleteModel`;
 - `setModelExpiry`.
 
+`install` and `uninstall` carry `path`, the user's answer to changing their
+PATH. The renderer asks before a local install (once for every engine the
+first-run wizard installs) and offers removal on uninstall only when the local
+status reports `pathManaged`; otherwise the uninstall omits `path`, which keeps
+PAIR's claim on any entry instead of handing it to the user unasked. Remote
+installs never change PATH. `update` reads `path_managed` fresh from
+`engine:status`, since `nvpair-tui` can change it without a push, and reuses
+that answer without asking.
+
 Commands return no state. Renderer stores update from
 `engines:state-changed`, `engines:progress-changed`, and
 `engines:progress-cleared`.

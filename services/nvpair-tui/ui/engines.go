@@ -27,6 +27,13 @@ type engineStatus struct {
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port"`
+	PathManaged bool   `json:"path_managed"`
+}
+
+// pathPrompt is a lifecycle op held back until the user answers whether it may
+// change their PATH.
+type pathPrompt struct {
+	method, what, engine, question string
 }
 
 // enginesView manages local inference engines via the engine-manager
@@ -43,6 +50,7 @@ type enginesView struct {
 	input      textinput.Model
 	pulling    bool
 	pullEngine string
+	confirm    *pathPrompt
 
 	width, height int
 }
@@ -181,9 +189,23 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (v *enginesView) CapturingInput() bool { return v.pulling }
+func (v *enginesView) CapturingInput() bool { return v.pulling || v.confirm != nil }
 
 func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if p := v.confirm; p != nil {
+		switch msg.String() {
+		case "y", "Y":
+			v.confirm = nil
+			return v.runLifecycle(p.method, p.what, p.engine, lifecycleParams(p.engine, true))
+		case "n", "N":
+			v.confirm = nil
+			return v.runLifecycle(p.method, p.what, p.engine, lifecycleParams(p.engine, false))
+		case "esc":
+			v.confirm = nil
+			v.status = p.what + " " + p.engine + " cancelled"
+		}
+		return nil
+	}
 	if v.pulling {
 		switch msg.String() {
 		case "enter":
@@ -270,10 +292,48 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if engine == "" {
 		return nil, true
 	}
+	if question := pathQuestion(method, v.byName[engine]); question != "" {
+		v.confirm = &pathPrompt{method: method, what: what, engine: engine, question: question}
+		return nil, true
+	}
+	return v.runLifecycle(method, what, engine, unaskedParams(engine)), true
+}
+
+// unaskedParams carries no PATH answer because none was asked for, so an
+// uninstall keeps PAIR's claim on any entry instead of handing it over unasked.
+func unaskedParams(engine string) map[string]any {
+	return map[string]any{"engine": engine}
+}
+
+// pathQuestion is what to ask before a lifecycle op may change the user's
+// PATH, or "" when the op leaves it alone. An install always asks; an uninstall
+// asks only when PAIR owns an entry to remove.
+func pathQuestion(method string, e engineStatus) string {
+	label := e.Engine
+	if e.DisplayName != "" {
+		label = e.DisplayName
+	}
+	switch {
+	case method == "engine:install":
+		return fmt.Sprintf("Add the %s command-line tools to your PATH? Open a new terminal afterward. (y/n, esc cancels)", label)
+	case method == "engine:uninstall" && e.PathManaged:
+		return fmt.Sprintf("Also remove %s from your PATH? (y/n, esc cancels)", label)
+	}
+	return ""
+}
+
+// lifecycleParams carries the user's PATH answer. The engine-manager reads a
+// false path as "leave PATH alone" on install and "keep the entries as mine" on
+// uninstall.
+func lifecycleParams(engine string, path bool) map[string]any {
+	return map[string]any{"engine": engine, "path": path}
+}
+
+func (v *enginesView) runLifecycle(method, what, engine string, params map[string]any) tea.Cmd {
 	v.status = what + " " + engine + "..."
-	return call(v.client, method, map[string]string{"engine": engine}, func(_ *rpc.Message, err error) tea.Msg {
+	return call(v.client, method, params, func(_ *rpc.Message, err error) tea.Msg {
 		return engineOpMsg{what: what, engine: engine, err: err}
-	}), true
+	})
 }
 
 func (v *enginesView) selectedEngine() string {
@@ -325,6 +385,9 @@ func (v *enginesView) View() string {
 	out := v.table.View()
 	if v.pulling {
 		out += "\npull model: " + v.input.View()
+	}
+	if v.confirm != nil {
+		out += "\n" + v.confirm.question
 	}
 	if v.status != "" {
 		out += "\n" + footerStyle.Render(v.status)

@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ModalContent, ModalDialog, ModalRoot, Stack, Text } from '@nvidia/foundations-react-core'
 import { DialogHeader } from '@/ui/components/DialogHeader'
+import { EnginePathConsentModal } from '@/ui/components/EnginePathConsentModal'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import { useBlurOnOpen } from '@/ui/hooks/useBlurOnOpen'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
@@ -46,6 +47,7 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
     > | null>(null)
     const [installing, setInstalling] = useState(false)
     const [installTargets, setInstallTargets] = useState<EngineType[]>([])
+    const [pathPromptTargets, setPathPromptTargets] = useState<EngineType[]>([])
     const [error, setError] = useState<string | null>(null)
     const startedTargets = useRef(new Set<EngineType>())
     const failedTargets = useRef(new Set<EngineType>())
@@ -64,6 +66,7 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
             setError(null)
             setInstalling(false)
             setInstallTargets([])
+            setPathPromptTargets([])
             startedTargets.current.clear()
             failedTargets.current.clear()
         }
@@ -140,13 +143,23 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
             finishWelcome(true)
             return
         }
-        setInstalling(true)
-        startedTargets.current.clear()
-        failedTargets.current.clear()
-        knownErrors.current = new Map(errors.map(item => [item.id, item.timestamp]))
-        setInstallTargets(targets)
-        targets.forEach(t => window.pairApi.engines.install(t, selfId))
-    }, [candidates, engineSelections, selfId, isEngineInstallable, finishWelcome, errors])
+        setPathPromptTargets(targets)
+    }, [candidates, engineSelections, isEngineInstallable, finishWelcome])
+
+    /** One PATH answer covers every engine the wizard installs. */
+    const handlePathAnswer = useCallback(
+        (addToPath: boolean) => {
+            const targets = pathPromptTargets
+            setPathPromptTargets([])
+            setInstalling(true)
+            startedTargets.current.clear()
+            failedTargets.current.clear()
+            knownErrors.current = new Map(errors.map(item => [item.id, item.timestamp]))
+            setInstallTargets(targets)
+            targets.forEach(t => window.pairApi.engines.install(t, selfId, addToPath))
+        },
+        [errors, pathPromptTargets, selfId]
+    )
 
     useEffect(() => {
         if (!installing || installTargets.length === 0) return
@@ -236,6 +249,12 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
                             onInstall={handleInstall}
                         />
                     </Stack>
+                    <EnginePathConsentModal
+                        open={pathPromptTargets.length > 0}
+                        engines={pathPromptTargets}
+                        onAnswer={handlePathAnswer}
+                        onCancel={() => setPathPromptTargets([])}
+                    />
                 </ModalContent>
             </ModalDialog>
         </ModalRoot>
