@@ -21,6 +21,40 @@ import (
 	"time"
 )
 
+// realOllamaManifest is the bundled Ollama manifest pointed at the Ollama
+// installed on this machine. The manager runs isolated, and in its environment
+// the bundled %LOCALAPPDATA% detect path names an empty temp directory, so the
+// installed executable is found here, from this process's environment.
+func realOllamaManifest(t *testing.T) Manifest {
+	t.Helper()
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatalf("load bundled manifests: %v", err)
+	}
+	m, ok := reg.Get("ollama")
+	if !ok {
+		t.Fatal("no bundled ollama manifest")
+	}
+	platform, ok := m.Platforms[hostKey()]
+	if !ok {
+		t.Fatalf("bundled ollama manifest has no %s block", hostKey())
+	}
+	for _, candidate := range platform.Detect {
+		bin := expandPath(candidate)
+		if strings.Contains(bin, "{") {
+			continue // a template such as {install_dir}, which names PAIR's own install
+		}
+		if _, err := os.Stat(bin); err == nil {
+			platform.Detect = []string{bin}
+			platform.Runtime.Bin = bin
+			m.Platforms[hostKey()] = platform
+			return *m
+		}
+	}
+	t.Fatal("no installed Ollama at any bundled detect location")
+	return Manifest{}
+}
+
 func TestLivePoundFixesOllama(t *testing.T) {
 	if os.Getenv("NVPAIR_LIVE_OLLAMA") == "" {
 		t.Skip("set NVPAIR_LIVE_OLLAMA=1 (needs a real Ollama already serving on :11434)")
@@ -32,8 +66,7 @@ func TestLivePoundFixesOllama(t *testing.T) {
 	// #3 adoption: a fresh manager must report the already-running Ollama
 	// (manifest port 11434) as running, without us ever starting it.
 	func() {
-		cfg := t.TempDir()
-		frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+		frames, stdin, stop := startManagerWithManifest(t, realOllamaManifest(t))
 		defer stop()
 		send(t, stdin, 1, "engine:get-installed", nil)
 		r := string(waitResult(t, frames, "1", 10*time.Second))
@@ -49,8 +82,7 @@ func TestLivePoundFixesOllama(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := t.TempDir()
-	frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	frames, stdin, stop := startManagerWithManifest(t, realOllamaManifest(t))
 	defer stop()
 
 	// Bind default: the bundled manifest now declares runtime.bind 127.0.0.1,

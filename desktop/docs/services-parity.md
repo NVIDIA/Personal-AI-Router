@@ -175,6 +175,12 @@ genuinely foreign listener (with an actionable error). Personal AI Router treats
 desired state as authoritative and surfaces a stop error as guidance, not as a
 sign the OFF choice was discarded.
 
+Reclaim depends on identifying the executable behind a port. macOS uses `lsof`
+at `/usr/sbin/lsof`, Linux uses `lsof` or `ss` for the PID and `/proc` for the
+executable, and Windows queries the process directly. Without that
+identification the check fails closed: the engine is declined as externally
+managed rather than terminated on a guess.
+
 For ease of use, Personal AI Router issues starts in two additional cases and
 keeps no auto-start list of its own: every install sends `engine:install` with
 `start: true`, so a successful install (or managed update) starts the engine;

@@ -205,10 +205,14 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
 	}
 	st := &engineState{
-		manifest:   m,
-		plat:       plat,
-		logs:       newLogBuffer(),
-		port:       plat.Runtime.Port,
+		manifest: m,
+		plat:     plat,
+		logs:     newLogBuffer(),
+		port:     plat.Runtime.Port,
+		// Kept as configured, not resolved: manifest commands substitute it as
+		// {install_dir}, and an uninstall's rm -rf or rmdir /s /q must act on the
+		// path PAIR owns, never on a directory a symlink there points to.
+		// isManagedInstallPath resolves it when it compares.
 		installDir: filepath.Join(e.baseDir, engine),
 	}
 	e.engines[engine] = st

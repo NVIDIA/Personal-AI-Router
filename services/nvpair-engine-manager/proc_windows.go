@@ -97,10 +97,10 @@ type mibTCP6RowOwnerPID struct {
 // desktop app on a different port is never surfaced.
 func pidOnPort(port int) (pid int, image string, ok bool) {
 	if p, found := listenerPID(windows.AF_INET, port); found {
-		return p, imagePathForPID(p), true
+		return p, procImage(p), true
 	}
 	if p, found := listenerPID(windows.AF_INET6, port); found {
-		return p, imagePathForPID(p), true
+		return p, procImage(p), true
 	}
 	return 0, "", false
 }
@@ -153,9 +153,13 @@ func ntohsPort(dw uint32) int {
 	return int(((dw & 0xFF) << 8) | ((dw >> 8) & 0xFF))
 }
 
-// imagePathForPID resolves a PID's full executable path. Empty on any error
+// procImage resolves a PID's full executable path. Empty on any error
 // (access denied, exited) so the image check fails closed.
-func imagePathForPID(pid int) string {
+//
+// Named identically to the Linux and macOS implementations so the ownership
+// check reads the same on every platform and a test that exercises it needs no
+// build tag.
+func procImage(pid int) string {
 	if pid <= 0 {
 		return ""
 	}

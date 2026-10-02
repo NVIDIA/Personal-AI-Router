@@ -44,9 +44,9 @@ func gracefulSignal(cmd *exec.Cmd) error {
 }
 
 // pidOnPort returns the PID listening on the given TCP port and that
-// process's executable path. Best-effort on the debug-only Unix targets: it
-// shells out to lsof, falling back to ss. ok is false when neither resolves
-// an owner, in which case the caller fails closed (declines the stop).
+// process's executable path. The PID comes from lsof, falling back to ss on
+// Linux, and the path from procImage. ok is false when no owner resolves, and
+// the caller then declines the stop.
 func pidOnPort(port int) (pid int, image string, ok bool) {
 	if p, found := lsofPID(port); found {
 		return p, procImage(p), true
@@ -57,12 +57,79 @@ func pidOnPort(port int) (pid int, image string, ok bool) {
 	return 0, "", false
 }
 
-// lsofPID prints just the PID(s) of the TCP listener on the port (-t = terse).
-func lsofPID(port int) (int, bool) {
+// Absolute locations of lsof, tried in order before a PATH lookup.
+//
+// PATH is not ours to trust: this worker inherits whatever the desktop app was
+// launched with, and nothing between Electron, the broker and here sets one, so
+// a user-writable directory such as /opt/homebrew/bin can shadow a system tool.
+// What comes back decides which PID gets terminated.
+//
+// One list covers every Unix because a missing path is skipped: macOS ships
+// lsof in /usr/sbin and most Linux distributions in /usr/bin. The ss locations
+// are in portowner_linux.go.
+var lsofLocations = []string{"/usr/sbin/lsof", "/usr/bin/lsof"}
+
+// systemTool is the first usable location, or name for a PATH lookup.
+//
+// Executability is checked, not just existence: a directory or a non-executable
+// file at a candidate path would otherwise short-circuit the search and take the
+// later candidates out of play.
+//
+// The fallback exists because Linux distributions disagree on where these live,
+// not as a convenience. Reaching it means none of the known locations exist, in
+// which case a PATH lookup is the only remaining chance of resolving the owner
+// at all — and failing to resolve declines the stop rather than widening it. A
+// tool found on PATH can only nominate a PID there: the image that authorizes a
+// kill comes from /proc. macOS never reaches the fallback, because it always
+// ships /usr/sbin/lsof.
+func systemTool(name string, locations []string) string {
+	for _, path := range locations {
+		fi, err := os.Stat(path)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		return path
+	}
+	return name
+}
+
+// runTool executes a resolved tool and returns its stdout.
+//
+// A non-zero exit is tolerated when there is still output, because lsof reports
+// failure if it hit *any* error anywhere — a filesystem it could not stat, which
+// is routine with network or FUSE mounts — while printing correct records for
+// what was asked about. Treating that as total failure is not a harmless
+// conservatism here: it drops the owner lookup through to ss on Linux, and on
+// macOS, which has no other mechanism, it declines a stop that was legitimate.
+//
+// A failure to start the tool, or a deadline (the answer may be truncated
+// mid-record), yields nothing so the caller fails closed.
+func runTool(tool string, args ...string) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsof", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
-	if err != nil {
+
+	cmd := exec.CommandContext(ctx, tool, args...)
+	// A UTF-8 locale makes lsof print a non-ASCII path as-is. Without one, the
+	// usual case for an app launched from Finder, it escapes those bytes and the
+	// path can never match the managed binary.
+	cmd.Env = append(os.Environ(), "LC_ALL=en_US.UTF-8")
+	out, err := cmd.Output()
+	var exited *exec.ExitError
+	if err != nil && !errors.As(err, &exited) {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return out
+}
+
+// lsofPID prints just the PID(s) of the TCP listener on the port (-t = terse).
+func lsofPID(port int) (int, bool) {
+	// -w suppresses the warnings that make lsof exit non-zero; see runTool.
+	out := runTool(systemTool("lsof", lsofLocations),
+		"-w", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN")
+	if len(out) == 0 {
 		return 0, false
 	}
 	for _, field := range strings.Fields(string(out)) {
@@ -73,47 +140,17 @@ func lsofPID(port int) (int, bool) {
 	return 0, false
 }
 
-// ssPID parses the owning PID out of ss's users:(("proc",pid=1234,fd=7)) tail.
-func ssPID(port int) (int, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "ss", "-ltnp", "sport", "=", ":"+strconv.Itoa(port)).Output()
-	if err != nil {
-		return 0, false
-	}
-	s := string(out)
-	idx := strings.Index(s, "pid=")
-	if idx < 0 {
-		return 0, false
-	}
-	rest := s[idx+len("pid="):]
-	end := strings.IndexAny(rest, ",)")
-	if end < 0 {
-		return 0, false
-	}
-	if p, err := strconv.Atoi(rest[:end]); err == nil && p > 0 {
-		return p, true
-	}
-	return 0, false
-}
-
-// procImage resolves a PID's executable path via /proc (Linux). macOS has no
-// /proc, so it returns "" there and the image check is skipped — reclamation
-// on macOS relies on the caller declining when the image can't be confirmed.
-func procImage(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	if path, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
-		return path
-	}
-	return ""
-}
-
-// signalPID sends SIGTERM (or SIGKILL when force) to the process group when
-// possible. It is the PID-addressed kill used only by the orphan reclaim (a
-// process we lost the *exec.Cmd handle to), distinct from the normal
-// graceful-only stop() path; force reaches forked helpers (model runners, etc.).
+// signalPID sends SIGTERM (or SIGKILL when force) to the orphan being reclaimed.
+// It is the PID-addressed kill used only by the orphan reclaim (a process we lost
+// the *exec.Cmd handle to), distinct from the normal graceful-only stop() path.
+//
+// The group is signalled only when the target leads it. Every engine PAIR
+// starts leads its own group (configureSysProcAttr sets Setpgid), so a forced
+// stop reaches the helpers it forks, such as model runners. A target that does
+// not lead its group was started by something else, and signalling that group
+// would reach processes the ownership check never examined. Leadership shows
+// where a group starts, not who started it: a leader started elsewhere, such as
+// the first command of a shell pipeline, still has its whole group signalled.
 func signalPID(pid int, force bool) error {
 	if pid <= 0 {
 		return nil
@@ -122,7 +159,7 @@ func signalPID(pid int, force bool) error {
 	if force {
 		sig = syscall.SIGKILL
 	}
-	if pgid, err := syscall.Getpgid(pid); err == nil {
+	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
 		return syscall.Kill(-pgid, sig)
 	}
 	return syscall.Kill(pid, sig)

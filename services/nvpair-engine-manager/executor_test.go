@@ -929,6 +929,42 @@ func TestUninstallNoOpWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestUninstallRemovesALinkedInstallDirNotItsTarget checks that {install_dir}
+// reaches the uninstall command as configured. When the install directory is a
+// symlink, rm -rf removes the link and leaves the directory it points to.
+func TestUninstallRemovesALinkedInstallDirNotItsTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses rm -rf on a directory symlink")
+	}
+	base := t.TempDir()
+	target := t.TempDir()
+	keep := filepath.Join(target, "keep")
+	if err := os.WriteFile(keep, []byte("not PAIR's"), 0o644); err != nil {
+		t.Fatalf("write file in link target: %v", err)
+	}
+	link := filepath.Join(base, "fake")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	m := testEngineManifest(writeFakeBinary(t, link, "engine"))
+	platform := m.Platforms[hostKey()]
+	platform.Uninstall = &Uninstall{Run: []string{"rm", "-rf", "{install_dir}"}}
+	m.Platforms[hostKey()] = platform
+	reg := NewRegistry()
+	reg.engines[m.Engine] = m
+	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, base)
+
+	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Errorf("install-directory link %q survived uninstall: %v", link, err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("uninstall removed the link's target: %v", err)
+	}
+}
+
 // TestCommandModeLifecycle exercises the "command" runtime mode: start
 // commands run, readiness is determined by a probe (here a stand-in
 // HTTP server for the daemon's API), and the stop command runs. Marker

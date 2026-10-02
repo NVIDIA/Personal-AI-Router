@@ -19,9 +19,9 @@ import (
 )
 
 // spawnFakeListener starts a fake-engine copied to binPath, bound to
-// 127.0.0.1:port, and skips the test when this host can't resolve the PID/
-// image behind a listening port (no lsof/ss, or a /proc-less OS) — the
-// reclaim/decline behavior can't be exercised without that resolution.
+// 127.0.0.1:port. The reclaim and decline tests that use it need the PID and
+// image behind the port. On Linux, macOS and Windows a failure to resolve them
+// is the regression those tests cover, so it fails; elsewhere it skips.
 func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(binPath)
@@ -33,7 +33,13 @@ func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	waitPortServing(t, port)
 	if _, image, ok := pidOnPort(port); !ok || image == "" {
-		t.Skip("host cannot resolve the PID/image owning a port; skipping PID-precise stop test")
+		switch runtime.GOOS {
+		case "linux", "darwin", "windows":
+			t.Fatalf("cannot resolve the PID and image owning port %d (pid found: %v, image %q); "+
+				"on Linux install lsof or iproute2", port, ok, image)
+		default:
+			t.Skipf("the port-owner lookup is not implemented on %s", runtime.GOOS)
+		}
 	}
 	return cmd
 }
@@ -146,6 +152,9 @@ func TestStopDeclinesForeignListenerWithActionableError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), filepath.Base(foreignBin)) {
 		t.Fatalf("decline error must name the offending image %q: %v", foreignBin, err)
+	}
+	if strings.Contains(err.Error(), filepath.Dir(foreignBin)) {
+		t.Fatalf("decline error reaches paired peers and must not carry the image's directory %q: %v", filepath.Dir(foreignBin), err)
 	}
 	if !portServing(port) {
 		t.Fatal("a genuinely foreign listener must be left running")
