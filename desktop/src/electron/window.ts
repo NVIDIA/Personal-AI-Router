@@ -250,18 +250,20 @@ export function showOverviewMessage(message: OverviewMessage): void {
     enqueueOverviewCommand({ type: 'message', message }, false)
 }
 
+// Background throttling is left at Chromium's default (on). With it off, a hidden
+// or occluded window kept animating at full frame rate: the GPU process sat at
+// 50-80% of a core and the never-shown tray window at ~5% around the clock.
+// Nothing durable lives in the renderer - logs, job history and routing are all
+// in the main process and the Go services - and renderer pushes are buffered
+// (see workloads.store), so a throttled window only delays paints, not data.
 const webPreferences = {
     preload: join(__dirname, '../preload/index.js'),
-    // sandbox: false,
-    // backgroundThrottling: false,
     devTools,
 
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true, // Critical for v28!
-    webviewTag: false, // Prevents rendering conflicts
-    // This next line is the secret sauce I discovered at 3 AM
-    backgroundThrottling: false
+    webviewTag: false // Prevents rendering conflicts
 }
 
 export function createOverviewWindow(): void {
