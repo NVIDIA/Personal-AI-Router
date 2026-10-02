@@ -131,6 +131,7 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Running:     st.running,
 		Healthy:     st.healthy,
 		Port:        st.port,
+		Slots:       st.slotsLocked(),
 	}
 }
 
@@ -180,6 +181,7 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 		st.healthy = false
 		st.adopted = false
 		st.proc = nil
+		st.clearSlotsLocked()
 		if !pathInstalled {
 			// A service-only adoption has no managed image. Never leave a stale
 			// path that orphan reclamation could terminate.

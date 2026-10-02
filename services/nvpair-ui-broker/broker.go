@@ -161,6 +161,7 @@ type Broker struct {
 	settingsRelayMu      sync.Mutex
 	settingsCancels      map[string]context.CancelFunc
 	activeSettings       map[string]activeSettingsOperation
+	engineSlots          engineSlotCache
 	codec                *Codec
 	cancel               context.CancelFunc
 	startedAt            time.Time

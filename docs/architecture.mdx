@@ -317,6 +317,14 @@ pending while it is queued or running, and it is attributed to the node it was
 placed on. Both engines count together, so Ollama load affects LM Studio ordering
 and vice versa.
 
+A job shows **In flight** (state `queued`) while it waits, either for a node or
+for a slot in the engine it was sent to, and **Running** once that engine has
+started it. On the node that received the request, PAIR counts the engine's
+slots and shows a job running as soon as it holds one. On any other node, a job
+shows running when that node's engine first produces output. Both states count
+as pending, so the difference is for display only. Refer to
+[Job States Are Estimates](known-issues.mdx#job-states-are-estimates).
+
 GPU pressure is deliberately coarse. The scheduler smooths the busiest GPU's
 utilization, maps it to 0–3 pressure units at 40%, 70%, and 85%, and uses lower
 thresholds on the way down to avoid rank thrash. Missing, invalid, or

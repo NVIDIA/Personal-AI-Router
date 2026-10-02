@@ -150,6 +150,12 @@ Personal AI Router consequences (all reflection, no security implementation):
 `nvpair-engine-manager` is authoritative for installed, running, healthy, and
 port state.
 
+While an engine runs, every `EngineStatus` payload (`engine:status`,
+`engine:get-installed`, `engine:state-changed`, and lifecycle results) also
+carries `slots`: how many requests the engine processes at once. Only the broker
+consumes it, relaying the counts to the engine's proxy. Personal AI Router does
+not read or display them.
+
 Personal AI Router supports local:
 
 - install and uninstall;

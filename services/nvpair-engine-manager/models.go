@@ -92,16 +92,18 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		if act, ok := mf.Actions["loaded_models"]; ok {
 			loadedSpec = act.Result
 		}
-		if listSpec == nil && loadedSpec == nil {
+		readsSlots := mf.Slots != nil && mf.Slots.Loaded != nil
+		if listSpec == nil && loadedSpec == nil && !readsSlots {
 			continue
 		}
 		wg.Add(1)
-		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
+		go func(i int, name string, listSpec, loadedSpec *ActionResult, readsSlots bool) {
 			defer wg.Done()
 			st, err := e.Status(name)
 			if err != nil || !st.Running {
 				return
 			}
+			gen := e.runGeneration(name)
 			if listSpec != nil {
 				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {
 					slog.Debug("engine:models list_models failed", "engine", name, "err", err)
@@ -112,20 +114,30 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 					slog.Debug("engine:models list_models returned an invalid inventory", "engine", name)
 				}
 			}
-			if loadedSpec != nil {
-				if raw, err := e.Action(ctx, name, "loaded_models", nil); err != nil {
-					slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
-				} else if models, ok := extractStringsResult(raw, loadedSpec); ok {
-					// A successful query — even an empty result — records the key
-					// so a consumer can tell "running, nothing loaded" apart from
-					// "unknown". An action or shape error leaves loadedOK[i] false.
-					loaded[i] = models
-					loadedOK[i] = true
-				} else {
-					slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
-				}
+			if loadedSpec == nil && !readsSlots {
+				return
 			}
-		}(i, name, listSpec, loadedSpec)
+			raw, err := e.Action(ctx, name, "loaded_models", nil)
+			if err != nil {
+				slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
+				return
+			}
+			if readsSlots {
+				e.recordLoadedSlots(name, gen, raw)
+			}
+			if loadedSpec == nil {
+				return
+			}
+			if models, ok := extractStringsResult(raw, loadedSpec); ok {
+				// A successful query — even an empty result — records the key
+				// so a consumer can tell "running, nothing loaded" apart from
+				// "unknown". An action or shape error leaves loadedOK[i] false.
+				loaded[i] = models
+				loadedOK[i] = true
+			} else {
+				slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
+			}
+		}(i, name, listSpec, loadedSpec, readsSlots)
 	}
 	wg.Wait()
 

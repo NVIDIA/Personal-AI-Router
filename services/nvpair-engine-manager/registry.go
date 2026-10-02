@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -55,6 +56,33 @@ type Manifest struct {
 	ManifestVersion int                 `json:"manifest_version"`
 	Platforms       map[string]Platform `json:"platforms"`
 	Actions         map[string]Action   `json:"actions,omitempty"`
+	Slots           *Slots              `json:"slots,omitempty"`
+}
+
+// Slots declares how many requests the engine processes at once for one
+// model. engine:status reports the count while the engine runs, and the broker
+// relays it to the engine's proxy. It describes capacity only and never
+// decides where a request is routed.
+type Slots struct {
+	// Default is the count for any model, and at least 1.
+	Default int `json:"default"`
+	// Env names the environment variable an NVPAIR-launched process reads its
+	// count from. A positive integer there replaces Default. Command-mode and
+	// adopted engines keep Default, because their environment is not visible.
+	Env string `json:"env,omitempty"`
+	// Loaded reads per-model counts from the loaded_models response.
+	Loaded *LoadedSlots `json:"loaded,omitempty"`
+}
+
+// LoadedSlots locates per-model counts in the loaded_models response. Each
+// element of Array is a model named by Key, whose Instances each carry an id
+// at InstanceID and a count at the field path Parallel.
+type LoadedSlots struct {
+	Array      string   `json:"array"`
+	Key        string   `json:"key"`
+	Instances  string   `json:"instances"`
+	InstanceID string   `json:"instance_id"`
+	Parallel   []string `json:"parallel"`
 }
 
 // Platform is the per-`<goos>/<goarch>` block. Variance lives here
@@ -592,7 +620,36 @@ func (m *Manifest) Validate() error {
 			}
 		}
 	}
+	if err := m.validateSlots(); err != nil {
+		return err
+	}
 	return m.validatePlaceholders()
+}
+
+func (m *Manifest) validateSlots() error {
+	s := m.Slots
+	if s == nil {
+		return nil
+	}
+	if s.Default < 1 {
+		return errors.New("slots.default must be at least 1")
+	}
+	if s.Env != "" && !validEnvironmentKey(s.Env) {
+		return fmt.Errorf("slots.env %q must be an environment variable name", s.Env)
+	}
+	l := s.Loaded
+	if l == nil {
+		return nil
+	}
+	if a, ok := m.Actions["loaded_models"]; !ok || a.HTTP == nil {
+		return errors.New("slots.loaded requires an http loaded_models action to read the counts from")
+	}
+	required := append([]string{l.Array, l.Key, l.Instances, l.InstanceID}, l.Parallel...)
+	blank := func(field string) bool { return strings.TrimSpace(field) == "" }
+	if len(l.Parallel) == 0 || slices.ContainsFunc(required, blank) {
+		return errors.New("slots.loaded requires array, key, instances, instance_id and a parallel path with no empty segments")
+	}
+	return nil
 }
 
 func (p *Platform) validate(key string) error {

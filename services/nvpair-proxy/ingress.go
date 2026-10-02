@@ -27,6 +27,9 @@ type localBackend struct {
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	Healthy bool   `json:"healthy"`
+	// Slots are the engine's slot counts. setLocalBackend hands them to the
+	// facade's slot tracker and stores the backend without them.
+	Slots *engineSlots `json:"slots,omitempty"`
 }
 
 // currentLocalBackend snapshots the configured local engine.
@@ -37,7 +40,9 @@ func (f *facade) currentLocalBackend() localBackend {
 }
 
 // setLocalBackend records (or, with a zero port / unhealthy flag, effectively
-// clears) the local engine this facade's ingress serves.
+// clears) the local engine this facade's ingress serves, and replaces the slot
+// tracker's counts with the normalized ones it carries. A backend without slots
+// clears them, as the broker sends none while the engine is down.
 //
 // A non-loopback host is rejected rather than stored. The ingress forwards a
 // pin-authenticated peer's request straight here without consulting discovery,
@@ -49,9 +54,14 @@ func (f *facade) setLocalBackend(b localBackend) error {
 	if b.Host != "" && !isLoopbackHost(b.Host) {
 		return fmt.Errorf("local backend host %q is not loopback", b.Host)
 	}
-	f.backendMu.Lock()
-	defer f.backendMu.Unlock()
-	f.backend = b
+	slots := f.profile.normalizeSlots(b.Slots)
+	b.Slots = nil
+	func() {
+		f.backendMu.Lock()
+		defer f.backendMu.Unlock()
+		f.backend = b
+	}()
+	f.slots.setSlots(slots)
 	return nil
 }
 

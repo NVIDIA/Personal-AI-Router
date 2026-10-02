@@ -145,11 +145,12 @@ type RequestEvent struct {
 }
 
 // Workload lifecycle method names (workload-manager spec 7). The proxy is
-// a workload *producer*: it emits one of these per forwarded inference
-// request so the broker can stamp the origin (originatedFrom) and forward it to the
-// workload-manager, which broadcasts it cluster-wide. We don't emit
-// workload:submitted (the proxy never queues — it forwards immediately) or
-// workloads:remove (retirement is a broker concern).
+// a workload *producer*: it emits these for each admitted inference request
+// so the broker can stamp the origin (originatedFrom) and forward them to the
+// workload-manager, which broadcasts them cluster-wide. workload:submitted
+// carries every queued state, workload:started the move to running, and the
+// other two the end. We don't emit workloads:remove (retirement is a broker
+// concern).
 const (
 	workloadSubmittedMethod = "workload:submitted"
 	workloadStartedMethod   = "workload:started"
@@ -805,11 +806,13 @@ func (p *Proxy) emitWorkload(method string, w Workload) {
 // rewrite) and its resolved URL. peerUUID is set for a remote cluster peer:
 // the request is dialed over cluster mTLS to the peer's promoted proxy (https),
 // pinned to that peer's exact server cert. Empty peerUUID means a plain-HTTP
-// dial — the local backend (self) or an explicit manual node.
+// dial — the local backend (self) or an explicit manual node. local is set
+// only for the local backend, whose requests the facade's slot tracker counts.
 type candidate struct {
 	id       string
 	url      *url.URL
 	peerUUID string
+	local    bool
 }
 
 // candidateTransport returns the reverse-proxy / model-list transport for a
@@ -1281,7 +1284,8 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// slot, so a card that waited for the upstream response would leave every
 	// queued job invisible until the node dequeued it, one at a time (a prior
 	// regression). "queued" is what makes that visible without claiming the
-	// engine is generating, which only becomes true at the commit point below.
+	// engine has started the job. That becomes true when a local attempt holds
+	// one of the engine's slots, or at the commit point below.
 	//
 	// scheduledOn is left empty here: nothing has been dispatched yet, and the
 	// scheduler counts pending work by scheduledOn, so naming a node we have
@@ -1386,8 +1390,8 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			Error:    reportErr,
 		})
 
-		// Terminal workload transition pairs with the workload:started emitted
-		// at forward time above. Cancellation, an upstream/transport error, a
+		// Terminal workload transition, ending the record admission opened
+		// with workload:submitted. Cancellation, an upstream/transport error, a
 		// failed client write (dead/half-open client), or any non-2xx status is
 		// a failure; a clean 2xx is a completion. The Workload carries the same
 		// id so the broker (and peers) can collapse the start/finish pair.
@@ -1544,7 +1548,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		lastPermitted := dispatches >= maxDispatches ||
 			(retryRounds && !time.Now().Before(deadline))
 		last := lastPermitted
-		job.repoint(cand.id)
+		attempt := job.dispatch(cand.id)
 		// The claim follows the node we are about to try, not the one
 		// reserveCandidate happened to pick for the round — an attempt can hold
 		// a node for the whole first-content budget, and for that time it is
@@ -1610,6 +1614,9 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		retry := false
 		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK, idle: idleClientWriteTimeout}
+		// ticket is this attempt's place among the local engine's slots, set
+		// below for a tracked request to this node's own engine.
+		var ticket *slotTicket
 
 		proxy := &httputil.ReverseProxy{
 			Director: func(req *http.Request) {
@@ -1722,11 +1729,14 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					// know the response had committed (and on which capture) to
 					// classify it.
 					committedSC = sc
-					// queued -> running: the engine is producing content, so
-					// this is the first moment "running" is true. It also fixes
-					// the placement on the node that actually served, which may
+					// The engine is producing content, so the job is running
+					// here, if a slot has not already said so. It also fixes the
+					// placement on the node that actually served, which may
 					// differ from the last node the queued updates named.
 					job.start(cand.id)
+					// Content is also proof the request holds a slot, whatever
+					// the count says.
+					ticket.observeOutput()
 				}
 				return nil
 			},
@@ -1777,7 +1787,16 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
+		// The ticket covers the request from just before it is sent until its
+		// response has been copied. The deferred release covers a copy error,
+		// which aborts this handler by panic.
+		if cand.local && job != nil {
+			ticket = f.acquireSlot(model)
+			defer ticket.release()
+			markRunningOnSlot(attemptCtx, ticket, job, attempt, cand.id)
+		}
 		proxy.ServeHTTP(sc, attemptReq)
+		ticket.release()
 		cancelAttempt()
 		if claim.abandoned() {
 			// Name the real reason rather than the bare "context canceled" the
@@ -1902,6 +1921,7 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			return
 		}
 		peerUUID := ""
+		local := false
 		switch {
 		case isSelfTarget(u, selfPort) || isAnyAliasSelfTarget(u, aliasBoundAddresses):
 			// Our own advertised endpoint (ol now points at this proxy). Serve
@@ -1914,6 +1934,7 @@ func (f *facade) resolveCandidates(model string) []candidate {
 				return
 			}
 			u = lb
+			local = true
 		case p.mesh.HasPin(n.ClusterUUID):
 			// A pinned cluster peer: reach it only over mTLS to its promoted
 			// proxy (the ol port now advertises the proxy, not the engine).
@@ -1951,6 +1972,7 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			id:       n.ID,
 			url:      u,
 			peerUUID: peerUUID,
+			local:    local,
 		})
 	}
 
@@ -2719,7 +2741,7 @@ func (p *Proxy) handleMessage(msg *Message) {
 		}
 		var b localBackend
 		if err := json.Unmarshal(msg.Params, &b); err != nil {
-			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"engine\",\"host\",\"port\",\"healthy\"}")
+			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"engine\",\"host\",\"port\",\"healthy\",\"slots\"}")
 			return
 		}
 		// The address decides which facade this applies to, so a payload naming

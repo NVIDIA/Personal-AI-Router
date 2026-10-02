@@ -51,6 +51,34 @@ Improving this is on the roadmap, and knowing which signals matter on your
 hardware would help. Refer to
 [Roadmap](../README.md#roadmap).
 
+## Job States Are Estimates
+
+A job shows **In flight** while it waits for a node or for a slot in its engine,
+and **Running** once the engine has started it. Engines do not report their own
+queues, so PAIR estimates when that happens, and the estimate can be early or
+late. Only the display is affected. Routing and retries never read it, and the
+node a job ran on and how it ended are always exact.
+
+- **Jobs served by another node** show Running only once that node's engine
+  produces output. A job that does not stream stays In flight until it
+  completes.
+- **Requests sent straight to an engine**, rather than through PAIR, are not
+  counted, so a job behind them can show Running while it still waits.
+- **Two jobs sent at almost the same moment** can show the wrong one running
+  until one of them produces output.
+- **Loading a model counts as running.** So does an Ollama that is waiting to
+  swap models, or running fewer jobs at once than configured because memory is
+  short.
+- **Ollama is assumed to run one job per model** unless PAIR started it with
+  `OLLAMA_NUM_PARALLEL` set and has not restarted since. If it runs more, the
+  extra jobs show In flight until they produce output.
+- **LM Studio's counts take up to about ten seconds to arrive.** Until then, a
+  model that has just loaded is assumed to run one job at a time. A lower count
+  never moves a running job back.
+- **An attempt PAIR gave up on** can keep running inside the engine without
+  being counted.
+- **Two Ollama tags of the same model** are counted separately.
+
 ## PAIR Does Not Detect a Stuck Service Automatically
 
 PAIR restarts a background service that exits, but nothing detects one that is

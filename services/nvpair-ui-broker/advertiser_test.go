@@ -6,9 +6,13 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
+	"nvpair-shared/engines"
 	"nvpair-ui-broker/relay"
 )
 
@@ -25,24 +29,179 @@ func TestLocalEnginePortFallback(t *testing.T) {
 	}
 }
 
-func TestRunningEnginePort(t *testing.T) {
+func TestRunningEngine(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		raw  string
-		port int
-		ok   bool
+		name  string
+		raw   string
+		port  int
+		slots *engineSlots
+		ok    bool
 	}{
 		{name: "running", raw: `{"running":true,"port":1235}`, port: 1235, ok: true},
-		{name: "stopped is authoritative", raw: `{"running":false,"port":1235}`},
+		{
+			name:  "running with slots",
+			raw:   `{"running":true,"port":1235,"slots":{"default":2,"models":{"qwen/qwen3-8b":4}}}`,
+			port:  1235,
+			slots: &engineSlots{Default: 2, Models: map[string]int{"qwen/qwen3-8b": 4}},
+			ok:    true,
+		},
+		{name: "malformed slots cost only the slots", raw: `{"running":true,"port":1235,"slots":{"default":"2"}}`, port: 1235, ok: true},
+		{name: "null slots", raw: `{"running":true,"port":1235,"slots":null}`, port: 1235, ok: true},
+		{name: "stopped is authoritative", raw: `{"running":false,"port":1235,"slots":{"default":2}}`},
 		{name: "running without a port", raw: `{"running":true,"port":0}`},
 		{name: "malformed response", raw: `{`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			port, ok := runningEnginePort([]byte(tc.raw))
-			if port != tc.port || ok != tc.ok {
-				t.Fatalf("runningEnginePort = (%d, %v), want (%d, %v)", port, ok, tc.port, tc.ok)
+			port, slots, ok := runningEngine([]byte(tc.raw))
+			if port != tc.port || ok != tc.ok || !reflect.DeepEqual(slots, tc.slots) {
+				t.Fatalf("runningEngine = (%d, %+v, %v), want (%d, %+v, %v)", port, slots, ok, tc.port, tc.slots, tc.ok)
 			}
 		})
+	}
+}
+
+// The advertise loop's engine:status read is the only writer of the slot cache
+// that setProxyLocalBackend relays.
+func TestLocalEnginePortUpdatesCachedSlots(t *testing.T) {
+	cached := &engineSlots{Default: 2}
+	test := func(name string, reply func(*Codec, *Message) error, wantPort int, wantProbe bool, want *engineSlots) {
+		t.Run(name, func(t *testing.T) {
+			worker, manager := newTestRPCWorkerPipe(t)
+			b := &Broker{}
+			b.setEngineMgr(worker)
+			b.engineSlots.set("ollama", cached)
+			replied := make(chan error, 1)
+			go func() {
+				msg, err := manager.Read()
+				if err != nil {
+					replied <- err
+					return
+				}
+				replied <- reply(manager, msg)
+			}()
+
+			port, probe := b.localEnginePort("ollama", defaultOllamaPort)
+			if err := <-replied; err != nil {
+				t.Fatalf("engine-manager reply: %v", err)
+			}
+			if port != wantPort || probe != wantProbe {
+				t.Fatalf("localEnginePort = (%d, %v), want (%d, %v)", port, probe, wantPort, wantProbe)
+			}
+			if got := b.engineSlots.get("ollama"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("cached slots = %+v, want %+v", got, want)
+			}
+		})
+	}
+	respond := func(result string) func(*Codec, *Message) error {
+		return func(c *Codec, msg *Message) error { return c.Respond(msg.ID, json.RawMessage(result)) }
+	}
+	test("a running engine's slots replace the cached ones",
+		respond(`{"running":true,"port":11435,"slots":{"default":3}}`), 11435, true, &engineSlots{Default: 3})
+	test("a running engine without slots clears them",
+		respond(`{"running":true,"port":11435}`), 11435, true, nil)
+	test("a stopped engine clears them",
+		respond(`{"running":false,"port":11435}`), 0, false, nil)
+	test("an RPC failure keeps them",
+		func(c *Codec, msg *Message) error { return c.RespondError(msg.ID, -32000, "engine-manager busy") },
+		defaultOllamaPort, true, cached)
+}
+
+// fakeLocalBackendProxy returns a ready proxy for engine and a channel that
+// receives every node/set-local-backend payload sent to it.
+func fakeLocalBackendProxy(t *testing.T, engine string, port int) (*proxyProcess, <-chan proxyLocalBackend) {
+	t.Helper()
+	proxyClient, proxyServer := net.Pipe()
+	t.Cleanup(func() {
+		_ = proxyClient.Close()
+		_ = proxyServer.Close()
+	})
+	proxy := &proxyProcess{
+		peer:        NewPeer(NewCodec(proxyClient)),
+		facadeState: readyFacade(engine, port),
+	}
+	go proxy.peer.Serve(nil, nil)
+	payloads := make(chan proxyLocalBackend, 4)
+	go func() {
+		codec := NewCodec(proxyServer)
+		for {
+			msg, err := codec.Read()
+			if err != nil {
+				return
+			}
+			var got proxyLocalBackend
+			if msg.Method == engines.AddressMethod(engine, "node/set-local-backend") && json.Unmarshal(msg.Params, &got) == nil {
+				payloads <- got
+			}
+			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		}
+	}()
+	return proxy, payloads
+}
+
+func receiveLocalBackend(t *testing.T, payloads <-chan proxyLocalBackend) proxyLocalBackend {
+	t.Helper()
+	select {
+	case got := <-payloads:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy received no node/set-local-backend")
+		return proxyLocalBackend{}
+	}
+}
+
+// Every node/set-local-backend goes through setProxyLocalBackend, so this is
+// what each of its callers sends.
+func TestSetProxyLocalBackendRelaysCachedSlots(t *testing.T) {
+	slots := &engineSlots{Default: 2, Models: map[string]int{"qwen/qwen3-8b": 4}}
+	test := func(name string, cached *engineSlots, healthy bool, want *engineSlots) {
+		t.Run(name, func(t *testing.T) {
+			proxy, payloads := fakeLocalBackendProxy(t, "lmstudio", defaultLMStudioPort)
+			b := &Broker{}
+			b.engineSlots.set("lmstudio", cached)
+			b.setProxyLocalBackend(proxy, "lmstudio", 1235, healthy)
+			got := receiveLocalBackend(t, payloads)
+			if got.Port != 1235 || got.Healthy != healthy || !reflect.DeepEqual(got.Slots, want) {
+				t.Fatalf("node/set-local-backend = %+v with slots %+v, want port 1235, healthy %v, slots %+v",
+					got, got.Slots, healthy, want)
+			}
+		})
+	}
+	test("a healthy backend carries the cached slots", slots, true, slots)
+	test("an unhealthy backend carries none", slots, false, nil)
+	test("a healthy backend with nothing cached carries none", nil, true, nil)
+}
+
+// TestReconcileAdvertiseRelaysEngineSlots drives the advertise loop end to end:
+// engine-manager reports slots, the engine answers its health probe, and the
+// proxy's local backend arrives carrying those slots.
+func TestReconcileAdvertiseRelaysEngineSlots(t *testing.T) {
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(engine.Close)
+	enginePort := engine.Listener.Addr().(*net.TCPAddr).Port
+
+	worker, manager := newTestRPCWorkerPipe(t)
+	go func() {
+		msg, err := manager.Read()
+		if err != nil {
+			return
+		}
+		_ = manager.Respond(msg.ID, map[string]any{
+			"running": true,
+			"port":    enginePort,
+			"slots":   map[string]any{"default": 3},
+		})
+	}()
+	proxy, payloads := fakeLocalBackendProxy(t, ollamaProxyProfile.Name, defaultOllamaPort)
+	b := &Broker{regCache: relay.NewRegistrationCache()}
+	b.setEngineMgr(worker)
+	b.setProxy(proxy)
+
+	b.reconcileAdvertise(&http.Client{Timeout: 2 * time.Second})
+	got := receiveLocalBackend(t, payloads)
+	if !got.Healthy || got.Port != enginePort || !reflect.DeepEqual(got.Slots, &engineSlots{Default: 3}) {
+		t.Fatalf("node/set-local-backend = %+v with slots %+v, want healthy port %d with 3 slots", got, got.Slots, enginePort)
 	}
 }
 

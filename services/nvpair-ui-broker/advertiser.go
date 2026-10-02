@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"nvpair-shared/httpcon"
@@ -192,32 +193,79 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 // the proxy's cluster mTLS ingress forwards to, and the proxy's own self
 // candidate on the local routing path.
 type proxyLocalBackend struct {
-	Engine  string `json:"engine"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	Healthy bool   `json:"healthy"`
+	Engine  string       `json:"engine"`
+	Host    string       `json:"host"`
+	Port    int          `json:"port"`
+	Healthy bool         `json:"healthy"`
+	Slots   *engineSlots `json:"slots,omitempty"`
+}
+
+// engineSlots is how many requests a local engine processes at once for one
+// model, exactly as engine-manager reports it on engine:status.
+type engineSlots struct {
+	Default int            `json:"default"`
+	Models  map[string]int `json:"models,omitempty"`
+}
+
+// engineSlotCache holds the slots engine-manager last reported for each
+// running local engine. Its lock is a leaf, so it is safe to take under
+// engineConfigMu, and a stored value is never mutated, so get may share it.
+type engineSlotCache struct {
+	mu    sync.Mutex
+	slots map[string]*engineSlots
+}
+
+// set records an engine's slots, or forgets them when slots is nil.
+func (c *engineSlotCache) set(engine string, slots *engineSlots) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if slots == nil {
+		delete(c.slots, engine)
+		return
+	}
+	if c.slots == nil {
+		c.slots = make(map[string]*engineSlots)
+	}
+	c.slots[engine] = slots
+}
+
+func (c *engineSlotCache) get(engine string) *engineSlots {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.slots[engine]
 }
 
 // setProxyLocalBackend hands the proxy its local (loopback) engine endpoint, or
 // clears it (healthy=false) when the engine is down / unresolved. Best-effort
 // and idempotent — re-sent on every reconcile so a freshly (re)spawned proxy
 // re-learns its backend within one poll interval. A nil proxy is a no-op.
+//
+// A healthy backend carries the engine's cached slots, so every caller relays
+// them without having to read engine:status itself.
 func (b *Broker) setProxyLocalBackend(p *proxyProcess, engine string, port int, healthy bool) {
 	if p == nil {
 		return
 	}
-	b.callProxyManual(p, engine, "node/set-local-backend", proxyLocalBackend{
+	backend := proxyLocalBackend{
 		Engine:  engine,
 		Host:    "127.0.0.1",
 		Port:    port,
 		Healthy: healthy,
-	}, "local-backend")
+	}
+	if healthy {
+		backend.Slots = b.engineSlots.get(engine)
+	}
+	b.callProxyManual(p, engine, "node/set-local-backend", backend, "local-backend")
 }
 
 // localEnginePort asks engine-manager for the port the named engine is actually
 // serving on. The bool says whether there is a port worth probing. A valid
 // running:false response is authoritative and returns false; only an unavailable
 // manager/RPC retains the legacy stock-port fallback.
+//
+// The same result updates the engine's cached slots: a running engine's replace
+// them, a stopped engine clears them, and an unavailable manager leaves them
+// alone, as it leaves the port to the fallback.
 func (b *Broker) localEnginePort(engine string, fallback int) (int, bool) {
 	em := b.getEngineMgr()
 	if em == nil {
@@ -230,18 +278,30 @@ func (b *Broker) localEnginePort(engine string, fallback int) (int, bool) {
 	if err != nil || rpcErr != nil {
 		return fallback, true
 	}
-	return runningEnginePort(result)
+	port, slots, ok := runningEngine(result)
+	b.engineSlots.set(engine, slots)
+	return port, ok
 }
 
-func runningEnginePort(result json.RawMessage) (int, bool) {
+// runningEngine reads an engine:status result: the port and slots of a running
+// engine, or false and no slots when it is stopped or the result is malformed.
+//
+// Slots decode on their own, so a malformed count costs only the slots. It
+// cannot make a running engine read as stopped and be withdrawn from discovery.
+func runningEngine(result json.RawMessage) (int, *engineSlots, bool) {
 	var st struct {
-		Running bool `json:"running"`
-		Port    int  `json:"port"`
+		Running bool            `json:"running"`
+		Port    int             `json:"port"`
+		Slots   json.RawMessage `json:"slots"`
 	}
 	if json.Unmarshal(result, &st) != nil || !st.Running || st.Port <= 0 {
-		return 0, false
+		return 0, nil, false
 	}
-	return st.Port, true
+	var slots *engineSlots
+	if len(st.Slots) > 0 && json.Unmarshal(st.Slots, &slots) != nil {
+		slots = nil
+	}
+	return st.Port, slots, true
 }
 
 // engineProxyListenPort returns an engine proxy's current listen port, or 0 if

@@ -288,6 +288,10 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		e.emitState(engine)
 		return werr
 	}
+	st.mu.Lock()
+	st.slotDefault = launchSlots(st.manifest.Slots, launch.Env)
+	st.slotModels = nil
+	st.mu.Unlock()
 	return nil
 }
 
@@ -389,6 +393,7 @@ func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
 			st.proc = nil
 			st.running = false
 			st.healthy = false
+			st.clearSlotsLocked()
 			if st.healthStop != nil {
 				st.healthStop()
 				st.healthStop = nil
@@ -584,6 +589,7 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 	st.stopping = true
 	st.adopted = false
 	st.proc = nil
+	st.clearSlotsLocked()
 	st.mu.Unlock()
 	// A deliberately-stopped engine has no live unhealthy/crash condition.
 	e.reporter.clear(unhealthyID(engine))
