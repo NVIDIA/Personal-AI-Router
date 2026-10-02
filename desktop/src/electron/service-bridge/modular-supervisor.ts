@@ -52,7 +52,6 @@ import type { EngineType } from '@/shared/types/engines'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 
 const log = createStructuredLogger('service-bridge')
-const ENGINE_PREPARE_SHUTDOWN_METHOD = 'engine:prepare-shutdown'
 
 export class ModularStartupTimeoutError extends Error {
     constructor(timeoutMs: number) {
@@ -67,13 +66,6 @@ interface ReadinessWaiter {
     resolve: () => void
     reject: (error: Error) => void
     timeout: ReturnType<typeof setTimeout>
-}
-
-/** Ask engine-manager to stop runtime processes without changing saved intent. */
-export async function prepareLocalEnginesForShutdown(
-    broker: Pick<JsonRpcSubprocess, 'call'>
-): Promise<void> {
-    await broker.call(ENGINE_PREPARE_SHUTDOWN_METHOD, undefined, 30_000)
 }
 
 export function getCliBinDir(): string {
@@ -560,15 +552,12 @@ class ModularSupervisor {
         // where the time actually went.
         const teardownStartedAt = Date.now()
 
-        // Stop running engines first, while engine-manager is fully alive and not
-        // under a shutdown deadline, so its child engine processes (e.g. Ollama)
-        // are gone before the teardown loop below — never orphaned by a SIGKILL.
-        await this.stopLocalEnginesForShutdown()
-        log.info({
-            sublevel: 'lifecycle',
-            message: `Stopped local engines for shutdown in ${Date.now() - teardownStartedAt}ms`
-        })
-
+        // The engines are not stopped from here. The broker's own shutdown
+        // orders it: the proxy first, so no new inference arrives, then the
+        // engines, keeping their saved on/off state, then the workers. Stopping
+        // the engines ahead of that ran the same step early and in the opposite
+        // order — engines went down while the proxy was still routing requests
+        // to them.
         const processes = Array.from(this.processes.values()).reverse()
         this.processes.clear()
         this.localBridges.clear()
@@ -600,20 +589,6 @@ class ModularSupervisor {
             sublevel: 'lifecycle',
             message: `Stopped modular service processes in ${Date.now() - teardownStartedAt}ms`
         })
-    }
-
-    /** Stop engine processes before teardown without changing saved ON/OFF intent. */
-    private async stopLocalEnginesForShutdown(): Promise<void> {
-        const broker = this.processes.get('broker')
-        if (!broker) return
-        try {
-            await prepareLocalEnginesForShutdown(broker)
-        } catch (err) {
-            log.warn({
-                sublevel: 'engine-manager',
-                message: `Could not stop engines for shutdown: ${getErrorString(err)}`
-            })
-        }
     }
 
     hasProcess(name: ModularProcessName): boolean {

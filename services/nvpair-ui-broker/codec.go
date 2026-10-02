@@ -23,9 +23,15 @@ type (
 )
 
 var (
-	NewCodec = jsonrpc.NewCodec
-	NewPeer  = jsonrpc.NewPeer
+	NewCodec         = jsonrpc.NewCodec
+	NewCodecMaxFrame = jsonrpc.NewCodecMaxFrame
+	NewPeer          = jsonrpc.NewPeer
 )
+
+// workerFrameBytes is the inbound frame cap for a worker link. Single-sourced
+// with every other hop on the same path, because a reply only arrives if all of
+// them agree.
+const workerFrameBytes = jsonrpc.WorkerFrameBytes
 
 // errPeerClosed is the sentinel a worker handle's Call/RelayRequest returns
 // once the child's transport has gone away.

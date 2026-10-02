@@ -105,10 +105,18 @@ func Spawn(ctx context.Context, brokerPath string) (*Supervisor, error) {
 	return &Supervisor{cmd: cmd, stdin: stdin, Client: client, Stderr: stderr}, nil
 }
 
-// Shutdown asks the broker to stop cleanly: send the shutdown RPC, close
-// its stdin (a second, EOF-based stop signal), then wait up to
-// shutdownGrace before killing it. The broker tears its own workers down
-// in response, so this leaves no orphans.
+// Shutdown asks the broker to stop cleanly: send the shutdown RPC, close its
+// stdin (a second, EOF-based stop signal), then wait up to shutdownGrace before
+// killing it. The broker tears its own workers down in response, so this leaves
+// no orphans.
+//
+// The order of that teardown is the broker's, and this deliberately does not
+// get ahead of it. The broker stops the proxy first, so no new inference
+// arrives, then stops the engines through engine:prepare-shutdown — keeping
+// their saved on/off state — and only then joins the workers. Calling
+// engine:prepare-shutdown from here first ran the same engine stop early, in
+// the opposite order: engines went down while the proxy was still routing
+// requests to them.
 func (s *Supervisor) Shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	_, _ = s.Client.Call(ctx, "shutdown", nil)

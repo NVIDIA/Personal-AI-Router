@@ -27,10 +27,7 @@ import {
     modularBinaryFileName,
     modularShippedBinaryBaseNames
 } from './src/shared/constants/modular-binaries'
-import {
-    INFERENCE_DISPATCHER_RESOURCE_DIR,
-    inferenceDispatcherFileName
-} from './src/shared/constants/inference-dispatcher'
+import { inferenceDispatcherFileName } from './src/shared/constants/inference-dispatcher'
 import type { JsonValue } from './src/shared/types/json'
 import type { SupportedPlatform } from './src/shared/types/platform'
 import { macAfterAllArtifactBuild, macAfterPack } from './scripts/build/macos/hooks'
@@ -87,6 +84,11 @@ function assertCliBinPackagingInputs(): void {
         ...modularShippedBinaryBaseNames().map(baseName =>
             modularBinaryFileName(baseName, platform)
         ),
+        // The Inference Demo's HTTP client. Not a services component, but it
+        // ships here so the terminal interface can find it beside its own
+        // executable — see INFERENCE_DISPATCHER_BASE_NAME. Named explicitly so
+        // the set stays exact and a genuine stray is still rejected.
+        inferenceDispatcherFileName(platform),
         'manifest.json'
     ])
     const entries = readdirSync('cli-bin', { withFileTypes: true })
@@ -144,62 +146,6 @@ function assertCliBinPackagingInputs(): void {
     }
 }
 
-/**
- * The same guarantee `assertCliBinPackagingInputs` gives cli-bin, for the
- * `inference-dispatcher` client in `tools/`. Its own manifest records the real
- * target, because the file name alone cannot distinguish a linux build from a
- * macOS one or x64 from arm64.
- */
-function assertToolsPackagingInputs(): void {
-    const platform = packagingPlatform()
-    const expected = new Set([inferenceDispatcherFileName(platform), 'manifest.json'])
-
-    const entries = readdirSync(INFERENCE_DISPATCHER_RESOURCE_DIR, { withFileTypes: true })
-    const unexpected = entries
-        .filter(entry => !entry.isFile() || !expected.has(entry.name))
-        .map(entry => entry.name)
-        .sort()
-    const missing = [...expected].filter(
-        fileName => !entries.some(entry => entry.name === fileName)
-    )
-
-    if (unexpected.length > 0 || missing.length > 0) {
-        throw new Error(
-            [
-                `Refusing to package an invalid ${INFERENCE_DISPATCHER_RESOURCE_DIR} directory.`,
-                unexpected.length > 0 ? `Unexpected: ${unexpected.join(', ')}` : '',
-                missing.length > 0 ? `Missing: ${missing.join(', ')}` : '',
-                'Run npm run build:tools for the target platform.'
-            ]
-                .filter(Boolean)
-                .join('\n')
-        )
-    }
-
-    const manifest: JsonValue = JSON.parse(
-        readFileSync(`${INFERENCE_DISPATCHER_RESOURCE_DIR}/manifest.json`, 'utf8')
-    )
-    if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
-        throw new Error(`${INFERENCE_DISPATCHER_RESOURCE_DIR}/manifest.json is not a JSON object.`)
-    }
-    const manifestPlatform = manifest['platform']
-    const manifestArch = manifest['arch']
-    if (manifestPlatform !== platform) {
-        throw new Error(
-            `${INFERENCE_DISPATCHER_RESOURCE_DIR} was built for platform ` +
-                `"${String(manifestPlatform)}" but packaging targets "${platform}". ` +
-                'Run npm run build:tools for the target platform.'
-        )
-    }
-    if (selectedArchs.length !== 1 || selectedArchs[0] !== manifestArch) {
-        throw new Error(
-            `${INFERENCE_DISPATCHER_RESOURCE_DIR} was built for arch "${String(manifestArch)}" ` +
-                `but packaging targets ${selectedArchs.join(', ')}. Package exactly one ` +
-                'architecture (pass --x64 or --arm64).'
-        )
-    }
-}
-
 // Narrow the packaged architectures based on CLI flags / env. Without this,
 // declaring `arch: ['x64', 'arm64']` on a target builds both installers even
 // when the user passes only `--arm64`.
@@ -214,7 +160,6 @@ const selectedArchs: PkgArch[] =
           : ['x64', 'arm64']
 
 assertCliBinPackagingInputs()
-assertToolsPackagingInputs()
 
 // Pin the NSIS payload's 7z branch filter to BCJ.
 //
@@ -276,20 +221,16 @@ const config: Configuration = {
     /**
      * Ship the modular Go subprocesses outside the asar so the Electron main
      * process can spawn them from `process.resourcesPath/cli-bin`.
+     *
+     * `cli-bin` also carries the Inference Demo's `inference-dispatcher`, which
+     * is not a services binary. It shares the directory so `nvpair-tui` — which
+     * runs the same demo and resolves the dispatcher next to its own executable
+     * — finds it in a packaged app as well as in a services install.
      */
     extraResources: [
         {
             from: 'cli-bin',
             to: 'cli-bin'
-        },
-        {
-            // The `inference-dispatcher` HTTP client the Inference Demo spawns
-            // (built by scripts/build-inference-dispatcher.ts). It ships beside
-            // cli-bin rather than inside it because it is not a services binary:
-            // no JSON-RPC, absent from services/versions.json, never supervised
-            // by the broker.
-            from: INFERENCE_DISPATCHER_RESOURCE_DIR,
-            to: INFERENCE_DISPATCHER_RESOURCE_DIR
         },
         {
             // Repo-root wipe scripts (append-only inventory). Packaged builds call

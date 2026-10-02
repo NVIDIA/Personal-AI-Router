@@ -291,11 +291,9 @@ across all candidates when the request has no parsed model, the order is:
 3. **Remaining nodes by stable node ID**, so cold start and unlisted nodes are
    predictable rather than random.
 
-Manual selection is a proxy capability rather than a desktop feature. The desktop
-application never pins a node. It renders routing state and lets the scheduler
-decide. The only way to pin one today is the terminal interface's **Proxies** tab,
-which selects a node with `enter` and returns to automatic with `a`. Treat
-automatic routing as the normal case.
+Manual selection is a proxy capability that neither front end uses. The desktop
+application and the terminal interface both render routing state and let the
+scheduler decide, so automatic routing is the only case PAIR produces.
 
 <Note>
 A pin cannot override model eligibility. If the pinned node does not advertise

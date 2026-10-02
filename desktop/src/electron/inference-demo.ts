@@ -4,12 +4,10 @@
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { app, BrowserWindow } from 'electron'
+import { BrowserWindow } from 'electron'
+import { getCliBinDir } from '@/electron/service-bridge/modular-supervisor'
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
-import {
-    INFERENCE_DISPATCHER_RESOURCE_DIR,
-    inferenceDispatcherFileName
-} from '@/shared/constants/inference-dispatcher'
+import { inferenceDispatcherFileName } from '@/shared/constants/inference-dispatcher'
 import { currentPlatform } from '@/shared/utils/platform'
 import type { DispatcherBackend, DispatcherModel } from '@/shared/types/inference-dispatcher'
 import type { IpcPushChannelKey, IpcPushChannelMap } from '@/shared/types/ipc-channels'
@@ -64,26 +62,24 @@ let deadlineMs = 0
 let generation = 0
 
 /**
- * Packaged builds place `extraResources` next to `process.resourcesPath`; in dev
- * they sit at the desktop project root (`app.getAppPath()`). Mirrors
- * `getCliBinDir()` in the modular supervisor, but resolves the dispatcher's own
- * `tools/` directory: the dispatcher is not a services binary and deliberately
- * stays out of the cli-bin inventory.
+ * The dispatcher ships inside `cli-bin/`, beside the services binaries, so this
+ * resolves through the same helper the supervisor uses to find the broker.
+ *
+ * It is still not a services component — it is absent from `versions.json` and
+ * nothing supervises it — but sharing the directory is what lets `nvpair-tui`
+ * find it with one rule, "next to my own executable", in a services install and
+ * in a packaged app alike.
  */
 function binaryPath(): string {
-    const base = app.isPackaged ? process.resourcesPath : app.getAppPath()
-    return path.join(
-        base,
-        INFERENCE_DISPATCHER_RESOURCE_DIR,
-        inferenceDispatcherFileName(currentPlatform())
-    )
+    return path.join(getCliBinDir(), inferenceDispatcherFileName(currentPlatform()))
 }
 
 function assertBinaryExists(): string {
     const executable = binaryPath()
     if (!fs.existsSync(executable)) {
         throw new Error(
-            `Inference dispatcher binary not found at ${executable}. Run npm run build:tools.`
+            `Inference dispatcher binary not found at ${executable}. ` +
+                'Run npm run build:modular-binaries.'
         )
     }
     return executable
