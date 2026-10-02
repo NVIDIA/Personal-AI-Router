@@ -691,6 +691,16 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	waitPortServing(t, port)
 
+	// Reclaiming a managed orphan needs the listener's executable path.
+	// procImage resolves it through /proc, so on a platform without /proc the
+	// image comes back empty, isOurEngineImage declines, and Uninstall refuses
+	// by design; see the procImage doc comment in proc_unix.go. Check the
+	// precondition rather than the platform, so this test starts running again
+	// on its own if the image ever becomes resolvable there.
+	if _, image, ok := pidOnPort(port); ok && image == "" {
+		t.Skipf("listener image is unresolvable on %s, so reclaim declines by design", runtime.GOOS)
+	}
+
 	m := testEngineManifest(bin)
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
