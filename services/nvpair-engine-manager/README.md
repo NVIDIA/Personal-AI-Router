@@ -146,7 +146,7 @@ full authoritative snapshots to pinned peers.
 ```
 NotInstalled --engine:install--> (HTTPS download + verify-if-pinned + user-mode run) --> Stopped
 Stopped      --engine:start----> (adopt if already serving the port, else spawn) --> Running --health--> Running
-Running      --engine:stop-----> (stop signal, wait for exit; no timeout) --> Stopped
+Running      --engine:stop-----> (stop signal, bounded grace, force if needed) --> Stopped
 ```
 
 Detect uses the manifest's `detect` paths. Install is one-shot and
@@ -157,11 +157,12 @@ unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
-reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+reports the failed start. On Unix, stopping an owned process sends SIGTERM to
+its process group, waits the manifest's `stop.grace_s` (five seconds by
+default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
+startup cleanup uses the same policy. On Windows, the windowless engines we
+spawn cannot receive a graceful (non-`/F`) close, so stopping uses immediate
+`taskkill /T /F`.
 
 ### Adoption — start may attach to an engine it didn't launch
 

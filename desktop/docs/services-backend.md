@@ -185,12 +185,12 @@ port is declined with an actionable error, but the user's OFF intent is still
 persisted. Personal AI Router therefore treats the saved desired state as authoritative and
 surfaces a stop error as guidance, not as proof the OFF choice was lost.
 
-Stopping a managed engine sends one stop signal and then waits for the process
-to exit, with no timeout — there is no grace-then-force escalation. On Unix that
-signal is SIGTERM to the process group (graceful, never escalated to SIGKILL);
-on Windows it is `taskkill /T /F`, because the windowless engines NVPAIR spawns
-cannot receive a graceful (non-`/F`) close. A forced PID kill survives only in
-the orphan-reclaim path, for a process whose `exec.Cmd` handle was lost.
+Stopping a managed engine is bounded. On Unix, engine-manager sends SIGTERM to
+the owned process group, waits the manifest's `stop.grace_s` (five seconds by
+default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
+startup cleanup and orphan reclaim use the same stop policy. On Windows,
+windowless managed engines cannot receive a graceful (non-`/F`) close, so
+stopping uses immediate `taskkill /T /F`.
 
 Personal AI Router calls `engine:prepare-shutdown` before broker teardown so local processes
 stop without clearing their persisted desired state. The broker also
