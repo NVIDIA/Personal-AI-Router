@@ -72,7 +72,8 @@ the response is complete, so "queued inside the engine" and "generating right
 now" look identical from outside. The attempt cap therefore has to cover whole
 generation, and when it expires the proxy cannot tell whether it abandoned a
 stalled request or a working one — so retrying may discard real progress. That
-is a genuine limitation, not a safety margin (§5.6).
+is a genuine limitation, not a safety margin (§5.6). The job state a request
+reports estimates that difference (§5.9), but no retry decision reads it.
 
 ## 2. Scope
 
@@ -424,23 +425,34 @@ stack and answered as an internal error.
 
 ### 5.5 Workload lifecycle
 
-| Event | When | State | `scheduledOn` |
-| --- | --- | --- | --- |
-| `workload:submitted` | admitted | `queued` | empty |
-| `workload:submitted` | each dispatch | `queued` | the target |
-| `workload:submitted` | between attempts | `queued` | empty |
-| `workload:started` | commit | `running` | the node that served |
-| `workload:completed` / `workload:errored` | terminal | per §5.4 | unchanged |
+A job is `queued` while it waits, for a node or for a slot on the node it was
+sent to, and `running` once that node's engine has started it. Its events:
 
-`submitted` covers the whole pre-commit life; `started` means the engine is
-producing content. A retry therefore stays in `queued`, with `scheduledOn`
-naming where the current attempt is.
+- **Admitted:** `workload:submitted`, `queued`, with `scheduledOn` empty.
+- **Each dispatch:** `workload:submitted`, `queued`, with `scheduledOn` naming
+  the target. A job that was running is waiting again, so it returns to `queued`
+  with no `startedAt`. That includes a new attempt on the node it ran on.
+- **Started:** `workload:started`, `running`, with `startedAt` set and
+  `scheduledOn` naming the node. On this node's own engine, that is when the
+  attempt holds one of the engine's slots (§5.9), which can come before any
+  output. On any other target it is the commit. A commit on the node a job
+  already reads `running` on emits nothing, so the job keeps the `startedAt` its
+  slot gave it.
+- **Between attempts:** `workload:submitted`, `queued`, with `scheduledOn` empty.
+- **Terminal:** `workload:completed` or `workload:errored`, per §5.4, with
+  `scheduledOn` unchanged.
+
+A failover therefore moves a job from `running` back to `queued`, and
+`scheduledOn` always names where the current attempt is. The scheduler counts
+both states as pending on that node, so the nodes a job is pending on are the
+same whether or not it held a slot.
 
 Every event carries `seq`, the producer's event counter from 1. The proxy
 numbers and writes each of a request's events under one lock, so they leave the
 process in `seq` order even when the disconnect watcher reports the terminal.
 The broker's store applies a workload's events in that order and never replaces
-a terminal record, so a delayed event cannot undo a later one. The
+a terminal record, so a delayed event cannot undo a later one, and a job's
+return from `running` to `queued` is applied like any other event. The
 workload-manager's inter-node dedup is a permanent set, so a retry returning to
 a placement it already used — `queued` on A, cleared, `queued` on A again, which
 this loop produces routinely — would otherwise be indistinguishable from a
@@ -482,10 +494,12 @@ the pessimistic case for that reason.
 This is accepted rather than overlooked: those internal queues are invisible and
 un-retargetable, which is the problem the retry policy works around rather than
 a mechanism it can build on. Do not reach for engine environment bounds or
-occupancy probes to "fix" it — LM Studio exposes no such signal at all, and an
-adopted engine keeps its own environment regardless. An engine that did offer a
-real cancellation API would change this calculus, and the claim should be
-revisited per engine rather than assumed to hold forever.
+occupancy probes to "fix" retry or cancellation — LM Studio exposes no such
+signal at all, and an adopted engine keeps its own environment regardless. The
+slot tracker (§5.9) estimates occupancy for job state only, and nothing that
+retries or cancels reads it. An engine that did offer a real cancellation API
+would change this calculus, and the claim should be revisited per engine rather
+than assumed to hold forever.
 
 ### 5.8 Browser policy
 
@@ -499,6 +513,49 @@ Model inventories with an Origin require agreement from every responding engine:
 a denial yields 403, an invalid inventory yields 502 without a partial list. An
 invalid-inventory error retains CORS headers only when all responding engines
 approve. See README.md for the complete forwarding and intersection rules.
+
+### 5.9 Engine slots and job state
+
+Each facade keeps a slot tracker for this node's own engine. It decides only
+whether a job reads `queued` or `running`: nothing that routes, reserves,
+retries or times out a request consults it.
+
+- **Capacity** comes from the counts `node/set-local-backend` carries (§7): the
+  model's own count, else the default, else 1.
+- **Tickets.** An attempt of a tracked request (inference that names a model)
+  to the local engine takes a ticket just before the request is sent, and
+  releases it when the response has been copied or the attempt ends. Each
+  model's tickets queue in the order they were taken.
+- **Running.** A ticket runs once it is among the first of its model's queue
+  that the capacity allows, or once the engine produces output for it, since
+  output proves it holds a slot. The job reads `running` from that moment
+  (§5.5). A running ticket never goes back to waiting, so a lower count takes
+  effect only as tickets release.
+- **Attempts.** Each dispatch is numbered. A slot that reaches the job after the
+  request has moved to another attempt, or finished, changes nothing.
+
+The tracker estimates a queue it cannot see, and it can be wrong in these ways,
+each affecting only the state a job reads:
+
+- A request served by another node reads `running` from its commit.
+- Requests sent straight to the engine, not through this proxy, are not
+  counted.
+- Two requests that reach the engine at almost the same moment can swap which
+  one reads `running` until one produces output.
+- Loading a model counts as running. So does an Ollama waiting to swap models
+  under memory pressure, or running fewer requests at once than configured
+  because memory is short.
+- An Ollama whose parallel setting engine-manager cannot see, because it did not
+  launch that process, is assumed to run one request per model (MANIFEST.md in
+  `nvpair-engine-manager`). Extra jobs read `queued` until they stream output
+  or, for a non-streaming request, until they complete.
+- Counts reach the facade on the broker's five-second advertise poll. LM
+  Studio's per-model counts first wait for engine-manager's five-second
+  loaded-model poll, so a newly loaded LM Studio model uses capacity 1 for up to
+  about ten seconds, and a change in its count takes as long to apply.
+- An abandoned attempt (§5.7) can keep running inside the engine after its
+  ticket is released.
+- Two Ollama tags of the same weights count separately.
 
 ## 6. Reservations
 

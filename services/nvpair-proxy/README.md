@@ -138,6 +138,15 @@ relays from engine-manager. The facade keeps counts of at least 1, keyed by
 normalized model name, and a backend without slots clears them. They describe
 how many requests the engine processes at once and do not affect routing.
 
+**Job state.** Each inference request that names a model is reported as a
+workload: `queued` while it waits for a node, or for a slot on the node it was
+sent to, and `running` once that node's engine has started it. A request to
+this node's own engine runs when it holds one of the counted slots, or when the
+engine produces output for it. A request served by another node runs from its
+first byte. A failover returns the job to `queued` until its next node starts
+it. The slot counts decide only what a job reads; see
+[spec.md](spec.md) §5.5 and §5.9.
+
 **Persisted port.** A port chosen at runtime via `set-port` is saved to the
 per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on
 Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) and

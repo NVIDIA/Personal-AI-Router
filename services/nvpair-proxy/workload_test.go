@@ -46,11 +46,11 @@ func (r *recRW) has(s string) bool {
 // but never sends a byte until released, so a first-byte emission could not
 // have fired — yet the job must already be visible.
 //
-// The event is workload:submitted, carrying state "queued". "running" is
-// reserved for the commit point, when the engine is actually producing content:
-// a job waiting its turn inside the engine is not running, and the broker's
-// store rejects a backwards transition, so a job that claimed "running" at
-// dispatch time could never return to "queued" for a retry.
+// The event is workload:submitted, carrying state "queued". The upstream is a
+// manual node, which tells this proxy nothing about its slots, so "running"
+// waits for the commit point, when the engine is actually producing content: a
+// job waiting its turn inside the engine is not running. A request to this
+// node's own engine can run sooner, once it holds a slot (localslots_test.go).
 //
 // proxy/request-started also stays at the commit point, so it names the node
 // that actually served after any failover.

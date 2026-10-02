@@ -82,6 +82,7 @@ Tracks inference workloads cluster-wide as they are queued, executed, and retire
 
 `WorkloadState` (enum): `"queued" | "running" | "completed" | "failed" | "cancelled"`
 - Method → `state`: `workload:submitted` → `queued`, `workload:started` → `running`, `workload:completed` → `completed`, `workload:errored` → `failed` or `cancelled`.
+- `queued` covers every wait, for a node or for a slot in the engine of the node the workload was sent to. `running` means that engine has started it: it holds one of the engine's slots, or the engine has produced output for it. A failover sends `workload:submitted` after `workload:started`, returning the workload to `queued` on its next node, so `running` is not final. The proxy stamps every event with `seq`, and the Broker applies a workload's events in `seq` order, so that return is applied rather than rejected as a lower state.
 - `cancelled` is terminal and means the requester stopped waiting — a disconnected client, a dead client whose write deadline tripped, or an in-flight request cancelled by the producer's own shutdown. It rides `workload:errored` rather than having a method of its own, because state is not validated against the method that carried it and consumers read `state` from the payload. Keeping it distinct from `failed` is what lets a consumer's failed bucket mean "an outcome someone might act on" instead of also collecting every time a user pressed stop.
 
 Validation: check every inbound envelope before processing. A `Workload` must
@@ -156,8 +157,8 @@ Example `workloads:remove` (identical body inter-node and on `stdout`; `originat
 ### 7.1 Local Interface (UI Broker ↔ Workload Manager)
 - Transport: `stdin` / `stdout` (or a named pipe); JSON-RPC 2.0 notifications only (no request/response).
 - **Inbound** (`stdin`): local `workload:*` lifecycle notifications and `workloads:remove`, for broadcast.
-  - `workload:submitted` — queued/submitted on this node
-  - `workload:started` — began executing
+  - `workload:submitted` — queued: admitted on this node, or waiting for a node or an engine slot, including after a failover
+  - `workload:started` — running: holds an engine slot, or the engine has produced output for it
   - `workload:completed` — finished successfully
   - `workload:errored` — failed (may retry on another node)
 - **Outbound** (`stdout`): `workloads:upsert` after each validated remote `workload:*`; `workloads:remove` after each validated remote removal (see §7.0).

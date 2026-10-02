@@ -93,7 +93,7 @@ func TestJobEventsWriteInSeqOrder(t *testing.T) {
 func TestJobEventsLifecycle(t *testing.T) {
 	rec := &eventRecorder{}
 	j := newJobEvents(Workload{ID: "7", Model: "m", Engine: "ollama", State: "queued", CreatedAt: 100}, rec.emit)
-	j.repoint("nodeA")
+	j.dispatch("nodeA")
 	j.start("nodeA")
 	j.finish("completed", "")
 
@@ -152,21 +152,24 @@ func TestJobEventsOtherTerminalsRideErrored(t *testing.T) {
 }
 
 // TestJobEventsNothingAfterFinish: the terminal is emitted at most once, and a
-// late dispatch or commit after it emits nothing.
+// late dispatch, slot or commit after it emits nothing.
 func TestJobEventsNothingAfterFinish(t *testing.T) {
 	rec := &eventRecorder{}
 	j := newJobEvents(Workload{ID: "1", State: "queued"}, rec.emit)
+	attempt := j.dispatch("nodeA")
 	j.finish("cancelled", "client disconnected before completion")
 	j.finish("completed", "")
+	j.markRunning(attempt, "nodeA")
 	j.repoint("nodeB")
+	j.dispatch("nodeB")
 	j.start("nodeB")
 
 	got := rec.all()
-	if len(got) != 2 {
-		t.Fatalf("emitted %d events, want admission and one terminal: %+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("emitted %d events, want admission, one dispatch and one terminal: %+v", len(got), got)
 	}
-	if got[1].wl.State != "cancelled" {
-		t.Fatalf("terminal state = %q, want the first finish to win", got[1].wl.State)
+	if got[2].wl.State != "cancelled" {
+		t.Fatalf("terminal state = %q, want the first finish to win", got[2].wl.State)
 	}
 }
 
@@ -184,11 +187,127 @@ func TestJobEventsRepointToCurrentPlacement(t *testing.T) {
 	}
 }
 
+// TestJobEventsRepointFromRunning: a job that moves on from the node running it
+// is waiting again, so it reads queued with no StartedAt until its next node
+// starts it. That includes a new attempt on the same node.
+func TestJobEventsRepointFromRunning(t *testing.T) {
+	test := func(name string, move func(j *jobEvents), wantScheduledOn string) {
+		t.Run(name, func(t *testing.T) {
+			rec := &eventRecorder{}
+			j := newJobEvents(Workload{ID: "1", State: "queued"}, rec.emit)
+			j.markRunning(j.dispatch("nodeA"), "nodeA")
+			move(j)
+
+			got := rec.all()
+			if len(got) != 4 {
+				t.Fatalf("emitted %d events, want admission, dispatch, slot and the move: %+v", len(got), got)
+			}
+			moved := got[3]
+			if moved.method != workloadSubmittedMethod || moved.wl.State != "queued" || moved.wl.ScheduledOn != wantScheduledOn {
+				t.Fatalf("move = %s %s on %q, want %s queued on %q",
+					moved.method, moved.wl.State, moved.wl.ScheduledOn, workloadSubmittedMethod, wantScheduledOn)
+			}
+			if moved.wl.StartedAt != nil {
+				t.Fatalf("a re-queued job carries startedAt %d", *moved.wl.StartedAt)
+			}
+		})
+	}
+	test("to another node", func(j *jobEvents) { j.dispatch("nodeB") }, "nodeB")
+	test("to no node", func(j *jobEvents) { j.repoint("") }, "")
+	test("to the same node", func(j *jobEvents) { j.dispatch("nodeA") }, "nodeA")
+}
+
+// TestJobEventsMarkRunning: a slot starts the job only for the attempt that
+// holds it, while the job still waits on that attempt's node.
+func TestJobEventsMarkRunning(t *testing.T) {
+	t.Run("the current attempt runs", func(t *testing.T) {
+		rec := &eventRecorder{}
+		j := newJobEvents(Workload{ID: "1", State: "queued"}, rec.emit)
+		j.markRunning(j.dispatch("nodeA"), "nodeA")
+
+		got := rec.all()
+		if len(got) != 3 {
+			t.Fatalf("emitted %d events, want admission, dispatch and slot: %+v", len(got), got)
+		}
+		slot := got[2]
+		if slot.method != workloadStartedMethod || slot.wl.State != "running" || slot.wl.ScheduledOn != "nodeA" {
+			t.Fatalf("slot = %s %s on %q, want %s running on nodeA",
+				slot.method, slot.wl.State, slot.wl.ScheduledOn, workloadStartedMethod)
+		}
+		if slot.wl.StartedAt == nil {
+			t.Fatal("the slot's started event carries no startedAt")
+		}
+	})
+
+	ignored := func(name string, setup func(j *jobEvents) (attempt uint64, nodeID string)) {
+		t.Run(name, func(t *testing.T) {
+			rec := &eventRecorder{}
+			j := newJobEvents(Workload{ID: "1", State: "queued"}, rec.emit)
+			attempt, nodeID := setup(j)
+			before := len(rec.all())
+			j.markRunning(attempt, nodeID)
+			if got := rec.all(); len(got) != before {
+				t.Fatalf("markRunning(%d, %q) emitted %+v", attempt, nodeID, got[before:])
+			}
+		})
+	}
+	ignored("an attempt the job has moved on from", func(j *jobEvents) (uint64, string) {
+		stale := j.dispatch("nodeA")
+		j.repoint("")
+		j.dispatch("nodeA")
+		return stale, "nodeA"
+	})
+	ignored("another node", func(j *jobEvents) (uint64, string) {
+		return j.dispatch("nodeA"), "nodeB"
+	})
+	ignored("a job between attempts", func(j *jobEvents) (uint64, string) {
+		attempt := j.dispatch("nodeA")
+		j.repoint("")
+		return attempt, "nodeA"
+	})
+	ignored("a job already running", func(j *jobEvents) (uint64, string) {
+		attempt := j.dispatch("nodeA")
+		j.markRunning(attempt, "nodeA")
+		return attempt, "nodeA"
+	})
+	ignored("a finished job", func(j *jobEvents) (uint64, string) {
+		attempt := j.dispatch("nodeA")
+		j.finish("completed", "")
+		return attempt, "nodeA"
+	})
+}
+
+// TestJobEventsCommitAfterSlot: a job a slot already started on the serving
+// node emits nothing at the commit, and keeps the StartedAt the slot gave it.
+func TestJobEventsCommitAfterSlot(t *testing.T) {
+	rec := &eventRecorder{}
+	j := newJobEvents(Workload{ID: "1", State: "queued"}, rec.emit)
+	j.markRunning(j.dispatch("nodeA"), "nodeA")
+	j.start("nodeA")
+	j.finish("completed", "")
+
+	got := rec.all()
+	if len(got) != 4 {
+		t.Fatalf("emitted %d events, want admission, dispatch, slot and terminal: %+v", len(got), got)
+	}
+	slot, terminal := got[2], got[3]
+	if slot.method != workloadStartedMethod || terminal.method != workloadCompletedMethod {
+		t.Fatalf("events end %s, %s, want %s, %s", slot.method, terminal.method, workloadStartedMethod, workloadCompletedMethod)
+	}
+	if slot.wl.StartedAt == nil || terminal.wl.StartedAt == nil || *terminal.wl.StartedAt != *slot.wl.StartedAt {
+		t.Fatalf("terminal startedAt = %v, want the slot's %v", terminal.wl.StartedAt, slot.wl.StartedAt)
+	}
+}
+
 // TestJobEventsNilIsNoop: a request that is not tracked as a workload has a nil
 // job, and the request path calls it unconditionally.
 func TestJobEventsNilIsNoop(t *testing.T) {
 	var j *jobEvents
 	j.repoint("nodeA")
+	if attempt := j.dispatch("nodeA"); attempt != 0 {
+		t.Fatalf("a nil job numbered an attempt %d", attempt)
+	}
+	j.markRunning(1, "nodeA")
 	j.start("nodeA")
 	j.finish("completed", "")
 }

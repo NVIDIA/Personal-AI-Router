@@ -86,9 +86,9 @@ type facade struct {
 	backendMu sync.RWMutex
 	backend   localBackend
 
-	// slots holds the local engine's slot counts, which setLocalBackend replaces
-	// from each node/set-local-backend. It locks on its own, never under
-	// backendMu.
+	// slots tracks which of the requests this facade sends its local engine
+	// hold one of the engine's slots. setLocalBackend replaces its counts from
+	// each node/set-local-backend. It locks on its own, never under backendMu.
 	slots slotTracker
 
 	// targets remembers, per node, which of its published addresses accepted a
