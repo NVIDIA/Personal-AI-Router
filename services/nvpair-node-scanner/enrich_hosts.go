@@ -13,9 +13,10 @@ import (
 // modelInventory is the three-part answer a node's engine manager gives, carried
 // as one value so the concurrent ask can return it.
 type modelInventory struct {
-	models         []string
-	byEngine       map[string][]string
-	loadedByEngine map[string][]string
+	models             []string
+	byEngine           map[string][]string
+	loadedByEngine     map[string][]string
+	loadedVRAMByEngine map[string]map[string]uint64
 }
 
 // hostKey identifies one node's endpoint for one service. Node-info and the engine
