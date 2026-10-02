@@ -98,9 +98,13 @@ type Executor struct {
 	// detectTimeout bounds the post-install/uninstall detect poll
 	// (installers finish their file work asynchronously). Overridable.
 	detectTimeout time.Duration
-	// actionTimeout bounds a single engine:action call (HTTP or CLI) so a
-	// hung engine can't park the goroutine or starve the caller forever.
+	// actionTimeout bounds ordinary engine actions and CLI-driven model pulls so
+	// a hung engine can't park the goroutine or starve the caller forever.
 	actionTimeout time.Duration
+	// pullProgressTimeout bounds how long a streaming HTTP model pull may go
+	// without advancing a layer/file byte count. Advancing progress refreshes
+	// the deadline, allowing large active downloads to exceed actionTimeout.
+	pullProgressTimeout time.Duration
 	// loadedPollInterval is the cadence of the loaded-model watcher
 	// (loadedwatch.go), which polls each running engine's resident set and emits
 	// engine:models-changed on change. 0 disables it. Overridable via
@@ -120,19 +124,20 @@ type Executor struct {
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
-		reg:                reg,
-		reporter:           reporter,
-		emit:               emit,
-		client:             newEngineHTTPClient(engineResponseHeaderTimeout),
-		ollamaLoadClient:   newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
-		progress:           newProgressHub(),
-		baseDir:            baseDir,
-		desired:            newDesiredStateStore(baseDir),
-		detectTimeout:      30 * time.Second,
-		actionTimeout:      30 * time.Minute,
-		loadedPollInterval: defaultLoadedPollSeconds * time.Second,
-		loadedPoke:         make(chan struct{}, 1),
-		engines:            make(map[string]*engineState),
+		reg:                 reg,
+		reporter:            reporter,
+		emit:                emit,
+		client:              newEngineHTTPClient(engineResponseHeaderTimeout),
+		ollamaLoadClient:    newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
+		progress:            newProgressHub(),
+		baseDir:             baseDir,
+		desired:             newDesiredStateStore(baseDir),
+		detectTimeout:       30 * time.Second,
+		actionTimeout:       30 * time.Minute,
+		pullProgressTimeout: 30 * time.Minute,
+		loadedPollInterval:  defaultLoadedPollSeconds * time.Second,
+		loadedPoke:          make(chan struct{}, 1),
+		engines:             make(map[string]*engineState),
 	}
 }
 
@@ -156,7 +161,8 @@ func (e *Executor) reservedPortError(port int) error {
 // Ollama's cold-load action gets a separate 10m client. Both set NO total
 // http.Client.Timeout: a multi-GB engine download can legitimately run
 // for many minutes and every call site already bounds total time with a
-// context deadline (download 30m, action actionTimeout, probe 3s). What
+// context deadline or inactivity watchdog (install download 30m, streaming
+// pull pullProgressTimeout, action actionTimeout, probe 3s). What
 // it adds over the zero-value client is (a) a bounded response-header
 // wait so a peer that accepts the connection but never replies can't park
 // a goroutine even inside a long context, and (b) a redirect policy that

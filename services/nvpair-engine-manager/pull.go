@@ -24,11 +24,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -38,6 +40,51 @@ const (
 	// protocol: subscribe first, POST /models, then await a matching terminal SSE.
 	pullProgressProtocolLlamaCPPModelsSSE = "llamacpp-models-sse"
 )
+
+var errPullProgressTimeout = errors.New("model download made no progress")
+
+type pullProgressWatchdog struct {
+	cancel      context.CancelCauseFunc
+	timer       *time.Timer
+	timeout     time.Duration
+	completedBy map[string]int64
+}
+
+func newPullProgressWatchdog(parent context.Context, timeout time.Duration) (context.Context, *pullProgressWatchdog) {
+	ctx, cancel := context.WithCancelCause(parent)
+	timeoutErr := fmt.Errorf("%w for %s", errPullProgressTimeout, timeout)
+	watchdog := &pullProgressWatchdog{
+		cancel:      cancel,
+		timeout:     timeout,
+		completedBy: make(map[string]int64),
+	}
+	watchdog.timer = time.AfterFunc(timeout, func() {
+		cancel(timeoutErr)
+	})
+	return ctx, watchdog
+}
+
+func (w *pullProgressWatchdog) stop() {
+	w.timer.Stop()
+	w.cancel(nil)
+}
+
+func (w *pullProgressWatchdog) recordProgress(key string, completed int64) {
+	previous, seen := w.completedBy[key]
+	if completed <= 0 || (seen && completed <= previous) {
+		return
+	}
+	w.completedBy[key] = completed
+	w.timer.Reset(w.timeout)
+}
+
+func (w *pullProgressWatchdog) resolveError(ctx context.Context, fallback error) error {
+	cause := context.Cause(ctx)
+	if errors.Is(cause, errPullProgressTimeout) {
+		return cause
+	}
+	return fallback
+}
 
 // modelFromParams extracts a human-readable model name from an engine:action
 // pull_model params object, preferring Ollama's "name" body key then the generic
@@ -75,17 +122,16 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		params, _ = json.Marshal(map[string]string{"name": model, "model": model})
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
-	defer cancel()
-
 	// CLI action (e.g. lms get): no structured line progress; emit a start
 	// marker and return the final result via the existing runner.
 	if len(act.Cmd) > 0 {
+		actionCtx, cancel := context.WithTimeout(ctx, e.actionTimeout)
+		defer cancel()
 		st.mu.Lock()
 		port := st.port
 		st.mu.Unlock()
 		e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: model})
-		return e.runCmdAction(ctx, st, act, port, params)
+		return e.runCmdAction(actionCtx, st, act, port, params)
 	}
 
 	// HTTP action (e.g. Ollama /api/pull): stream NDJSON progress.
@@ -96,22 +142,24 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	if !running {
 		return nil, fmt.Errorf("engine %q is not running", engine)
 	}
+	pullCtx, watchdog := newPullProgressWatchdog(ctx, e.pullProgressTimeout)
+	defer watchdog.stop()
 	if act.ProgressProtocol == pullProgressProtocolLlamaCPPModelsSSE {
-		return e.pullModelLlamaCPPSSE(ctx, engine, model, act, port, params)
+		return e.pullModelLlamaCPPSSE(pullCtx, engine, model, act, port, params, watchdog)
 	}
 	path, err := resolvePlaceholders(act.HTTP.Path, map[string]string{"port": strconv.Itoa(port)})
 	if err != nil {
 		return nil, err
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(act.HTTP.Method), url, bytes.NewReader(params))
+	req, err := http.NewRequestWithContext(pullCtx, strings.ToUpper(act.HTTP.Method), url, bytes.NewReader(params))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("pull %q: %w", model, err)
+		return nil, fmt.Errorf("pull %q: %w", model, watchdog.resolveError(pullCtx, err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -135,7 +183,9 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 			continue
 		}
 		last = append(json.RawMessage(nil), line...)
-		ev := pullProgressFromLine(engine, line)
+		progress := decodeOllamaPullLine(line)
+		watchdog.recordProgress(progress.progressKey(), progress.Completed)
+		ev := progress.event(engine)
 		if ev.Stage == lastStage && ev.Percent == lastPct {
 			continue
 		}
@@ -143,7 +193,7 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		e.emitPullProgress(ev)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("pull %q: %w", model, err)
+		return nil, fmt.Errorf("pull %q: %w", model, watchdog.resolveError(pullCtx, err))
 	}
 	return last, nil
 }
@@ -151,7 +201,7 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 // pullModelLlamaCPPSSE runs llama.cpp's asynchronous router download protocol.
 // The SSE response must be open before POST /models because terminal events are
 // one-shot broadcasts; subscribing afterward can miss a fast completion.
-func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model string, act Action, port int, params json.RawMessage) (json.RawMessage, error) {
+func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model string, act Action, port int, params json.RawMessage, watchdog *pullProgressWatchdog) (json.RawMessage, error) {
 	if strings.TrimSpace(model) == "" {
 		return nil, fmt.Errorf("pull model is required for %s", pullProgressProtocolLlamaCPPModelsSSE)
 	}
@@ -163,7 +213,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	sseReq.Header.Set("Accept", "text/event-stream")
 	sseResp, err := e.client.Do(sseReq)
 	if err != nil {
-		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, err)
+		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, watchdog.resolveError(ctx, err))
 	}
 	defer sseResp.Body.Close()
 	if sseResp.StatusCode < 200 || sseResp.StatusCode >= 300 {
@@ -182,12 +232,12 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	startReq.Header.Set("Content-Type", "application/json")
 	startResp, err := e.client.Do(startReq)
 	if err != nil {
-		return nil, fmt.Errorf("pull %q: start download: %w", model, err)
+		return nil, fmt.Errorf("pull %q: start download: %w", model, watchdog.resolveError(ctx, err))
 	}
 	startData, readErr := io.ReadAll(io.LimitReader(startResp.Body, 64*1024))
 	startResp.Body.Close()
 	if readErr != nil {
-		return nil, fmt.Errorf("pull %q: read start response: %w", model, readErr)
+		return nil, fmt.Errorf("pull %q: read start response: %w", model, watchdog.resolveError(ctx, readErr))
 	}
 	if startResp.StatusCode < 200 || startResp.StatusCode >= 300 {
 		return nil, fmt.Errorf("pull %q: engine returned HTTP %d: %s", model, startResp.StatusCode, strings.TrimSpace(string(startData)))
@@ -213,6 +263,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		}
 		switch event.Event {
 		case "download_progress":
+			event.recordProgress(watchdog)
 			pct := event.percent()
 			if pct != lastPct {
 				lastPct = pct
@@ -226,7 +277,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("pull %q: progress stream: %w", model, err)
+		return nil, fmt.Errorf("pull %q: progress stream: %w", model, watchdog.resolveError(ctx, err))
 	}
 	return nil, fmt.Errorf("pull %q: progress stream ended before completion", model)
 }
@@ -240,6 +291,12 @@ type llamaCPPModelsEvent struct {
 			Total int64 `json:"total"`
 		} `json:"progress"`
 	} `json:"data"`
+}
+
+func (e llamaCPPModelsEvent) recordProgress(watchdog *pullProgressWatchdog) {
+	for file, progress := range e.Data.Progress {
+		watchdog.recordProgress(file, progress.Done)
+	}
 }
 
 func (e llamaCPPModelsEvent) percent() int {
@@ -279,18 +336,36 @@ func (e *Executor) reportPullFailed(engine, model string, err error) string {
 	return msg
 }
 
-// pullProgressFromLine maps an Ollama /api/pull status line into a ProgressEvent,
-// computing a percentage when the line carries total/completed byte counts.
-func pullProgressFromLine(engine string, line []byte) ProgressEvent {
-	var p struct {
-		Status    string `json:"status"`
-		Total     int64  `json:"total"`
-		Completed int64  `json:"completed"`
+type ollamaPullLine struct {
+	Status    string `json:"status"`
+	Digest    string `json:"digest"`
+	Total     int64  `json:"total"`
+	Completed int64  `json:"completed"`
+}
+
+func decodeOllamaPullLine(line []byte) ollamaPullLine {
+	var progress ollamaPullLine
+	_ = json.Unmarshal(line, &progress)
+	return progress
+}
+
+func (p ollamaPullLine) progressKey() string {
+	if p.Digest != "" {
+		return p.Digest
 	}
-	_ = json.Unmarshal(line, &p)
+	return p.Status
+}
+
+func (p ollamaPullLine) event(engine string) ProgressEvent {
 	pct := 0
 	if p.Total > 0 {
 		pct = int(p.Completed * 100 / p.Total)
 	}
 	return ProgressEvent{Engine: engine, Op: "pull", Stage: p.Status, Percent: pct, Message: p.Status}
+}
+
+// pullProgressFromLine maps an Ollama /api/pull status line into a ProgressEvent,
+// computing a percentage when the line carries total/completed byte counts.
+func pullProgressFromLine(engine string, line []byte) ProgressEvent {
+	return decodeOllamaPullLine(line).event(engine)
 }
