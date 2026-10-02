@@ -55,7 +55,7 @@ Tracks inference workloads cluster-wide as they are queued, executed, and retire
 - Authenticate all inter-node traffic with mTLS, validating client and server certificates against the trusted node store; reject untrusted clients (`403 Forbidden`).
 - Stay stateless re: workload history — the Broker is the source of truth.
 - A failed broadcast to one peer must not block delivery of the current frame to other peers or the local Broker. A slow peer may delay later frames while the ordered worker finishes the current round.
-- Serialize `stdout` writes so frames never interleave; the Broker orders events per workload by `(nodeId, workloadId)` and timestamps.
+- Serialize `stdout` writes so frames never interleave; the Broker identifies a workload by `(originatedFrom, engine, runId, id)` and applies its events in the origin's `seq` order, and by state for events without one.
 
 ## 6. Inputs and Outputs
 
@@ -113,7 +113,7 @@ All traffic is JSON-RPC 2.0. The local interface uses `stdin`/`stdout` (or a nam
 | `workloads:remove` | Broker → WM; broadcast | Peer → WM; → `workloads:remove` | After validated remote `workloads:remove` |
 
 - **Inbound `workload:*` (Broker → WM)**: local-origin transitions to broadcast cluster-wide; `params.workloadInfo` is a full `Workload`. No response.
-- **`workloads:upsert` (WM → Broker)**: emitted for remote-origin lifecycle updates — each validated inter-node `workload:*` is translated (not forwarded) into an upsert. Not used on inter-node HTTP or Broker `stdin`. Params: `workloadInfo` copied unchanged from the peer event. Semantics: upsert into the Broker catalog by `Workload.id` (create if absent, replace if present) — the latest metadata/state, not a replay of the method name.
+- **`workloads:upsert` (WM → Broker)**: emitted for remote-origin lifecycle updates — each validated inter-node `workload:*` is translated (not forwarded) into an upsert. Not used on inter-node HTTP or Broker `stdin`. Params: `workloadInfo` copied unchanged from the peer event. Semantics: upsert into the Broker catalog by `(originatedFrom, engine, runId, id)` (create if absent, otherwise merged in `seq` order) — the latest metadata/state, not a replay of the method name.
 - **`workloads:remove` (WM → Broker)**: emitted on `stdout` after a validated inter-node removal (same `(nodeId, workloadId)`), deduplicated so retries emit at most once; not re-posted to peers. Local-origin removals arrive on `stdin` and are broadcast over HTTP unchanged. Semantics: remove the workload by `(nodeId, workloadId)` from the Broker's view if present, else no-op. Inter-node handler returns `200 OK` once accepted/relayed (or deduplicated).
 
 Example `workloads:upsert` (`stdout`):
@@ -250,7 +250,7 @@ Response: `200 OK`.
 - The Broker is always the parent process: it spawns the Workload Manager, writes `workload:*` / `workloads:remove` to `stdin`, and consumes `workloads:upsert` / `workloads:remove` from `stdout`. If the Broker exits, the manager shuts down cleanly — no reconnect or buffering.
 - The Broker is the source of truth; local notifications are well-formed JSON-RPC with epoch-ms timestamps.
 - Small cluster (~dozen nodes), low event volume; peers mutually authenticated via mTLS. New nodes receive current active and recently terminal workload re-assertions after discovery, but no historical event or removal replay.
-- Each node assigns `Workload.id` from a monotonic per-node counter (e.g. creation-time Unix ms); cross-node ordering comes from the Broker via the `(nodeId, workloadId)` tuple and timestamps.
+- Each engine proxy assigns `Workload.id` from a per-process counter that starts at 1, so ids repeat across nodes, engines and runs. The Broker identifies a workload by `(originatedFrom, engine, runId, id)` and orders its events by the origin's `seq`.
 
 ## 12. Failure Modes and Mitigations
 - **Peer unreachable/slow during broadcast** (partition, crash, suspend, GC pause): that peer's Broker misses the event, causing temporary inconsistency. → Concurrent fan-out lets other peers receive the current frame and keeps the local Broker unblocked; bounded exponential-backoff retries drop after max attempts with a warning. The ordered broadcast worker waits for all peers before taking the next frame, so a slow peer can delay later frames to healthy peers and build a queue. Revisit independent per-peer queues if this delay becomes a problem.
