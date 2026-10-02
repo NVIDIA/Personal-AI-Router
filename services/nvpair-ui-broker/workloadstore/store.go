@@ -22,7 +22,9 @@
 //   - Provenance: an authoritative event (from the origin) overrides a locally
 //     inferred guess (the node-loss sweep), while an inferred guess may only
 //     fail an authoritative non-terminal record — this lets a returning node
-//     reconcile away a wrongly-inferred "failed".
+//     reconcile away a wrongly-inferred "failed". A guess keeps the seq of the
+//     record it replaced, so a delayed origin event older than that record
+//     cannot override it.
 //   - Generation gate: createdAt orders events for one identity (defensive;
 //     with runId in the key an identity has a single createdAt), rejecting a
 //     stale generation before provenance/rank are considered.
@@ -224,8 +226,9 @@ func (s *Store) ApplyInferredUnchangedSince(in Incoming, seenAt time.Time) bool 
 }
 
 // apply is the provenance-aware merge. The rule: provenance first — an
-// authoritative event overrides any inferred guess (this is what lets a
-// returning node un-stick a peer's wrongly-inferred "failed"), and an inferred
+// authoritative event overrides any inferred guess unless its seq is lower than
+// the one the guess kept (this is what lets a returning node un-stick a peer's
+// wrongly-inferred "failed"), and an inferred
 // guess may only mark an authoritative *non-terminal* record failed (never
 // override the origin's terminal or otherwise rewrite its truth). Within the
 // same provenance: newer generation (createdAt) replaces, older is rejected.
@@ -279,7 +282,14 @@ func (s *Store) applyLocked(in Incoming, inferred bool) bool {
 	// Same generation: provenance takes precedence over rank. An authoritative
 	// event overrides any inferred guess (un-sticks a wrongly-inferred failed),
 	// and an inferred guess may only fail an authoritative non-terminal record.
+	// A guess keeps the seq of the record it was made from, so an authoritative
+	// event with a lower seq is a delayed copy of something older than what the
+	// guess replaced, and is rejected; an equal seq is the origin re-asserting
+	// that record, and overrides the guess.
 	if !inferred && cur.Inferred {
+		if in.Seq > 0 && cur.Seq > 0 && in.Seq < cur.Seq {
+			return false
+		}
 		s.putLocked(key, in, false)
 		return true
 	}
@@ -295,8 +305,8 @@ func (s *Store) applyLocked(in Incoming, inferred bool) bool {
 	// workload's events in the order it made them, so a higher seq is newer even
 	// where state rank disagrees, and an equal or lower one is a duplicate or a
 	// delayed copy, such as a heartbeat re-assertion captured before a re-point
-	// but delivered after it. A terminal record stays final. An inferred guess
-	// copies the seq of the record it was made from, so it keeps the rank rule.
+	// but delivered after it. A terminal record stays final. Two inferred
+	// guesses keep the rank rule.
 	if !inferred && in.Seq > 0 && cur.Seq > 0 {
 		if cur.Terminal || in.Seq <= cur.Seq {
 			return false

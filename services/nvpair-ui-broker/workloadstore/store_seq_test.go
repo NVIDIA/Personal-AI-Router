@@ -174,7 +174,8 @@ func TestApplyUnsequencedUsesRank(t *testing.T) {
 }
 
 // TestApplySeqLeavesProvenanceAlone: a guess copies the seq of the record it was
-// made from, so seq must not decide between a guess and the origin.
+// made from, so a guess and the origin's event at that seq are decided by
+// provenance.
 func TestApplySeqLeavesProvenanceAlone(t *testing.T) {
 	t.Run("node-loss guess fails a sequenced running job", func(t *testing.T) {
 		s := New()
@@ -197,6 +198,45 @@ func TestApplySeqLeavesProvenanceAlone(t *testing.T) {
 		}
 		if r := mustGet(t, s, "1"); r.State != "running" || r.Inferred {
 			t.Fatalf("record = %+v, want authoritative running", r)
+		}
+	})
+}
+
+// TestApplySeqRejectsDelayedEventOverGuess: a guess keeps the seq of the record
+// it replaced, so a delayed origin event older than that record cannot override
+// the guess and move the job back to a node it had already left, while a newer
+// one still does.
+func TestApplySeqRejectsDelayedEventOverGuess(t *testing.T) {
+	guessed := func(t *testing.T) *Store {
+		t.Helper()
+		s := New()
+		mustApply(t, s, mkSeq(t, "1", "queued", "nodeA", 1))
+		mustApply(t, s, mkSeq(t, "1", "queued", "nodeB", 2))
+		if !s.ApplyInferred(mkSeq(t, "1", "failed", "nodeB", 2)) {
+			t.Fatal("setup guess was rejected")
+		}
+		return s
+	}
+
+	t.Run("older event is rejected", func(t *testing.T) {
+		s := guessed(t)
+
+		if s.Apply(mkSeq(t, "1", "queued", "nodeA", 1)) {
+			t.Fatal("the delayed nodeA event is older than the guessed record and must be rejected")
+		}
+		if r := mustGet(t, s, "1"); r.State != "failed" || !r.Inferred || r.ScheduledOn != "nodeB" {
+			t.Fatalf("record = %+v, want the inferred failure on nodeB", r)
+		}
+	})
+
+	t.Run("newer event overrides the guess", func(t *testing.T) {
+		s := guessed(t)
+
+		if !s.Apply(mkSeq(t, "1", "running", "nodeB", 3)) {
+			t.Fatal("an origin event newer than the guessed record must override it")
+		}
+		if r := mustGet(t, s, "1"); r.State != "running" || r.Inferred || r.Seq != 3 {
+			t.Fatalf("record = %+v, want authoritative running at seq 3", r)
 		}
 	})
 }
