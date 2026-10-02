@@ -12,9 +12,11 @@ import { initTray, destroyTray } from '@/electron/tray'
 import { createStructuredLogger } from '@/shared/utils/log'
 import {
     loadUiConfig,
+    getStartupSettings,
     isMacHelperSetupComplete,
     setMacHelperSetupComplete
 } from '@/electron/config/ui-config'
+import { applyLoginItem, readLoginItem, shouldOpenOverviewOnStart } from '@/electron/login-item'
 import { currentPlatform } from '@/shared/utils/platform'
 import { APP_DISPLAY_NAME, APP_EXIT_ARGUMENT, APP_ID } from '@/shared/constants/app'
 import { migrateAppData } from '@/electron/path'
@@ -55,7 +57,13 @@ if (!gotTheLock || exitRequested) {
             app.quit()
             return
         }
-        createOverviewWindow()
+        // A second launch is normally a person double-clicking the app while it
+        // sits in the tray, and it opens the window as it always has. The login
+        // item firing against an already-running instance is the exception: it
+        // carries the hidden argument and must not steal the foreground.
+        if (shouldOpenOverviewOnStart(commandLine)) {
+            createOverviewWindow()
+        }
     })
 
     // macOS fires `activate` when the Dock/Launchpad icon is clicked on an
@@ -135,8 +143,16 @@ if (!gotTheLock || exitRequested) {
         // the bundled terminal UI.
         ensureNvpairOnPath()
 
-        createOverviewWindow()
+        // A login-item launch starts to the tray with no window. The tray is
+        // still what keeps the process alive and its Overview entry (and a tray
+        // click) creates the window on demand, exactly as it does after the
+        // window is closed by hand.
+        if (shouldOpenOverviewOnStart(process.argv)) {
+            createOverviewWindow()
+        }
         initTray()
+
+        reconcileLoginItem()
 
         void runMacPrivilegedSetup()
     })
@@ -147,6 +163,32 @@ if (!gotTheLock || exitRequested) {
     })
 
     const log = createStructuredLogger('app')
+
+    /**
+     * Rewrite the OS login item from the persisted preferences, once per launch.
+     *
+     * The registered entry names an executable, and an app update moves that
+     * executable, so an entry written by the previous version can point at a
+     * path that no longer exists. Re-applying on every ready keeps it current
+     * without the user touching the toggle again, and costs nothing when the
+     * preference is off — `openAtLogin: false` simply leaves no entry behind.
+     */
+    function reconcileLoginItem(): void {
+        const startup = getStartupSettings()
+        try {
+            applyLoginItem(startup)
+            const applied = readLoginItem(startup)
+            if (!applied) return
+            log.info({
+                sublevel: 'login-item',
+                message: `Login item reconciled: requested openAtLogin=${startup.launchAtLogin} startHidden=${startup.startHidden}, reported openAtLogin=${applied.openAtLogin}`
+            })
+        } catch (err) {
+            // Autostart is a convenience; a registry or SMAppService failure must
+            // not take the launch down with it.
+            log.error({ sublevel: 'login-item', message: `Login item write failed: ${err}` })
+        }
+    }
 
     // macOS only: register the SMAppService privileged helper that owns one-time
     // root setup (Application Firewall config) and keep it current across app

@@ -8,12 +8,14 @@ import {
     Dropdown,
     Flex,
     Stack,
+    Switch,
     Text,
     type DropdownEntry
 } from '@nvidia/foundations-react-core'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { Download, OpenInNew } from '@/ui/components/icons'
-import type { ServiceStatus } from '@/shared/types/ipc-channels'
+import type { ServiceStatus, StartupSettings, StartupState } from '@/shared/types/ipc-channels'
+import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_LOG_LEVELS,
@@ -30,6 +32,7 @@ import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import { useInferenceDemoStore } from '@/ui/stores/inference-demo.store'
 
 const BROWSER_TOOLTIP = 'Only available in the desktop app'
+const UNSUPPORTED_STARTUP_TOOLTIP = 'This operating system has no login item to register'
 
 const LOG_LEVEL_LABELS: Record<ModularLogLevel, string> = {
     debug: 'Debug',
@@ -81,6 +84,59 @@ function ElectronOnlyButton({
     )
 }
 
+/**
+ * One labelled switch in the Startup section.
+ *
+ * A switch that is off because the platform cannot support it looks exactly like
+ * one the user turned off, so a known reason travels with it as a tooltip on a
+ * wrapper — a disabled control fires no pointer events of its own. `disabled` is
+ * separate from that reason because the switch is also inert while main has yet
+ * to answer, and "still loading" is not a reason worth naming.
+ */
+function StartupToggle({
+    label,
+    description,
+    checked,
+    onCheckedChange,
+    disabled,
+    unavailableReason
+}: {
+    label: string
+    description: string
+    checked: boolean
+    onCheckedChange: (next: boolean) => void
+    disabled: boolean
+    unavailableReason: string | null
+}) {
+    const control = (
+        <Switch
+            checked={checked}
+            onCheckedChange={onCheckedChange}
+            disabled={disabled}
+            size="small"
+            aria-label={label}
+        />
+    )
+
+    return (
+        <Stack gap="1">
+            <Flex align="center" justify="between" gap="4">
+                <Text kind="body/regular/md">{label}</Text>
+                {unavailableReason !== null ? (
+                    <DismissibleTooltip slotContent={unavailableReason}>
+                        <span className="inline-flex">{control}</span>
+                    </DismissibleTooltip>
+                ) : (
+                    control
+                )}
+            </Flex>
+            <Text kind="body/regular/sm" className="text-subtle-color">
+                {description}
+            </Text>
+        </Stack>
+    )
+}
+
 function StatusPill({
     label,
     color
@@ -101,6 +157,8 @@ export default function ServiceSettings() {
     const [error, setError] = useState<string | null>(null)
     const [loading, setLoading] = useState<string | null>(null)
     const [logLevel, setLogLevel] = useState<ModularLogLevel>(MODULAR_DEFAULT_LOG_LEVEL)
+    /** `null` until the main process reports it — not "everything is off". */
+    const [startup, setStartup] = useState<StartupState | null>(null)
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const [startingDemo, setStartingDemo] = useState(false)
     const setActiveTab = useOverviewUiStore(state => state.setActiveTab)
@@ -153,6 +211,41 @@ export default function ServiceSettings() {
         },
         [logLevel]
     )
+
+    useEffect(() => {
+        if (!isElectron) return
+        window.windowApi.service
+            .getStartup()
+            .then(setStartup)
+            .catch(() => {})
+    }, [])
+
+    /**
+     * Flip the switch immediately, then reconcile against what main actually
+     * wrote. Writing a login item touches the registry (or SMAppService), which
+     * can fail on a locked-down machine — a switch left where the user put it
+     * after that would claim an autostart that does not exist.
+     */
+    const handleStartupChange = useCallback(
+        async (patch: Partial<StartupSettings>) => {
+            if (!startup) return
+            setStartup({ ...startup, ...patch })
+            try {
+                setStartup(await window.windowApi.service.setStartup(patch))
+            } catch (err) {
+                setStartup(startup)
+                setError(getErrorString(err))
+            }
+        },
+        [startup]
+    )
+
+    const startupDisabled = !isElectron || startup === null || !startup.supported
+    const startupUnavailableReason = !isElectron
+        ? BROWSER_TOOLTIP
+        : startup !== null && !startup.supported
+          ? UNSUPPORTED_STARTUP_TOOLTIP
+          : null
 
     const logLevelItems: DropdownEntry[] = useMemo(
         () =>
@@ -372,6 +465,30 @@ export default function ServiceSettings() {
                                     </button>
                                 </Flex>
                             )}
+                        </Stack>
+
+                        <Stack gap="4">
+                            <Text kind="body/semibold/md">Startup</Text>
+                            <StartupToggle
+                                label="Launch at login"
+                                description={`Start ${APP_DISPLAY_NAME} automatically when you sign in to this computer.`}
+                                checked={startup?.launchAtLogin ?? false}
+                                onCheckedChange={next =>
+                                    void handleStartupChange({ launchAtLogin: next })
+                                }
+                                disabled={startupDisabled}
+                                unavailableReason={startupUnavailableReason}
+                            />
+                            <StartupToggle
+                                label="Start minimized to tray"
+                                description="When started at login, open to the tray without showing the window. Starting the app yourself always opens it."
+                                checked={startup?.startHidden ?? true}
+                                onCheckedChange={next =>
+                                    void handleStartupChange({ startHidden: next })
+                                }
+                                disabled={startupDisabled}
+                                unavailableReason={startupUnavailableReason}
+                            />
                         </Stack>
 
                         <WipeAppDataCard />

@@ -20,7 +20,7 @@ responses.
 
 - **Window management**: `window:close`, `window:open-*`, `window:quit`, `window:maximize`, `window:minimize`, `window:is-maximized`, `window:copy-to-clipboard`, `window:copy-image-to-clipboard`, `window:save-debug-logs`
 - **Tray**: `tray:resize`, `tray:show-menu`
-- **Service lifecycle**: `service:get-status`, `service:start`, `service:stop`, `service:restart`, `service:get-log-level`, `service:set-log-level`, `service:open-log-file`, `service:open-log-dir`, `service:get-versions`, `service:open-license`, `service:open-third-party-licenses`
+- **Service lifecycle**: `service:get-status`, `service:start`, `service:stop`, `service:restart`, `service:get-log-level`, `service:set-log-level`, `service:open-log-file`, `service:open-log-dir`, `service:get-versions`, `service:get-startup`, `service:set-startup`, `service:open-license`, `service:open-third-party-licenses`
 - **Settings**: `settings:consume-first-run`
 
 ## Handlers must never throw
