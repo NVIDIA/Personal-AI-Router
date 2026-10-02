@@ -184,7 +184,7 @@ in every proxy run, so a job ID alone repeats across nodes, engines, and runs.
 | `engines:progress-cleared`        | `{ key }`                                         |
 | `metrics:update`                  | `NodeItemMetrics`                                 |
 | `workloads:upsert`                | `Workload`                                        |
-| `workloads:remove`                | `{ workloadId, originatedFrom, engine?, runId? }` |
+| `workloads:remove`                | `{ workloadId, originatedFrom[, engine, runId] }` |
 | `errors:update`                   | `ServiceError[]`                                  |
 | `cluster:invite-received`         | `Invite`                                          |
 | `cluster:pending-invites-changed` | `Invite[]`                                        |

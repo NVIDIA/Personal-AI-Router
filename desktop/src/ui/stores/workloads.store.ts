@@ -35,6 +35,36 @@ type PendingOp =
 let pendingOps: PendingOp[] = []
 let flushHandle = 0
 
+// Pushes that land during a snapshot fetch are newer than the snapshot, but the
+// flush applies them to the map the snapshot then replaces. Each in-flight
+// fetch records them here and replays them onto its snapshot, in arrival order,
+// so a remove-then-readd of one job still surfaces the re-add.
+const fetchLogs = new Set<PendingOp[]>()
+
+function recordOp(op: PendingOp): void {
+    for (const log of fetchLogs) log.push(op)
+    pendingOps.push(op)
+}
+
+async function loadSnapshot(): Promise<Map<string, Workload>> {
+    const log: PendingOp[] = []
+    fetchLogs.add(log)
+    try {
+        const initial = await window.pairApi.workloads.getInitial()
+        const map = new Map<string, Workload>(Object.entries(initial))
+        for (const op of log) {
+            if (op.kind === 'upsert') {
+                map.set(workloadKey(op.workload), op.workload)
+            } else {
+                for (const key of workloadKeysRemovedBy(map, op.removal)) map.delete(key)
+            }
+        }
+        return map
+    } finally {
+        fetchLogs.delete(log)
+    }
+}
+
 export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
     workloads: new Map(),
 
@@ -73,65 +103,31 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
             flushHandle = requestAnimationFrame(flush)
         }
 
-        // A `workloads:remove` that lands (and flushes) during the baseline fetch
-        // below would be silently undone by rebuilding the map from the baseline
-        // snapshot, which still lists the now-retired job. Record such removes so
-        // the merge can subtract them — these deltas are newer than the snapshot.
-        const removedDuringInit: WsPushPayload<'workloads:remove'>[] = []
-        let initializing = true
-
-        // Subscribe BEFORE fetching the baseline so a `workloads:upsert` that
-        // fires during the fetch is buffered rather than dropped. Any such push
-        // is applied to the store map by the rAF flush; the baseline merge below
-        // then overlays those (newer) entries on top so a live transition is
-        // never clobbered by the older snapshot.
+        // Subscribe BEFORE fetching the baseline so a push that fires during the
+        // fetch is recorded for replay rather than dropped.
         if (window.pairApi) {
             unsubs.push(
                 window.pairApi.workloads.onUpsert((workload: Workload) => {
-                    pendingOps.push({ kind: 'upsert', workload })
+                    recordOp({ kind: 'upsert', workload })
                     schedule()
                 }),
                 window.pairApi.workloads.onRemove(removal => {
-                    if (initializing) removedDuringInit.push(removal)
-                    pendingOps.push({ kind: 'remove', removal })
+                    recordOp({ kind: 'remove', removal })
                     schedule()
                 })
             )
         }
 
         try {
-            const initial = await window.pairApi.workloads.getInitial()
-            const map = new Map<string, Workload>()
-            for (const [key, workload] of Object.entries(initial)) {
-                map.set(key, workload)
-            }
-            // Subtract jobs a `workloads:remove` retired during the fetch (that
-            // delta is newer than the snapshot), before overlaying upserts — so a
-            // remove-then-readd of the same key still surfaces the re-add.
-            for (const removal of removedDuringInit) {
-                for (const key of workloadKeysRemovedBy(map, removal)) map.delete(key)
-            }
-            // Overlay upserts that already landed during the fetch (also newer than
-            // the baseline), so seeding never regresses a live transition.
-            for (const [key, workload] of get().workloads) {
-                map.set(key, workload)
-            }
-            set({ workloads: map })
+            set({ workloads: await loadSnapshot() })
         } catch (error) {
             console.error('Failed to initialize workloads store:', error)
-        } finally {
-            initializing = false
         }
     },
 
     refresh: async () => {
         try {
-            const initial = await window.pairApi.workloads.getInitial()
-            const map = new Map<string, Workload>()
-            for (const [key, workload] of Object.entries(initial)) {
-                map.set(key, workload)
-            }
-            set({ workloads: map })
+            set({ workloads: await loadSnapshot() })
         } catch (error) {
             console.error('Failed to refresh workloads store:', error)
         }

@@ -4,7 +4,14 @@
 import type { Workload } from '@/shared/types/workloads'
 import type { WsPushPayload } from '@/shared/types/ws-channels'
 
-type WorkloadIdentity = Pick<Workload, 'originatedFrom' | 'engine' | 'runId' | 'id'>
+// `engine` is a plain string so a job card's data attributes key the same way
+// as the `Workload` they were rendered from.
+interface WorkloadIdentity {
+    originatedFrom: string | null
+    engine: string
+    runId: string
+    id: string
+}
 
 /**
  * Stable catalog key for a workload: `(originatedFrom, engine, runId, id)`, the

@@ -178,3 +178,50 @@ describe('removals that arrive while the job list loads', () => {
         expect(shownKeys()).toEqual([workloadKey(lmStudioOne), workloadKey(ollamaTwo)].sort())
     })
 })
+
+describe('pushes that arrive while the job list refreshes', () => {
+    async function startRefresh(): Promise<{
+        resolve: (s: Snapshot) => void
+        refreshing: Promise<void>
+    }> {
+        vi.stubGlobal(
+            'window',
+            makeFakeWindow(async () => snapshotOf([ollamaOne, lmStudioOne]))
+        )
+        await useWorkloadsStore.getState().initialize()
+
+        let resolve: (snapshot: Snapshot) => void = () => {}
+        const promise = new Promise<Snapshot>(done => {
+            resolve = done
+        })
+        vi.stubGlobal(
+            'window',
+            makeFakeWindow(() => promise)
+        )
+        return { resolve, refreshing: useWorkloadsStore.getState().refresh() }
+    }
+
+    it('keeps a removal that lands during the fetch', async () => {
+        const { resolve, refreshing } = await startRefresh()
+
+        removeCb?.({ workloadId: '1', originatedFrom: ORIGIN, engine: 'ollama', runId: RUN })
+        runFrames()
+        resolve(snapshotOf([ollamaOne, lmStudioOne]))
+        await refreshing
+
+        expect(shownKeys()).toEqual([workloadKey(lmStudioOne)])
+    })
+
+    it('keeps an upsert that lands during the fetch', async () => {
+        const { resolve, refreshing } = await startRefresh()
+
+        upsertCb?.(ollamaTwo)
+        runFrames()
+        resolve(snapshotOf([ollamaOne, lmStudioOne]))
+        await refreshing
+
+        expect(shownKeys()).toEqual(
+            [workloadKey(ollamaOne), workloadKey(lmStudioOne), workloadKey(ollamaTwo)].sort()
+        )
+    })
+})
