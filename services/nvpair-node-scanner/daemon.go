@@ -1467,6 +1467,9 @@ func (d *daemon) refreshPeersLoop(ctx context.Context) {
 			}
 			d.refreshClusterIdentityOnce()
 			d.refreshModelsOnce()
+			// Self needs its own pull: onBrowse skips our uuid and publishSelf
+			// only runs when the registry moves. See refreshSelfInfoOnce.
+			d.refreshSelfInfoOnce()
 		}
 	}
 }
@@ -1775,6 +1778,52 @@ func (d *daemon) refreshModelsOnce() {
 		}(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
 	}
 	wg.Wait()
+}
+
+// refreshSelfInfoOnce re-reads our own node-info over loopback and applies just
+// the GPU, CPU and memory figures to the directory entry for this host.
+//
+// Self is the odd one out in the refresh loops. onBrowse returns early on our own
+// uuid, so self never gets the per-browse re-enrichment every peer gets, and
+// publishSelf is otherwise only called when the registry moves — a service
+// (un)register, an identity or address change. refreshPeersLoop refreshes
+// advertised addresses, the mesh, models and cluster identity, none of which touch
+// the local hardware figures. They therefore stayed at whatever they were when the
+// daemon started: observed on an RTX 3060, the card filled to 9.1 GB while the
+// directory kept reporting the 0.12 GB it held at startup, with node-info serving
+// the true value every two seconds the whole time.
+//
+// This is deliberately narrower than calling publishSelf on a timer. It pulls the
+// same loopback node-info a peer would, then moves three fields through applyInfo,
+// so the record is republished only when a figure actually changed instead of on
+// every tick. Returns whether anything changed, which the tests assert on.
+func (d *daemon) refreshSelfInfoOnce() bool {
+	rec := d.reg.record()
+	if rec.HostUUID == "" {
+		return false // no identity resolved yet — nothing to anchor self on
+	}
+	node, present := d.dir.get(rec.HostUUID)
+	if !present {
+		return false // not published yet; publishSelf seeds the entry first
+	}
+	ni, has := node.Services[noderec.ServiceNodeInfo]
+	if !has {
+		return false
+	}
+	// Enrich over loopback, never the advertised LAN ip: a first-run Windows
+	// firewall block on inbound to our own LAN address must not blank the local
+	// node's metrics (the "no metrics" failure mode publishSelfLocked guards too).
+	probe := node
+	d.enrichInfoCandidates(&probe, []string{loopbackHost})
+
+	updated, changed, valid := d.dir.applyInfo(rec.HostUUID, node.IP, ni.Port, probe.GPUs, probe.CPU, probe.Memory)
+	if !valid {
+		return false
+	}
+	if changed {
+		d.emit(noderec.NotifyNodeUpdated, updated)
+	}
+	return changed
 }
 
 // refreshNodeModels fetches one peer's /v1/models and, on success, applies it to
