@@ -20,7 +20,7 @@ import (
 )
 
 // This file runs on one arbitrary engine (anyCase), not both. Its subject is
-// statusCapture's write and flush deadlines and the terminalOnce guard, which
+// statusCapture's write and flush deadlines and the single terminal event, which
 // never consult the profile; the inference request is only the vehicle that
 // reaches the streaming path. Two of these drive real sockets against
 // multi-second deadlines, so a second pass would cost real time for no branch.
@@ -115,9 +115,9 @@ func TestHandleHTTP_ClientWriteError_MarksCancelled(t *testing.T) {
 
 // TestHandleHTTP_ClientDisconnect_TerminalOnce covers the disconnect watcher: a
 // request whose context is cancelled mid-flight (client disconnect / shutdown)
-// must emit exactly one terminal (errored) — the watcher and the post-handler
-// path are guarded by terminalOnce so they can't double-emit — and handleHTTP
-// must return promptly rather than hang.
+// must emit exactly one terminal (errored) — jobEvents.finish emits at most
+// once, so the watcher and the post-handler path can't double-emit — and
+// handleHTTP must return promptly rather than hang.
 func TestHandleHTTP_ClientDisconnect_TerminalOnce(t *testing.T) {
 	received := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -172,7 +172,7 @@ func TestHandleHTTP_ClientDisconnect_TerminalOnce(t *testing.T) {
 	}
 
 	if got := rec.count("workload:errored"); got != 1 {
-		t.Fatalf("workload:errored emitted %d times, want exactly 1 (terminalOnce guard)", got)
+		t.Fatalf("workload:errored emitted %d times, want exactly 1", got)
 	}
 	if rec.has("workload:completed") {
 		t.Fatal("workload:completed emitted for a cancelled request")

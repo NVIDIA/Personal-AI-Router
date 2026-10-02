@@ -433,13 +433,14 @@ stack and answered as an internal error.
 | `workload:completed` / `workload:errored` | terminal | per §5.4 | unchanged |
 
 `submitted` covers the whole pre-commit life; `started` means the engine is
-producing content. That split is forced as well as honest: the broker's store
-merges by state rank and rejects a lower one, so a job that claimed `running` at
-dispatch time could not return to `queued` for its next attempt and the retry
-would be invisible. Keeping the loop inside one state, with `scheduledOn`
-carrying the detail, is the only shape that store can represent.
+producing content. A retry therefore stays in `queued`, with `scheduledOn`
+naming where the current attempt is.
 
-Every event carries `seq`, the producer's event counter from 1. The
+Every event carries `seq`, the producer's event counter from 1. The proxy
+numbers and writes each of a request's events under one lock, so they leave the
+process in `seq` order even when the disconnect watcher reports the terminal.
+The broker's store applies a workload's events in that order and never replaces
+a terminal record, so a delayed event cannot undo a later one. The
 workload-manager's inter-node dedup is a permanent set, so a retry returning to
 a placement it already used — `queued` on A, cleared, `queued` on A again, which
 this loop produces routinely — would otherwise be indistinguishable from a

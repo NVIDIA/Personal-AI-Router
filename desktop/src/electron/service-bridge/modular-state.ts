@@ -29,7 +29,7 @@ import {
     isEngineType
 } from '@/shared/utils/engines'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
-import { workloadKey } from '@/shared/utils/workloads'
+import { workloadKey, workloadKeysRemovedBy } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
 import { mergePullProgressPercent } from './pull-error-handling'
@@ -371,6 +371,7 @@ function parseWorkload(value: JsonValue | undefined): Workload | null {
         id,
         model: stringValue(obj.model),
         engine,
+        runId: stringValue(obj.runId),
         state: stateValue,
         originatedFrom: nullableStringValue(obj.originatedFrom),
         createdAt: numberValue(obj.createdAt),
@@ -1277,8 +1278,8 @@ class ModularBridgeState {
 
     /**
      * Seed the catalog from a broker `workloads:get-initial` baseline and return
-     * the full current map. Adds each entry (keyed by `(originatedFrom, id)`)
-     * only when the key is absent, rather than clearing or overwriting: a live
+     * the full current map. Adds each entry (keyed by `workloadKey`) only when
+     * the key is absent, rather than clearing or overwriting: a live
      * `workloads:upsert` that already landed at that key (the realtime stream is
      * at least as fresh as this durable snapshot) is preserved, and the baseline
      * only fills in jobs the stream has not delivered yet. No push is emitted —
@@ -1287,7 +1288,7 @@ class ModularBridgeState {
      */
     seedWorkloads(workloads: Workload[]): WsInvokeResponse<'workloads:get-initial'> {
         for (const workload of workloads) {
-            const key = workloadKey(workload.originatedFrom, workload.id)
+            const key = workloadKey(workload)
             if (!this.workloads.has(key)) this.workloads.set(key, workload)
         }
         return this.getWorkloads()
@@ -1298,26 +1299,37 @@ class ModularBridgeState {
         const obj = objectValue(params)
         const workload = parseWorkload(obj?.workloadInfo)
         if (!workload) return
-        this.workloads.set(workloadKey(workload.originatedFrom, workload.id), workload)
+        this.workloads.set(workloadKey(workload), workload)
         emitBridgePush('workloads:upsert', workload)
     }
 
-    /** Relay a broker `workloads:remove` (`{ workloadId, originatedFrom? }`) into the catalog + UI. */
+    /**
+     * Relay a broker `workloads:remove` (`{ workloadId, originatedFrom? }`) into
+     * the catalog + UI. The broker retires every engine and run sharing that
+     * origin and id, so every matching entry is dropped.
+     */
     removeWorkloadFromParams(params: JsonValue | undefined): void {
         const obj = objectValue(params)
         const workloadId = stringValue(obj?.workloadId)
         if (!workloadId) return
-        const originatedFrom = nullableStringValue(obj?.originatedFrom)
-        this.workloads.delete(workloadKey(originatedFrom, workloadId))
-        emitBridgePush('workloads:remove', { workloadId, originatedFrom })
+        const removal = { workloadId, originatedFrom: nullableStringValue(obj?.originatedFrom) }
+        for (const key of workloadKeysRemovedBy(this.workloads, removal)) {
+            this.workloads.delete(key)
+        }
+        // Pushed even when nothing matched: the renderer can receive this job in
+        // a baseline that Electron has not seeded yet, and subtracts removals
+        // that arrive while it initializes.
+        emitBridgePush('workloads:remove', removal)
     }
 
-    /** Push a `workloads:remove` for an entry and drop it from the catalog. */
+    /** Push an exact `workloads:remove` for an entry and drop it from the catalog. */
     private evictWorkload(key: string, workload: Workload): void {
         this.workloads.delete(key)
         emitBridgePush('workloads:remove', {
             workloadId: workload.id,
-            originatedFrom: workload.originatedFrom
+            originatedFrom: workload.originatedFrom,
+            engine: workload.engine,
+            runId: workload.runId
         })
     }
 

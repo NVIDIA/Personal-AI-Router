@@ -137,11 +137,14 @@ export interface WsPushChannelMap {
     // Metrics
     'metrics:update': NodeItemMetrics
 
-    // Workloads. Removal carries the origin node (`originatedFrom`) because
-    // workload ids are a per-node proxy counter (the catalog is keyed by the
-    // (originatedFrom, id) pair).
+    // Workloads. A removal from the broker names a job's origin and id and
+    // retires every engine and run sharing them. One Electron sends for a job it
+    // dropped from its own catalog also names the engine and run. Resolve either
+    // with `workloadKeysRemovedBy`.
     'workloads:upsert': Workload
-    'workloads:remove': { workloadId: string; originatedFrom: string | null }
+    'workloads:remove':
+        | { workloadId: string; originatedFrom: string | null }
+        | { workloadId: string; originatedFrom: string | null; engine: EngineType; runId: string }
 
     // Errors
     'errors:update': ServiceError[]

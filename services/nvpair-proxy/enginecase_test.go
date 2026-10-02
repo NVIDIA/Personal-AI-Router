@@ -133,8 +133,8 @@ func anyProfile(t *testing.T) engineProfile {
 // anyCase is anyProfile for a body that still needs an engine's fixtures as a
 // vehicle — a routed inference request to reach the streaming path — while its
 // subject remains engine-free. The zombie suite is the case in point: it tests
-// statusCapture's write and flush deadlines and the terminalOnce guard, none of
-// which consult the profile. That the path classifies as inference on both
+// statusCapture's write and flush deadlines and the single terminal event, none
+// of which consult the profile. That the path classifies as inference on both
 // engines is already covered by the parameterized workload tests, so a second
 // pass here would add real-socket seconds and no coverage.
 func anyCase(t *testing.T) engineCase {

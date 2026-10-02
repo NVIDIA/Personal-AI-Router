@@ -125,7 +125,16 @@ Commands return no state. Renderer stores update from
 
 - `getInitial()` returns active workloads.
 - `onUpsert(callback)` reports workload creation and state changes.
-- `onRemove(callback)` reports removal with both workload ID and origin node.
+- `onRemove(callback)` reports retired workloads. A removal from the broker
+  carries the workload ID and origin node and retires every engine and run that
+  shares them. A removal for a job Electron dropped from its own catalog also
+  carries `engine` and `runId` and retires only that job. `workloadKeysRemovedBy`
+  resolves either shape to catalog keys.
+
+A workload's identity is `(originatedFrom, engine, runId, id)`, the key the
+broker's store uses. Each engine facade numbers its jobs from 1 and starts again
+in every proxy run, so a job ID alone repeats across nodes, engines, and runs.
+`workloadKey` builds the catalog key from those four parts.
 
 ### `pairApi.errors`
 
@@ -163,25 +172,25 @@ Commands return no state. Renderer stores update from
 
 ## Logical push channels
 
-| Channel                           | Payload                          |
-| --------------------------------- | -------------------------------- |
-| `nodes:upsert`                    | `NodeItem`                       |
-| `nodes:remove`                    | node ID                          |
-| `nodes:changed`                   | `ClusterNode[]`                  |
-| `engines:state-changed`           | `EngineStatePatch`               |
-| `engines:settings-changed`        | `EngineSettingsSnapshot`         |
-| `engines:settings-disconnected`   | `{ nodeId }`                     |
-| `engines:progress-changed`        | `EngineProgress`                 |
-| `engines:progress-cleared`        | `{ key }`                        |
-| `metrics:update`                  | `NodeItemMetrics`                |
-| `workloads:upsert`                | `Workload`                       |
-| `workloads:remove`                | `{ workloadId, originatedFrom }` |
-| `errors:update`                   | `ServiceError[]`                 |
-| `cluster:invite-received`         | `Invite`                         |
-| `cluster:pending-invites-changed` | `Invite[]`                       |
-| `discovery:nodes-changed`         | `AvailableNode[]`                |
-| `connection:cluster-identity`     | `ClusterIdentityPayload`         |
-| `state:request-refresh`           | `void`                           |
+| Channel                           | Payload                                           |
+| --------------------------------- | ------------------------------------------------- |
+| `nodes:upsert`                    | `NodeItem`                                        |
+| `nodes:remove`                    | node ID                                           |
+| `nodes:changed`                   | `ClusterNode[]`                                   |
+| `engines:state-changed`           | `EngineStatePatch`                                |
+| `engines:settings-changed`        | `EngineSettingsSnapshot`                          |
+| `engines:settings-disconnected`   | `{ nodeId }`                                      |
+| `engines:progress-changed`        | `EngineProgress`                                  |
+| `engines:progress-cleared`        | `{ key }`                                         |
+| `metrics:update`                  | `NodeItemMetrics`                                 |
+| `workloads:upsert`                | `Workload`                                        |
+| `workloads:remove`                | `{ workloadId, originatedFrom[, engine, runId] }` |
+| `errors:update`                   | `ServiceError[]`                                  |
+| `cluster:invite-received`         | `Invite`                                          |
+| `cluster:pending-invites-changed` | `Invite[]`                                        |
+| `discovery:nodes-changed`         | `AvailableNode[]`                                 |
+| `connection:cluster-identity`     | `ClusterIdentityPayload`                          |
+| `state:request-refresh`           | `void`                                            |
 
 ## Electron-native API
 

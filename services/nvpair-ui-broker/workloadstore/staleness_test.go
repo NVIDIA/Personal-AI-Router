@@ -256,9 +256,9 @@ func TestStaleForeignSweepsWorkThisNodeIsExecuting(t *testing.T) {
 }
 
 // TestStaleForeignSkipsCollidingClientKeys: the broker identifies a workload by
-// (origin, engine, runId, id) but the desktop keys only on (origin, id), and both
-// engines number their requests from 1 and reset on restart, so that coarse key
-// collides in practice. Emitting a synthesized terminal for one generation would
+// (origin, engine, runId, id) but the terminal UI still keys only on (origin,
+// id), and both engines number their requests from 1 and reset on restart, so
+// that coarse key collides in practice. Emitting a synthesized terminal for one generation would
 // land on whichever generation currently holds the key — possibly a live job — so
 // an ambiguous candidate is left alone.
 func TestStaleForeignSkipsCollidingClientKeys(t *testing.T) {

@@ -132,6 +132,8 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
             style={CARD_STYLE}
             data-workload-id={workload.id}
             data-workload-origin={workload.originatedFrom ?? ''}
+            data-workload-engine={workload.engine}
+            data-workload-run-id={workload.runId}
             attributes={{ CardContent: { className: 'workload-card-content' } }}
         >
             <div className="workload-badge hidden" style={{ backgroundColor: barColor }}></div>
