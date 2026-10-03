@@ -29,6 +29,38 @@ func TestLlamaCPPProxyIsIncludedInBrokerDefaults(t *testing.T) {
 	}
 }
 
+func TestBrokerLlamaCPPProxySetPortRejectsInvalidPorts(t *testing.T) {
+	stdin, msgs, stderr, cleanup := startBrokerWith(t,
+		"--proxy-path", proxyBin, "--proxy-engines", "llamacpp",
+	)
+	t.Cleanup(cleanup)
+	go func() {
+		for range stderr {
+		}
+	}()
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	for i, tc := range []struct{ name, params string }{
+		{"missing port", `{}`},
+		{"zero port", `{"port":0}`},
+		{"negative port", `{"port":-1}`},
+		{"oversized port", `{"port":65536}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := 7300 + i
+			if _, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:set-port","params":%s}`+"\n", id, tc.params); err != nil {
+				t.Fatalf("write proxy port request: %v", err)
+			}
+			response := waitForResponse(t, msgs, 10*time.Second)
+			if response.ID == nil || string(*response.ID) != fmt.Sprint(id) {
+				t.Fatalf("unexpected response ID: %+v", response)
+			}
+			if response.Error == nil || response.Error.Code != -32602 || response.Error.Message != "port must be between 1 and 65535" {
+				t.Fatalf("error = %+v, want broker invalid-port rejection", response.Error)
+			}
+		})
+	}
+}
+
 func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 	const model = "org/router-model-GGUF:Q4_K_M"
 	var modelListHits atomic.Int32
