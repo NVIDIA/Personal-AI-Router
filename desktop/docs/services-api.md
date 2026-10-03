@@ -47,8 +47,6 @@
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
-- ⚠️ nvpair-ui-broker → lmstudio-proxy:set-port
-- ⚠️ nvpair-ui-broker → ollama-proxy:set-port
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
 
 ### Backend binaries not listed in `modular-binaries.ts`
@@ -267,14 +265,12 @@
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:set-port` | request (we call) | ⚠️ not called |
 | `node/add` | request (we call) | ✅ yes |
 | `node/discovered` | request (we call) | ✅ yes |
 | `node/remove` | request (we call) | ✅ yes |
 | `node/removed` | request (we call) | ✅ yes |
 | `node/updated` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
-| `ollama-proxy:set-port` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
