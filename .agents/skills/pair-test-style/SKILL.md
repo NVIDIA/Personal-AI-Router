@@ -34,12 +34,18 @@ They guide test structure; they do not require new coverage or unrelated rewrite
 
 For Go cases with the same setup and assertions, prefer a local helper closure
 that captures shared setup and calls `t.Run`. List explicit, named calls below
-it. A signature such as `test := func(name, input, wantError string)` often makes
-cases easier to read than a large table with mode-dependent branches.
+it. A signature such as `test := func(name, input string)` often makes cases
+easier to read than a large table with mode-dependent branches.
 
 Use ordinary tables when they are clearer. Separate acceptance and rejection
-helpers when that removes branching and makes expected outcomes explicit. Keep
+helpers when that removes branching and makes expected outcomes explicit.
+Define and list acceptance cases before rejection cases for consistency. Keep
 mutable state fresh per case so cases do not depend on execution order.
+Avoid adding a `wantError` parameter to a helper shared by acceptance and
+rejection cases; it forces every case through a conditional assertion path.
+Rejection helpers should check the relevant error field or returned error and
+its expected message or type. A parameter for the expected error message is
+appropriate in a rejection-only helper.
 
 Mark Go assertion and setup helpers with `t.Helper()`. Pass the subtest's
 `*testing.T` to helpers that report failures so errors belong to the right case.

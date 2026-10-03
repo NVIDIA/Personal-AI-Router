@@ -228,15 +228,22 @@ func TestSettingsArgumentsDoNotIncludeExecutableOrSubcommand(t *testing.T) {
 		}
 		st := settingsState(t, e)
 		rt := st.plat.Runtime
-		rt.LaunchArgs = &result.Args
-		rt.LaunchEnv = &result.Env
+		rt.LaunchArgs = result.Args
+		rt.LaunchEnv = result.Env
 		launch, err := launchForState(st, p.Settings.ServerPort)
 		if err != nil {
 			t.Fatal(err)
 		}
 		actual, err := applyLiteralLaunch(rt, launch, map[string]string{"host": "127.0.0.1", "port": fmt.Sprint(p.Settings.ServerPort)})
-		if err != nil || actual.Bin != fakeEngineBin || !slices.Equal(actual.Args[:len(rt.EditableLaunch.FixedArgs)], rt.EditableLaunch.FixedArgs) {
-			t.Fatalf("arguments changed the executable/subcommand: %+v %v", actual, err)
+		if err != nil {
+			t.Fatalf("apply literal launch: %v", err)
+		}
+		fixed := rt.EditableLaunch.FixedArgs
+		if actual.Bin != fakeEngineBin || len(actual.Args) < len(fixed) || !slices.Equal(actual.Args[:len(fixed)], fixed) {
+			t.Fatalf("arguments changed the executable/subcommand: %+v", actual)
+		}
+		if len(actual.Args) < len(result.Args) || !slices.Equal(actual.Args[len(actual.Args)-len(result.Args):], result.Args) {
+			t.Fatalf("user arguments changed: %v, want suffix %v", actual.Args, result.Args)
 		}
 	})
 }
@@ -348,7 +355,7 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 				t.Fatalf("port=%d, want %d", result.ServerPort, preview.Settings.ServerPort)
 			}
 			override := readSettingsOverride(t, e)
-			if override.LaunchArgs == nil || !reflect.DeepEqual(*override.LaunchArgs, preview.Args) {
+			if override.LaunchArgs == nil || !reflect.DeepEqual(override.LaunchArgs, preview.Args) {
 				t.Fatalf("persisted arguments = %v, want %v", override.LaunchArgs, preview.Args)
 			}
 			if want != staysStopped {
@@ -410,7 +417,7 @@ func TestSettingsNoOpApplyKeepsEngineLogCapture(t *testing.T) {
 	st.mu.Lock()
 	persisted := st.plat.Runtime.LaunchEnv
 	st.mu.Unlock()
-	if persisted == nil || len(*persisted) != 0 {
+	if persisted == nil || len(persisted) != 0 {
 		t.Fatalf("expected a no-op Apply to leave an empty launch_env, got %v", persisted)
 	}
 	if err := e.Stop("fake"); err != nil {
@@ -467,78 +474,106 @@ func TestEarlyExitHasOneStartError(t *testing.T) {
 }
 
 func TestSettingsCORSOriginsValidationAndNormalization(t *testing.T) {
-	test := func(name, origins, wantError string) {
+	preview := func(t *testing.T, origins string) (*Executor, settings.Preview) {
+		t.Helper()
+		e := settingsExecutor(t, false)
+		request := settingsRequest(t, e)
+		request.Settings.LaunchText = `OLLAMA_ORIGINS="` + origins + `" ` + request.Settings.LaunchText
+		return e, previewSettings(t, e, request)
+	}
+	accept := func(name, origins string) {
 		t.Run(name, func(t *testing.T) {
-			e := settingsExecutor(t, false)
-			request := settingsRequest(t, e)
-			request.Settings.LaunchText = `OLLAMA_ORIGINS="` + origins + `" ` + request.Settings.LaunchText
-			result := previewSettings(t, e, request)
-			if wantError != "" {
-				if !strings.Contains(result.Errors["launchText"], wantError) {
-					t.Fatalf("expected %q: %+v", wantError, result)
-				}
-			} else {
-				if len(result.Errors) != 0 {
-					t.Fatalf("valid origins rejected: %+v", result)
-				}
-				env, err := literalEnvironment(result.Env)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if value, ok := env["OLLAMA_ORIGINS"]; !ok || value != origins {
-					t.Fatalf("origins = %q (present %v), want %q", value, ok, origins)
-				}
+			e, result := preview(t, origins)
+			if len(result.Errors) != 0 {
+				t.Fatalf("valid origins rejected: %+v", result)
+			}
+			env, err := literalEnvironment(result.Env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value, ok := env["OLLAMA_ORIGINS"]; !ok || value != origins {
+				t.Fatalf("origins = %q (present %v), want %q", value, ok, origins)
 			}
 			assertNoSettingsOverride(t, e)
 		})
 	}
-	test("rejects origin without scheme", "localhost", `"http://localhost"`)
-	test("rejects mixed valid and invalid origins", "http://localhost,invalid", `"http://localhost"`)
-	test("rejects bare wildcard", "*", "every origin")
-	test("rejects wildcard host", "http://*", "every origin")
-	test("rejects wildcard scheme and host", "*://*", "every origin")
-	test("rejects wildcard in origin list", "http://localhost,*", "every origin")
-	test("accepts localhost URL", "http://localhost", "")
-	test("accepts explicit origin list", "https://example.test,http://localhost", "")
-	test("accepts wildcard subdomain", "https://*.example.test", "")
-	test("accepts empty origins", "", "")
+	reject := func(name, origins, wantMessage string) {
+		t.Run(name, func(t *testing.T) {
+			e, result := preview(t, origins)
+			if message := result.Errors["launchText"]; !strings.Contains(message, wantMessage) {
+				t.Fatalf("launchText error = %q, want %q", message, wantMessage)
+			}
+			assertNoSettingsOverride(t, e)
+		})
+	}
+
+	accept("localhost URL", "http://localhost")
+	accept("explicit origin list", "https://example.test,http://localhost")
+	accept("wildcard subdomain", "https://*.example.test")
+	accept("empty origins", "")
+
+	reject("origin without scheme", "localhost", `"http://localhost"`)
+	reject("mixed valid and invalid origins", "http://localhost,invalid", `"http://localhost"`)
+	reject("bare wildcard", "*", "every origin")
+	reject("wildcard host", "http://*", "every origin")
+	reject("wildcard scheme and host", "*://*", "every origin")
+	reject("wildcard in origin list", "http://localhost,*", "every origin")
 }
 
 func TestSettingsCORSIsOptionalAndIndependentOfEngine(t *testing.T) {
-	test := func(name, corsEnv, corsFlag, prefix, suffix string, wantError bool) {
-		t.Run(name, func(t *testing.T) {
-			e := settingsExecutor(t, false)
-			rt := &settingsState(t, e).plat.Runtime
-			rt.Env = map[string]string{"FUTURE_BIND": "{host}:{port}"}
-			rt.EditableLaunch = &EditableLaunch{FixedArgs: []string{"serve"}, Controls: []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"FUTURE_BIND"}}}}
-			if corsEnv != "" {
-				rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Env: []string{corsEnv}})
-			}
-			if corsFlag != "" {
-				rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Flags: []string{corsFlag}})
-			}
+	setup := func(t *testing.T, corsEnv, corsFlag, prefix, suffix string) (*Executor, settings.Request, settings.Preview) {
+		t.Helper()
+		e := settingsExecutor(t, false)
+		rt := &settingsState(t, e).plat.Runtime
+		rt.Env = map[string]string{"FUTURE_BIND": "{host}:{port}"}
+		rt.EditableLaunch = &EditableLaunch{FixedArgs: []string{"serve"}, Controls: []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"FUTURE_BIND"}}}}
+		if corsEnv != "" {
+			rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Env: []string{corsEnv}})
+		}
+		if corsFlag != "" {
+			rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Flags: []string{corsFlag}})
+		}
 
-			request := settingsRequest(t, e)
-			request.Settings.LaunchText = prefix + request.Settings.LaunchText + suffix
-			preview := previewSettings(t, e, request)
-			if (len(preview.Errors) != 0) != wantError {
-				t.Fatalf("preview errors = %v, want error %v", preview.Errors, wantError)
+		request := settingsRequest(t, e)
+		request.Settings.LaunchText = prefix + request.Settings.LaunchText + suffix
+		return e, request, previewSettings(t, e, request)
+	}
+	accept := func(name, corsEnv, corsFlag, prefix, suffix string) {
+		t.Run(name, func(t *testing.T) {
+			e, request, preview := setup(t, corsEnv, corsFlag, prefix, suffix)
+			if len(preview.Errors) != 0 {
+				t.Fatalf("valid launch settings rejected: %+v", preview)
 			}
-			if !wantError {
-				if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil }); err != nil {
-					t.Fatal(err)
-				}
+			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil }); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
-	test("no CORS option required", "", "", "", " --future-option arbitrary", false)
-	test("undeclared CORS configuration stays opaque", "", "", "FUTURE_ORIGINS=* ", " --cors", false)
-	test("declared environment accepts origins", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=https://example.test ", "", false)
-	test("declared environment rejects wildcard", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=* ", "", true)
-	test("declared flag accepts origins", "", "--browser-origins", "", " --browser-origins https://example.test", false)
-	test("declared flag accepts equals form", "", "--browser-origins", "", " --browser-origins=https://example.test", false)
-	test("declared flag rejects wildcard", "", "--browser-origins", "", " --browser-origins=*", true)
-	test("declared flag rejects missing value", "", "--browser-origins", "", " --browser-origins", true)
+	reject := func(name, corsEnv, corsFlag, prefix, suffix, wantMessage string) {
+		t.Run(name, func(t *testing.T) {
+			e, request, preview := setup(t, corsEnv, corsFlag, prefix, suffix)
+			if message := preview.Errors["launchText"]; !strings.Contains(message, wantMessage) {
+				t.Fatalf("launchText error = %q, want %q", message, wantMessage)
+			}
+			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error {
+				t.Fatal("invalid settings reached the rebind callback")
+				return nil
+			}); err == nil || !strings.Contains(err.Error(), "authoritative validation") {
+				t.Fatalf("ConfigureLaunch error = %v, want authoritative validation failure", err)
+			}
+			assertNoSettingsOverride(t, e)
+		})
+	}
+
+	accept("no CORS option required", "", "", "", " --future-option arbitrary")
+	accept("undeclared CORS configuration stays opaque", "", "", "FUTURE_ORIGINS=* ", " --cors")
+	accept("declared environment accepts origins", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=https://example.test ", "")
+	accept("declared flag accepts origins", "", "--browser-origins", "", " --browser-origins https://example.test")
+	accept("declared flag accepts equals form", "", "--browser-origins", "", " --browser-origins=https://example.test")
+
+	reject("declared environment rejects wildcard", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=* ", "", "every origin")
+	reject("declared flag rejects wildcard", "", "--browser-origins", "", " --browser-origins=*", "every origin")
+	reject("declared flag rejects missing value", "", "--browser-origins", "", " --browser-origins", "missing its value")
 }
 
 func TestSettingsPassesUnknownEnvironmentNamesAndValues(t *testing.T) {
@@ -603,7 +638,7 @@ func TestSettingsManifestEnvironmentCanBeOverridden(t *testing.T) {
 				t.Fatal(err)
 			}
 			override := readSettingsOverride(t, e)
-			env, err := literalEnvironment(*override.LaunchEnv)
+			env, err := literalEnvironment(override.LaunchEnv)
 			if err != nil || env["LD_LIBRARY_PATH"] != replacement {
 				t.Fatalf("saved environment = %v, error %v", env, err)
 			}
@@ -688,11 +723,9 @@ func TestSavedLaunchOverridesManifestEnvironmentLiterally(t *testing.T) {
 		EditableLaunch: &EditableLaunch{FixedArgs: []string{"serve"}},
 		Env:            map[string]string{"LD_LIBRARY_PATH": "{install_dir}/lib"},
 	}
-	args := []string{}
-	rt.LaunchArgs = &args
+	rt.LaunchArgs = []string{}
 	for _, value := range []string{"/custom", "", "{install_dir}/other"} {
-		env := []string{"LD_LIBRARY_PATH=" + value}
-		rt.LaunchEnv = &env
+		rt.LaunchEnv = []string{"LD_LIBRARY_PATH=" + value}
 		launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"})
 		if err != nil || launch.Env["LD_LIBRARY_PATH"] != value {
 			t.Errorf("saved launch environment = %v, error %v; want literal %q", launch.Env, err, value)
@@ -843,7 +876,7 @@ func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) 
 			if override.LaunchEnv == nil {
 				t.Fatal("launch environment missing from override")
 			}
-			env, err := literalEnvironment(*override.LaunchEnv)
+			env, err := literalEnvironment(override.LaunchEnv)
 			if err != nil {
 				t.Fatal(err)
 			}

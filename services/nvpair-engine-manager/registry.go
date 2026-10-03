@@ -113,23 +113,50 @@ type Fetch struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
-	EditableLaunch *EditableLaunch   `json:"editable_launch,omitempty"`
-	LaunchArgs     *[]string         `json:"launch_args,omitempty"` // literal arguments after managed fields
-	LaunchEnv      *[]string         `json:"launch_env,omitempty"`  // complete literal explicit environment
-	Mode           string            `json:"mode,omitempty"`
-	Bin            string            `json:"bin,omitempty"`
-	Args           []string          `json:"args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Port           int               `json:"port"`            // 0 => auto-assign a free loopback port
-	Bind           string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
-	Start          [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
+	// EditableLaunch declares which startup arguments and environment controls
+	// PAIR can safely expose through engine settings.
+	EditableLaunch *EditableLaunch `json:"editable_launch,omitempty"`
+	// LaunchArgs holds literal user arguments appended after PAIR-managed
+	// arguments. Nil inherits the manifest's Args or editable Start command;
+	// a non-nil empty slice keeps only fixed and managed arguments. Use
+	// omitzero to omit nil while preserving explicit empty arrays in JSON.
+	LaunchArgs []string `json:"launch_args,omitzero"`
+	// Mode selects the lifecycle model: "process" means PAIR owns the launched
+	// foreground process; "command" means PAIR invokes commands that manage a
+	// separate daemon. Empty defaults to "process".
+	Mode string `json:"mode,omitempty"`
+	// Bin is the executable template for process mode.
+	Bin string `json:"bin,omitempty"`
+	// Args are the manifest's default argument templates, resolved at launch.
+	Args []string `json:"args,omitempty"`
+	// Env and LaunchEnv form the child process environment in two layers. Env
+	// contains manifest defaults whose placeholders are resolved at launch.
+	// LaunchEnv contains literal user assignments that override matching
+	// defaults; nil means no saved environment override, while a non-nil empty
+	// slice means saved environment settings with no user assignments.
+	// These are applied to the manager's environment.
+	// Env looks like "env": {"ADDRESS": "{host}:{port}"}
+	// LaunchEnv looks like "launch_env": ["MODEL_DIR=D:/models"]
+	Env       map[string]string `json:"env,omitempty"`
+	LaunchEnv []string          `json:"launch_env,omitzero"`
+	// Port is the configured service port; zero requests an available loopback
+	// port.
+	Port int `json:"port"`
+	// Bind is the default listener address, used as the value of {host}.
+	// Empty defaults to loopback; a per-call bind can override it.
+	Bind string `json:"bind,omitempty"`
+	// Start is the ordered list of daemon bring-up commands in command mode.
+	Start [][]string `json:"start,omitempty"`
 	// CLI is the engine's control-CLI path for this platform, referenced
 	// elsewhere as {cli}. It lets the manifest's global actions resolve
 	// to the correct per-OS binary (e.g. lms.exe vs lms).
-	CLI    string    `json:"cli,omitempty"`
-	Ready  *Probe    `json:"ready,omitempty"`
-	Stop   *StopSpec `json:"stop,omitempty"`
-	Health *Probe    `json:"health,omitempty"`
+	CLI string `json:"cli,omitempty"`
+	// Ready is the probe used to decide whether startup has completed.
+	Ready *Probe `json:"ready,omitempty"`
+	// Stop describes the process signal/grace period or daemon stop command.
+	Stop *StopSpec `json:"stop,omitempty"`
+	// Health is the periodic availability probe for a running engine.
+	Health *Probe `json:"health,omitempty"`
 }
 
 type EditableLaunch struct {
@@ -157,11 +184,10 @@ func (r *Runtime) modeOrDefault() string {
 
 // hasCustomLaunch reports whether the user supplied any literal argument or
 // environment assignment. A saved override writes both keys, so the untouched
-// one persists as an empty — not absent — slice. Emptiness, not nil, is what
-// separates a default launch from a customized one.
+// one persists as an empty — not absent — slice. This reports whether the user
+// supplied any values; nil versus empty still matters when resolving the launch.
 func (r *Runtime) hasCustomLaunch() bool {
-	return (r.LaunchArgs != nil && len(*r.LaunchArgs) > 0) ||
-		(r.LaunchEnv != nil && len(*r.LaunchEnv) > 0)
+	return len(r.LaunchArgs) > 0 || len(r.LaunchEnv) > 0
 }
 
 // Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
@@ -611,7 +637,7 @@ func (p *Platform) validate(key string) error {
 		if p.Runtime.EditableLaunch == nil {
 			return fmt.Errorf("platform %q: launch_args requires editable_launch", key)
 		}
-		if _, err := formatLaunchText(append([]string{"arguments"}, (*args)...)); err != nil {
+		if _, err := formatLaunchText(append([]string{"arguments"}, args...)); err != nil {
 			return fmt.Errorf("platform %q: invalid literal launch arguments", key)
 		}
 	}
@@ -619,7 +645,7 @@ func (p *Platform) validate(key string) error {
 		if p.Runtime.EditableLaunch == nil {
 			return fmt.Errorf("platform %q: launch_env requires editable_launch", key)
 		}
-		if _, err := literalEnvironment(*env); err != nil {
+		if _, err := literalEnvironment(env); err != nil {
 			return fmt.Errorf("platform %q: invalid literal launch environment", key)
 		}
 	}
