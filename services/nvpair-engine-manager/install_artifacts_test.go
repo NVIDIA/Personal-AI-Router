@@ -14,9 +14,52 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type installProgressRecorder struct {
+	mu     sync.Mutex
+	events []any
+}
+
+func (r *installProgressRecorder) emit(method string, params any) {
+	if method != "engine:install-progress" {
+		return
+	}
+	r.mu.Lock()
+	r.events = append(r.events, params)
+	r.mu.Unlock()
+}
+
+func (r *installProgressRecorder) assertSingleTerminal(t *testing.T, want string) {
+	t.Helper()
+	r.mu.Lock()
+	events := append([]any(nil), r.events...)
+	r.mu.Unlock()
+
+	stages := make([]string, 0, len(events))
+	terminal := make([]string, 0, 1)
+	for index, params := range events {
+		event, ok := params.(map[string]any)
+		if !ok {
+			t.Fatalf("install progress event %d params type = %T, want map[string]any", index, params)
+		}
+		stage, ok := event["stage"].(string)
+		if !ok {
+			t.Fatalf("install progress event %d stage = %v, want string", index, event["stage"])
+		}
+		stages = append(stages, stage)
+		switch stage {
+		case "done", "already-installed", "failed":
+			terminal = append(terminal, stage)
+		}
+	}
+	if len(terminal) != 1 || terminal[0] != want {
+		t.Fatalf("terminal install progress stages = %v, want [%s]; all stages = %v", terminal, want, stages)
+	}
+}
 
 func TestInstallDownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
 	payload := []byte("artifact")
@@ -32,10 +75,13 @@ func TestInstallDownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
 	}
 	manifest := artifactInstallManifest(t, "artifact-success", marker, artifacts)
 	executor := newTestExecutor(t, manifest)
+	progress := &installProgressRecorder{}
+	executor.emit = progress.emit
 
 	if err := executor.Install(context.Background(), manifest.Engine); err != nil {
 		t.Fatalf("install named artifacts: %v", err)
 	}
+	progress.assertSingleTerminal(t, "done")
 	data, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("read captured install arguments: %v", err)
@@ -64,11 +110,14 @@ func TestInstallRejectsBadSecondArtifactBeforeCommand(t *testing.T) {
 	}
 	manifest := artifactInstallManifest(t, "artifact-bad-checksum", marker, artifacts)
 	executor := newTestExecutor(t, manifest)
+	progress := &installProgressRecorder{}
+	executor.emit = progress.emit
 
 	err := executor.Install(context.Background(), manifest.Engine)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("install error = %v, want checksum mismatch", err)
 	}
+	progress.assertSingleTerminal(t, "failed")
 	if fileExists(marker) {
 		t.Fatal("install command ran after an artifact checksum failed")
 	}
@@ -99,6 +148,8 @@ func TestInstallCancellationRemovesDownloadedArtifacts(t *testing.T) {
 	}
 	manifest := artifactInstallManifest(t, "artifact-cancel", marker, artifacts)
 	executor := newTestExecutor(t, manifest)
+	progress := &installProgressRecorder{}
+	executor.emit = progress.emit
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -119,6 +170,7 @@ func TestInstallCancellationRemovesDownloadedArtifacts(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled install did not return")
 	}
+	progress.assertSingleTerminal(t, "failed")
 	assertNoArtifactTemps(t, manifest.Engine)
 }
 
