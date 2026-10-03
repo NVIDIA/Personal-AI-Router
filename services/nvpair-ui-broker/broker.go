@@ -3240,10 +3240,6 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "engine:set-port":
 		go b.handleSettingsPortRPC(msg, "")
-	case "ollama-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "ollama")
-	case "lmstudio-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "lmstudio")
 
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
@@ -3331,7 +3327,7 @@ func (b *Broker) handleMessage(msg *Message) {
 	default:
 		// Any remaining method under an engine's <component>: prefix is
 		// relayed verbatim to that engine's proxy (the reserved broker-local
-		// ones — get-status and the subscription methods — are handled by
+		// ones — get-status, set-port and the subscription methods — are handled by
 		// the profile-driven block above). This makes the broker a thin pass-through
 		// for each proxy's whole control plane without enumerating methods.
 		//

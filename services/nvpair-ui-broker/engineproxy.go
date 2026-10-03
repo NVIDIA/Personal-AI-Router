@@ -572,6 +572,12 @@ func (b *Broker) setEngineProxySubscribed(p engineProxyProfile, subscribed bool)
 // rather than the proxy child. It reports whether method was handled.
 func (b *Broker) handleEngineProxyBrokerRequest(profile engineProxyProfile, method string, msg *Message) bool {
 	switch method {
+	case "set-port":
+		// Settings application round-trips through worker readers, so it
+		// must not block the broker's JSON-RPC read pump.
+		go b.handleSettingsPortRPC(msg, profile.Name)
+		return true
+
 	case "get-status":
 		var result ProxyStatusResult
 		if proxy := b.engineProxyHandle(profile); proxy != nil {

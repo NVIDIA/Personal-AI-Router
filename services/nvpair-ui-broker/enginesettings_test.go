@@ -25,6 +25,7 @@ import (
 type settingsHarness struct {
 	b                   *Broker
 	applies             atomic.Int32
+	proxyRebinds        atomic.Int32
 	fail                atomic.Bool
 	failBeforeStop      atomic.Bool
 	loseProxyOnStop     atomic.Bool
@@ -38,6 +39,11 @@ type settingsHarness struct {
 }
 
 func newSettingsHarness(t *testing.T) *settingsHarness {
+	t.Helper()
+	return newSettingsHarnessForEngine(t, "ollama")
+}
+
+func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	t.Helper()
 	ports := make([]int, 4)
 	listeners := []net.Listener{}
@@ -81,14 +87,18 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 			var p struct {
 				Port int `json:"port"`
 			}
-			_ = json.Unmarshal(msg.Params, &p)
+			if err := json.Unmarshal(msg.Params, &p); err != nil {
+				t.Errorf("decode proxy port request: %v", err)
+				return
+			}
+			h.proxyRebinds.Add(1)
 			proxy.readyMu.Lock()
 			proxy.facadeState[engine] = proxyFacadeState{ready: true, port: p.Port}
 			proxy.readyMu.Unlock()
 			_ = proxyCodec.Respond(msg.ID, map[string]int{"port": p.Port})
 		}
 	}()
-	launch := settings.LaunchState{Engine: "ollama", ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
+	launch := settings.LaunchState{Engine: engine, ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
 	go func() {
 		for {
 			msg, err := codec.Read()
@@ -130,9 +140,9 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 					if h.failBeforeStop.Load() {
 						if h.loseProxyOnStop.Load() {
 							proxy.readyMu.Lock()
-							state := proxy.facadeState["ollama"]
+							state := proxy.facadeState[engine]
 							state.ready = false
-							proxy.facadeState["ollama"] = state
+							proxy.facadeState[engine] = state
 							proxy.readyMu.Unlock()
 						}
 						_ = codec.RespondError(msg.ID, -32000, "stop failure")
