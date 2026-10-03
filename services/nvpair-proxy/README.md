@@ -101,7 +101,7 @@ and the health crash key are matched against each other, so they move together
 | Where PAIR relocates the engine | 11435 | 1235 | 8081 |
 | Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 |
 | Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` |
-| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI; upstream `/models`) |
+| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) |
 | Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/messages` | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` |
 | Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte |
 
@@ -118,6 +118,8 @@ clients use `8080`, while the managed `llama-server` stays on `8081`.
 A facade listens on its enabled port and forwards incoming requests to the
 currently active node — except the model-list routes, which are queried across
 every candidate node concurrently and merged into one de-duplicated inventory.
+On the llama.cpp facade, `GET /models` and `GET /v1/models` return the same
+fleet inventory across llama.cpp candidates, even when a node is selected.
 Point your client at the proxy and it handles routing.
 
 When the broker supplies `aliasAddresses`, the facade reserves that

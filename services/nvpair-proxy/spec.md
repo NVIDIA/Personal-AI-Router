@@ -178,8 +178,11 @@ For a model-bearing inference request:
 An ineligible manual selection cannot override the capability gate, and failover
 never broadens to an excluded node.
 
-The llama.cpp facade exposes the OpenAI-compatible `GET /v1/models` route and
-remaps it to the router's `GET /models`; its inference routes remain `/v1/*`.
+The llama.cpp facade exposes `GET /models` and `GET /v1/models` as aliases for
+the fleet's llama.cpp inventory. Both query every candidate's `GET /models`
+concurrently and merge duplicate model ids into an OpenAI list envelope
+(`{"object":"list","data":[...]}`). A selected node affects candidate ordering,
+not inventory scope. Its inference routes remain `/v1/*`.
 
 ### 5.1 Retry bounds
 

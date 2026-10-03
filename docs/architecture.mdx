@@ -366,9 +366,10 @@ advertised owner eligible.
 
 A request whose model cannot be parsed keeps the ordinary non-model ordering.
 
-Model listings are not routed at all. A `GET` of `/v1/models` or `/api/tags` is
-fanned out to every candidate concurrently and the replies are merged, which is
-why the answer is the cluster's inventory rather than one node's.
+Model listings are not routed at all. A `GET` of `/v1/models`, Ollama's
+`/api/tags`, or llama.cpp's `/models` is fanned out to every candidate for that
+engine concurrently and the replies are merged, which is why the answer is the
+cluster's inventory for that engine rather than one node's.
 
 #### Failover and Inventory Freshness
 
