@@ -141,7 +141,7 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 |---|---|---|---|
 | `fetch.url` | string | when `fetch` present | Download URL — **HTTPS** (plain `http` only from loopback). |
 | `fetch.sha256` | string | no | Hex SHA-256. When set, the download is verified against it **before** `run` executes; when omitted, the fetch is HTTPS-only and runs with a loud "unpinned" warning (the same weaker guarantee as `script`). Pin it for any real release. |
-| `run` | string[] | no | Argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. The child also receives exact paths in `NVPAIR_INSTALL_DIR`, `NVPAIR_INSTALL_DOWNLOAD`, and `NVPAIR_INSTALL_DOWNLOAD_<ARTIFACT_NAME>` so commands that reparse argv can avoid shell quoting. Requires a `fetch` or `artifacts`. |
+| `run` | string[] | when `fetch` or nonempty `artifacts` present | Nonempty argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. The child also receives exact paths in `NVPAIR_INSTALL_DIR`, `NVPAIR_INSTALL_DOWNLOAD`, and `NVPAIR_INSTALL_DOWNLOAD_<ARTIFACT_NAME>` so commands that reparse argv can avoid shell quoting. Requires a `fetch` or `artifacts`. |
 | `script` | string[] | no | **Escape hatch** for vendors that only ship a script installer. Runs **without** checksum verification (logged as unpinned) and replaces `fetch`+`run`. Prefer `fetch`+`run` whenever the vendor publishes a script or artifact: download it first, then execute the local file. **Make failures loud:** a piped bootstrap such as `curl … \| bash` can mask a failed fetch, while a separate fetch prevents the run and reports the error. |
 | `mode` | string | no | `"user"` (default) or `"admin"`. The runner **refuses** `"admin"` (engine-manager is user-mode only); it is a deliberate, flagged exception, not a default. |
 
@@ -322,8 +322,10 @@ substituted into `http.path`, which templates only `{port}`.
 A manifest is rejected at load (with a specific message) when: a required
 field is missing, `manifest_version` is unsupported, a platform key isn't
 `"<goos>/<goarch>"`, `runtime.bin` is empty in process mode (or
-`runtime.start` is empty in command mode), `install.run` has no `fetch`,
-`install.script` is combined with `fetch`/`run`, `install.mode` or
+`runtime.start` is empty in command mode), `install.run` has neither `fetch`
+nor nonempty `artifacts`, `fetch` or nonempty `artifacts` is present without
+nonempty `install.run`, `install.script` is combined with
+`fetch`/`artifacts`/`run`, `install.mode` or
 `runtime.mode` is invalid, an action sets none or more than one of
 `http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
