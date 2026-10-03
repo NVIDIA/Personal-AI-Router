@@ -156,6 +156,51 @@ func TestValidateAcceptsNamedInstallArtifacts(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsDownloadInstallWithoutRun(t *testing.T) {
+	test := func(name string, install *Install) {
+		t.Run(name, func(t *testing.T) {
+			m := validManifest()
+			p := m.Platforms["linux/amd64"]
+			p.Install = install
+			m.Platforms["linux/amd64"] = p
+
+			err := m.Validate()
+			if err == nil {
+				t.Fatal("download install without run accepted")
+			}
+			const want = `platform "linux/amd64": install.run is required when install.fetch or install.artifacts is present`
+			if err.Error() != want {
+				t.Fatalf("validation error = %q, want %q", err, want)
+			}
+		})
+	}
+
+	test("fetch with omitted run", &Install{
+		Fetch: &Fetch{URL: "https://example/installer.zip"},
+	})
+	test("fetch with empty run", &Install{
+		Fetch: &Fetch{URL: "https://example/installer.zip"},
+		Run:   []string{},
+	})
+	test("artifacts with omitted run", &Install{
+		Artifacts: validInstallArtifacts(),
+	})
+	test("artifacts with empty run", &Install{
+		Artifacts: validInstallArtifacts(),
+		Run:       []string{},
+	})
+}
+
+func TestValidateAcceptsScriptOnlyInstall(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.Install = &Install{Script: []string{"sh", "installer.sh"}}
+	m.Platforms["linux/amd64"] = p
+	if err := m.Validate(); err != nil {
+		t.Fatalf("script-only install rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsArtifactPlaceholderFromAnotherPlatform(t *testing.T) {
 	m := validManifest()
 	setInstallArtifacts(&m, validInstallArtifacts())
@@ -414,6 +459,40 @@ func TestLoadRegistryOverride(t *testing.T) {
 	m, ok := reg.Get("ollama")
 	if !ok || m.DisplayName != "Ollama (user)" {
 		t.Fatalf("user override did not win: %+v", m)
+	}
+}
+
+func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatalf("load bundled manifests: %v", err)
+	}
+	base, ok := reg.Get("ollama")
+	if !ok {
+		t.Fatal("bundled ollama manifest missing")
+	}
+	baseRun := base.Platforms["linux/amd64"].Install.Run
+	if len(baseRun) == 0 {
+		t.Fatal("bundled ollama install.run is empty")
+	}
+	dir := t.TempDir()
+	const override = `{
+  "engine": "ollama",
+  "display_name": "Invalid override",
+  "platforms": {"linux/amd64": {"install": {"run": []}}}
+}`
+	if err := os.WriteFile(filepath.Join(dir, "ollama.json"), []byte(override), 0o644); err != nil {
+		t.Fatalf("write override: %v", err)
+	}
+	if err := reg.LoadOverrideDir(dir); err != nil {
+		t.Fatalf("load override directory: %v", err)
+	}
+	got, ok := reg.Get("ollama")
+	if !ok || got != base {
+		t.Fatalf("invalid override replaced bundled manifest: got %+v, want original manifest", got)
+	}
+	if !slices.Equal(got.Platforms["linux/amd64"].Install.Run, baseRun) {
+		t.Fatal("invalid override changed the bundled install.run")
 	}
 }
 

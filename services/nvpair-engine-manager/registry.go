@@ -677,6 +677,9 @@ func (p *Platform) validate(key string) error {
 		if p.Install.Fetch != nil && hasArtifacts {
 			return fmt.Errorf("platform %q: install.fetch and install.artifacts are mutually exclusive", key)
 		}
+		if (p.Install.Fetch != nil || hasArtifacts) && len(p.Install.Run) == 0 {
+			return fmt.Errorf("platform %q: install.run is required when install.fetch or install.artifacts is present", key)
+		}
 		if len(p.Install.Run) > 0 && p.Install.Fetch == nil && !hasArtifacts {
 			return fmt.Errorf("platform %q: install.run requires a fetch or artifacts (the downloads the run command uses)", key)
 		}
