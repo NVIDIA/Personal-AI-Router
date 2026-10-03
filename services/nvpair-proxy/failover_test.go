@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -534,6 +535,65 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 			t.Fatalf("models = %+v, want a, shared(first), c", got.Data)
 		}
 	})
+}
+
+func TestHandleHTTP_LlamaCPPModelListsAggregateFleet(t *testing.T) {
+	for _, path := range []string{"/models", "/v1/models"} {
+		t.Run(path, func(t *testing.T) {
+			profile, ok := profileFor("llamacpp")
+			if !ok {
+				t.Fatal("llamacpp profile missing")
+			}
+			serve := func(body string, hits *atomic.Int32) *httptest.Server {
+				t.Helper()
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hits.Add(1)
+					if r.Method != http.MethodGet || r.URL.Path != "/models" || r.URL.RawQuery != "scope=all" {
+						t.Errorf("upstream request = %s %s?%s, want GET /models?scope=all", r.Method, r.URL.Path, r.URL.RawQuery)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if _, err := io.WriteString(w, body); err != nil {
+						t.Errorf("write model list: %v", err)
+					}
+				}))
+				t.Cleanup(server.Close)
+				return server
+			}
+			var aHits, bHits atomic.Int32
+			a := serve(`{"object":"list","data":[{"id":"a","owned_by":"a"},{"id":"shared","owned_by":"first"}]}`, &aHits)
+			b := serve(`{"object":"list","data":[{"id":"shared","owned_by":"second"},{"id":"c","owned_by":"b"}]}`, &bHits)
+			disc := NewDiscovery()
+			disc.AddManual(nodeFor(t, "a", a.URL))
+			disc.AddManual(nodeFor(t, "b", b.URL))
+			f := testProxy(profile, disc, profile.FacadePort).soleFacade()
+			f.SetSelected("a")
+			rec := httptest.NewRecorder()
+			f.handleHTTP(rec, httptest.NewRequest(http.MethodGet, path+"?scope=all", nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("model list status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			var got struct {
+				Object string `json:"object"`
+				Data   []struct {
+					ID      string `json:"id"`
+					OwnedBy string `json:"owned_by"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode model list: %v", err)
+			}
+			if got.Object != "list" || len(got.Data) != 3 {
+				t.Fatalf("model list = %+v, want list envelope with three deduplicated models", got)
+			}
+			if got.Data[0].ID != "a" || got.Data[1].ID != "shared" || got.Data[1].OwnedBy != "first" || got.Data[2].ID != "c" {
+				t.Fatalf("models = %+v, want a, shared(first), c", got.Data)
+			}
+			if aHits.Load() != 1 || bHits.Load() != 1 {
+				t.Fatalf("upstream requests: a=%d, b=%d, want one per node despite selecting a", aHits.Load(), bHits.Load())
+			}
+		})
+	}
 }
 
 func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {

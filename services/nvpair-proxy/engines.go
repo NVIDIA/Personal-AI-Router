@@ -138,9 +138,10 @@ var lmStudioBaseRoutes = []route{
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
 
-// llamaCPPBaseRoutes maps the facade's OpenAI-compatible model-list path to
-// llama.cpp's router endpoint. The response already uses the OpenAI envelope.
+// llamaCPPBaseRoutes serves both model-list paths through the fleet inventory,
+// querying llama.cpp's router endpoint. Its response uses the OpenAI envelope.
 var llamaCPPBaseRoutes = []route{
+	{Path: "/models", Role: roleModelListOpenAIGET},
 	{Path: "/v1/models", UpstreamPath: "/models", Role: roleModelListOpenAIGET},
 }
 

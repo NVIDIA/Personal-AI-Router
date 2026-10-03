@@ -73,8 +73,10 @@ func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
-	t.Run("remaps OpenAI model list to router inventory", func(t *testing.T) {
-		response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", proxyPort))
+	getModelList := func(t *testing.T, path string) {
+		t.Helper()
+		hitsBefore := modelListHits.Load()
+		response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", proxyPort, path))
 		if err != nil {
 			t.Fatalf("get model list: %v", err)
 		}
@@ -95,10 +97,16 @@ func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 			}
 		}
 		if response.StatusCode != http.StatusOK || list.Object != "list" ||
-			!found || modelListHits.Load() != 1 {
+			!found || modelListHits.Load() != hitsBefore+1 {
 			t.Fatalf("model list status=%d body=%+v upstreamHits=%d",
 				response.StatusCode, list, modelListHits.Load())
 		}
+	}
+	t.Run("remaps OpenAI model list to router inventory", func(t *testing.T) {
+		getModelList(t, "/v1/models")
+	})
+	t.Run("serves router model-list alias", func(t *testing.T) {
+		getModelList(t, "/models")
 	})
 
 	post := func(t *testing.T, requestedModel string) int {
