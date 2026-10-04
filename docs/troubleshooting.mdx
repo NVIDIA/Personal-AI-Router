@@ -98,6 +98,12 @@ needs no GPU or engine of its own, and its local endpoint routes to nodes that
 have them. Refer to
 [The Endpoint Is Local to the Machine Running PAIR](getting-started.mdx#the-endpoint-is-local-to-the-machine-running-pair).
 
+If the application is a container on a Kubernetes cluster, the same rule applies
+and the answer is the same: run a PAIR node on the cluster. That node needs the
+host's network to discover peers, and a small relay to turn in-cluster
+connections into loopback ones. Refer to
+[Containers and Kubernetes](containers.mdx).
+
 For an application on the same machine, copy the URL from
 **Endpoints > API endpoints** rather than assuming a port. PAIR takes the
 engine's usual port for its compatible proxy and moves the engine itself to the
