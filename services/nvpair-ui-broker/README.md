@@ -122,9 +122,13 @@ withdrawn or answered with an error on its own, leaving the others serving.
 
 Ollama's standalone default is `:11435`; with managed port ownership enabled (the default), the broker starts settings and engine-manager first, claims `:11434` with that facade, and only then moves a stopped default-port Ollama backend to a free port. Custom backend ports are preserved. When the inherited `OLLAMA_HOST` names a distinct local plaintext port, the broker also gives the facade that normalized loopback-only alias so clients already using the variable enter the same routing path; `localhost` reserves both canonical loopback families atomically, while remote and HTTPS targets are ignored. The alias port is reserved against every configured engine, local or remote engine start override, every facade's control plane, and the managed Ollama and LM Studio backend port plans, so a backend that has to move can never land on the alias. A running Ollama or unknown owner on either requested port is never stopped or moved: the primary uses a safe fallback when needed, and an occupied alias remains with its owner while the broker reports a warning.
 
-llama.cpp is prepositioned by its manifest on `:8081`; the broker never takes
-over or moves that process. Its default-enabled facade uses `:8080` or a safe
-fallback without colliding with the fixed backend port.
+llama.cpp is a managed engine: engine-manager owns its lifecycle and starts it
+on its configured loopback port, `:8081` by default. The broker places its
+default-enabled facade on `:8080` or a safe fallback, without automatically
+relocating the engine or adding a compatibility-port ownership gate. Fallback
+selection excludes the default engine port and other engines' reserved ports.
+Explicit engine and proxy settings are preserved; a bind failure on an explicitly
+chosen proxy port is reported instead of selecting a fallback.
 
 For automatic model-bearing inference, every facade combines scheduler pending counts and GPU pressure with the process-wide reservation map under one lock before forwarding, so concurrent requests distribute without an artificial delay or a round trip through the scheduler. A reservation is released when its request ends and moves with a failover, so a node stops counting as loaded as soon as it stops working. Manual pins, model-owner tiers, and the complete failover list keep their existing precedence. The broker otherwise treats the proxy as **optional and non-fatal**.
 
