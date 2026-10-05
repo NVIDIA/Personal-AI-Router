@@ -188,25 +188,25 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	}
 }
 
-// runAutoAdvertisePrepositioned reconciles an ungated engine whose backend is
-// fixed on the port recorded in its runtime profile.
-func (b *Broker) runAutoAdvertisePrepositioned(ctx context.Context, profile engineProxyProfile) {
+// runAutoAdvertiseEngine reconciles an engine using the configured port
+// recorded in its runtime profile, without compatibility-port reconciliation.
+func (b *Broker) runAutoAdvertiseEngine(ctx context.Context, profile engineProxyProfile) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	ticker := time.NewTicker(autoAdvertiseInterval)
 	defer ticker.Stop()
 
-	b.reconcileAdvertisePrepositioned(profile, client)
+	b.reconcileAdvertiseEngine(profile, client)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			b.reconcileAdvertisePrepositioned(profile, client)
+			b.reconcileAdvertiseEngine(profile, client)
 		}
 	}
 }
 
-func (b *Broker) reconcileAdvertisePrepositioned(profile engineProxyProfile, client *http.Client) {
+func (b *Broker) reconcileAdvertiseEngine(profile engineProxyProfile, client *http.Client) {
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
 

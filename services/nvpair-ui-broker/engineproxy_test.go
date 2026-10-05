@@ -93,8 +93,8 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	}
 }
 
-// Ownership is the one judgment call in adding an engine, so every value in
-// the table today are pinned explicitly. Getting these backwards does not fail
+// Every engine's relocation authority is pinned explicitly. Getting these
+// backwards does not fail
 // to compile — it silently changes which engine the broker believes it may stop.
 func TestEngineOwnershipAssignments(t *testing.T) {
 	for _, tc := range []struct {
@@ -103,7 +103,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 	}{
 		{"ollama", adoptedEngine},
 		{"lmstudio", managedEngine},
-		{"llamacpp", prepositionedEngine},
+		{"llamacpp", managedEngine},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {

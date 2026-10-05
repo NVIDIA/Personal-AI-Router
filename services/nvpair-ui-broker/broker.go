@@ -769,23 +769,20 @@ func (b *Broker) enableEngineFacadeWithPortCheck(
 	alias ollamaHostAlias,
 	available func(int) bool,
 ) error {
-	if profile.Ownership == prepositionedEngine {
-		return b.enableProxyFacadeWithFallback(
-			ctx,
-			pp,
-			b.prepositionedFacadeSpec(profile),
-			func(failed int) int {
-				return b.prepositionedFallbackPortWithCheck(profile, failed, available)
-			},
-		)
-	}
 	switch profile.Name {
 	case ollamaProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.ollamaFacadeSpec(alias), b.ollamaFallbackPort)
 	case lmstudioProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.lmstudioFacadeSpec(), b.lmstudioFallbackPort)
 	default:
-		return fmt.Errorf("no facade spec for engine %q", profile.Name)
+		return b.enableProxyFacadeWithFallback(
+			ctx,
+			pp,
+			b.defaultEngineFacadeSpec(profile),
+			func(failed int) int {
+				return b.defaultEngineFallbackPortWithCheck(profile, failed, available)
+			},
+		)
 	}
 }
 
@@ -799,9 +796,6 @@ func (b *Broker) enableEngineFacadeWithPortCheck(
 // alias. Finishing is what returns the alias, which is only correct once this
 // engine is known not to be coming up.
 func (b *Broker) blockAndFinishEngineProxy(profile engineProxyProfile) {
-	if profile.Ownership == prepositionedEngine {
-		return
-	}
 	switch profile.Name {
 	case ollamaProxyProfile.Name:
 		if b.ollamaState().managedFacade.Load() {
@@ -814,7 +808,7 @@ func (b *Broker) blockAndFinishEngineProxy(profile engineProxyProfile) {
 		}
 		b.finishLMStudioProxyTerminal()
 	default:
-		slog.Warn("no terminal handling for engine", "engine", profile.Name)
+		// Other engines have no compatibility-port claim or startup gate.
 	}
 }
 
@@ -1009,8 +1003,8 @@ func (b *Broker) forwardProxyProcessNotification(
 		}
 	default:
 		profile, known := engineProxyProfileFor(engine)
-		if known && profile.Ownership == prepositionedEngine {
-			b.forwardPrepositionedProxyNotification(profile, method, params)
+		if known {
+			b.forwardDefaultEngineProxyNotification(profile, method, params)
 			return
 		}
 		slog.Warn("proxy addressed a notification without a handler",
@@ -2234,12 +2228,15 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// the broker can resolve ownership.
 	availabilityRunners := []func(context.Context){b.runAutoAdvertise, b.runAutoAdvertiseLMStudio}
 	for _, profile := range engineProxyProfiles {
-		if profile.Ownership != prepositionedEngine || !b.proxyEnabled(profile) {
+		if !b.proxyEnabled(profile) {
+			continue
+		}
+		if profile.Name == ollamaProxyProfile.Name || profile.Name == lmstudioProxyProfile.Name {
 			continue
 		}
 		profile := profile
 		availabilityRunners = append(availabilityRunners, func(ctx context.Context) {
-			b.runAutoAdvertisePrepositioned(ctx, profile)
+			b.runAutoAdvertiseEngine(ctx, profile)
 		})
 	}
 	go b.runEngineAvailabilityAfterPortGates(ctx, availabilityRunners...)

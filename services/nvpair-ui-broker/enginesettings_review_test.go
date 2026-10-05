@@ -64,7 +64,7 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 			case "lmstudio":
 				b.forwardLMStudioProxyNotification("error", failure)
 			default:
-				b.forwardPrepositionedProxyNotification(profile, profile.addressed("error"), failure)
+				b.forwardDefaultEngineProxyNotification(profile, profile.addressed("error"), failure)
 			}
 			if got := b.engineProxy(profile).startupPort.Load(); got != requested {
 				t.Fatalf("bind notification changed chosen port to %d", got)

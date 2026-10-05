@@ -111,7 +111,7 @@ func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 	}
 }
 
-func TestPrepositionedAdvertiserTracksBackendHealth(t *testing.T) {
+func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -129,14 +129,14 @@ func TestPrepositionedAdvertiserTracksBackendHealth(t *testing.T) {
 		proxyPort++
 	}
 
-	profile := testPrepositionedProfile()
+	profile := testDefaultEngineProxyProfile()
 	profile.DiscoveryService = noderec.ServiceLMStudio
-	b := brokerWithPrepositionedProfile(profile)
+	b := brokerWithEngineProxyProfile(profile)
 	b.regCache = relay.NewRegistrationCache()
 	b.engineProxy(profile).backendPort.Store(int32(backendPort))
 	updates := attachAdvertiserProxy(t, b, profile, proxyPort)
 
-	b.reconcileAdvertisePrepositioned(profile, backend.Client())
+	b.reconcileAdvertiseEngine(profile, backend.Client())
 	registrations := b.regCache.Snapshot()
 	if len(registrations) != 1 || registrations[0].Service != profile.DiscoveryService ||
 		registrations[0].Port != proxyPort {
@@ -147,7 +147,7 @@ func TestPrepositionedAdvertiserTracksBackendHealth(t *testing.T) {
 	}
 
 	backend.Close()
-	b.reconcileAdvertisePrepositioned(profile, backend.Client())
+	b.reconcileAdvertiseEngine(profile, backend.Client())
 	if got := b.regCache.Snapshot(); len(got) != 0 {
 		t.Fatalf("unhealthy engine remained advertised: %+v", got)
 	}
@@ -156,10 +156,10 @@ func TestPrepositionedAdvertiserTracksBackendHealth(t *testing.T) {
 	}
 }
 
-func TestPrepositionedAdvertiserRejectsSelfForwardLoop(t *testing.T) {
-	profile := testPrepositionedProfile()
+func TestEngineAdvertiserRejectsSelfForwardLoop(t *testing.T) {
+	profile := testDefaultEngineProxyProfile()
 	profile.DiscoveryService = noderec.ServiceLMStudio
-	b := brokerWithPrepositionedProfile(profile)
+	b := brokerWithEngineProxyProfile(profile)
 	b.regCache = relay.NewRegistrationCache()
 	b.regCache.Register(noderec.RegisterParams{Service: profile.DiscoveryService, Port: 44000})
 	b.engineProxy(profile).backendPort.Store(44000)
@@ -167,7 +167,7 @@ func TestPrepositionedAdvertiserRejectsSelfForwardLoop(t *testing.T) {
 
 	// A nil client proves the collision check short-circuits before probing the
 	// facade as though it were the backend.
-	b.reconcileAdvertisePrepositioned(profile, nil)
+	b.reconcileAdvertiseEngine(profile, nil)
 	if got := b.regCache.Snapshot(); len(got) != 0 {
 		t.Fatalf("self-forwarding facade remained advertised: %+v", got)
 	}

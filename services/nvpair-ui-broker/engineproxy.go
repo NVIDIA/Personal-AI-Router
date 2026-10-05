@@ -9,11 +9,9 @@ package main
 // the broker about it. What this file adds is the one thing only the broker
 // needs: whether it may reposition the engine's process while it is running.
 //
-// That single question decides every place the two engines' port choreography
-// diverges, which is why it is a named enum rather than a set of booleans or a
-// bag of function pointers. A hook would only move the divergent bodies into
-// this file; naming the reason keeps them where they belong and makes the
-// difference reviewable.
+// Ownership governs relocation authority, not facade setup. Engines normally
+// keep their configured port while the broker places their facade. Ollama and
+// LM Studio additionally need engine-specific compatibility-port takeover.
 
 import (
 	"context"
@@ -30,7 +28,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-// engineOwnership selects the broker's port-ownership strategy.
+// engineOwnership describes the broker's authority to request engine relocation.
 type engineOwnership int
 
 const (
@@ -40,15 +38,11 @@ const (
 	// it holds the facade port. Ollama.
 	adoptedEngine engineOwnership = iota
 
-	// managedEngine — engine-manager launched it in identified command mode
-	// and has an official stop command for it, so it may be stopped and
-	// repositioned before the proxy starts. LM Studio.
+	// managedEngine — engine-manager can stop and reposition a process it
+	// owns, or an identified command-mode runtime with an official stop
+	// command. It still refuses unknown or unowned processes. LM Studio and
+	// llama.cpp; only LM Studio needs automatic compatibility-port takeover.
 	managedEngine
-
-	// prepositionedEngine — engine-manager already owns the process and keeps
-	// it on EnginePortBase. The broker only places the facade, never gates
-	// engine requests or takes over/repositions the backend.
-	prepositionedEngine
 )
 
 // engineProxyProfile is everything the broker needs to supervise one engine's
@@ -56,9 +50,8 @@ const (
 type engineProxyProfile struct {
 	engines.Engine
 
-	// Ownership decides the port choreography: plan-then-commit for an adopted
-	// engine, move-then-verify for a managed one, or facade-only placement for
-	// a prepositioned one. It is the only judgment call in adding an engine.
+	// Ownership determines whether a running engine may be relocated when an
+	// engine-specific compatibility-port takeover requires it.
 	Ownership engineOwnership
 
 	// HealthProbePath is the path whose 200 means "this engine is answering".
@@ -168,10 +161,10 @@ var engineProxyProfiles = buildEngineProxyProfiles()
 func buildEngineProxyProfiles() []engineProxyProfile {
 	brokerOnly := map[string]engineProxyProfile{
 		"ollama": {Ownership: adoptedEngine, HealthProbePath: "/"},
-		// LM Studio is the one engine engine-manager may move while running:
-		// its identified command-mode runtime has an official stop command.
+		// LM Studio's command-mode runtime has an official stop command;
+		// llama.cpp's managed process is stopped directly by engine-manager.
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
-		"llamacpp": {Ownership: prepositionedEngine, HealthProbePath: "/health"},
+		"llamacpp": {Ownership: managedEngine, HealthProbePath: "/health"},
 	}
 	out := make([]engineProxyProfile, 0, len(engines.All()))
 	for _, e := range engines.All() {
@@ -300,9 +293,9 @@ func (b *Broker) enableProxyFacadeWithFallback(
 	return b.enableProxyFacade(parent, p, spec)
 }
 
-// prepositionedFacadeSpec prefers the stock facade port, while preserving a
+// defaultEngineFacadeSpec prefers the stock facade port, while preserving a
 // fallback or explicit port already selected for this broker lifetime.
-func (b *Broker) prepositionedFacadeSpec(profile engineProxyProfile) enableFacadeRequest {
+func (b *Broker) defaultEngineFacadeSpec(profile engineProxyProfile) enableFacadeRequest {
 	spec := enableFacadeRequest{Engine: profile.Name, Port: profile.FacadePort}
 	if port := int(b.engineProxy(profile).startupPort.Load()); port != 0 {
 		spec.Port = port
@@ -311,9 +304,9 @@ func (b *Broker) prepositionedFacadeSpec(profile engineProxyProfile) enableFacad
 	return spec
 }
 
-// prepositionedFallbackPortWithCheck keeps a fallback off the fixed backend
+// defaultEngineFallbackPortWithCheck keeps a fallback off the engine's default
 // port and every sibling's facade/backend/persisted ports.
-func (b *Broker) prepositionedFallbackPortWithCheck(
+func (b *Broker) defaultEngineFallbackPortWithCheck(
 	profile engineProxyProfile, failed int, available func(int) bool,
 ) int {
 	excluded := []int{failed, profile.EnginePortBase}
@@ -396,11 +389,11 @@ func (b *Broker) proxyEnabled(p engineProxyProfile) bool {
 
 // prepareEnabledFacades prepares port ownership for the engines the broker is
 // actually going to front, in table order — Ollama first, because its alias
-// reservation constrains later engines. A prepositioned backend needs no gate
-// or move; recording its fixed backend port is its entire preparation.
+// reservation constrains later engines. The default path records the engine
+// port without a gate or automatic relocation.
 //
 // The enablement check belongs here and not downstream, because preparation is
-// not read-only: for a managed engine the backend move runs inside it, so
+// not read-only: LM Studio's engine move runs inside it, so
 // preparing an engine whose proxy is never started relocates that engine off
 // its own stock port and leaves nothing serving it. Ollama cannot show the
 // symptom, since its move is deferred until its proxy proves it holds the
@@ -410,20 +403,18 @@ func (b *Broker) prepareEnabledFacades() {
 		if !b.proxyEnabled(profile) {
 			continue
 		}
-		switch {
-		case profile.Name == ollamaProxyProfile.Name:
+		switch profile.Name {
+		case ollamaProxyProfile.Name:
 			b.prepareManagedOllamaFacade()
-		case profile.Name == lmstudioProxyProfile.Name:
+		case lmstudioProxyProfile.Name:
 			b.prepareManagedLMStudioFacade()
-		case profile.Ownership == prepositionedEngine:
-			b.preparePrepositionedFacade(profile)
 		default:
-			slog.Warn("no port preparation strategy for engine", "engine", profile.Name)
+			b.prepareDefaultEngineFacade(profile)
 		}
 	}
 }
 
-func (b *Broker) preparePrepositionedFacade(profile engineProxyProfile) {
+func (b *Broker) prepareDefaultEngineFacade(profile engineProxyProfile) {
 	if b.prepareExplicitEngineSettings(profile.Name) {
 		return
 	}
@@ -517,10 +508,9 @@ func (b *Broker) forwardEngineProxyNotification(profile engineProxyProfile, meth
 	}
 }
 
-// forwardPrepositionedProxyNotification is the facade-only notification path:
-// there is no ownership or readiness reconciliation because the backend stays
-// fixed on EnginePortBase.
-func (b *Broker) forwardPrepositionedProxyNotification(profile engineProxyProfile, method string, params json.RawMessage) {
+// forwardDefaultEngineProxyNotification relays a facade notification without
+// engine-specific compatibility-port reconciliation.
+func (b *Broker) forwardDefaultEngineProxyNotification(profile engineProxyProfile, method string, params json.RawMessage) {
 	method, addressed := facadeMethodFor(profile, method)
 	if !addressed {
 		return

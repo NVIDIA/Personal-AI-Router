@@ -13,7 +13,7 @@ import (
 	"nvpair-shared/engines"
 )
 
-func testPrepositionedProfile() engineProxyProfile {
+func testDefaultEngineProxyProfile() engineProxyProfile {
 	return engineProxyProfile{
 		Engine: engines.Engine{
 			Name:           "fixedtest",
@@ -22,12 +22,12 @@ func testPrepositionedProfile() engineProxyProfile {
 			EnginePortBase: 1234,
 			PortFile:       "fixedtest-proxy-port.json",
 		},
-		Ownership:       prepositionedEngine,
+		Ownership:       managedEngine,
 		HealthProbePath: "/health",
 	}
 }
 
-func brokerWithPrepositionedProfile(profile engineProxyProfile) *Broker {
+func brokerWithEngineProxyProfile(profile engineProxyProfile) *Broker {
 	b := &Broker{}
 	b.engineProxiesOnce.Do(func() {
 		b.engineProxies = map[string]*engineProxyRuntime{
@@ -37,10 +37,10 @@ func brokerWithPrepositionedProfile(profile engineProxyProfile) *Broker {
 	return b
 }
 
-func TestPrepositionedFacadeRetriesAwayFromReservedPorts(t *testing.T) {
+func TestDefaultEngineFacadeRetriesAwayFromReservedPorts(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
-	profile := testPrepositionedProfile()
-	b := brokerWithPrepositionedProfile(profile)
+	profile := testDefaultEngineProxyProfile()
+	b := brokerWithEngineProxyProfile(profile)
 
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
@@ -60,7 +60,7 @@ func TestPrepositionedFacadeRetriesAwayFromReservedPorts(t *testing.T) {
 		func(int) bool { return true },
 	)
 	if err != nil {
-		t.Fatalf("enable prepositioned facade: %v", err)
+		t.Fatalf("enable engine facade: %v", err)
 	}
 	first, second := <-attempts, <-attempts
 	if first.Port != profile.FacadePort {
@@ -74,23 +74,16 @@ func TestPrepositionedFacadeRetriesAwayFromReservedPorts(t *testing.T) {
 		t.Fatal("fallback retry could restore the port that just failed")
 	}
 
-	restart := b.prepositionedFacadeSpec(profile)
+	restart := b.defaultEngineFacadeSpec(profile)
 	if restart.Port != second.Port || !restart.IgnorePersistedPort {
 		t.Fatalf("restart spec = %+v, want explicit fallback port %d", restart, second.Port)
 	}
 }
 
-func TestPrepositionedProfileNeverTakesBackendOwnership(t *testing.T) {
-	profile := testPrepositionedProfile()
-	if profile.mayMoveRunningEngine() {
-		t.Fatal("prepositioned strategy may move a running backend")
-	}
-	if profile.blocksOnOccupiedFacade() {
-		t.Fatal("prepositioned strategy blocks instead of moving only its facade")
-	}
-
-	b := brokerWithPrepositionedProfile(profile)
-	b.preparePrepositionedFacade(profile)
+func TestDefaultEngineFacadePreservesEnginePort(t *testing.T) {
+	profile := testDefaultEngineProxyProfile()
+	b := brokerWithEngineProxyProfile(profile)
+	b.prepareDefaultEngineFacade(profile)
 	state := b.engineProxy(profile)
 	if got := int(state.backendPort.Load()); got != profile.EnginePortBase {
 		t.Fatalf("backend port = %d, want fixed base %d", got, profile.EnginePortBase)
@@ -103,9 +96,8 @@ func TestPrepositionedProfileNeverTakesBackendOwnership(t *testing.T) {
 	}
 }
 
-func TestPrepositionedNotificationPreservesFacadeAddress(t *testing.T) {
-	profile := lmstudioProxyProfile
-	profile.Ownership = prepositionedEngine
+func TestDefaultEngineNotificationPreservesFacadeAddress(t *testing.T) {
+	profile := mustEngineProxyProfile("llamacpp")
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -116,10 +108,10 @@ func TestPrepositionedNotificationPreservesFacadeAddress(t *testing.T) {
 	b.setEngineProxySubscribed(profile, true)
 	b.proxyMu.Unlock()
 
-	payload := json.RawMessage(`{"port":1234}`)
+	payload := json.RawMessage(`{"port":8080}`)
 	done := make(chan struct{})
 	go func() {
-		b.forwardPrepositionedProxyNotification(profile, profile.addressed("ready"), payload)
+		b.forwardDefaultEngineProxyNotification(profile, profile.addressed("ready"), payload)
 		close(done)
 	}()
 	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
