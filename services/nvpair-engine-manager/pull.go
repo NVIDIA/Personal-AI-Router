@@ -260,12 +260,15 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		return nil, fmt.Errorf("pull %q: engine returned HTTP %d: %s", model, startResp.StatusCode, strings.TrimSpace(string(startData)))
 	}
 	var started struct {
-		Success bool `json:"success"`
+		Success *bool `json:"success"`
 	}
 	if err := json.Unmarshal(startData, &started); err != nil {
 		return nil, llamaCPPUnconfirmedStartError(ctx, model, err)
 	}
-	if !started.Success {
+	if started.Success == nil {
+		return nil, llamaCPPUnconfirmedStartError(ctx, model, errors.New("start response has no success flag"))
+	}
+	if !*started.Success {
 		return nil, fmt.Errorf("pull %q: engine did not accept the download", model)
 	}
 	terminal := false
