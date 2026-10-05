@@ -288,7 +288,7 @@
   ${if} ${Errors}
     ClearErrors
     Delete "$INSTDIR\resources\installer-tools\VC_redist.x64.exe"
-    MessageBox MB_OK|MB_ICONSTOP "Personal AI Router could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    MessageBox MB_OK|MB_ICONSTOP "NVIDIA PAIR could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
     SetErrorLevel 3
     Quit
   ${endif}
@@ -305,7 +305,7 @@
     DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart required."
     SetRebootFlag true
   ${else}
-    MessageBox MB_OK|MB_ICONSTOP "Personal AI Router could not install the Microsoft Visual C++ Runtime (exit code $8).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    MessageBox MB_OK|MB_ICONSTOP "NVIDIA PAIR could not install the Microsoft Visual C++ Runtime (exit code $8).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
     SetErrorLevel 3
     Quit
   ${endif}
