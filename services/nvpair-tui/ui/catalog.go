@@ -52,12 +52,15 @@ func (s catalogSort) String() string {
 }
 
 type catalogLoadedMsg struct {
-	engine    string
+	engine string
+	// gen is the request this answers; see catalogBrowser.gen.
+	gen       int
 	models    []catalogModel
 	fetchedAt string
 	// target is the machine the served list was filtered for, as OS/arch.
-	target string
-	err    error
+	target     string
+	searchable bool
+	err        error
 }
 
 var (
@@ -69,7 +72,9 @@ var (
 	// typed. Not esc, which already closes the browser here — a filter matching
 	// nothing otherwise left throwing the whole catalogue away as the only exit.
 	catalogClearKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear filter"))
-	catalogRetryKey = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry"))
+	// The same key, named for what it undoes when the list is a search.
+	catalogClearSearchKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear search"))
+	catalogRetryKey       = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry"))
 )
 
 // catalogBrowser lists the models an engine can download, with a filter.
@@ -80,8 +85,10 @@ var (
 // the terminal interface and the desktop app offer the same models.
 //
 // Filtering is local over the whole fetched list. The catalogue is thousands of
-// entries for Ollama and there is no server-side search, so a keystroke filters
-// what is already in memory instead of issuing a request.
+// entries for Ollama and its source cannot search, so a keystroke filters what
+// is already in memory instead of issuing a request. A source that reports
+// itself searchable is the exception: its browse list is a small slice of what
+// can be downloaded, so a search there is sent upstream instead.
 type catalogBrowser struct {
 	client *rpc.Client
 	engine string
@@ -112,6 +119,17 @@ type catalogBrowser struct {
 	target string
 	remote bool
 	status toast
+
+	// searchable is whether the source answers a query, as its reply says.
+	searchable bool
+	// query is the search the list shows, empty for the browse list. browse
+	// keeps the browse list while a search is showing, so clearing the search
+	// brings it straight back.
+	query  string
+	browse []catalogModel
+	// gen numbers the requests sent, so the reply to one that has since been
+	// superseded, by a newer search or a cleared one, is dropped.
+	gen int
 
 	width, height int
 }
@@ -146,17 +164,28 @@ func catalogColumns(w int) []table.Column {
 }
 
 func (b *catalogBrowser) Init() tea.Cmd {
-	engine := b.engine
-	return call(b.client, "engine:catalog", map[string]string{"engine": engine},
+	return b.load()
+}
+
+// load asks for the browse list, or for the current query's results.
+func (b *catalogBrowser) load() tea.Cmd {
+	b.gen++
+	engine, gen := b.engine, b.gen
+	params := map[string]string{"engine": engine}
+	if b.query != "" {
+		params["query"] = b.query
+	}
+	return call(b.client, "engine:catalog", params,
 		func(msg *rpc.Message, err error) tea.Msg {
 			if err != nil {
-				return catalogLoadedMsg{engine: engine, err: err}
+				return catalogLoadedMsg{engine: engine, gen: gen, err: err}
 			}
 			var r struct {
-				Models    []catalogModel `json:"models"`
-				FetchedAt string         `json:"fetchedAt"`
-				Platform  string         `json:"platform"`
-				Arch      string         `json:"arch"`
+				Models     []catalogModel `json:"models"`
+				FetchedAt  string         `json:"fetchedAt"`
+				Platform   string         `json:"platform"`
+				Arch       string         `json:"arch"`
+				Searchable bool           `json:"searchable"`
 			}
 			decodeOrLog("engine:catalog", msg.Result, &r)
 			// The architecture is half of the answer: an Intel Mac and an
@@ -166,12 +195,30 @@ func (b *catalogBrowser) Init() tea.Cmd {
 				target += "/" + r.Arch
 			}
 			return catalogLoadedMsg{
-				engine:    engine,
-				models:    r.Models,
-				fetchedAt: r.FetchedAt,
-				target:    target,
+				engine:     engine,
+				gen:        gen,
+				models:     r.Models,
+				fetchedAt:  r.FetchedAt,
+				target:     target,
+				searchable: r.Searchable,
 			}
 		})
+}
+
+// search shows the source's answer to a query, or the browse list again for an
+// empty one.
+func (b *catalogBrowser) search(query string) tea.Cmd {
+	b.query = query
+	b.failed = false
+	if query == "" {
+		b.gen++ // a search still in flight is no longer wanted
+		b.loading = false
+		b.all = b.browse
+		b.refresh()
+		return nil
+	}
+	b.loading = true
+	return b.load()
 }
 
 // SetSize records the budget and fixes the table's width. Its height is set in
@@ -187,18 +234,26 @@ func (b *catalogBrowser) SetSize(w, h int) {
 func (b *catalogBrowser) update(msg tea.Msg) (tea.Cmd, string, bool) {
 	switch msg := msg.(type) {
 	case catalogLoadedMsg:
-		if msg.engine != b.engine {
+		if msg.engine != b.engine || msg.gen != b.gen {
 			return nil, "", true
 		}
 		b.loading = false
 		b.failed = msg.err != nil
 		if msg.err != nil {
-			b.status.error("could not load the %s catalog: %s", b.engineLabel, msg.err)
+			if b.query != "" {
+				b.status.error("could not search the %s catalog: %s", b.engineLabel, msg.err)
+			} else {
+				b.status.error("could not load the %s catalog: %s", b.engineLabel, msg.err)
+			}
 			return nil, "", true
 		}
 		b.all = msg.models
-		b.fetchedAt = msg.fetchedAt
-		b.target = msg.target
+		b.searchable = msg.searchable
+		if b.query == "" {
+			b.browse = msg.models
+			b.fetchedAt = msg.fetchedAt
+			b.target = msg.target
+		}
 		b.refresh()
 		return nil, "", true
 
@@ -212,9 +267,13 @@ func (b *catalogBrowser) handleKey(msg tea.KeyMsg) (tea.Cmd, string, bool) {
 	if b.searching {
 		switch msg.String() {
 		case "enter":
-			b.filter = strings.TrimSpace(b.input.Value())
+			value := strings.TrimSpace(b.input.Value())
 			b.searching = false
 			b.input.Blur()
+			if b.searchable {
+				return b.search(value), "", true
+			}
+			b.filter = value
 			b.refresh()
 			return nil, "", true
 		case "esc":
@@ -232,9 +291,17 @@ func (b *catalogBrowser) handleKey(msg tea.KeyMsg) (tea.Cmd, string, bool) {
 		return nil, "", false
 	case key.Matches(msg, catalogSearchKey):
 		b.searching = true
-		b.input.SetValue(b.filter)
+		if b.searchable {
+			b.input.Placeholder = "search for a model"
+			b.input.SetValue(b.query)
+		} else {
+			b.input.Placeholder = "filter by name"
+			b.input.SetValue(b.filter)
+		}
 		b.input.Focus()
 		return textinput.Blink, "", true
+	case key.Matches(msg, catalogClearKey) && b.query != "":
+		return b.search(""), "", true
 	case key.Matches(msg, catalogClearKey) && b.filter != "":
 		b.filter = ""
 		b.refresh()
@@ -350,17 +417,31 @@ func (b *catalogBrowser) View() string {
 		footer = s
 	}
 	if b.searching {
-		footer = "filter: " + b.input.View()
+		label := "filter: "
+		if b.searchable {
+			label = "search: "
+		}
+		footer = label + b.input.View()
 	}
 
 	body := ""
 	switch {
+	case b.loading && b.query != "":
+		body = footerStyle.Render(fmt.Sprintf("  Searching for %q...", b.query))
 	case b.loading:
 		body = footerStyle.Render("  Loading the catalog...")
+	case b.failed && b.query != "":
+		body = footerStyle.Render(fmt.Sprintf(
+			"  The search for %q failed. Press r to try again, c to go back to the list, or esc to close.",
+			b.query))
 	case b.failed:
 		// Said in the body as well as the status line, which expires and
 		// would leave a list that reads as this engine having nothing.
 		body = footerStyle.Render("  The catalog could not be loaded. Press r to try again, or esc to close.")
+	case len(b.all) == 0 && b.query != "":
+		body = footerStyle.Render(fmt.Sprintf(
+			"  Nothing matches %q. Press / to search again, c to go back to the list, or esc to close.",
+			b.query))
 	case len(b.all) == 0:
 		body = footerStyle.Render("  No catalog available for this engine.")
 	case len(b.shown) == 0:
@@ -381,7 +462,10 @@ func (b *catalogBrowser) summary() string {
 		return ""
 	}
 	parts := []string{fmt.Sprintf("%d of %d models", len(b.shown), len(b.all))}
-	if b.filter != "" {
+	switch {
+	case b.query != "":
+		parts[0] = fmt.Sprintf("%d results for %q", len(b.shown), b.query)
+	case b.filter != "":
 		parts[0] = fmt.Sprintf("%d of %d matching %q", len(b.shown), len(b.all), b.filter)
 	}
 	parts = append(parts, "sorted by "+b.sortBy.String())
@@ -409,10 +493,16 @@ func shortDate(ts string) string {
 
 func (b *catalogBrowser) Help() []key.Binding {
 	if b.searching {
+		if b.searchable {
+			return inputHelp("search")
+		}
 		return inputHelp("apply filter")
 	}
 	bindings := []key.Binding{catalogCloseKey, catalogSearchKey, catalogSortKey, catalogGetKey}
-	if b.filter != "" {
+	switch {
+	case b.query != "":
+		bindings = append(bindings, catalogClearSearchKey)
+	case b.filter != "":
 		bindings = append(bindings, catalogClearKey)
 	}
 	if b.failed {

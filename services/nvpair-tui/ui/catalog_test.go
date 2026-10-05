@@ -4,11 +4,134 @@
 package ui
 
 import (
+	"context"
+	"encoding/json"
+	"net"
 	"strings"
 	"testing"
 
+	"nvpair-tui/rpc"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// catalogBroker is a broker that answers engine:catalog, recording the params
+// of each call and answering a query with one model named after it.
+func catalogBroker(t *testing.T) (*rpc.Client, <-chan map[string]string) {
+	t.Helper()
+	c1, c2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		c1.Close()
+		c2.Close()
+	})
+	client := rpc.NewClient(c1, c1)
+	go client.Run(ctx)
+
+	calls := make(chan map[string]string, 8)
+	broker := rpc.NewCodec(c2, c2)
+	go func() {
+		for {
+			req, err := broker.Read()
+			if err != nil {
+				return
+			}
+			var params map[string]string
+			_ = json.Unmarshal(req.Params, &params)
+			calls <- params
+			result := `{"models":[{"name":"ggml-org/browse-GGUF:Q4_K_M"}],"searchable":true}`
+			if q := params["query"]; q != "" {
+				result = `{"models":[{"name":"found/` + q + `-GGUF:Q4_K_M"}],"searchable":true,"query":"` + q + `"}`
+			}
+			_ = broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(result)})
+		}
+	}()
+	return client, calls
+}
+
+// typeSearch opens the search field, types text, and submits it.
+func typeSearch(b *catalogBrowser, text string) tea.Cmd {
+	b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	b.input.SetValue(text)
+	cmd, _, _ := b.update(tea.KeyMsg{Type: tea.KeyEnter})
+	return cmd
+}
+
+// TestSearchableCatalogSearchesUpstream checks a source that can search is
+// searched rather than filtered. llama.cpp's browse list is a few publishers'
+// repos, and filtering it locally could never find a model outside them.
+func TestSearchableCatalogSearchesUpstream(t *testing.T) {
+	client, calls := catalogBroker(t)
+	b := newCatalogBrowser(client, "llamacpp", "llama.cpp", "this-host", false)
+	b.SetSize(100, 24)
+	b.update(b.Init()())
+	if got := <-calls; got["query"] != "" || got["engine"] != "llamacpp" {
+		t.Fatalf("the browse list was asked for with %v", got)
+	}
+
+	cmd := typeSearch(b, "gemma")
+	if cmd == nil || !b.loading {
+		t.Fatal("a search on a searchable source did not go upstream")
+	}
+	if !strings.Contains(b.View(), `Searching for "gemma"`) {
+		t.Errorf("the search in flight is not shown: %q", b.View())
+	}
+	b.update(cmd())
+	if got := <-calls; got["query"] != "gemma" {
+		t.Errorf("the search was sent as %v", got)
+	}
+	if len(b.shown) != 1 || b.shown[0].Name != "found/gemma-GGUF:Q4_K_M" {
+		t.Fatalf("showing %v, want the search's result", b.shown)
+	}
+	if !strings.Contains(b.summary(), `1 results for "gemma"`) {
+		t.Errorf("summary %q does not say this is a search", b.summary())
+	}
+
+	if cmd, _, _ := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}); cmd != nil {
+		t.Error("clearing a search asked the backend again for a list it already had")
+	}
+	if b.query != "" || len(b.shown) != 1 || b.shown[0].Name != "ggml-org/browse-GGUF:Q4_K_M" {
+		t.Errorf("clearing the search showed %v, want the browse list back", b.shown)
+	}
+}
+
+// TestSupersededSearchIsDropped checks a reply to a search the operator has
+// since replaced or cleared does not overwrite what is on screen.
+func TestSupersededSearchIsDropped(t *testing.T) {
+	b := newCatalogBrowser(nil, "llamacpp", "llama.cpp", "this-host", false)
+	b.SetSize(100, 24)
+	b.update(catalogLoadedMsg{engine: "llamacpp", gen: b.gen, searchable: true,
+		models: []catalogModel{{Name: "browse"}}})
+
+	typeSearch(b, "first")
+	first := b.gen
+	typeSearch(b, "second")
+	b.update(catalogLoadedMsg{engine: "llamacpp", gen: first, searchable: true,
+		models: []catalogModel{{Name: "stale"}}})
+	if !b.loading || len(b.shown) == 1 && b.shown[0].Name == "stale" {
+		t.Error("the reply to a replaced search was shown")
+	}
+
+	b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	b.update(catalogLoadedMsg{engine: "llamacpp", gen: first + 1, searchable: true,
+		models: []catalogModel{{Name: "late"}}})
+	if b.loading || len(b.shown) != 1 || b.shown[0].Name != "browse" {
+		t.Errorf("a cleared search's late reply replaced the browse list: %v", b.shown)
+	}
+}
+
+// TestUnsearchableCatalogStillFiltersLocally checks a source that cannot search
+// keeps the local filter, which issues no request.
+func TestUnsearchableCatalogStillFiltersLocally(t *testing.T) {
+	b := loadedBrowser()
+	if cmd := typeSearch(b, "qwen"); cmd != nil {
+		t.Error("filtering a source that cannot search sent a request")
+	}
+	if b.query != "" || len(b.shown) != 1 {
+		t.Errorf("query %q, %d shown; want a local filter to one model", b.query, len(b.shown))
+	}
+}
 
 func loadedBrowser() *catalogBrowser {
 	b := newCatalogBrowser(nil, "ollama", "Ollama", "this-host", false)
