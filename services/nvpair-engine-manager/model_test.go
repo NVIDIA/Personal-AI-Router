@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"strings"
+
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestModelLifecycle exercises the full model lifecycle through the engine
@@ -33,43 +35,27 @@ func TestModelLifecycle(t *testing.T) {
 	ex := newTestExecutor(t, m)
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
 
 	list := func() string {
 		r, err := ex.Action(ctx, "fake", "list_models", nil)
-		if err != nil {
-			t.Fatalf("list_models: %v", err)
-		}
+		require.NoError(t, err, "list_models")
 		return string(r)
 	}
 	act := func(name, params string) json.RawMessage {
 		r, err := ex.Action(ctx, "fake", name, json.RawMessage(params))
-		if err != nil {
-			t.Fatalf("action %s: %v", name, err)
-		}
+		require.NoError(t, err, "action (%v, %v)", name, err)
 		return r
 	}
 
 	const model = "demo-model:1b"
-	if strings.Contains(list(), model) {
-		t.Fatalf("model %q unexpectedly present before pull", model)
-	}
+	require.NotContains(t, list(), model, "model")
 	act("pull_model", `{"name":"`+model+`"}`)
-	if !strings.Contains(list(), model) {
-		t.Fatalf("model %q not listed after pull", model)
-	}
+	require.Contains(t, list(), model, "model")
 	act("run_model", `{"model":"`+model+`","stream":false}`)
-	if !strings.Contains(string(act("loaded_models", "null")), model) {
-		t.Fatalf("model %q not loaded after warm-up run", model)
-	}
+	require.Contains(t, string(act("loaded_models", "null")), model, "model")
 	act("unload_model", `{"model":"`+model+`","keep_alive":0}`)
-	if strings.Contains(string(act("loaded_models", "null")), model) {
-		t.Fatalf("model %q still loaded after unload", model)
-	}
+	require.NotContains(t, string(act("loaded_models", "null")), model, "model")
 	act("delete_model", `{"name":"`+model+`"}`)
-	if strings.Contains(list(), model) {
-		t.Fatalf("model %q still listed after delete", model)
-	}
+	require.NotContains(t, list(), model, "model")
 }

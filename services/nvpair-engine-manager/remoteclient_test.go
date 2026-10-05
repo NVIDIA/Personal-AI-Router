@@ -7,9 +7,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
@@ -26,12 +29,14 @@ func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
 		readyHTTP: newRemoteHTTPClient(base, time.Second),
 		base:      srv.URL,
 	}
-	if _, err := c.postJSON(context.Background(), controlStartPath, "remote-only", startRequest{Engine: "remote-only"}); err != nil {
-		t.Fatalf("remote start was cut off by the ordinary response-header budget: %v", err)
+	{
+		_, err := c.postJSON(context.Background(), controlStartPath, "remote-only", startRequest{Engine: "remote-only"})
+		require.NoError(t, err, "remote start was cut off by the ordinary response-header budget")
 	}
-	if _, err := c.postJSON(context.Background(), controlStopPath, "ollama", stopRequest{Engine: "ollama"}); err == nil ||
-		!strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("ordinary remote call error = %v, want the ordinary bounded response-header timeout", err)
+	{
+		_, err := c.postJSON(context.Background(), controlStopPath, "ollama", stopRequest{Engine: "ollama"})
+		require.Error(t, err, "ordinary remote call error")
+		require.Contains(t, err.Error(), "timeout awaiting response headers", "ordinary remote call error (%v)", err)
 	}
 }
 
@@ -53,28 +58,29 @@ func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
 		base:      srv.URL,
 	}
 	ollama := modelActionRequest{Engine: "ollama", Model: "qwen2.5"}
-	if _, err := c.postJSON(context.Background(), controlLoadPath, "ollama", ollama); err != nil {
-		t.Fatalf("remote load was cut off by the ordinary response-header budget: %v", err)
+	{
+		_, err := c.postJSON(context.Background(), controlLoadPath, "ollama", ollama)
+		require.NoError(t, err, "remote load was cut off by the ordinary response-header budget")
 	}
 	lmstudio := modelActionRequest{Engine: "lmstudio", Model: "qwen2.5"}
-	if _, err := c.postJSON(context.Background(), controlDeletePath, "lmstudio", lmstudio); err != nil {
-		t.Fatalf("remote delete was cut off by the ordinary response-header budget: %v", err)
+	{
+		_, err := c.postJSON(context.Background(), controlDeletePath, "lmstudio", lmstudio)
+		require.NoError(t, err, "remote delete was cut off by the ordinary response-header budget")
 	}
-	if _, err := c.postJSON(context.Background(), controlLoadPath, "lmstudio", lmstudio); err == nil ||
-		!strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("remote LM Studio load error = %v, want the ordinary bounded response-header timeout", err)
+	{
+		_, err := c.postJSON(context.Background(), controlLoadPath, "lmstudio", lmstudio)
+		require.Error(t, err, "remote LM Studio load error")
+		require.Contains(t, err.Error(), "timeout awaiting response headers", "remote LM Studio load error (%v)", err)
 	}
-	if _, err := c.postJSON(context.Background(), controlUnloadPath, "ollama", ollama); err == nil ||
-		!strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("remote unload error = %v, want the ordinary bounded response-header timeout", err)
+	{
+		_, err := c.postJSON(context.Background(), controlUnloadPath, "ollama", ollama)
+		require.Error(t, err, "remote unload error")
+		require.Contains(t, err.Error(), "timeout awaiting response headers", "remote unload error (%v)", err)
 	}
 }
 
 func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
-	if remoteReadyResponseHeaderTimeout <= remoteResponseHeaderTimeout {
-		t.Fatalf("readiness budget %s must exceed the ordinary budget %s",
-			remoteReadyResponseHeaderTimeout, remoteResponseHeaderTimeout)
-	}
+	require.Greater(t, remoteReadyResponseHeaderTimeout, remoteResponseHeaderTimeout, "readiness budget")
 	cases := []struct {
 		path   string
 		engine string
@@ -89,8 +95,9 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 		{controlEnginesPath, "", false},
 	}
 	for _, tc := range cases {
-		if got := waitsForEngineReadiness(tc.path, tc.engine); got != tc.want {
-			t.Errorf("waitsForEngineReadiness(%q, %q) = %v, want %v", tc.path, tc.engine, got, tc.want)
+		{
+			got := waitsForEngineReadiness(tc.path, tc.engine)
+			assert.True(t, got == tc.want, "waitsForEngineReadiness (%v)", got)
 		}
 	}
 }
@@ -114,10 +121,10 @@ func TestRemoteStartHeaderWaitRemainsBounded(t *testing.T) {
 	}
 	started := time.Now()
 	_, err := c.postJSON(context.Background(), controlStartPath, "ollama", startRequest{Engine: "ollama"})
-	if err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("remote start error = %v, want bounded response-header timeout", err)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("remote start took %s, want a prompt bounded failure", elapsed)
+	require.Error(t, err, "remote start error")
+	require.Contains(t, err.Error(), "timeout awaiting response headers", "remote start error (%v)", err)
+	{
+		elapsed := time.Since(started)
+		require.LessOrEqual(t, elapsed, time.Second, "remote start took")
 	}
 }

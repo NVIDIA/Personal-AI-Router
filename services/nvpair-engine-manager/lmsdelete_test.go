@@ -6,6 +6,9 @@ package main
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLMSEntryMatchesModel(t *testing.T) {
@@ -25,8 +28,9 @@ func TestLMSEntryMatchesModel(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := lmsEntryMatchesModel(entry, c.model); got != c.want {
-			t.Errorf("lmsEntryMatchesModel(%q) = %v, want %v", c.model, got, c.want)
+		{
+			got := lmsEntryMatchesModel(entry, c.model)
+			assert.True(t, got == c.want, "lmsEntryMatchesModel (%v)", got)
 		}
 	}
 }
@@ -34,7 +38,5 @@ func TestLMSEntryMatchesModel(t *testing.T) {
 func TestSafeRemoveUnderRootRejectsMissingPath(t *testing.T) {
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing-model")
-	if err := safeRemoveUnderRoot(root, missing); err == nil {
-		t.Fatal("expected missing path to fail")
-	}
+	require.Error(t, safeRemoveUnderRoot(root, missing), "expected missing path to fail")
 }

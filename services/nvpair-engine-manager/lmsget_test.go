@@ -9,11 +9,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
+
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLMSGetCandidates(t *testing.T) {
@@ -81,9 +84,7 @@ func TestLMSGetCandidates(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := lmsGetCandidates(c.in)
-			if !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("lmsGetCandidates(%q)\n got: %#v\nwant: %#v", c.in, got, c.want)
-			}
+			require.Equal(t, c.want, got, "lmsGetCandidates")
 		})
 	}
 }
@@ -95,9 +96,7 @@ func TestIsLMSResolveFailure(t *testing.T) {
 		"no models found matching that term",
 	}
 	for _, s := range yes {
-		if !isLMSResolveFailure(errors.New(s)) {
-			t.Errorf("expected resolve failure for %q", s)
-		}
+		assert.True(t, isLMSResolveFailure(errors.New(s)), "expected resolve failure for (%v)", s)
 	}
 	no := []error{
 		nil,
@@ -105,9 +104,7 @@ func TestIsLMSResolveFailure(t *testing.T) {
 		errors.New("network connection failed"),
 	}
 	for _, e := range no {
-		if isLMSResolveFailure(e) {
-			t.Errorf("did not expect resolve failure for %v", e)
-		}
+		assert.False(t, isLMSResolveFailure(e), "did not expect resolve failure for (%v)", e)
 	}
 }
 
@@ -119,9 +116,7 @@ func TestIsLMSTransientDownloadError(t *testing.T) {
 		"exit status 1: fetch failed",
 	}
 	for _, s := range yes {
-		if !isLMSTransientDownloadError(errors.New(s)) {
-			t.Errorf("expected transient download error for %q", s)
-		}
+		assert.True(t, isLMSTransientDownloadError(errors.New(s)), "expected transient download error for (%v)", s)
 	}
 	no := []error{
 		nil,
@@ -131,9 +126,7 @@ func TestIsLMSTransientDownloadError(t *testing.T) {
 		errors.New(`exit status 1: Failed to resolve artifact "x/y": the artifact does not exist`),
 	}
 	for _, e := range no {
-		if isLMSTransientDownloadError(e) {
-			t.Errorf("did not expect transient download error for %v", e)
-		}
+		assert.False(t, isLMSTransientDownloadError(e), "did not expect transient download error for (%v)", e)
 	}
 }
 
@@ -151,12 +144,8 @@ func TestCmdActionLMSGetFallback(t *testing.T) {
 
 	res, err := ex.Action(context.Background(), "fake", "pull_model",
 		json.RawMessage(`{"model":"lmstudio-community/Foo-MLX-4bit"}`))
-	if err != nil {
-		t.Fatalf("expected Hugging Face fallback to succeed, got: %v", err)
-	}
-	if !strings.Contains(string(res), "https://huggingface.co/lmstudio-community/Foo-MLX-4bit") {
-		t.Fatalf("expected the Hugging Face candidate to win, got: %s", res)
-	}
+	require.NoError(t, err, "expected Hugging Face fallback to succeed")
+	require.Contains(t, string(res), "https://huggingface.co/lmstudio-community/Foo-MLX-4bit", "expected the Hugging Face candidate to win (%v)", res)
 }
 
 // TestCmdActionLMSGetAllFail confirms that when every candidate fails to
@@ -173,12 +162,8 @@ func TestCmdActionLMSGetAllFail(t *testing.T) {
 	// "nope" makes even the Hugging Face URL candidate fail in resolvesim.
 	_, err := ex.Action(context.Background(), "fake", "pull_model",
 		json.RawMessage(`{"model":"owner/nope"}`))
-	if err == nil {
-		t.Fatal("expected an error when all candidates fail to resolve")
-	}
-	if !strings.Contains(err.Error(), "action command failed") {
-		t.Fatalf("unexpected error shape: %v", err)
-	}
+	require.Error(t, err, "expected an error when all candidates fail to resolve")
+	require.Contains(t, err.Error(), "action command failed", "unexpected error shape (%v)", err)
 }
 
 // TestCmdActionLMSGetResumesTransientDownload proves a transient `lms get`
@@ -196,12 +181,14 @@ func TestCmdActionLMSGetResumesTransientDownload(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 
-	if _, err := ex.Action(context.Background(), "fake", "pull_model",
-		json.RawMessage(`{"model":"owner/name"}`)); err != nil {
-		t.Fatalf("expected resume to succeed after transient failures, got: %v", err)
+	{
+		_, err := ex.Action(context.Background(), "fake", "pull_model",
+			json.RawMessage(`{"model":"owner/name"}`))
+		require.NoError(t, err, "expected resume to succeed after transient failures")
 	}
-	if got := readCount(t, counter); got != 3 {
-		t.Fatalf("expected 3 in-place attempts (2 fail + 1 success), got %d", got)
+	{
+		got := readCount(t, counter)
+		require.Equal(t, 3, got, "expected 3 in-place attempts (2 fail + 1 success)")
 	}
 }
 
@@ -222,14 +209,11 @@ func TestCmdActionLMSGetResumeExhausted(t *testing.T) {
 
 	_, err := ex.Action(context.Background(), "fake", "pull_model",
 		json.RawMessage(`{"model":"owner/name"}`))
-	if err == nil {
-		t.Fatal("expected an error when the download never recovers")
-	}
-	if !strings.Contains(err.Error(), "Timed-out") {
-		t.Fatalf("expected the LM Studio timeout to surface, got: %v", err)
-	}
-	if got := readCount(t, counter); got != 3 {
-		t.Fatalf("expected exactly 3 attempts (resume budget, no source fallthrough), got %d", got)
+	require.Error(t, err, "expected an error when the download never recovers")
+	require.Contains(t, err.Error(), "Timed-out", "expected the LM Studio timeout to surface (%v)", err)
+	{
+		got := readCount(t, counter)
+		require.Equal(t, 3, got, "expected exactly 3 attempts (resume budget, no source fallthrough)")
 	}
 }
 
@@ -243,13 +227,9 @@ func setResumeBudget(t *testing.T, attempts int, backoff time.Duration) func() {
 func readCount(t *testing.T, path string) int {
 	t.Helper()
 	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read counter: %v", err)
-	}
+	require.NoError(t, err, "read counter")
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		t.Fatalf("parse counter %q: %v", b, err)
-	}
+	require.NoError(t, err, "parse counter (%v, %v)", b, err)
 	return n
 }
 
@@ -268,12 +248,8 @@ func TestModelResolutionValidation(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			err := c.action.validate("pull_model")
-			if c.wantErr && err == nil {
-				t.Fatal("expected a validation error, got nil")
-			}
-			if !c.wantErr && err != nil {
-				t.Fatalf("expected no error, got %v", err)
-			}
+			require.False(t, c.wantErr && err == nil, "expected a validation error, got nil")
+			require.False(t, !c.wantErr && err != nil, "expected no error (%v)", err)
 		})
 	}
 }

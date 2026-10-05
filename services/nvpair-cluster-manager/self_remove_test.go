@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // selfRemovalProof builds the JSON body a peer returns alongside a 403 to prove
@@ -105,9 +107,7 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 				_, _ = w.Write(proofBody)
 			})
 			ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
-			if err != nil {
-				t.Fatalf("listen: %v", err)
-			}
+			require.NoError(t, err, "listen")
 			defer ln.Close()
 			srv := &http.Server{Handler: mux}
 			go func() { _ = srv.Serve(ln) }()
@@ -132,7 +132,7 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			select {
 			case <-entered:
 			case <-time.After(10 * time.Second):
-				t.Fatal("peer reconcile never reached the handler")
+				require.FailNow(t, "test expectation failed", "peer reconcile never reached the handler")
 			}
 			if tc.mutate != nil {
 				tc.mutate(mA)
@@ -142,11 +142,12 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			select {
 			case <-done:
 			case <-time.After(10 * time.Second):
-				t.Fatal("reconcile pass did not finish")
+				require.FailNow(t, "test expectation failed", "reconcile pass did not finish")
 			}
 
-			if got, _ := mA.clusterIdentity(); got != tc.wantCluster {
-				t.Fatalf("after reconcile pass clusterId = %q, want %q", got, tc.wantCluster)
+			{
+				got, _ := mA.clusterIdentity()
+				require.Equal(t, tc.wantCluster, got, "after reconcile pass clusterId")
 			}
 		})
 	}
@@ -183,9 +184,7 @@ func startPeerStub(t *testing.T, m *Manager, id string, status int, proof bool) 
 		_, _ = w.Write(proofBody) // nil body ⇒ a bare 403 with no removal proof
 	})
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	t.Cleanup(func() { _ = ln.Close() })
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
@@ -243,8 +242,9 @@ func TestSelfRemoveRequiresUnanimousRejection(t *testing.T) {
 
 			mA.reconcilePeersAndMaybeSelfRemove()
 
-			if got, _ := mA.clusterIdentity(); got != tc.wantCluster {
-				t.Fatalf("after reconcile clusterId = %q, want %q", got, tc.wantCluster)
+			{
+				got, _ := mA.clusterIdentity()
+				require.Equal(t, tc.wantCluster, got, "after reconcile clusterId")
 			}
 		})
 	}
@@ -303,8 +303,9 @@ func TestSelfRemoveRequiresRemovalProof(t *testing.T) {
 
 			mA.reconcilePeersAndMaybeSelfRemove()
 
-			if got, _ := mA.clusterIdentity(); got != tc.wantCluster {
-				t.Fatalf("after reconcile clusterId = %q, want %q", got, tc.wantCluster)
+			{
+				got, _ := mA.clusterIdentity()
+				require.Equal(t, tc.wantCluster, got, "after reconcile clusterId")
 			}
 		})
 	}

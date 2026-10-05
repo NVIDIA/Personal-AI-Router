@@ -23,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
 )
@@ -32,9 +35,7 @@ import (
 func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("genkey: %v", err)
-	}
+	require.NoError(t, err, "genkey")
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	uri, _ := url.Parse("urn:nvpair:node:" + uuid)
 	tmpl := &x509.Certificate{
@@ -48,9 +49,7 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 		URIs:                  []*url.URL{uri},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
-	if err != nil {
-		t.Fatalf("create cert: %v", err)
-	}
+	require.NoError(t, err, "create cert")
 	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
@@ -62,21 +61,13 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
 	td := filepath.Join(dir, "trusted")
-	if err := os.MkdirAll(td, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(td, 0o700))
 	for uuid, pcert := range pins {
 		body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
-		if err := os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600))
 	}
 	return dir
 }
@@ -98,9 +89,7 @@ func servePinnedErrorsMux(t *testing.T, mgr *Manager) (*httptest.Server, *http.C
 	t.Cleanup(srv.Close)
 
 	cfg, ok := peerMesh.ClientTLSConfig("uuid-self")
-	if !ok {
-		t.Fatal("the pinned peer must be able to build a client for self")
-	}
+	require.True(t, ok, "the pinned peer must be able to build a client for self")
 	return srv, &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
 }
 
@@ -121,9 +110,9 @@ func TestErrorsPeerSync_MTLSGate(t *testing.T) {
 	dirC := setupNode(t, cCert, cKey, map[string][]byte{"uuid-a": aCert})
 
 	mtlsA, mtlsB, mtlsC := clustertrust.Open(dirA), clustertrust.Open(dirB), clustertrust.Open(dirC)
-	if !mtlsA.Clustered() || !mtlsB.Clustered() || !mtlsC.Clustered() {
-		t.Fatal("a populated cluster dir must read as clustered")
-	}
+	assert.True(t, mtlsA.Clustered(), "a populated cluster dir must read as clustered")
+	assert.True(t, mtlsB.Clustered(), "a populated cluster dir must read as clustered")
+	assert.True(t, mtlsC.Clustered(), "a populated cluster dir must read as clustered")
 
 	// A serves its errors ingest over mTLS.
 	mgrA := NewManager(NewCodec(struct {
@@ -151,18 +140,20 @@ func TestErrorsPeerSync_MTLSGate(t *testing.T) {
 	}
 
 	// Pinned member B -> A: accepted (204).
-	if code, err := push(mtlsB, "uuid-a"); err != nil || code != http.StatusNoContent {
-		t.Fatalf("pinned member push: code=%d err=%v, want 204", code, err)
+	{
+		code, err := push(mtlsB, "uuid-a")
+		require.NoError(t, err, "pinned member push: code (%v, %v)", code, err)
+		assert.Equal(t, http.StatusNoContent, code, "pinned member push: code (%v, %v)", code, err)
 	}
 
 	// C completes the handshake (it pins A) but A doesn't pin C -> 403 at the gate.
-	if code, err := push(mtlsC, "uuid-a"); err != nil || code != http.StatusForbidden {
-		t.Fatalf("non-member push: code=%d err=%v, want 403", code, err)
+	{
+		code, err := push(mtlsC, "uuid-a")
+		require.NoError(t, err, "non-member push: code (%v, %v)", code, err)
+		assert.Equal(t, http.StatusForbidden, code, "non-member push: code (%v, %v)", code, err)
 	}
 
 	// Client-side gate: B holds no pin for an unknown peer, so the DER lookup
 	// fails and it would never build a client to contact a non-member.
-	if mtlsB.HasPin("uuid-unknown") {
-		t.Fatal("an unpinned peer must not resolve a pin (cluster gate)")
-	}
+	assert.False(t, mtlsB.HasPin("uuid-unknown"), "an unpinned peer must not resolve a pin (cluster gate)")
 }

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // CORS follows HTTP responses even for a profile absent from the engine table.
@@ -26,9 +28,8 @@ func TestCORSPolicyIsIndependentOfEngineIdentity(t *testing.T) {
 				if method == http.MethodOptions {
 					wantStatus = http.StatusNoContent
 				}
-				if rec.Code != wantStatus || rec.Header().Get("Access-Control-Allow-Origin") != allowed {
-					t.Fatalf("%s: status=%d, headers=%v", method, rec.Code, rec.Header())
-				}
+				require.True(t, rec.Code == wantStatus, " (%v)", method)
+				require.True(t, rec.Header().Get("Access-Control-Allow-Origin") == allowed, " (%v)", method)
 			}
 		})
 	}

@@ -7,9 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"strings"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
@@ -37,27 +40,23 @@ func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
 
 	select {
 	case got := <-method:
-		t.Fatalf("restore %q was sent before either port gate opened", got)
+		require.FailNow(t, "test expectation failed", "restore %q was sent before either port gate opened", got)
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(broker.ollamaPortReady)
 	select {
 	case got := <-method:
-		t.Fatalf("restore %q was sent before the LM Studio port gate opened", got)
+		require.FailNow(t, "test expectation failed", "restore %q was sent before the LM Studio port gate opened", got)
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(broker.lmstudioPortReady)
 	select {
 	case got := <-method:
-		if got != restoreEnabledEnginesMethod {
-			t.Fatalf("method = %q, want %q", got, restoreEnabledEnginesMethod)
-		}
+		require.True(t, got == restoreEnabledEnginesMethod, "method (%v, %v)", got, restoreEnabledEnginesMethod)
 	case <-time.After(2 * time.Second):
-		t.Fatal("restore was not sent after both port gates opened")
+		require.FailNow(t, "test expectation failed", "restore was not sent after both port gates opened")
 	}
-	if !<-done {
-		t.Fatal("restore wait reported cancellation")
-	}
+	require.True(t, <-done, "restore wait reported cancellation")
 }
 
 func TestPlanManagedOllamaPorts(t *testing.T) {
@@ -132,17 +131,16 @@ func TestPlanManagedOllamaPorts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := planManagedOllamaPorts(tc.enabled, tc.status, tc.available)
-			if got != tc.want {
-				t.Fatalf("plan = %+v, want %+v", got, tc.want)
-			}
+			require.True(t, got == tc.want, "plan (%v)", got)
 		})
 	}
 }
 
 func TestNextAvailablePortExcludingCustomBackend(t *testing.T) {
 	available := func(port int) bool { return port == 11435 || port == 11436 }
-	if got := nextAvailablePortExcluding(11435, []int{11435}, available); got != 11436 {
-		t.Fatalf("fallback = %d, want 11436 (11435 is the configured backend)", got)
+	{
+		got := nextAvailablePortExcluding(11435, []int{11435}, available)
+		require.Equal(t, 11436, got, "fallback")
 	}
 }
 
@@ -151,25 +149,30 @@ func TestTakePendingManagedOllamaBackendOnce(t *testing.T) {
 	b.ollamaState().managedFacade.Store(true)
 	b.managedOllamaBackend.Store(11435)
 
-	if got := b.takePendingManagedOllamaBackend(11436); got != 0 {
-		t.Fatalf("wrong bound port consumed pending backend: %d", got)
+	{
+		got := b.takePendingManagedOllamaBackend(11436)
+		require.Equal(t, 0, got, "wrong bound port consumed pending backend")
 	}
-	if got := b.takePendingManagedOllamaBackend(managedOllamaFacadePort); got != 11435 {
-		t.Fatalf("first facade reconciliation got %d, want 11435", got)
+	{
+		got := b.takePendingManagedOllamaBackend(managedOllamaFacadePort)
+		require.Equal(t, 11435, got, "first facade reconciliation")
 	}
-	if got := b.takePendingManagedOllamaBackend(managedOllamaFacadePort); got != 0 {
-		t.Fatalf("duplicate reconciliation consumed backend twice: %d", got)
+	{
+		got := b.takePendingManagedOllamaBackend(managedOllamaFacadePort)
+		require.Equal(t, 0, got, "duplicate reconciliation consumed backend twice")
 	}
 }
 
 func TestOllamaBackendSourcePort(t *testing.T) {
 	b := &Broker{}
-	if got := b.ollamaBackendSourcePort(); got != managedOllamaFacadePort {
-		t.Fatalf("unset source = %d, want %d", got, managedOllamaFacadePort)
+	{
+		got := b.ollamaBackendSourcePort()
+		require.True(t, got == managedOllamaFacadePort, "unset source (%v, %v)", got, managedOllamaFacadePort)
 	}
 	b.ollamaState().backendPort.Store(managedOllamaBackendStart)
-	if got := b.ollamaBackendSourcePort(); got != managedOllamaBackendStart {
-		t.Fatalf("configured source = %d, want %d", got, managedOllamaBackendStart)
+	{
+		got := b.ollamaBackendSourcePort()
+		require.True(t, got == managedOllamaBackendStart, "configured source (%v, %v)", got, managedOllamaBackendStart)
 	}
 }
 
@@ -178,8 +181,9 @@ func TestDuplicateOllamaReadyDoesNotOpenGateDuringMove(t *testing.T) {
 	b.ollamaState().managedFacade.Store(true)
 	b.managedOllamaBackend.Store(managedOllamaBackendStart + 1)
 	b.setProxy(&proxyProcess{})
-	if got := b.takePendingManagedOllamaBackend(managedOllamaFacadePort); got != managedOllamaBackendStart+1 {
-		t.Fatalf("first reconciler got %d", got)
+	{
+		got := b.takePendingManagedOllamaBackend(managedOllamaFacadePort)
+		require.True(t, got == managedOllamaBackendStart+1, "first reconciler (%v)", got)
 	}
 
 	b.reconcileProxyPortOnReady(managedOllamaFacadePort)
@@ -214,9 +218,9 @@ func TestOwningOllamaReadyOpensGateAfterMove(t *testing.T) {
 
 func TestEnginePortAssignmentRequest(t *testing.T) {
 	engine, port, ok := enginePortAssignmentRequest("engine:set-port", []byte(`{"engine":"ollama","port":11434}`))
-	if !ok || engine != "ollama" || port != 11434 {
-		t.Fatalf("valid request = (%q, %d, %v), want (ollama, 11434, true)", engine, port, ok)
-	}
+	require.True(t, ok, "valid request (%v, %v, %v)", engine, port, ok)
+	require.Equal(t, "ollama", engine, "valid request (%v, %v, %v)", engine, port, ok)
+	require.Equal(t, 11434, port, "valid request (%v, %v, %v)", engine, port, ok)
 	for _, tc := range []struct {
 		method string
 		params string
@@ -228,17 +232,17 @@ func TestEnginePortAssignmentRequest(t *testing.T) {
 		{"engine:restart", `{"engine":"ollama","port":11433}`},
 		{"engine:set-port", `{`},
 	} {
-		if _, _, ok := enginePortAssignmentRequest(tc.method, []byte(tc.params)); ok {
-			t.Fatalf("unexpected engine set-port match for %s %s", tc.method, tc.params)
+		{
+			_, _, ok := enginePortAssignmentRequest(tc.method, []byte(tc.params))
+			require.False(t, ok, "unexpected engine set-port match for")
 		}
 	}
 }
 
 func TestLMStudioSetPortRequest(t *testing.T) {
 	port, ok := lmstudioSetPortRequest("engine:set-port", []byte(`{"engine":"lmstudio","port":1234}`))
-	if !ok || port != managedLMStudioFacadePort {
-		t.Fatalf("valid LM Studio request = (%d, %v), want (%d, true)", port, ok, managedLMStudioFacadePort)
-	}
+	require.True(t, ok, "valid LM Studio request (%v, %v, %v)", port, ok, managedLMStudioFacadePort)
+	require.True(t, port == managedLMStudioFacadePort, "valid LM Studio request (%v, %v, %v)", port, ok, managedLMStudioFacadePort)
 	for _, tc := range []struct {
 		method string
 		params string
@@ -248,8 +252,9 @@ func TestLMStudioSetPortRequest(t *testing.T) {
 		{"engine:set-port", `{"engine":"lmstudio","port":0}`},
 		{"engine:set-port", `{`},
 	} {
-		if _, ok := lmstudioSetPortRequest(tc.method, []byte(tc.params)); ok {
-			t.Fatalf("unexpected LM Studio set-port match for %s %s", tc.method, tc.params)
+		{
+			_, ok := lmstudioSetPortRequest(tc.method, []byte(tc.params))
+			require.False(t, ok, "unexpected LM Studio set-port match for")
 		}
 	}
 }
@@ -278,11 +283,10 @@ func TestManagedLMStudioRejectsFacadeBackendPort(t *testing.T) {
 
 	select {
 	case got := <-response:
-		if got.Error == nil || !strings.Contains(got.Error.Message, "reserved by the managed LM Studio proxy") {
-			t.Fatalf("reservation response = %+v", got.Error)
-		}
+		require.NotNil(t, got.Error, "reservation response")
+		require.Contains(t, got.Error.Message, "reserved by the managed LM Studio proxy", "reservation response")
 	case <-time.After(2 * time.Second):
-		t.Fatal("missing managed LM Studio reservation response")
+		require.FailNow(t, "test expectation failed", "missing managed LM Studio reservation response")
 	}
 }
 
@@ -326,22 +330,19 @@ func TestLMStudioSetPortUpdatesBackendCache(t *testing.T) {
 	})
 	select {
 	case got := <-request:
-		if got.Method != "engine:set-port" {
-			t.Fatalf("relayed method = %q", got.Method)
-		}
+		require.Equal(t, "engine:set-port", got.Method, "relayed method")
 	case <-time.After(2 * time.Second):
-		t.Fatal("LM Studio set-port was not relayed")
+		require.FailNow(t, "test expectation failed", "LM Studio set-port was not relayed")
 	}
 	select {
 	case got := <-response:
-		if got.Error != nil {
-			t.Fatalf("LM Studio set-port response error: %v", got.Error)
-		}
+		require.Nil(t, got.Error, "LM Studio set-port response error")
 	case <-time.After(2 * time.Second):
-		t.Fatal("missing LM Studio set-port response")
+		require.FailNow(t, "test expectation failed", "missing LM Studio set-port response")
 	}
-	if got := b.lmstudioState().backendPort.Load(); got != 12400 {
-		t.Fatalf("cached LM Studio backend = %d, want 12400", got)
+	{
+		got := b.lmstudioState().backendPort.Load()
+		require.Equal(t, int32(12400), got, "cached LM Studio backend")
 	}
 }
 
@@ -387,13 +388,13 @@ func TestRelayRejectsEnginePortAssignmentToActiveOllamaHostAlias(t *testing.T) {
 
 			select {
 			case err := <-readErr:
-				t.Fatal(err)
+				require.NoError(t, err)
 			case msg := <-response:
-				if msg.Error == nil || msg.Error.Code != -32000 || !strings.Contains(msg.Error.Message, "OLLAMA_HOST proxy alias") {
-					t.Fatalf("response = %+v, want alias-port rejection", msg)
-				}
+				require.NotNil(t, msg.Error, "response (%v)", msg)
+				require.True(t, msg.Error.Code == -32000, "response (%v)", msg)
+				require.Contains(t, msg.Error.Message, "OLLAMA_HOST proxy alias", "response (%v)", msg)
 			case <-time.After(2 * time.Second):
-				t.Fatal("timed out waiting for alias-port rejection")
+				require.FailNow(t, "test expectation failed", "timed out waiting for alias-port rejection")
 			}
 		})
 	}
@@ -426,13 +427,13 @@ func TestBrokerRejectsLMStudioProxyPortAssignmentToActiveOllamaHostAlias(t *test
 
 	select {
 	case err := <-readErr:
-		t.Fatal(err)
+		require.NoError(t, err)
 	case msg := <-response:
-		if msg.Error == nil || msg.Error.Code != -32000 || !strings.Contains(msg.Error.Message, "OLLAMA_HOST proxy alias") {
-			t.Fatalf("response = %+v, want alias-port rejection", msg)
-		}
+		require.NotNil(t, msg.Error, "response (%v)", msg)
+		require.True(t, msg.Error.Code == -32000, "response (%v)", msg)
+		require.Contains(t, msg.Error.Message, "OLLAMA_HOST proxy alias", "response (%v)", msg)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for LM Studio alias-port rejection")
+		require.FailNow(t, "test expectation failed", "timed out waiting for LM Studio alias-port rejection")
 	}
 }
 
@@ -472,14 +473,14 @@ func TestRelayCachesActualOllamaPortFromResponse(t *testing.T) {
 
 	select {
 	case msg := <-response:
-		if msg == nil || msg.Error != nil {
-			t.Fatalf("response = %+v, want success", msg)
-		}
+		require.NotNil(t, msg, "response")
+		require.Nil(t, msg.Error, "response (%v)", msg)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for engine:start response")
+		require.FailNow(t, "test expectation failed", "timed out waiting for engine:start response")
 	}
-	if got := b.ollamaState().backendPort.Load(); got != 11435 {
-		t.Fatalf("cached Ollama backend port = %d, want returned port 11435", got)
+	{
+		got := b.ollamaState().backendPort.Load()
+		require.Equal(t, int32(11435), got, "cached Ollama backend port")
 	}
 }
 
@@ -504,11 +505,11 @@ func TestBrokerDoesNotExposeInternalReservationSetter(t *testing.T) {
 
 	select {
 	case msg := <-response:
-		if msg == nil || msg.Error == nil || msg.Error.Code != -32601 {
-			t.Fatalf("response = %+v, want method-not-found", msg)
-		}
+		require.NotNil(t, msg, "response")
+		require.NotNil(t, msg.Error, "response (%v)", msg)
+		require.True(t, msg.Error.Code == -32601, "response (%v)", msg)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for private-method rejection")
+		require.FailNow(t, "test expectation failed", "timed out waiting for private-method rejection")
 	}
 }
 
@@ -527,8 +528,9 @@ func TestNeedsOllamaPortGate(t *testing.T) {
 		{"engine:models", `{"engine":"ollama"}`, false},
 		{"engine:status", `{`, false},
 	} {
-		if got := needsOllamaPortGate(tc.method, []byte(tc.params)); got != tc.want {
-			t.Errorf("needsOllamaPortGate(%q, %s) = %v, want %v", tc.method, tc.params, got, tc.want)
+		{
+			got := needsOllamaPortGate(tc.method, []byte(tc.params))
+			assert.True(t, got == tc.want, "needsOllamaPortGate (%v)", got)
 		}
 	}
 }
@@ -576,9 +578,9 @@ func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
 
 	select {
 	case got := <-method:
-		t.Fatalf("%q was relayed before the Ollama port gate opened", got)
+		require.FailNow(t, "test expectation failed", "%q was relayed before the Ollama port gate opened", got)
 	case err := <-workerErr:
-		t.Fatalf("worker failed before the Ollama port gate opened: %v", err)
+		require.FailNow(t, "test expectation failed", "worker failed before the Ollama port gate opened: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -587,24 +589,18 @@ func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
 	close(b.ollamaPortReady)
 	select {
 	case got := <-method:
-		if got != "engine:get-installed" {
-			t.Fatalf("method = %q, want engine:get-installed", got)
-		}
+		require.Equal(t, "engine:get-installed", got, "method")
 	case err := <-workerErr:
-		t.Fatalf("worker failed after the Ollama port gate opened: %v", err)
+		require.FailNow(t, "test expectation failed", "worker failed after the Ollama port gate opened: %v", err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("engine:get-installed was not relayed after the Ollama port gate opened")
+		require.FailNow(t, "test expectation failed", "engine:get-installed was not relayed after the Ollama port gate opened")
 	}
-	if err := <-workerErr; err != nil {
-		t.Fatalf("respond to relayed request: %v", err)
-	}
+	require.NoError(t, <-workerErr, "respond to relayed request")
 	select {
 	case err := <-response:
-		if err != nil {
-			t.Fatalf("read broker response: %v", err)
-		}
+		require.NoError(t, err, "read broker response")
 	case <-time.After(2 * time.Second):
-		t.Fatal("broker did not return the relayed response")
+		require.FailNow(t, "test expectation failed", "broker did not return the relayed response")
 	}
 }
 
@@ -626,8 +622,9 @@ func TestNextFreeProxyPort(t *testing.T) {
 			for _, p := range tc.taken {
 				taken[p] = true
 			}
-			if got := nextFreeProxyPort(tc.req, taken); got != tc.want {
-				t.Errorf("nextFreeProxyPort(%d, %v) = %d, want %d", tc.req, tc.taken, got, tc.want)
+			{
+				got := nextFreeProxyPort(tc.req, taken)
+				assert.True(t, got == tc.want, "nextFreeProxyPort (%v)", got)
 			}
 		})
 	}

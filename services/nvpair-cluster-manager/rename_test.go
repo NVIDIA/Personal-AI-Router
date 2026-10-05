@@ -3,7 +3,11 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // TestReconcileRefreshesRenamedPeerName verifies that when a still-trusted
 // peer renames its PC and reconciles, its own roster entry (sender == entry
@@ -22,20 +26,16 @@ func TestReconcileRefreshesRenamedPeerName(t *testing.T) {
 	roster := &Roster{ClusterID: "cluster-1", Members: []RosterEntry{
 		{NodeUUID: aUUID, NodeID: "new-a", Name: "new-a", CertPem: aCert, CertFingerprint: aFP},
 	}}
-	if !m.mergeRoster(roster, aUUID) {
-		t.Fatal("rename should report a change")
-	}
+	require.True(t, m.mergeRoster(roster, aUUID), "rename should report a change")
 	n, ok := m.memberByNodeID(aUUID)
-	if !ok || n.ID != "new-a" || n.Name != "new-a" {
-		t.Fatalf("member not renamed: got id=%q name=%q", n.ID, n.Name)
-	}
+	require.True(t, ok, "member not renamed: got id")
+	require.Equal(t, "new-a", n.ID, "member not renamed: got id")
+	require.Equal(t, "new-a", n.Name, "member not renamed: got id")
 	pin, ok := m.trust.Get(aUUID)
-	if !ok || pin.NodeID != "new-a" || pin.Name != "new-a" {
-		t.Fatalf("pin not renamed: got nodeId=%q name=%q", pin.NodeID, pin.Name)
-	}
-	if m.mergeRoster(roster, aUUID) {
-		t.Fatal("re-applying the same name should be a no-op")
-	}
+	require.True(t, ok, "pin not renamed: got nodeId")
+	require.Equal(t, "new-a", pin.NodeID, "pin not renamed: got nodeId")
+	require.Equal(t, "new-a", pin.Name, "pin not renamed: got nodeId")
+	require.False(t, m.mergeRoster(roster, aUUID), "re-applying the same name should be a no-op")
 }
 
 // TestReconcileIgnoresThirdPartyName verifies the anti-flap guard: only a peer's
@@ -57,9 +57,8 @@ func TestReconcileIgnoresThirdPartyName(t *testing.T) {
 	m.mergeRoster(roster, aUUID)
 
 	n, _ := m.memberByNodeID(bUUID)
-	if n.ID != "b-current" || n.Name != "b-current" {
-		t.Fatalf("a third party's stale name must not rename B: got id=%q name=%q", n.ID, n.Name)
-	}
+	require.Equal(t, "b-current", n.ID, "a third party's stale name must not rename B: got id")
+	require.Equal(t, "b-current", n.Name, "a third party's stale name must not rename B: got id")
 }
 
 // TestRefreshSelfMemberIdentityOnRestart verifies that a self entry restored
@@ -76,11 +75,7 @@ func TestRefreshSelfMemberIdentityOnRestart(t *testing.T) {
 	m.refreshSelfMemberIdentity()
 
 	self, ok := m.memberByNodeID(m.identity.NodeUUID)
-	if !ok {
-		t.Fatal("self member missing after refresh")
-	}
-	if self.ID != m.identity.NodeID || self.Name != m.identity.Name {
-		t.Fatalf("self not re-stamped: got id=%q name=%q want id=%q name=%q",
-			self.ID, self.Name, m.identity.NodeID, m.identity.Name)
-	}
+	require.True(t, ok, "self member missing after refresh")
+	require.True(t, self.ID == m.identity.NodeID, "self not re-stamped: got id")
+	require.True(t, self.Name == m.identity.Name, "self not re-stamped: got id")
 }

@@ -8,6 +8,9 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFingerprintOrderInsensitive(t *testing.T) {
@@ -19,17 +22,13 @@ func TestFingerprintOrderInsensitive(t *testing.T) {
 		LocalIPs: map[string]bool{"192.168.1.2": true, "10.0.0.1": true},
 		IfaceV4:  map[int][]net.IP{3: {net.IPv4(10, 0, 0, 2), net.IPv4(10, 0, 0, 1)}},
 	}
-	if fingerprint(a) != fingerprint(b) {
-		t.Fatalf("fingerprints differ for equal-but-reordered snapshots:\n%q\n%q", fingerprint(a), fingerprint(b))
-	}
+	assert.Equal(t, fingerprint(b), fingerprint(a), "fingerprints differ for equal-but-reordered snapshots")
 }
 
 func TestFingerprintDetectsChange(t *testing.T) {
 	a := Snapshot{LocalIPs: map[string]bool{"10.0.0.1": true}, IfaceV4: map[int][]net.IP{}}
 	b := Snapshot{LocalIPs: map[string]bool{"10.0.0.2": true}, IfaceV4: map[int][]net.IP{}}
-	if fingerprint(a) == fingerprint(b) {
-		t.Fatal("fingerprint should differ when an IP changes")
-	}
+	assert.NotEqual(t, fingerprint(b), fingerprint(a), "fingerprint should differ when an IP changes")
 }
 
 func TestSnapshotCloneIsIndependent(t *testing.T) {
@@ -40,25 +39,20 @@ func TestSnapshotCloneIsIndependent(t *testing.T) {
 	cp := orig.clone()
 	cp.LocalIPs["10.0.0.2"] = true
 	cp.IfaceV4[1][0] = net.IPv4(8, 8, 8, 8)
-	if orig.LocalIPs["10.0.0.2"] {
-		t.Error("clone shares LocalIPs map with original")
-	}
-	if orig.IfaceV4[1][0].Equal(net.IPv4(8, 8, 8, 8)) {
-		t.Error("clone shares IfaceV4 backing array with original")
-	}
+	assert.False(t, orig.LocalIPs["10.0.0.2"], "clone shares LocalIPs map with original")
+	assert.False(t, orig.IfaceV4[1][0].Equal(net.IPv4(8, 8, 8, 8)), "clone shares IfaceV4 backing array with original")
 }
 
 func TestWatchProvidesInitialSnapshot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mon, err := Watch(ctx)
-	if err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
+	require.NoError(t, err, "Watch")
 	// Snapshot should match a direct enumeration taken at roughly the same
 	// time (interfaces don't change during the test).
-	if got, want := fingerprint(mon.Snapshot()), fingerprint(Enumerate()); got != want {
-		t.Errorf("monitor snapshot %q != enumerate %q", got, want)
+	{
+		got, want := fingerprint(mon.Snapshot()), fingerprint(Enumerate())
+		assert.Equal(t, want, got, "monitor snapshot")
 	}
 	// Subscribe must hand back a usable channel that closes on cancel.
 	ch := mon.Subscribe()
@@ -67,6 +61,6 @@ func TestWatchProvidesInitialSnapshot(t *testing.T) {
 	case <-ch:
 		// closed (or signalled) — both acceptable
 	case <-time.After(2 * time.Second):
-		t.Error("subscription channel not closed after context cancel")
+		assert.Fail(t, "test expectation failed", "subscription channel not closed after context cancel")
 	}
 }

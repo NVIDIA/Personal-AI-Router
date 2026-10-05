@@ -4,8 +4,10 @@
 package main
 
 import (
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
@@ -35,21 +37,24 @@ func TestPeerDirectorySetAndLookup(t *testing.T) {
 	})
 
 	p, ok := d.lookup("uuid-b")
-	if !ok || !slices.Equal(p.addresses, []string{"192.168.1.42", "10.0.0.42"}) ||
-		p.port != 14323 || p.clusterUUID != "cuuid-b" {
-		t.Fatalf("unexpected nodeB entry: %+v ok=%v", p, ok)
+	require.True(t, ok, "unexpected nodeB entry (%v, %v)", p, ok)
+	assert.Equal(t, []string{"192.168.1.42", "10.0.0.42"}, p.addresses, "unexpected nodeB addresses")
+	require.Equal(t, 14323, p.port, "unexpected nodeB entry (%v, %v)", p, ok)
+	require.Equal(t, "cuuid-b", p.clusterUUID, "unexpected nodeB entry (%v, %v)", p, ok)
+	{
+		_, ok := d.lookup("uuid-c")
+		require.False(t, ok, "nodeC advertises no ec; should not be in directory")
 	}
-	if _, ok := d.lookup("uuid-c"); ok {
-		t.Fatal("nodeC advertises no ec; should not be in directory")
-	}
-	if _, ok := d.lookup("uuid-d"); ok {
-		t.Fatal("nodeD has no dialable IP; should not be in directory")
+	{
+		_, ok := d.lookup("uuid-d")
+		require.False(t, ok, "nodeD has no dialable IP; should not be in directory")
 	}
 
 	// A later snapshot replaces the set wholesale.
 	d.set(nil)
-	if _, ok := d.lookup("uuid-b"); ok {
-		t.Fatal("empty snapshot should clear the directory")
+	{
+		_, ok := d.lookup("uuid-b")
+		require.False(t, ok, "empty snapshot should clear the directory")
 	}
 }
 
@@ -66,10 +71,11 @@ func TestPeerDirectoryKeysByHostUUID(t *testing.T) {
 		},
 	}})
 	p, ok := d.lookup("uuid-b")
-	if !ok || p.nodeID != "uuid-b" || !slices.Equal(p.addresses, []string{"192.168.1.42"}) {
-		t.Fatalf("expected lookup by hostUuid, got %+v ok=%v", p, ok)
-	}
-	if _, ok := d.lookup("nodeB"); ok {
-		t.Fatal("must not be addressable by hostname when a hostUuid is present")
+	require.True(t, ok, "expected lookup by hostUuid (%v, %v)", p, ok)
+	require.Equal(t, "uuid-b", p.nodeID, "expected lookup by hostUuid (%v, %v)", p, ok)
+	assert.Equal(t, []string{"192.168.1.42"}, p.addresses, "expected lookup by hostUuid")
+	{
+		_, ok := d.lookup("nodeB")
+		require.False(t, ok, "must not be addressable by hostname when a hostUuid is present")
 	}
 }

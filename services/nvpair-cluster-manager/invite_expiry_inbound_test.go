@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // putPendingJoinerSession registers a pending INBOUND invite (one this node
@@ -65,17 +67,16 @@ func TestExpireInboundInviteTearsDownReceiver(t *testing.T) {
 	m.expirePendingInvites(time.Now())
 
 	inv, ok := m.getInvite(inviteID)
-	if !ok || inv.State != inviteStateExpired {
-		t.Fatalf("invite state = %+v, want expired", inv)
+	require.True(t, ok, "invite state (%v)", inv)
+	require.True(t, inv.State == inviteStateExpired, "invite state (%v)", inv)
+	require.Nil(t, inv.Pin, "expired invite must not carry a PIN")
+	{
+		_, ok := m.getSession(inviteID)
+		require.False(t, ok, "expired inbound invite must drop its joiner EAP session")
 	}
-	if inv.Pin != nil {
-		t.Fatal("expired invite must not carry a PIN")
-	}
-	if _, ok := m.getSession(inviteID); ok {
-		t.Fatal("expired inbound invite must drop its joiner EAP session")
-	}
-	if _, ok := m.memberByNodeID(inviterUUID); ok {
-		t.Fatal("expired inbound invite must drop the tentative pending-inbound member")
+	{
+		_, ok := m.memberByNodeID(inviterUUID)
+		require.False(t, ok, "expired inbound invite must drop the tentative pending-inbound member")
 	}
 }
 
@@ -114,14 +115,10 @@ func TestExpireInboundInviteSignalsInviter(t *testing.T) {
 
 	select {
 	case env := <-got:
-		if env.Phase != "expire" {
-			t.Fatalf("inviter signal phase = %q, want %q", env.Phase, "expire")
-		}
-		if env.InviteID != inviteID {
-			t.Fatalf("inviter signal inviteId = %q, want %q", env.InviteID, inviteID)
-		}
+		require.Equal(t, "expire", env.Phase, "inviter signal phase")
+		require.True(t, env.InviteID == inviteID, "inviter signal inviteId (%v)", inviteID)
 	case <-time.After(3 * time.Second):
-		t.Fatal("receiver did not signal the inviter on inbound expiry")
+		require.FailNow(t, "test expectation failed", "receiver did not signal the inviter on inbound expiry")
 	}
 }
 
@@ -140,11 +137,11 @@ func TestExpireInboundInvitePreservesFresh(t *testing.T) {
 	m.expirePendingInvites(time.Now())
 
 	inv, ok := m.getInvite(inviteID)
-	if !ok || inv.State != inviteStatePending {
-		t.Fatalf("fresh inbound invite state = %+v, want still pending", inv)
-	}
-	if _, ok := m.getSession(inviteID); !ok {
-		t.Fatal("fresh inbound invite must keep its joiner session")
+	require.True(t, ok, "fresh inbound invite state (%v)", inv)
+	require.True(t, inv.State == inviteStatePending, "fresh inbound invite state (%v)", inv)
+	{
+		_, ok := m.getSession(inviteID)
+		require.True(t, ok, "fresh inbound invite must keep its joiner session")
 	}
 }
 
@@ -173,9 +170,8 @@ func TestExpireInboundInviteNoSession(t *testing.T) {
 	m.expirePendingInvites(time.Now())
 
 	inv, ok := m.getInvite(inviteID)
-	if !ok || inv.State != inviteStateExpired {
-		t.Fatalf("sessionless inbound invite state = %+v, want expired", inv)
-	}
+	require.True(t, ok, "sessionless inbound invite state (%v)", inv)
+	require.True(t, inv.State == inviteStateExpired, "sessionless inbound invite state (%v)", inv)
 }
 
 // TestExpireInboundSkipsInFlightAccept guards the accept-vs-expiry race: while an
@@ -198,9 +194,7 @@ func TestExpireInboundSkipsInFlightAccept(t *testing.T) {
 	// Simulate an accept mid-completion: hold sess.mu the way
 	// runCompletionExchangeLocked does across its network round-trips.
 	sess, ok := m.getSession(inviteID)
-	if !ok {
-		t.Fatal("setup did not register the joiner session")
-	}
+	require.True(t, ok, "setup did not register the joiner session")
 	sess.mu.Lock()
 
 	done := make(chan struct{})
@@ -213,16 +207,20 @@ func TestExpireInboundSkipsInFlightAccept(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("expirePendingInvites parked on sess.mu instead of skipping the busy session")
+		require.FailNow(t, "test expectation failed", "expirePendingInvites parked on sess.mu instead of skipping the busy session")
 	}
-	if inv, _ := m.getInvite(inviteID); inv == nil || inv.State != inviteStatePending {
-		t.Fatalf("invite state = %+v, want still pending during in-flight accept", inv)
+	{
+		inv, _ := m.getInvite(inviteID)
+		require.NotNil(t, inv, "invite state")
+		require.True(t, inv.State == inviteStatePending, "invite state (%v)", inv)
 	}
-	if _, ok := m.getSession(inviteID); !ok {
-		t.Fatal("in-flight accept must keep its joiner session")
+	{
+		_, ok := m.getSession(inviteID)
+		require.True(t, ok, "in-flight accept must keep its joiner session")
 	}
-	if _, ok := m.memberByNodeID(inviterUUID); !ok {
-		t.Fatal("in-flight accept must keep its tentative pending-inbound member")
+	{
+		_, ok := m.memberByNodeID(inviterUUID)
+		require.True(t, ok, "in-flight accept must keep its tentative pending-inbound member")
 	}
 
 	sess.mu.Unlock()
@@ -241,13 +239,14 @@ func TestHandlePairingExpiredTearsDownInviter(t *testing.T) {
 	m.handlePairingExpired(httptest.NewRecorder(), &pairingEnvelope{InviteID: "inv-expire", Phase: "expire"})
 
 	inv, ok := m.getInvite("inv-expire")
-	if !ok || inv.State != inviteStateExpired {
-		t.Fatalf("invite state = %+v, want expired", inv)
+	require.True(t, ok, "invite state (%v)", inv)
+	require.True(t, inv.State == inviteStateExpired, "invite state (%v)", inv)
+	{
+		_, ok := m.getSession("inv-expire")
+		require.False(t, ok, "expire signal must drop the inviter's EAP session")
 	}
-	if _, ok := m.getSession("inv-expire"); ok {
-		t.Fatal("expire signal must drop the inviter's EAP session")
-	}
-	if id, _ := m.clusterIdentity(); id == "" {
-		t.Fatal("intentional cluster erased by an expire signal")
+	{
+		id, _ := m.clusterIdentity()
+		require.NotEqual(t, "", id, "intentional cluster erased by an expire signal")
 	}
 }

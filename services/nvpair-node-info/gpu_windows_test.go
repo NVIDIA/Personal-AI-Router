@@ -8,6 +8,9 @@ package main
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestDXGIAdapterDesc1Size pins the in-Go layout of dxgiAdapterDesc1 to the
@@ -34,8 +37,9 @@ import (
 // garbage to DXGI.
 func TestDXGIAdapterDesc1Size(t *testing.T) {
 	const expected = 312
-	if got := unsafe.Sizeof(dxgiAdapterDesc1{}); got != expected {
-		t.Fatalf("dxgiAdapterDesc1 size = %d, want %d", got, expected)
+	{
+		got := unsafe.Sizeof(dxgiAdapterDesc1{})
+		require.True(t, got == expected, "dxgiAdapterDesc1 size (%v, %v)", got, expected)
 	}
 }
 
@@ -57,8 +61,9 @@ func TestIsVirtualDisplayAdapter(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		if got := isVirtualDisplayAdapter(tc.name); got != tc.want {
-			t.Errorf("isVirtualDisplayAdapter(%q) = %v, want %v", tc.name, got, tc.want)
+		{
+			got := isVirtualDisplayAdapter(tc.name)
+			assert.True(t, got == tc.want, "isVirtualDisplayAdapter (%v)", got)
 		}
 	}
 }
@@ -75,8 +80,9 @@ func TestLuidUint64(t *testing.T) {
 		{0xffffffff, -1, 0xffffffffffffffff},
 	}
 	for _, tc := range cases {
-		if got := luidUint64(tc.low, tc.high); got != tc.want {
-			t.Errorf("luidUint64(%#x, %d) = %#x, want %#x", tc.low, tc.high, got, tc.want)
+		{
+			got := luidUint64(tc.low, tc.high)
+			assert.True(t, got == tc.want, "luidUint64 (%v)", got)
 		}
 	}
 }
@@ -100,8 +106,9 @@ func TestKeepPhysicalAdapter(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := keepPhysicalAdapter(tc.luid, tc.physical); got != tc.want {
-				t.Errorf("keepPhysicalAdapter(%#x) = %v, want %v", tc.luid, got, tc.want)
+			{
+				got := keepPhysicalAdapter(tc.luid, tc.physical)
+				assert.True(t, got == tc.want, "keepPhysicalAdapter (%v)", got)
 			}
 		})
 	}

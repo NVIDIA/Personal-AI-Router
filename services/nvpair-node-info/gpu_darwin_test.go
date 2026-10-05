@@ -7,35 +7,30 @@ package main
 
 import (
 	"context"
-	"errors"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestStaticGPUsFromIORegistry(t *testing.T) {
 	const systemMemory = uint64(36 << 30)
 	gpus, err := staticGPUsFromIORegistry([]byte(ioRegistryGPUFixture), systemMemory)
-	if err != nil {
-		t.Fatalf("staticGPUsFromIORegistry() error = %v", err)
-	}
-	if len(gpus) != 2 {
-		t.Fatalf("got %d GPUs, want 2", len(gpus))
-	}
+	require.NoError(t, err, "staticGPUsFromIORegistry() error")
+	require.Len(t, gpus, 2)
 
 	apple := gpus[0]
-	if apple.Name != "Apple M3 Max" || apple.VramBytes != systemMemory ||
-		apple.statsKey != "ioreg:2a" {
-		t.Fatalf("unexpected Apple GPU: %+v", apple)
-	}
-	if apple.VramUsedBytes != 0 || apple.UtilizationPercent != 0 {
-		t.Fatalf("static detection published dynamic fields: %+v", apple)
-	}
+	require.Equal(t, "Apple M3 Max", apple.Name, "unexpected Apple GPU (%v)", apple)
+	require.True(t, apple.VramBytes == systemMemory, "unexpected Apple GPU (%v)", apple)
+	require.Equal(t, "ioreg:2a", apple.statsKey, "unexpected Apple GPU (%v)", apple)
+	require.Equal(t, uint64(0), apple.VramUsedBytes, "static detection published dynamic fields (%v)", apple)
+	require.Equal(t, uint32(0), apple.UtilizationPercent, "static detection published dynamic fields (%v)", apple)
 
 	discrete := gpus[1]
-	if discrete.Name != "AMD Radeon Pro" || discrete.VramBytes != 8<<30 ||
-		discrete.statsKey != "ioreg:63" {
-		t.Fatalf("unexpected discrete GPU: %+v", discrete)
-	}
+	require.Equal(t, "AMD Radeon Pro", discrete.Name, "unexpected discrete GPU (%v)", discrete)
+	require.True(t, discrete.VramBytes == 8<<30, "unexpected discrete GPU (%v)", discrete)
+	require.Equal(t, "ioreg:63", discrete.statsKey, "unexpected discrete GPU (%v)", discrete)
 }
 
 func TestReadDarwinIORegistryTimeout(t *testing.T) {
@@ -43,7 +38,5 @@ func TestReadDarwinIORegistryTimeout(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want context deadline exceeded", err)
-	}
+	require.ErrorIs(t, err, context.DeadlineExceeded, "error")
 }

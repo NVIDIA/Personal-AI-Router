@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
@@ -67,11 +70,9 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 			select {
 			case got := <-seen:
 				want := profile.addressed("nodes/list")
-				if got != want {
-					t.Fatalf("relayed method = %q, want %q", got, want)
-				}
+				require.True(t, got == want, "relayed method (%v, %v)", got, want)
 			case <-time.After(2 * time.Second):
-				t.Fatal("relay sent nothing downward")
+				require.FailNow(t, "test expectation failed", "relay sent nothing downward")
 			}
 		})
 	}
@@ -110,8 +111,9 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 
 	b.blockManagedOllamaFacade("the Ollama proxy facade could not be brought up")
 
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Errorf("blocking released the alias a retry still needs: %+v", got)
+	{
+		got := b.currentOllamaHostAlias()
+		assert.True(t, got.Port == alias.Port, "blocking released the alias a retry still needs (%v)", got)
 	}
 }
 
@@ -127,13 +129,15 @@ func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
 	}
 	alias := ollamaHostAlias{Address: "127.0.0.1:11433", Port: 11433}
 	b.setOllamaHostAlias(alias)
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Fatalf("alias not established for the test: %+v", got)
+	{
+		got := b.currentOllamaHostAlias()
+		require.True(t, got.Port == alias.Port, "alias not established for the test (%v)", got)
 	}
 
 	b.blockAndFinishEngineProxy(ollamaProxyProfile)
-	if got := b.currentOllamaHostAlias(); got.Port != 0 {
-		t.Errorf("terminal treatment did not release the alias: %+v", got)
+	{
+		got := b.currentOllamaHostAlias()
+		assert.Equal(t, 0, got.Port, "terminal treatment did not release the alias (%v)", got)
 	}
 }
 
@@ -178,8 +182,9 @@ func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := facadeCameUpAnyway(tc.pp, engine, tc.err); got != tc.want {
-				t.Fatalf("facadeCameUpAnyway = %v, want %v", got, tc.want)
+			{
+				got := facadeCameUpAnyway(tc.pp, engine, tc.err)
+				require.True(t, got == tc.want, "facadeCameUpAnyway (%v)", got)
 			}
 		})
 	}
@@ -216,21 +221,17 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 
 	for engine, wantPort := range map[string]int{first.Name: 11434, second.Name: 1234} {
 		ready, port := p.Status(engine)
-		if !ready {
-			t.Errorf("%s facade is not ready", engine)
-		}
-		if port != wantPort {
-			t.Errorf("%s facade port = %d, want %d", engine, port, wantPort)
-		}
-		if p.ReadyParams(engine) == nil {
-			t.Errorf("%s facade has no replayable ready payload", engine)
-		}
+		assert.True(t, ready, " (%v)", engine)
+		assert.True(t, port == wantPort, " (%v, %v, %v)", engine, port, wantPort)
+		assert.NotNil(t, p.ReadyParams(engine), " (%v)", engine)
 	}
 
 	// An engine that never announced itself is not ready, rather than
 	// inheriting a sibling's port.
-	if ready, port := p.Status("vllm"); ready || port != 0 {
-		t.Errorf("an unannounced engine reported ready=%v port=%d", ready, port)
+	{
+		ready, port := p.Status("vllm")
+		assert.False(t, ready, "an unannounced engine reported ready (%v, %v)", ready, port)
+		assert.Equal(t, 0, port, "an unannounced engine reported ready (%v, %v)", ready, port)
 	}
 }
 
@@ -344,9 +345,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 		params, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{service},
 		})
-		if err != nil {
-			t.Fatalf("marshal subscribe for %s: %v", engine, err)
-		}
+		require.NoError(t, err, "marshal subscribe for (%v, %v)", engine, err)
 		p.handleSubscribe(engine, params)
 	}
 
@@ -356,17 +355,13 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	if len(p.subIDs) != len(engines.All()) {
-		t.Fatalf("tracked %d subscriptions for %d engines: %v",
-			len(p.subIDs), len(engines.All()), p.subIDs)
-	}
+	require.Len(t, p.subIDs, len(engines.All()), "tracked")
 	seen := map[int]string{}
 	for engine, id := range p.subIDs {
-		if id == 0 {
-			t.Errorf("engine %q has subscription id 0", engine)
-		}
-		if other, dup := seen[id]; dup {
-			t.Errorf("engines %q and %q share subscription id %d", engine, other, id)
+		assert.NotEqual(t, 0, id, "engine (%v)", engine)
+		{
+			other, dup := seen[id]
+			assert.False(t, dup, "engines (%v, %v, %v)", engine, other, id)
 		}
 		seen[id] = engine
 	}
@@ -403,9 +398,7 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 		raw, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{e.DiscoveryService},
 		})
-		if err != nil {
-			t.Fatalf("marshal subscribe: %v", err)
-		}
+		require.NoError(t, err, "marshal subscribe")
 		return raw
 	}
 
@@ -420,14 +413,8 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	if p.subIDs[first.Name] == firstID {
-		t.Errorf("re-subscribe kept %s's original id %d, so it is now double-fed",
-			first.Name, firstID)
-	}
-	if p.subIDs[second.Name] != secondID {
-		t.Errorf("re-subscribing %s changed %s's id from %d to %d",
-			first.Name, second.Name, secondID, p.subIDs[second.Name])
-	}
+	assert.True(t, p.subIDs[first.Name] != firstID, "re-subscribe kept (%v)", firstID)
+	assert.True(t, p.subIDs[second.Name] == secondID, "re-subscribing (%v)", secondID)
 }
 
 // The read pump reports ready and wires subscriptions by matching bare method
@@ -484,14 +471,8 @@ func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := facadeMethodFor(tc.profile, tc.method)
-			if ok != tc.ok {
-				t.Fatalf("facadeMethodFor(%s, %q) ok = %v, want %v",
-					tc.profile.Name, tc.method, ok, tc.ok)
-			}
-			if ok && got != tc.want {
-				t.Fatalf("facadeMethodFor(%s, %q) = %q, want %q",
-					tc.profile.Name, tc.method, got, tc.want)
-			}
+			require.True(t, ok == tc.ok, "facadeMethodFor (%v)", ok)
+			require.False(t, ok && got != tc.want, "facadeMethodFor (%v)", got)
 		})
 	}
 }

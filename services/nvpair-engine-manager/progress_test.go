@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestProgressHubFanOutAndFilter verifies a subscriber receives only its
@@ -26,23 +28,23 @@ func TestProgressHubFanOutAndFilter(t *testing.T) {
 
 	select {
 	case ev := <-ch:
-		if ev.Engine != "ollama" || ev.Percent != 25 {
-			t.Fatalf("expected ollama 25%%, got %+v", ev)
-		}
+		require.Equal(t, "ollama", ev.Engine, "expected ollama 25 (%v)", ev)
+		require.Equal(t, 25, ev.Percent, "expected ollama 25 (%v)", ev)
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for matching progress event")
+		require.FailNow(t, "test expectation failed", "timed out waiting for matching progress event")
 	}
 
 	// The non-matching (lmstudio) event must not have been delivered.
 	select {
 	case ev := <-ch:
-		t.Fatalf("unexpected extra event: %+v", ev)
+		require.FailNow(t, "test expectation failed", "unexpected extra event: %+v", ev)
 	default:
 	}
 
 	cancel()
-	if _, ok := <-ch; ok {
-		t.Fatal("expected channel closed after cancel")
+	{
+		_, ok := <-ch
+		require.False(t, ok, "expected channel closed after cancel")
 	}
 }
 
@@ -65,7 +67,7 @@ func TestProgressHubDropsWhenFull(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("publish blocked on a full subscriber buffer")
+		require.FailNow(t, "test expectation failed", "publish blocked on a full subscriber buffer")
 	}
 }
 
@@ -89,11 +91,11 @@ func TestEmitInstallProgressPublishesToHub(t *testing.T) {
 	}
 	select {
 	case ev := <-ch:
-		if ev.Op != "install" || ev.Stage != "downloading" || ev.Percent != 42 {
-			t.Fatalf("unexpected event: %+v", ev)
-		}
+		require.Equal(t, "install", ev.Op, "unexpected event (%v)", ev)
+		require.Equal(t, "downloading", ev.Stage, "unexpected event (%v)", ev)
+		require.Equal(t, 42, ev.Percent, "unexpected event (%v)", ev)
 	case <-time.After(time.Second):
-		t.Fatal("emitInstallProgress did not publish to the hub")
+		require.FailNow(t, "test expectation failed", "emitInstallProgress did not publish to the hub")
 	}
 }
 
@@ -228,19 +230,18 @@ func TestEmitPullProgressNotifiesAndPublishes(t *testing.T) {
 
 	e.emitPullProgress(ProgressEvent{Engine: "ollama", Op: "pull", Stage: "pulling", Percent: 62, Message: "pulling"})
 
-	if gotMethod != "engine:pull-progress" {
-		t.Fatalf("expected engine:pull-progress notification, got %q", gotMethod)
-	}
-	if gotParams["engine"] != "ollama" || gotParams["op"] != "pull" || gotParams["percent"] != 62 || gotParams["message"] != "pulling" {
-		t.Fatalf("unexpected notification params: %+v", gotParams)
-	}
+	require.Equal(t, "engine:pull-progress", gotMethod, "expected engine:pull-progress notification")
+	require.Equal(t, "ollama", gotParams["engine"], "unexpected notification params (%v)", gotParams)
+	require.Equal(t, "pull", gotParams["op"], "unexpected notification params (%v)", gotParams)
+	require.Equal(t, 62, gotParams["percent"], "unexpected notification params (%v)", gotParams)
+	require.Equal(t, "pulling", gotParams["message"], "unexpected notification params (%v)", gotParams)
 
 	select {
 	case ev := <-ch:
-		if ev.Op != "pull" || ev.Stage != "pulling" || ev.Percent != 62 {
-			t.Fatalf("unexpected hub event: %+v", ev)
-		}
+		require.Equal(t, "pull", ev.Op, "unexpected hub event (%v)", ev)
+		require.Equal(t, "pulling", ev.Stage, "unexpected hub event (%v)", ev)
+		require.Equal(t, 62, ev.Percent, "unexpected hub event (%v)", ev)
 	case <-time.After(time.Second):
-		t.Fatal("emitPullProgress did not publish to the hub")
+		require.FailNow(t, "test expectation failed", "emitPullProgress did not publish to the hub")
 	}
 }

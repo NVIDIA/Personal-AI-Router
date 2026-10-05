@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -58,18 +60,16 @@ func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
 
 			select {
 			case msg := <-relayed:
-				if msg.Method != noderec.MethodSetObservedAddresses {
-					t.Fatalf("relayed method = %q, want %q", msg.Method, noderec.MethodSetObservedAddresses)
-				}
+				require.True(t, msg.Method == noderec.MethodSetObservedAddresses, "relayed method")
 				var got noderec.ObservedAddressesParams
-				if err := json.Unmarshal(msg.Params, &got); err != nil {
-					t.Fatalf("decode relayed params %s: %v", msg.Params, err)
+				{
+					err := json.Unmarshal(msg.Params, &got)
+					require.NoError(t, err, "decode relayed params")
 				}
-				if len(got.Addresses) != len(tc.addrs) || (len(tc.addrs) > 0 && !reflect.DeepEqual(got.Addresses, tc.addrs)) {
-					t.Fatalf("relayed addresses = %v, want %v", got.Addresses, tc.addrs)
-				}
+				require.Len(t, got.Addresses, len(tc.addrs), "relayed addresses")
+				require.False(t, len(tc.addrs) > 0 && !reflect.DeepEqual(got.Addresses, tc.addrs), "relayed addresses")
 			case <-time.After(2 * time.Second):
-				t.Fatal("observed addresses never reached the scanner")
+				require.FailNow(t, "test expectation failed", "observed addresses never reached the scanner")
 			}
 		})
 	}

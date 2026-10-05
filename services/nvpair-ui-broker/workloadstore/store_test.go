@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mkIn builds an Incoming with a realistic full-fidelity Info payload.
@@ -37,32 +39,23 @@ func mkIn(id, origin, state, scheduledOn string, createdAt int64) Incoming {
 // workload. The stale running must not resurrect a finished job.
 func TestApplyRejectsRunningAfterTerminal(t *testing.T) {
 	s := New()
-	if !s.Apply(mkIn("9", "laptop", "failed", "pc", 100)) {
-		t.Fatal("first sighting (failed) should be accepted")
-	}
-	if s.Apply(mkIn("9", "laptop", "running", "pc", 100)) {
-		t.Fatal("running after failed (same generation) must be rejected")
-	}
+	require.True(t, s.Apply(mkIn("9", "laptop", "failed", "pc", 100)), "first sighting (failed) should be accepted")
+	require.False(t, s.Apply(mkIn("9", "laptop", "running", "pc", 100)), "running after failed (same generation) must be rejected")
 	r, ok := s.Get("laptop", "9")
-	if !ok || r.State != "failed" || !r.Terminal {
-		t.Fatalf("final record = %+v, want terminal failed", r)
-	}
+	require.True(t, ok, "final record (%v)", r)
+	require.Equal(t, "failed", r.State, "final record (%v)", r)
+	require.True(t, r.Terminal, "final record (%v)", r)
 }
 
 // TestApplyRunningThenFailed is the in-order path: running then failed both
 // apply and the workload ends terminal.
 func TestApplyRunningThenFailed(t *testing.T) {
 	s := New()
-	if !s.Apply(mkIn("9", "laptop", "running", "pc", 100)) {
-		t.Fatal("running should be accepted")
-	}
-	if !s.Apply(mkIn("9", "laptop", "failed", "pc", 100)) {
-		t.Fatal("failed after running should be accepted (forward progress)")
-	}
+	require.True(t, s.Apply(mkIn("9", "laptop", "running", "pc", 100)), "running should be accepted")
+	require.True(t, s.Apply(mkIn("9", "laptop", "failed", "pc", 100)), "failed after running should be accepted (forward progress)")
 	r, _ := s.Get("laptop", "9")
-	if r.State != "failed" || !r.Terminal {
-		t.Fatalf("final record = %+v, want terminal failed", r)
-	}
+	require.Equal(t, "failed", r.State, "final record (%v)", r)
+	require.True(t, r.Terminal, "final record (%v)", r)
 }
 
 // TestApplyNewerGenerationReplaces is epoch protection: a restarted proxy
@@ -70,16 +63,13 @@ func TestApplyRunningThenFailed(t *testing.T) {
 // replace the prior generation's terminal record, not be mistaken for it.
 func TestApplyNewerGenerationReplaces(t *testing.T) {
 	s := New()
-	if !s.Apply(mkIn("5", "pc", "failed", "pc", 100)) {
-		t.Fatal("old-generation terminal should be accepted")
-	}
-	if !s.Apply(mkIn("5", "pc", "running", "laptop", 200)) {
-		t.Fatal("newer-generation running must replace the old terminal")
-	}
+	require.True(t, s.Apply(mkIn("5", "pc", "failed", "pc", 100)), "old-generation terminal should be accepted")
+	require.True(t, s.Apply(mkIn("5", "pc", "running", "laptop", 200)), "newer-generation running must replace the old terminal")
 	r, _ := s.Get("pc", "5")
-	if r.State != "running" || r.CreatedAt != 200 || r.ScheduledOn != "laptop" || r.Terminal {
-		t.Fatalf("record = %+v, want running gen=200 scheduledOn=laptop", r)
-	}
+	require.Equal(t, "running", r.State, "record (%v)", r)
+	require.Equal(t, int64(200), r.CreatedAt, "record (%v)", r)
+	require.Equal(t, "laptop", r.ScheduledOn, "record (%v)", r)
+	require.False(t, r.Terminal, "record (%v)", r)
 }
 
 // TestApplyOlderGenerationRejected: a late event from a prior generation (older
@@ -87,35 +77,22 @@ func TestApplyNewerGenerationReplaces(t *testing.T) {
 // one, which would otherwise look like "forward progress" by state rank.
 func TestApplyOlderGenerationRejected(t *testing.T) {
 	s := New()
-	if !s.Apply(mkIn("5", "pc", "running", "pc", 200)) {
-		t.Fatal("current-generation running should be accepted")
-	}
-	if s.Apply(mkIn("5", "pc", "completed", "pc", 100)) {
-		t.Fatal("older-generation event must be rejected despite higher state rank")
-	}
+	require.True(t, s.Apply(mkIn("5", "pc", "running", "pc", 200)), "current-generation running should be accepted")
+	require.False(t, s.Apply(mkIn("5", "pc", "completed", "pc", 100)), "older-generation event must be rejected despite higher state rank")
 	r, _ := s.Get("pc", "5")
-	if r.CreatedAt != 200 || r.State != "running" {
-		t.Fatalf("record = %+v, want running gen=200", r)
-	}
+	require.Equal(t, int64(200), r.CreatedAt, "record (%v)", r)
+	require.Equal(t, "running", r.State, "record (%v)", r)
 }
 
 // TestApplyEqualRankReemit: an identical re-emit is a no-op, but a same-state
 // re-emit that re-points scheduledOn (a failover) is a meaningful change.
 func TestApplyEqualRankReemit(t *testing.T) {
 	s := New()
-	if !s.Apply(mkIn("1", "a", "running", "node1", 100)) {
-		t.Fatal("initial running should be accepted")
-	}
-	if s.Apply(mkIn("1", "a", "running", "node1", 100)) {
-		t.Fatal("identical re-emit should be a no-op")
-	}
-	if !s.Apply(mkIn("1", "a", "running", "node2", 100)) {
-		t.Fatal("running re-pointed to a new scheduledOn should be accepted")
-	}
+	require.True(t, s.Apply(mkIn("1", "a", "running", "node1", 100)), "initial running should be accepted")
+	require.False(t, s.Apply(mkIn("1", "a", "running", "node1", 100)), "identical re-emit should be a no-op")
+	require.True(t, s.Apply(mkIn("1", "a", "running", "node2", 100)), "running re-pointed to a new scheduledOn should be accepted")
 	r, _ := s.Get("a", "1")
-	if r.ScheduledOn != "node2" {
-		t.Fatalf("scheduledOn = %q, want node2", r.ScheduledOn)
-	}
+	require.Equal(t, "node2", r.ScheduledOn, "scheduledOn")
 }
 
 // TestApplyCancelledIsTerminal covers the two gates a new terminal state has
@@ -126,27 +103,18 @@ func TestApplyEqualRankReemit(t *testing.T) {
 // toward its node's pending total and stays exposed to the staleness sweeps.
 func TestApplyCancelledIsTerminal(t *testing.T) {
 	s := New()
-	if !s.Apply(mkIn("1", "a", "running", "node1", 100)) {
-		t.Fatal("initial running should be accepted")
-	}
+	require.True(t, s.Apply(mkIn("1", "a", "running", "node1", 100)), "initial running should be accepted")
 	// Ranks above running, so the transition is accepted rather than dropped.
-	if !s.Apply(mkIn("1", "a", "cancelled", "node1", 100)) {
-		t.Fatal("cancelled after running should be accepted (missing from rank(): sorts below queued and is rejected)")
-	}
+	require.True(t, s.Apply(mkIn("1", "a", "cancelled", "node1", 100)), "cancelled after running should be accepted (missing from rank(): sorts below queued and is rejected)")
 	// Terminal, so a late running cannot resurrect it.
-	if s.Apply(mkIn("1", "a", "running", "node1", 100)) {
-		t.Fatal("running after cancelled should be rejected as backwards")
-	}
+	require.False(t, s.Apply(mkIn("1", "a", "running", "node1", 100)), "running after cancelled should be rejected as backwards")
 	// Terminal, so it drops out of the active set rather than counting as load.
 	r, ok := s.Get("a", "1")
-	if !ok {
-		t.Fatal("record should still be stored")
-	}
-	if !r.Terminal {
-		t.Fatal("cancelled must be terminal (missing from isTerminal(): counts as pending forever and stays exposed to the staleness sweeps)")
-	}
-	if got := len(s.ActiveSnapshot()); got != 0 {
-		t.Fatalf("active snapshot has %d entries, want 0 for a cancelled workload", got)
+	require.True(t, ok, "record should still be stored")
+	require.True(t, r.Terminal, "cancelled must be terminal (missing from isTerminal(): counts as pending forever and stays exposed to the staleness sweeps)")
+	{
+		got := len(s.ActiveSnapshot())
+		require.Equal(t, 0, got, "active snapshot has")
 	}
 }
 
@@ -154,47 +122,34 @@ func TestApplyCancelledIsTerminal(t *testing.T) {
 // distinct workloads and must never merge against each other.
 func TestApplyCrossNodeIsolation(t *testing.T) {
 	s := New()
-	if !s.Apply(mkIn("1", "A", "failed", "A", 100)) {
-		t.Fatal("A/1 should be accepted")
+	require.True(t, s.Apply(mkIn("1", "A", "failed", "A", 100)), "A/1 should be accepted")
+	require.True(t, s.Apply(mkIn("1", "B", "running", "B", 100)), "B/1 has the same id but a different origin; must be independent")
+	require.Equal(t, 2, s.Len())
+	{
+		a, _ := s.Get("A", "1")
+		require.Equal(t, "failed", a.State, "A/1 state")
 	}
-	if !s.Apply(mkIn("1", "B", "running", "B", 100)) {
-		t.Fatal("B/1 has the same id but a different origin; must be independent")
-	}
-	if s.Len() != 2 {
-		t.Fatalf("Len = %d, want 2", s.Len())
-	}
-	if a, _ := s.Get("A", "1"); a.State != "failed" {
-		t.Fatalf("A/1 state = %q, want failed", a.State)
-	}
-	if b, _ := s.Get("B", "1"); b.State != "running" {
-		t.Fatalf("B/1 state = %q, want running", b.State)
+	{
+		b, _ := s.Get("B", "1")
+		require.Equal(t, "running", b.State, "B/1 state")
 	}
 }
 
 func TestApplyRejectsMalformed(t *testing.T) {
 	s := New()
-	if s.Apply(Incoming{ID: "", Origin: "a", State: "running"}) {
-		t.Fatal("missing id must be rejected")
-	}
-	if s.Apply(Incoming{ID: "1", Origin: "", State: "running"}) {
-		t.Fatal("missing origin must be rejected")
-	}
-	if s.Len() != 0 {
-		t.Fatalf("Len = %d, want 0", s.Len())
-	}
+	require.False(t, s.Apply(Incoming{ID: "", Origin: "a", State: "running"}), "missing id must be rejected")
+	require.False(t, s.Apply(Incoming{ID: "1", Origin: "", State: "running"}), "missing origin must be rejected")
+	require.Equal(t, 0, s.Len())
 }
 
 func TestRemove(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
-	if !s.Remove("a", "1") {
-		t.Fatal("Remove of present entry should report true")
-	}
-	if s.Remove("a", "1") {
-		t.Fatal("Remove of absent entry should report false")
-	}
-	if _, ok := s.Get("a", "1"); ok {
-		t.Fatal("entry should be gone after Remove")
+	require.True(t, s.Remove("a", "1"), "Remove of present entry should report true")
+	require.False(t, s.Remove("a", "1"), "Remove of absent entry should report false")
+	{
+		_, ok := s.Get("a", "1")
+		require.False(t, ok, "entry should be gone after Remove")
 	}
 }
 
@@ -205,24 +160,18 @@ func TestSnapshotOrderedByCreatedAt(t *testing.T) {
 	s.Apply(mkIn("1", "b", "running", "b", 200))
 
 	snap := s.Snapshot()
-	if len(snap) != 3 {
-		t.Fatalf("snapshot len = %d, want 3", len(snap))
-	}
+	require.Len(t, snap, 3, "snapshot len")
 	var got []int64
 	for _, raw := range snap {
 		var hdr struct {
 			CreatedAt int64 `json:"createdAt"`
 		}
-		if err := json.Unmarshal(raw, &hdr); err != nil {
-			t.Fatalf("bad snapshot entry: %v", err)
-		}
+		require.NoError(t, json.Unmarshal(raw, &hdr), "bad snapshot entry")
 		got = append(got, hdr.CreatedAt)
 	}
 	want := []int64{100, 200, 300}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("snapshot order = %v, want %v", got, want)
-		}
+		require.True(t, got[i] == want[i], "snapshot order (%v, %v)", got, want)
 	}
 }
 
@@ -234,26 +183,18 @@ func TestActiveSnapshotExcludesTerminalHistory(t *testing.T) {
 	s.Apply(mkIn("failed", "b", "failed", "b", 400))
 
 	snap := s.ActiveSnapshot()
-	if len(snap) != 2 {
-		t.Fatalf("active snapshot len = %d, want 2", len(snap))
-	}
+	require.Len(t, snap, 2, "active snapshot len")
 	var ids []string
 	for _, raw := range snap {
 		var hdr struct {
 			ID    string `json:"id"`
 			State string `json:"state"`
 		}
-		if err := json.Unmarshal(raw, &hdr); err != nil {
-			t.Fatalf("bad active snapshot entry: %v", err)
-		}
-		if hdr.State != "queued" && hdr.State != "running" {
-			t.Fatalf("active snapshot included terminal state %q", hdr.State)
-		}
+		require.NoError(t, json.Unmarshal(raw, &hdr), "bad active snapshot entry")
+		require.False(t, hdr.State != "queued" && hdr.State != "running", "active snapshot included terminal state")
 		ids = append(ids, hdr.ID)
 	}
-	if !sameIDSet(ids, []string{"queued", "running"}) {
-		t.Fatalf("active snapshot ids = %v, want [queued running]", ids)
-	}
+	require.True(t, sameIDSet(ids, []string{"queued", "running"}), "active snapshot ids (%v)", ids)
 }
 
 func TestActiveForNode(t *testing.T) {
@@ -268,16 +209,10 @@ func TestActiveForNode(t *testing.T) {
 	s.Apply(mkIn("4", "pc", "running", "laptop", 100))
 
 	active := s.ActiveForNode("pc")
-	if len(active) != 2 {
-		t.Fatalf("ActiveForNode(pc) len = %d, want 2", len(active))
-	}
+	require.Len(t, active, 2, "ActiveForNode(pc) len")
 	for _, r := range active {
-		if r.Terminal {
-			t.Fatalf("ActiveForNode returned a terminal record: %+v", r)
-		}
-		if r.Origin != "pc" && r.ScheduledOn != "pc" {
-			t.Fatalf("ActiveForNode returned an unrelated record: %+v", r)
-		}
+		require.False(t, r.Terminal, "ActiveForNode returned a terminal record (%v)", r)
+		require.False(t, r.Origin != "pc" && r.ScheduledOn != "pc", "ActiveForNode returned an unrelated record (%v)", r)
 	}
 }
 
@@ -299,15 +234,17 @@ func TestReplayForNode(t *testing.T) {
 	s.Apply(mkIn("4", "host", "completed", "host", 1))      // recent terminal local-origin → replay
 	s.ApplyInferred(mkIn("5", "host", "failed", "gone", 1)) // inferred terminal local-origin → never
 
-	if got := replayIDSet(s.ReplayForNode("host", window)); !sameIDSet(got, []string{"1", "2", "4"}) {
-		t.Fatalf("replay set = %v, want [1 2 4] (active + recent terminals; no peer/inferred)", got)
+	{
+		got := replayIDSet(s.ReplayForNode("host", window))
+		require.True(t, sameIDSet(got, []string{"1", "2", "4"}), "replay set (%v)", got)
 	}
 
 	// Age everything past the window: terminals drop; the still-running record
 	// (non-terminal) is always replayed regardless of age.
 	clock += window + 1
-	if got := replayIDSet(s.ReplayForNode("host", window)); !sameIDSet(got, []string{"1"}) {
-		t.Fatalf("post-window replay set = %v, want [1] (only the still-active record)", got)
+	{
+		got := replayIDSet(s.ReplayForNode("host", window))
+		require.True(t, sameIDSet(got, []string{"1"}), "post-window replay set (%v)", got)
 	}
 }
 
@@ -325,23 +262,17 @@ func TestReplayForNodeAfterLoadUsesCompletionTime(t *testing.T) {
 	writer := newStoreAt(path, testNow)
 	writer.Apply(mkTerm("old-history", "host", testNow-1_001_000, testNow-1_000_000))
 	writer.Apply(mkTerm("recent", "host", testNow-31_000, testNow-30_000))
-	if err := writer.Flush(); err != nil {
-		t.Fatalf("flush: %v", err)
-	}
+	require.NoError(t, writer.Flush(), "flush")
 
 	// A fresh store loads at the same wall clock. Load stamps LastUpdated=now on
 	// BOTH restored records, but completedAt is preserved in Info — so keying the
 	// replay window on completion time (not LastUpdated) keeps the 1000s-old
 	// terminal out while still replaying the 30s-old one.
 	s := newStoreAt(path, testNow)
-	if err := s.Load(); err != nil {
-		t.Fatalf("load: %v", err)
-	}
+	require.NoError(t, s.Load(), "load")
 
 	got := replayIDSet(s.ReplayForNode("host", window))
-	if !sameIDSet(got, []string{"recent"}) {
-		t.Fatalf("post-load replay set = %v, want [recent] (old history must not look recent after Load)", got)
-	}
+	require.True(t, sameIDSet(got, []string{"recent"}), "post-load replay set (%v)", got)
 }
 
 func replayIDSet(recs []Record) []string {
@@ -376,13 +307,11 @@ func sameIDSet(got, want []string) bool {
 func TestInferredMarksRunningFailed(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
-	if !s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)) {
-		t.Fatal("inferred failed should mark a running job failed")
-	}
+	require.True(t, s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)), "inferred failed should mark a running job failed")
 	r, _ := s.Get("a", "1")
-	if r.State != "failed" || !r.Terminal || !r.Inferred {
-		t.Fatalf("record = %+v, want inferred terminal failed", r)
-	}
+	require.Equal(t, "failed", r.State, "record (%v)", r)
+	require.True(t, r.Terminal, "record (%v)", r)
+	require.True(t, r.Inferred, "record (%v)", r)
 }
 
 // TestAuthoritativeOverridesInferred is the blip-and-return case: a node
@@ -392,13 +321,11 @@ func TestAuthoritativeOverridesInferred(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
 	s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)) // node-loss guess
-	if !s.Apply(mkIn("1", "a", "running", "a", 100)) {
-		t.Fatal("authoritative running must override an inferred failed")
-	}
+	require.True(t, s.Apply(mkIn("1", "a", "running", "a", 100)), "authoritative running must override an inferred failed")
 	r, _ := s.Get("a", "1")
-	if r.State != "running" || r.Terminal || r.Inferred {
-		t.Fatalf("record = %+v, want authoritative running", r)
-	}
+	require.Equal(t, "running", r.State, "record (%v)", r)
+	require.False(t, r.Terminal, "record (%v)", r)
+	require.False(t, r.Inferred, "record (%v)", r)
 }
 
 // TestInferredCannotOverrideAuthoritativeTerminal: a guess must never overwrite
@@ -406,13 +333,10 @@ func TestAuthoritativeOverridesInferred(t *testing.T) {
 func TestInferredCannotOverrideAuthoritativeTerminal(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "completed", "a", 100))
-	if s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)) {
-		t.Fatal("inferred failed must not override an authoritative terminal")
-	}
+	require.False(t, s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)), "inferred failed must not override an authoritative terminal")
 	r, _ := s.Get("a", "1")
-	if r.State != "completed" || r.Inferred {
-		t.Fatalf("record = %+v, want authoritative completed", r)
-	}
+	require.Equal(t, "completed", r.State, "record (%v)", r)
+	require.False(t, r.Inferred, "record (%v)", r)
 }
 
 // TestAuthoritativeTerminalOverridesInferred: the origin's real terminal
@@ -421,13 +345,10 @@ func TestAuthoritativeTerminalOverridesInferred(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
 	s.ApplyInferred(mkIn("1", "a", "failed", "a", 100))
-	if !s.Apply(mkIn("1", "a", "completed", "a", 100)) {
-		t.Fatal("origin's authoritative terminal must override an inferred one")
-	}
+	require.True(t, s.Apply(mkIn("1", "a", "completed", "a", 100)), "origin's authoritative terminal must override an inferred one")
 	r, _ := s.Get("a", "1")
-	if r.State != "completed" || r.Inferred {
-		t.Fatalf("record = %+v, want authoritative completed", r)
-	}
+	require.Equal(t, "completed", r.State, "record (%v)", r)
+	require.False(t, r.Inferred, "record (%v)", r)
 }
 
 // mkInFull builds an Incoming with explicit engine + runId (and no completedAt).
@@ -458,30 +379,18 @@ func mkTermFull(id, origin, engine, runID string, createdAt, completedAt int64) 
 // and must not collide in the store.
 func TestCrossEngineConcurrentDistinct(t *testing.T) {
 	s := New()
-	if !s.Apply(mkInFull("1", "host", "ollama", "ro", "running", "host", 100)) {
-		t.Fatal("ollama/1 should be accepted")
-	}
-	if !s.Apply(mkInFull("1", "host", "lmstudio", "rl", "running", "host", 200)) {
-		t.Fatal("lmstudio/1 shares the numeric id but a different engine; must be distinct")
-	}
-	if s.Len() != 2 {
-		t.Fatalf("Len = %d, want 2 (engine distinguishes concurrent same-id jobs)", s.Len())
-	}
+	require.True(t, s.Apply(mkInFull("1", "host", "ollama", "ro", "running", "host", 100)), "ollama/1 should be accepted")
+	require.True(t, s.Apply(mkInFull("1", "host", "lmstudio", "rl", "running", "host", 200)), "lmstudio/1 shares the numeric id but a different engine; must be distinct")
+	require.Equal(t, 2, s.Len())
 }
 
 // TestRestartReuseKeepsHistory: after a proxy restart reuses id "1" (new runId),
 // the prior generation's terminal history must be preserved, not overwritten.
 func TestRestartReuseKeepsHistory(t *testing.T) {
 	s := New()
-	if !s.Apply(mkTermFull("1", "host", "ollama", "run1", 100, 150)) {
-		t.Fatal("gen-1 terminal should be accepted")
-	}
-	if !s.Apply(mkInFull("1", "host", "ollama", "run2", "running", "host", 200)) {
-		t.Fatal("gen-2 reused id (new run) should be a distinct workload")
-	}
-	if s.Len() != 2 {
-		t.Fatalf("Len = %d, want 2 (runId preserves the prior generation's history)", s.Len())
-	}
+	require.True(t, s.Apply(mkTermFull("1", "host", "ollama", "run1", 100, 150)), "gen-1 terminal should be accepted")
+	require.True(t, s.Apply(mkInFull("1", "host", "ollama", "run2", "running", "host", 200)), "gen-2 reused id (new run) should be a distinct workload")
+	require.Equal(t, 2, s.Len())
 }
 
 // TestGenerationBeforeProvenance: a stale generation must be rejected before
@@ -492,40 +401,42 @@ func TestGenerationBeforeProvenance(t *testing.T) {
 	s := New()
 	s.Apply(mkInFull("1", "a", "ollama", "r", "running", "a", 200))
 	s.ApplyInferred(mkInFull("1", "a", "ollama", "r", "failed", "a", 200)) // inferred at gen 200
-	if s.Apply(mkInFull("1", "a", "ollama", "r", "running", "a", 100)) {
-		t.Fatal("stale authoritative gen-100 must not replace the gen-200 record")
-	}
-	if r, _ := s.Get("a", "1"); r.CreatedAt != 200 {
-		t.Fatalf("createdAt = %d, want 200 (older generation rejected)", r.CreatedAt)
+	require.False(t, s.Apply(mkInFull("1", "a", "ollama", "r", "running", "a", 100)), "stale authoritative gen-100 must not replace the gen-200 record")
+	{
+		r, _ := s.Get("a", "1")
+		require.Equal(t, int64(200), r.CreatedAt)
 	}
 
 	// (b) A stale inferred failure must not replace a newer authoritative running.
 	s.Apply(mkInFull("2", "a", "ollama", "r", "running", "a", 200))
-	if s.ApplyInferred(mkInFull("2", "a", "ollama", "r", "failed", "a", 100)) {
-		t.Fatal("stale inferred gen-100 must not fail a gen-200 running")
-	}
-	if r, _ := s.Get("a", "2"); r.State != "running" || r.CreatedAt != 200 {
-		t.Fatalf("record = %+v, want running gen 200", r)
+	require.False(t, s.ApplyInferred(mkInFull("2", "a", "ollama", "r", "failed", "a", 100)), "stale inferred gen-100 must not fail a gen-200 running")
+	{
+		r, _ := s.Get("a", "2")
+		require.Equal(t, "running", r.State, "record (%v)", r)
+		require.Equal(t, int64(200), r.CreatedAt, "record (%v)", r)
 	}
 }
 
 func TestParseIncoming(t *testing.T) {
 	info := mkIn("7", "laptop", "running", "pc", 4242).Info
 	in, ok := ParseIncoming(info)
-	if !ok {
-		t.Fatal("valid workloadInfo should parse")
-	}
-	if in.ID != "7" || in.Origin != "laptop" || in.State != "running" || in.ScheduledOn != "pc" || in.CreatedAt != 4242 {
-		t.Fatalf("parsed = %+v", in)
-	}
+	require.True(t, ok, "valid workloadInfo should parse")
+	require.Equal(t, "7", in.ID, "parsed (%v)", in)
+	require.Equal(t, "laptop", in.Origin, "parsed (%v)", in)
+	require.Equal(t, "running", in.State, "parsed (%v)", in)
+	require.Equal(t, "pc", in.ScheduledOn, "parsed (%v)", in)
+	require.Equal(t, int64(4242), in.CreatedAt, "parsed (%v)", in)
 
-	if _, ok := ParseIncoming([]byte(`{"originatedFrom":"laptop","state":"running"}`)); ok {
-		t.Fatal("missing id should not parse")
+	{
+		_, ok := ParseIncoming([]byte(`{"originatedFrom":"laptop","state":"running"}`))
+		require.False(t, ok, "missing id should not parse")
 	}
-	if _, ok := ParseIncoming([]byte(`{"id":"1","state":"running"}`)); ok {
-		t.Fatal("missing originatedFrom should not parse")
+	{
+		_, ok := ParseIncoming([]byte(`{"id":"1","state":"running"}`))
+		require.False(t, ok, "missing originatedFrom should not parse")
 	}
-	if _, ok := ParseIncoming([]byte(`not json`)); ok {
-		t.Fatal("invalid JSON should not parse")
+	{
+		_, ok := ParseIncoming([]byte(`not json`))
+		require.False(t, ok, "invalid JSON should not parse")
 	}
 }

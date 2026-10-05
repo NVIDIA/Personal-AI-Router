@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/grandcat/zeroconf"
 )
 
@@ -48,13 +50,9 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse stub url: %v", err)
-	}
+	require.NoError(t, err, "parse stub url")
 	emPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("stub port: %v", err)
-	}
+	require.NoError(t, err, "stub port")
 
 	const instance = "xproc-models-1"
 	// Advertise a _nvpair-node with em=<port> and ip=127.0.0.1 so the daemon
@@ -62,9 +60,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 	// address in the daemon's enrichment target selection).
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
 	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	if err != nil {
-		t.Fatalf("register %s: %v", instance, err)
-	}
+	require.NoError(t, err, "register (%v, %v)", instance, err)
 	t.Cleanup(zsrv.Shutdown)
 	t.Logf("advertising %s @ %s (em=%d)", instance, nodeRecordService, emPort)
 
@@ -80,9 +76,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed unexpectedly")
-			}
+			require.True(t, ok, "broker stream closed unexpectedly")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
 				if json.Unmarshal(msg.Result, &res) == nil {
@@ -97,7 +91,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
 		case <-deadline:
-			t.Fatalf("timed out waiting for %q with an enriched model list", instance)
+			require.FailNow(t, "test expectation failed", "timed out waiting for %q with an enriched model list", instance)
 		}
 	}
 }

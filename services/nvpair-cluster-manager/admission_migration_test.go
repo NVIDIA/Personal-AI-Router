@@ -6,6 +6,8 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestLegacyPairingInfoMapsToFirstAdmission(t *testing.T) {
@@ -18,22 +20,17 @@ func TestLegacyPairingInfoMapsToFirstAdmission(t *testing.T) {
 		ClusterID: "cluster-1",
 		Cert:      string(peer.identity.CertPEM),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	info, _, err := parsePairingInfo(raw)
-	if err != nil {
-		t.Fatalf("parse legacy pairing info: %v", err)
-	}
-	if info.AdmissionEpoch != legacyAdmissionEpoch {
-		t.Fatalf("legacy admission epoch = %d, want %d", info.AdmissionEpoch, legacyAdmissionEpoch)
-	}
+	require.NoError(t, err, "parse legacy pairing info")
+	require.True(t, info.AdmissionEpoch == legacyAdmissionEpoch, "legacy admission epoch (%v)", legacyAdmissionEpoch)
 
 	info.AdmissionEpoch = 0
 	info.V = pairingInfoVersion
 	raw, _ = json.Marshal(info)
-	if _, _, err := parsePairingInfo(raw); err == nil {
-		t.Fatal("v2 pairing info without admission epoch was accepted")
+	{
+		_, _, err := parsePairingInfo(raw)
+		require.Error(t, err, "v2 pairing info without admission epoch was accepted")
 	}
 }
 
@@ -42,28 +39,24 @@ func TestRestartMigratesLegacyPinnedMemberAdmission(t *testing.T) {
 	m := testManagerAt(t, dir, 15124)
 	activateTestCluster(t, m, "cluster-1")
 	peer := newTestManagerPort(t, 15125)
-	if err := m.trust.Pin(&TrustedPin{
+	require.NoError(t, m.trust.Pin(&TrustedPin{
 		NodeUUID:        peer.identity.NodeUUID,
 		NodeID:          peer.identity.NodeID,
 		Name:            peer.identity.Name,
 		CertPem:         string(peer.identity.CertPEM),
 		CertFingerprint: peer.identity.CertFingerprint,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	m.upsertMember(&ClusterNode{
 		ID: peer.identity.NodeID, NodeUUID: peer.identity.NodeUUID,
 		State: stateMember,
 	})
-	if err := m.persistMembersErr(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, m.persistMembersErr())
 
 	restarted := testManagerAt(t, dir, 15124)
 	pin, ok := restarted.trust.Get(peer.identity.NodeUUID)
-	if !ok || pin.ClusterID != "cluster-1" || pin.AdmissionEpoch != legacyAdmissionEpoch {
-		t.Fatalf("migrated pin = %+v", pin)
-	}
+	require.True(t, ok, "migrated pin (%v)", pin)
+	require.Equal(t, "cluster-1", pin.ClusterID, "migrated pin (%v)", pin)
+	require.True(t, pin.AdmissionEpoch == legacyAdmissionEpoch, "migrated pin (%v)", pin)
 	hasLocalV2 := false
 	_, selfEpoch := restarted.currentAdmission()
 	for _, end := range pin.Endorsements {
@@ -72,18 +65,15 @@ func TestRestartMigratesLegacyPinnedMemberAdmission(t *testing.T) {
 			hasLocalV2 = true
 		}
 	}
-	if !hasLocalV2 {
-		t.Fatal("migrated pin has no local admission-bound endorsement")
-	}
+	require.True(t, hasLocalV2, "migrated pin has no local admission-bound endorsement")
 	member, ok := restarted.memberByNodeID(peer.identity.NodeUUID)
-	if !ok || member.ClusterID != "cluster-1" || member.AdmissionEpoch != legacyAdmissionEpoch {
-		t.Fatalf("migrated member = %+v", member)
-	}
+	require.True(t, ok, "migrated member (%v)", member)
+	require.Equal(t, "cluster-1", member.ClusterID, "migrated member (%v)", member)
+	require.True(t, member.AdmissionEpoch == legacyAdmissionEpoch, "migrated member (%v)", member)
 	proof, err := restarted.newRemovalProof(peer.identity.NodeUUID, member.AdmissionEpoch)
-	if err != nil {
-		t.Fatalf("migrated offline member is not removable: %v", err)
-	}
-	if _, err := restarted.putRemovalProof(proof); err != nil {
-		t.Fatalf("persist removal for migrated offline member: %v", err)
+	require.NoError(t, err, "migrated offline member is not removable")
+	{
+		_, err := restarted.putRemovalProof(proof)
+		require.NoError(t, err, "persist removal for migrated offline member")
 	}
 }

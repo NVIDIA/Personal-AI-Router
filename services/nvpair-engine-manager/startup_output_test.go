@@ -7,38 +7,42 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestStartupOutputPreservesExplanationAndRedactsValues(t *testing.T) {
 	o := newStartupOutput([]string{"--future-option", "private-value"}, map[string]string{"FUTURE_ENV": "private-env"})
-	if _, err := o.Write([]byte("unknown option --future-option; input=private-value env=private-env\n")); err != nil {
-		t.Fatal(err)
+	{
+		_, err := o.Write([]byte("unknown option --future-option; input=private-value env=private-env\n"))
+		require.NoError(t, err)
 	}
 	cause := errors.New("exit status 1")
 	err := o.failure(cause)
-	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "unknown option --future-option") || strings.Contains(err.Error(), "private-value") || strings.Contains(err.Error(), "private-env") {
-		t.Fatalf("lost diagnostic or leaked supplied value: %v", err)
-	}
+	require.ErrorIs(t, err, cause, "lost diagnostic or leaked supplied value")
+	require.Contains(t, err.Error(), "unknown option --future-option", "lost diagnostic or leaked supplied value (%v)", err)
+	require.NotContains(t, err.Error(), "private-value", "lost diagnostic or leaked supplied value (%v)", err)
+	require.NotContains(t, err.Error(), "private-env", "lost diagnostic or leaked supplied value (%v)", err)
 }
 
 func TestStartupOutputBoundsLargeWritesAndStopsCapturing(t *testing.T) {
 	o := newStartupOutput([]string{"x", "x", "x"}, nil)
 	data := []byte(strings.Repeat("x", maxStartupOutput*4) + "last diagnostic")
-	if n, err := o.Write(data); n != len(data) || err != nil {
-		t.Fatalf("writer did not consume all output: %d %v", n, err)
+	{
+		n, err := o.Write(data)
+		require.True(t, n == len(data), "writer did not consume all output (%v, %v)", n, err)
+		require.NoError(t, err, "writer did not consume all output (%v, %v)", n, err)
 	}
 	cause := errors.New("failed")
 	err := o.failure(cause)
-	if len(err.Error()) > maxStartupOutput+len(cause.Error())+2 || !strings.HasSuffix(err.Error(), "last diagnostic") {
-		t.Fatalf("diagnostic tail exceeded bound or lost final message: %d bytes", len(err.Error()))
-	}
+	require.LessOrEqual(t, len(err.Error()), maxStartupOutput+len(cause.Error())+2, "diagnostic tail exceeded bound or lost final message")
+	require.True(t, strings.HasSuffix(err.Error(), "last diagnostic"), "diagnostic tail exceeded bound or lost final message")
 	o.close()
-	if _, err := o.Write([]byte("later engine log")); err != nil {
-		t.Fatal(err)
+	{
+		_, err := o.Write([]byte("later engine log"))
+		require.NoError(t, err)
 	}
-	if o.failure(cause) != cause {
-		t.Fatal("startup capture retained output after successful startup")
-	}
+	require.True(t, o.failure(cause) == cause, "startup capture retained output after successful startup")
 }
 
 func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
@@ -50,12 +54,13 @@ func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
 			output := before + value + after
 			for offset := 0; offset < len(output); offset += chunkSize {
 				chunk := output[offset:min(offset+chunkSize, len(output))]
-				if n, err := o.Write([]byte(chunk)); n != len(chunk) || err != nil {
-					t.Fatalf("Write() = %d, %v", n, err)
+				{
+					n, err := o.Write([]byte(chunk))
+					require.True(t, n == len(chunk), "Write() (%v, %v)", n, err)
+					require.NoError(t, err, "Write() (%v, %v)", n, err)
 				}
-				if len(o.tail) > maxStartupOutput || len(o.pending) > o.lookback {
-					t.Fatal("capture exceeded its diagnostic and boundary-context bounds")
-				}
+				require.LessOrEqual(t, len(o.tail), maxStartupOutput, "capture exceeded its diagnostic and boundary-context bounds")
+				require.LessOrEqual(t, len(o.pending), o.lookback, "capture exceeded its diagnostic and boundary-context bounds")
 			}
 			// Compare the entire result with redaction before truncation: checking
 			// only for the full value would miss the original partial-value leak.
@@ -65,9 +70,8 @@ func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
 			}
 			cause := errors.New("failed")
 			got := o.failure(cause)
-			if !errors.Is(got, cause) || got.Error() != "failed: "+want {
-				t.Fatal("failure diagnostic differs from redact-before-truncate result")
-			}
+			require.ErrorIs(t, got, cause, "failure diagnostic differs from redact-before-truncate result")
+			require.True(t, got.Error() == "failed: "+want, "failure diagnostic differs from redact-before-truncate result")
 		})
 	}
 
@@ -82,11 +86,10 @@ func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
 func TestStartupOutputPrefersLongestPrivateValueAcrossWrites(t *testing.T) {
 	o := newStartupOutput([]string{"private", "private-longer-value"}, nil)
 	for _, part := range []string{"input=private", "-longer-value; useful diagnostic"} {
-		if _, err := o.Write([]byte(part)); err != nil {
-			t.Fatal(err)
+		{
+			_, err := o.Write([]byte(part))
+			require.NoError(t, err)
 		}
 	}
-	if o.failure(errors.New("failed")).Error() != "failed: input=[redacted]; useful diagnostic" {
-		t.Fatal("a shorter private value exposed the suffix of a longer value")
-	}
+	require.Equal(t, "failed: input=[redacted]; useful diagnostic", o.failure(errors.New("failed")).Error(), "a shorter private value exposed the suffix of a longer value")
 }

@@ -9,10 +9,12 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"slices"
-	"strings"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type recordingPacketWriter struct {
@@ -70,24 +72,14 @@ func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
 	writer := &recordingPacketWriter{}
 	options := &recordingMulticastOptions{}
 
-	if err := writePacket(payload, ifi, source, target, writer, options); err != nil {
-		t.Fatalf("writePacket: %v", err)
-	}
-	if len(options.interfaces) != 1 || options.interfaces[0] != ifi {
-		t.Fatalf("multicast interfaces = %v, want [%v]", options.interfaces, ifi)
-	}
-	if len(options.ttls) != 1 || options.ttls[0] != preferredMulticastTTL {
-		t.Fatalf("multicast TTLs = %v, want [255]", options.ttls)
-	}
-	if writer.writes != 1 {
-		t.Fatalf("writes = %d, want 1", writer.writes)
-	}
-	if !bytes.Equal(writer.payload, payload) {
-		t.Errorf("payload = %q, want %q", writer.payload, payload)
-	}
-	if writer.target != target {
-		t.Errorf("target = %v, want %v", writer.target, target)
-	}
+	require.NoError(t, writePacket(payload, ifi, source, target, writer, options), "writePacket")
+	require.Len(t, options.interfaces, 1, "multicast interfaces")
+	assert.Same(t, ifi, options.interfaces[0], "multicast interfaces")
+	require.Len(t, options.ttls, 1, "multicast TTLs")
+	assert.Equal(t, preferredMulticastTTL, options.ttls[0], "multicast TTLs")
+	assert.Equal(t, 1, writer.writes)
+	assert.Equal(t, payload, writer.payload)
+	assert.Same(t, target, writer.target)
 }
 
 func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
@@ -96,15 +88,10 @@ func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
 	writer := &recordingPacketWriter{}
 	options := &recordingMulticastOptions{}
 
-	if err := writePacket([]byte("unicast payload"), nil, source, target, writer, options); err != nil {
-		t.Fatalf("writePacket: %v", err)
-	}
-	if len(options.interfaces) != 0 || len(options.ttls) != 0 {
-		t.Fatalf("multicast options used for unicast: interfaces=%v TTLs=%v", options.interfaces, options.ttls)
-	}
-	if writer.writes != 1 {
-		t.Fatalf("writes = %d, want 1", writer.writes)
-	}
+	require.NoError(t, writePacket([]byte("unicast payload"), nil, source, target, writer, options), "writePacket")
+	require.Len(t, options.interfaces, 0, "multicast options used for unicast: interfaces")
+	require.Len(t, options.ttls, 0, "multicast options used for unicast: interfaces")
+	assert.Equal(t, 1, writer.writes)
 }
 
 func TestWritePacketReturnsWriteFailure(t *testing.T) {
@@ -114,12 +101,8 @@ func TestWritePacketReturnsWriteFailure(t *testing.T) {
 	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
 
 	err := writePacket([]byte("unicast payload"), nil, source, target, writer, &recordingMulticastOptions{})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("error = %v, want wrapped %v", err, wantErr)
-	}
-	if writer.writes != 1 {
-		t.Fatalf("writes = %d, want 1", writer.writes)
-	}
+	require.ErrorIs(t, err, wantErr, "error")
+	assert.Equal(t, 1, writer.writes)
 }
 
 func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
@@ -172,29 +155,17 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 				fallbackTTLErr: tc.fallbackTTLErr,
 			}
 
-			if err := writePacket([]byte("multicast payload"), ifi, source, target, writer, options); err != nil {
-				t.Fatalf("writePacket: %v", err)
-			}
-			if len(options.interfaces) != 1 {
-				t.Fatalf("interface attempts = %d, want 1", len(options.interfaces))
-			}
-			if !slices.Equal(options.ttls, tc.wantTTLs) {
-				t.Fatalf("multicast TTLs = %v, want %v", options.ttls, tc.wantTTLs)
-			}
-			if writer.writes != 1 {
-				t.Fatalf("writes = %d, want 1", writer.writes)
-			}
+			require.NoError(t, writePacket([]byte("multicast payload"), ifi, source, target, writer, options), "writePacket")
+			require.Len(t, options.interfaces, 1, "interface attempts")
+			assert.Equal(t, tc.wantTTLs, options.ttls, "multicast TTLs")
+			assert.Equal(t, 1, writer.writes)
 
 			gotLogs := logs.String()
 			for _, message := range tc.wantMessages {
-				if !strings.Contains(gotLogs, message) {
-					t.Errorf("logs missing %q:\n%s", message, gotLogs)
-				}
+				assert.Contains(t, gotLogs, message, "logs missing")
 			}
 			for _, field := range []string{"iface=eth0", "ip=192.0.2.10", "target=224.0.0.251:5353"} {
-				if !strings.Contains(gotLogs, field) {
-					t.Errorf("logs missing %q:\n%s", field, gotLogs)
-				}
+				assert.Contains(t, gotLogs, field, "logs missing")
 			}
 		})
 	}
@@ -205,56 +176,36 @@ func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 
 	lc := net.ListenConfig{Control: setReuseAddr}
 	receiveSocket, err := lc.ListenPacket(context.Background(), "udp4", mdnsTargetV4.String())
-	if err != nil {
-		t.Fatalf("open reusable mDNS receive socket: %v", err)
-	}
+	require.NoError(t, err, "open reusable mDNS receive socket")
 	defer receiveSocket.Close()
 
 	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source, Port: 0})
-	if err != nil {
-		t.Fatalf("open UDP sink: %v", err)
-	}
+	require.NoError(t, err, "open UDP sink")
 	defer sink.Close()
-	if err := sink.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set sink deadline: %v", err)
-	}
+	require.NoError(t, sink.SetReadDeadline(time.Now().Add(2*time.Second)), "set sink deadline")
 
 	target, ok := sink.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		t.Fatalf("sink address has type %T, want *net.UDPAddr", sink.LocalAddr())
-	}
+	require.True(t, ok, "sink address has type")
 	responder := &Responder{
 		ifaceAddrs: map[int][]net.IP{
 			ifi.Index: {source},
 		},
 	}
 	payload := []byte("mDNS source-port regression")
-	if err := responder.sendOnInterface(payload, ifi.Index, target); err != nil {
-		t.Fatalf("sendOnInterface: %v", err)
-	}
+	require.NoError(t, responder.sendOnInterface(payload, ifi.Index, target), "sendOnInterface")
 
 	buf := make([]byte, len(payload))
 	n, from, err := sink.ReadFromUDP(buf)
-	if err != nil {
-		t.Fatalf("read UDP sink: %v", err)
-	}
-	if !bytes.Equal(buf[:n], payload) {
-		t.Fatalf("payload = %q, want %q", buf[:n], payload)
-	}
-	if !from.IP.Equal(source) {
-		t.Errorf("source IP = %s, want %s", from.IP, source)
-	}
-	if from.Port != mdnsPort {
-		t.Errorf("source port = %d, want %d", from.Port, mdnsPort)
-	}
+	require.NoError(t, err, "read UDP sink")
+	assert.Equal(t, payload, buf[:n])
+	assert.True(t, from.IP.Equal(source), "source IP")
+	assert.Equal(t, mdnsPort, from.Port, "source port")
 }
 
 func loopbackIPv4(t *testing.T) (*net.Interface, net.IP) {
 	t.Helper()
 	ifaces, err := net.Interfaces()
-	if err != nil {
-		t.Fatalf("enumerate interfaces: %v", err)
-	}
+	require.NoError(t, err, "enumerate interfaces")
 	for i := range ifaces {
 		ifi := &ifaces[i]
 		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback == 0 {

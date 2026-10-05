@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestDarwinCPUUtilization(t *testing.T) {
@@ -31,8 +33,9 @@ func TestDarwinCPUUtilization(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := darwinCPUUtilization(c.prev, c.cur); got != c.want {
-				t.Fatalf("darwinCPUUtilization() = %d, want %d", got, c.want)
+			{
+				got := darwinCPUUtilization(c.prev, c.cur)
+				require.True(t, got == c.want, "darwinCPUUtilization() (%v)", got)
 			}
 		})
 	}
@@ -42,16 +45,12 @@ func TestInitialDarwinMemorySnapshot(t *testing.T) {
 	snap := initialDarwinMemorySnapshot(func() (uint64, bool) {
 		return 12 << 30, true
 	})
-	if snap.MemUsedBytes != 12<<30 {
-		t.Fatalf("MemUsedBytes = %d, want %d", snap.MemUsedBytes, uint64(12<<30))
-	}
+	require.True(t, snap.MemUsedBytes == 12<<30, "MemUsedBytes")
 
 	snap = initialDarwinMemorySnapshot(func() (uint64, bool) {
 		return 0, false
 	})
-	if snap.MemUsedBytes != 0 {
-		t.Fatalf("failed read published %d bytes", snap.MemUsedBytes)
-	}
+	require.Equal(t, uint64(0), snap.MemUsedBytes, "failed read published")
 }
 
 func TestDarwinCollectorPublishesAndStops(t *testing.T) {
@@ -82,18 +81,11 @@ func TestDarwinCollectorPublishesAndStops(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	snap := c.Snapshot()
-	if snap.CPUUtilPct != 80 {
-		t.Fatalf("CPUUtilPct = %d, want 80", snap.CPUUtilPct)
-	}
-	if snap.MemUsedBytes < 2<<30 {
-		t.Fatalf("MemUsedBytes = %d, want a refreshed sample", snap.MemUsedBytes)
-	}
-	if snap.GPU["ioreg:2a"].UtilizationPct != 42 {
-		t.Fatalf("GPU snapshot = %+v", snap.GPU)
-	}
-	if len(snap.GPUInventory) != 1 || snap.GPUInventory[0].Name != "Apple M3 Max" {
-		t.Fatalf("GPU inventory = %+v", snap.GPUInventory)
-	}
+	require.Equal(t, uint32(80), snap.CPUUtilPct)
+	require.GreaterOrEqual(t, snap.MemUsedBytes, uint64(2<<30))
+	require.Equal(t, uint32(42), snap.GPU["ioreg:2a"].UtilizationPct, "GPU snapshot")
+	require.Len(t, snap.GPUInventory, 1, "GPU inventory")
+	require.Equal(t, "Apple M3 Max", snap.GPUInventory[0].Name, "GPU inventory")
 
 	c.Stop()
 	c.Stop()
@@ -110,9 +102,8 @@ func TestDarwinCollectorKeepsMemoryOnCPUFailure(t *testing.T) {
 		},
 	}
 	snap := c.decodeSystemSnapshot()
-	if snap.CPUUtilPct != 0 || snap.MemUsedBytes != 8<<30 {
-		t.Fatalf("unexpected partial snapshot: %+v", snap)
-	}
+	require.Equal(t, uint32(0), snap.CPUUtilPct, "unexpected partial snapshot (%v)", snap)
+	require.True(t, snap.MemUsedBytes == 8<<30, "unexpected partial snapshot (%v)", snap)
 }
 
 func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
@@ -139,12 +130,14 @@ func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
 	c.latest.Store(&statsSnapshot{})
 
 	c.collectGPU(context.Background())
-	if got := c.Snapshot().GPU; len(got) != 0 {
-		t.Fatalf("failed GPU read published %+v", got)
+	{
+		got := c.Snapshot().GPU
+		require.Len(t, got, 0, "failed GPU read published")
 	}
 	c.collectGPU(context.Background())
-	if got := c.Snapshot().GPU["ioreg:2a"].UtilizationPct; got != 77 {
-		t.Fatalf("retry utilization = %d, want 77", got)
+	{
+		got := c.Snapshot().GPU["ioreg:2a"].UtilizationPct
+		require.Equal(t, uint32(77), got, "retry utilization")
 	}
 }
 
@@ -176,23 +169,19 @@ func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
 
 	c.collectGPU(context.Background())
 	partial := c.Snapshot()
-	if partial.GPU["ioreg:2a"].VRAMUsed != 2<<30 || !partial.GPUSampledAt.IsZero() {
-		t.Fatalf("pre-utilization reading = %+v, want display data without sample time", partial)
-	}
+	require.True(t, partial.GPU["ioreg:2a"].VRAMUsed == 2<<30, "pre-utilization reading (%v)", partial)
+	require.True(t, partial.GPUSampledAt.IsZero(), "pre-utilization reading (%v)", partial)
 
 	c.collectGPU(context.Background())
 	idle := c.Snapshot()
-	if idle.GPU["ioreg:2a"].VRAMUsed != 3<<30 || idle.GPU["ioreg:2a"].UtilizationPct != 0 ||
-		idle.GPUSampledAt.IsZero() {
-		t.Fatalf("valid idle reading = %+v, want fresh 0%% utilization", idle)
-	}
+	require.True(t, idle.GPU["ioreg:2a"].VRAMUsed == 3<<30, "valid idle reading (%v)", idle)
+	require.Equal(t, uint32(0), idle.GPU["ioreg:2a"].UtilizationPct, "valid idle reading (%v)", idle)
+	require.False(t, idle.GPUSampledAt.IsZero(), "valid idle reading (%v)", idle)
 
 	c.collectGPU(context.Background())
 	retained := c.Snapshot()
-	if retained.GPU["ioreg:2a"].VRAMUsed != 3<<30 ||
-		!retained.GPUSampledAt.Equal(idle.GPUSampledAt) {
-		t.Fatalf("missing utilization replaced last valid reading: got %+v want %+v", retained, idle)
-	}
+	require.True(t, retained.GPU["ioreg:2a"].VRAMUsed == 3<<30, "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
+	require.True(t, retained.GPUSampledAt.Equal(idle.GPUSampledAt), "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
 }
 
 func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
@@ -218,8 +207,9 @@ func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	for c.Snapshot().CPUUtilPct != 80 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := c.Snapshot().CPUUtilPct; got != 80 {
-		t.Fatalf("CPUUtilPct = %d while GPU reader blocked, want 80", got)
+	{
+		got := c.Snapshot().CPUUtilPct
+		require.Equal(t, uint32(80), got, "CPUUtilPct")
 	}
 
 	stopped := make(chan struct{})
@@ -230,27 +220,19 @@ func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(250 * time.Millisecond):
-		t.Fatal("Stop did not cancel blocked GPU reader")
+		require.FailNow(t, "test expectation failed", "Stop did not cancel blocked GPU reader")
 	}
 }
 
 func TestDynamicGPUReadingFromIORegistry(t *testing.T) {
 	reading, err := dynamicGPUReadingFromIORegistry([]byte(ioRegistryGPUFixture), 36<<30)
-	if err != nil {
-		t.Fatalf("dynamicGPUReadingFromIORegistry() error = %v", err)
-	}
+	require.NoError(t, err, "dynamicGPUReadingFromIORegistry() error")
 	apple := reading.stats["ioreg:2a"]
-	if apple.VRAMUsed != 8<<30 || apple.UtilizationPct != 100 {
-		t.Fatalf("unexpected Apple stats: %+v", apple)
-	}
+	require.True(t, apple.VRAMUsed == 8<<30, "unexpected Apple stats (%v)", apple)
+	require.Equal(t, uint32(100), apple.UtilizationPct, "unexpected Apple stats (%v)", apple)
 	discrete := reading.stats["ioreg:63"]
-	if discrete.VRAMUsed != 2<<30 || discrete.UtilizationPct != 25 {
-		t.Fatalf("unexpected discrete stats: %+v", discrete)
-	}
-	if reading.inventory[0].VramBytes != 36<<30 {
-		t.Fatalf("unexpected Apple inventory: %+v", reading.inventory[0])
-	}
-	if reading.utilizationSamples != 2 {
-		t.Fatalf("utilization samples = %d, want 2", reading.utilizationSamples)
-	}
+	require.True(t, discrete.VRAMUsed == 2<<30, "unexpected discrete stats (%v)", discrete)
+	require.Equal(t, uint32(25), discrete.UtilizationPct, "unexpected discrete stats (%v)", discrete)
+	require.True(t, reading.inventory[0].VramBytes == 36<<30, "unexpected Apple inventory")
+	require.Equal(t, 2, reading.utilizationSamples, "utilization samples")
 }

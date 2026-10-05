@@ -8,31 +8,26 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSafeRemoveUnderRootDeletesNestedFile(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "publisher", "model")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(target, "weights.gguf"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := safeRemoveUnderRoot(root, target); err != nil {
-		t.Fatalf("safeRemoveUnderRoot: %v", err)
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("target still exists after delete: %v", err)
+	require.NoError(t, os.MkdirAll(target, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "weights.gguf"), []byte("x"), 0o644))
+	require.NoError(t, safeRemoveUnderRoot(root, target), "safeRemoveUnderRoot")
+	{
+		_, err := os.Stat(target)
+		require.True(t, os.IsNotExist(err), "target still exists after delete (%v)", err)
 	}
 }
 
 func TestSafeRemoveUnderRootRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := safeRemoveUnderRoot(root, filepath.Join(root, "..", filepath.Base(outside))); err == nil {
-		t.Fatal("expected traversal escape to fail")
-	}
+	require.Error(t, safeRemoveUnderRoot(root, filepath.Join(root, "..", filepath.Base(outside))), "expected traversal escape to fail")
 }
 
 func TestSafeRemoveUnderRootRejectsSymlinkEscape(t *testing.T) {
@@ -42,10 +37,6 @@ func TestSafeRemoveUnderRootRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	link := filepath.Join(root, "escape")
-	if err := os.Symlink(outside, link); err != nil {
-		t.Fatal(err)
-	}
-	if err := safeRemoveUnderRoot(root, link); err == nil {
-		t.Fatal("expected symlink escape to fail")
-	}
+	require.NoError(t, os.Symlink(outside, link))
+	require.Error(t, safeRemoveUnderRoot(root, link), "expected symlink escape to fail")
 }

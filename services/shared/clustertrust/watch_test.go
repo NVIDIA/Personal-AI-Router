@@ -7,6 +7,9 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWatchReportsTransitionAConcurrentCallerAlreadyObserved is the regression
@@ -28,9 +31,7 @@ import (
 func TestWatchReportsTransitionAConcurrentCallerAlreadyObserved(t *testing.T) {
 	dir := t.TempDir()
 	m := Open(dir)
-	if m.Clustered() {
-		t.Fatal("an empty cluster dir must start unclustered")
-	}
+	assert.False(t, m.Clustered(), "an empty cluster dir must start unclustered")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -66,10 +67,8 @@ func TestWatchReportsTransitionAConcurrentCallerAlreadyObserved(t *testing.T) {
 
 	select {
 	case clustered := <-changed:
-		if !clustered {
-			t.Fatal("the watch reported a transition to unclustered, want clustered")
-		}
+		require.True(t, clustered, "the watch reported a transition to unclustered, want clustered")
 	case <-time.After(4 * RefreshInterval):
-		t.Fatal("the watch never reported the join: a concurrent Refresh consumed the transition")
+		require.FailNow(t, "test expectation failed", "the watch never reported the join: a concurrent Refresh consumed the transition")
 	}
 }

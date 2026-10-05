@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTLSClientOptionsValidate(t *testing.T) {
@@ -30,12 +33,8 @@ func TestTLSClientOptionsValidate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.o.validate()
-			if tc.ok && err != nil {
-				t.Fatalf("validate() = %v, want nil", err)
-			}
-			if !tc.ok && err == nil {
-				t.Fatal("validate() = nil, want error")
-			}
+			require.False(t, tc.ok && err != nil, "validate() (%v)", err)
+			require.False(t, !tc.ok && err == nil, "validate() = nil, want error")
 		})
 	}
 }
@@ -44,12 +43,8 @@ func TestTLSClientOptionsValidate(t *testing.T) {
 // no flags set, there's no TLS client and the daemon falls back to plain HTTP.
 func TestBuildTLSClientUnconfiguredIsNil(t *testing.T) {
 	c, err := buildTLSClient(tlsClientOptions{}, nodeInfoFetchTimeout)
-	if err != nil {
-		t.Fatalf("buildTLSClient(unconfigured) err = %v", err)
-	}
-	if c != nil {
-		t.Fatal("buildTLSClient(unconfigured) should return a nil client (plain-HTTP fallback)")
-	}
+	require.NoError(t, err, "buildTLSClient(unconfigured) err")
+	require.Nil(t, c, "buildTLSClient(unconfigured) should return a nil client (plain-HTTP fallback)")
 }
 
 func TestBuildTLSClientCABundle(t *testing.T) {
@@ -59,20 +54,16 @@ func TestBuildTLSClientCABundle(t *testing.T) {
 	dir := t.TempDir()
 
 	good := filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(good, caPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(good, caPEM, 0o600))
 	c, err := buildTLSClient(tlsClientOptions{CABundlePath: good}, nodeInfoFetchTimeout)
-	if err != nil || c == nil {
-		t.Fatalf("buildTLSClient(valid CA) = (%v, %v), want non-nil client and nil err", c, err)
-	}
+	require.NoError(t, err, "buildTLSClient(valid CA) (%v, %v)", c, err)
+	require.NotNil(t, c, "buildTLSClient(valid CA) (%v, %v)", c, err)
 
 	bad := filepath.Join(dir, "bad.pem")
-	if err := os.WriteFile(bad, []byte("not a pem"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := buildTLSClient(tlsClientOptions{CABundlePath: bad}, nodeInfoFetchTimeout); err == nil {
-		t.Fatal("buildTLSClient(garbage CA) should error")
+	require.NoError(t, os.WriteFile(bad, []byte("not a pem"), 0o600))
+	{
+		_, err := buildTLSClient(tlsClientOptions{CABundlePath: bad}, nodeInfoFetchTimeout)
+		require.Error(t, err, "buildTLSClient(garbage CA) should error")
 	}
 }
 
@@ -91,20 +82,20 @@ func TestFetchNodeInfoTLSClientSelection(t *testing.T) {
 	defer srv.Close()
 
 	host, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	port, _ := strconv.Atoi(portStr)
 
 	// With the TLS client (which trusts the test server), the HTTPS fetch works.
 	dTLS := &daemon{http: &http.Client{Timeout: nodeInfoFetchTimeout}, tlsHTTP: srv.Client()}
-	if _, ok := dTLS.fetchNodeInfo(host, port); !ok {
-		t.Error("fetchNodeInfo with a TLS client should reach the HTTPS node-info endpoint")
+	{
+		_, ok := dTLS.fetchNodeInfo(host, port)
+		assert.True(t, ok, "fetchNodeInfo with a TLS client should reach the HTTPS node-info endpoint")
 	}
 
 	// Without it (dormant default), plain HTTP can't reach an HTTPS-only endpoint.
 	dPlain := &daemon{http: &http.Client{Timeout: nodeInfoFetchTimeout}}
-	if _, ok := dPlain.fetchNodeInfo(host, port); ok {
-		t.Error("fetchNodeInfo without a TLS client should not reach an HTTPS-only endpoint over plain HTTP")
+	{
+		_, ok := dPlain.fetchNodeInfo(host, port)
+		assert.False(t, ok, "fetchNodeInfo without a TLS client should not reach an HTTPS-only endpoint over plain HTTP")
 	}
 }

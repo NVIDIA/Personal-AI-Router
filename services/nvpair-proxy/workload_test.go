@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // recRW is a thread-safe io.ReadWriter that records everything the codec writes
@@ -93,32 +95,22 @@ func TestHandleHTTP_WorkloadVisibleBeforeFirstByte(t *testing.T) {
 		select {
 		case <-received:
 		case <-time.After(5 * time.Second):
-			t.Fatal("upstream never received the forwarded request")
+			require.FailNow(t, "test expectation failed", "upstream never received the forwarded request")
 		}
 
 		// The upstream has the request but has sent no response byte, so a
 		// first-byte emission could not have fired. The job must still be
 		// visible, as queued.
-		if !waitFor(t, rec, "workload:submitted") {
-			t.Fatal("workload:submitted not emitted when the request was admitted")
-		}
-		if !rec.has(`"state":"queued"`) {
-			t.Fatal("an admitted job must be queued until the engine produces content")
-		}
-		if rec.has("workload:started") {
-			t.Fatal("workload:started emitted before the engine produced any content")
-		}
+		require.True(t, waitFor(t, rec, "workload:submitted"), "workload:submitted not emitted when the request was admitted")
+		require.True(t, rec.has(`"state":"queued"`), "an admitted job must be queued until the engine produces content")
+		require.False(t, rec.has("workload:started"), "workload:started emitted before the engine produced any content")
 
 		doRelease()
 		<-done
 
 		// Released: the engine produced content, so the job is now running and
 		// then completes. queued -> running -> completed, never backwards.
-		if !waitFor(t, rec, "workload:started") {
-			t.Fatal("workload:started not emitted once the engine produced content")
-		}
-		if !rec.has(`"state":"running"`) {
-			t.Fatal("the commit point must transition the job to running")
-		}
+		require.True(t, waitFor(t, rec, "workload:started"), "workload:started not emitted once the engine produced content")
+		require.True(t, rec.has(`"state":"running"`), "the commit point must transition the job to running")
 	})
 }

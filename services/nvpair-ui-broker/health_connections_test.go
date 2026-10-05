@@ -9,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/httpcon/testclient"
 )
 
@@ -19,9 +22,7 @@ func TestHealthChecksReuseConnections(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					var requests atomic.Int32
 					client, connections := testclient.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						if r.URL.Path != path {
-							t.Errorf("path = %q, want %q", r.URL.Path, path)
-						}
+						assert.True(t, r.URL.Path == path, "path (%v)", path)
 						status := http.StatusOK
 						if requests.Add(1)%2 == 0 {
 							status = http.StatusServiceUnavailable
@@ -34,12 +35,14 @@ func TestHealthChecksReuseConnections(t *testing.T) {
 					}))
 					const rounds = 32
 					for i := 0; i < rounds; i++ {
-						if got, want := checkEngineHealth(profile, client, 1), i%2 == 0; got != want {
-							t.Fatalf("poll %d: healthy = %v, want %v", i, got, want)
+						{
+							got, want := checkEngineHealth(profile, client, 1), i%2 == 0
+							require.True(t, got == want, "poll (%v, %v, %v)", i, got, want)
 						}
 					}
-					if got := connections.Count(); got != 1 {
-						t.Fatalf("accepted %d HTTP/1 connections for %d polls, want 1", got, rounds)
+					{
+						got := connections.Count()
+						require.Equal(t, int32(1), got, "accepted (%v, %v)", got, rounds)
 					}
 				})
 			}

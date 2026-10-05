@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/applog"
 	"nvpair-shared/noderec"
 )
@@ -16,9 +19,7 @@ import (
 func identityFrame(t *testing.T, clusterUUID string) applog.StdinMessage {
 	t.Helper()
 	params, err := json.Marshal(noderec.ClusterIdentityParams{ClusterUUID: clusterUUID})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
-	}
+	require.NoError(t, err, "marshal params")
 	return applog.StdinMessage{Method: noderec.MethodSetClusterIdentity, Params: params}
 }
 
@@ -30,19 +31,17 @@ func identityFrame(t *testing.T, clusterUUID string) applog.StdinMessage {
 // collapse into the empty string it happens to be stored as.
 func TestClusterIdentityStartsUnknown(t *testing.T) {
 	var identity clusterIdentity
-	if uuid, told := identity.get(); told || uuid != "" {
-		t.Fatalf("fresh identity = (%q, told=%v), want an empty principal and told=false", uuid, told)
+	{
+		uuid, told := identity.get()
+		require.False(t, told, "fresh identity (%v, %v)", uuid, told)
+		require.Equal(t, "", uuid, "fresh identity (%v, %v)", uuid, told)
 	}
 
 	// A departure is a real value and must report as present-and-empty.
 	identity.set("")
 	uuid, told := identity.get()
-	if !told {
-		t.Error("identity pushed as empty still reports as not told")
-	}
-	if uuid != "" {
-		t.Errorf("uuid = %q, want empty", uuid)
-	}
+	assert.True(t, told, "identity pushed as empty still reports as not told")
+	assert.Equal(t, "", uuid, "uuid")
 }
 
 // TestHandleClusterIdentityAppliesPush drives the real stdin handler for the
@@ -51,13 +50,17 @@ func TestHandleClusterIdentityAppliesPush(t *testing.T) {
 	var identity clusterIdentity
 
 	handleClusterIdentity(identityFrame(t, "our-principal"), &identity)
-	if uuid, told := identity.get(); !told || uuid != "our-principal" {
-		t.Fatalf("after push = (%q, told=%v), want (our-principal, true)", uuid, told)
+	{
+		uuid, told := identity.get()
+		require.True(t, told, "after push (%v, %v)", uuid, told)
+		require.Equal(t, "our-principal", uuid, "after push (%v, %v)", uuid, told)
 	}
 
 	handleClusterIdentity(identityFrame(t, ""), &identity)
-	if uuid, told := identity.get(); !told || uuid != "" {
-		t.Fatalf("after departure = (%q, told=%v), want an empty principal and told=true", uuid, told)
+	{
+		uuid, told := identity.get()
+		require.True(t, told, "after departure (%v, %v)", uuid, told)
+		require.Equal(t, "", uuid, "after departure (%v, %v)", uuid, told)
 	}
 
 	// Another method must not touch it. log/set-level never reaches this handler
@@ -65,8 +68,9 @@ func TestHandleClusterIdentityAppliesPush(t *testing.T) {
 	// silently reset membership, so the guard is worth pinning.
 	handleClusterIdentity(identityFrame(t, "restored"), &identity)
 	handleClusterIdentity(applog.StdinMessage{Method: applog.SetLevelMethod}, &identity)
-	if uuid, _ := identity.get(); uuid != "restored" {
-		t.Errorf("uuid = %q after an unrelated frame, want restored", uuid)
+	{
+		uuid, _ := identity.get()
+		assert.Equal(t, "restored", uuid, "uuid")
 	}
 }
 
@@ -82,8 +86,10 @@ func TestHandleClusterIdentityIgnoresMalformed(t *testing.T) {
 		Params: json.RawMessage(`"not-an-object"`),
 	}, &identity)
 
-	if uuid, told := identity.get(); !told || uuid != "our-principal" {
-		t.Errorf("after malformed push = (%q, told=%v), want the prior value kept", uuid, told)
+	{
+		uuid, told := identity.get()
+		assert.True(t, told, "after malformed push (%v, %v)", uuid, told)
+		assert.Equal(t, "our-principal", uuid, "after malformed push (%v, %v)", uuid, told)
 	}
 }
 
@@ -97,28 +103,24 @@ func TestBuildResponseClusterUUIDWireStates(t *testing.T) {
 	raw := func(clusterUUID *string) map[string]any {
 		t.Helper()
 		var out map[string]any
-		if err := json.Unmarshal(buildResponse(nil, nil, 0, statsSnapshot{}, "host", clusterUUID), &out); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
+		require.NoError(t, json.Unmarshal(buildResponse(nil, nil, 0, statsSnapshot{}, "host", clusterUUID), &out), "decode")
 		return out
 	}
 
-	if _, present := raw(nil)["clusterUuid"]; present {
-		t.Error("unknown membership emitted a clusterUuid key; a peer would read it as a claim")
+	{
+		_, present := raw(nil)["clusterUuid"]
+		assert.False(t, present, "unknown membership emitted a clusterUuid key; a peer would read it as a claim")
 	}
 
 	unclustered := ""
 	got := raw(&unclustered)
 	value, present := got["clusterUuid"]
-	if !present {
-		t.Fatal("unclustered membership omitted clusterUuid; a peer cannot tell it apart from unknown")
-	}
-	if value != "" {
-		t.Errorf("clusterUuid = %v, want empty", value)
-	}
+	require.True(t, present, "unclustered membership omitted clusterUuid; a peer cannot tell it apart from unknown")
+	assert.Equal(t, "", value, "clusterUuid")
 
 	principal := "our-principal"
-	if got := raw(&principal)["clusterUuid"]; got != "our-principal" {
-		t.Errorf("clusterUuid = %v, want our-principal", got)
+	{
+		got := raw(&principal)["clusterUuid"]
+		assert.Equal(t, "our-principal", got, "clusterUuid")
 	}
 }
