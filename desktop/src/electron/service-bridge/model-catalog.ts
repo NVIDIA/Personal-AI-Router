@@ -7,18 +7,10 @@ import { getModularSupervisor } from '@/electron/service-bridge/modular-supervis
 import type { JsonObject, JsonValue } from '@/electron/service-bridge/json-rpc-subprocess'
 import { createStructuredLogger } from '@/shared/utils/log'
 import { MODULAR_CATALOG_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
+import { engineManagerName } from '@/shared/utils/engines'
 import getErrorString from '@/shared/utils/get-error-string'
 
 const log = createStructuredLogger('model-catalog')
-
-/**
- * The engine's name in the backend's vocabulary. `EngineType` is the renderer's
- * spelling; the engine manager keys on its manifest names.
- */
-const BACKEND_ENGINE_NAME: Record<EngineType, string> = {
-    ollama: 'ollama',
-    'lm-studio': 'lmstudio'
-}
 
 /**
  * `JsonObject` is what the stdio plane already resolves a reply to, so narrowing
@@ -90,8 +82,7 @@ export async function getEngineHubModels(
     engineType: EngineType,
     query?: string
 ): Promise<EngineHubSearchResponse> {
-    const engine = BACKEND_ENGINE_NAME[engineType]
-    if (!engine) return { models: [] }
+    const engine = engineManagerName(engineType)
     const search = query?.trim()
     try {
         // No target machine is named. The hub only ever installs to this
@@ -122,7 +113,7 @@ export async function getEngineHubModels(
 
 /**
  * Warm the backend's catalog cache so the first modal open is instant. Only the
- * live-fetched source benefits; the committed one is compiled in and costs
+ * live-fetched sources benefit; the committed one is compiled in and costs
  * nothing. Fire-and-forget: failures are logged by the call itself and the modal
  * will simply fetch again.
  *
@@ -132,4 +123,5 @@ export async function getEngineHubModels(
  */
 export function warmEngineHubs(): void {
     void getEngineHubModels('lm-studio')
+    void getEngineHubModels('llama-cpp')
 }

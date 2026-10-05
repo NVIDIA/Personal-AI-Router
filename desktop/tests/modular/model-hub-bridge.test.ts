@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { getEngineHubModels } from '@/electron/model-hub'
+import type { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 
 const mocks = vi.hoisted(() => ({
     getEngineHubModels: vi.fn<typeof getEngineHubModels>()
@@ -17,7 +17,7 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => []
 }))
-vi.mock('@/electron/model-hub', () => ({
+vi.mock('@/electron/service-bridge/model-catalog', () => ({
     getEngineHubModels: mocks.getEngineHubModels
 }))
 
@@ -29,7 +29,7 @@ describe('model hub service bridge', () => {
         mocks.getEngineHubModels.mockResolvedValue({ models: [] })
     })
 
-    it('forwards an explicit llama.cpp query to Electron main', async () => {
+    it('forwards an explicit llama.cpp query to the catalog relay', async () => {
         await handleServiceBridgeInvoke('engine:search-hub', {
             engineType: 'llama-cpp',
             query: 'qwen coder'

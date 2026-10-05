@@ -152,7 +152,7 @@ var all = []Engine{
 		PortFile:         "lmstudio-proxy-port.json",
 	},
 	{
-		Name:             "llamacpp",
+		Name:             NameLlamaCPP,
 		DisplayName:      "llama.cpp",
 		DiscoveryService: noderec.ServiceLlamaCPP,
 		FacadePort:       8080,
