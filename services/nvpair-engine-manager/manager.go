@@ -362,7 +362,7 @@ func (m *Manager) runModels(ctx context.Context, msg *Message) {
 }
 
 // runCatalog answers engine:catalog. It is off the request goroutine because the
-// LM Studio source is a live fetch on a cold cache.
+// LM Studio and llama.cpp sources are live fetches on a cold cache.
 func (m *Manager) runCatalog(ctx context.Context, msg *Message) {
 	var p catalogParams
 	if !m.parse(msg, &p) {
@@ -372,7 +372,7 @@ func (m *Manager) runCatalog(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "engine is required")
 		return
 	}
-	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch)
+	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch, p.Query)
 	if err != nil {
 		m.codec.RespondError(msg.ID, -32603, err.Error())
 		return

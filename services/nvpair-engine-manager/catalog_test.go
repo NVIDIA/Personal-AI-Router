@@ -6,9 +6,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,7 +26,7 @@ import (
 // has nothing to offer".
 func TestOllamaCatalogLoadsFromEmbeddedFile(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64")
+	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64", "")
 	if err != nil {
 		t.Fatalf("ollama catalog: %v", err)
 	}
@@ -86,7 +88,7 @@ func TestOllamaCatalogIsServedFromCache(t *testing.T) {
 // adding rows or by widening them.
 func TestOllamaCatalogFitsInAFrame(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64")
+	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64", "")
 	if err != nil {
 		t.Fatalf("ollama catalog: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestLmStudioCatalogCoalescesConcurrentCallers(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			models, _, err := c.lmStudioCatalog(context.Background())
+			models, _, err := c.lmStudio.get(context.Background())
 			errs[i], counts[i] = err, len(models)
 		}()
 	}
@@ -178,19 +180,19 @@ func TestLmStudioCatalogBacksOffAfterFailure(t *testing.T) {
 
 	// Seed a good list, then start failing.
 	fail = false
-	if _, _, err := c.lmStudioCatalog(context.Background()); err != nil {
+	if _, _, err := c.lmStudio.get(context.Background()); err != nil {
 		t.Fatalf("seed fetch: %v", err)
 	}
 	fail = true
 
 	// Force a refresh by ageing the cache past its TTL.
-	c.mu.Lock()
-	c.lmFetched = time.Now().Add(-2 * catalogCacheTTL)
-	c.mu.Unlock()
+	c.lmStudio.mu.Lock()
+	c.lmStudio.fetched = time.Now().Add(-2 * catalogCacheTTL)
+	c.lmStudio.mu.Unlock()
 
 	before := requests.Load()
 	for range 3 {
-		models, _, err := c.lmStudioCatalog(context.Background())
+		models, _, err := c.lmStudio.get(context.Background())
 		if err != nil {
 			t.Fatalf("a failed refresh should still serve the stale list: %v", err)
 		}
@@ -220,7 +222,7 @@ func TestLmStudioCatalogBacksOffWithNothingCached(t *testing.T) {
 	c.baseURL = srv.URL
 
 	for i := range 3 {
-		if _, _, err := c.lmStudioCatalog(context.Background()); err == nil {
+		if _, _, err := c.lmStudio.get(context.Background()); err == nil {
 			t.Fatalf("call %d: a failing upstream with nothing cached returned no error", i)
 		}
 	}
@@ -229,10 +231,10 @@ func TestLmStudioCatalogBacksOffWithNothingCached(t *testing.T) {
 	}
 
 	// Once the backoff has run out, the next call tries again.
-	c.mu.Lock()
-	c.lmFailed = time.Now().Add(-2 * catalogRetryAfterFailure)
-	c.mu.Unlock()
-	_, _, _ = c.lmStudioCatalog(context.Background())
+	c.lmStudio.mu.Lock()
+	c.lmStudio.failed = time.Now().Add(-2 * catalogRetryAfterFailure)
+	c.lmStudio.mu.Unlock()
+	_, _, _ = c.lmStudio.get(context.Background())
 	if got := requests.Load(); got != 2 {
 		t.Errorf("after the backoff expired: %d requests, want a second attempt", got)
 	}
@@ -251,6 +253,9 @@ func TestNormalizeCatalogEngine(t *testing.T) {
 	expectNormalized("lmstudio", "lmstudio")
 	expectNormalized("LM Studio", "lmstudio")
 	expectNormalized("lm-studio", "lmstudio")
+	expectNormalized("llamacpp", "llamacpp")
+	expectNormalized("llama-cpp", "llamacpp")
+	expectNormalized("llama.cpp", "llamacpp")
 	expectNormalized("vllm", "vllm")
 }
 
@@ -258,7 +263,7 @@ func TestNormalizeCatalogEngine(t *testing.T) {
 // rather than returning an empty list that reads as "nothing available".
 func TestCatalogRejectsUnknownEngine(t *testing.T) {
 	c := newCatalogService()
-	if _, err := c.Catalog(context.Background(), "vllm", "linux", "amd64"); err == nil {
+	if _, err := c.Catalog(context.Background(), "vllm", "linux", "amd64", ""); err == nil {
 		t.Error("unknown engine returned a catalog")
 	}
 }
@@ -325,7 +330,7 @@ func TestFilterForTarget(t *testing.T) {
 // as universal.
 func TestCatalogEchoesTarget(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "darwin", "amd64")
+	res, err := c.Catalog(context.Background(), "ollama", "darwin", "amd64", "")
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
@@ -334,7 +339,7 @@ func TestCatalogEchoesTarget(t *testing.T) {
 	}
 
 	// Omitting both means this host.
-	res, err = c.Catalog(context.Background(), "ollama", "", "")
+	res, err = c.Catalog(context.Background(), "ollama", "", "", "")
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
@@ -345,7 +350,7 @@ func TestCatalogEchoesTarget(t *testing.T) {
 
 	// A named platform does not borrow this host's architecture: that would
 	// describe a machine the caller did not ask about.
-	res, err = c.Catalog(context.Background(), "ollama", "darwin", "")
+	res, err = c.Catalog(context.Background(), "ollama", "darwin", "", "")
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
@@ -409,5 +414,222 @@ func TestNormalizeOllamaRowsDedupes(t *testing.T) {
 		if m.Name == "llama3.2:latest" && m.Size != 2 {
 			t.Errorf("duplicate kept size %d, want the later entry's 2", m.Size)
 		}
+	}
+}
+
+// ggufRow is a listing entry llama.cpp can download, for a test to break one
+// field of.
+func ggufRow(id string, downloads int, files ...string) hfModelRow {
+	if len(files) == 0 {
+		files = []string{"model-Q4_K_M.gguf"}
+	}
+	siblings := make([]hfSibling, len(files))
+	for i, f := range files {
+		siblings[i] = hfSibling{RFilename: f}
+	}
+	return hfModelRow{
+		ID:           id,
+		Downloads:    downloads,
+		LastModified: "2026-09-01T12:00:00.000Z",
+		Tags:         []string{"gguf", "conversational"},
+		Gated:        json.RawMessage(`false`),
+		PipelineTag:  "text-generation",
+		Siblings:     siblings,
+	}
+}
+
+// TestNormalizeLlamaCPPRowsKeepsOnlyDownloadable is the guard for offering a
+// download that cannot succeed. The listing's GGUF filter also matches gated
+// and private repos, embedding models, and repos with no file at the offered
+// quantization, and every one of those fails only after the operator picked it.
+func TestNormalizeLlamaCPPRowsKeepsOnlyDownloadable(t *testing.T) {
+	gated := ggufRow("a/gated", 1)
+	gated.Gated = json.RawMessage(`"auto"`)
+	unstated := ggufRow("a/unstated", 1)
+	unstated.Gated = nil
+	private := ggufRow("a/private", 1)
+	private.Private = true
+	untagged := ggufRow("a/untagged", 1)
+	untagged.Tags = []string{"conversational"}
+	embedding := ggufRow("a/embedding", 1)
+	embedding.PipelineTag, embedding.Tags = "feature-extraction", []string{"gguf"}
+	undated := ggufRow("a/undated", 1)
+	undated.LastModified = "yesterday"
+
+	rows := []hfModelRow{
+		ggufRow("ggml-org/kept", 10),
+		ggufRow("a/split", 5, "q4/model-Q4_K_M-00001-of-00002.gguf", "q4/model-Q4_K_M-00002-of-00002.gguf"),
+		gated, unstated, private, untagged, embedding, undated,
+		ggufRow("a/no-q4", 1, "model-Q8_0.gguf"),
+		ggufRow("a/projector-only", 1, "mmproj-model-Q4_K_M.gguf"),
+		ggufRow("a/second-shard-only", 1, "model-Q4_K_M-00002-of-00002.gguf"),
+		ggufRow("../escape", 1),
+		ggufRow("a/has space", 1),
+	}
+	got := normalizeLlamaCPPRows(rows)
+	ids := make([]string, len(got))
+	for i, m := range got {
+		ids[i] = m.ID
+	}
+	if strings.Join(ids, ",") != "ggml-org/kept:Q4_K_M,a/split:Q4_K_M" {
+		t.Fatalf("kept %v, want only the two downloadable repos, most downloaded first", ids)
+	}
+
+	m := got[0]
+	if m.Name != m.ID {
+		t.Errorf("name %q and id %q disagree; both must be the download name", m.Name, m.ID)
+	}
+	if m.Author != "ggml-org" || m.URL != "https://huggingface.co/ggml-org/kept" {
+		t.Errorf("author %q, url %q", m.Author, m.URL)
+	}
+	if !hasTag(m.Tags, "Q4_K_M") {
+		t.Errorf("tags %v do not name the quantization offered", m.Tags)
+	}
+}
+
+// TestNormalizeLlamaCPPRowsDedupesAcrossPublishers checks a repo listed twice,
+// as it is when a search and a publisher page overlap, yields one row.
+func TestNormalizeLlamaCPPRowsDedupesAcrossPublishers(t *testing.T) {
+	got := normalizeLlamaCPPRows([]hfModelRow{ggufRow("a/model", 1), ggufRow("a/model", 7)})
+	if len(got) != 1 || got[0].Downloads != 7 {
+		t.Errorf("got %+v, want one row carrying the later entry", got)
+	}
+}
+
+// llamaCPPServer answers the listing for each approved publisher with one repo
+// of its own, and a search with a repo named after the query. It records every
+// request's query string.
+func llamaCPPServer(t *testing.T, failAuthor string) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		mu.Lock()
+		requests = append(requests, r.URL.RawQuery)
+		mu.Unlock()
+		if q.Get("filter") != "gguf" || q.Get("full") != "true" {
+			t.Errorf("listing asked for %q, want GGUF repos in full", r.URL.RawQuery)
+		}
+		var rows []hfModelRow
+		switch author, search := q.Get("author"), q.Get("search"); {
+		case author != "" && author == failAuthor:
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		case author != "":
+			rows = []hfModelRow{ggufRow(author+"/model-GGUF", 1)}
+		case search == "nothing":
+		case search != "":
+			rows = []hfModelRow{ggufRow("found/"+strings.ReplaceAll(search, " ", "-"), 1)}
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), requests...)
+	}
+}
+
+// TestLlamaCPPCatalogReadsEveryPublisher checks the browse list is the union of
+// the approved publishers, and that the reply says a search is possible.
+func TestLlamaCPPCatalogReadsEveryPublisher(t *testing.T) {
+	srv, _ := llamaCPPServer(t, "")
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	res, err := c.Catalog(context.Background(), "llama.cpp", "linux", "arm64", "")
+	if err != nil {
+		t.Fatalf("llama.cpp catalog: %v", err)
+	}
+	if len(res.Models) != len(llamaCPPPublishers) {
+		t.Fatalf("got %d models, want one from each of %v", len(res.Models), llamaCPPPublishers)
+	}
+	for _, publisher := range llamaCPPPublishers {
+		if !slices.ContainsFunc(res.Models, func(m CatalogModel) bool { return m.Author == publisher }) {
+			t.Errorf("nothing from %s", publisher)
+		}
+	}
+	if !res.Searchable || res.Query != "" {
+		t.Errorf("searchable %v, query %q; want a searchable browse list", res.Searchable, res.Query)
+	}
+}
+
+// TestLlamaCPPCatalogFailsWhole checks one publisher failing fails the fetch,
+// rather than caching for six hours a list that is silently missing it.
+func TestLlamaCPPCatalogFailsWhole(t *testing.T) {
+	srv, _ := llamaCPPServer(t, "bartowski")
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	if res, err := c.Catalog(context.Background(), "llamacpp", "", "", ""); err == nil {
+		t.Errorf("a failed publisher still produced a list of %d", len(res.Models))
+	}
+}
+
+// TestLlamaCPPSearch checks a query reaches the upstream once, is cached
+// regardless of case, and that a search matching nothing is an answer rather
+// than a failure.
+func TestLlamaCPPSearch(t *testing.T) {
+	srv, requests := llamaCPPServer(t, "")
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	res, err := c.Catalog(context.Background(), "llamacpp", "", "", "  Gemma 3  ")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if res.Query != "Gemma 3" || len(res.Models) != 1 || res.Models[0].ID != "found/Gemma-3:Q4_K_M" {
+		t.Fatalf("query %q answered with %+v", res.Query, res.Models)
+	}
+	if _, err := c.Catalog(context.Background(), "llamacpp", "", "", "gemma 3"); err != nil {
+		t.Fatalf("repeat search: %v", err)
+	}
+	if got := len(requests()); got != 1 {
+		t.Errorf("the same query twice made %d requests, want 1", got)
+	}
+
+	res, err = c.Catalog(context.Background(), "llamacpp", "", "", "nothing")
+	if err != nil {
+		t.Fatalf("a search matching nothing failed: %v", err)
+	}
+	if len(res.Models) != 0 {
+		t.Errorf("got %d models for a query that matches none", len(res.Models))
+	}
+}
+
+// TestLlamaCPPSearchesAreBounded checks the per-query caches are evicted least
+// recently used first, since the set of possible queries is unbounded.
+func TestLlamaCPPSearchesAreBounded(t *testing.T) {
+	c := newCatalogService()
+	first := c.llamaCPPSearch("first")
+	for i := range llamaCPPSearchCacheLimit {
+		c.llamaCPPSearch(fmt.Sprint("query ", i))
+	}
+	if len(c.llamaSearches) != llamaCPPSearchCacheLimit {
+		t.Errorf("%d searches kept, want at most %d", len(c.llamaSearches), llamaCPPSearchCacheLimit)
+	}
+	if c.llamaCPPSearch("first") == first {
+		t.Error("the least recently used search was not evicted")
+	}
+}
+
+// TestQueryIsIgnoredByASourceThatCannotSearch checks a query sent for an engine
+// whose source cannot search returns the whole list, marked unsearchable, for
+// the client to filter itself.
+func TestQueryIsIgnoredByASourceThatCannotSearch(t *testing.T) {
+	c := newCatalogService()
+	all, err := c.Catalog(context.Background(), "ollama", "", "", "")
+	if err != nil {
+		t.Fatalf("ollama catalog: %v", err)
+	}
+	queried, err := c.Catalog(context.Background(), "ollama", "", "", "llama")
+	if err != nil {
+		t.Fatalf("ollama catalog with a query: %v", err)
+	}
+	if queried.Searchable || queried.Query != "" || len(queried.Models) != len(all.Models) {
+		t.Errorf("searchable %v, query %q, %d of %d models",
+			queried.Searchable, queried.Query, len(queried.Models), len(all.Models))
 	}
 }
