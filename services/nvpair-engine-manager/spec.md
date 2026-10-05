@@ -56,7 +56,7 @@ extensibility story for an open-source product.
 - **Inference traffic** — stays with `nvpair-proxy`; this service never proxies `/api/chat` etc.
 - **Multi-instance per engine and an MCP server** — future-additive, not v1.
 - **The node's error list** — owned by `nvpair-errors`, which holds it as in-memory session state; this service only emits `errors:report` / `errors:clear`.
-- Automatic cleanup of persistent llama.cpp model downloads.
+- Automatic deletion of persistent llama.cpp model-cache files.
 
 ## 3. Key Use Cases
 - **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
@@ -227,6 +227,23 @@ The operator starts it: `engine:start {engine:"ollama"}` resolves the manifest r
 The operator stops it: `engine:stop {engine:"ollama"}` signals a process the service owns. For an **adopted** engine (no owned process), it resolves the PID bound to the port and terminates it only when that process is running the binary we manage — reclaiming an orphan a prior run left on our own managed port; a genuinely foreign listener (a different image on a different port) is declined with an error naming its PID and image. A user-initiated `stop` records the OFF intent regardless (even when the RPC returns an error), so the health loop and restore-on-restart don't flip the engine back on — clients must not treat a stop error as proof the OFF choice was discarded. The cluster `ec` stop endpoint shares this semantics and may return HTTP 500 while OFF is persisted.
 
 The operator pulls a model: `engine:action {engine:"ollama", action:"pull_model", params:{name:"llama3.2"}}` issues the manifest-declared `POST 127.0.0.1:{port}/api/pull`. Because the action is `pull_model`, the request is routed through the streaming pull path (not the buffered `engine:action` reader): each `/api/pull` status line is emitted as an `engine:pull-progress` notification — so a local pull shows live download progress just like a remote pull's `engine:remote-progress` — and the request settles with the pull's terminal result line. Frames are coalesced (only a change in `stage` or `percent` is emitted) so a chatty engine that streams many byte-progress lines per layer doesn't flood subscribers. Streaming Ollama and llama.cpp pulls use a 30-minute inactivity watchdog that is refreshed only when a layer/file completed-byte count advances, allowing active downloads to exceed 30 minutes without letting duplicate progress or heartbeat frames keep a stalled pull alive. The engine's terminal `{"status":"success"}` surfaces as a `stage:"success"` frame; a **failed** pull emits a terminal `stage:"error", percent:-1, message:<why>` frame in addition to the JSON-RPC error, so a UI whose synchronous call already timed out on a long download still converges off "pulling". A CLI-driven pull (LM Studio's `lms get`) has no line-level progress, so it emits one `stage:"pulling"` marker and retains the fixed 30-minute action timeout before returning the command's result. On `shutdown` (or stdin EOF) the service stops every running engine first, so none are orphaned.
+
+For the `llamacpp-models-sse` adapter, the monitored model must match
+`params.model`. Subscribe before starting, and bound the `POST /models`
+acknowledgement by a separate 30-second total timeout that survives caller
+cancellation. Once accepted, any exit before a matching `download_finished` or
+`download_failed` event performs cleanup before returning: caller cancellation,
+remote disconnect, inactivity timeout, SSE read failure, and premature SSE EOF
+all take this path. Using the same captured router URL and a fresh five-second
+context, query `GET /models` and send `POST /models/unload` with the exact model
+only if its status is still `downloading`. Missing or completed models need no
+stop request, and persistent cache files are retained. Validate the unload
+acknowledgement (`success:true`); join cleanup failures to the original error
+without losing cancellation or inactivity causes. A lost or malformed start
+acknowledgement means acceptance and cancellation cannot be confirmed: do not
+unload a download without confirmed ownership. Neither terminal SSE event
+triggers cleanup. These operations retain the existing JSON-RPC and progress
+payloads and do not terminate the entire engine when cleanup fails.
 
 ## 15. Current integration / wiring
 

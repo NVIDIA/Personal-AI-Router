@@ -100,6 +100,22 @@ watchdog, so an active download may run longer than 30 minutes; duplicate
 progress frames and heartbeats do not extend a stalled pull. CLI-driven pulls
 without structured byte progress retain the fixed 30-minute action timeout.
 
+For llama.cpp, an accepted pull that ends before a matching `download_finished`
+or `download_failed` event stops the active download. This includes caller
+cancellation, remote caller disconnect, inactivity timeout, and premature SSE
+termination. Cleanup checks `GET /models` and sends `POST /models/unload` only
+when the exact model is still `downloading`; cached files are retained, and
+models that have already completed are left alone.
+
+The initial `POST /models` handshake has a separate 30-second total timeout and
+continues through caller cancellation so its acceptance can still be read.
+The pull then waits for cleanup, which has a separate five-second budget for
+the inventory check and stop request together. A failed cleanup reports that
+the download could not be confirmed stopped alongside the original pull error.
+If the start acknowledgement is lost or unreadable, acceptance and cancellation
+are reported as unconfirmed without unloading an unowned download. The monitored
+model must match `params.model`; mismatches are rejected before subscribing.
+
 The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
