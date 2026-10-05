@@ -135,6 +135,24 @@ var modelWires = map[string]modelWire{
 	},
 }
 
+// downloadExamples show what a download name looks like for each engine. The
+// engines spell them very differently: an Ollama tag, a Hugging Face repo, and
+// a repo with its quantization after a colon.
+var downloadExamples = map[string]string{
+	engines.NameOllama:   "llama3.2",
+	engines.NameLMStudio: "lmstudio-community/Qwen3-8B-GGUF",
+	engines.NameLlamaCPP: "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+}
+
+// downloadPrompt is the placeholder for the download-by-name field, with an
+// example in the engine's own spelling where there is one.
+func downloadPrompt(engine, label string) string {
+	if example, ok := downloadExamples[engine]; ok {
+		return fmt.Sprintf("model name for %s (e.g. %s)", label, example)
+	}
+	return "model name for " + label
+}
+
 // modelOnly is an action that takes the model under "model".
 func modelOnly(action string) func(string) (string, map[string]any) {
 	return func(model string) (string, map[string]any) {

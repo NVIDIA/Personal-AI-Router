@@ -6,6 +6,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"nvpair-shared/engines"
@@ -204,6 +205,23 @@ func TestLlamaCPPSendsTheModelAlone(t *testing.T) {
 		if len(params) != 1 || params["model"] != "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M" {
 			t.Errorf("%s: params = %v, want only the model", op, params)
 		}
+	}
+}
+
+// TestDownloadPromptUsesTheEnginesSpelling is the regression guard for an
+// Ollama example offered for every engine. "llama3.2" is not a name LM Studio
+// or llama.cpp can download, and llama.cpp's needs a quantization after a colon.
+func TestDownloadPromptUsesTheEnginesSpelling(t *testing.T) {
+	for _, e := range engines.All() {
+		if _, ok := downloadExamples[e.Name]; !ok {
+			t.Errorf("%s has no download example", e.Name)
+		}
+	}
+	if got := downloadPrompt(engines.NameLlamaCPP, "llama.cpp"); !strings.Contains(got, ":Q4_K_M") {
+		t.Errorf("llama.cpp prompt %q does not show the quantization suffix", got)
+	}
+	if got := downloadPrompt("vllm", "vLLM"); got != "model name for vLLM" {
+		t.Errorf("an engine with no example got %q", got)
 	}
 }
 

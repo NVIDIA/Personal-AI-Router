@@ -1186,7 +1186,7 @@ func (d *nodeDetail) handleModelKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		d.mode = detailInputModelName
-		d.input.Placeholder = fmt.Sprintf("model name for %s (e.g. llama3.2)", d.engineLabel(engine))
+		d.input.Placeholder = downloadPrompt(engine, d.engineLabel(engine))
 		d.input.CharLimit = 0
 		d.input.SetValue("")
 		d.input.Focus()
