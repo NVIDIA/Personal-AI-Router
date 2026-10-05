@@ -186,6 +186,27 @@ func TestDeleteSendsBothKeys(t *testing.T) {
 	}
 }
 
+// TestLlamaCPPSendsTheModelAlone checks every llama.cpp model operation carries
+// the model under "model" and nothing else, as the engine manager's own wire
+// for it does. Its delete sends the params as a query string, so an extra
+// "name" would reach the engine as a parameter it does not take.
+func TestLlamaCPPSendsTheModelAlone(t *testing.T) {
+	want := map[string]string{
+		"load": "load_model", "unload": "unload_model",
+		"delete": "delete_model", "pull": "pull_model",
+	}
+	for op, action := range want {
+		envelope := wireOf(t, engines.NameLlamaCPP, op, "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M")
+		got, params := actionOf(t, envelope)
+		if got != action {
+			t.Errorf("%s: action = %q, want %q", op, got, action)
+		}
+		if len(params) != 1 || params["model"] != "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M" {
+			t.Errorf("%s: params = %v, want only the model", op, params)
+		}
+	}
+}
+
 // TestEveryEngineHasAModelWire is what makes adding an engine a matter of
 // adding its entry: an engine in the shared table without a spelling for every
 // model operation fails here, rather than being sent another engine's action

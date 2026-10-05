@@ -130,6 +130,7 @@ func (e Engine) ComponentName() string { return e.Name + "-proxy" }
 const (
 	NameOllama   = "ollama"
 	NameLMStudio = "lmstudio"
+	NameLlamaCPP = "llamacpp"
 )
 
 // all is the ordered engine set. Ollama is first; see the package comment.

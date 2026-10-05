@@ -119,15 +119,27 @@ var modelWires = map[string]modelWire{
 		"pull":   nameAndModel("pull_model"),
 	},
 	engines.NameLMStudio: {
-		"load": func(model string) (string, map[string]any) {
-			return "load_model", map[string]any{"model": model}
-		},
-		"unload": func(model string) (string, map[string]any) {
-			return "unload_model", map[string]any{"model": model}
-		},
+		"load":   modelOnly("load_model"),
+		"unload": modelOnly("unload_model"),
 		"delete": nameAndModel("delete_model"),
 		"pull":   nameAndModel("pull_model"),
 	},
+	// llama.cpp's router takes the model under "model" alone, delete included.
+	// Its delete puts the params in the query string, where a second key would
+	// be sent to the engine as a parameter it does not take.
+	engines.NameLlamaCPP: {
+		"load":   modelOnly("load_model"),
+		"unload": modelOnly("unload_model"),
+		"delete": modelOnly("delete_model"),
+		"pull":   modelOnly("pull_model"),
+	},
+}
+
+// modelOnly is an action that takes the model under "model".
+func modelOnly(action string) func(string) (string, map[string]any) {
+	return func(model string) (string, map[string]any) {
+		return action, map[string]any{"model": model}
+	}
 }
 
 // nameAndModel is an action that takes the model under both keys. The engines
