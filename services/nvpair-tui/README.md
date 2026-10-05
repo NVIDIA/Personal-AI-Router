@@ -98,9 +98,10 @@ ships in `cli-bin` and the app's updater replaces it.
   under the cursor whenever a download finishes or a peer republishes.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
-backend's `engine:catalog`. Filtering (`/`) and sorting (`o`) are local over the
-whole fetched list, because the catalog is thousands of entries for Ollama and
-there is no server-side search.
+backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a
+source that cannot search, such as Ollama's list of thousands of entries. For
+one whose reply says it is `searchable` — llama.cpp's, a slice of Hugging Face —
+`/` sends the query upstream instead, and `c` returns to the browse list.
 
 Both panes work on remote cluster peers through the engine manager's
 `engine:remote-*` methods. Restart, uninstall, and the port change need process

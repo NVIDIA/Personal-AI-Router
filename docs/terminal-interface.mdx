@@ -325,6 +325,9 @@ configured, and says why.
 | `e` | Eject from memory |
 | `d` | Delete (asks you to confirm) |
 
+The `LOADED` column reads `?` for an engine that cannot report which models are
+in memory.
+
 Pressing `p` opens the catalog of models this engine can download. Press `/` to
 filter — by name, family, or parameter size, so both `llama` and `8b` narrow the
 list — `o` to change the sort between popularity, name, and size, `enter` to
@@ -332,9 +335,16 @@ download the highlighted model, and `esc` to back out. The footer shows how many
 models match and when the catalog was compiled. If the catalog cannot be loaded,
 press `r` to try again.
 
+llama.cpp's catalog opens on popular GGUF models from a few well-known
+publishers, but it can download any GGUF model on Hugging Face, so there `/`
+searches all of Hugging Face instead of filtering the list. Press `c` to go back
+to the starting list.
+
 Press `n` instead if you already know exactly what you want and would rather type
-it. Either way, downloading needs a running engine, and progress appears on the
-status line.
+it. Each engine names models its own way: an Ollama tag such as `llama3.2`, a
+Hugging Face repository for LM Studio, and a repository with its quantization
+for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`. Either way,
+downloading needs a running engine, and progress appears on the status line.
 
 Restart and uninstall need PAIR to own the engine process, so they only apply
 to the machine you are sitting on. They are hidden on a peer rather than
