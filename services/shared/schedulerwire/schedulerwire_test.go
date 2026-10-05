@@ -5,30 +5,22 @@ package schedulerwire
 
 import (
 	"encoding/json"
-	"reflect"
-	"strings"
+
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPriorityAcceptsLegacyNodesOnlyPayload(t *testing.T) {
 	var got Priority
-	if err := json.Unmarshal([]byte(`{"nodes":["a","b"]}`), &got); err != nil {
-		t.Fatalf("unmarshal nodes-only priority: %v", err)
-	}
-	if !reflect.DeepEqual(got.Nodes, []string{"a", "b"}) {
-		t.Fatalf("nodes = %v, want [a b]", got.Nodes)
-	}
-	if len(got.Ranks) != 0 {
-		t.Fatalf("nodes-only ranks = %v, want empty", got.Ranks)
-	}
+	require.NoError(t, json.Unmarshal([]byte(`{"nodes":["a","b"]}`), &got), "unmarshal nodes-only priority")
+	assert.Equal(t, []string{"a", "b"}, got.Nodes)
+	require.Len(t, got.Ranks, 0, "nodes-only ranks")
 
 	encoded, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal nodes-only priority: %v", err)
-	}
-	if strings.Contains(string(encoded), `"ranks"`) {
-		t.Fatalf("nodes-only encoding unexpectedly included ranks: %s", encoded)
-	}
+	require.NoError(t, err, "marshal nodes-only priority")
+	assert.NotContains(t, string(encoded), `"ranks"`, "nodes-only encoding unexpectedly included ranks")
 }
 
 func TestEnginePriorityRoundTripsGPUAwareRanks(t *testing.T) {
@@ -41,20 +33,12 @@ func TestEnginePriorityRoundTripsGPUAwareRanks(t *testing.T) {
 		},
 	}
 	encoded, err := json.Marshal(want)
-	if err != nil {
-		t.Fatalf("marshal engine priority: %v", err)
-	}
-	if !strings.Contains(string(encoded), `"gpuPressure":3`) {
-		t.Fatalf("encoded priority omitted gpuPressure: %s", encoded)
-	}
+	require.NoError(t, err, "marshal engine priority")
+	assert.Contains(t, string(encoded), `"gpuPressure":3`, "encoded priority omitted gpuPressure")
 
 	var got EnginePriority
-	if err := json.Unmarshal(encoded, &got); err != nil {
-		t.Fatalf("unmarshal engine priority: %v", err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("round trip = %#v, want %#v", got, want)
-	}
+	require.NoError(t, json.Unmarshal(encoded, &got), "unmarshal engine priority")
+	assert.Equal(t, want, got, "round trip")
 }
 
 func TestPriorityCopiesOwnTheirSlices(t *testing.T) {
@@ -71,7 +55,6 @@ func TestPriorityCopiesOwnTheirSlices(t *testing.T) {
 	source.Ranks[0].Pending = 9
 	snapshot.Ranks[0].Pending = 8
 
-	if clone.Nodes[0] != "a" || clone.Ranks[0].Pending != 2 {
-		t.Fatalf("clone changed through an aliased slice: %#v", clone)
-	}
+	assert.Equal(t, "a", clone.Nodes[0], "clone changed through an aliased slice")
+	assert.Equal(t, 2, clone.Ranks[0].Pending, "clone changed through an aliased slice")
 }

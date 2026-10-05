@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // pinFixture is a peer's minted identity (uuid + self-signed leaf) for use as a
@@ -62,15 +64,15 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 				m.handleSetIdentity(&Message{Params: params})
 			},
 			assertDone: func(t *testing.T, m *Manager, p1, _ pinFixture) {
-				if id, _ := m.clusterIdentity(); id != "" {
-					t.Fatalf("after teardown a stale set-identity restore left clusterId = %q, want empty", id)
+				{
+					id, _ := m.clusterIdentity()
+					require.Equal(t, "", id, "after teardown a stale set-identity restore left clusterId")
 				}
-				if _, ok := m.trust.Get(p1.uuid); ok {
-					t.Fatal("a pin survived teardown+stale-restore; want an empty pin set")
+				{
+					_, ok := m.trust.Get(p1.uuid)
+					require.False(t, ok, "a pin survived teardown+stale-restore; want an empty pin set")
 				}
-				if n := m.snapshotNodes(); len(n) != 0 {
-					t.Fatalf("members = %d after teardown+stale-restore, want 0", len(n))
-				}
+				require.Len(t, m.snapshotNodes(), 0)
 			},
 		},
 		{
@@ -87,19 +89,20 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 				})
 			},
 			assertDone: func(t *testing.T, m *Manager, p1, p2 pinFixture) {
-				if id, _ := m.clusterIdentity(); id != "cluster-2" {
-					t.Fatalf("after rejoin clusterId = %q, want cluster-2", id)
+				{
+					id, _ := m.clusterIdentity()
+					require.Equal(t, "cluster-2", id, "after rejoin clusterId")
 				}
-				if _, ok := m.trust.Get(p2.uuid); !ok {
-					t.Fatal("rejoined peer pin missing after teardown+rejoin")
+				{
+					_, ok := m.trust.Get(p2.uuid)
+					require.True(t, ok, "rejoined peer pin missing after teardown+rejoin")
 				}
-				if _, ok := m.trust.Get(p1.uuid); ok {
-					t.Fatal("old cluster-1 pin survived teardown; state is inconsistent")
+				{
+					_, ok := m.trust.Get(p1.uuid)
+					require.False(t, ok, "old cluster-1 pin survived teardown; state is inconsistent")
 				}
 				for _, n := range m.snapshotNodes() {
-					if n.NodeUUID == p1.uuid {
-						t.Fatal("old cluster-1 member survived teardown; state is inconsistent")
-					}
+					require.NotEqual(t, p1.uuid, n.NodeUUID, "old cluster-1 member survived teardown; state is inconsistent")
 				}
 			},
 		},
@@ -130,11 +133,12 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 			// two asserts below.
 			select {
 			case <-done:
-				t.Fatal("rejoin committed while the teardown boundary was held; not serialized")
+				require.FailNow(t, "test expectation failed", "rejoin committed while the teardown boundary was held; not serialized")
 			case <-time.After(300 * time.Millisecond):
 			}
-			if id, _ := m.clusterIdentity(); id != "cluster-1" {
-				t.Fatalf("clusterId changed to %q while boundary held; rejoin was not serialized", id)
+			{
+				id, _ := m.clusterIdentity()
+				require.Equal(t, "cluster-1", id, "clusterId changed to")
 			}
 
 			// The self-remove teardown runs under the held boundary, then releases.
@@ -144,7 +148,7 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 			select {
 			case <-done:
 			case <-time.After(5 * time.Second):
-				t.Fatal("rejoin did not complete after the boundary was released")
+				require.FailNow(t, "test expectation failed", "rejoin did not complete after the boundary was released")
 			}
 			tc.assertDone(t, m, p1, p2)
 		})

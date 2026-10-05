@@ -5,10 +5,12 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestDetectMemoryTotalDarwin(t *testing.T) {
-	if total := detectMemoryTotal(); total == 0 {
-		t.Fatal("detectMemoryTotal() returned zero on macOS")
-	}
+	require.NotEqual(t, uint64(0), detectMemoryTotal(), "detectMemoryTotal() returned zero on macOS")
 }

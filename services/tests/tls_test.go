@@ -19,9 +19,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // generateTestPKI creates a fresh CA and a server cert + key signed
@@ -34,9 +37,7 @@ func generateTestPKI(t *testing.T, host string) (caPEM, serverCertPEM, serverKey
 	t.Helper()
 
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("ca key: %v", err)
-	}
+	require.NoError(t, err, "ca key")
 	caTmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "nvpair-test-ca"},
@@ -47,15 +48,11 @@ func generateTestPKI(t *testing.T, host string) (caPEM, serverCertPEM, serverKey
 		BasicConstraintsValid: true,
 	}
 	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("create ca: %v", err)
-	}
+	require.NoError(t, err, "create ca")
 	caPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 
 	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("server key: %v", err)
-	}
+	require.NoError(t, err, "server key")
 	serverTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: host},
@@ -67,20 +64,14 @@ func generateTestPKI(t *testing.T, host string) (caPEM, serverCertPEM, serverKey
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	serverDER, err := x509.CreateCertificate(rand.Reader, serverTmpl, caTmpl, &serverKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("create server cert: %v", err)
-	}
+	require.NoError(t, err, "create server cert")
 	serverCertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER})
 	serverKeyDER, err := x509.MarshalECPrivateKey(serverKey)
-	if err != nil {
-		t.Fatalf("marshal server key: %v", err)
-	}
+	require.NoError(t, err, "marshal server key")
 	serverKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: serverKeyDER})
 
 	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("client key: %v", err)
-	}
+	require.NoError(t, err, "client key")
 	clientTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(3),
 		Subject:      pkix.Name{CommonName: "nvpair-test-client"},
@@ -90,14 +81,10 @@ func generateTestPKI(t *testing.T, host string) (caPEM, serverCertPEM, serverKey
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	clientDER, err := x509.CreateCertificate(rand.Reader, clientTmpl, caTmpl, &clientKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("create client cert: %v", err)
-	}
+	require.NoError(t, err, "create client cert")
 	clientCertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientDER})
 	clientKeyDER, err := x509.MarshalECPrivateKey(clientKey)
-	if err != nil {
-		t.Fatalf("marshal client key: %v", err)
-	}
+	require.NoError(t, err, "marshal client key")
 	clientKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: clientKeyDER})
 
 	return
@@ -109,8 +96,9 @@ func generateTestPKI(t *testing.T, host string) (caPEM, serverCertPEM, serverKey
 func writePEM(t *testing.T, dir, name string, data []byte) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
+	{
+		err := os.WriteFile(path, data, 0o600)
+		require.NoError(t, err, "write (%v, %v)", path, err)
 	}
 	return path
 }
@@ -128,12 +116,8 @@ func startNodeInfo(t *testing.T, instanceName string, extraArgs ...string) (clea
 	cmd := exec.Command(nodeInfoBin, extraArgs...)
 	cmd.Stderr = os.Stderr
 	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("node-info stdin pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start node-info: %v", err)
-	}
+	require.NoError(t, err, "node-info stdin pipe")
+	require.NoError(t, cmd.Start(), "start node-info")
 	t.Logf("node-info %q started: pid=%d args=%v", instanceName, cmd.Process.Pid, extraArgs)
 
 	return func() {
@@ -157,9 +141,7 @@ func startNodeInfo(t *testing.T, instanceName string, extraArgs ...string) (clea
 func freePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	return port
@@ -171,13 +153,9 @@ func freePort(t *testing.T) int {
 func httpsClientWithCert(t *testing.T, caPEM, clientCertPEM, clientKeyPEM []byte) *http.Client {
 	t.Helper()
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		t.Fatal("CA pool: no certs parsed")
-	}
+	require.True(t, pool.AppendCertsFromPEM(caPEM), "CA pool: no certs parsed")
 	cert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
-	if err != nil {
-		t.Fatalf("client keypair: %v", err)
-	}
+	require.NoError(t, err, "client keypair")
 	return &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -196,9 +174,7 @@ func httpsClientWithCert(t *testing.T, caPEM, clientCertPEM, clientKeyPEM []byte
 func httpsClientNoCert(t *testing.T, caPEM []byte) *http.Client {
 	t.Helper()
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		t.Fatal("CA pool: no certs parsed")
-	}
+	require.True(t, pool.AppendCertsFromPEM(caPEM), "CA pool: no certs parsed")
 	return &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -237,7 +213,7 @@ func waitForPort(t *testing.T, host string, port int, timeout time.Duration) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("port %s:%d did not start listening within %s", host, port, timeout)
+	require.FailNow(t, "test expectation failed", "port %s:%d did not start listening within %s", host, port, timeout)
 }
 
 func TestNodeInfoHTTPSWithMTLS(t *testing.T) {
@@ -270,31 +246,23 @@ func TestNodeInfoHTTPSWithMTLS(t *testing.T) {
 	client := httpsClientWithCert(t, caPEM, ccPEM, ckPEM)
 	url := fmt.Sprintf("https://localhost:%d/v1/node-info", tlsPort)
 	resp, err := client.Get(url)
-	if err != nil {
-		t.Fatalf("authenticated mTLS GET %s: %v", url, err)
-	}
+	require.NoError(t, err, "authenticated mTLS GET (%v, %v)", url, err)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("authenticated mTLS GET status = %d, body=%s", resp.StatusCode, body)
-	}
-	if !strings.Contains(string(body), "GPUs") {
-		t.Errorf("response body missing GPUs key: %s", body)
-	}
+	require.True(t, resp.StatusCode == http.StatusOK, "authenticated mTLS GET status (%v)", body)
+	assert.Contains(t, string(body), "GPUs", "response body missing GPUs key (%v)", body)
 	t.Logf("mTLS-authenticated GET succeeded (%d bytes)", len(body))
 
 	// 2. HTTPS without any client cert fails the handshake.
 	noCertClient := httpsClientNoCert(t, caPEM)
 	if _, err := noCertClient.Get(url); err == nil {
-		t.Fatal("expected unauthenticated GET to fail, got nil error")
+		require.FailNow(t, "test expectation failed", "expected unauthenticated GET to fail, got nil error")
 	} else {
 		t.Logf("unauthenticated GET correctly rejected: %v", err)
 	}
 
 	// 3. The HTTP port is NOT listening.
-	if portReachable("127.0.0.1", httpPort) {
-		t.Errorf("HTTP port %d should be closed without --accept-http but TCP dial succeeded", httpPort)
-	}
+	assert.False(t, portReachable("127.0.0.1", httpPort), "HTTP port (%v)", httpPort)
 }
 
 func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
@@ -324,25 +292,17 @@ func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	httpURL := fmt.Sprintf("http://localhost:%d/v1/node-info", httpPort)
 	resp, err := httpClient.Get(httpURL)
-	if err != nil {
-		t.Fatalf("HTTP GET %s: %v", httpURL, err)
-	}
+	require.NoError(t, err, "HTTP GET (%v, %v)", httpURL, err)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("HTTP GET status = %d, want 200", resp.StatusCode)
-	}
+	assert.True(t, resp.StatusCode == http.StatusOK, "HTTP GET status")
 
 	// HTTPS works too — server-only TLS, no client cert needed.
 	tlsClient := httpsClientNoCert(t, caPEM)
 	tlsURL := fmt.Sprintf("https://localhost:%d/v1/node-info", tlsPort)
 	resp, err = tlsClient.Get(tlsURL)
-	if err != nil {
-		t.Fatalf("HTTPS GET %s: %v", tlsURL, err)
-	}
+	require.NoError(t, err, "HTTPS GET (%v, %v)", tlsURL, err)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("HTTPS GET status = %d, want 200", resp.StatusCode)
-	}
+	assert.True(t, resp.StatusCode == http.StatusOK, "HTTPS GET status")
 }
 
 func TestNodeInfoPlainHTTPDefaultUnchanged(t *testing.T) {
@@ -360,11 +320,7 @@ func TestNodeInfoPlainHTTPDefaultUnchanged(t *testing.T) {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	url := fmt.Sprintf("http://localhost:%d/v1/node-info", httpPort)
 	resp, err := httpClient.Get(url)
-	if err != nil {
-		t.Fatalf("HTTP GET %s: %v", url, err)
-	}
+	require.NoError(t, err, "HTTP GET (%v, %v)", url, err)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("HTTP GET status = %d, want 200", resp.StatusCode)
-	}
+	assert.True(t, resp.StatusCode == http.StatusOK, "HTTP GET status")
 }

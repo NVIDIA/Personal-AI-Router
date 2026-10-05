@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	settings "nvpair-shared/enginesettings"
 )
 
@@ -26,20 +29,15 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 				_, before[candidate.Name] = p.Status(candidate.Name)
 			}
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			port := ln.Addr().(*net.TCPAddr).Port
 			_ = ln.Close()
-			if err := h.b.rebindSettingsProxy(profile.Name, port); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, h.b.rebindSettingsProxy(profile.Name, port))
 			before[profile.Name] = port
 			for engine, want := range before {
 				ready, got := p.Status(engine)
-				if !ready || got != want {
-					t.Fatalf("%s ready=%v port=%d, want %d", engine, ready, got, want)
-				}
+				require.True(t, ready, " (%v, %v, %v, %v)", engine, ready, got, want)
+				require.True(t, got == want, " (%v, %v, %v, %v)", engine, ready, got, want)
 			}
 		})
 	}
@@ -54,9 +52,7 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 					Explicit: true, Snapshot: settings.Snapshot{Settings: settings.Config{ServerPort: 24999, ProxyPort: requested}},
 				}},
 			}
-			if !b.prepareExplicitEngineSettings(profile.Name) {
-				t.Fatal("explicit settings were not restored")
-			}
+			require.True(t, b.prepareExplicitEngineSettings(profile.Name), "explicit settings were not restored")
 			failure := settingsJSON(map[string]any{"code": "bind-failed", "port": requested})
 			switch profile.Name {
 			case "ollama":
@@ -66,8 +62,9 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 			default:
 				b.forwardDefaultEngineProxyNotification(profile, profile.addressed("error"), failure)
 			}
-			if got := b.engineProxy(profile).startupPort.Load(); got != requested {
-				t.Fatalf("bind notification changed chosen port to %d", got)
+			{
+				got := b.engineProxy(profile).startupPort.Load()
+				require.True(t, got == requested, "bind notification changed chosen port to (%v)", got)
 			}
 			client, server := net.Pipe()
 			t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
@@ -76,15 +73,11 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 			attempts := make(chan enableFacadeRequest, 2)
 			serveFacadeEnable(t, server, map[int]bool{requested: true}, attempts)
 			err := b.enableProxyFacadeWithFallback(context.Background(), p, enableFacadeRequest{Engine: profile.Name, Port: requested}, func(int) int {
-				t.Error("explicit port must not fall back")
+				assert.Fail(t, "test expectation failed", "explicit port must not fall back")
 				return requested + 1
 			})
-			if err == nil {
-				t.Fatal("bind failure was hidden")
-			}
-			if len(attempts) != 1 {
-				t.Fatalf("attempts=%d, want only the chosen port", len(attempts))
-			}
+			require.Error(t, err, "bind failure was hidden")
+			require.Len(t, attempts, 1)
 		})
 	}
 }
@@ -106,12 +99,8 @@ func TestSettingsReservesStoppedProxySavedPort(t *testing.T) {
 				request.Settings.ProxyPort = reserved
 			}
 			preview, err := h.b.previewEngineSettings(context.Background(), request, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(preview.Errors) == 0 {
-				t.Fatalf("accepted stopped proxy's saved port: %+v", preview)
-			}
+			require.NoError(t, err)
+			require.NotEqual(t, 0, len(preview.Errors), "accepted stopped proxy's saved port (%v)", preview)
 		})
 	}
 	test("server port cannot reuse saved proxy port", true)
@@ -126,19 +115,14 @@ func TestSettingsMigrationRejectsReservedPorts(t *testing.T) {
 			delete(h.b.engineSettings, "ollama")
 			port := reserve(h, request)
 			path, err := h.b.engineSettingsPath()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			data, err := json.Marshal(map[string]int{"port": port})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), data, 0600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), data, 0600))
 			h.b.migrateLegacyEngineSettings()
-			if _, explicit := h.b.explicitEngineSettings("ollama"); explicit {
-				t.Fatal("reserved legacy port became an explicit setting")
+			{
+				_, explicit := h.b.explicitEngineSettings("ollama")
+				require.False(t, explicit, "reserved legacy port became an explicit setting")
 			}
 		})
 	}
@@ -165,18 +149,14 @@ func TestSettingsMigrationRejectsReservedPorts(t *testing.T) {
 func TestEnabledEngineRestorationSurvivesInvalidSettingsJournal(t *testing.T) {
 	b := &Broker{clusterDir: filepath.Join(t.TempDir(), "cluster")}
 	path, err := b.engineSettingsPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("{invalid"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("{invalid"), 0600))
 	worker, codec := newTestRPCWorkerPipe(t)
 	restored := make(chan string, 1)
 	go func() {
 		msg, err := codec.Read()
 		if err != nil {
-			t.Error(err)
+			assert.NoError(t, err)
 			return
 		}
 		restored <- msg.Method
@@ -184,15 +164,11 @@ func TestEnabledEngineRestorationSurvivesInvalidSettingsJournal(t *testing.T) {
 	b.restoreEnabledEngines(worker)
 	select {
 	case method := <-restored:
-		if method != restoreEnabledEnginesMethod {
-			t.Fatalf("method=%q", method)
-		}
+		require.True(t, method == restoreEnabledEnginesMethod, "method (%v)", method)
 	case <-time.After(time.Second):
-		t.Fatal("invalid journal suppressed enabled-engine restoration")
+		require.FailNow(t, "test expectation failed", "invalid journal suppressed enabled-engine restoration")
 	}
-	if b.engineSettingsError == nil {
-		t.Fatal("invalid journal was not reported")
-	}
+	require.NotNil(t, b.engineSettingsError, "invalid journal was not reported")
 }
 
 func TestSettingsFullCommandJournalMigratesBeforeRecovery(t *testing.T) {
@@ -205,21 +181,15 @@ func TestSettingsFullCommandJournalMigratesBeforeRecovery(t *testing.T) {
 	record.Snapshot.Phase = "applying"
 	record.Resume = true
 	oldProxyPort := record.Snapshot.Settings.ProxyPort
-	if err := h.b.saveEngineSettingsLocked(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, h.b.saveEngineSettingsLocked())
 	h.b.engineConfigMu.Unlock()
-	if !h.b.recoverEngineSettings() {
-		t.Fatal("recovery failed")
-	}
+	require.True(t, h.b.recoverEngineSettings(), "recovery failed")
 	snapshot, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "ollama"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Format != "pair-arguments-v1" || snapshot.Phase != "succeeded" || snapshot.Settings.LaunchText != "--fixture-option --future-option" || snapshot.Settings.ProxyPort != oldProxyPort || snapshot.Settings.ServerPort != request.Settings.ServerPort {
-		t.Fatalf("migration lost accepted configuration: %+v", snapshot)
-	}
-	if h.applies.Load() != 1 {
-		t.Fatal("pending operation was not applied exactly once")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "pair-arguments-v1", snapshot.Format, "migration lost accepted configuration (%v)", snapshot)
+	require.Equal(t, "succeeded", snapshot.Phase, "migration lost accepted configuration (%v)", snapshot)
+	require.Equal(t, "--fixture-option --future-option", snapshot.Settings.LaunchText, "migration lost accepted configuration (%v)", snapshot)
+	require.True(t, snapshot.Settings.ProxyPort == oldProxyPort, "migration lost accepted configuration (%v)", snapshot)
+	require.True(t, snapshot.Settings.ServerPort == request.Settings.ServerPort, "migration lost accepted configuration (%v)", snapshot)
+	require.Equal(t, int32(1), h.applies.Load(), "pending operation was not applied exactly once")
 }

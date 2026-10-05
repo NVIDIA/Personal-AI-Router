@@ -8,6 +8,8 @@ package main
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestLuidKey locks down the PDH instance-name format. If this ever drifts
@@ -32,9 +34,7 @@ func TestLuidKey(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := luidKey(c.low, c.high)
-			if got != c.want {
-				t.Fatalf("luidKey(%#x, %#x) = %q, want %q", c.low, c.high, got, c.want)
-			}
+			require.True(t, got == c.want, "luidKey (%v)", got)
 		})
 	}
 }
@@ -47,8 +47,9 @@ func TestLuidKey(t *testing.T) {
 // write into the CPU percentage.
 func TestPDHFmtCounterValueSize(t *testing.T) {
 	const expected = 16
-	if got := unsafe.Sizeof(pdhFmtCounterValue{}); got != expected {
-		t.Fatalf("pdhFmtCounterValue size = %d, want %d", got, expected)
+	{
+		got := unsafe.Sizeof(pdhFmtCounterValue{})
+		require.True(t, got == expected, "pdhFmtCounterValue size (%v, %v)", got, expected)
 	}
 }
 
@@ -60,8 +61,9 @@ func TestPDHFmtCounterValueSize(t *testing.T) {
 // and every lookup would silently fail.
 func TestPDHFmtCounterValueItemSize(t *testing.T) {
 	const expected = 24
-	if got := unsafe.Sizeof(pdhFmtCounterValueItemW{}); got != expected {
-		t.Fatalf("pdhFmtCounterValueItemW size = %d, want %d", got, expected)
+	{
+		got := unsafe.Sizeof(pdhFmtCounterValueItemW{})
+		require.True(t, got == expected, "pdhFmtCounterValueItemW size (%v, %v)", got, expected)
 	}
 }
 
@@ -74,7 +76,8 @@ func TestPDHFmtCounterValueItemSize(t *testing.T) {
 // stack when the OS writes past our struct.
 func TestMemoryStatusExSize(t *testing.T) {
 	const expected = 64
-	if got := unsafe.Sizeof(memoryStatusEx{}); got != expected {
-		t.Fatalf("memoryStatusEx size = %d, want %d", got, expected)
+	{
+		got := unsafe.Sizeof(memoryStatusEx{})
+		require.True(t, got == expected, "memoryStatusEx size (%v, %v)", got, expected)
 	}
 }

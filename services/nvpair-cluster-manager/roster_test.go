@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestReconcileMTLSFanout drives the real mTLS roster endpoint over loopback
@@ -38,20 +40,19 @@ func TestReconcileMTLSFanout(t *testing.T) {
 
 	// A holds a third member C, endorsed by A.
 	cUUID, cCert, cFP, _ := makeNode(t, "node-c")
-	if err := mA.trust.Pin(&TrustedPin{
+	require.NoError(t, mA.trust.Pin(&TrustedPin{
 		NodeUUID: cUUID, NodeID: "node-c", ClusterID: "cluster-1",
 		AdmissionEpoch: 1, CertPem: cCert, CertFingerprint: cFP, PinnedAt: time.Now().UnixMilli(),
 		Endorsements: []Endorsement{mA.endorsePeer(cUUID, cFP, 1)},
-	}); err != nil {
-		t.Fatalf("pin C on A: %v", err)
-	}
+	}), "pin C on A")
 	mA.upsertMember(&ClusterNode{NodeUUID: cUUID, ID: "node-c", IPAddress: "10.0.0.9", Port: 14321, AdmissionEpoch: 1, State: stateMember})
 
 	// B reconciles with A and must transitively learn C.
 	mB.reconcileWith([]string{net.JoinHostPort("127.0.0.1", strconv.Itoa(15011))}, mA.identity.NodeUUID)
 
-	if _, ok := mB.trust.Get(cUUID); !ok {
-		t.Fatal("B should have transitively pinned C after reconciling with A over mTLS")
+	{
+		_, ok := mB.trust.Get(cUUID)
+		require.True(t, ok, "B should have transitively pinned C after reconciling with A over mTLS")
 	}
 }
 
@@ -69,11 +70,10 @@ func newTestManagerPort(t *testing.T, port int) *Manager {
 		io.Writer
 	}{strings.NewReader(""), io.Discard})
 	mgr, err := NewManager(codec, t.TempDir(), port)
-	if err != nil {
-		t.Fatalf("new manager: %v", err)
-	}
-	if _, err := mgr.ensureAdmission("cluster-1"); err != nil {
-		t.Fatalf("establish test admission: %v", err)
+	require.NoError(t, err, "new manager")
+	{
+		_, err := mgr.ensureAdmission("cluster-1")
+		require.NoError(t, err, "establish test admission")
 	}
 	mgr.setClusterIdentity("cluster-1", "Lab")
 	return mgr
@@ -84,18 +84,12 @@ func newTestManagerPort(t *testing.T, port int) *Manager {
 func makeNode(t *testing.T, host string) (uuid, certPEM, fingerprint string, priv ed25519.PrivateKey) {
 	t.Helper()
 	uuid, err := newUUIDv4()
-	if err != nil {
-		t.Fatalf("uuid: %v", err)
-	}
+	require.NoError(t, err, "uuid")
 	certPEMb, keyPEMb, err := generateLeaf(uuid, host)
-	if err != nil {
-		t.Fatalf("leaf: %v", err)
-	}
+	require.NoError(t, err, "leaf")
 	block, _ := pem.Decode(keyPEMb)
 	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		t.Fatalf("parse key: %v", err)
-	}
+	require.NoError(t, err, "parse key")
 	fp, _ := certFingerprintFromPEM(certPEMb)
 	return uuid, string(certPEMb), fp, k.(ed25519.PrivateKey)
 }
@@ -104,7 +98,7 @@ func makeNode(t *testing.T, host string) (uuid, certPEM, fingerprint string, pri
 // member (no endorsement needed — direct trust).
 func pinTrusted(t *testing.T, m *Manager, uuid, certPEM, fp string) {
 	t.Helper()
-	if err := m.trust.Pin(&TrustedPin{
+	require.NoError(t, m.trust.Pin(&TrustedPin{
 		NodeUUID:        uuid,
 		NodeID:          uuid,
 		ClusterID:       "cluster-1",
@@ -112,9 +106,7 @@ func pinTrusted(t *testing.T, m *Manager, uuid, certPEM, fp string) {
 		CertPem:         certPEM,
 		CertFingerprint: fp,
 		PinnedAt:        time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("pin: %v", err)
-	}
+	}), "pin")
 }
 
 // TestMergeRosterTransitivePin verifies the core fan-out property: a node we
@@ -137,14 +129,14 @@ func TestMergeRosterTransitivePin(t *testing.T) {
 			CertPem: cCert, CertFingerprint: cFP, Endorsements: []Endorsement{endC},
 		}},
 	}
-	if !m.mergeRoster(roster, aUUID) {
-		t.Fatal("merge should have reported a change")
+	require.True(t, m.mergeRoster(roster, aUUID), "merge should have reported a change")
+	{
+		_, ok := m.trust.Get(cUUID)
+		require.True(t, ok, "C should have been transitively pinned via A's endorsement")
 	}
-	if _, ok := m.trust.Get(cUUID); !ok {
-		t.Fatal("C should have been transitively pinned via A's endorsement")
-	}
-	if _, ok := m.memberByNodeID(cUUID); !ok {
-		t.Fatal("C should have been recorded as a member")
+	{
+		_, ok := m.memberByNodeID(cUUID)
+		require.True(t, ok, "C should have been recorded as a member")
 	}
 }
 
@@ -166,11 +158,13 @@ func TestMergeRosterFixpoint(t *testing.T) {
 		{NodeUUID: bUUID, NodeID: "node-b", AdmissionEpoch: 1, CertPem: bCert, CertFingerprint: bFP, Endorsements: []Endorsement{endB}},
 	}}
 	m.mergeRoster(roster, aUUID)
-	if _, ok := m.trust.Get(bUUID); !ok {
-		t.Fatal("B should be pinned (endorsed by trusted A)")
+	{
+		_, ok := m.trust.Get(bUUID)
+		require.True(t, ok, "B should be pinned (endorsed by trusted A)")
 	}
-	if _, ok := m.trust.Get(cUUID); !ok {
-		t.Fatal("C should be pinned at fixpoint (endorsed by newly-pinned B)")
+	{
+		_, ok := m.trust.Get(cUUID)
+		require.True(t, ok, "C should be pinned at fixpoint (endorsed by newly-pinned B)")
 	}
 }
 
@@ -187,11 +181,10 @@ func TestMergeRosterRejectsUntrustedEndorser(t *testing.T) {
 	roster := &Roster{ClusterID: "cluster-1", Members: []RosterEntry{
 		{NodeUUID: cUUID, NodeID: "node-c", CertPem: cCert, CertFingerprint: cFP, Endorsements: []Endorsement{endC}},
 	}}
-	if m.mergeRoster(roster, cUUID) {
-		t.Fatal("merge should report no change for an unendorsed entry")
-	}
-	if _, ok := m.trust.Get(cUUID); ok {
-		t.Fatal("C must NOT be pinned: its only endorser is untrusted")
+	require.False(t, m.mergeRoster(roster, cUUID), "merge should report no change for an unendorsed entry")
+	{
+		_, ok := m.trust.Get(cUUID)
+		require.False(t, ok, "C must NOT be pinned: its only endorser is untrusted")
 	}
 }
 
@@ -212,8 +205,9 @@ func TestMergeRosterTamperedFingerprint(t *testing.T) {
 		{NodeUUID: cUUID, NodeID: "node-c", CertPem: otherCert, CertFingerprint: cFP, Endorsements: []Endorsement{endC}},
 	}}
 	m.mergeRoster(roster, aUUID)
-	if _, ok := m.trust.Get(cUUID); ok {
-		t.Fatal("entry with a cert that doesn't match its fingerprint must be rejected")
+	{
+		_, ok := m.trust.Get(cUUID)
+		require.False(t, ok, "entry with a cert that doesn't match its fingerprint must be rejected")
 	}
 }
 
@@ -231,25 +225,26 @@ func TestMergeTombstoneRemoves(t *testing.T) {
 	m.mergeRoster(&Roster{ClusterID: "cluster-1", Members: []RosterEntry{
 		{NodeUUID: cUUID, NodeID: "node-c", AdmissionEpoch: 1, CertPem: cCert, CertFingerprint: cFP, Endorsements: []Endorsement{endC}},
 	}}, aUUID)
-	if _, ok := m.trust.Get(cUUID); !ok {
-		t.Fatal("precondition: C should be pinned")
+	{
+		_, ok := m.trust.Get(cUUID)
+		require.True(t, ok, "precondition: C should be pinned")
 	}
 
 	// A tombstones C (newer than the add).
 	tomb := signTombstone(aPriv, aUUID, cUUID, "cluster-1", addedAt+1000, 1, 1)
 	proof := RemovalProof{Tombstone: tomb, SignerCertPem: aCert, SignerFingerprint: aFP}
-	if !m.mergeRoster(&Roster{ClusterID: "cluster-1", RemovalProofs: []RemovalProof{proof}}, aUUID) {
-		t.Fatal("tombstone merge should report a change")
-	}
-	if _, ok := m.trust.Get(cUUID); ok {
-		t.Fatal("C should be de-pinned by the tombstone")
+	require.True(t, m.mergeRoster(&Roster{ClusterID: "cluster-1", RemovalProofs: []RemovalProof{proof}}, aUUID), "tombstone merge should report a change")
+	{
+		_, ok := m.trust.Get(cUUID)
+		require.False(t, ok, "C should be de-pinned by the tombstone")
 	}
 
 	// A stale re-add (older than the tombstone) must not resurrect C.
 	m.mergeRoster(&Roster{ClusterID: "cluster-1", Members: []RosterEntry{
 		{NodeUUID: cUUID, NodeID: "node-c", AdmissionEpoch: 1, CertPem: cCert, CertFingerprint: cFP, Endorsements: []Endorsement{endC}},
 	}}, aUUID)
-	if _, ok := m.trust.Get(cUUID); ok {
-		t.Fatal("a stale add must not resurrect a tombstoned node")
+	{
+		_, ok := m.trust.Get(cUUID)
+		require.False(t, ok, "a stale add must not resurrect a tombstoned node")
 	}
 }

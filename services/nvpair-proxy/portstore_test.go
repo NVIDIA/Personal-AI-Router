@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // redirectConfigDir points os.UserConfigDir() at a temp dir for the test, so
@@ -38,9 +41,7 @@ func redirectConfigDir(t *testing.T) {
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve free port: %v", err)
-	}
+	require.NoError(t, err, "reserve free port")
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
 }
@@ -51,27 +52,25 @@ func TestPersistedPortRoundTrip(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		redirectConfigDir(t)
 
-		if _, ok := loadPersistedPort(tc.profile); ok {
-			t.Fatal("expected no persisted port before any save")
+		{
+			_, ok := loadPersistedPort(tc.profile)
+			require.False(t, ok, "expected no persisted port before any save")
 		}
-		if err := savePersistedPort(tc.profile, 11500); err != nil {
-			t.Fatalf("savePersistedPort: %v", err)
-		}
-		if p, ok := loadPersistedPort(tc.profile); !ok || p != 11500 {
-			t.Errorf("round-trip: got %d ok=%v, want 11500", p, ok)
+		require.NoError(t, savePersistedPort(tc.profile, 11500), "savePersistedPort")
+		{
+			p, ok := loadPersistedPort(tc.profile)
+			assert.True(t, ok, "round-trip: (%v, %v)", p, ok)
+			assert.Equal(t, 11500, p, "round-trip: (%v, %v)", p, ok)
 		}
 
 		// An out-of-range stored value is treated as "none" so startup falls
 		// back to the flag/default rather than trying to bind port 0.
 		path, err := proxyPortPath(tc.profile)
-		if err != nil {
-			t.Fatalf("proxyPortPath: %v", err)
-		}
-		if err := os.WriteFile(path, []byte(`{"port":0}`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := loadPersistedPort(tc.profile); ok {
-			t.Error("port 0 should be treated as none")
+		require.NoError(t, err, "proxyPortPath")
+		require.NoError(t, os.WriteFile(path, []byte(`{"port":0}`), 0o644))
+		{
+			_, ok := loadPersistedPort(tc.profile)
+			assert.False(t, ok, "port 0 should be treated as none")
 		}
 	})
 }
@@ -84,17 +83,16 @@ func TestPersistedPortIsPerEngine(t *testing.T) {
 	ollama := ollamaCase(t).profile
 	lmstudio := lmstudioCase(t).profile
 
-	if err := savePersistedPort(ollama, 11500); err != nil {
-		t.Fatal(err)
+	require.NoError(t, savePersistedPort(ollama, 11500))
+	{
+		_, ok := loadPersistedPort(lmstudio)
+		require.False(t, ok, "LM Studio read a port only Ollama saved")
 	}
-	if _, ok := loadPersistedPort(lmstudio); ok {
-		t.Fatal("LM Studio read a port only Ollama saved")
-	}
-	if err := savePersistedPort(lmstudio, 1300); err != nil {
-		t.Fatal(err)
-	}
-	if p, ok := loadPersistedPort(ollama); !ok || p != 11500 {
-		t.Errorf("Ollama's port changed when LM Studio saved: got %d ok=%v", p, ok)
+	require.NoError(t, savePersistedPort(lmstudio, 1300))
+	{
+		p, ok := loadPersistedPort(ollama)
+		assert.True(t, ok, "Ollama's port changed when LM Studio saved: (%v, %v)", p, ok)
+		assert.Equal(t, 11500, p, "Ollama's port changed when LM Studio saved: (%v, %v)", p, ok)
 	}
 }
 
@@ -114,41 +112,35 @@ func TestSetPortRebinds(t *testing.T) {
 		proxy := newTestProxy(tc.profile, codec, disc, portA)
 
 		lnA, err := net.Listen("tcp", fmt.Sprintf(":%d", portA))
-		if err != nil {
-			t.Fatalf("listen on port A: %v", err)
-		}
+		require.NoError(t, err, "listen on port A")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		proxy.soleFacade().serveHTTP(ctx, lnA)
 		defer proxy.shutdown(context.Background())
 
 		portB := freeTCPPort(t)
-		if err := proxy.soleFacade().setPort(portB); err != nil {
-			t.Fatalf("setPort: %v", err)
-		}
+		require.NoError(t, proxy.soleFacade().setPort(portB), "setPort")
 
 		// New port is now serving.
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", portB), 2*time.Second)
-		if err != nil {
-			t.Fatalf("new port %d not listening after rebind: %v", portB, err)
-		}
+		require.NoError(t, err, "new port (%v, %v)", portB, err)
 		conn.Close()
 
 		// Old port stopped accepting.
 		if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", portA), 500*time.Millisecond); err == nil {
 			c.Close()
-			t.Errorf("old port %d should be closed after rebind", portA)
+			assert.Fail(t, "test expectation failed", "old port %d should be closed after rebind", portA)
 		}
 
 		// Persisted for next startup.
-		if p, ok := loadPersistedPort(tc.profile); !ok || p != portB {
-			t.Errorf("persisted port: got %d ok=%v, want %d", p, ok, portB)
+		{
+			p, ok := loadPersistedPort(tc.profile)
+			assert.True(t, ok, "persisted port: (%v, %v, %v)", p, ok, portB)
+			assert.True(t, p == portB, "persisted port: (%v, %v, %v)", p, ok, portB)
 		}
 
 		// A fresh ready notification announced the new port.
-		if !strings.Contains(buf.String(), fmt.Sprintf("\"port\":%d", portB)) {
-			t.Errorf("expected ready notification carrying port %d, got %q", portB, buf.String())
-		}
+		assert.Contains(t, buf.String(), fmt.Sprintf("\"port\":%d", portB), "expected ready notification carrying port (%v)", portB)
 	})
 }
 
@@ -159,33 +151,21 @@ func TestSetPortPersistenceFailurePreservesListener(t *testing.T) {
 		portA := freeTCPPort(t)
 		proxy := newTestProxy(tc.profile, NewCodec(&bytes.Buffer{}), NewDiscovery(), portA)
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", portA))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		proxy.soleFacade().serveHTTP(ctx, ln)
 		defer proxy.shutdown(context.Background())
 		path, err := proxyPortPath(tc.profile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(path, 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(path, 0700))
 		portB := freeTCPPort(t)
-		if err := proxy.soleFacade().setPort(portB); err == nil {
-			t.Fatal("persistence failure reported success")
-		}
+		require.Error(t, proxy.soleFacade().setPort(portB), "persistence failure reported success")
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", portA), time.Second)
-		if err != nil {
-			t.Fatal("old listener lost", err)
-		}
+		require.NoError(t, err, "old listener lost")
 		_ = conn.Close()
 		next, err := net.Listen("tcp", fmt.Sprintf(":%d", portB))
-		if err != nil {
-			t.Fatal("failed candidate listener leaked", err)
-		}
+		require.NoError(t, err, "failed candidate listener leaked")
 		_ = next.Close()
 	})
 }

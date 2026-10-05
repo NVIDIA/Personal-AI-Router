@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 )
 
@@ -36,9 +38,7 @@ import (
 func mintClusterIdentity(t *testing.T, dir, uuid string) string {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	require.NoError(t, err, "generate key")
 	san, _ := url.Parse("urn:nvpair:node:" + uuid)
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
@@ -52,21 +52,13 @@ func mintClusterIdentity(t *testing.T, dir, uuid string) string {
 		IsCA:                  true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
-	if err != nil {
-		t.Fatalf("create cert: %v", err)
-	}
+	require.NoError(t, err, "create cert")
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
+	require.NoError(t, err, "marshal key")
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	if err := os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o600); err != nil {
-		t.Fatalf("write node.crt: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600); err != nil {
-		t.Fatalf("write node.key: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o600), "write node.crt")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600), "write node.key")
 	return string(certPEM)
 }
 
@@ -75,13 +67,9 @@ func mintClusterIdentity(t *testing.T, dir, uuid string) string {
 func writePin(t *testing.T, dir, peerUUID, peerCertPEM string) {
 	t.Helper()
 	trustedDir := filepath.Join(dir, "trusted")
-	if err := os.MkdirAll(trustedDir, 0o700); err != nil {
-		t.Fatalf("mkdir trusted: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(trustedDir, 0o700), "mkdir trusted")
 	pin, _ := json.Marshal(map[string]string{"nodeUuid": peerUUID, "certPem": peerCertPEM})
-	if err := os.WriteFile(filepath.Join(trustedDir, peerUUID+".json"), pin, 0o600); err != nil {
-		t.Fatalf("write pin: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(trustedDir, peerUUID+".json"), pin, 0o600), "write pin")
 }
 
 // writeActiveAdmission marks dir as belonging to a cluster without adding any
@@ -94,12 +82,8 @@ func writeActiveAdmission(t *testing.T, dir string) {
 		"clusterId": "remote-engine-test-cluster",
 		"epoch":     1,
 	})
-	if err != nil {
-		t.Fatalf("marshal admission: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "admission.json"), admission, 0o600); err != nil {
-		t.Fatalf("write admission.json: %v", err)
-	}
+	require.NoError(t, err, "marshal admission")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "admission.json"), admission, 0o600), "write admission.json")
 }
 
 // TestRemoteEngineGetInstalled drives engine:remote-get-installed from node A to
@@ -137,20 +121,17 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 	// Fire the remote read and await the response.
 	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
 	resp := waitForResponse(t, aMsgs, 15*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("remote-get-installed errored: %+v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "remote-get-installed errored")
 	var res struct {
 		Engines []struct {
 			Engine string `json:"engine"`
 		} `json:"engines"`
 	}
-	if err := json.Unmarshal(resp.Result, &res); err != nil {
-		t.Fatalf("decode result %s: %v", resp.Result, err)
+	{
+		err := json.Unmarshal(resp.Result, &res)
+		require.NoError(t, err, "decode result")
 	}
-	if len(res.Engines) == 0 {
-		t.Fatalf("expected B to report at least one engine, got %s", resp.Result)
-	}
+	require.NotEqual(t, 0, len(res.Engines), "expected B to report at least one engine")
 	t.Logf("node A read %d engine(s) from node B over ec mTLS", len(res.Engines))
 }
 
@@ -182,9 +163,7 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
 
 	resp := waitForResponse(t, aMsgs, 15*time.Second)
-	if resp.Error == nil {
-		t.Fatalf("expected an error from an unpinned caller, got result %s", resp.Result)
-	}
+	require.NotNil(t, resp.Error, "expected an error from an unpinned caller, got result")
 	t.Logf("unpinned caller correctly refused: %+v", resp.Error)
 }
 
@@ -200,16 +179,10 @@ func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) 
 	)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("engine-manager stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "engine-manager stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("engine-manager stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start engine-manager (server): %v", err)
-	}
+	require.NoError(t, err, "engine-manager stdout pipe")
+	require.NoError(t, cmd.Start(), "start engine-manager (server)")
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
 	return stdin, func() {
 		_ = stdin.Close()
@@ -231,16 +204,10 @@ func startEngineManagerStdio(t *testing.T, clusterDir string) (io.WriteCloser, <
 	cmd := exec.Command(engineMgrBin, "--cluster-dir", clusterDir, "--log-level", "warn")
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("engine-manager stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "engine-manager stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("engine-manager stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start engine-manager (client): %v", err)
-	}
+	require.NoError(t, err, "engine-manager stdout pipe")
+	require.NoError(t, cmd.Start(), "start engine-manager (client)")
 	msgs := startMsgReader(stdout)
 	return stdin, msgs, func() {
 		_ = stdin.Close()

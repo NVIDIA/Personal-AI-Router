@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 )
 
@@ -28,9 +30,7 @@ import (
 func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("genkey: %v", err)
-	}
+	require.NoError(t, err, "genkey")
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	uri, _ := url.Parse("urn:nvpair:node:" + uuid)
 	tmpl := &x509.Certificate{
@@ -44,9 +44,7 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 		URIs:                  []*url.URL{uri},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
-	if err != nil {
-		t.Fatalf("create cert: %v", err)
-	}
+	require.NoError(t, err, "create cert")
 	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
@@ -58,21 +56,13 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
 	td := filepath.Join(dir, "trusted")
-	if err := os.MkdirAll(td, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(td, 0o700))
 	for uuid, pcert := range pins {
 		body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
-		if err := os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600))
 	}
 	return dir
 }
@@ -95,9 +85,9 @@ func TestNodeInfoHandler_MTLSGate(t *testing.T) {
 	dirC := setupNode(t, cCert, cKey, map[string][]byte{"uuid-a": aCert})
 
 	meshA, meshB, meshC := clustertrust.Open(dirA), clustertrust.Open(dirB), clustertrust.Open(dirC)
-	if !meshA.Clustered() || !meshB.Clustered() || !meshC.Clustered() {
-		t.Fatal("a populated cluster dir must read as clustered")
-	}
+	require.True(t, meshA.Clustered(), "a populated cluster dir must read as clustered")
+	require.True(t, meshB.Clustered(), "a populated cluster dir must read as clustered")
+	require.True(t, meshC.Clustered(), "a populated cluster dir must read as clustered")
 
 	const wantBody = `{"GPUs":[]}`
 	mux := http.NewServeMux()
@@ -109,31 +99,32 @@ func TestNodeInfoHandler_MTLSGate(t *testing.T) {
 
 	get := func(m *clustertrust.Mesh, peerUUID string) (int, string) {
 		cfg, ok := m.ClientTLSConfig(peerUUID)
-		if !ok {
-			t.Fatalf("no client config for %s", peerUUID)
-		}
+		require.True(t, ok, "no client config for (%v)", peerUUID)
 		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
 		resp, err := client.Get(srv.URL + "/v1/node-info")
-		if err != nil {
-			t.Fatalf("get: %v", err)
-		}
+		require.NoError(t, err, "get")
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b)
 	}
 
 	// Pinned member B -> A: accepted, real body.
-	if code, body := get(meshB, "uuid-a"); code != http.StatusOK || body != wantBody {
-		t.Fatalf("pinned member read: code=%d body=%q, want 200 %q", code, body, wantBody)
+	{
+		code, body := get(meshB, "uuid-a")
+		require.True(t, code == http.StatusOK, "pinned member read: code (%v, %v, %v)", code, body, wantBody)
+		require.True(t, body == wantBody, "pinned member read: code (%v, %v, %v)", code, body, wantBody)
 	}
 
 	// Self-read A -> A: accepted via self-trust (A isn't in its own trusted/).
-	if code, body := get(meshA, "uuid-a"); code != http.StatusOK || body != wantBody {
-		t.Fatalf("self read: code=%d body=%q, want 200 %q (self-trust)", code, body, wantBody)
+	{
+		code, body := get(meshA, "uuid-a")
+		require.True(t, code == http.StatusOK, "self read: code (%v, %v, %v)", code, body, wantBody)
+		require.True(t, body == wantBody, "self read: code (%v, %v, %v)", code, body, wantBody)
 	}
 
 	// C completes the handshake (it pins A) but A doesn't pin C -> 403 at the gate.
-	if code, _ := get(meshC, "uuid-a"); code != http.StatusForbidden {
-		t.Fatalf("non-member read: code=%d, want 403", code)
+	{
+		code, _ := get(meshC, "uuid-a")
+		require.True(t, code == http.StatusForbidden, "non-member read: code (%v)", code)
 	}
 }

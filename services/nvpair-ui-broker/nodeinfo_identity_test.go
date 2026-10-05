@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -30,17 +33,11 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			var mu sync.Mutex
-			if err := writeClusterIdentityFrame(&mu, &buf, tc.clusterUUID); err != nil {
-				t.Fatalf("write: %v", err)
-			}
+			require.NoError(t, writeClusterIdentityFrame(&mu, &buf, tc.clusterUUID), "write")
 
 			line := buf.String()
-			if !strings.HasSuffix(line, "\n") {
-				t.Error("frame is not newline-terminated; node-info reads line-delimited frames")
-			}
-			if strings.Count(line, "\n") != 1 {
-				t.Errorf("frame contains %d newlines, want exactly one", strings.Count(line, "\n"))
-			}
+			assert.True(t, strings.HasSuffix(line, "\n"), "frame is not newline-terminated; node-info reads line-delimited frames")
+			assert.Equal(t, 1, strings.Count(line, "\n"), "frame contains")
 
 			var frame struct {
 				JSONRPC string                        `json:"jsonrpc"`
@@ -48,28 +45,19 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 				ID      json.RawMessage               `json:"id"`
 				Params  noderec.ClusterIdentityParams `json:"params"`
 			}
-			if err := json.Unmarshal([]byte(line), &frame); err != nil {
-				t.Fatalf("decode frame %q: %v", line, err)
+			{
+				err := json.Unmarshal([]byte(line), &frame)
+				require.NoError(t, err, "decode frame (%v, %v)", line, err)
 			}
-			if frame.JSONRPC != "2.0" {
-				t.Errorf("jsonrpc = %q, want 2.0", frame.JSONRPC)
-			}
-			if frame.Method != noderec.MethodSetClusterIdentity {
-				t.Errorf("method = %q, want %q", frame.Method, noderec.MethodSetClusterIdentity)
-			}
+			assert.Equal(t, "2.0", frame.JSONRPC)
+			assert.True(t, frame.Method == noderec.MethodSetClusterIdentity, "method")
 			// A notification, not a request: node-info's stdout is drained to
 			// io.Discard, so an id-bearing frame would strand a reply.
-			if len(frame.ID) != 0 {
-				t.Errorf("frame carries an id (%s); the push must be a notification", frame.ID)
-			}
-			if frame.Params.ClusterUUID != tc.clusterUUID {
-				t.Errorf("clusterUuid = %q, want %q", frame.Params.ClusterUUID, tc.clusterUUID)
-			}
+			assert.Len(t, frame.ID, 0, "frame carries an id")
+			assert.True(t, frame.Params.ClusterUUID == tc.clusterUUID, "clusterUuid")
 			// The field must be on the wire even when empty, since that is how a
 			// departure is expressed.
-			if !strings.Contains(line, `"clusterUuid"`) {
-				t.Errorf("frame omitted clusterUuid: %s", line)
-			}
+			assert.Contains(t, line, `"clusterUuid"`, "frame omitted clusterUuid")
 		})
 	}
 }

@@ -10,6 +10,9 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // pipePeers wires two Peers over a synchronous in-memory net.Pipe. Handlers
@@ -34,12 +37,12 @@ func TestPeerCallReturnsResult(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	res, rpcErr, err := a.Call(ctx, "ping", json.RawMessage(`{"x":1}`))
-	if err != nil || rpcErr != nil {
-		t.Fatalf("Call err=%v rpcErr=%v", err, rpcErr)
-	}
+	require.NoError(t, err, "Call err")
+	require.Nil(t, rpcErr, "Call err")
 	var out map[string]string
-	if json.Unmarshal(res, &out); out["echo"] != "ping" {
-		t.Fatalf("unexpected result: %s", res)
+	{
+		json.Unmarshal(res, &out)
+		assert.Equal(t, "ping", out["echo"], "unexpected result")
 	}
 }
 
@@ -53,12 +56,9 @@ func TestPeerCallReturnsRPCError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, rpcErr, err := a.Call(ctx, "nope", nil)
-	if err != nil {
-		t.Fatalf("transport err: %v", err)
-	}
-	if rpcErr == nil || rpcErr.Code != -32601 {
-		t.Fatalf("want rpc error -32601, got %+v", rpcErr)
-	}
+	require.NoError(t, err, "transport err")
+	require.NotNil(t, rpcErr, "want rpc error -32601")
+	assert.Equal(t, -32601, rpcErr.Code, "want rpc error -32601,")
 }
 
 func TestPeerSimultaneousInboundRequest(t *testing.T) {
@@ -86,11 +86,9 @@ func TestPeerSimultaneousInboundRequest(t *testing.T) {
 	for _, ch := range []chan res{ares, bres} {
 		select {
 		case r := <-ch:
-			if r.err != nil {
-				t.Fatalf("simultaneous call failed: %v", r.err)
-			}
+			require.NoError(t, r.err, "simultaneous call failed")
 		case <-time.After(3 * time.Second):
-			t.Fatal("simultaneous calls deadlocked")
+			require.FailNow(t, "test expectation failed", "simultaneous calls deadlocked")
 		}
 	}
 }
@@ -103,18 +101,14 @@ func TestPeerNotificationOrdering(t *testing.T) {
 
 	const n = 8
 	for i := 0; i < n; i++ {
-		if err := a.Notify(fmt.Sprintf("n%d", i), nil); err != nil {
-			t.Fatalf("Notify: %v", err)
-		}
+		require.NoError(t, a.Notify(fmt.Sprintf("n%d", i), nil), "Notify")
 	}
 	for i := 0; i < n; i++ {
 		select {
 		case m := <-got:
-			if m != fmt.Sprintf("n%d", i) {
-				t.Fatalf("out of order: got %s want n%d", m, i)
-			}
+			assert.Equal(t, fmt.Sprintf("n%d", i), m, "out of order:")
 		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for notification %d", i)
+			require.FailNow(t, "test expectation failed", "timed out waiting for notification")
 		}
 	}
 }
@@ -127,9 +121,7 @@ func TestPeerCallCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	_, _, err := a.Call(ctx, "hang", nil)
-	if err != context.Canceled {
-		t.Fatalf("want context.Canceled, got %v", err)
-	}
+	assert.True(t, err == context.Canceled, "want context.Canceled,")
 }
 
 func TestPeerCloseWakesPendingCall(t *testing.T) {
@@ -147,19 +139,18 @@ func TestPeerCloseWakesPendingCall(t *testing.T) {
 
 	select {
 	case e := <-errc:
-		if e != ErrPeerClosed {
-			t.Fatalf("want ErrPeerClosed, got %v", e)
-		}
+		assert.Equal(t, ErrPeerClosed, e, "want ErrPeerClosed,")
 	case <-time.After(2 * time.Second):
-		t.Fatal("pending Call was not woken on close")
+		require.FailNow(t, "test expectation failed", "pending Call was not woken on close")
 	}
 }
 
 func TestPeerCallAfterCloseFailsFast(t *testing.T) {
 	a, _ := pipePeers(t)
 	a.Close()
-	if _, _, err := a.Call(context.Background(), "m", nil); err != ErrPeerClosed {
-		t.Fatalf("want ErrPeerClosed after Close, got %v", err)
+	{
+		_, _, err := a.Call(context.Background(), "m", nil)
+		assert.True(t, err == ErrPeerClosed, "want ErrPeerClosed after Close,")
 	}
 }
 
@@ -175,21 +166,18 @@ func TestPeerRelayRequest(t *testing.T) {
 		err error
 	}
 	done := make(chan relayed, 1)
-	if err := a.RelayRequest("m", nil, func(res json.RawMessage, _ *RPCError, err error) {
+	require.NoError(t, a.RelayRequest("m", nil, func(res json.RawMessage, _ *RPCError, err error) {
 		done <- relayed{res, err}
-	}); err != nil {
-		t.Fatalf("RelayRequest: %v", err)
-	}
+	}), "RelayRequest")
 	select {
 	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("relay err: %v", r.err)
-		}
+		require.NoError(t, r.err, "relay err")
 		var out map[string]int
-		if json.Unmarshal(r.res, &out); out["ok"] != 1 {
-			t.Fatalf("unexpected relay result: %s", r.res)
+		{
+			json.Unmarshal(r.res, &out)
+			assert.Equal(t, 1, out["ok"], "unexpected relay result")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("relay respond not invoked")
+		require.FailNow(t, "test expectation failed", "relay respond not invoked")
 	}
 }

@@ -36,6 +36,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 
 	"github.com/grandcat/zeroconf"
@@ -86,16 +89,10 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	t.Logf("broker started: pid=%d", cmd.Process.Pid)
 
 	ch := startMsgReader(stdoutPipe)
@@ -116,8 +113,9 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 // broker. (The package's other writeFrame takes a typed brokerFrame.)
 func writeRawFrame(t *testing.T, w io.Writer, frame string) {
 	t.Helper()
-	if _, err := w.Write([]byte(frame + "\n")); err != nil {
-		t.Fatalf("write frame: %v", err)
+	{
+		_, err := w.Write([]byte(frame + "\n"))
+		require.NoError(t, err, "write frame")
 	}
 }
 
@@ -140,8 +138,10 @@ func TestWorkloadManagerInboundRelay(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	if err := json.Unmarshal(ack.Result, &sr); err != nil || !sr.Subscribed {
-		t.Fatalf("workloads:subscribe ack = %s (err %v), want subscribed:true", ack.Result, err)
+	{
+		err := json.Unmarshal(ack.Result, &sr)
+		require.NoError(t, err, "workloads:subscribe ack")
+		require.True(t, sr.Subscribed, "workloads:subscribe ack (%v)", err)
 	}
 	t.Log("subscribed to workloads stream")
 
@@ -154,12 +154,8 @@ func TestWorkloadManagerInboundRelay(t *testing.T) {
 	// The manager translates the peer lifecycle event into workloads:upsert
 	// on its stdout; the broker relays it to us.
 	upsert := waitForWorkloadEvent(t, msgs, "workloads:upsert", "peer-wl-1", 10*time.Second)
-	if upsert.WorkloadInfo.OriginatedFrom != "peer-node-A" {
-		t.Errorf("relayed upsert originatedFrom = %q, want %q", upsert.WorkloadInfo.OriginatedFrom, "peer-node-A")
-	}
-	if upsert.WorkloadInfo.State != "running" {
-		t.Errorf("relayed upsert state = %q, want %q", upsert.WorkloadInfo.State, "running")
-	}
+	assert.Equal(t, "peer-node-A", upsert.WorkloadInfo.OriginatedFrom, "relayed upsert originatedFrom")
+	assert.Equal(t, "running", upsert.WorkloadInfo.State, "relayed upsert state")
 	t.Log("inbound OK: peer workload relayed to client as workloads:upsert")
 }
 
@@ -181,8 +177,10 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	if err := json.Unmarshal(ack.Result, &sr); err != nil || !sr.Subscribed {
-		t.Fatalf("subscribe ack = %s (err %v), want subscribed:true", ack.Result, err)
+	{
+		err := json.Unmarshal(ack.Result, &sr)
+		require.NoError(t, err, "subscribe ack")
+		require.True(t, sr.Subscribed, "subscribe ack (%v)", err)
 	}
 
 	const endpoint = "https://127.0.0.1:14320/v1/workloads/events"
@@ -194,9 +192,7 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 
 	postPeerEvent(t, peer, endpoint, failedEvent, 15*time.Second)
 	failed := waitForWorkloadEvent(t, msgs, "workloads:upsert", "ooo-1", 10*time.Second)
-	if failed.WorkloadInfo.State != "failed" {
-		t.Fatalf("first client upsert state = %q, want failed", failed.WorkloadInfo.State)
-	}
+	require.Equal(t, "failed", failed.WorkloadInfo.State, "first client upsert state")
 
 	// The stale running arrives after the terminal. The store must reject it,
 	// so the client never sees a running upsert for ooo-1.
@@ -206,9 +202,7 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 	for draining {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("client stream closed unexpectedly")
-			}
+			require.True(t, ok, "client stream closed unexpectedly")
 			if msg.Method != "workloads:upsert" {
 				continue
 			}
@@ -216,9 +210,7 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 			if json.Unmarshal(msg.Params, &p) != nil {
 				continue
 			}
-			if p.WorkloadInfo.ID == "ooo-1" && p.WorkloadInfo.State == "running" {
-				t.Fatal("stale running after failed was re-emitted to the client — reordering not suppressed")
-			}
+			require.False(t, p.WorkloadInfo.ID == "ooo-1" && p.WorkloadInfo.State == "running", "stale running after failed was re-emitted to the client — reordering not suppressed")
 		case <-deadline:
 			draining = false
 		}
@@ -230,21 +222,18 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 	var res struct {
 		Workloads []wlInfo `json:"workloads"`
 	}
-	if err := json.Unmarshal(resp.Result, &res); err != nil {
-		t.Fatalf("get-initial result: %v\nraw: %s", err, resp.Result)
+	{
+		err := json.Unmarshal(resp.Result, &res)
+		require.NoError(t, err, "get-initial result")
 	}
 	found := false
 	for _, w := range res.Workloads {
 		if w.ID == "ooo-1" {
 			found = true
-			if w.State != "failed" {
-				t.Fatalf("get-initial ooo-1 state = %q, want failed", w.State)
-			}
+			require.Equal(t, "failed", w.State, "get-initial ooo-1 state")
 		}
 	}
-	if !found {
-		t.Fatal("get-initial did not include ooo-1")
-	}
+	require.True(t, found, "get-initial did not include ooo-1")
 	t.Log("reordering OK: stale running suppressed; get-initial reports failed")
 }
 
@@ -279,8 +268,10 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	if err := json.Unmarshal(ack.Result, &sr); err != nil || !sr.Subscribed {
-		t.Fatalf("workloads:subscribe ack = %s (err %v), want subscribed:true", ack.Result, err)
+	{
+		err := json.Unmarshal(ack.Result, &sr)
+		require.NoError(t, err, "workloads:subscribe ack")
+		require.True(t, sr.Subscribed, "workloads:subscribe ack (%v)", err)
 	}
 	t.Log("subscribed to workloads stream")
 
@@ -290,9 +281,7 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	// it from colliding with this host's own record.
 	peerTXT := []string{"v=1", "uuid=" + peerUUID, "ip=127.0.0.1"}
 	peerAdv, err := zeroconf.Register(peerNode, nodeRecordService, testDomain, 14999, peerTXT, nil)
-	if err != nil {
-		t.Fatalf("register peer node: %v", err)
-	}
+	require.NoError(t, err, "register peer node")
 	stopAdv := func() {
 		if peerAdv != nil {
 			peerAdv.Shutdown()
@@ -315,9 +304,7 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	postPeerEvent(t, fx.clientAsPeer(t), "https://127.0.0.1:14320/v1/workloads/events", peerEvent, 15*time.Second)
 
 	running := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 10*time.Second)
-	if running.WorkloadInfo.State != "running" {
-		t.Fatalf("initial upsert state = %q, want running", running.WorkloadInfo.State)
-	}
+	require.Equal(t, "running", running.WorkloadInfo.State, "initial upsert state")
 	t.Log("peer workload tracked as running")
 
 	// Pull the peer off the network. The scanner holds a node through
@@ -331,12 +318,8 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	t.Log("peer advertisement withdrawn; awaiting node eviction + workload failure")
 
 	failed := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 2*time.Minute)
-	if failed.WorkloadInfo.State != "failed" {
-		t.Fatalf("post-eviction upsert state = %q, want failed", failed.WorkloadInfo.State)
-	}
-	if failed.WorkloadInfo.OriginatedFrom != peerUUID {
-		t.Errorf("failed upsert originatedFrom = %q, want %q", failed.WorkloadInfo.OriginatedFrom, peerUUID)
-	}
+	require.Equal(t, "failed", failed.WorkloadInfo.State, "post-eviction upsert state")
+	assert.True(t, failed.WorkloadInfo.OriginatedFrom == peerUUID, "failed upsert originatedFrom (%v)", peerUUID)
 	t.Log("node-loss OK: UUID-stamped workload marked failed after the (name-distinct) peer went offline")
 }
 
@@ -415,25 +398,22 @@ func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
 				continue
 			}
 			var p wlParams
-			if err := json.Unmarshal(msg.Params, &p); err != nil {
-				t.Fatalf("unmarshal broadcast params: %v\nraw: %s", err, msg.Params)
+			{
+				err := json.Unmarshal(msg.Params, &p)
+				require.NoError(t, err, "unmarshal broadcast params")
 			}
 			if p.WorkloadInfo.Model != "test-model" {
 				continue
 			}
-			if p.WorkloadInfo.OriginatedFrom == "" {
-				t.Errorf("broadcast workload originatedFrom is empty; broker did not stamp it")
-			}
-			if p.WorkloadInfo.Engine != "ollama" {
-				t.Errorf("broadcast workload engine = %q, want %q", p.WorkloadInfo.Engine, "ollama")
-			}
+			assert.NotEqual(t, "", p.WorkloadInfo.OriginatedFrom, "broadcast workload originatedFrom is empty; broker did not stamp it")
+			assert.Equal(t, "ollama", p.WorkloadInfo.Engine, "broadcast workload engine")
 			t.Logf("outbound OK: stub peer received %s for model %q from node %q",
 				msg.Method, p.WorkloadInfo.Model, p.WorkloadInfo.OriginatedFrom)
 			return
 		case <-reqTick.C:
 			fire()
 		case <-deadline:
-			t.Fatal("timed out: stub peer never received a workload broadcast")
+			require.FailNow(t, "test expectation failed", "timed out: stub peer never received a workload broadcast")
 		}
 	}
 }
@@ -461,7 +441,7 @@ func postPeerEvent(t *testing.T, client *http.Client, endpoint, body string, tim
 		select {
 		case <-tick.C:
 		case <-deadline:
-			t.Fatalf("timed out POSTing peer event to %s (last err: %v)", endpoint, err)
+			require.FailNow(t, "test expectation failed", "timed out POSTing peer event to %s (last err: %v)", endpoint, err)
 		}
 	}
 }
@@ -508,9 +488,7 @@ func waitEngineProxyReady(t *testing.T, namespace string, stdin io.Writer, msgs 
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatalf("broker stream closed waiting for %s", method)
-			}
+			require.True(t, ok, "broker stream closed waiting for (%v)", method)
 			if msg.ID == nil || msg.Method != "" {
 				continue
 			}
@@ -529,7 +507,7 @@ func waitEngineProxyReady(t *testing.T, namespace string, stdin io.Writer, msgs 
 		case <-tick.C:
 			poll()
 		case <-deadline:
-			t.Fatalf("timed out (%s) waiting for %s proxy to become ready", timeout, namespace)
+			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for %s proxy to become ready", timeout, namespace)
 		}
 	}
 }
@@ -542,21 +520,20 @@ func waitForWorkloadEvent(t *testing.T, msgs <-chan jsonrpc.Message, method, id 
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatalf("stream closed before %s for %q", method, id)
-			}
+			require.True(t, ok, "stream closed before (%v, %v)", method, id)
 			if msg.Method != method {
 				continue
 			}
 			var p wlParams
-			if err := json.Unmarshal(msg.Params, &p); err != nil {
-				t.Fatalf("unmarshal %s: %v\nraw: %s", method, err, msg.Params)
+			{
+				err := json.Unmarshal(msg.Params, &p)
+				require.NoError(t, err, "unmarshal (%v, %v)", method, err)
 			}
 			if p.WorkloadInfo.ID == id {
 				return p
 			}
 		case <-to:
-			t.Fatalf("timed out (%s) waiting for %s %q", timeout, method, id)
+			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for %s %q", timeout, method, id)
 		}
 	}
 }

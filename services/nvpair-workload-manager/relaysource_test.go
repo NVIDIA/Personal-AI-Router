@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
@@ -26,10 +28,9 @@ func TestSameNameDistinctUUIDPeersSurviveReplace(t *testing.T) {
 	}
 	src.set([]noderec.DirectoryNode{node("uuid-1", "10.0.0.1"), node("uuid-2", "10.0.0.2")})
 
-	nodes, _ := src.Nodes(context.Background())
-	if len(nodes) != 2 {
-		t.Fatalf("relay source kept %d peers, want 2", len(nodes))
-	}
+	nodes, err := src.Nodes(context.Background())
+	require.NoError(t, err)
+	require.Len(t, nodes, 2)
 	ids := map[string]bool{}
 	wantAddresses := map[string][]string{
 		"uuid-1": {"10.0.0.1", "192.168.1.1"},
@@ -37,29 +38,22 @@ func TestSameNameDistinctUUIDPeersSurviveReplace(t *testing.T) {
 	}
 	for _, n := range nodes {
 		ids[n.ID] = true
-		if !slices.Equal(n.Addresses, wantAddresses[n.ID]) {
-			t.Fatalf("PeerNode.Addresses = %v, want %v", n.Addresses, wantAddresses[n.ID])
-		}
+		assert.Equal(t, wantAddresses[n.ID], n.Addresses, "addresses for %s", n.ID)
 	}
-	if !ids["uuid-1"] || !ids["uuid-2"] {
-		t.Fatalf("PeerNode.ID must be the hostUuid; got %v", ids)
-	}
+	assert.True(t, ids["uuid-1"], "PeerNode.ID must be the hostUuid")
+	assert.True(t, ids["uuid-2"], "PeerNode.ID must be the hostUuid")
 
 	// peerSet.Replace keys the broadcast set by PeerNode.ID: both distinct-UUID
 	// peers must be added, not collapsed into one under the shared hostname.
 	ps := newPeerSet(14320)
 	added, _ := ps.Replace(nodes)
-	if len(added) != 2 {
-		t.Fatalf("peerSet.Replace added %d targets, want 2 (same-named peers collapsed)", len(added))
-	}
+	assert.Len(t, added, 2, "same-named peers must remain distinct")
 	wantCandidates := map[string][]string{
 		"uuid-1": {"10.0.0.1:14320", "192.168.1.1:14320"},
 		"uuid-2": {"10.0.0.2:14320", "192.168.1.2:14320"},
 	}
 	for _, target := range ps.targets() {
-		if !slices.Equal(target.candidates, wantCandidates[target.id]) {
-			t.Fatalf("target candidates = %v, want %v", target.candidates, wantCandidates[target.id])
-		}
+		assert.Equal(t, wantCandidates[target.id], target.candidates, "candidates for %s", target.id)
 	}
 }
 
@@ -72,8 +66,8 @@ func TestSelfFilteredByUUID(t *testing.T) {
 		{HostUUID: "self-uuid", Name: "host", IP: "10.0.0.1", Services: svc}, // us
 		{HostUUID: "peer-uuid", Name: "host", IP: "10.0.0.2", Services: svc}, // same name, different machine
 	})
-	nodes, _ := src.Nodes(context.Background())
-	if len(nodes) != 1 || nodes[0].ID != "peer-uuid" {
-		t.Fatalf("self-filter should drop only our own UUID, kept %+v", nodes)
-	}
+	nodes, err := src.Nodes(context.Background())
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "peer-uuid", nodes[0].ID, "self-filter should drop only our own UUID")
 }

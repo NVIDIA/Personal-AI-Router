@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestServer_InterNodeDedupRecordedOnlyAfterSuccessfulEmit verifies that a
@@ -39,27 +42,18 @@ func TestServer_InterNodeDedupRecordedOnlyAfterSuccessfulEmit(t *testing.T) {
 			)
 			post := serveEventsOverMTLS(t, srv, self, peer)
 
-			if code := post(frame); code != http.StatusInternalServerError {
-				t.Fatalf("failed emit status = %d, want 500", code)
-			}
-			if upserts != 0 || removes != 0 {
-				t.Fatalf("emits after failed attempt = (%d upserts, %d removes), want (0, 0)", upserts, removes)
-			}
+			assert.Equal(t, http.StatusInternalServerError, post(frame), "failed emit")
+			assert.Zero(t, upserts, "failed emit must not upsert")
+			assert.Zero(t, removes, "failed emit must not remove")
 
 			failEmit = false
-			if code := post(frame); code != http.StatusOK {
-				t.Fatalf("retry status = %d, want 200", code)
-			}
-			if upserts != wantUpserts || removes != wantRemoves {
-				t.Fatalf("emits after retry = (%d upserts, %d removes), want (%d, %d)", upserts, removes, wantUpserts, wantRemoves)
-			}
+			assert.Equal(t, http.StatusOK, post(frame), "retry")
+			assert.Equal(t, wantUpserts, upserts, "upserts after retry")
+			assert.Equal(t, wantRemoves, removes, "removes after retry")
 			// they are duplicates at this point and shouldn't get sent to do work
-			if code := post(frame); code != http.StatusOK {
-				t.Fatalf("duplicate status = %d, want 200", code)
-			}
-			if upserts != wantUpserts || removes != wantRemoves {
-				t.Fatalf("emits after duplicate = (%d upserts, %d removes), want (%d, %d)", upserts, removes, wantUpserts, wantRemoves)
-			}
+			assert.Equal(t, http.StatusOK, post(frame), "duplicate")
+			assert.Equal(t, wantUpserts, upserts, "duplicate must not upsert")
+			assert.Equal(t, wantRemoves, removes, "duplicate must not remove")
 		})
 	}
 
@@ -116,14 +110,14 @@ func TestServer_ConcurrentDuplicatesEmitOnce(t *testing.T) {
 			select {
 			case <-firstEntered:
 			case <-time.After(2 * time.Second):
-				t.Fatal("first request did not reach the broker emit")
+				require.FailNow(t, "first request did not reach the broker emit")
 			}
 			go post(secondDone)
 			// The duplicate must wait for the first emit's result. The short
 			// timeout gives it an opportunity to expose a premature response.
 			select {
 			case code := <-secondDone:
-				t.Fatalf("duplicate completed before first emit: HTTP %d", code)
+				require.FailNow(t, "duplicate completed before first emit", "HTTP %d", code)
 			case <-time.After(50 * time.Millisecond):
 			}
 			// Once the first emit succeeds, both requests may return 200, but
@@ -132,16 +126,12 @@ func TestServer_ConcurrentDuplicatesEmitOnce(t *testing.T) {
 			for _, result := range []<-chan int{firstDone, secondDone} {
 				select {
 				case code := <-result:
-					if code != http.StatusOK {
-						t.Fatalf("request status = %d, want 200", code)
-					}
+					assert.Equal(t, http.StatusOK, code)
 				case <-time.After(2 * time.Second):
-					t.Fatal("request did not finish")
+					require.FailNow(t, "request did not finish")
 				}
 			}
-			if got := emits.Load(); got != 1 {
-				t.Fatalf("broker emits = %d, want 1", got)
-			}
+			assert.Equal(t, int32(1), emits.Load(), "broker must emit once")
 		})
 	}
 

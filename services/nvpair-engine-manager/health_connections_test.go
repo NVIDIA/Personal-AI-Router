@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/httpcon/testclient"
 )
 
@@ -20,9 +23,7 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var requests atomic.Int32
 			client, connections := testclient.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get(engineIdentityProbeHeader) != "1" {
-					t.Error("missing engine identity header")
-				}
+				assert.Equal(t, "1", r.Header.Get(engineIdentityProbeHeader), "missing engine identity header")
 				status := http.StatusOK
 				if requests.Add(1)%2 == 0 {
 					status = http.StatusServiceUnavailable
@@ -37,12 +38,14 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 			probe := &Probe{HTTP: "http://127.0.0.1:{port}/api/version"}
 			const rounds = 32
 			for i := 0; i < rounds; i++ {
-				if got, want := ex.probe(context.Background(), probe, 1), i%2 == 0; got != want {
-					t.Fatalf("poll %d: healthy = %v, want %v", i, got, want)
+				{
+					got, want := ex.probe(context.Background(), probe, 1), i%2 == 0
+					require.True(t, got == want, "poll (%v, %v, %v)", i, got, want)
 				}
 			}
-			if got := connections.Count(); got != 1 {
-				t.Fatalf("accepted %d HTTP/1 connections for %d polls, want 1", got, rounds)
+			{
+				got := connections.Count()
+				require.Equal(t, int32(1), got, "accepted (%v, %v)", got, rounds)
 			}
 		})
 	}
@@ -83,12 +86,10 @@ func TestProbeHTTPBoundsBodyDrain(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusAccepted, Body: body, Header: make(http.Header)}, nil
 	})}}
 	probe := &Probe{HTTP: "http://127.0.0.1:{port}/", Status: http.StatusAccepted}
-	if !ex.probe(context.Background(), probe, 1) {
-		t.Fatal("body drain changed the configured HTTP status health result")
-	}
-	if body.read == 0 || body.read > 1<<20 || !body.closed {
-		t.Fatalf("body read = %d, closed = %v; want bounded drain and close", body.read, body.closed)
-	}
+	require.True(t, ex.probe(context.Background(), probe, 1), "body drain changed the configured HTTP status health result")
+	require.NotEqual(t, 0, body.read, "body read")
+	require.LessOrEqual(t, body.read, 1<<20, "body read")
+	require.True(t, body.closed, "body read")
 }
 
 func TestProbeHTTPRejectsOversizedJSONIdentityBody(t *testing.T) {
@@ -118,12 +119,10 @@ func TestProbeHTTPBodyDrainHonorsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if !ex.probe(ctx, probe, 1) {
-		t.Fatal("body drain changed the HTTP status health result")
-	}
-	if !body.attempted || !body.closed || time.Since(start) > time.Second {
-		t.Fatalf("stalled body did not drain and close within deadline: %+v", body)
-	}
+	require.True(t, ex.probe(ctx, probe, 1), "body drain changed the HTTP status health result")
+	require.True(t, body.attempted, "stalled body did not drain and close within deadline (%v)", body)
+	require.True(t, body.closed, "stalled body did not drain and close within deadline (%v)", body)
+	require.LessOrEqual(t, time.Since(start), time.Second, "stalled body did not drain and close within deadline (%v)", body)
 }
 
 type healthProbeTransport func(*http.Request) (*http.Response, error)

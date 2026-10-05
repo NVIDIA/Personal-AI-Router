@@ -6,6 +6,9 @@ package main
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -17,27 +20,14 @@ func TestToDirectoryNode(t *testing.T) {
 		TXT:       []string{"v=1", "uuid=host-uuid", "cluster-uuid=clu", "ip=192.168.1.10", "ni=14318", "ol=11434"},
 	}
 	n, ok := toDirectoryNode(raw, true)
-	if !ok {
-		t.Fatal("a record with uuid= should project")
-	}
-	if n.HostUUID != "host-uuid" {
-		t.Errorf("HostUUID = %q, want host-uuid", n.HostUUID)
-	}
-	if n.Name != "hostA" {
-		t.Errorf("Name = %q, want hostA (instance)", n.Name)
-	}
-	if n.IP != "192.168.1.10" {
-		t.Errorf("IP = %q, want the ip= TXT value", n.IP)
-	}
-	if !n.Trusted {
-		t.Error("Trusted should reflect the caller-supplied flag")
-	}
-	if !n.HasService(noderec.ServiceNodeInfo) || !n.HasService(noderec.ServiceOllama) {
-		t.Errorf("services wrong: %+v", n.Services)
-	}
-	if n.Services[noderec.ServiceOllama].Port != 11434 {
-		t.Errorf("ol port = %d", n.Services[noderec.ServiceOllama].Port)
-	}
+	require.True(t, ok, "a record with uuid= should project")
+	assert.Equal(t, "host-uuid", n.HostUUID)
+	assert.Equal(t, "hostA", n.Name)
+	assert.Equal(t, "192.168.1.10", n.IP)
+	assert.True(t, n.Trusted, "Trusted should reflect the caller-supplied flag")
+	assert.True(t, n.HasService(noderec.ServiceNodeInfo), "services wrong")
+	assert.True(t, n.HasService(noderec.ServiceOllama), "services wrong")
+	assert.Equal(t, 11434, n.Services[noderec.ServiceOllama].Port, "ol port")
 }
 
 // TestToDirectoryNodeIgnoresSRVPort asserts the locked-decision contract: the
@@ -54,19 +44,17 @@ func TestToDirectoryNodeIgnoresSRVPort(t *testing.T) {
 		TXT:       []string{"v=1", "uuid=host-c", "ip=192.168.1.30", "ni=14318", "ol=11434"},
 	}
 	n, ok := toDirectoryNode(raw, false)
-	if !ok {
-		t.Fatal("a record with uuid= should project")
+	require.True(t, ok, "a record with uuid= should project")
+	{
+		got := n.Services[noderec.ServiceNodeInfo].Port
+		assert.Equal(t, 14318, got, "ni port")
 	}
-	if got := n.Services[noderec.ServiceNodeInfo].Port; got != 14318 {
-		t.Errorf("ni port = %d, want 14318 from TXT (SRV port 65000 must be ignored)", got)
-	}
-	if got := n.Services[noderec.ServiceOllama].Port; got != 11434 {
-		t.Errorf("ol port = %d, want 11434 from TXT", got)
+	{
+		got := n.Services[noderec.ServiceOllama].Port
+		assert.Equal(t, 11434, got, "ol port")
 	}
 	for svc, st := range n.Services {
-		if st.Port == 65000 {
-			t.Errorf("the non-authoritative SRV port leaked into service %q", svc)
-		}
+		assert.NotEqual(t, 65000, st.Port, "the non-authoritative SRV port leaked into service (%v)", svc)
 	}
 }
 
@@ -79,8 +67,9 @@ func TestToDirectoryNodeSkipsWithoutUUID(t *testing.T) {
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
 		TXT:       []string{"v=1", "er=14319"},
 	}
-	if _, ok := toDirectoryNode(raw, false); ok {
-		t.Error("a record without uuid= must be skipped, not projected")
+	{
+		_, ok := toDirectoryNode(raw, false)
+		assert.False(t, ok, "a record without uuid= must be skipped, not projected")
 	}
 }
 
@@ -98,18 +87,12 @@ func TestToDirectoryNodeIPFallback(t *testing.T) {
 		TXT:       []string{"v=1", "uuid=host-b", "er=14319"},
 	}
 	n, ok := toDirectoryNode(raw, false)
-	if !ok {
-		t.Fatal("a record with uuid= should project")
-	}
-	if n.IP != "10.221.0.9" {
-		t.Errorf("IP fallback = %q, want 10.221.0.9 (top-ranked)", n.IP)
-	}
-	if len(n.IPs) != 2 || n.IPs[0] != "10.221.0.9" || n.IPs[1] != "192.168.1.20" {
-		t.Errorf("candidates = %v, want both advertised addresses ranked", n.IPs)
-	}
-	if n.Clustered() {
-		t.Error("no cluster-uuid should mean not clustered")
-	}
+	require.True(t, ok, "a record with uuid= should project")
+	assert.Equal(t, "10.221.0.9", n.IP, "IP fallback")
+	require.Len(t, n.IPs, 2)
+	assert.Equal(t, "10.221.0.9", n.IPs[0])
+	assert.Equal(t, "192.168.1.20", n.IPs[1])
+	assert.False(t, n.Clustered(), "no cluster-uuid should mean not clustered")
 }
 
 // TestToDirectoryNodePreservesPublishedOrder: a node's own ips= order survives
@@ -126,15 +109,11 @@ func TestToDirectoryNodePreservesPublishedOrder(t *testing.T) {
 		},
 	}
 	n, ok := toDirectoryNode(raw, false)
-	if !ok {
-		t.Fatal("a record with uuid= should project")
-	}
-	if n.IP != "10.172.54.70" {
-		t.Errorf("canonical = %q, want the node's own ip= 10.172.54.70", n.IP)
-	}
-	if len(n.IPs) != 2 || n.IPs[0] != "10.172.54.70" || n.IPs[1] != "192.168.240.2" {
-		t.Errorf("candidates = %v, want the node's published order", n.IPs)
-	}
+	require.True(t, ok, "a record with uuid= should project")
+	assert.Equal(t, "10.172.54.70", n.IP, "canonical")
+	require.Len(t, n.IPs, 2)
+	assert.Equal(t, "10.172.54.70", n.IPs[0])
+	assert.Equal(t, "192.168.240.2", n.IPs[1])
 }
 
 // TestToDirectoryNodeUnionsUnpublishedAddresses: an address the browse resolved
@@ -146,13 +125,11 @@ func TestToDirectoryNodeUnionsUnpublishedAddresses(t *testing.T) {
 		TXT:       []string{"v=1", "uuid=host-c", "ip=10.0.0.5", "ips=10.0.0.5"},
 	}
 	n, ok := toDirectoryNode(raw, false)
-	if !ok {
-		t.Fatal("a record with uuid= should project")
-	}
+	require.True(t, ok, "a record with uuid= should project")
 	want := []string{"10.0.0.5", "10.0.9.9"}
-	if len(n.IPs) != len(want) || n.IPs[0] != want[0] || n.IPs[1] != want[1] {
-		t.Errorf("candidates = %v, want %v", n.IPs, want)
-	}
+	require.Len(t, n.IPs, len(want), "candidates (%v)", want)
+	assert.True(t, n.IPs[0] == want[0], "candidates (%v)", want)
+	assert.True(t, n.IPs[1] == want[1], "candidates (%v)", want)
 }
 
 func TestDirectoryUpsertRemoveSnapshot(t *testing.T) {
@@ -160,28 +137,27 @@ func TestDirectoryUpsertRemoveSnapshot(t *testing.T) {
 	a := noderec.DirectoryNode{HostUUID: "a", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}}}
 	b := noderec.DirectoryNode{HostUUID: "b", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}
 
-	if !d.upsert(a) {
-		t.Error("first upsert should be new")
-	}
-	if d.upsert(a) {
-		t.Error("second upsert of same hostUuid should not be new")
-	}
+	assert.True(t, d.upsert(a), "first upsert should be new")
+	assert.False(t, d.upsert(a), "second upsert of same hostUuid should not be new")
 	d.upsert(b)
 
-	if all := d.snapshot(""); len(all) != 2 || all[0].HostUUID != "a" || all[1].HostUUID != "b" {
-		t.Fatalf("snapshot(all) = %+v, want [a b] sorted", all)
+	{
+		all := d.snapshot("")
+		require.Len(t, all, 2, "snapshot(all)")
+		require.Equal(t, "a", all[0].HostUUID, "snapshot(all) (%v)", all)
+		require.Equal(t, "b", all[1].HostUUID, "snapshot(all) (%v)", all)
 	}
 	// Service filter.
-	if ol := d.snapshot(noderec.ServiceOllama); len(ol) != 1 || ol[0].HostUUID != "a" {
-		t.Fatalf("snapshot(ol) = %+v, want [a]", ol)
+	{
+		ol := d.snapshot(noderec.ServiceOllama)
+		require.Len(t, ol, 1, "snapshot(ol)")
+		require.Equal(t, "a", ol[0].HostUUID, "snapshot(ol) (%v)", ol)
 	}
-	if !d.remove("a") {
-		t.Error("remove(a) should report existed")
-	}
-	if d.remove("a") {
-		t.Error("remove(a) again should report not existed")
-	}
-	if all := d.snapshot(""); len(all) != 1 || all[0].HostUUID != "b" {
-		t.Fatalf("after remove, snapshot = %+v, want [b]", all)
+	assert.True(t, d.remove("a"), "remove(a) should report existed")
+	assert.False(t, d.remove("a"), "remove(a) again should report not existed")
+	{
+		all := d.snapshot("")
+		require.Len(t, all, 1, "after remove, snapshot")
+		require.Equal(t, "b", all[0].HostUUID, "after remove, snapshot (%v)", all)
 	}
 }

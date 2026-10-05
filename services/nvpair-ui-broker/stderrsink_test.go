@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // blockingWriter models the parent that has stopped reading its end of the
@@ -51,7 +54,7 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 		defer close(done)
 		for i := 0; i < writes; i++ {
 			if _, err := sink.Write(chunk); err != nil {
-				t.Errorf("Write returned an error: %v", err)
+				assert.Fail(t, "test expectation failed", "Write returned an error: %v", err)
 				return
 			}
 		}
@@ -60,23 +63,18 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Write blocked while the reader was stalled; a worker in this state can never exit")
+		require.FailNow(t, "test expectation failed", "Write blocked while the reader was stalled; a worker in this state can never exit")
 	}
 
 	sink.Close()
 
 	data, err := os.ReadFile(spill)
-	if err != nil {
-		t.Fatalf("overflow was not preserved: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("spill file is empty; overflow was discarded rather than kept")
-	}
-	if spilled := sink.spilledChunks.Load(); spilled == 0 {
-		t.Fatal("no chunks recorded as spilled")
-	}
-	if lost := sink.lostChunks.Load(); lost != 0 {
-		t.Fatalf("lost %d chunk(s) with a writable spill path", lost)
+	require.NoError(t, err, "overflow was not preserved")
+	require.NotEqual(t, 0, len(data), "spill file is empty; overflow was discarded rather than kept")
+	require.NotEqual(t, int64(0), sink.spilledChunks.Load(), "no chunks recorded as spilled")
+	{
+		lost := sink.lostChunks.Load()
+		require.Equal(t, int64(0), lost, "lost")
 	}
 }
 
@@ -92,8 +90,9 @@ func TestStderrSinkPassesThroughWhenDrained(t *testing.T) {
 
 	want := []byte("broker line\n")
 	for i := 0; i < 100; i++ {
-		if _, err := sink.Write(want); err != nil {
-			t.Fatalf("Write returned an error: %v", err)
+		{
+			_, err := sink.Write(want)
+			require.NoError(t, err, "Write returned an error")
 		}
 	}
 	sink.Close()
@@ -101,11 +100,10 @@ func TestStderrSinkPassesThroughWhenDrained(t *testing.T) {
 	open.mu.Lock()
 	got := len(open.sunk)
 	open.mu.Unlock()
-	if got != len(want)*100 {
-		t.Fatalf("forwarded %d bytes, want %d", got, len(want)*100)
-	}
+	require.True(t, got == len(want)*100, "forwarded (%v)", got)
 
-	if _, err := os.Stat(spill); !os.IsNotExist(err) {
-		t.Fatalf("spill file was created for a reader that kept up (stat err: %v)", err)
+	{
+		_, err := os.Stat(spill)
+		require.True(t, os.IsNotExist(err), "spill file was created for a reader that kept up (stat err (%v)", err)
 	}
 }

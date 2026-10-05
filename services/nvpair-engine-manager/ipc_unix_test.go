@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/ipc"
 )
 
@@ -22,9 +24,7 @@ func ipcListener(t *testing.T) (net.Listener, string) {
 	t.Helper()
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("nvpair-em-%d.sock", time.Now().UnixNano()))
 	ln, err := ipc.Listen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(path) })
 	return ln, path
 }

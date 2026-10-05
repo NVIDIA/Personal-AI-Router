@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestReservedAliasPortBlocksLocalAndRemoteStarts(t *testing.T) {
@@ -17,21 +19,22 @@ func TestReservedAliasPortBlocksLocalAndRemoteStarts(t *testing.T) {
 	reg.engines[manifest.Engine] = manifest
 	exec := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
 	exec.overrideDir = t.TempDir()
-	if err := exec.SetReservedPort(15555); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, exec.SetReservedPort(15555))
 
-	if err := exec.StartWith(context.Background(), manifest.Engine, startOpts{Port: 15555}); err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("local start error = %v, want reserved-port rejection", err)
+	{
+		err := exec.StartWith(context.Background(), manifest.Engine, startOpts{Port: 15555})
+		require.Error(t, err, "local start error")
+		require.Contains(t, err.Error(), "reserved", "local start error (%v)", err)
 	}
-	if _, err := exec.SetPort(context.Background(), manifest.Engine, 15555); err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("set-port error = %v, want reserved-port rejection", err)
+	{
+		_, err := exec.SetPort(context.Background(), manifest.Engine, 15555)
+		require.Error(t, err, "set-port error")
+		require.Contains(t, err.Error(), "reserved", "set-port error (%v)", err)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, controlStartPath, strings.NewReader(`{"engine":"fake","port":15555}`))
 	rec := httptest.NewRecorder()
 	(&controlServer{exec: exec}).handleStart(rec, req)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "reserved") {
-		t.Fatalf("remote start response = %d %q, want reserved-port rejection", rec.Code, rec.Body.String())
-	}
+	require.True(t, rec.Code == http.StatusInternalServerError, "remote start response")
+	require.Contains(t, rec.Body.String(), "reserved", "remote start response")
 }

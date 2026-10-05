@@ -6,8 +6,9 @@
 package main
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestParseProcStat pins the /proc/stat aggregate-line parse. The collector
@@ -55,16 +56,12 @@ func TestParseProcStat(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := parseProcStat(c.in)
-			if got.valid != c.wantValid {
-				t.Fatalf("valid = %v, want %v", got.valid, c.wantValid)
-			}
+			require.True(t, got.valid == c.wantValid, "valid")
 			if !c.wantValid {
 				return
 			}
-			if got.idle != c.wantIdle || got.total != c.wantTotal {
-				t.Fatalf("idle/total = %d/%d, want %d/%d",
-					got.idle, got.total, c.wantIdle, c.wantTotal)
-			}
+			require.True(t, got.idle == c.wantIdle, "idle/total")
+			require.True(t, got.total == c.wantTotal, "idle/total")
 		})
 	}
 }
@@ -123,8 +120,9 @@ func TestCPUUtilization(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := cpuUtilization(c.prev, c.cur); got != c.want {
-				t.Fatalf("cpuUtilization() = %d, want %d", got, c.want)
+			{
+				got := cpuUtilization(c.prev, c.cur)
+				require.True(t, got == c.want, "cpuUtilization() (%v)", got)
 			}
 		})
 	}
@@ -157,9 +155,7 @@ func TestInitialMemorySnapshot(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			snap := initialMemorySnapshot(c.readUsed)
-			if snap.MemUsedBytes != c.wantUsed {
-				t.Fatalf("MemUsedBytes = %d, want %d", snap.MemUsedBytes, c.wantUsed)
-			}
+			require.True(t, snap.MemUsedBytes == c.wantUsed, "MemUsedBytes")
 		})
 	}
 }
@@ -200,12 +196,8 @@ func TestParseMeminfoUsed(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			used, ok := parseMeminfoUsed(c.in)
-			if ok != c.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, c.wantOK)
-			}
-			if ok && used != c.wantUsed {
-				t.Fatalf("used = %d, want %d", used, c.wantUsed)
-			}
+			require.True(t, ok == c.wantOK, "ok (%v)", ok)
+			require.False(t, ok && used != c.wantUsed, "used (%v)", used)
 		})
 	}
 }
@@ -263,12 +255,8 @@ func TestParseNvidiaStatic(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got, uma := parseNvidiaStatic(c.in)
-			if uma != c.wantUMA {
-				t.Fatalf("unifiedMemory = %v, want %v", uma, c.wantUMA)
-			}
-			if !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("parseNvidiaStatic() = %+v, want %+v", got, c.want)
-			}
+			require.True(t, uma == c.wantUMA, "unifiedMemory (%v)", uma)
+			require.Equal(t, c.want, got, "parseNvidiaStatic()")
 		})
 	}
 }
@@ -330,12 +318,8 @@ func TestParseNvidiaDynamic(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got, samples := parseNvidiaDynamic(c.in)
-			if !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("parseNvidiaDynamic() = %+v, want %+v", got, c.want)
-			}
-			if samples != c.wantSamples {
-				t.Fatalf("parseNvidiaDynamic() samples = %d, want %d", samples, c.wantSamples)
-			}
+			require.Equal(t, c.want, got, "parseNvidiaDynamic()")
+			require.True(t, samples == c.wantSamples, "parseNvidiaDynamic() samples (%v)", samples)
 		})
 	}
 }
@@ -355,8 +339,9 @@ func TestIsNvidiaSmiNA(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := isNvidiaSmiNA(c.in); got != c.want {
-			t.Fatalf("isNvidiaSmiNA(%q) = %v, want %v", c.in, got, c.want)
+		{
+			got := isNvidiaSmiNA(c.in)
+			require.True(t, got == c.want, "isNvidiaSmiNA (%v)", got)
 		}
 	}
 }

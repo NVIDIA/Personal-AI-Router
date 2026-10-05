@@ -16,6 +16,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Both engines' port tests assert on an ownership gate opening or staying
@@ -41,7 +43,7 @@ func requireGateOpens(t *testing.T, gate <-chan struct{}, reason string) {
 	select {
 	case <-gate:
 	case <-time.After(gateSettleWindow):
-		t.Fatalf("ownership gate never opened: %s", reason)
+		require.FailNow(t, "test expectation failed", "ownership gate never opened: %s", reason)
 	}
 }
 
@@ -52,7 +54,7 @@ func requireGateStaysShut(t *testing.T, gate <-chan struct{}, reason string) {
 	t.Helper()
 	select {
 	case <-gate:
-		t.Fatalf("ownership gate opened when it should not have: %s", reason)
+		require.FailNow(t, "test expectation failed", "ownership gate opened when it should not have: %s", reason)
 	case <-time.After(gateQuietWindow):
 	}
 }
@@ -64,7 +66,7 @@ func requireGateShutNow(t *testing.T, gate <-chan struct{}, reason string) {
 	t.Helper()
 	select {
 	case <-gate:
-		t.Fatalf("ownership gate was already open: %s", reason)
+		require.FailNow(t, "test expectation failed", "ownership gate was already open: %s", reason)
 	default:
 	}
 }
@@ -77,7 +79,7 @@ func requireGateOpenNow(t *testing.T, gate <-chan struct{}, reason string) {
 	select {
 	case <-gate:
 	default:
-		t.Fatalf("ownership gate was not open: %s", reason)
+		require.FailNow(t, "test expectation failed", "ownership gate was not open: %s", reason)
 	}
 }
 

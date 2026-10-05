@@ -5,8 +5,10 @@ package main
 
 import (
 	"net/http"
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
 )
@@ -16,41 +18,29 @@ func TestProfilesMatchSharedEngines(t *testing.T) {
 	for i, profile := range profiles {
 		names[i] = profile.Name
 	}
-	if !slices.Equal(names, engines.Names()) {
-		t.Fatalf("proxy profiles = %v, want canonical engines %v", names, engines.Names())
-	}
+	require.Equal(t, engines.Names(), names, "proxy profiles must match the canonical engines")
 }
 
 func TestLlamaCPPProfile(t *testing.T) {
 	profile, ok := profileFor("llamacpp")
-	if !ok {
-		t.Fatal("llamacpp profile missing")
-	}
-	if role, ok := profile.roleFor("POST", "/v1/chat/completions"); !ok || role != roleInferencePOST {
-		t.Fatalf("chat route = %v, %v", role, ok)
-	}
-	if got := profile.normalizeModel("org/model:Q4_K_M"); got != "org/model:Q4_K_M" {
-		t.Fatalf("exact model id normalized to %q", got)
-	}
-	if profile.StandalonePort != 8080 || profile.ReservedPersistedPort != 8081 {
-		t.Fatalf("ports = facade %d, reserved %d", profile.StandalonePort, profile.ReservedPersistedPort)
-	}
+	require.True(t, ok, "llamacpp profile missing")
+	role, ok := profile.roleFor("POST", "/v1/chat/completions")
+	require.True(t, ok, "chat route missing")
+	require.Equal(t, roleInferencePOST, role, "chat route")
+	require.Equal(t, "org/model:Q4_K_M", profile.normalizeModel("org/model:Q4_K_M"), "model identifiers must match exactly")
+	require.Equal(t, 8080, profile.StandalonePort, "standalone facade port")
+	require.Equal(t, 8081, profile.ReservedPersistedPort, "reserved engine port")
 }
 
 func TestLlamaCPPModelListRoutes(t *testing.T) {
 	profile, ok := profileFor("llamacpp")
-	if !ok {
-		t.Fatal("llamacpp profile missing")
-	}
+	require.True(t, ok, "llamacpp profile missing")
 	for _, path := range []string{"/models", "/v1/models"} {
 		t.Run(path, func(t *testing.T) {
 			route, ok := profile.routeFor(http.MethodGet, path)
-			if !ok {
-				t.Fatalf("GET %s is not classified", path)
-			}
-			if route.Role != roleModelListOpenAIGET || route.upstreamPath() != "/models" {
-				t.Fatalf("GET %s route = %+v, want OpenAI model list at upstream /models", path, route)
-			}
+			require.True(t, ok, "model list route is not classified")
+			require.Equal(t, roleModelListOpenAIGET, route.Role, "model list route")
+			require.Equal(t, "/models", route.upstreamPath(), "upstream model list path")
 		})
 	}
 }
@@ -61,17 +51,11 @@ func TestLlamaCPPModelListRoutes(t *testing.T) {
 // /api/pull, /api/ps, /api/version and OPTIONS preflights keep working.
 func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	ollama, ok := profileFor("ollama")
-	if !ok {
-		t.Fatal("ollama profile missing")
-	}
+	require.True(t, ok, "ollama profile missing")
 	lmstudio, ok := profileFor("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio profile missing")
-	}
+	require.True(t, ok, "lmstudio profile missing")
 	llamacpp, ok := profileFor("llamacpp")
-	if !ok {
-		t.Fatal("llamacpp profile missing")
-	}
+	require.True(t, ok, "llamacpp profile missing")
 
 	for _, tc := range []struct {
 		name     string
@@ -107,12 +91,8 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			role, ok := tc.profile.roleFor(tc.method, tc.path)
-			if ok != tc.wantOK {
-				t.Fatalf("roleFor(%s %s) ok = %v, want %v", tc.method, tc.path, ok, tc.wantOK)
-			}
-			if ok && role != tc.wantRole {
-				t.Fatalf("roleFor(%s %s) role = %v, want %v", tc.method, tc.path, role, tc.wantRole)
-			}
+			require.True(t, ok == tc.wantOK, "roleFor (%v)", ok)
+			require.False(t, ok && role != tc.wantRole, "roleFor (%v)", role)
 		})
 	}
 }
@@ -121,15 +101,9 @@ func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	if !isInferenceRequest(ollama, "POST", "/api/generate") {
-		t.Error("ollama /api/generate must be inference")
-	}
-	if isInferenceRequest(lmstudio, "POST", "/api/generate") {
-		t.Error("lmstudio serves no native routes, so /api/generate is not inference for it")
-	}
-	if isInferenceRequest(ollama, "GET", "/api/tags") {
-		t.Error("a model list is not inference")
-	}
+	assert.True(t, isInferenceRequest(ollama, "POST", "/api/generate"), "ollama /api/generate must be inference")
+	assert.False(t, isInferenceRequest(lmstudio, "POST", "/api/generate"), "lmstudio serves no native routes, so /api/generate is not inference for it")
+	assert.False(t, isInferenceRequest(ollama, "GET", "/api/tags"), "a model list is not inference")
 }
 
 // One naming convention governs both the federated list's dedupe key and the
@@ -155,8 +129,9 @@ func TestModelNaming(t *testing.T) {
 		{lmstudio, "qwen3-8b:latest", "qwen3-8b:latest"},
 		{lmstudio, "", ""},
 	} {
-		if got := tc.profile.normalizeModel(tc.in); got != tc.want {
-			t.Errorf("%s normalizeModel(%q) = %q, want %q", tc.profile.Name, tc.in, got, tc.want)
+		{
+			got := tc.profile.normalizeModel(tc.in)
+			assert.True(t, got == tc.want, " (%v)", got)
 		}
 	}
 }
@@ -166,15 +141,9 @@ func TestNodeAdvertisesModelUsesTheProfilesNaming(t *testing.T) {
 	lmstudio, _ := profileFor("lmstudio")
 
 	tagged := Node{Models: []string{"llama3:latest"}}
-	if !nodeAdvertisesModel(ollama, tagged, "llama3") {
-		t.Error("ollama must treat an untagged request as the :latest tag")
-	}
-	if nodeAdvertisesModel(lmstudio, tagged, "llama3") {
-		t.Error("lmstudio matches identifiers exactly, so llama3 is not llama3:latest")
-	}
-	if nodeAdvertisesModel(ollama, Node{Models: []string{"llama3:latest"}}, "") {
-		t.Error("an empty request model advertises nothing")
-	}
+	assert.True(t, nodeAdvertisesModel(ollama, tagged, "llama3"), "ollama must treat an untagged request as the :latest tag")
+	assert.False(t, nodeAdvertisesModel(lmstudio, tagged, "llama3"), "lmstudio matches identifiers exactly, so llama3 is not llama3:latest")
+	assert.False(t, nodeAdvertisesModel(ollama, Node{Models: []string{"llama3:latest"}}, ""), "an empty request model advertises nothing")
 }
 
 // A path may legitimately be declared twice under different methods. roleFor
@@ -187,14 +156,19 @@ func TestRoleForFindsAPathDeclaredUnderTwoMethods(t *testing.T) {
 		{Path: "/v1/models", Role: roleModelListOpenAIGET},
 	}}
 
-	if role, ok := p.roleFor("GET", "/v1/models"); !ok || role != roleModelListOpenAIGET {
-		t.Errorf("GET /v1/models = (%v, %v), want the model-list role", role, ok)
+	{
+		role, ok := p.roleFor("GET", "/v1/models")
+		assert.True(t, ok, "GET /v1/models (%v, %v)", role, ok)
+		assert.True(t, role == roleModelListOpenAIGET, "GET /v1/models (%v, %v)", role, ok)
 	}
-	if role, ok := p.roleFor("POST", "/v1/models"); !ok || role != roleInferencePOST {
-		t.Errorf("POST /v1/models = (%v, %v), want the inference role", role, ok)
+	{
+		role, ok := p.roleFor("POST", "/v1/models")
+		assert.True(t, ok, "POST /v1/models (%v, %v)", role, ok)
+		assert.True(t, role == roleInferencePOST, "POST /v1/models (%v, %v)", role, ok)
 	}
-	if _, ok := p.roleFor("DELETE", "/v1/models"); ok {
-		t.Error("DELETE /v1/models classified; an undeclared method must forward verbatim")
+	{
+		_, ok := p.roleFor("DELETE", "/v1/models")
+		assert.False(t, ok, "DELETE /v1/models classified; an undeclared method must forward verbatim")
 	}
 }
 
@@ -205,9 +179,7 @@ func TestNoDuplicateRoutePerMethod(t *testing.T) {
 		seen := map[string]bool{}
 		for _, r := range p.Routes {
 			key := r.Role.method() + " " + r.Path
-			if seen[key] {
-				t.Errorf("%s declares %q twice; the second entry is unreachable", p.Name, key)
-			}
+			assert.False(t, seen[key], " (%v)", key)
 			seen[key] = true
 		}
 	}
@@ -221,17 +193,21 @@ func TestDerivedIdentifiers(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	if got := ollama.PortFile; got != "proxy-port.json" {
-		t.Errorf("ollama PortFile = %q, want the pre-unification name", got)
+	{
+		got := ollama.PortFile
+		assert.Equal(t, "proxy-port.json", got, "ollama PortFile")
 	}
-	if got := lmstudio.PortFile; got != "lmstudio-proxy-port.json" {
-		t.Errorf("lmstudio PortFile = %q", got)
+	{
+		got := lmstudio.PortFile
+		assert.Equal(t, "lmstudio-proxy-port.json", got, "lmstudio PortFile")
 	}
-	if got := upstreamUnreachableID(ollama, "peer-A"); got != "ollama-proxy:upstream-unreachable:peer-A" {
-		t.Errorf("ollama upstreamUnreachableID = %q", got)
+	{
+		got := upstreamUnreachableID(ollama, "peer-A")
+		assert.Equal(t, "ollama-proxy:upstream-unreachable:peer-A", got, "ollama upstreamUnreachableID")
 	}
-	if got := upstreamUnreachableID(lmstudio, "peer-A"); got != "lmstudio-proxy:upstream-unreachable:peer-A" {
-		t.Errorf("lmstudio upstreamUnreachableID = %q", got)
+	{
+		got := upstreamUnreachableID(lmstudio, "peer-A")
+		assert.Equal(t, "lmstudio-proxy:upstream-unreachable:peer-A", got, "lmstudio upstreamUnreachableID")
 	}
 }
 
@@ -262,9 +238,7 @@ func TestChooseStartupPort(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := chooseStartupPort(tc.profile, tc.flagPort, tc.ignorePersisted, tc.persisted, tc.hasPersisted)
-			if got != tc.want {
-				t.Fatalf("chooseStartupPort = %d, want %d", got, tc.want)
-			}
+			require.True(t, got == tc.want, "chooseStartupPort (%v)", got)
 		})
 	}
 }

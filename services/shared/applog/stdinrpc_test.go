@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNotifyEmitsOneNewlineTerminatedNotification pins the wire form. A parent
@@ -18,17 +21,11 @@ import (
 func TestNotifyEmitsOneNewlineTerminatedNotification(t *testing.T) {
 	var buf bytes.Buffer
 	params := map[string][]string{"addresses": {"10.172.54.70", "10.0.0.5"}}
-	if err := NewNotifier(&buf).Notify("nodeinfo:observed-addresses", params); err != nil {
-		t.Fatalf("notify: %v", err)
-	}
+	require.NoError(t, NewNotifier(&buf).Notify("nodeinfo:observed-addresses", params), "notify")
 
 	out := buf.String()
-	if !strings.HasSuffix(out, "\n") {
-		t.Errorf("frame is not newline-terminated: %q", out)
-	}
-	if got := strings.Count(out, "\n"); got != 1 {
-		t.Errorf("emitted %d newlines, want exactly one frame", got)
-	}
+	assert.True(t, strings.HasSuffix(out, "\n"), "frame is not newline-terminated")
+	assert.Equal(t, 1, strings.Count(out, "\n"))
 
 	var frame struct {
 		JSONRPC string              `json:"jsonrpc"`
@@ -36,22 +33,17 @@ func TestNotifyEmitsOneNewlineTerminatedNotification(t *testing.T) {
 		ID      json.RawMessage     `json:"id"`
 		Params  map[string][]string `json:"params"`
 	}
-	if err := json.Unmarshal([]byte(out), &frame); err != nil {
-		t.Fatalf("decode %q: %v", out, err)
-	}
-	if frame.JSONRPC != "2.0" {
-		t.Errorf("jsonrpc = %q, want 2.0", frame.JSONRPC)
-	}
-	if frame.Method != "nodeinfo:observed-addresses" {
-		t.Errorf("method = %q, want nodeinfo:observed-addresses", frame.Method)
-	}
+	require.NoError(t, json.Unmarshal([]byte(out), &frame), "decode")
+	assert.Equal(t, "2.0", frame.JSONRPC)
+	assert.Equal(t, "nodeinfo:observed-addresses", frame.Method)
 	// A notification carries no id: an id would make the parent's reader wait for
 	// a reply to a report nobody asked for.
-	if len(frame.ID) != 0 {
-		t.Errorf("frame carries an id (%s), want a notification", frame.ID)
-	}
-	if got := frame.Params["addresses"]; len(got) != 2 || got[0] != "10.172.54.70" || got[1] != "10.0.0.5" {
-		t.Errorf("params addresses = %v, want the two reported addresses", got)
+	assert.Len(t, frame.ID, 0, "frame carries an id")
+	{
+		got := frame.Params["addresses"]
+		require.Len(t, got, 2, "params addresses")
+		assert.Equal(t, "10.172.54.70", got[0], "params addresses")
+		assert.Equal(t, "10.0.0.5", got[1], "params addresses")
 	}
 }
 
@@ -60,19 +52,13 @@ func TestNotifyEmitsOneNewlineTerminatedNotification(t *testing.T) {
 func TestNilNotifierDropsFramesAndReportsSuccess(t *testing.T) {
 	var n *Notifier
 
-	if err := n.Notify("nodeinfo:observed-addresses", map[string][]string{"addresses": {"10.0.0.5"}}); err != nil {
-		t.Errorf("nil Notifier.Notify returned %v, want the frame dropped silently", err)
-	}
+	assert.NoError(t, n.Notify("nodeinfo:observed-addresses", map[string][]string{"addresses": {"10.0.0.5"}}), "nil Notifier.Notify returned")
 	frame := []byte(`{"jsonrpc":"2.0","id":1,"result":{"level":"debug"}}` + "\n")
 	got, err := n.Write(frame)
-	if err != nil {
-		t.Errorf("nil Notifier.Write returned %v, want the frame dropped silently", err)
-	}
+	assert.NoError(t, err, "nil Notifier.Write returned")
 	// The full length: a short write is an error to an io.Writer's caller, and
 	// StdinRPC's response path would report a failure that did not happen.
-	if got != len(frame) {
-		t.Errorf("nil Notifier.Write wrote %d, want %d", got, len(frame))
-	}
+	assert.Equal(t, len(frame), got, "nil Notifier.Write wrote")
 }
 
 // splitWriter forwards each write to buf in two halves with a scheduling point
@@ -115,13 +101,13 @@ func TestNotifierSerializesConcurrentNotifyAndWrite(t *testing.T) {
 				if w%2 == 0 {
 					params := map[string][]string{"addresses": {"10.172.54.70", "10.0.0.5", "192.168.240.1"}}
 					if err := n.Notify("nodeinfo:observed-addresses", params); err != nil {
-						t.Errorf("notify from writer %d: %v", w, err)
+						assert.Fail(t, "test expectation failed", "notify from writer")
 						return
 					}
 					continue
 				}
 				if _, err := n.Write(response); err != nil {
-					t.Errorf("write from writer %d: %v", w, err)
+					assert.Fail(t, "test expectation failed", "write from writer")
 					return
 				}
 			}
@@ -130,23 +116,15 @@ func TestNotifierSerializesConcurrentNotifyAndWrite(t *testing.T) {
 	wg.Wait()
 
 	out := buf.String()
-	if !strings.HasSuffix(out, "\n") {
-		t.Fatalf("stream does not end on a frame boundary: last 80 bytes = %q", tail(out, 80))
-	}
+	assert.True(t, strings.HasSuffix(out, "\n"), "stream does not end on a frame boundary: last 80 bytes")
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != writers*framesPerWriter {
-		t.Fatalf("read back %d frames, want %d", len(lines), writers*framesPerWriter)
-	}
+	require.Len(t, lines, writers*framesPerWriter, "read back")
 	for i, line := range lines {
 		var frame struct {
 			JSONRPC string `json:"jsonrpc"`
 		}
-		if err := json.Unmarshal([]byte(line), &frame); err != nil {
-			t.Fatalf("frame %d is not one complete JSON object (%v): %q", i, err, line)
-		}
-		if frame.JSONRPC != "2.0" {
-			t.Fatalf("frame %d jsonrpc = %q, want 2.0", i, frame.JSONRPC)
-		}
+		require.NoError(t, json.Unmarshal([]byte(line), &frame), "frame %d", i)
+		assert.Equal(t, "2.0", frame.JSONRPC)
 	}
 }
 

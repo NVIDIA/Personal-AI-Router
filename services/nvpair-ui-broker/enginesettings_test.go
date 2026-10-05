@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
@@ -49,9 +52,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	listeners := []net.Listener{}
 	for i := range ports {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		listeners = append(listeners, ln)
 		ports[i] = ln.Addr().(*net.TCPAddr).Port
 	}
@@ -170,12 +171,8 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 					h.launchMu.Unlock()
 					if h.failResultSave.Load() {
 						journal, _ := h.b.engineSettingsPath()
-						if err := os.Remove(journal); err != nil {
-							t.Error(err)
-						}
-						if err := os.Mkdir(journal, 0700); err != nil {
-							t.Error(err)
-						}
+						assert.NoError(t, os.Remove(journal))
+						assert.NoError(t, os.Mkdir(journal, 0700))
 					}
 					_ = codec.Respond(msg.ID, current)
 				}(msg)
@@ -190,9 +187,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 func (h *settingsHarness) request(t *testing.T) settings.Request {
 	t.Helper()
 	s, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "ollama"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return settings.Request{Engine: "ollama", ExpectedRevision: s.Revision, RequestID: settingsID(), Settings: s.Settings}
 }
 
@@ -200,51 +195,53 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h.applies.Load() != 0 || receipt.Phase != "succeeded" {
-		t.Fatal("no-op mutated runtime")
-	}
+	require.NoError(t, err)
+	require.Equal(t, int32(0), h.applies.Load(), "no-op mutated runtime")
+	require.Equal(t, "succeeded", receipt.Phase, "no-op mutated runtime")
 	p = h.request(t)
 	p.Settings.LaunchText += " --parallel 2"
 	receipt, err = h.b.applyEngineSettings(context.Background(), p, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receipt.Revision != p.ExpectedRevision+1 || receipt.Phase != "succeeded" || h.applies.Load() != 1 {
-		t.Fatalf("receipt=%+v applies=%d", receipt, h.applies.Load())
-	}
-	if _, err = h.b.applyEngineSettings(context.Background(), p, ""); err != nil || h.applies.Load() != 1 {
-		t.Fatal("duplicate restarted")
+	require.NoError(t, err)
+	require.True(t, receipt.Revision == p.ExpectedRevision+1, "receipt (%v)", receipt)
+	require.Equal(t, "succeeded", receipt.Phase, "receipt (%v)", receipt)
+	require.Equal(t, int32(1), h.applies.Load(), "receipt (%v)", receipt)
+	{
+		_, err = h.b.applyEngineSettings(context.Background(), p, "")
+		require.NoError(t, err, "duplicate restarted")
+		require.Equal(t, int32(1), h.applies.Load(), "duplicate restarted")
 	}
 	reused := p
 	reused.Settings.LaunchText += " --different"
-	if _, err = h.b.applyEngineSettings(context.Background(), reused, ""); err == nil {
-		t.Fatal("reused identifier accepted")
+	{
+		_, err = h.b.applyEngineSettings(context.Background(), reused, "")
+		require.Error(t, err, "reused identifier accepted")
 	}
 	p.RequestID = settingsID()
-	if _, err = h.b.applyEngineSettings(context.Background(), p, ""); err == nil {
-		t.Fatal("stale revision accepted")
+	{
+		_, err = h.b.applyEngineSettings(context.Background(), p, "")
+		require.Error(t, err, "stale revision accepted")
 	}
 	p = h.request(t)
 	p.Settings.LaunchText += " --invalid"
 	h.fail.Store(true)
 	receipt, err = h.b.applyEngineSettings(context.Background(), p, "")
-	if err != nil || receipt.Phase != "failed" {
-		t.Fatalf("failure receipt %+v %v", receipt, err)
-	}
+	require.NoError(t, err, "failure receipt (%v, %v)", receipt, err)
+	require.Equal(t, "failed", receipt.Phase, "failure receipt (%v, %v)", receipt, err)
 	s := h.b.engineSettings["ollama"].Snapshot
-	if s.Settings != p.Settings || s.Running || s.AppliedRevision >= s.Revision || s.Error == "" {
-		t.Fatalf("untruthful failed snapshot: %+v", s)
-	}
+	require.True(t, s.Settings == p.Settings, "untruthful failed snapshot (%v)", s)
+	require.False(t, s.Running, "untruthful failed snapshot (%v)", s)
+	require.Less(t, s.AppliedRevision, s.Revision, "untruthful failed snapshot (%v)", s)
+	require.NotEqual(t, "", s.Error, "untruthful failed snapshot (%v)", s)
 	h.fail.Store(false)
 	p = h.request(t)
-	if _, err = h.b.applyEngineSettings(context.Background(), p, ""); err != nil {
-		t.Fatal(err)
+	{
+		_, err = h.b.applyEngineSettings(context.Background(), p, "")
+		require.NoError(t, err)
 	}
-	if s := h.b.engineSettings["ollama"].Snapshot; !s.Running || s.Phase != "succeeded" {
-		t.Fatalf("retry lost resume intent: %+v", s)
+	{
+		s := h.b.engineSettings["ollama"].Snapshot
+		require.True(t, s.Running, "retry lost resume intent (%v)", s)
+		require.Equal(t, "succeeded", s.Phase, "retry lost resume intent (%v)", s)
 	}
 }
 
@@ -270,16 +267,15 @@ func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
 			h.loseProxyOnStop.Store(!tc.proxyReady)
 			p.Settings.LaunchText += " --new-option"
 			receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
-			if err != nil || receipt.Phase != "failed" {
-				t.Fatalf("expected failed receipt, got %+v, %v", receipt, err)
-			}
+			require.NoError(t, err, "expected failed receipt (%v, %v)", receipt, err)
+			require.Equal(t, "failed", receipt.Phase, "expected failed receipt (%v, %v)", receipt, err)
 			registered := h.b.regCache.Snapshot()
 			if tc.advertised {
-				if len(registered) != 1 || registered[0].Service != noderec.ServiceOllama || registered[0].Port != oldPort {
-					t.Fatalf("running engine lost registration: %+v", registered)
-				}
-			} else if len(registered) != 0 {
-				t.Fatalf("unavailable service advertised: %+v", registered)
+				require.Len(t, registered, 1, "running engine lost registration")
+				require.True(t, registered[0].Service == noderec.ServiceOllama, "running engine lost registration (%v)", registered)
+				require.True(t, registered[0].Port == oldPort, "running engine lost registration (%v)", registered)
+			} else {
+				require.Len(t, registered, 0, "unavailable service advertised")
 			}
 		})
 	}
@@ -301,15 +297,9 @@ func TestSettingsCoordinatorSerializesAndCancelsQueuedRequests(t *testing.T) {
 	canceled := make(chan error, 1)
 	go func() { _, err := h.b.applyEngineSettings(ctx, other, ""); canceled <- err }()
 	close(h.release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-canceled; err == nil {
-		t.Fatal("canceled queued mutation accepted")
-	}
-	if h.applies.Load() != 1 {
-		t.Fatal("concurrent request mutated runtime")
-	}
+	require.NoError(t, <-done)
+	require.Error(t, <-canceled, "canceled queued mutation accepted")
+	require.Equal(t, int32(1), h.applies.Load(), "concurrent request mutated runtime")
 }
 
 // An apply stops and restarts an engine, which can run for minutes. Holding the
@@ -332,17 +322,13 @@ func TestSettingsApplyDoesNotBlockUnrelatedReads(t *testing.T) {
 	}()
 	select {
 	case err := <-read:
-		if err != nil {
-			t.Fatalf("read during an in-flight apply failed: %v", err)
-		}
+		require.NoError(t, err, "read during an in-flight apply failed")
 	case <-time.After(10 * time.Second):
-		t.Fatal("engine settings read blocked behind an in-flight apply")
+		require.FailNow(t, "test expectation failed", "engine settings read blocked behind an in-flight apply")
 	}
 
 	close(h.release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, <-done)
 }
 
 func TestSettingsResultPersistenceFailureReturnsFailedReceipt(t *testing.T) {
@@ -351,9 +337,9 @@ func TestSettingsResultPersistenceFailureReturnsFailedReceipt(t *testing.T) {
 	p.Settings.LaunchText += " --new"
 	h.failResultSave.Store(true)
 	receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
-	if err != nil || receipt.Phase != "failed" || h.b.engineSettings["ollama"].Snapshot.Phase != "failed" {
-		t.Fatalf("result persistence failure claimed success: %+v %v", receipt, err)
-	}
+	require.NoError(t, err, "result persistence failure claimed success (%v, %v)", receipt, err)
+	require.Equal(t, "failed", receipt.Phase, "result persistence failure claimed success (%v, %v)", receipt, err)
+	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "result persistence failure claimed success (%v, %v)", receipt, err)
 }
 
 func TestSettingsJournalFailureAndInterruptedRecovery(t *testing.T) {
@@ -361,41 +347,32 @@ func TestSettingsJournalFailureAndInterruptedRecovery(t *testing.T) {
 	p := h.request(t)
 	p.Settings.LaunchText += " --new"
 	path, _ := h.b.engineSettingsPath()
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Mkdir(path, 0700))
+	{
+		_, err := h.b.applyEngineSettings(context.Background(), p, "")
+		require.Error(t, err, "runtime changed despite failed journal write")
+		require.Equal(t, int32(0), h.applies.Load(), "runtime changed despite failed journal write")
 	}
-	if err := os.Mkdir(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.b.applyEngineSettings(context.Background(), p, ""); err == nil || h.applies.Load() != 0 {
-		t.Fatal("runtime changed despite failed journal write")
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(path))
 	r := h.b.engineSettings["ollama"]
 	r.Snapshot.Settings = p.Settings
 	r.Snapshot.Revision++
 	r.Snapshot.Phase = "applying"
 	r.Resume = true
 	r.Explicit = true
-	if err := h.b.saveEngineSettingsLocked(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, h.b.saveEngineSettingsLocked())
 	// Simulate a fresh coordinator after its journal was written but component
 	// writes/rebind/start had not completed. The same replay handles later cuts.
 	h.b.engineSettingsLoaded = false
-	if !h.b.recoverEngineSettings() {
-		t.Fatal("recovery refused")
-	}
-	if h.applies.Load() != 1 || h.b.engineSettings["ollama"].Snapshot.Phase != "succeeded" {
-		t.Fatal("accepted operation not recovered")
-	}
-	if !h.b.recoverEngineSettings() || h.applies.Load() != 1 {
-		t.Fatal("completed operation replayed")
-	}
-	if _, ok := h.b.explicitEngineSettings("ollama"); !ok {
-		t.Fatal("explicit startup preference lost")
+	require.True(t, h.b.recoverEngineSettings(), "recovery refused")
+	require.Equal(t, int32(1), h.applies.Load(), "accepted operation not recovered")
+	require.Equal(t, "succeeded", h.b.engineSettings["ollama"].Snapshot.Phase, "accepted operation not recovered")
+	require.True(t, h.b.recoverEngineSettings(), "completed operation replayed")
+	require.Equal(t, int32(1), h.applies.Load(), "completed operation replayed")
+	{
+		_, ok := h.b.explicitEngineSettings("ollama")
+		require.True(t, ok, "explicit startup preference lost")
 	}
 }
 
@@ -404,46 +381,36 @@ func TestSettingsPortValidationIncludesStoppedEnginesAndAliases(t *testing.T) {
 	p := h.request(t)
 	p.Settings.ProxyPort = p.Settings.ServerPort
 	preview, err := h.b.previewEngineSettings(context.Background(), p, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(preview.Errors) == 0 {
-		t.Fatal("equal ports accepted")
-	}
+	require.NoError(t, err)
+	require.NotEqual(t, 0, len(preview.Errors), "equal ports accepted")
 	p = h.request(t)
 	p.Settings.ServerPort = engineControlPort
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
-	if err != nil || len(preview.Errors) == 0 {
-		t.Fatalf("reserved control port accepted: %v %v", preview, err)
-	}
+	require.NoError(t, err, "reserved control port accepted (%v, %v)", preview, err)
+	require.NotEqual(t, 0, len(preview.Errors), "reserved control port accepted (%v, %v)", preview, err)
 	p = h.request(t)
 	h.otherEnginePort.Store(int32(p.Settings.ServerPort))
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
-	if err != nil || len(preview.Errors) == 0 {
-		t.Fatalf("stopped engine reservation ignored: %v %v", preview, err)
-	}
+	require.NoError(t, err, "stopped engine reservation ignored (%v, %v)", preview, err)
+	require.NotEqual(t, 0, len(preview.Errors), "stopped engine reservation ignored (%v, %v)", preview, err)
 	h.otherEnginePort.Store(0)
 	h.b.ollamaHostAliasMu.Lock()
 	h.b.ollamaHostAlias.Port = p.Settings.ProxyPort
 	h.b.ollamaHostAliasMu.Unlock()
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
-	if err != nil || len(preview.Errors) == 0 {
-		t.Fatalf("proxy alias reservation ignored: %v %v", preview, err)
-	}
+	require.NoError(t, err, "proxy alias reservation ignored (%v, %v)", preview, err)
+	require.NotEqual(t, 0, len(preview.Errors), "proxy alias reservation ignored (%v, %v)", preview, err)
 }
 
 func TestSettingsMigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {
 	h := newSettingsHarness(t)
 	path, _ := h.b.engineSettingsPath()
-	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), []byte(`{"port":26080}`), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), []byte(`{"port":26080}`), 0600))
 	h.b.migrateLegacyEngineSettings()
 	config, ok := h.b.explicitEngineSettings("ollama")
-	if !ok || config.ProxyPort != 26080 {
-		t.Fatalf("legacy choice lost: %+v %v", config, ok)
-	}
-	if !h.b.prepareExplicitEngineSettings("ollama") || h.b.ollamaState().startupPort.Load() != 26080 || h.b.ollamaState().managedFacade.Load() {
-		t.Fatal("automatic startup overrode saved proxy choice")
-	}
+	require.True(t, ok, "legacy choice lost (%v, %v)", config, ok)
+	require.Equal(t, 26080, config.ProxyPort, "legacy choice lost (%v, %v)", config, ok)
+	require.True(t, h.b.prepareExplicitEngineSettings("ollama"), "automatic startup overrode saved proxy choice")
+	require.Equal(t, int32(26080), h.b.ollamaState().startupPort.Load(), "automatic startup overrode saved proxy choice")
+	require.False(t, h.b.ollamaState().managedFacade.Load(), "automatic startup overrode saved proxy choice")
 }

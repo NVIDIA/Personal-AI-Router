@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/schedulerwire"
 )
@@ -39,16 +41,10 @@ func startSchedulerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan js
 	cmd := exec.Command(schedulerBin, args...)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("scheduler stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "scheduler stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("scheduler stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start scheduler: %v", err)
-	}
+	require.NoError(t, err, "scheduler stdout pipe")
+	require.NoError(t, cmd.Start(), "start scheduler")
 	ch := startMsgReader(stdout)
 	var cleanupOnce sync.Once
 	return stdin, ch, func() {
@@ -75,9 +71,7 @@ func waitForPriorityPair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.D
 	for {
 		select {
 		case msg, ok := <-ch:
-			if !ok {
-				t.Fatal("stream closed before both schedule:priority outputs")
-			}
+			require.True(t, ok, "stream closed before both schedule:priority outputs")
 			if msg.Method != "schedule:priority" {
 				continue
 			}
@@ -92,7 +86,7 @@ func waitForPriorityPair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.D
 				return got
 			}
 		case <-to:
-			t.Fatalf("timed out (%s) waiting for both schedule:priority outputs; got %v", timeout, got)
+			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for both schedule:priority outputs; got %v", timeout, got)
 		}
 	}
 }
@@ -115,13 +109,9 @@ func assertSchedulePair(t *testing.T, got map[string][]string, want []string) {
 
 func assertScheduleOrder(t *testing.T, engine string, got, want []string) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("%s order = %v, want %v", engine, got, want)
-	}
+	require.Len(t, got, len(want), " (%v, %v, %v)", engine, got, want)
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("%s order = %v, want %v", engine, got, want)
-		}
+		require.True(t, got[i] == want[i], " (%v, %v, %v)", engine, got, want)
 	}
 }
 
@@ -219,18 +209,11 @@ func assertPriorityPair(
 	for _, engine := range []string{"ollama", "lmstudio"} {
 		priority := got[engine]
 		assertScheduleOrder(t, engine, priority.Nodes, wantOrder)
-		if len(priority.Ranks) != len(wantPressure) {
-			t.Fatalf("%s ranks = %+v, want pressure for %v", engine, priority.Ranks, wantPressure)
-		}
+		require.Len(t, priority.Ranks, len(wantPressure), " (%v, %v)", engine, wantPressure)
 		for _, rank := range priority.Ranks {
 			want, ok := wantPressure[rank.ID]
-			if !ok {
-				t.Fatalf("%s emitted unexpected rank %+v", engine, rank)
-			}
-			if rank.GPUPressure != want {
-				t.Fatalf("%s gpuPressure[%s] = %d, want %d; ranks=%+v",
-					engine, rank.ID, rank.GPUPressure, want, priority.Ranks)
-			}
+			require.True(t, ok, " (%v, %v)", engine, rank)
+			require.True(t, rank.GPUPressure == want, " (%v, %v)", engine, want)
 		}
 	}
 }
@@ -275,9 +258,8 @@ func TestSchedulerSyntheticMixedEngineBurst(t *testing.T) {
 			maxDepth = depth
 		}
 	}
-	if minDepth <= 3 || maxDepth-minDepth > 1 {
-		t.Fatalf("50-job mixed-engine depths = %v, want all >3 with skew <=1", depths)
-	}
+	require.True(t, minDepth > 3, "50-job mixed-engine depths (%v)", depths)
+	require.True(t, maxDepth-minDepth <= 1, "50-job mixed-engine depths (%v)", depths)
 }
 
 func rankSyntheticDepths(depths map[string]int) []string {
@@ -323,9 +305,7 @@ func TestProxyConcurrentBurstDistribution(t *testing.T) {
 
 func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (map[string]int, []string) {
 	t.Helper()
-	if len(pending) != len(pressure) {
-		t.Fatalf("pending/pressure length mismatch: %d != %d", len(pending), len(pressure))
-	}
+	require.Len(t, pending, len(pressure), "pending/pressure length mismatch")
 
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -458,7 +438,7 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 		case id := <-hits:
 			counts[id]++
 		case <-hitTimer.C:
-			t.Fatalf("timed out waiting for %d blocked upstream hits; got %v", requests, counts)
+			require.FailNow(t, "test expectation failed", "timed out waiting for %d blocked upstream hits; got %v", requests, counts)
 		}
 	}
 
@@ -468,11 +448,9 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 	for range requests {
 		select {
 		case err := <-results:
-			if err != nil {
-				t.Fatalf("burst request failed: %v", err)
-			}
+			require.NoError(t, err, "burst request failed")
 		case <-resultTimer.C:
-			t.Fatalf("timed out waiting for %d burst responses", requests)
+			require.FailNow(t, "test expectation failed", "timed out waiting for %d burst responses", requests)
 		}
 	}
 	return counts, ids
@@ -486,14 +464,10 @@ func callBrokerRPC(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, i
 		"method":  method,
 		"params":  params,
 	})
-	if err != nil {
-		t.Fatalf("marshal %s request: %v", method, err)
-	}
+	require.NoError(t, err, "marshal (%v, %v)", method, err)
 	writeRawFrame(t, stdin, string(frame))
 	response := waitForResponseID(t, msgs, id, 5*time.Second)
-	if response.Error != nil {
-		t.Fatalf("%s rejected: %d %s", method, response.Error.Code, response.Error.Message)
-	}
+	require.Nil(t, response.Error, " (%v)", method)
 }
 
 func assertBurstTotalsSkew(
@@ -516,10 +490,7 @@ func assertBurstTotalsSkew(
 			maxTotal = total
 		}
 	}
-	if maxTotal-minTotal > wantMaxSkew {
-		t.Fatalf("burst assignments did not balance: assigned=%v totals=%v, max skew %d",
-			counts, totals, wantMaxSkew)
-	}
+	require.LessOrEqual(t, maxTotal-minTotal, wantMaxSkew, "burst assignments did not balance: assigned (%v, %v, %v)", counts, totals, wantMaxSkew)
 }
 
 // TestProxySetPriorityViaBroker: the proxy's node/set-priority is reachable
@@ -541,12 +512,11 @@ func TestProxySetPriorityViaBroker(t *testing.T) {
 	var r struct {
 		Count int `json:"count"`
 	}
-	if err := json.Unmarshal(resp.Result, &r); err != nil {
-		t.Fatalf("node/set-priority result = %s (err %v)", resp.Result, err)
+	{
+		err := json.Unmarshal(resp.Result, &r)
+		require.NoError(t, err, "node/set-priority result")
 	}
-	if r.Count != 3 {
-		t.Fatalf("node/set-priority count = %d, want 3", r.Count)
-	}
+	require.Equal(t, 3, r.Count, "node/set-priority count")
 	t.Logf("proxy accepted priority list of %d nodes via broker relay", r.Count)
 }
 
@@ -588,15 +558,17 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 		`{"jsonrpc":"2.0","id":90,"method":"lmstudio-proxy:node/add-manual","params":{"id":"real-lm","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["chat-model"]}}`,
 		realPort,
 	))
-	if resp := waitForResponse(t, msgs, 5*time.Second); resp.Error != nil {
-		t.Fatalf("lmstudio-proxy:node/add-manual rejected: %d %s", resp.Error.Code, resp.Error.Message)
+	{
+		resp := waitForResponse(t, msgs, 5*time.Second)
+		require.Nil(t, resp.Error, "lmstudio-proxy:node/add-manual rejected")
 	}
 
 	// Priority puts a peer that never advertised LM Studio first. The proxy must
 	// skip it and route to the discovered real-lm node.
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":91,"method":"lmstudio-proxy:node/set-priority","params":{"generation":1,"nodes":["no-lm-peer","real-lm"]}}`)
-	if resp := waitForResponse(t, msgs, 5*time.Second); resp.Error != nil {
-		t.Fatalf("lmstudio-proxy:node/set-priority rejected: %d %s", resp.Error.Code, resp.Error.Message)
+	{
+		resp := waitForResponse(t, msgs, 5*time.Second)
+		require.Nil(t, resp.Error, "lmstudio-proxy:node/set-priority rejected")
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -605,20 +577,14 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 		"application/json",
 		bytes.NewReader([]byte(`{"model":"chat-model","messages":[]}`)),
 	)
-	if err != nil {
-		t.Fatalf("chat request failed: %v", err)
-	}
+	require.NoError(t, err, "chat request failed")
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("proxy status %d, want 200", resp.StatusCode)
-	}
+	require.True(t, resp.StatusCode == http.StatusOK, "proxy status")
 
 	hitsMu.Lock()
 	defer hitsMu.Unlock()
-	if hits["real-lm"] != 1 {
-		t.Fatalf("real-lm hits = %d, want 1 (priority phantom should be ignored)", hits["real-lm"])
-	}
+	require.Equal(t, 1, hits["real-lm"], "real-lm hits")
 }
 
 // TestBrokerSpawnsScheduler: with the scheduler adopted, the broker still
@@ -638,7 +604,9 @@ func TestBrokerSpawnsScheduler(t *testing.T) {
 	var r struct {
 		Level string `json:"level"`
 	}
-	if err := json.Unmarshal(resp.Result, &r); err != nil || r.Level != "debug" {
-		t.Fatalf("log/set-level result = %s (err %v), want level=debug", resp.Result, err)
+	{
+		err := json.Unmarshal(resp.Result, &r)
+		require.NoError(t, err, "log/set-level result")
+		require.Equal(t, "debug", r.Level, "log/set-level result (%v)", err)
 	}
 }

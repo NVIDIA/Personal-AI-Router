@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // A peer whose node-info address silently drops packets is the failure these
@@ -46,21 +48,19 @@ func TestNodeInfoOutageIsStatedOnceAtEachEnd(t *testing.T) {
 	for range 3 {
 		d.noteNodeInfo("peer-uuid", "10.0.0.5:14300", false)
 	}
-	if got := strings.Count(logs.String(), "node-info is not answering"); got != 1 {
-		t.Fatalf("outage reported %d times, want exactly 1:\n%s", got, logs.String())
+	{
+		got := strings.Count(logs.String(), "node-info is not answering")
+		require.Equal(t, 1, got, "outage reported")
 	}
-	if !strings.Contains(logs.String(), "level=WARN") {
-		t.Fatalf("an unreachable peer must be visible above debug:\n%s", logs.String())
-	}
-	if !strings.Contains(logs.String(), "10.0.0.5:14300") {
-		t.Fatalf("the report must name where the node was asked:\n%s", logs.String())
-	}
+	require.Contains(t, logs.String(), "level=WARN", "an unreachable peer must be visible above debug")
+	require.Contains(t, logs.String(), "10.0.0.5:14300", "the report must name where the node was asked")
 
 	for range 2 {
 		d.noteNodeInfo("peer-uuid", "10.0.0.5:14300", true)
 	}
-	if got := strings.Count(logs.String(), "node-info is answering again"); got != 1 {
-		t.Fatalf("recovery reported %d times, want exactly 1:\n%s", got, logs.String())
+	{
+		got := strings.Count(logs.String(), "node-info is answering again")
+		require.Equal(t, 1, got, "recovery reported")
 	}
 }
 
@@ -73,9 +73,7 @@ func TestNodeInfoSilenceWhenNothingChanges(t *testing.T) {
 	for range 5 {
 		d.noteNodeInfo("peer-uuid", "10.0.0.5:14300", true)
 	}
-	if logs.Len() != 0 {
-		t.Fatalf("a healthy peer must log nothing:\n%s", logs.String())
-	}
+	require.Equal(t, 0, logs.Len(), "a healthy peer must log nothing")
 }
 
 // TestNodeInfoConnectGivesUpBeforeTheRequestBudget covers the split itself. The
@@ -84,31 +82,24 @@ func TestNodeInfoSilenceWhenNothingChanges(t *testing.T) {
 // is the case that mattered: it must end at the connect budget rather than
 // consume the whole request timeout the enrichment client allows.
 func TestNodeInfoConnectGivesUpBeforeTheRequestBudget(t *testing.T) {
-	if nodeInfoDialTimeout >= nodeInfoFetchTimeout {
-		t.Fatalf("a connect budget of %v inside a request budget of %v splits nothing",
-			nodeInfoDialTimeout, nodeInfoFetchTimeout)
-	}
+	require.Less(t, nodeInfoDialTimeout, nodeInfoFetchTimeout, "a connect budget of")
 
 	start := time.Now()
 	conn, err := nodeInfoTransport(nil).DialContext(context.Background(), "tcp", "192.0.2.1:14300")
 	if err == nil {
 		_ = conn.Close()
-		t.Fatal("nothing may answer at a documentation address")
+		require.FailNow(t, "test expectation failed", "nothing may answer at a documentation address")
 	}
-	if elapsed := time.Since(start); elapsed >= nodeInfoFetchTimeout {
-		t.Fatalf("connect took %v; it must give up at the connect budget (%v), not the request budget (%v)",
-			elapsed, nodeInfoDialTimeout, nodeInfoFetchTimeout)
+	{
+		elapsed := time.Since(start)
+		require.Less(t, elapsed, nodeInfoFetchTimeout, "connect took (%v, %v, %v)", elapsed, nodeInfoDialTimeout, nodeInfoFetchTimeout)
 	}
 }
 
 func TestNodeInfoTransportBoundsConnectionsPerHost(t *testing.T) {
 	transport := nodeInfoTransport(nil)
-	if transport.MaxConnsPerHost != 1 {
-		t.Fatalf("MaxConnsPerHost = %d, want 1", transport.MaxConnsPerHost)
-	}
-	if transport.MaxIdleConnsPerHost != 1 {
-		t.Fatalf("MaxIdleConnsPerHost = %d, want 1", transport.MaxIdleConnsPerHost)
-	}
+	require.Equal(t, 1, transport.MaxConnsPerHost)
+	require.Equal(t, 1, transport.MaxIdleConnsPerHost)
 }
 
 func TestNodeInfoConcurrentFetchesGetIndependentRequestBudgets(t *testing.T) {
@@ -129,13 +120,9 @@ func TestNodeInfoConcurrentFetchesGetIndependentRequestBudgets(t *testing.T) {
 	defer server.Close()
 
 	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
+	require.NoError(t, err, "parse server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
+	require.NoError(t, err, "parse server port")
 	transport := nodeInfoTransport(nil)
 	defer transport.CloseIdleConnections()
 	d := &daemon{http: &http.Client{Timeout: 300 * time.Millisecond, Transport: transport}}
@@ -157,24 +144,22 @@ func TestNodeInfoConcurrentFetchesGetIndependentRequestBudgets(t *testing.T) {
 	close(results)
 
 	for ok := range results {
-		if !ok {
-			t.Fatal("a queued healthy request consumed its timeout before reaching the peer")
-		}
+		require.True(t, ok, "a queued healthy request consumed its timeout before reaching the peer")
 	}
-	if got := requests.Load(); got != 2 {
-		t.Fatalf("server received %d requests, want 2", got)
+	{
+		got := requests.Load()
+		require.Equal(t, int32(2), got, "server received")
 	}
-	if got := connections.Load(); got != 1 {
-		t.Fatalf("requests used %d TCP connections, want 1 serialized connection", got)
+	{
+		got := connections.Load()
+		require.Equal(t, int32(1), got, "requests used")
 	}
 }
 
 func TestNodeInfoOriginGateHonorsCanceledWaiter(t *testing.T) {
 	var gate nodeInfoOriginGate
 	release, acquired := gate.acquire(context.Background(), "http://127.0.0.1:14318")
-	if !acquired {
-		t.Fatal("first origin request did not acquire the gate")
-	}
+	require.True(t, acquired, "first origin request did not acquire the gate")
 	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -182,7 +167,7 @@ func TestNodeInfoOriginGateHonorsCanceledWaiter(t *testing.T) {
 	waitingRelease, waitingAcquired := gate.acquire(ctx, "http://127.0.0.1:14318")
 	if waitingAcquired {
 		waitingRelease()
-		t.Fatal("canceled origin request acquired the occupied gate")
+		require.FailNow(t, "test expectation failed", "canceled origin request acquired the occupied gate")
 	}
 }
 
@@ -206,25 +191,22 @@ func TestNodeInfoErrorBodyIsDrainedForConnectionReuse(t *testing.T) {
 	defer server.Close()
 
 	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
+	require.NoError(t, err, "parse server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
+	require.NoError(t, err, "parse server port")
 	transport := nodeInfoTransport(nil)
 	defer transport.CloseIdleConnections()
 	d := &daemon{http: &http.Client{Timeout: time.Second, Transport: transport}}
 
-	if _, ok := d.fetchNodeInfo(serverURL.Hostname(), port); ok {
-		t.Fatal("HTTP 503 unexpectedly succeeded")
+	{
+		_, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
+		require.False(t, ok, "HTTP 503 unexpectedly succeeded")
 	}
 	info, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
-	if !ok || info.HostUUID != "peer-uuid" {
-		t.Fatalf("second fetch = %+v,%v, want successful peer response", info, ok)
-	}
-	if got := connections.Load(); got != 1 {
-		t.Fatalf("requests used %d TCP connections, want 1 reused connection", got)
+	require.True(t, ok, "second fetch (%v, %v)", info, ok)
+	require.Equal(t, "peer-uuid", info.HostUUID, "second fetch (%v, %v)", info, ok)
+	{
+		got := connections.Load()
+		require.Equal(t, int32(1), got, "requests used")
 	}
 }

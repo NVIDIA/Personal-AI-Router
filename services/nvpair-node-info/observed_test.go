@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/applog"
 	"nvpair-shared/noderec"
 )
@@ -29,9 +31,7 @@ func (c stubConn) RemoteAddr() net.Addr { return c.remote }
 func tcpAddr(t *testing.T, s string) *net.TCPAddr {
 	t.Helper()
 	a, err := net.ResolveTCPAddr("tcp", s)
-	if err != nil {
-		t.Fatalf("resolve %s: %v", s, err)
-	}
+	require.NoError(t, err, "resolve (%v, %v)", s, err)
 	return a
 }
 
@@ -43,9 +43,8 @@ func TestObserverRecordsTheAddressARemotePeerReached(t *testing.T) {
 	}, http.StateActive)
 
 	got := o.addresses()
-	if len(got) != 1 || got[0] != "10.172.54.70" {
-		t.Fatalf("addresses = %v, want [10.172.54.70]", got)
-	}
+	require.Len(t, got, 1, "addresses")
+	require.Equal(t, "10.172.54.70", got[0], "addresses (%v)", got)
 }
 
 // A loopback caller is this machine talking to itself and proves nothing about
@@ -57,8 +56,9 @@ func TestObserverIgnoresLoopbackPeers(t *testing.T) {
 		remote: tcpAddr(t, "127.0.0.1:51000"),
 	}, http.StateActive)
 
-	if got := o.addresses(); len(got) != 0 {
-		t.Fatalf("addresses = %v, want none", got)
+	{
+		got := o.addresses()
+		require.Len(t, got, 0, "addresses")
 	}
 }
 
@@ -72,8 +72,9 @@ func TestObserverIgnoresConnectionsThatSendNothing(t *testing.T) {
 	o.connState(conn, http.StateNew)
 	o.connState(conn, http.StateClosed)
 
-	if got := o.addresses(); len(got) != 0 {
-		t.Fatalf("addresses = %v, want none", got)
+	{
+		got := o.addresses()
+		require.Len(t, got, 0, "addresses")
 	}
 }
 
@@ -89,8 +90,9 @@ func TestObserverExpiresStaleObservations(t *testing.T) {
 	}, http.StateActive)
 
 	now = now.Add(observationTTL + time.Second)
-	if got := o.addresses(); len(got) != 0 {
-		t.Fatalf("addresses = %v, want the expired observation dropped", got)
+	{
+		got := o.addresses()
+		require.Len(t, got, 0, "addresses")
 	}
 }
 
@@ -107,15 +109,9 @@ func TestObserverReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {
 		Method string                          `json:"method"`
 		Params noderec.ObservedAddressesParams `json:"params"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &msg); err != nil {
-		t.Fatalf("decode report: %v", err)
-	}
-	if msg.Method != noderec.NotifyObservedAddresses {
-		t.Fatalf("method = %q, want %q", msg.Method, noderec.NotifyObservedAddresses)
-	}
-	if len(msg.Params.Addresses) != 0 {
-		t.Fatalf("reported addresses = %v, want an explicit empty replacement", msg.Params.Addresses)
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &msg), "decode report")
+	require.True(t, msg.Method == noderec.NotifyObservedAddresses, "method")
+	require.Len(t, msg.Params.Addresses, 0, "reported addresses")
 }
 
 func TestObserverReportsASortedSet(t *testing.T) {
@@ -127,7 +123,7 @@ func TestObserverReportsASortedSet(t *testing.T) {
 		}, http.StateActive)
 	}
 	got := o.addresses()
-	if len(got) != 2 || got[0] != "10.0.0.5" || got[1] != "10.172.54.70" {
-		t.Fatalf("addresses = %v, want a sorted pair", got)
-	}
+	require.Len(t, got, 2, "addresses")
+	require.Equal(t, "10.0.0.5", got[0], "addresses (%v)", got)
+	require.Equal(t, "10.172.54.70", got[1], "addresses (%v)", got)
 }

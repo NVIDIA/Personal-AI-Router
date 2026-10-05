@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // validManifest is a minimal well-formed manifest used as the base for
@@ -49,9 +51,7 @@ func validManifest() Manifest {
 
 func TestValidateAcceptsValid(t *testing.T) {
 	m := validManifest()
-	if err := m.Validate(); err != nil {
-		t.Fatalf("valid manifest rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "valid manifest rejected")
 }
 
 func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
@@ -65,9 +65,7 @@ func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
 	// A CLI action with a param placeholder ({model}) must validate —
 	// action templates are resolved from params at call time, not here.
 	m.Actions["pull"] = Action{Cmd: []string{"lms", "get", "{model}", "--yes"}}
-	if err := m.Validate(); err != nil {
-		t.Fatalf("command-mode/cmd-action manifest rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "command-mode/cmd-action manifest rejected")
 }
 
 func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
@@ -143,9 +141,7 @@ func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	p := m.Platforms["linux/amd64"]
 	p.Install.Fetch.SHA256 = "" // unpinned: allowed (download runs HTTPS-only with a loud warning)
 	m.Platforms["linux/amd64"] = p
-	if err := m.Validate(); err != nil {
-		t.Fatalf("unpinned fetch should validate, got %v", err)
-	}
+	require.NoError(t, m.Validate(), "unpinned fetch should validate")
 }
 
 func TestValidateAcceptsNamedInstallArtifacts(t *testing.T) {
@@ -247,9 +243,7 @@ func TestValidateRejectsBadEngineName(t *testing.T) {
 	for _, bad := range []string{"../evil", "a/b", `a\b`, "..", ".", "a b", ""} {
 		m := validManifest()
 		m.Engine = bad
-		if err := m.Validate(); err == nil {
-			t.Errorf("expected rejection of engine name %q", bad)
-		}
+		assert.Error(t, m.Validate(), "expected rejection of engine name (%v)", bad)
 	}
 }
 
@@ -258,8 +252,10 @@ func TestValidateRejectsScriptWithFetch(t *testing.T) {
 	p := m.Platforms["linux/amd64"]
 	p.Install.Script = []string{"sh", "-c", "curl x | sh"} // coexists with fetch+run
 	m.Platforms["linux/amd64"] = p
-	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("expected script+fetch rejection, got %v", err)
+	{
+		err := m.Validate()
+		require.Error(t, err, "expected script+fetch rejection")
+		require.Contains(t, err.Error(), "mutually exclusive", "expected script+fetch rejection (%v)", err)
 	}
 }
 
@@ -380,12 +376,8 @@ func TestValidateRejects(t *testing.T) {
 			m := validManifest()
 			tc.mutate(&m)
 			err := m.Validate()
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
-			}
+			require.Error(t, err, "expected error containing")
+			require.Contains(t, err.Error(), tc.want)
 		})
 	}
 }
@@ -393,39 +385,34 @@ func TestValidateRejects(t *testing.T) {
 func TestPlatformFor(t *testing.T) {
 	m := validManifest()
 	m.Platforms["windows/amd64"] = m.Platforms["linux/amd64"]
-	if _, ok := m.PlatformFor("linux", "amd64"); !ok {
-		t.Fatal("expected linux/amd64 to resolve")
+	{
+		_, ok := m.PlatformFor("linux", "amd64")
+		require.True(t, ok, "expected linux/amd64 to resolve")
 	}
-	if _, ok := m.PlatformFor("darwin", "arm64"); ok {
-		t.Fatal("did not expect darwin/arm64 to resolve")
+	{
+		_, ok := m.PlatformFor("darwin", "arm64")
+		require.False(t, ok, "did not expect darwin/arm64 to resolve")
 	}
 }
 
 func TestResolvePlaceholders(t *testing.T) {
 	vars := map[string]string{"port": "11434", "install_dir": "/opt/x", "bin": "/opt/x/ollama"}
 	got, err := resolvePlaceholders("http://127.0.0.1:{port}/", vars)
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if got != "http://127.0.0.1:11434/" {
-		t.Fatalf("got %q", got)
-	}
-	if _, err := resolvePlaceholders("{download}", vars); err == nil {
-		t.Fatal("expected error for unresolved {download}")
+	require.NoError(t, err, "resolve")
+	require.Equal(t, "http://127.0.0.1:11434/", got, "got")
+	{
+		_, err := resolvePlaceholders("{download}", vars)
+		require.Error(t, err, "expected error for unresolved {download}")
 	}
 }
 
 func TestResolveArgs(t *testing.T) {
 	vars := map[string]string{"download": "/tmp/x.tgz", "install_dir": "/opt/x"}
 	got, err := resolveArgs([]string{"tar", "xzf", "{download}", "-C", "{install_dir}"}, vars)
-	if err != nil {
-		t.Fatalf("resolveArgs: %v", err)
-	}
+	require.NoError(t, err, "resolveArgs")
 	want := []string{"tar", "xzf", "/tmp/x.tgz", "-C", "/opt/x"}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("arg %d: got %q want %q", i, got[i], want[i])
-		}
+		require.True(t, got[i] == want[i], "arg (%v)", i)
 	}
 }
 
@@ -449,17 +436,14 @@ func TestLoadRegistryOverride(t *testing.T) {
 	writeManifest(t, userDir, "ollama.json", override)
 
 	reg, err := LoadRegistry(bundled, userDir)
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
+	require.NoError(t, err, "LoadRegistry")
 	names := reg.Names()
-	if len(names) != 2 || names[0] != "ollama" || names[1] != "vllm" {
-		t.Fatalf("unexpected names: %v", names)
-	}
+	require.Len(t, names, 2, "unexpected names")
+	require.Equal(t, "ollama", names[0], "unexpected names (%v)", names)
+	require.Equal(t, "vllm", names[1], "unexpected names (%v)", names)
 	m, ok := reg.Get("ollama")
-	if !ok || m.DisplayName != "Ollama (user)" {
-		t.Fatalf("user override did not win: %+v", m)
-	}
+	require.True(t, ok, "user override did not win (%v)", m)
+	require.Equal(t, "Ollama (user)", m.DisplayName, "user override did not win (%v)", m)
 }
 
 func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
@@ -498,22 +482,17 @@ func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
 
 func TestLoadRegistryRejectsInvalidFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte(`{"engine":"x"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadRegistry(dir); err == nil {
-		t.Fatal("expected LoadRegistry to reject an invalid manifest")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.json"), []byte(`{"engine":"x"}`), 0o644))
+	{
+		_, err := LoadRegistry(dir)
+		require.Error(t, err, "expected LoadRegistry to reject an invalid manifest")
 	}
 }
 
 func TestLoadRegistryMissingDirIsSkipped(t *testing.T) {
 	reg, err := LoadRegistry(filepath.Join(t.TempDir(), "does-not-exist"))
-	if err != nil {
-		t.Fatalf("missing dir should be skipped, got: %v", err)
-	}
-	if len(reg.Names()) != 0 {
-		t.Fatalf("expected empty registry, got %v", reg.Names())
-	}
+	require.NoError(t, err, "missing dir should be skipped")
+	require.Len(t, reg.Names(), 0, "expected empty registry")
 }
 
 // TestApplyPlatformDefaults covers the shared-base merge: a top-level
@@ -548,55 +527,35 @@ func TestApplyPlatformDefaults(t *testing.T) {
     }
   }
 }`
-	if err := os.WriteFile(filepath.Join(dir, "demo.json"), []byte(raw), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "demo.json"), []byte(raw), 0o644))
 	reg, err := LoadRegistry(dir)
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
+	require.NoError(t, err, "LoadRegistry")
 	m, ok := reg.Get("demo")
-	if !ok {
-		t.Fatal("demo not loaded")
-	}
+	require.True(t, ok, "demo not loaded")
 
 	amd, ok := m.PlatformFor("linux", "amd64")
-	if !ok {
-		t.Fatal("linux/amd64 missing")
-	}
+	require.True(t, ok, "linux/amd64 missing")
 	// inherited from the shared base:
-	if amd.Runtime.Port != 11434 {
-		t.Errorf("amd64 port: expected inherited 11434, got %d", amd.Runtime.Port)
+	assert.Equal(t, 11434, amd.Runtime.Port, "amd64 port: expected inherited 11434")
+	assert.Equal(t, []string{"serve"}, amd.Runtime.Args, "amd64 args: expected inherited [serve]")
+	if assert.NotNil(t, amd.Runtime.Ready, "amd64 ready: inherited base probe missing") {
+		assert.Equal(t, 200, amd.Runtime.Ready.Status, "amd64 ready: inherited base probe missing")
 	}
-	if len(amd.Runtime.Args) != 1 || amd.Runtime.Args[0] != "serve" {
-		t.Errorf("amd64 args: expected inherited [serve], got %v", amd.Runtime.Args)
-	}
-	if amd.Runtime.Ready == nil || amd.Runtime.Ready.Status != 200 {
-		t.Errorf("amd64 ready: inherited base probe missing")
-	}
-	if amd.Install == nil || amd.Install.ModeOrDefault() != "user" || amd.Install.Fetch == nil {
-		t.Errorf("amd64 install: expected base mode + platform fetch, got %+v", amd.Install)
+	if assert.NotNil(t, amd.Install, "amd64 install: expected base mode + platform fetch") {
+		assert.Equal(t, "user", amd.Install.ModeOrDefault(), "amd64 install: expected base mode + platform fetch")
+		assert.NotNil(t, amd.Install.Fetch, "amd64 install: expected base mode + platform fetch")
 	}
 	// per-platform override applied:
-	if amd.Runtime.Bin != "{install_dir}/bin/demo" {
-		t.Errorf("amd64 bin override missing: %q", amd.Runtime.Bin)
-	}
+	assert.Equal(t, "{install_dir}/bin/demo", amd.Runtime.Bin, "amd64 bin override missing")
 	// nested object (env) deep-merges base + platform keys:
-	if amd.Runtime.Env["SHARED"] != "1" || amd.Runtime.Env["EXTRA"] != "2" {
-		t.Errorf("amd64 env deep-merge expected {SHARED,EXTRA}, got %v", amd.Runtime.Env)
-	}
+	assert.Equal(t, "1", amd.Runtime.Env["SHARED"], "amd64 env deep-merge expected {SHARED,EXTRA}")
+	assert.Equal(t, "2", amd.Runtime.Env["EXTRA"], "amd64 env deep-merge expected {SHARED,EXTRA}")
 
 	// a platform may override a shared scalar while still inheriting the rest:
 	arm, ok := m.PlatformFor("linux", "arm64")
-	if !ok {
-		t.Fatal("linux/arm64 missing")
-	}
-	if arm.Runtime.Port != 5678 {
-		t.Errorf("arm64 port override expected 5678, got %d", arm.Runtime.Port)
-	}
-	if arm.Runtime.Env["SHARED"] != "1" {
-		t.Errorf("arm64 should still inherit base env SHARED, got %v", arm.Runtime.Env)
-	}
+	require.True(t, ok, "linux/arm64 missing")
+	assert.Equal(t, 5678, arm.Runtime.Port, "arm64 port override expected 5678")
+	assert.Equal(t, "1", arm.Runtime.Env["SHARED"], "arm64 should still inherit base env SHARED")
 }
 
 // TestBundledManifestsMerge guards the actual shipped manifests: they must
@@ -604,40 +563,29 @@ func TestApplyPlatformDefaults(t *testing.T) {
 // shared-base merge.
 func TestBundledManifestsMerge(t *testing.T) {
 	reg, err := LoadRegistry("manifests")
-	if err != nil {
-		t.Fatalf("load bundled manifests: %v", err)
-	}
+	require.NoError(t, err, "load bundled manifests")
 
 	ol, ok := reg.Get("ollama")
-	if !ok {
-		t.Fatal("ollama not loaded")
-	}
+	require.True(t, ok, "ollama not loaded")
 	if p, ok := ol.PlatformFor("linux", "amd64"); ok {
 		// linux env must deep-merge shared OLLAMA_HOST with per-platform LD_LIBRARY_PATH
-		if p.Runtime.Env["OLLAMA_HOST"] == "" || p.Runtime.Env["LD_LIBRARY_PATH"] == "" {
-			t.Errorf("ollama linux env merge missing a key: %v", p.Runtime.Env)
-		}
-		if p.Runtime.Port != 11434 || p.Runtime.Bin == "" {
-			t.Errorf("ollama linux runtime: port=%d bin=%q", p.Runtime.Port, p.Runtime.Bin)
-		}
+		assert.NotEqual(t, "", p.Runtime.Env["OLLAMA_HOST"], "ollama linux env merge missing a key")
+		assert.NotEqual(t, "", p.Runtime.Env["LD_LIBRARY_PATH"], "ollama linux env merge missing a key")
+		assert.Equal(t, 11434, p.Runtime.Port, "ollama linux runtime: port")
+		assert.NotEqual(t, "", p.Runtime.Bin, "ollama linux runtime: port")
 	} else {
-		t.Error("ollama linux/amd64 missing")
+		assert.Fail(t, "test expectation failed", "ollama linux/amd64 missing")
 	}
 
 	lm, ok := reg.Get("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio not loaded")
-	}
+	require.True(t, ok, "lmstudio not loaded")
 	if p, ok := lm.PlatformFor("darwin", "arm64"); ok {
 		// per-platform cli override + inherited shared runtime (port/start)
-		if p.Runtime.CLI != "~/.lmstudio/bin/lms" {
-			t.Errorf("lmstudio darwin cli: %q", p.Runtime.CLI)
-		}
-		if p.Runtime.Port != 1235 || len(p.Runtime.Start) == 0 {
-			t.Errorf("lmstudio darwin inherited runtime missing: port=%d start=%v", p.Runtime.Port, p.Runtime.Start)
-		}
+		assert.Equal(t, "~/.lmstudio/bin/lms", p.Runtime.CLI, "lmstudio darwin cli")
+		assert.Equal(t, 1235, p.Runtime.Port, "lmstudio darwin inherited runtime missing: port")
+		assert.NotEqual(t, 0, len(p.Runtime.Start), "lmstudio darwin inherited runtime missing: port")
 	} else {
-		t.Error("lmstudio darwin/arm64 missing")
+		assert.Fail(t, "test expectation failed", "lmstudio darwin/arm64 missing")
 	}
 }
 
@@ -646,24 +594,21 @@ func TestBundledManifestsMerge(t *testing.T) {
 // discovery completes, which can exceed the previous 30-second allowance.
 func TestBundledOllamaReadinessBudget(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("ollama")
-	if !ok {
-		t.Fatal("ollama manifest not loaded")
-	}
+	require.True(t, ok, "ollama manifest not loaded")
 	for key, p := range m.Platforms {
 		if p.Runtime.Ready == nil {
-			t.Errorf("%s: readiness probe missing", key)
+			assert.Fail(t, "test expectation failed", "%s: readiness probe missing", key)
 			continue
 		}
-		if got, want := p.Runtime.Ready.TimeoutS, 600; got != want {
-			t.Errorf("%s: readiness timeout = %ds, want %ds", key, got, want)
+		{
+			got, want := p.Runtime.Ready.TimeoutS, 600
+			assert.True(t, got == want, " (%v, %v, %v)", key, got, want)
 		}
-		if readiness := time.Duration(p.Runtime.Ready.TimeoutS) * time.Second; remoteReadyResponseHeaderTimeout <= readiness {
-			t.Errorf("%s: remote readiness response-header timeout %s must exceed readiness timeout %s",
-				key, remoteReadyResponseHeaderTimeout, readiness)
+		{
+			readiness := time.Duration(p.Runtime.Ready.TimeoutS) * time.Second
+			assert.Greater(t, remoteReadyResponseHeaderTimeout, readiness, " (%v, %v, %v)", key, remoteReadyResponseHeaderTimeout, readiness)
 		}
 	}
 }
@@ -671,12 +616,8 @@ func TestBundledOllamaReadinessBudget(t *testing.T) {
 func writeManifest(t *testing.T, dir, name string, m Manifest) {
 	t.Helper()
 	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0o644))
 }
 
 // TestOllamaManifestBindsLoopback pins the secure-inference policy: the bundled
@@ -686,20 +627,12 @@ func writeManifest(t *testing.T, dir, name string, m Manifest) {
 // loopback).
 func TestOllamaManifestBindsLoopback(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("ollama")
-	if !ok {
-		t.Fatal("ollama manifest not loaded")
-	}
+	require.True(t, ok, "ollama manifest not loaded")
 	for key, p := range m.Platforms {
-		if p.Runtime.Bind != "127.0.0.1" {
-			t.Errorf("%s: runtime.bind = %q, want 127.0.0.1", key, p.Runtime.Bind)
-		}
-		if !strings.Contains(p.Runtime.Env["OLLAMA_HOST"], "{host}") {
-			t.Errorf("%s: OLLAMA_HOST %q should use {host}", key, p.Runtime.Env["OLLAMA_HOST"])
-		}
+		assert.Equal(t, "127.0.0.1", p.Runtime.Bind, " (%v)", key)
+		assert.Contains(t, p.Runtime.Env["OLLAMA_HOST"], "{host}", " (%v)", key)
 	}
 }
 
@@ -709,17 +642,11 @@ func TestOllamaManifestBindsLoopback(t *testing.T) {
 // only through the promoted proxy's mTLS ingress, never directly on the LAN.
 func TestLMStudioManifestBindsLoopback(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio manifest not loaded")
-	}
+	require.True(t, ok, "lmstudio manifest not loaded")
 	for key, p := range m.Platforms {
-		if p.Runtime.Bind != "127.0.0.1" {
-			t.Errorf("%s: runtime.bind = %q, want 127.0.0.1", key, p.Runtime.Bind)
-		}
+		assert.Equal(t, "127.0.0.1", p.Runtime.Bind, " (%v)", key)
 		var hasBindFlag, hasHostToken bool
 		for _, cmd := range p.Runtime.Start {
 			for i, arg := range cmd {
@@ -731,9 +658,8 @@ func TestLMStudioManifestBindsLoopback(t *testing.T) {
 				}
 			}
 		}
-		if !hasBindFlag || !hasHostToken {
-			t.Errorf("%s: start %v should pass --bind {host}", key, p.Runtime.Start)
-		}
+		assert.True(t, hasBindFlag, " (%v)", key)
+		assert.True(t, hasHostToken, " (%v)", key)
 	}
 }
 
@@ -790,23 +716,17 @@ func TestLlamaCPPManifestDeclaresNativeCacheDelete(t *testing.T) {
 
 func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio manifest not loaded")
-	}
+	require.True(t, ok, "lmstudio manifest not loaded")
 	action, ok := m.Actions["list_models"]
-	if !ok || action.HTTP == nil || action.Result == nil {
-		t.Fatalf("lmstudio list_models action is incomplete: %+v", action)
-	}
-	if action.HTTP.Method != "GET" || action.HTTP.Path != "/api/v1/models" {
-		t.Errorf("lmstudio list_models HTTP = %s %s, want GET /api/v1/models", action.HTTP.Method, action.HTTP.Path)
-	}
-	if action.Result.Array != "models" || action.Result.Field != "key" {
-		t.Errorf("lmstudio list_models result = %+v, want models[].key", action.Result)
-	}
+	require.True(t, ok, "lmstudio list_models action is incomplete (%v)", action)
+	require.NotNil(t, action.HTTP, "lmstudio list_models action is incomplete (%v)", action)
+	require.NotNil(t, action.Result, "lmstudio list_models action is incomplete (%v)", action)
+	assert.Equal(t, "GET", action.HTTP.Method, "lmstudio list_models HTTP")
+	assert.Equal(t, "/api/v1/models", action.HTTP.Path, "lmstudio list_models HTTP")
+	assert.Equal(t, "models", action.Result.Array, "lmstudio list_models result")
+	assert.Equal(t, "key", action.Result.Field, "lmstudio list_models result")
 }
 
 // TestLMStudioInstallBootstrapSafety verifies that bootstrap fetch failures are
@@ -814,39 +734,27 @@ func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {
 // file rather than pipe remote content through Invoke-Expression.
 func TestLMStudioInstallBootstrapSafety(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio manifest not loaded")
-	}
+	require.True(t, ok, "lmstudio manifest not loaded")
 	for key, p := range m.Platforms {
 		if p.Install == nil {
 			continue
 		}
 		if strings.HasPrefix(key, "windows/") {
-			if len(p.Install.Script) != 0 {
-				t.Errorf("%s: install must not evaluate a remote script inline; got %v", key, p.Install.Script)
-			}
-			if p.Install.Fetch == nil || p.Install.Fetch.URL != "https://lmstudio.ai/install.ps1" {
-				t.Errorf("%s: install must download the official script through engine-manager; got %+v", key, p.Install.Fetch)
+			assert.Len(t, p.Install.Script, 0, " (%v)", key)
+			if assert.NotNil(t, p.Install.Fetch, " (%v)", key) {
+				assert.Equal(t, "https://lmstudio.ai/install.ps1", p.Install.Fetch.URL, " (%v)", key)
 			}
 			wantRun := []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "{download}"}
-			if !slices.Equal(p.Install.Run, wantRun) {
-				t.Errorf("%s: install run = %v, want %v", key, p.Install.Run, wantRun)
-			}
+			assert.Equal(t, wantRun, p.Install.Run, " (%v)", key)
 			continue
 		}
-		if len(p.Install.Script) != 0 {
-			t.Errorf("%s: install must not interpolate paths into shell text; got %v", key, p.Install.Script)
-		}
-		if p.Install.Fetch == nil || p.Install.Fetch.URL != "https://lmstudio.ai/install.sh" {
-			t.Errorf("%s: install must download the official script through engine-manager; got %+v", key, p.Install.Fetch)
+		assert.Len(t, p.Install.Script, 0, " (%v)", key)
+		if assert.NotNil(t, p.Install.Fetch, " (%v)", key) {
+			assert.Equal(t, "https://lmstudio.ai/install.sh", p.Install.Fetch.URL, " (%v)", key)
 		}
 		wantRun := []string{"bash", "{download}"}
-		if !slices.Equal(p.Install.Run, wantRun) {
-			t.Errorf("%s: install run = %v, want %v", key, p.Install.Run, wantRun)
-		}
+		assert.Equal(t, wantRun, p.Install.Run, " (%v)", key)
 	}
 }

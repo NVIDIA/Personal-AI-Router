@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/noderec"
@@ -122,19 +125,11 @@ func TestDepartedPeerConvergesWithoutMDNS(t *testing.T) {
 	d.refreshClusterIdentityOnce()
 
 	n, ok := d.dir.get(peerUUID)
-	if !ok {
-		t.Fatal("peer dropped from the directory by the refresh")
-	}
-	if n.Clustered() {
-		t.Errorf("peer still annotated as clustered (clusterUuid=%q) after reporting it left", n.ClusterUUID)
-	}
-	if n.Trusted {
-		t.Error("peer still annotated as trusted after leaving the cluster")
-	}
+	require.True(t, ok, "peer dropped from the directory by the refresh")
+	assert.False(t, n.Clustered(), "peer still annotated as clustered (clusterUuid")
+	assert.False(t, n.Trusted, "peer still annotated as trusted after leaving the cluster")
 	// A second pass agrees with the first and stays silent.
-	if d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort) {
-		t.Error("refresh emitted again for an unchanged peer")
-	}
+	assert.False(t, d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort), "refresh emitted again for an unchanged peer")
 }
 
 func TestClusterIdentityRefreshFallsBackToASecondPublishedAddress(t *testing.T) {
@@ -143,13 +138,10 @@ func TestClusterIdentityRefreshFallsBackToASecondPublishedAddress(t *testing.T) 
 	_, niPort := startNodeInfoStub(t, `{"GPUs":[],"hostUuid":"peer-multihomed","clusterUuid":""}`)
 	seedPeer(d, peerUUID, "stale-principal", niPort)
 
-	if !d.refreshNodeClusterIdentityCandidates(peerUUID, []string{"127.0.0.2", "127.0.0.1"}, niPort) {
-		t.Fatal("membership did not refresh through the second published address")
-	}
+	require.True(t, d.refreshNodeClusterIdentityCandidates(peerUUID, []string{"127.0.0.2", "127.0.0.1"}, niPort), "membership did not refresh through the second published address")
 	n, ok := d.dir.get(peerUUID)
-	if !ok || n.Clustered() {
-		t.Fatalf("peer after refresh = %+v, want unclustered", n)
-	}
+	require.True(t, ok, "peer after refresh (%v)", n)
+	require.False(t, n.Clustered(), "peer after refresh (%v)", n)
 }
 
 // TestPeerInForeignClusterStaysSuppressed is the other half of the contract, and
@@ -166,16 +158,10 @@ func TestPeerInForeignClusterStaysSuppressed(t *testing.T) {
 	d.refreshClusterIdentityOnce()
 
 	n, _ := d.dir.get(peerUUID)
-	if !n.Clustered() {
-		t.Fatal("peer reporting a cluster principal was not annotated as clustered")
-	}
-	if n.ClusterUUID != "their-principal" {
-		t.Errorf("clusterUuid = %q, want their-principal", n.ClusterUUID)
-	}
+	require.True(t, n.Clustered(), "peer reporting a cluster principal was not annotated as clustered")
+	assert.Equal(t, "their-principal", n.ClusterUUID)
 	// We hold no pin for it, so it is clustered but not trusted.
-	if n.Trusted {
-		t.Error("peer in a cluster we hold no pin for was annotated trusted")
-	}
+	assert.False(t, n.Trusted, "peer in a cluster we hold no pin for was annotated trusted")
 }
 
 // TestPeerWithoutClusterFieldIsLeftAlone pins the version-skew rule. A node too
@@ -189,13 +175,9 @@ func TestPeerWithoutClusterFieldIsLeftAlone(t *testing.T) {
 	_, niPort := startNodeInfoStub(t, `{"GPUs":[],"hostUuid":"peer-uuid"}`)
 	seedPeer(d, peerUUID, "their-principal", niPort)
 
-	if d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort) {
-		t.Error("refresh acted on a peer that reported no clusterUuid field")
-	}
+	assert.False(t, d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort), "refresh acted on a peer that reported no clusterUuid field")
 	n, _ := d.dir.get(peerUUID)
-	if n.ClusterUUID != "their-principal" {
-		t.Errorf("clusterUuid = %q, want the prior value kept for a peer that reported nothing", n.ClusterUUID)
-	}
+	assert.Equal(t, "their-principal", n.ClusterUUID)
 }
 
 // TestUnreachablePeerKeepsItsAnnotation covers the same rule for a failed fetch:
@@ -208,13 +190,9 @@ func TestUnreachablePeerKeepsItsAnnotation(t *testing.T) {
 	stub.set(http.StatusInternalServerError, "")
 	seedPeer(d, peerUUID, "their-principal", niPort)
 
-	if d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort) {
-		t.Error("refresh acted on a failed node-info fetch")
-	}
+	assert.False(t, d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort), "refresh acted on a failed node-info fetch")
 	n, _ := d.dir.get(peerUUID)
-	if n.ClusterUUID != "their-principal" {
-		t.Errorf("clusterUuid = %q, want the prior value kept across a fetch failure", n.ClusterUUID)
-	}
+	assert.Equal(t, "their-principal", n.ClusterUUID)
 }
 
 // TestSelfExcludedFromIdentityRefresh keeps the sweep off this node's own entry:
@@ -231,9 +209,7 @@ func TestSelfExcludedFromIdentityRefresh(t *testing.T) {
 	d.refreshClusterIdentityOnce()
 
 	n, _ := d.dir.get(self)
-	if n.ClusterUUID != "our-principal" {
-		t.Errorf("self clusterUuid = %q, want the registry-owned value untouched", n.ClusterUUID)
-	}
+	assert.Equal(t, "our-principal", n.ClusterUUID, "self clusterUuid")
 }
 
 // TestStrangerAtTheAddressIsNotApplied covers the case where the machine
@@ -249,20 +225,14 @@ func TestStrangerAtTheAddressIsNotApplied(t *testing.T) {
 	_, niPort := startNodeInfoStub(t, `{"GPUs":[],"hostUuid":"someone-else","clusterUuid":""}`)
 	seedPeer(d, peerUUID, "their-principal", niPort)
 
-	if d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort) {
-		t.Error("applied membership reported by a different host")
-	}
+	assert.False(t, d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort), "applied membership reported by a different host")
 	n, _ := d.dir.get(peerUUID)
-	if n.ClusterUUID != "their-principal" {
-		t.Errorf("clusterUuid = %q, want the entry left for the liveness probe to age out", n.ClusterUUID)
-	}
+	assert.Equal(t, "their-principal", n.ClusterUUID)
 
 	// A peer that reports no hostUuid predates the field and is taken at its word.
 	_, oldPort := startNodeInfoStub(t, `{"GPUs":[],"clusterUuid":""}`)
 	seedPeer(d, "old-peer-uuid", "their-principal", oldPort)
-	if !d.refreshNodeClusterIdentity("old-peer-uuid", "127.0.0.1", oldPort) {
-		t.Error("skipped a peer that reported no hostUuid; it cannot be identity-checked either way")
-	}
+	assert.True(t, d.refreshNodeClusterIdentity("old-peer-uuid", "127.0.0.1", oldPort), "skipped a peer that reported no hostUuid; it cannot be identity-checked either way")
 }
 
 // TestSweepAnnotatesEveryPeerAgainstThePinSet exercises the sweep the way it
@@ -294,20 +264,14 @@ func TestSweepAnnotatesEveryPeerAgainstThePinSet(t *testing.T) {
 	d.refreshClusterIdentityOnce()
 
 	member, _ := d.dir.get("member-uuid")
-	if member.ClusterUUID != "pinned-principal" || !member.Trusted {
-		t.Errorf("member = (clusterUuid=%q, trusted=%v), want the pinned principal and trusted",
-			member.ClusterUUID, member.Trusted)
-	}
+	assert.Equal(t, "pinned-principal", member.ClusterUUID, "member = (clusterUuid")
+	assert.True(t, member.Trusted, "member = (clusterUuid")
 	stranger, _ := d.dir.get("stranger-uuid")
-	if stranger.ClusterUUID != "foreign-principal" || stranger.Trusted {
-		t.Errorf("stranger = (clusterUuid=%q, trusted=%v), want its own principal and untrusted",
-			stranger.ClusterUUID, stranger.Trusted)
-	}
+	assert.Equal(t, "foreign-principal", stranger.ClusterUUID, "stranger = (clusterUuid")
+	assert.False(t, stranger.Trusted, "stranger = (clusterUuid")
 	departed, _ := d.dir.get("departed-uuid")
-	if departed.Clustered() || departed.Trusted {
-		t.Errorf("departed = (clusterUuid=%q, trusted=%v), want cleared",
-			departed.ClusterUUID, departed.Trusted)
-	}
+	assert.False(t, departed.Clustered(), "departed = (clusterUuid")
+	assert.False(t, departed.Trusted, "departed = (clusterUuid")
 }
 
 // TestPinSetPassCannotWriteBackAPrincipal guards the interaction between the two
@@ -331,23 +295,15 @@ func TestPinSetPassCannotWriteBackAPrincipal(t *testing.T) {
 	trustFor := func(clusterUUID string) bool { return clusterUUID == "current-principal" }
 
 	n, changed := dir.applyClusterIdentity("peer", nil, trustFor)
-	if !changed {
-		t.Fatal("pin-set pass reported no change, want the trust annotation derived")
-	}
-	if n.ClusterUUID != "current-principal" {
-		t.Errorf("clusterUuid = %q, want the stored value untouched by a pass that supplied none", n.ClusterUUID)
-	}
-	if !n.Trusted {
-		t.Error("trust was not derived from the stored principal")
-	}
+	require.True(t, changed, "pin-set pass reported no change, want the trust annotation derived")
+	assert.Equal(t, "current-principal", n.ClusterUUID)
+	assert.True(t, n.Trusted, "trust was not derived from the stored principal")
 
 	// And a pass that does know the principal still governs it.
 	moved := "moved-principal"
 	n, _ = dir.applyClusterIdentity("peer", &moved, trustFor)
-	if n.ClusterUUID != "moved-principal" || n.Trusted {
-		t.Errorf("after an explicit move = (clusterUuid=%q, trusted=%v), want the new principal and untrusted",
-			n.ClusterUUID, n.Trusted)
-	}
+	assert.Equal(t, "moved-principal", n.ClusterUUID, "after an explicit move = (clusterUuid")
+	assert.False(t, n.Trusted, "after an explicit move = (clusterUuid")
 }
 
 // TestNodeInfoResponseDistinguishesAbsentFromEmpty pins the wire contract the
@@ -355,27 +311,15 @@ func TestPinSetPassCannotWriteBackAPrincipal(t *testing.T) {
 // present-but-empty stay distinguishable.
 func TestNodeInfoResponseDistinguishesAbsentFromEmpty(t *testing.T) {
 	var absent NodeInfoResponse
-	if err := json.Unmarshal([]byte(`{"GPUs":[]}`), &absent); err != nil {
-		t.Fatalf("decode absent: %v", err)
-	}
-	if absent.ClusterUUID != nil {
-		t.Errorf("absent clusterUuid decoded to %q, want nil", *absent.ClusterUUID)
-	}
-	if absent.TelemetryValid || absent.MSSince != 0 {
-		t.Errorf("absent telemetry fields decoded as valid: %+v", absent)
-	}
+	require.NoError(t, json.Unmarshal([]byte(`{"GPUs":[]}`), &absent), "decode absent")
+	assert.Nil(t, absent.ClusterUUID, "absent clusterUuid decoded to")
+	assert.False(t, absent.TelemetryValid, "absent telemetry fields decoded as valid (%v)", absent)
+	assert.Equal(t, int64(0), absent.MSSince, "absent telemetry fields decoded as valid (%v)", absent)
 
 	var empty NodeInfoResponse
-	if err := json.Unmarshal([]byte(`{"GPUs":[],"clusterUuid":"","telemetryValid":true,"msSince":137}`), &empty); err != nil {
-		t.Fatalf("decode empty: %v", err)
-	}
-	if empty.ClusterUUID == nil {
-		t.Fatal("present-but-empty clusterUuid decoded to nil, want a non-nil empty string")
-	}
-	if *empty.ClusterUUID != "" {
-		t.Errorf("empty clusterUuid = %q", *empty.ClusterUUID)
-	}
-	if !empty.TelemetryValid || empty.MSSince != 137 {
-		t.Errorf("telemetry fields = valid:%v age:%d, want true/137", empty.TelemetryValid, empty.MSSince)
-	}
+	require.NoError(t, json.Unmarshal([]byte(`{"GPUs":[],"clusterUuid":"","telemetryValid":true,"msSince":137}`), &empty), "decode empty")
+	require.NotNil(t, empty.ClusterUUID, "present-but-empty clusterUuid decoded to nil, want a non-nil empty string")
+	assert.Equal(t, "", *empty.ClusterUUID, "empty clusterUuid")
+	assert.True(t, empty.TelemetryValid, "telemetry fields = valid")
+	assert.Equal(t, int64(137), empty.MSSince, "telemetry fields = valid")
 }

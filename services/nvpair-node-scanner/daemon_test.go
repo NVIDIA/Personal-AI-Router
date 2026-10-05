@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/noderec"
 )
@@ -74,26 +77,25 @@ func TestReloadIdentityAdoptsClusterPrincipal(t *testing.T) {
 
 	// cluster-manager writes its principal under <base>/cluster/identity.json.
 	idPath := filepath.Join(base, "cluster", "identity.json")
-	if err := os.MkdirAll(filepath.Dir(idPath), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(idPath), 0o700), "mkdir")
 	body, _ := json.Marshal(map[string]any{"node_uuid": "cluster-principal-Y", "created_at": 1})
-	if err := os.WriteFile(idPath, body, 0o600); err != nil {
-		t.Fatalf("write identity.json: %v", err)
-	}
+	require.NoError(t, os.WriteFile(idPath, body, 0o600), "write identity.json")
 
 	d.reloadIdentity()
 
-	if got := d.reg.record().HostUUID; got != "cluster-principal-Y" {
-		t.Fatalf("reloadIdentity hostUuid = %q, want the cluster principal (no scanner-minted ghost)", got)
+	{
+		got := d.reg.record().HostUUID
+		require.Equal(t, "cluster-principal-Y", got, "reloadIdentity hostUuid")
 	}
 	// Inbound reconciliation: the directory entry moved to the new uuid and the
 	// old one is gone (no ghost).
-	if _, ok := d.dir.get("cluster-principal-Y"); !ok {
-		t.Error("directory missing the re-stamped hostUuid after reloadIdentity")
+	{
+		_, ok := d.dir.get("cluster-principal-Y")
+		assert.True(t, ok, "directory missing the re-stamped hostUuid after reloadIdentity")
 	}
-	if _, ok := d.dir.get("scanner-minted-X"); ok {
-		t.Error("stale scanner-minted hostUuid left in the directory (ghost)")
+	{
+		_, ok := d.dir.get("scanner-minted-X")
+		assert.False(t, ok, "stale scanner-minted hostUuid left in the directory (ghost)")
 	}
 }
 
@@ -107,25 +109,27 @@ func TestSelfNotEvictedByBrowse(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	d.reg.register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318})
 	d.publishSelf()
-	if _, ok := d.dir.get("self-uuid"); !ok {
-		t.Fatal("publishSelf should put the local node in the directory")
+	{
+		_, ok := d.dir.get("self-uuid")
+		require.True(t, ok, "publishSelf should put the local node in the directory")
 	}
 
 	// Its own record aged out of the browse (Windows self-multicast loss): the
 	// browser emits removed for our uuid. It must NOT drop the self entry.
 	selfTXT := []string{"v=1", "uuid=self-uuid", "ip=192.168.1.17", "ni=14318"}
 	d.onBrowse(DiscoveryEvent{Type: "removed", Node: RawNode{ID: "myhost", TXT: selfTXT}})
-	if _, ok := d.dir.get("self-uuid"); !ok {
-		t.Error("a browse 'removed' for our own uuid must not evict the local node")
+	{
+		_, ok := d.dir.get("self-uuid")
+		assert.True(t, ok, "a browse 'removed' for our own uuid must not evict the local node")
 	}
 
 	// A later self re-appearance in the browse is also a no-op (self stays
 	// registry-driven; the browse never clobbers it).
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "myhost", TXT: selfTXT}})
 	if n, ok := d.dir.get("self-uuid"); !ok {
-		t.Error("self entry disappeared after a self 'discovered' browse event")
-	} else if n.Name != "myhost" {
-		t.Errorf("self entry Name = %q, want the registry-driven name", n.Name)
+		assert.Fail(t, "test expectation failed", "self entry disappeared after a self 'discovered' browse event")
+	} else {
+		assert.Equal(t, "myhost", n.Name, "self entry Name")
 	}
 }
 
@@ -148,9 +152,7 @@ func TestPublishSelfEnrichesOverLoopback(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split stub addr: %v", err)
-	}
+	require.NoError(t, err, "split stub addr")
 	port, _ := strconv.Atoi(portStr)
 
 	// The node advertises the LAN address (which no server answers on in the
@@ -160,21 +162,14 @@ func TestPublishSelfEnrichesOverLoopback(t *testing.T) {
 	d.publishSelf()
 
 	n, ok := d.dir.get("self-uuid")
-	if !ok {
-		t.Fatal("self missing from directory")
-	}
-	if n.IP != "192.168.1.17" {
-		t.Errorf("self display IP = %q, want the advertised LAN address", n.IP)
-	}
-	if len(n.GPUs) != 1 || n.GPUs[0].Name != "NVIDIA GeForce RTX 5090" {
-		t.Errorf("self GPUs = %v, want it enriched over loopback", n.GPUs)
-	}
-	if n.CPU == nil || n.CPU.Name != "AMD Ryzen 7 9800X3D" {
-		t.Errorf("self CPU = %v, want it enriched over loopback", n.CPU)
-	}
-	if n.Memory == nil || n.Memory.TotalBytes != 68719476736 {
-		t.Errorf("self Memory = %v, want it enriched over loopback", n.Memory)
-	}
+	require.True(t, ok, "self missing from directory")
+	assert.Equal(t, "192.168.1.17", n.IP, "self display IP")
+	require.Len(t, n.GPUs, 1, "self GPUs")
+	assert.Equal(t, "NVIDIA GeForce RTX 5090", n.GPUs[0].Name, "self GPUs")
+	require.NotNil(t, n.CPU, "self CPU")
+	assert.Equal(t, "AMD Ryzen 7 9800X3D", n.CPU.Name, "self CPU")
+	require.NotNil(t, n.Memory, "self Memory")
+	assert.Equal(t, uint64(68719476736), n.Memory.TotalBytes, "self Memory")
 }
 
 // TestPublishSelfLoopbackIPFallback covers the "IP unknown at startup" case: when
@@ -184,12 +179,8 @@ func TestPublishSelfLoopbackIPFallback(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "") // BestLocalIP() empty
 	d.publishSelf()
 	n, ok := d.dir.get("self-uuid")
-	if !ok {
-		t.Fatal("self missing from directory")
-	}
-	if n.IP != loopbackHost {
-		t.Errorf("self IP with no LAN address = %q, want loopback fallback %q", n.IP, loopbackHost)
-	}
+	require.True(t, ok, "self missing from directory")
+	assert.True(t, n.IP == loopbackHost, "self IP with no LAN address (%v)", loopbackHost)
 }
 
 // TestPeerStillAgesOut confirms the fix is scoped to self: a genuine remote peer
@@ -199,12 +190,14 @@ func TestPeerStillAgesOut(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	peerTXT := []string{"v=1", "uuid=peer-uuid", "ip=192.168.1.99"}
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	if _, ok := d.dir.get("peer-uuid"); !ok {
-		t.Fatal("a discovered peer should be added to the directory")
+	{
+		_, ok := d.dir.get("peer-uuid")
+		require.True(t, ok, "a discovered peer should be added to the directory")
 	}
 	d.onBrowse(DiscoveryEvent{Type: "removed", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	if _, ok := d.dir.get("peer-uuid"); ok {
-		t.Error("a genuine remote peer must still age out when it leaves")
+	{
+		_, ok := d.dir.get("peer-uuid")
+		assert.False(t, ok, "a genuine remote peer must still age out when it leaves")
 	}
 }
 
@@ -221,32 +214,22 @@ func TestReachableAntiFlap(t *testing.T) {
 	}))
 	defer niSrv.Close()
 	niURL, err := url.Parse(niSrv.URL)
-	if err != nil {
-		t.Fatalf("parse ni url: %v", err)
-	}
+	require.NoError(t, err, "parse ni url")
 	niPort, err := strconv.Atoi(niURL.Port())
-	if err != nil {
-		t.Fatalf("ni port: %v", err)
-	}
+	require.NoError(t, err, "ni port")
 
 	emLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("em listen: %v", err)
-	}
+	require.NoError(t, err, "em listen")
 	defer emLn.Close()
 	emPort := emLn.Addr().(*net.TCPAddr).Port
 
 	olLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("ol listen: %v", err)
-	}
+	require.NoError(t, err, "ol listen")
 	defer olLn.Close()
 	olPort := olLn.Addr().(*net.TCPAddr).Port
 
 	dl, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("dead listen: %v", err)
-	}
+	require.NoError(t, err, "dead listen")
 	deadPort := dl.Addr().(*net.TCPAddr).Port
 	dl.Close()
 
@@ -256,9 +239,7 @@ func TestReachableAntiFlap(t *testing.T) {
 	}
 
 	liveNI := RawNode{TXT: []string{"v=1", "uuid=host-a", "ip=127.0.0.1", fmt.Sprintf("ni=%d", niPort)}}
-	if !d.reachable(liveNI) {
-		t.Error("node with live node-info should be reachable")
-	}
+	assert.True(t, d.reachable(liveNI), "node with live node-info should be reachable")
 
 	// The node's first-ranked address can be unreachable from this observer even
 	// when a later published address reaches the same live service. A transient
@@ -267,50 +248,34 @@ func TestReachableAntiFlap(t *testing.T) {
 		"v=1", "uuid=host-multihomed", "ip=127.0.0.2",
 		"ips=127.0.0.2,127.0.0.1", fmt.Sprintf("ni=%d", niPort),
 	}}
-	if !d.reachable(liveNIOnSecondAddress) {
-		t.Error("node reachable at its second published address should stay alive")
-	}
+	assert.True(t, d.reachable(liveNIOnSecondAddress), "node reachable at its second published address should stay alive")
 
 	deadNI := RawNode{TXT: []string{"v=1", "ip=127.0.0.1", fmt.Sprintf("ni=%d", deadPort)}}
-	if d.reachable(deadNI) {
-		t.Error("node whose only ni port is closed should be unreachable")
-	}
+	assert.False(t, d.reachable(deadNI), "node whose only ni port is closed should be unreachable")
 
 	// Live ol alone must not keep the node (inference proxy is not a liveness signal).
 	olOnly := RawNode{TXT: []string{"v=1", "ip=127.0.0.1", fmt.Sprintf("ol=%d", olPort)}}
-	if d.reachable(olOnly) {
-		t.Error("node with only a live ol port must not be reachable")
-	}
+	assert.False(t, d.reachable(olOnly), "node with only a live ol port must not be reachable")
 
 	// Dead ni + live ol: still unreachable — ol is ignored.
 	mixed := RawNode{TXT: []string{"v=1", "ip=127.0.0.1", fmt.Sprintf("ni=%d", deadPort), fmt.Sprintf("ol=%d", olPort)}}
-	if d.reachable(mixed) {
-		t.Error("dead ni with live ol must not be reachable")
-	}
+	assert.False(t, d.reachable(mixed), "dead ni with live ol must not be reachable")
 
 	// em fallback when ni is absent.
 	emOnly := RawNode{TXT: []string{"v=1", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}}
-	if !d.reachable(emOnly) {
-		t.Error("node with live em and no ni should be reachable")
-	}
+	assert.True(t, d.reachable(emOnly), "node with live em and no ni should be reachable")
 
 	// Fresh lastInfo skips dialing.
 	d.lastInfo["host-cached"] = NodeInfoResponse{}
 	d.lastInfoAt["host-cached"] = time.Now()
 	cached := RawNode{TXT: []string{"v=1", "uuid=host-cached", "ip=127.0.0.1", fmt.Sprintf("ni=%d", deadPort)}}
-	if !d.reachable(cached) {
-		t.Error("fresh lastInfo should keep the node without a successful probe")
-	}
+	assert.True(t, d.reachable(cached), "fresh lastInfo should keep the node without a successful probe")
 
 	idOnly := RawNode{TXT: []string{"v=1", "ip=127.0.0.1"}}
-	if d.reachable(idOnly) {
-		t.Error("identity-only node (no ni/em) should be unreachable")
-	}
+	assert.False(t, d.reachable(idOnly), "identity-only node (no ni/em) should be unreachable")
 
 	noIP := RawNode{TXT: []string{"v=1", fmt.Sprintf("ni=%d", niPort)}}
-	if d.reachable(noIP) {
-		t.Error("node with no resolvable address should be unreachable")
-	}
+	assert.False(t, d.reachable(noIP), "node with no resolvable address should be unreachable")
 }
 
 func TestEnrichFallsBackToASecondPublishedAddress(t *testing.T) {
@@ -323,13 +288,9 @@ func TestEnrichFallsBackToASecondPublishedAddress(t *testing.T) {
 	}))
 	defer niSrv.Close()
 	niURL, err := url.Parse(niSrv.URL)
-	if err != nil {
-		t.Fatalf("parse node-info URL: %v", err)
-	}
+	require.NoError(t, err, "parse node-info URL")
 	niPort, err := strconv.Atoi(niURL.Port())
-	if err != nil {
-		t.Fatalf("parse node-info port: %v", err)
-	}
+	require.NoError(t, err, "parse node-info port")
 
 	d := &daemon{
 		http:         niSrv.Client(),
@@ -346,9 +307,8 @@ func TestEnrichFallsBackToASecondPublishedAddress(t *testing.T) {
 		},
 	}
 	d.enrich(&node)
-	if len(node.GPUs) != 1 || node.GPUs[0].Name != "GPU from reachable address" {
-		t.Fatalf("GPUs = %+v, want enrichment from the second published address", node.GPUs)
-	}
+	require.Len(t, node.GPUs, 1)
+	require.Equal(t, "GPU from reachable address", node.GPUs[0].Name)
 }
 
 // TestReachableSelfDialsLoopback pins the uuid-keyed self probe: when the
@@ -366,13 +326,9 @@ func TestReachableSelfDialsLoopback(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split stub addr: %v", err)
-	}
+	require.NoError(t, err, "split stub addr")
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("stub port: %v", err)
-	}
+	require.NoError(t, err, "stub port")
 
 	d := newSelfTestDaemon(selfUUID, "192.0.2.1")
 	// Advertise an unroutable DOCUMENTATION address so a LAN dial cannot succeed;
@@ -381,15 +337,11 @@ func TestReachableSelfDialsLoopback(t *testing.T) {
 		ID:  "myhost",
 		TXT: []string{"v=1", "uuid=" + selfUUID, "ip=192.0.2.1", fmt.Sprintf("ni=%d", port)},
 	}
-	if !d.reachable(self) {
-		t.Fatal("self record must stay reachable via loopback when LAN ip= is unroutable")
-	}
+	require.True(t, d.reachable(self), "self record must stay reachable via loopback when LAN ip= is unroutable")
 
 	peer := RawNode{
 		ID:  "myhost", // same instance name as self — must not be treated as us
 		TXT: []string{"v=1", "uuid=peer-uuid", "ip=192.0.2.1", fmt.Sprintf("ni=%d", port)},
 	}
-	if d.reachable(peer) {
-		t.Error("a same-hostname peer advertising an unroutable LAN ip must not inherit the self loopback dial")
-	}
+	assert.False(t, d.reachable(peer), "a same-hostname peer advertising an unroutable LAN ip must not inherit the self loopback dial")
 }

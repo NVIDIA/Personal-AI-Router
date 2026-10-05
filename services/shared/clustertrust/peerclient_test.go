@@ -13,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // meshDir builds a cluster dir for a node and returns both the mesh and the dir,
@@ -25,10 +28,27 @@ func meshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) (*Mes
 		writePin(t, dir, uuid, pem)
 	}
 	m := Open(dir)
-	if !m.Clustered() {
-		t.Fatal("a populated cluster dir must read as clustered")
-	}
+	require.True(t, m.Clustered(), "a populated cluster dir must read as clustered")
 	return m, dir
+}
+
+// checkPeerClientCertificates checks the TLS behavior as well as cache identity.
+func checkPeerClientCertificates(t *testing.T, client *http.Client, selfDER, peerDER, rejectedPeerDER []byte) {
+	t.Helper()
+	require.NotNil(t, client)
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "pooled client must use an HTTP transport")
+	require.NotNil(t, transport)
+	cfg := transport.TLSClientConfig
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Certificates, 1)
+	require.NotEmpty(t, cfg.Certificates[0].Certificate)
+	assert.Equal(t, selfDER, cfg.Certificates[0].Certificate[0], "client must present the current local certificate")
+	require.NotNil(t, cfg.VerifyPeerCertificate)
+	require.NoError(t, cfg.VerifyPeerCertificate([][]byte{peerDER}, nil), "client must accept the current peer pin")
+	if len(rejectedPeerDER) > 0 {
+		assert.Error(t, cfg.VerifyPeerCertificate([][]byte{rejectedPeerDER}, nil), "client must reject the superseded peer pin")
+	}
 }
 
 // TestPeerClientPool_ReusesOneConnection is the regression for the dropped
@@ -69,31 +89,21 @@ func TestPeerClientPool_ReusesOneConnection(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		client, ok := pool.Client("uuid-peer")
-		if !ok {
-			t.Fatalf("request %d: pinned peer must yield a client", i)
-		}
+		require.True(t, ok, "request")
 		resp, err := client.Get(srv.URL)
-		if err != nil {
-			t.Fatalf("request %d: %v", i, err)
-		}
+		require.NoError(t, err, "request")
 		// Drain before closing, exactly as a caller must: an undrained body
 		// leaves the connection unusable and it never returns to the idle pool.
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("request %d: status %d, want 200", i, resp.StatusCode)
-		}
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	}
 
 	mu.Lock()
 	got := newConns
 	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("server accepted %d connections for 5 requests, want 1 (connections are not being reused)", got)
-	}
-	if pool.len() != 1 {
-		t.Fatalf("pool holds %d peers, want 1", pool.len())
-	}
+	assert.Equal(t, 1, got, "server accepted")
+	assert.Equal(t, 1, pool.len(), "pool holds")
 }
 
 // TestPeerClientPool_TransportBoundsIdleConnections pins the two settings whose
@@ -106,31 +116,22 @@ func TestPeerClientPool_TransportBoundsIdleConnections(t *testing.T) {
 	selfMesh, _ := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
 
 	pool := NewPeerClientPool(selfMesh, 3*time.Second)
-	if _, ok := pool.Client("uuid-peer"); !ok {
-		t.Fatal("pinned peer must yield a client")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.True(t, ok, "pinned peer must yield a client")
 	}
 	entry := pool.entries["uuid-peer"]
-	if entry.transport.IdleConnTimeout != PeerIdleTimeout {
-		t.Errorf("IdleConnTimeout = %v, want %v", entry.transport.IdleConnTimeout, PeerIdleTimeout)
-	}
-	if entry.transport.MaxIdleConnsPerHost != peerMaxIdleConnsPerHost {
-		t.Errorf("MaxIdleConnsPerHost = %d, want %d", entry.transport.MaxIdleConnsPerHost, peerMaxIdleConnsPerHost)
-	}
+	assert.Equal(t, PeerIdleTimeout, entry.transport.IdleConnTimeout)
+	assert.Equal(t, peerMaxIdleConnsPerHost, entry.transport.MaxIdleConnsPerHost)
 	// The bound that actually protects the peer. Retaining idle connections stops
 	// the leak, but only capping TOTAL connections per host stops a per-event
 	// fan-out from opening hundreds of simultaneous handshakes during a burst —
 	// which is what exhausted the receiver in the field.
-	if entry.transport.MaxConnsPerHost != peerMaxConnsPerHost {
-		t.Errorf("MaxConnsPerHost = %d, want %d (an unbounded cap lets a burst storm the peer)", entry.transport.MaxConnsPerHost, peerMaxConnsPerHost)
-	}
+	assert.Equal(t, peerMaxConnsPerHost, entry.transport.MaxConnsPerHost)
 	// The client must reap an idle connection BEFORE the listener does, or it can
 	// pick one the server is already closing.
-	if PeerListenerIdleTimeout <= PeerIdleTimeout {
-		t.Errorf("PeerListenerIdleTimeout (%v) must exceed PeerIdleTimeout (%v)", PeerListenerIdleTimeout, PeerIdleTimeout)
-	}
-	if entry.client.Timeout != 3*time.Second {
-		t.Errorf("client Timeout = %v, want the pool timeout 3s", entry.client.Timeout)
-	}
+	assert.Greater(t, PeerListenerIdleTimeout, PeerIdleTimeout)
+	assert.Equal(t, 3*time.Second, entry.client.Timeout, "client Timeout")
 }
 
 // TestPeerClientPool_RebuildsOnRepin: cache membership must never outrank the
@@ -138,35 +139,31 @@ func TestPeerClientPool_TransportBoundsIdleConnections(t *testing.T) {
 // connections were negotiated against a pin that no longer applies and the entry
 // has to be rebuilt rather than reused.
 func TestPeerClientPool_RebuildsOnRepin(t *testing.T) {
-	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
-	peerPEM, _, _ := genLeaf(t, "uuid-peer")
-	rePeerPEM, _, _ := genLeaf(t, "uuid-peer")
+	selfPEM, selfKey, selfDER := genLeaf(t, "uuid-self")
+	peerPEM, _, peerDER := genLeaf(t, "uuid-peer")
+	rePeerPEM, _, rePeerDER := genLeaf(t, "uuid-peer")
 
 	selfMesh, dir := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
 	pool := NewPeerClientPool(selfMesh, time.Second)
 	defer pool.CloseIdle()
 
 	first, ok := pool.Client("uuid-peer")
-	if !ok {
-		t.Fatal("pinned peer must yield a client")
-	}
-	if again, _ := pool.Client("uuid-peer"); again != first {
-		t.Fatal("an unchanged pin must reuse the pooled client")
+	require.True(t, ok, "pinned peer must yield a client")
+	checkPeerClientCertificates(t, first, selfDER, peerDER, rePeerDER)
+	{
+		again, ok := pool.Client("uuid-peer")
+		require.True(t, ok, "unchanged pin must still yield a client")
+		assert.Same(t, first, again, "an unchanged pin must reuse the pooled client")
 	}
 
 	writePin(t, dir, "uuid-peer", string(rePeerPEM))
 	selfMesh.Refresh()
 
 	second, ok := pool.Client("uuid-peer")
-	if !ok {
-		t.Fatal("re-pinned peer must still yield a client")
-	}
-	if second == first {
-		t.Fatal("a re-pinned peer must be rebuilt, not served from cache with the old pin")
-	}
-	if pool.len() != 1 {
-		t.Fatalf("pool holds %d peers, want 1 (the rebuilt entry replaces the old one)", pool.len())
-	}
+	require.True(t, ok, "re-pinned peer must still yield a client")
+	assert.NotSame(t, first, second, "a re-pinned peer must be rebuilt, not served from cache with the old pin")
+	checkPeerClientCertificates(t, second, selfDER, rePeerDER, peerDER)
+	assert.Equal(t, 1, pool.len(), "pool holds")
 }
 
 // TestPeerClientPool_RebuildsOnLocalCertRotation: the pooled TLS config freezes
@@ -177,47 +174,39 @@ func TestPeerClientPool_RebuildsOnRepin(t *testing.T) {
 // delivery is precisely the failure this pool exists to prevent, so rotation must
 // rebuild the entry.
 func TestPeerClientPool_RebuildsOnLocalCertRotation(t *testing.T) {
-	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
-	rotatedPEM, rotatedKey, _ := genLeaf(t, "uuid-self")
-	peerPEM, _, _ := genLeaf(t, "uuid-peer")
+	selfPEM, selfKey, selfDER := genLeaf(t, "uuid-self")
+	rotatedPEM, rotatedKey, rotatedDER := genLeaf(t, "uuid-self")
+	peerPEM, _, peerDER := genLeaf(t, "uuid-peer")
 
 	selfMesh, dir := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
 	pool := NewPeerClientPool(selfMesh, time.Second)
 	defer pool.CloseIdle()
 
 	first, ok := pool.Client("uuid-peer")
-	if !ok {
-		t.Fatal("pinned peer must yield a client")
-	}
+	require.True(t, ok, "pinned peer must yield a client")
+	checkPeerClientCertificates(t, first, selfDER, peerDER, nil)
 
 	// Our own leaf is re-minted; the peer's pin is untouched.
 	writeIdentity(t, dir, rotatedPEM, rotatedKey)
 	selfMesh.Refresh()
 
 	second, ok := pool.Client("uuid-peer")
-	if !ok {
-		t.Fatal("peer must still yield a client after our leaf rotated")
-	}
-	if second == first {
-		t.Fatal("our leaf was re-minted, so the entry must be rebuilt — a cached client keeps presenting the superseded certificate and the peer refuses it")
-	}
+	require.True(t, ok, "peer must still yield a client after our leaf rotated")
+	assert.NotSame(t, first, second, "our leaf was re-minted, so the entry must be rebuilt — a cached client keeps presenting the superseded certificate and the peer refuses it")
+	checkPeerClientCertificates(t, second, rotatedDER, peerDER, nil)
 
 	// DropUnpinned must reach the same conclusion for an entry nobody re-requested.
-	third, _ := pool.Client("uuid-peer")
-	rotatedAgainPEM, rotatedAgainKey, _ := genLeaf(t, "uuid-self")
+	third, ok := pool.Client("uuid-peer")
+	require.True(t, ok, "peer must yield a client before the second rotation")
+	rotatedAgainPEM, rotatedAgainKey, rotatedAgainDER := genLeaf(t, "uuid-self")
 	writeIdentity(t, dir, rotatedAgainPEM, rotatedAgainKey)
 	selfMesh.Refresh()
 	pool.DropUnpinned()
-	if pool.len() != 0 {
-		t.Fatalf("DropUnpinned left %d entries after a local rotation, want 0", pool.len())
-	}
+	assert.Equal(t, 0, pool.len(), "DropUnpinned left")
 	fourth, ok := pool.Client("uuid-peer")
-	if !ok {
-		t.Fatal("peer must yield a client after the second rotation")
-	}
-	if fourth == third {
-		t.Fatal("entry survived a local rotation via DropUnpinned")
-	}
+	require.True(t, ok, "peer must yield a client after the second rotation")
+	assert.NotSame(t, third, fourth, "entry survived a local rotation via DropUnpinned")
+	checkPeerClientCertificates(t, fourth, rotatedAgainDER, peerDER, nil)
 }
 
 // TestPeerClientPool_UnpinnedIsRefusedAndEvicted: losing a pin (peer removed, or
@@ -230,40 +219,36 @@ func TestPeerClientPool_UnpinnedIsRefusedAndEvicted(t *testing.T) {
 	selfMesh, dir := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
 
 	pool := NewPeerClientPool(selfMesh, time.Second)
-	if _, ok := pool.Client("uuid-peer"); !ok {
-		t.Fatal("pinned peer must yield a client")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.True(t, ok, "pinned peer must yield a client")
 	}
-	if _, ok := pool.Client("uuid-stranger"); ok {
-		t.Fatal("an unpinned peer must not yield a client")
+	{
+		_, ok := pool.Client("uuid-stranger")
+		require.False(t, ok, "an unpinned peer must not yield a client")
 	}
 
-	if err := os.Remove(filepath.Join(dir, "trusted", "uuid-peer.json")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(filepath.Join(dir, "trusted", "uuid-peer.json")))
 	selfMesh.Refresh()
 
-	if _, ok := pool.Client("uuid-peer"); ok {
-		t.Fatal("a de-pinned peer must no longer yield a client")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.False(t, ok, "a de-pinned peer must no longer yield a client")
 	}
-	if pool.len() != 0 {
-		t.Fatalf("pool holds %d peers after de-pin, want 0", pool.len())
-	}
+	assert.Equal(t, 0, pool.len(), "pool holds")
 
 	// DropUnpinned is the sweep the fan-out runs per round; it must reach the
 	// same conclusion for an entry nobody has asked for since the change.
 	writePin(t, dir, "uuid-peer", string(peerPEM))
 	selfMesh.Refresh()
-	if _, ok := pool.Client("uuid-peer"); !ok {
-		t.Fatal("re-pinned peer must yield a client again")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.True(t, ok, "re-pinned peer must yield a client again")
 	}
-	if err := os.Remove(filepath.Join(dir, "trusted", "uuid-peer.json")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(filepath.Join(dir, "trusted", "uuid-peer.json")))
 	selfMesh.Refresh()
 	pool.DropUnpinned()
-	if pool.len() != 0 {
-		t.Fatalf("DropUnpinned left %d peers, want 0", pool.len())
-	}
+	assert.Equal(t, 0, pool.len(), "DropUnpinned left")
 }
 
 // TestPeerClientPool_ResolverRevocationOverridesDiskPin covers an owner with a
@@ -275,9 +260,7 @@ func TestPeerClientPool_ResolverRevocationOverridesDiskPin(t *testing.T) {
 	peerPEM, _, _ := genLeaf(t, "uuid-peer")
 	selfMesh, _ := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
 	peerDER, ok := selfMesh.trustedDER("uuid-peer")
-	if !ok {
-		t.Fatal("mesh must retain the on-disk peer pin")
-	}
+	require.True(t, ok, "mesh must retain the on-disk peer pin")
 
 	authorized := true
 	pool := NewPeerClientPoolOpts(selfMesh, PeerClientOptions{
@@ -291,30 +274,27 @@ func TestPeerClientPool_ResolverRevocationOverridesDiskPin(t *testing.T) {
 	})
 	defer pool.CloseIdle()
 
-	if _, ok := pool.Client("uuid-peer"); !ok {
-		t.Fatal("resolver-authorized peer must yield a client")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.True(t, ok, "resolver-authorized peer must yield a client")
 	}
 	authorized = false
 	selfMesh.Refresh()
-	if !selfMesh.HasPin("uuid-peer") {
-		t.Fatal("test requires the stale disk pin to remain visible to the mesh")
+	assert.True(t, selfMesh.HasPin("uuid-peer"), "test requires the stale disk pin to remain visible to the mesh")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.False(t, ok, "resolver-revoked peer must not yield a client despite its disk pin")
 	}
-	if _, ok := pool.Client("uuid-peer"); ok {
-		t.Fatal("resolver-revoked peer must not yield a client despite its disk pin")
-	}
-	if pool.len() != 0 {
-		t.Fatalf("pool holds %d peers after resolver revocation, want 0", pool.len())
-	}
+	assert.Equal(t, 0, pool.len(), "pool holds")
 
 	authorized = true
-	if _, ok := pool.Client("uuid-peer"); !ok {
-		t.Fatal("re-authorized peer must yield a client")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.True(t, ok, "re-authorized peer must yield a client")
 	}
 	authorized = false
 	pool.DropUnpinned()
-	if pool.len() != 0 {
-		t.Fatalf("DropUnpinned left %d resolver-revoked peers, want 0", pool.len())
-	}
+	assert.Equal(t, 0, pool.len(), "DropUnpinned left")
 }
 
 // TestPeerClientPool_CloseIdleEmptiesPool: shutdown must not leave sockets open.
@@ -329,17 +309,14 @@ func TestPeerClientPool_CloseIdleEmptiesPool(t *testing.T) {
 
 	pool := NewPeerClientPool(selfMesh, time.Second)
 	for _, uuid := range []string{"uuid-peer", "uuid-other"} {
-		if _, ok := pool.Client(uuid); !ok {
-			t.Fatalf("%s must yield a client", uuid)
+		{
+			_, ok := pool.Client(uuid)
+			require.True(t, ok)
 		}
 	}
-	if pool.len() != 2 {
-		t.Fatalf("pool holds %d peers, want 2", pool.len())
-	}
+	assert.Equal(t, 2, pool.len(), "pool holds")
 	pool.CloseIdle()
-	if pool.len() != 0 {
-		t.Fatalf("pool holds %d peers after CloseIdle, want 0", pool.len())
-	}
+	assert.Equal(t, 0, pool.len(), "pool holds")
 }
 
 // TestPeerClientPool_UnclusteredYieldsNothing: a node that belongs to no cluster
@@ -347,11 +324,13 @@ func TestPeerClientPool_CloseIdleEmptiesPool(t *testing.T) {
 // plaintext or unpinned path.
 func TestPeerClientPool_UnclusteredYieldsNothing(t *testing.T) {
 	pool := NewPeerClientPool(Open(t.TempDir()), time.Second)
-	if _, ok := pool.Client("uuid-peer"); ok {
-		t.Fatal("an unclustered node must yield no peer client")
+	{
+		_, ok := pool.Client("uuid-peer")
+		require.False(t, ok, "an unclustered node must yield no peer client")
 	}
-	if _, ok := NewPeerClientPool(nil, time.Second).Client("uuid-peer"); ok {
-		t.Fatal("a nil mesh must yield no peer client")
+	{
+		_, ok := NewPeerClientPool(nil, time.Second).Client("uuid-peer")
+		require.False(t, ok, "a nil mesh must yield no peer client")
 	}
 }
 
@@ -382,21 +361,13 @@ func TestPeerClientPoolOpts_TimeoutZeroKeepsStreamingAlive(t *testing.T) {
 	pool := NewPeerClientPoolOpts(selfMesh, PeerClientOptions{Timeout: 0})
 	defer pool.CloseIdle()
 	client, ok := pool.Client("uuid-peer")
-	if !ok {
-		t.Fatal("pinned peer must yield a client")
-	}
-	if client.Timeout != 0 {
-		t.Fatalf("client Timeout = %v, want 0", client.Timeout)
-	}
+	require.True(t, ok, "pinned peer must yield a client")
+	assert.Equal(t, time.Duration(0), client.Timeout, "client Timeout")
 	resp, err := client.Get(srv.URL)
-	if err != nil {
-		t.Fatalf("Timeout=0 must wait out a slow body: %v", err)
-	}
+	require.NoError(t, err, "Timeout=0 must wait out a slow body")
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "ok" {
-		t.Fatalf("body = %q, want ok", body)
-	}
+	assert.Equal(t, "ok", string(body))
 }
 
 // TestPeerClientPoolOpts_ResponseHeaderTimeoutFires: a peer that accepts the
@@ -421,14 +392,11 @@ func TestPeerClientPoolOpts_ResponseHeaderTimeoutFires(t *testing.T) {
 	})
 	defer pool.CloseIdle()
 	client, ok := pool.Client("uuid-peer")
-	if !ok {
-		t.Fatal("pinned peer must yield a client")
-	}
-	if entry := pool.entries["uuid-peer"]; entry.transport.ResponseHeaderTimeout != 40*time.Millisecond {
-		t.Fatalf("ResponseHeaderTimeout = %v, want 40ms", entry.transport.ResponseHeaderTimeout)
+	require.True(t, ok, "pinned peer must yield a client")
+	{
+		entry := pool.entries["uuid-peer"]
+		assert.Equal(t, 40*time.Millisecond, entry.transport.ResponseHeaderTimeout)
 	}
 	_, err := client.Get(srv.URL)
-	if err == nil {
-		t.Fatal("want a response-header timeout")
-	}
+	require.Error(t, err, "want a response-header timeout")
 }

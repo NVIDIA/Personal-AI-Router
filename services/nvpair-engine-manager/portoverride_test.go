@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
+
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSetPortPreservesOtherOverrides(t *testing.T) {
@@ -32,46 +34,41 @@ func TestSetPortPreservesOtherOverrides(t *testing.T) {
 			}},
 		},
 	}
-	if err := writeJSONAtomic(path, original); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeJSONAtomic(path, original))
 	ex := newBundledExecutor(t, dir)
 	for _, port := range []int{21003, 11434} {
-		if _, err := ex.SetPort(context.Background(), "ollama", port); err != nil {
-			t.Fatal(err)
+		{
+			_, err := ex.SetPort(context.Background(), "ollama", port)
+			require.NoError(t, err)
 		}
 		reg := loadWithOverrides(t, dir)
 		manifest, _ := reg.Get("ollama")
 		platform, _ := manifest.HostPlatform()
-		if platform.Runtime.Port != port {
-			t.Fatalf("restart restored %d instead of %d", platform.Runtime.Port, port)
-		}
-		if manifest.DisplayName != "Custom Ollama" ||
-			!reflect.DeepEqual(platform.Runtime.Args, []string{"serve", "--custom-option"}) ||
-			platform.Runtime.Env["CUSTOM_SETTING"] != "kept" ||
-			platform.Runtime.Env["HOST_SETTING"] != "kept" ||
-			platform.Runtime.Env["OLLAMA_HOST"] != "{host}:{port}" {
-			t.Fatalf("port change lost unrelated overrides or inherited defaults: %+v", platform.Runtime)
-		}
+		require.True(t, platform.Runtime.Port == port, "restart restored (%v)", port)
+		require.Equal(t, "Custom Ollama", manifest.DisplayName, "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, []string{"serve", "--custom-option"}, platform.Runtime.Args, "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, "kept", platform.Runtime.Env["CUSTOM_SETTING"], "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, "kept", platform.Runtime.Env["HOST_SETTING"], "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, "{host}:{port}", platform.Runtime.Env["OLLAMA_HOST"], "port change lost unrelated overrides or inherited defaults")
 	}
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var saved map[string]any
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatal(err)
-	}
-	if _, pinned := saved["runtime"].(map[string]any)["port"]; pinned {
-		t.Fatal("reset retained a shared port override")
+	require.NoError(t, json.Unmarshal(data, &saved))
+	{
+		_, pinned := saved["runtime"].(map[string]any)["port"]
+		require.False(t, pinned, "reset retained a shared port override")
 	}
 	hostRuntime := saved["platforms"].(map[string]any)[host].(map[string]any)["runtime"].(map[string]any)
-	if _, pinned := hostRuntime["port"]; pinned {
-		t.Fatal("reset retained a host port override")
+	{
+		_, pinned := hostRuntime["port"]
+		require.False(t, pinned, "reset retained a host port override")
 	}
 	var exact map[string]json.RawMessage
-	if err := json.Unmarshal(data, &exact); err != nil || string(exact["custom_counter"]) != "9007199254740993" {
-		t.Fatalf("unrelated numeric setting lost precision: %s, %v", exact["custom_counter"], err)
+	{
+		err := json.Unmarshal(data, &exact)
+		require.NoError(t, err, "unrelated numeric setting lost precision")
+		require.Equal(t, "9007199254740993", string(exact["custom_counter"]), "unrelated numeric setting lost precision (%v)", err)
 	}
 }
 
@@ -82,30 +79,27 @@ func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
 		"runtime":   map[string]any{"bin": "fake", "port": 22000},
 		"platforms": map[string]any{host: map[string]any{"runtime": map[string]any{"port": 22001}}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	reg := NewRegistry()
-	if _, err := reg.addManifest("test", raw); err != nil {
-		t.Fatal(err)
+	{
+		_, err := reg.addManifest("test", raw)
+		require.NoError(t, err)
 	}
 	reg.bundledRaw["platform-engine"] = raw
 	ex := NewExecutor(reg, NewReporter(nil), nil, t.TempDir())
 	ex.overrideDir = t.TempDir()
 	for _, port := range []int{22002, 22001} {
-		if err := ex.persistPort("platform-engine", port); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, ex.persistPort("platform-engine", port))
 		reloaded := NewRegistry()
-		if _, err := reloaded.addManifest("test", raw); err != nil {
-			t.Fatal(err)
+		{
+			_, err := reloaded.addManifest("test", raw)
+			require.NoError(t, err)
 		}
 		reloaded.bundledRaw["platform-engine"] = raw
-		if err := reloaded.LoadOverrideDir(ex.overrideDir); err != nil {
-			t.Fatal(err)
-		}
-		if got := hostPort(t, reloaded, "platform-engine"); got != port {
-			t.Fatalf("host default shadowed saved port: got %d, want %d", got, port)
+		require.NoError(t, reloaded.LoadOverrideDir(ex.overrideDir))
+		{
+			got := hostPort(t, reloaded, "platform-engine")
+			require.True(t, got == port, "host default shadowed saved port: (%v, %v)", got, port)
 		}
 	}
 }
@@ -120,18 +114,17 @@ func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "ollama.json")
 			ex := newBundledExecutor(t, dir)
-			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := ex.SetPort(context.Background(), "ollama", 23001); err == nil {
-				t.Fatal("malformed override was overwritten")
+			require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+			{
+				_, err := ex.SetPort(context.Background(), "ollama", 23001)
+				require.Error(t, err, "malformed override was overwritten")
 			}
 			got, err := os.ReadFile(path)
-			if err != nil || string(got) != data {
-				t.Fatalf("invalid override changed: %q, %v", got, err)
-			}
-			if got, _ := ex.Status("ollama"); got.Port != 11434 {
-				t.Fatalf("failed persistence changed runtime port: %+v", got)
+			require.NoError(t, err, "invalid override changed (%v, %v)", got, err)
+			require.True(t, string(got) == data, "invalid override changed (%v, %v)", got, err)
+			{
+				got, _ := ex.Status("ollama")
+				require.Equal(t, 11434, got.Port, "failed persistence changed runtime port (%v)", got)
 			}
 		})
 	}
@@ -141,22 +134,19 @@ func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	for _, port := range []int{24001, 24002} {
-		if err := writeJSONAtomic(path, map[string]int{"port": port}); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, writeJSONAtomic(path, map[string]int{"port": port}))
 		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		var got map[string]int
-		if err := json.Unmarshal(data, &got); err != nil || got["port"] != port {
-			t.Fatalf("replacement not readable: %q, %v", data, err)
+		{
+			err := json.Unmarshal(data, &got)
+			require.NoError(t, err, "replacement not readable (%v, %v)", data, err)
+			require.True(t, got["port"] == port, "replacement not readable (%v, %v)", data, err)
 		}
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("atomic writer left temporary files: %v, %v", entries, err)
-	}
+	require.NoError(t, err, "atomic writer left temporary files (%v, %v)", entries, err)
+	require.Len(t, entries, 1, "atomic writer left temporary files (%v, %v)", entries, err)
 }
 
 // bundledHostPlatform returns an engine's bundled platform for this host, or

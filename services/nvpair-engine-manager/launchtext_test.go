@@ -4,26 +4,23 @@
 package main
 
 import (
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseLaunchText(t *testing.T) {
 	test := func(name, text string, want []string) {
 		t.Run(name, func(t *testing.T) {
 			got, err := parseLaunchText(text)
-			if err != nil || !reflect.DeepEqual(got, want) {
-				t.Fatalf("got %#v, %v; want %#v", got, err, want)
-			}
+			require.NoError(t, err, "got (%v, %v, %v)", got, err, want)
+			require.Equal(t, want, got, "got (%v, %v, %v)", got, err, want)
 			normalized, err := formatLaunchText(got)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			again, err := parseLaunchText(normalized)
-			if err != nil || !reflect.DeepEqual(again, want) {
-				t.Fatalf("round trip changed arguments: %#v, %v", again, err)
-			}
+			require.NoError(t, err, "round trip changed arguments (%v, %v)", again, err)
+			require.Equal(t, want, again, "round trip changed arguments (%v, %v)", again, err)
 		})
 	}
 	test("empty arguments", "", nil)
@@ -47,15 +44,18 @@ func TestParseLaunchTextRejectsInvalidInput(t *testing.T) {
 		`lms && other`, `lms ; other`, "lms `other`", `lms $(other)`,
 		strings.Repeat("x", maxLaunchTextBytes+1), strings.Repeat("x ", maxLaunchTokens+1),
 	} {
-		if _, err := parseLaunchText(text); err == nil {
-			t.Fatalf("invalid input accepted (%d bytes)", len(text))
+		{
+			_, err := parseLaunchText(text)
+			require.Error(t, err, "invalid input accepted")
 		}
 	}
-	if _, err := parseLaunchText(strings.Repeat("x", maxLaunchTextBytes)); err != nil {
-		t.Fatalf("exact byte limit rejected: %v", err)
+	{
+		_, err := parseLaunchText(strings.Repeat("x", maxLaunchTextBytes))
+		require.NoError(t, err, "exact byte limit rejected")
 	}
-	if _, err := parseLaunchText(strings.Repeat("x ", maxLaunchTokens)); err != nil {
-		t.Fatalf("exact token limit rejected: %v", err)
+	{
+		_, err := parseLaunchText(strings.Repeat("x ", maxLaunchTokens))
+		require.NoError(t, err, "exact token limit rejected")
 	}
 }
 
@@ -77,12 +77,10 @@ func FuzzLaunchTextRoundTrip(f *testing.F) {
 			return
 		}
 		again, err := parseLaunchText(formatted)
-		if err != nil || !reflect.DeepEqual(again, tokens) {
-			t.Fatalf("round trip changed tokens: %#v -> %#v (%v)", tokens, again, err)
-		}
+		require.NoError(t, err, "round trip changed tokens (%v, %v, %v)", tokens, again, err)
+		require.Equal(t, tokens, again, "round trip changed tokens (%v, %v, %v)", tokens, again, err)
 		stable, err := formatLaunchText(again)
-		if err != nil || stable != formatted {
-			t.Fatalf("normalization is not stable: %v", err)
-		}
+		require.NoError(t, err, "normalization is not stable")
+		require.True(t, stable == formatted, "normalization is not stable (%v)", err)
 	})
 }

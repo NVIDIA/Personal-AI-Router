@@ -18,11 +18,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
+
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testEngineManifest returns a manifest whose host-platform block runs
@@ -63,19 +66,19 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 	t.Helper()
 	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
-	}
+	require.True(t, ok, "transport type")
 	return transport.ResponseHeaderTimeout
 }
 
 func TestEngineHTTPClientsBoundResponseHeaders(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
-	if got := responseHeaderTimeout(t, ex.client); got != engineResponseHeaderTimeout {
-		t.Fatalf("ordinary response-header timeout = %s, want %s", got, engineResponseHeaderTimeout)
+	{
+		got := responseHeaderTimeout(t, ex.client)
+		require.True(t, got == engineResponseHeaderTimeout, "ordinary response-header timeout (%v, %v)", got, engineResponseHeaderTimeout)
 	}
-	if got := responseHeaderTimeout(t, ex.ollamaLoadClient); got != ollamaLoadResponseHeaderTimeout {
-		t.Fatalf("Ollama load response-header timeout = %s, want %s", got, ollamaLoadResponseHeaderTimeout)
+	{
+		got := responseHeaderTimeout(t, ex.ollamaLoadClient)
+		require.True(t, got == ollamaLoadResponseHeaderTimeout, "Ollama load response-header timeout (%v, %v)", got, ollamaLoadResponseHeaderTimeout)
 	}
 }
 
@@ -102,16 +105,17 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	ex.client = newEngineHTTPClient(20 * time.Millisecond)
 	ex.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
 	st, err := ex.state("ollama")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	st.running = true
 
-	if _, err := ex.Action(context.Background(), "ollama", "run_model", json.RawMessage(`{"model":"tiny"}`)); err != nil {
-		t.Fatalf("Ollama load was cut off by the ordinary response-header budget: %v", err)
+	{
+		_, err := ex.Action(context.Background(), "ollama", "run_model", json.RawMessage(`{"model":"tiny"}`))
+		require.NoError(t, err, "Ollama load was cut off by the ordinary response-header budget")
 	}
-	if _, err := ex.Action(context.Background(), "ollama", "delete_model", json.RawMessage(`{"name":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("ordinary action error = %v, want bounded response-header timeout", err)
+	{
+		_, err := ex.Action(context.Background(), "ollama", "delete_model", json.RawMessage(`{"name":"tiny"}`))
+		require.Error(t, err, "ordinary action error")
+		require.Contains(t, err.Error(), "timeout awaiting response headers", "ordinary action error (%v)", err)
 	}
 
 	other := testEngineManifest(fakeEngineBin)
@@ -126,12 +130,12 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	otherEx.client = newEngineHTTPClient(20 * time.Millisecond)
 	otherEx.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
 	otherState, err := otherEx.state("other")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	otherState.running = true
-	if _, err := otherEx.Action(context.Background(), "other", "run_model", json.RawMessage(`{"model":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("non-Ollama run_model error = %v, want ordinary response-header timeout", err)
+	{
+		_, err := otherEx.Action(context.Background(), "other", "run_model", json.RawMessage(`{"model":"tiny"}`))
+		require.Error(t, err, "non-Ollama run_model error")
+		require.Contains(t, err.Error(), "timeout awaiting response headers", "non-Ollama run_model error (%v)", err)
 	}
 }
 
@@ -249,46 +253,27 @@ func TestEngineLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 
 	installed, err := ex.Detect("fake")
-	if err != nil {
-		t.Fatalf("detect: %v", err)
-	}
-	if !installed {
-		t.Fatalf("expected fake engine to be detected (bin=%s)", fakeEngineBin)
-	}
+	require.NoError(t, err, "detect")
+	require.True(t, installed, "expected fake engine to be detected (bin (%v)", fakeEngineBin)
 
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	st, _ := ex.Status("fake")
-	if !st.Running || !st.Healthy {
-		t.Fatalf("expected running+healthy, got %+v", st)
-	}
-	if st.Port == 0 {
-		t.Fatalf("expected a non-zero port, got %+v", st)
-	}
+	require.True(t, st.Running, "expected running+healthy (%v)", st)
+	require.True(t, st.Healthy, "expected running+healthy (%v)", st)
+	require.NotEqual(t, 0, st.Port, "expected a non-zero port (%v)", st)
 
 	res, err := ex.Action(ctx, "fake", "list_models", nil)
-	if err != nil {
-		t.Fatalf("action: %v", err)
-	}
-	if !strings.Contains(string(res), "llama3.2") {
-		t.Fatalf("unexpected action result: %s", res)
-	}
+	require.NoError(t, err, "action")
+	require.Contains(t, string(res), "llama3.2", "unexpected action result (%v)", res)
 
-	if err := ex.Stop("fake"); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
+	require.NoError(t, ex.Stop("fake"), "stop")
 	st, _ = ex.Status("fake")
-	if st.Running {
-		t.Fatalf("expected stopped, got %+v", st)
-	}
+	require.False(t, st.Running, "expected stopped (%v)", st)
 }
 
 func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 	port, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	m := testEngineManifest(fakeEngineBin)
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
@@ -296,9 +281,7 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 	m.Platforms[key] = p
 	ex := newTestExecutor(t, m)
 
-	if err := ex.Start(context.Background(), m.Engine); err != nil {
-		t.Fatalf("initial start: %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), m.Engine), "initial start")
 	resp, _ := http.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/exit")
 	if resp != nil {
 		_ = resp.Body.Close()
@@ -311,9 +294,7 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 	})
 
 	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-	if err != nil {
-		t.Fatalf("external listener: %v", err)
-	}
+	require.NoError(t, err, "external listener")
 	external := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})}
@@ -323,45 +304,39 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 		_, _ = ex.Status(m.Engine)
 	}()
 
-	if err := ex.Start(context.Background(), m.Engine); err != nil {
-		t.Fatalf("restart should adopt the external service: %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), m.Engine), "restart should adopt the external service")
 	state.mu.Lock()
 	proc := state.proc
 	adopted := state.adopted
 	running := state.running
 	healthy := state.healthy
 	state.mu.Unlock()
-	if proc != nil || !adopted || !running || !healthy {
-		t.Fatalf("restart spawned over external service: proc=%v adopted=%v running=%v healthy=%v", proc != nil, adopted, running, healthy)
-	}
+	require.Nil(t, proc, "restart spawned over external service: proc (%v, %v, %v)", adopted, running, healthy)
+	require.True(t, adopted, "restart spawned over external service: proc (%v, %v, %v)", adopted, running, healthy)
+	require.True(t, running, "restart spawned over external service: proc (%v, %v, %v)", adopted, running, healthy)
+	require.True(t, healthy, "restart spawned over external service: proc (%v, %v, %v)", adopted, running, healthy)
 }
 
 func TestActionRequiresRunning(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
-	if _, err := ex.Action(context.Background(), "fake", "list_models", nil); err == nil {
-		t.Fatal("expected error: action on a non-running engine")
+	{
+		_, err := ex.Action(context.Background(), "fake", "list_models", nil)
+		require.Error(t, err, "expected error: action on a non-running engine")
 	}
 }
 
 func TestStartUnknownEngine(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
-	if err := ex.Start(context.Background(), "nope"); err == nil {
-		t.Fatal("expected error for unknown engine")
-	}
+	require.Error(t, ex.Start(context.Background(), "nope"), "expected error for unknown engine")
 }
 
 func TestStartPortOverride(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin)) // manifest Port is 0
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	const want = 17777
-	if err := ex.StartWith(context.Background(), "fake", startOpts{Port: want}); err != nil {
-		t.Fatalf("start with port override: %v", err)
-	}
+	require.NoError(t, ex.StartWith(context.Background(), "fake", startOpts{Port: want}), "start with port override")
 	st, _ := ex.Status("fake")
-	if st.Port != want {
-		t.Fatalf("expected port %d, got %d", want, st.Port)
-	}
+	require.True(t, st.Port == want, "expected port (%v)", want)
 }
 
 func TestEffectiveBind(t *testing.T) {
@@ -372,8 +347,9 @@ func TestEffectiveBind(t *testing.T) {
 		{"", "192.168.1.5", "192.168.1.5"},    // per-call specific interface
 	}
 	for _, c := range cases {
-		if got := effectiveBind(c.manifest, c.override); got != c.want {
-			t.Errorf("effectiveBind(%q,%q)=%q want %q", c.manifest, c.override, got, c.want)
+		{
+			got := effectiveBind(c.manifest, c.override)
+			assert.True(t, got == c.want, "effectiveBind (%v)", got)
 		}
 	}
 }
@@ -407,9 +383,9 @@ func TestStatusReportsExternallyRunning(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 	st, _ := ex.Status("ext") // never started via the executor
-	if !st.Installed || !st.Running || !st.Healthy {
-		t.Fatalf("expected externally-running engine adopted as installed and healthy, got %+v", st)
-	}
+	require.True(t, st.Installed, "expected externally-running engine adopted as installed and healthy (%v)", st)
+	require.True(t, st.Running, "expected externally-running engine adopted as installed and healthy (%v)", st)
+	require.True(t, st.Healthy, "expected externally-running engine adopted as installed and healthy (%v)", st)
 }
 
 func TestStatusAtPortAdoptsLegacyListener(t *testing.T) {
@@ -436,12 +412,11 @@ func TestStatusAtPortAdoptsLegacyListener(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 	st, err := ex.StatusAtPort("legacy", legacyPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !st.Installed || !st.Running || !st.Healthy || st.Port != legacyPort {
-		t.Fatalf("legacy listener was not adopted at %d: %+v", legacyPort, st)
-	}
+	require.NoError(t, err)
+	require.True(t, st.Installed, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
+	require.True(t, st.Running, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
+	require.True(t, st.Healthy, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
+	require.True(t, st.Port == legacyPort, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
 }
 
 func TestGetInstalledAdoptsExternallyRunningEngineWithoutDetectPath(t *testing.T) {
@@ -468,9 +443,10 @@ func TestGetInstalledAdoptsExternallyRunningEngineWithoutDetectPath(t *testing.T
 	}
 	ex := newTestExecutor(t, m)
 	statuses := ex.GetInstalled()
-	if len(statuses) != 1 || !statuses[0].Installed || !statuses[0].Running || !statuses[0].Healthy {
-		t.Fatalf("expected get-installed to adopt the external engine, got %+v", statuses)
-	}
+	require.Len(t, statuses, 1, "expected get-installed to adopt the external engine")
+	require.True(t, statuses[0].Installed, "expected get-installed to adopt the external engine (%v)", statuses)
+	require.True(t, statuses[0].Running, "expected get-installed to adopt the external engine (%v)", statuses)
+	require.True(t, statuses[0].Healthy, "expected get-installed to adopt the external engine (%v)", statuses)
 }
 
 func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
@@ -513,25 +489,24 @@ func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
 	var methods []string
 	ex := NewExecutor(reg, NewReporter(nil), func(method string, _ any) { methods = append(methods, method) }, t.TempDir())
 
-	if err := ex.Install(context.Background(), m.Engine); err != nil {
-		t.Fatalf("install should adopt the external service: %v", err)
-	}
-	if got := downloads.Load(); got != 0 {
-		t.Fatalf("external service triggered %d installer downloads, want 0", got)
+	require.NoError(t, ex.Install(context.Background(), m.Engine), "install should adopt the external service")
+	{
+		got := downloads.Load()
+		require.Equal(t, int32(0), got, "external service triggered")
 	}
 	st, err := ex.Status(m.Engine)
-	if err != nil || !st.Installed || !st.Running || !st.Healthy {
-		t.Fatalf("external service status = %+v, err=%v", st, err)
-	}
+	require.NoError(t, err, "external service status (%v, %v)", st, err)
+	require.True(t, st.Installed, "external service status (%v, %v)", st, err)
+	require.True(t, st.Running, "external service status (%v, %v)", st, err)
+	require.True(t, st.Healthy, "external service status (%v, %v)", st, err)
 	stateSeen := false
 	progressSeen := false
 	for _, method := range methods {
 		stateSeen = stateSeen || method == "engine:state-changed"
 		progressSeen = progressSeen || method == "engine:install-progress"
 	}
-	if !stateSeen || !progressSeen {
-		t.Fatalf("install adoption notifications = %v, want progress and state", methods)
-	}
+	require.True(t, stateSeen, "install adoption notifications (%v)", methods)
+	require.True(t, progressSeen, "install adoption notifications (%v)", methods)
 }
 
 func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
@@ -566,16 +541,15 @@ func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 	err := ex.Install(context.Background(), m.Engine)
-	if err == nil || !strings.Contains(err.Error(), "occupied") {
-		t.Fatalf("install over an unknown listener error = %v, want occupied", err)
-	}
-	if got := downloads.Load(); got != 0 {
-		t.Fatalf("unknown listener triggered %d installer downloads, want 0", got)
+	require.Error(t, err, "install over an unknown listener error")
+	require.Contains(t, err.Error(), "occupied", "install over an unknown listener error (%v)", err)
+	{
+		got := downloads.Load()
+		require.Equal(t, int32(0), got, "unknown listener triggered")
 	}
 	st, _ := ex.Status(m.Engine)
-	if st.Installed || st.Running {
-		t.Fatalf("unknown listener must not be adopted: %+v", st)
-	}
+	require.False(t, st.Installed, "unknown listener must not be adopted (%v)", st)
+	require.False(t, st.Running, "unknown listener must not be adopted (%v)", st)
 }
 
 func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
@@ -604,15 +578,14 @@ func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
 		}},
 	}
 	ex := newTestExecutor(t, m)
-	if st, err := ex.Status(m.Engine); err != nil || st.Installed || st.Running {
-		t.Fatalf("live API without CLI status = %+v, err=%v; want not installed", st, err)
+	{
+		st, err := ex.Status(m.Engine)
+		require.NoError(t, err, "live API without CLI status (%v, %v)", st, err)
+		require.False(t, st.Installed, "live API without CLI status (%v, %v)", st, err)
+		require.False(t, st.Running, "live API without CLI status (%v, %v)", st, err)
 	}
-	if err := ex.Install(context.Background(), m.Engine); err != nil {
-		t.Fatalf("install missing command-mode CLI: %v", err)
-	}
-	if !fileExists(cli) {
-		t.Fatal("live API incorrectly suppressed command-mode installer")
-	}
+	require.NoError(t, ex.Install(context.Background(), m.Engine), "install missing command-mode CLI")
+	require.True(t, fileExists(cli), "live API incorrectly suppressed command-mode installer")
 }
 
 func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
@@ -625,12 +598,8 @@ func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
 	}))
 	defer facade.Close()
 	backendPort, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backendPort == portOf(t, facade.URL) {
-		t.Fatal("test requires distinct facade and backend ports")
-	}
+	require.NoError(t, err)
+	require.True(t, backendPort != portOf(t, facade.URL), "test requires distinct facade and backend ports")
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -644,8 +613,11 @@ func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
 		}},
 	}
 	ex := newTestExecutor(t, m)
-	if st, err := ex.Status(m.Engine); err != nil || st.Installed || st.Running {
-		t.Fatalf("facade on a different port was adopted: status=%+v err=%v", st, err)
+	{
+		st, err := ex.Status(m.Engine)
+		require.NoError(t, err, "facade on a different port was adopted: status (%v, %v)", st, err)
+		require.False(t, st.Installed, "facade on a different port was adopted: status (%v, %v)", st, err)
+		require.False(t, st.Running, "facade on a different port was adopted: status (%v, %v)", st, err)
 	}
 }
 
@@ -670,21 +642,19 @@ func TestAdoptedExternalLivenessIsTruthful(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 	st, _ := ex.Status(m.Engine)
-	if !st.Running || !st.Healthy {
-		t.Fatalf("initial external status = %+v", st)
-	}
+	require.True(t, st.Running, "initial external status (%v)", st)
+	require.True(t, st.Healthy, "initial external status (%v)", st)
 
 	status.Store(http.StatusServiceUnavailable)
 	st, _ = ex.Status(m.Engine)
-	if !st.Running || st.Healthy {
-		t.Fatalf("HTTP 503 is live-but-unhealthy, got %+v", st)
-	}
+	require.True(t, st.Running, "HTTP 503 is live-but-unhealthy (%v)", st)
+	require.False(t, st.Healthy, "HTTP 503 is live-but-unhealthy (%v)", st)
 
 	srv.Close()
 	st, _ = ex.Status(m.Engine)
-	if st.Installed || st.Running || st.Healthy {
-		t.Fatalf("closed external listener remained present: %+v", st)
-	}
+	require.False(t, st.Installed, "closed external listener remained present (%v)", st)
+	require.False(t, st.Running, "closed external listener remained present (%v)", st)
+	require.False(t, st.Healthy, "closed external listener remained present (%v)", st)
 }
 
 func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
@@ -711,25 +681,33 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 	m.Platforms[key] = p
 	ex := newTestExecutor(t, m)
 
-	if st, err := ex.Status("ollama"); err != nil || st.Installed || st.Running || st.Healthy {
-		t.Fatalf("proxy facade was adopted: status=%+v err=%v", st, err)
+	{
+		st, err := ex.Status("ollama")
+		require.NoError(t, err, "proxy facade was adopted: status (%v, %v)", st, err)
+		require.False(t, st.Installed, "proxy facade was adopted: status (%v, %v)", st, err)
+		require.False(t, st.Running, "proxy facade was adopted: status (%v, %v)", st, err)
+		require.False(t, st.Healthy, "proxy facade was adopted: status (%v, %v)", st, err)
 	}
-	if err := ex.Install(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
-		t.Fatalf("install over proxy facade error = %v", err)
+	{
+		err := ex.Install(context.Background(), "ollama")
+		require.Error(t, err, "install over proxy facade error")
+		require.Contains(t, err.Error(), "occupied", "install over proxy facade error (%v)", err)
 	}
-	if err := ex.Start(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
-		t.Fatalf("start over proxy facade error = %v", err)
+	{
+		err := ex.Start(context.Background(), "ollama")
+		require.Error(t, err, "start over proxy facade error")
+		require.Contains(t, err.Error(), "occupied", "start over proxy facade error (%v)", err)
 	}
 	state, _ := ex.state("ollama")
 	state.mu.Lock()
 	state.running = true // stale pre-transition state must not route an action through the facade
 	state.mu.Unlock()
-	if _, err := ex.Action(context.Background(), "ollama", "list_models", nil); err == nil || !strings.Contains(err.Error(), "HTTP 409") {
-		t.Fatalf("action through proxy facade error = %v", err)
+	{
+		_, err := ex.Action(context.Background(), "ollama", "list_models", nil)
+		require.Error(t, err, "action through proxy facade error")
+		require.Contains(t, err.Error(), "HTTP 409", "action through proxy facade error (%v)", err)
 	}
-	if probes.Load() == 0 {
-		t.Fatal("engine identity probe did not carry the proxy sentinel")
-	}
+	require.NotEqual(t, int32(0), probes.Load(), "engine identity probe did not carry the proxy sentinel")
 }
 
 func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
@@ -761,18 +739,28 @@ func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
 	m.Platforms[key] = p
 	ex := newTestExecutor(t, m)
 
-	if st, err := ex.Status("ollama"); err != nil || !st.Running || !st.Healthy {
-		t.Fatalf("initial adoption = %+v, err=%v", st, err)
+	{
+		st, err := ex.Status("ollama")
+		require.NoError(t, err, "initial adoption (%v, %v)", st, err)
+		require.True(t, st.Running, "initial adoption (%v, %v)", st, err)
+		require.True(t, st.Healthy, "initial adoption (%v, %v)", st, err)
 	}
 	isOllama.Store(false)
-	if st, err := ex.Status("ollama"); err != nil || !st.Running || st.Healthy {
-		t.Fatalf("foreign replacement status = %+v, err=%v", st, err)
+	{
+		st, err := ex.Status("ollama")
+		require.NoError(t, err, "foreign replacement status (%v, %v)", st, err)
+		require.True(t, st.Running, "foreign replacement status (%v, %v)", st, err)
+		require.False(t, st.Healthy, "foreign replacement status (%v, %v)", st, err)
 	}
-	if err := ex.Start(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
-		t.Fatalf("Start accepted foreign replacement: %v", err)
+	{
+		err := ex.Start(context.Background(), "ollama")
+		require.Error(t, err, "Start accepted foreign replacement")
+		require.Contains(t, err.Error(), "occupied", "Start accepted foreign replacement (%v)", err)
 	}
-	if err := ex.Install(context.Background(), "ollama"); err == nil || !strings.Contains(err.Error(), "occupied") {
-		t.Fatalf("Install accepted foreign replacement: %v", err)
+	{
+		err := ex.Install(context.Background(), "ollama")
+		require.Error(t, err, "Install accepted foreign replacement")
+		require.Contains(t, err.Error(), "occupied", "Install accepted foreign replacement (%v)", err)
 	}
 }
 
@@ -782,21 +770,15 @@ func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
 func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	baseDir := t.TempDir()
 	bin := filepath.Join(baseDir, "fake", "fakeu"+strconv.Itoa(os.Getpid())+exeExt())
-	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(bin), 0o755))
 	copyFile(t, fakeEngineBin, bin)
 
 	port, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(), "OLLAMA_HOST=127.0.0.1:"+strconv.Itoa(port))
 	configureSysProcAttr(cmd)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	waitPortServing(t, port)
 
@@ -811,15 +793,12 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
-	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
-		t.Fatalf("uninstall: %v", err)
+	require.NoError(t, ex.Uninstall(context.Background(), "fake"), "uninstall")
+	{
+		ok, _ := ex.Detect("fake")
+		require.False(t, ok, "engine still detected after uninstall")
 	}
-	if ok, _ := ex.Detect("fake"); ok {
-		t.Fatal("engine still detected after uninstall")
-	}
-	if portServing(port) {
-		t.Fatal("expected uninstall to stop the running instance")
-	}
+	require.False(t, portServing(port), "expected uninstall to stop the running instance")
 }
 
 func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
@@ -827,22 +806,16 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 	name := "fakeu" + strconv.Itoa(os.Getpid()) + exeExt()
 	managedBin := filepath.Join(baseDir, "fake", name)
 	externalBin := filepath.Join(t.TempDir(), name)
-	if err := os.MkdirAll(filepath.Dir(managedBin), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(managedBin), 0o755))
 	copyFile(t, fakeEngineBin, managedBin)
 	copyFile(t, fakeEngineBin, externalBin)
 
 	port, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cmd := exec.Command(externalBin)
 	cmd.Env = append(os.Environ(), "OLLAMA_HOST=127.0.0.1:"+strconv.Itoa(port))
 	configureSysProcAttr(cmd)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	waitPortServing(t, port)
 
@@ -859,15 +832,10 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
 
 	err = ex.Uninstall(context.Background(), m.Engine)
-	if err == nil || !strings.Contains(err.Error(), "external management") {
-		t.Fatalf("uninstall external same-name owner error = %v", err)
-	}
-	if !portServing(port) {
-		t.Fatal("uninstall killed the externally owned process")
-	}
-	if !fileExists(managedBin) {
-		t.Fatal("uninstall removed managed files after refusing the external owner")
-	}
+	require.Error(t, err, "uninstall external same-name owner error")
+	require.Contains(t, err.Error(), "external management", "uninstall external same-name owner error (%v)", err)
+	require.True(t, portServing(port), "uninstall killed the externally owned process")
+	require.True(t, fileExists(managedBin), "uninstall removed managed files after refusing the external owner")
 }
 
 func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
@@ -882,20 +850,15 @@ func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
 
 	ex := newTestExecutor(t, m) // managed base is a different temp directory
 	err := ex.Uninstall(context.Background(), m.Engine)
-	if err == nil || !strings.Contains(err.Error(), "outside NVPAIR's managed install directory") {
-		t.Fatalf("external uninstall error = %v", err)
-	}
-	if !fileExists(externalBin) {
-		t.Fatal("external executable was removed")
-	}
+	require.Error(t, err, "external uninstall error")
+	require.Contains(t, err.Error(), "outside NVPAIR's managed install directory", "external uninstall error (%v)", err)
+	require.True(t, fileExists(externalBin), "external executable was removed")
 }
 
 func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
 	baseDir := t.TempDir()
 	managedBin := filepath.Join(baseDir, "fake", "fake"+exeExt())
-	if err := os.MkdirAll(filepath.Dir(managedBin), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(managedBin), 0o755))
 	copyFile(t, fakeEngineBin, managedBin)
 
 	srv := httptest.NewServer(http.NotFoundHandler())
@@ -916,12 +879,9 @@ func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
 	err := ex.Uninstall(context.Background(), m.Engine)
-	if err == nil || !strings.Contains(err.Error(), "occupied by an unidentified service") {
-		t.Fatalf("uninstall unidentified listener error = %v", err)
-	}
-	if !fileExists(managedBin) {
-		t.Fatal("uninstall removed managed files while the target port was occupied")
-	}
+	require.Error(t, err, "uninstall unidentified listener error")
+	require.Contains(t, err.Error(), "occupied by an unidentified service", "uninstall unidentified listener error (%v)", err)
+	require.True(t, fileExists(managedBin), "uninstall removed managed files while the target port was occupied")
 }
 
 func waitPortServing(t *testing.T, port int) {
@@ -933,7 +893,7 @@ func waitPortServing(t *testing.T, port int) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("port %d never started serving", port)
+	require.FailNow(t, "test expectation failed", "port %d never started serving", port)
 }
 
 func portServing(port int) bool {
@@ -959,28 +919,26 @@ func TestDownloadVerify(t *testing.T) {
 	ctx := context.Background()
 
 	p, err := ex.download(ctx, "fake", &Fetch{URL: srv.URL + "/installer.ps1", SHA256: good})
-	if err != nil {
-		t.Fatalf("download (ok): %v", err)
-	}
+	require.NoError(t, err, "download (ok)")
 	defer os.Remove(p)
-	if filepath.Ext(p) != ".ps1" {
-		t.Fatalf("downloaded path %q lost its .ps1 suffix", p)
-	}
+	require.Equal(t, ".ps1", filepath.Ext(p), "downloaded path (%v)", p)
 	got, _ := os.ReadFile(p)
-	if string(got) != string(payload) {
-		t.Fatalf("downloaded content mismatch")
-	}
+	require.True(t, string(got) == string(payload), "downloaded content mismatch")
 
-	if _, err := ex.download(ctx, "fake", &Fetch{URL: srv.URL + "/installer.ps1", SHA256: "deadbeef"}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Fatalf("expected checksum mismatch, got %v", err)
+	{
+		_, err := ex.download(ctx, "fake", &Fetch{URL: srv.URL + "/installer.ps1", SHA256: "deadbeef"})
+		require.Error(t, err, "expected checksum mismatch")
+		require.Contains(t, err.Error(), "checksum mismatch", "expected checksum mismatch (%v)", err)
 	}
 
 	notFound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer notFound.Close()
-	if _, err := ex.download(ctx, "fake", &Fetch{URL: notFound.URL, SHA256: good}); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
-		t.Fatalf("expected HTTP 404, got %v", err)
+	{
+		_, err := ex.download(ctx, "fake", &Fetch{URL: notFound.URL, SHA256: good})
+		require.Error(t, err, "expected HTTP 404")
+		require.Contains(t, err.Error(), "HTTP 404", "expected HTTP 404 (%v)", err)
 	}
 }
 
@@ -994,9 +952,8 @@ func TestInstallRefusesAdmin(t *testing.T) {
 
 	ex := newTestExecutor(t, m)
 	err := ex.Install(context.Background(), "fake")
-	if err == nil || !strings.Contains(err.Error(), "refused") {
-		t.Fatalf("expected admin-install refusal, got %v", err)
-	}
+	require.Error(t, err, "expected admin-install refusal")
+	require.Contains(t, err.Error(), "refused", "expected admin-install refusal (%v)", err)
 }
 
 func TestEngineUninstall(t *testing.T) {
@@ -1004,9 +961,7 @@ func TestEngineUninstall(t *testing.T) {
 	// disturbing the shared build artifact other tests rely on.
 	baseDir := t.TempDir()
 	binCopy := filepath.Join(baseDir, "fake", "fake"+exeExt())
-	if err := os.MkdirAll(filepath.Dir(binCopy), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(binCopy), 0o755))
 	copyFile(t, fakeEngineBin, binCopy)
 
 	m := testEngineManifest(binCopy)
@@ -1019,23 +974,21 @@ func TestEngineUninstall(t *testing.T) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
-	if ok, _ := ex.Detect("fake"); !ok {
-		t.Fatal("expected installed before uninstall")
+	{
+		ok, _ := ex.Detect("fake")
+		require.True(t, ok, "expected installed before uninstall")
 	}
-	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
-		t.Fatalf("uninstall: %v", err)
-	}
-	if ok, _ := ex.Detect("fake"); ok {
-		t.Fatal("expected not-installed after uninstall")
+	require.NoError(t, ex.Uninstall(context.Background(), "fake"), "uninstall")
+	{
+		ok, _ := ex.Detect("fake")
+		require.False(t, ok, "expected not-installed after uninstall")
 	}
 }
 
 func TestUninstallNoOpWhenAbsent(t *testing.T) {
 	m := testEngineManifest(filepath.Join(t.TempDir(), "absent"+exeExt()))
 	ex := newTestExecutor(t, m)
-	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
-		t.Fatalf("uninstall of an absent engine should be a no-op, got %v", err)
-	}
+	require.NoError(t, ex.Uninstall(context.Background(), "fake"), "uninstall of an absent engine should be a no-op")
 }
 
 // TestCommandModeLifecycle exercises the "command" runtime mode: start
@@ -1101,27 +1054,16 @@ func TestCommandModeLifecycle(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 
-	if err := ex.Start(context.Background(), "daemon"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if !fileExists(startMarker) {
-		t.Fatal("expected the start command to have run")
-	}
+	require.NoError(t, ex.Start(context.Background(), "daemon"), "start")
+	require.True(t, fileExists(startMarker), "expected the start command to have run")
 	st, _ := ex.Status("daemon")
-	if !st.Running || !st.Healthy {
-		t.Fatalf("expected running+healthy, got %+v", st)
-	}
+	require.True(t, st.Running, "expected running+healthy (%v)", st)
+	require.True(t, st.Healthy, "expected running+healthy (%v)", st)
 
-	if err := ex.Stop("daemon"); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if !fileExists(stopMarker) {
-		t.Fatal("expected the stop command to have run")
-	}
+	require.NoError(t, ex.Stop("daemon"), "stop")
+	require.True(t, fileExists(stopMarker), "expected the stop command to have run")
 	st, _ = ex.Status("daemon")
-	if st.Running {
-		t.Fatalf("expected stopped, got %+v", st)
-	}
+	require.False(t, st.Running, "expected stopped (%v)", st)
 }
 
 // TestCmdAction exercises a CLI action with a param placeholder; it must
@@ -1132,12 +1074,8 @@ func TestCmdAction(t *testing.T) {
 	ex := newTestExecutor(t, m)
 
 	res, err := ex.Action(context.Background(), "fake", "echo", json.RawMessage(`{"model":"llama3"}`))
-	if err != nil {
-		t.Fatalf("cmd action: %v", err)
-	}
-	if !strings.Contains(string(res), "llama3") {
-		t.Fatalf("unexpected cmd-action result: %s", res)
-	}
+	require.NoError(t, err, "cmd action")
+	require.Contains(t, string(res), "llama3", "unexpected cmd-action result (%v)", res)
 }
 
 // TestStartAdoptsAlreadyRunning verifies Start adopts an instance that
@@ -1167,20 +1105,16 @@ func TestStartAdoptsAlreadyRunning(t *testing.T) {
 		},
 	}
 	ex := newTestExecutor(t, m)
-	if err := ex.Start(context.Background(), "adopt"); err != nil {
-		t.Fatalf("expected adoption of the already-serving instance, got: %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), "adopt"), "expected adoption of the already-serving instance")
 	st, _ := ex.Status("adopt")
-	if !st.Installed || !st.Running || !st.Healthy {
-		t.Fatalf("expected running via adoption, got %+v", st)
-	}
+	require.True(t, st.Installed, "expected running via adoption (%v)", st)
+	require.True(t, st.Running, "expected running via adoption (%v)", st)
+	require.True(t, st.Healthy, "expected running via adoption (%v)", st)
 	state, _ := ex.state("adopt")
 	state.mu.Lock()
 	binPath := state.binPath
 	state.mu.Unlock()
-	if binPath != "" {
-		t.Fatalf("service-only adoption retained killable binPath %q", binPath)
-	}
+	require.Equal(t, "", binPath, "service-only adoption retained killable binPath")
 }
 
 func exeExt() string {
@@ -1193,12 +1127,8 @@ func exeExt() string {
 func copyFile(t *testing.T, src, dst string) {
 	t.Helper()
 	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dst, data, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(dst, data, 0o755))
 }
 
 func rmCmd(path string) []string {

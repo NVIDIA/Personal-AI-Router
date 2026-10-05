@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 )
 
@@ -23,15 +26,17 @@ import (
 func TestClusterManagerConfigDirTracksBrokerClusterDir(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "Personal AI Router")
 	b := &Broker{clusterDir: filepath.Join(base, "cluster")}
-	if got := b.clusterManagerConfigDir(); got != base {
-		t.Fatalf("clusterManagerConfigDir = %q, want %q", got, base)
+	{
+		got := b.clusterManagerConfigDir()
+		require.True(t, got == base, "clusterManagerConfigDir (%v, %v)", got, base)
 	}
 
 	// With no cluster dir there is nothing to pass, and the manager falls back to
 	// its own default — the one case where the two can still diverge, which the
 	// broker reports at startup.
-	if got := (&Broker{}).clusterManagerConfigDir(); got != "" {
-		t.Fatalf("clusterManagerConfigDir with no cluster dir = %q, want empty", got)
+	{
+		got := (&Broker{}).clusterManagerConfigDir()
+		require.Equal(t, "", got, "clusterManagerConfigDir with no cluster dir")
 	}
 }
 
@@ -69,28 +74,26 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 
 	select {
 	case got := <-restore:
-		t.Fatalf("restore %q ran before either proxy outcome", got)
+		require.FailNow(t, "test expectation failed", "restore %q ran before either proxy outcome", got)
 	case got := <-advertised:
-		t.Fatalf("%s advertising ran before either proxy outcome", got)
+		require.FailNow(t, "test expectation failed", "%s advertising ran before either proxy outcome", got)
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(b.ollamaPortReady)
 	select {
 	case got := <-restore:
-		t.Fatalf("restore %q ran before LM Studio proxy outcome", got)
+		require.FailNow(t, "test expectation failed", "restore %q ran before LM Studio proxy outcome", got)
 	case got := <-advertised:
-		t.Fatalf("%s advertising ran before LM Studio proxy outcome", got)
+		require.FailNow(t, "test expectation failed", "%s advertising ran before LM Studio proxy outcome", got)
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(b.lmstudioPortReady)
 
 	select {
 	case got := <-restore:
-		if got != restoreEnabledEnginesMethod {
-			t.Fatalf("restore method = %q, want %q", got, restoreEnabledEnginesMethod)
-		}
+		require.True(t, got == restoreEnabledEnginesMethod, "restore method (%v, %v)", got, restoreEnabledEnginesMethod)
 	case <-time.After(2 * time.Second):
-		t.Fatal("enabled-engine restore did not run after both proxy outcomes")
+		require.FailNow(t, "test expectation failed", "enabled-engine restore did not run after both proxy outcomes")
 	}
 	seen := map[string]bool{}
 	for len(seen) < 3 {
@@ -98,12 +101,10 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 		case got := <-advertised:
 			seen[got] = true
 		case <-time.After(2 * time.Second):
-			t.Fatalf("advertising did not start for every engine: %v", seen)
+			require.FailNowf(t, "advertising did not start for every engine", "advertised engines: %v", seen)
 		}
 	}
-	if !<-done {
-		t.Fatal("availability orchestration reported cancellation")
-	}
+	require.True(t, <-done, "availability orchestration reported cancellation")
 }
 
 type orderedLifecycleHandle struct {
@@ -134,9 +135,7 @@ func TestInferenceShutdownStopsTheProxyBeforeEngines(t *testing.T) {
 	proxy := newOrderedLifecycleHandle(engines.ProxyComponent, order)
 	proxySup := newSupervisor(engines.ProxyComponent, noRestartPolicy(),
 		func() (supervisedHandle, error) { return proxy, nil })
-	if err := proxySup.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, proxySup.Start())
 
 	engineClient, engineServer := net.Pipe()
 	defer engineClient.Close()
@@ -158,9 +157,8 @@ func TestInferenceShutdownStopsTheProxyBeforeEngines(t *testing.T) {
 	b.shutdownInferenceStack()
 
 	got := []string{<-order, <-order}
-	if got[0] != engines.ProxyComponent || got[1] != "engine-manager" {
-		t.Fatalf("shutdown order = %v, want [%s engine-manager]", got, engines.ProxyComponent)
-	}
+	require.True(t, got[0] == engines.ProxyComponent, "shutdown order (%v)", got)
+	require.Equal(t, "engine-manager", got[1], "shutdown order (%v)", got)
 }
 
 // A terminally failed proxy releases every engine's ownership gate. Shared fate
@@ -180,9 +178,7 @@ func TestTerminalProxyFailureOpensEveryEnginesGate(t *testing.T) {
 	b.ollamaState().managedFacade.Store(true)
 	b.lmstudioState().managedFacade.Store(true)
 	b.configureProxySupervisorCallbacks(sup)
-	if err := sup.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, sup.Start())
 	defer sup.Stop()
 
 	mustSpawn(t, spawned).crash()
@@ -193,12 +189,11 @@ func TestTerminalProxyFailureOpensEveryEnginesGate(t *testing.T) {
 		select {
 		case <-gate:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("terminal proxy failure left %s ownership pending", name)
+			require.FailNow(t, "test expectation failed", "terminal proxy failure left %s ownership pending", name)
 		}
 	}
-	if b.ollamaState().managedFacade.Load() || b.lmstudioState().managedFacade.Load() {
-		t.Fatal("terminal proxy failure left managed ownership enabled")
-	}
+	require.False(t, b.ollamaState().managedFacade.Load(), "terminal proxy failure left managed ownership enabled")
+	require.False(t, b.lmstudioState().managedFacade.Load(), "terminal proxy failure left managed ownership enabled")
 }
 
 // An unbindable LM Studio facade is given up on by itself: its ownership gate
@@ -246,19 +241,16 @@ func TestUnbindableLMStudioFacadeFinishesWithoutRestartingTheProcess(t *testing.
 	port, ok := b.rebindLMStudioFacadeOrFinish(proxy, 1, managedLMStudioFacadePort)
 	b.lmstudioReadyMu.Unlock()
 
-	if ok || port != 0 {
-		t.Fatalf("rebind reported success (port %d) though every set-port was refused", port)
-	}
+	require.False(t, ok, "rebind reported success (port (%v)", port)
+	require.Equal(t, 0, port, "rebind reported success (port")
 	// The gate has to open, or every engine:status for LM Studio waits out the
 	// call timeout and answers "retry" for the life of the process.
 	select {
 	case <-b.lmstudioPortReady:
 	case <-time.After(2 * time.Second):
-		t.Fatal("an unbindable facade left its ownership gate closed")
+		require.FailNow(t, "test expectation failed", "an unbindable facade left its ownership gate closed")
 	}
-	if b.lmstudioState().managedFacade.Load() {
-		t.Error("managed LM Studio mode survived an unbindable facade")
-	}
+	assert.False(t, b.lmstudioState().managedFacade.Load(), "managed LM Studio mode survived an unbindable facade")
 	// The process is untouched: the same handle is still published for BOTH
 	// engines, so Ollama's facade in that same process keeps serving. Handle
 	// identity is the whole property — a process restart would replace it,
@@ -266,10 +258,6 @@ func TestUnbindableLMStudioFacadeFinishesWithoutRestartingTheProcess(t *testing.
 	//
 	// The Ollama handle is published in the setup precisely so this can fail:
 	// asserting on a slot that was never populated would pass no matter what.
-	if b.getLMStudioProxy() != proxy {
-		t.Error("a facade port failure replaced the shared proxy handle")
-	}
-	if b.getProxy() != proxy {
-		t.Error("a facade port failure disturbed the other engine's handle on the same process")
-	}
+	assert.True(t, b.getLMStudioProxy() == proxy, "a facade port failure replaced the shared proxy handle")
+	assert.True(t, b.getProxy() == proxy, "a facade port failure disturbed the other engine's handle on the same process")
 }

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 )
 
@@ -24,9 +27,7 @@ import (
 // validate content, not the set, so this closes the last gap.
 func TestBundledManifestSetMatchesEngineTable(t *testing.T) {
 	entries, err := fs.ReadDir(bundledManifests, "manifests")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	have := map[string]bool{}
 	for _, e := range entries {
@@ -34,12 +35,10 @@ func TestBundledManifestSetMatchesEngineTable(t *testing.T) {
 	}
 
 	for _, engine := range engines.All() {
-		if !have[engine.Name] {
-			t.Errorf("no manifests/%s.json for engine %q", engine.Name, engine.Name)
-		}
+		assert.True(t, have[engine.Name], "no manifests/")
 		delete(have, engine.Name)
 	}
 	for name := range have {
-		t.Errorf("manifests/%s.json has no entry in nvpair-shared/engines", name)
+		assert.Fail(t, "test expectation failed", "manifests/%s.json has no entry in nvpair-shared/engines", name)
 	}
 }

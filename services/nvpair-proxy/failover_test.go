@@ -16,6 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // rwNop is a no-op io.ReadWriter so a Codec can be constructed in tests
@@ -67,17 +70,11 @@ func testProxy(p engineProfile, disc *Discovery, port int) *Proxy {
 func nodeFor(t *testing.T, id, serverURL string) Node {
 	t.Helper()
 	u, err := url.Parse(serverURL)
-	if err != nil {
-		t.Fatalf("parse %q: %v", serverURL, err)
-	}
+	require.NoError(t, err, "parse (%v, %v)", serverURL, err)
 	host, portStr, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		t.Fatalf("split %q: %v", u.Host, err)
-	}
+	require.NoError(t, err, "split")
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("port %q: %v", portStr, err)
-	}
+	require.NoError(t, err, "port (%v, %v)", portStr, err)
 	return Node{ID: id, Addresses: []string{host}, Port: port}
 }
 
@@ -95,9 +92,8 @@ func TestHandlePlain_PreflightWithoutEngineFails(t *testing.T) {
 		req := corsRequest(http.MethodOptions, tc.inferencePath, "http://app.test")
 		rec := httptest.NewRecorder()
 		p.soleFacade().handlePlain(rec, req)
-		if rec.Code != http.StatusBadGateway || rec.Header().Get("Access-Control-Allow-Origin") != "" {
-			t.Fatalf("status=%d headers=%v", rec.Code, rec.Header())
-		}
+		require.True(t, rec.Code == http.StatusBadGateway, "status")
+		require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"))
 	})
 }
 
@@ -108,9 +104,7 @@ func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		preflightSeen := make(chan struct{}, 1)
 		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodOptions {
-				t.Errorf("engine method = %s, want OPTIONS", r.Method)
-			}
+			assert.True(t, r.Method == http.MethodOptions, "engine method")
 			preflightSeen <- struct{}{}
 			w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -135,16 +129,16 @@ func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
 		select {
 		case <-preflightSeen:
 		default:
-			t.Fatal("engine did not receive the credentialed preflight")
+			require.FailNow(t, "test expectation failed", "engine did not receive the credentialed preflight")
 		}
-		if rec.Code != http.StatusNoContent {
-			t.Errorf("status = %d, want %d", rec.Code, http.StatusNoContent)
+		assert.True(t, rec.Code == http.StatusNoContent, "status")
+		{
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			assert.Equal(t, "https://app.example", got, "Access-Control-Allow-Origin")
 		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want the engine's exact origin", got)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-			t.Errorf("Access-Control-Allow-Credentials = %q, want the engine's true", got)
+		{
+			got := rec.Header().Get("Access-Control-Allow-Credentials")
+			assert.Equal(t, "true", got, "Access-Control-Allow-Credentials")
 		}
 	})
 }
@@ -169,11 +163,13 @@ func TestHandleHTTP_EngineCORSPolicyPreserved(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want the engine's own origin", got)
+		{
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			assert.Equal(t, "https://app.example", got, "Access-Control-Allow-Origin")
 		}
-		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-			t.Errorf("Access-Control-Allow-Credentials = %q, want the engine's true", got)
+		{
+			got := rec.Header().Get("Access-Control-Allow-Credentials")
+			assert.Equal(t, "true", got, "Access-Control-Allow-Credentials")
 		}
 	})
 }
@@ -195,11 +191,13 @@ func TestHandleHTTP_EngineCredentialsWithoutOriginPreserved(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header", got)
+		{
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
 		}
-		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-			t.Errorf("Access-Control-Allow-Credentials = %q, want upstream value preserved", got)
+		{
+			got := rec.Header().Get("Access-Control-Allow-Credentials")
+			assert.Equal(t, "true", got, "Access-Control-Allow-Credentials")
 		}
 	})
 }
@@ -224,14 +222,11 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-		if gotBody != tc.inferenceBody() {
-			t.Errorf("node got body %q, want the original request body", gotBody)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header on success", got)
+		require.True(t, rec.Code == http.StatusOK, "status")
+		assert.True(t, gotBody == tc.inferenceBody(), "node got body (%v)", gotBody)
+		{
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
 		}
 	})
 }
@@ -261,12 +256,8 @@ func TestHandleHTTP_NoRetryOn400(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400 (client errors must not fail over)", rec.Code)
-		}
-		if hits != 1 {
-			t.Errorf("bad node hit %d times, want exactly 1 (no retry on 400)", hits)
-		}
+		require.True(t, rec.Code == http.StatusBadRequest, "status")
+		assert.Equal(t, 1, hits, "bad node hit")
 	})
 }
 
@@ -277,11 +268,10 @@ func TestHandleHTTP_RejectionHasNoCORS(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusBadGateway {
-			t.Fatalf("status = %d, want 502", rec.Code)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header on rejection", got)
+		require.True(t, rec.Code == http.StatusBadGateway, "status")
+		{
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
 		}
 	})
 }
@@ -314,14 +304,11 @@ func TestHandleHTTP_FailoverOn503(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200 (should have failed over past the 503)", rec.Code)
-		}
-		if gotBody != tc.inferenceBody() {
-			t.Errorf("failover node got body %q, want the original request body", gotBody)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header on proxied success", got)
+		require.True(t, rec.Code == http.StatusOK, "status")
+		assert.True(t, gotBody == tc.inferenceBody(), "failover node got body (%v)", gotBody)
+		{
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
 		}
 	})
 }
@@ -346,11 +333,10 @@ func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusBadGateway {
-			t.Fatalf("status = %d, want 502 when all nodes are down", rec.Code)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header on exhausted error", got)
+		require.True(t, rec.Code == http.StatusBadGateway, "status")
+		{
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
 		}
 	})
 }
@@ -383,16 +369,12 @@ func TestHandleHTTP_404FailoverInferenceOnly(t *testing.T) {
 		// Inference POST: 404 on first → fail over → 200.
 		rec := httptest.NewRecorder()
 		newProxy().soleFacade().handleHTTP(rec, tc.inferenceRequest())
-		if rec.Code != http.StatusOK {
-			t.Fatalf("inference 404: status = %d, want 200 (should fail over)", rec.Code)
-		}
+		require.True(t, rec.Code == http.StatusOK, "inference 404: status")
 
 		// An ordinary non-inference GET still returns the first node's 404.
 		rec = httptest.NewRecorder()
 		newProxy().soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.nonInferencePath, nil))
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("non-inference 404: status = %d, want 404 (must NOT fail over)", rec.Code)
-		}
+		require.True(t, rec.Code == http.StatusNotFound, "non-inference 404: status")
 	})
 }
 
@@ -404,12 +386,8 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 	release := make(chan struct{})
 	server := func(body string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet || r.URL.Path != "/api/tags" {
-				t.Errorf("upstream request = %s %s, want GET /api/tags", r.Method, r.URL.Path)
-			}
-			if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
-				t.Errorf("client credentials leaked to fan-out target")
-			}
+			assert.False(t, r.Method != http.MethodGet || r.URL.Path != "/api/tags", "upstream request")
+			assert.False(t, r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "", "client credentials leaked to fan-out target")
 			entered <- struct{}{}
 			<-release
 			_, _ = io.WriteString(w, body)
@@ -450,19 +428,17 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 		case <-entered:
 		case <-time.After(5 * time.Second):
 			close(release)
-			t.Fatal("model-list requests were not issued concurrently")
+			require.FailNow(t, "test expectation failed", "model-list requests were not issued concurrently")
 		}
 	}
 	close(release)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("aggregate request did not finish")
+		require.FailNow(t, "test expectation failed", "aggregate request did not finish")
 	}
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
+	require.True(t, rec.Code == http.StatusOK, "status")
 	var got struct {
 		Models []struct {
 			Name   string `json:"name"`
@@ -470,26 +446,23 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 			Digest string `json:"digest"`
 		} `json:"models"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Models) != 3 || got.Models[0].Model != "a" || got.Models[1].Name != "shared" || got.Models[1].Model != "" || got.Models[2].Model != "c" {
-		t.Fatalf("models = %+v, want a, shared, c", got.Models)
-	}
-	if got.Models[1].Digest != "first" {
-		t.Errorf("duplicate metadata = %q, want deterministic first candidate", got.Models[1].Digest)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header", got)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got.Models, 3)
+	require.Equal(t, "a", got.Models[0].Model)
+	require.Equal(t, "shared", got.Models[1].Name)
+	require.Equal(t, "", got.Models[1].Model)
+	require.Equal(t, "c", got.Models[2].Model)
+	assert.Equal(t, "first", got.Models[1].Digest, "duplicate metadata")
+	{
+		got := rec.Header().Get("Access-Control-Allow-Origin")
+		assert.Equal(t, "", got, "Access-Control-Allow-Origin")
 	}
 	// Addressed to the engine, like every facade-scoped notification: the
 	// broker's process-scoped router claims only workload and node-activity
 	// methods, so an unaddressed request event is dropped rather than relayed.
-	if !events.has(`"method":"ollama:proxy/request-started"`) ||
-		!events.has(`"method":"ollama:proxy/request"`) ||
-		!events.has(`"target":"cluster"`) {
-		t.Errorf("aggregate telemetry missing paired addressed cluster events: %s", events.b)
-	}
+	assert.True(t, events.has(`"method":"ollama:proxy/request-started"`), "aggregate telemetry missing paired addressed cluster events")
+	assert.True(t, events.has(`"method":"ollama:proxy/request"`), "aggregate telemetry missing paired addressed cluster events")
+	assert.True(t, events.has(`"target":"cluster"`), "aggregate telemetry missing paired addressed cluster events")
 }
 
 // TestHandleHTTP_AggregatesOpenAIModelList runs for both engines: /v1/models
@@ -499,9 +472,7 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		serve := func(body string) *httptest.Server {
 			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
-					t.Errorf("upstream request = %s %s, want GET /v1/models", r.Method, r.URL.Path)
-				}
+				assert.False(t, r.Method != http.MethodGet || r.URL.Path != "/v1/models", "upstream request")
 				_, _ = io.WriteString(w, body)
 			}))
 		}
@@ -525,15 +496,14 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 				OwnedBy string `json:"owned_by"`
 			} `json:"data"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-			t.Fatal(err)
-		}
-		if rec.Code != http.StatusOK || got.Object != "list" || len(got.Data) != 3 {
-			t.Fatalf("response = %d %+v", rec.Code, got)
-		}
-		if got.Data[0].ID != "a" || got.Data[1].ID != "shared" || got.Data[1].OwnedBy != "first" || got.Data[2].ID != "c" {
-			t.Fatalf("models = %+v, want a, shared(first), c", got.Data)
-		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		require.True(t, rec.Code == http.StatusOK, "response (%v)", got)
+		require.Equal(t, "list", got.Object, "response (%v)", got)
+		require.Len(t, got.Data, 3, "response (%v)", got)
+		require.Equal(t, "a", got.Data[0].ID)
+		require.Equal(t, "shared", got.Data[1].ID)
+		require.Equal(t, "first", got.Data[1].OwnedBy)
+		require.Equal(t, "c", got.Data[2].ID)
 	})
 }
 
@@ -641,9 +611,7 @@ func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
 		rec := httptest.NewRecorder()
 		testProxy(tc.profile, disc, tc.profile.FacadePort).soleFacade().
 			handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.modelListPath, nil))
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("unavailable status = %d, want 503", rec.Code)
-		}
+		require.True(t, rec.Code == http.StatusServiceUnavailable, "unavailable status")
 
 		// A reachable node with no models is 200 and this engine's own empty
 		// envelope, so its client can parse the response.
@@ -654,9 +622,8 @@ func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
 		rec = httptest.NewRecorder()
 		testProxy(tc.profile, disc, tc.profile.FacadePort).soleFacade().
 			handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.modelListPath, nil))
-		if rec.Code != http.StatusOK || rec.Body.String() != tc.emptyModelList {
-			t.Fatalf("empty response = %d %s, want 200 %s", rec.Code, rec.Body.String(), tc.emptyModelList)
-		}
+		require.True(t, rec.Code == http.StatusOK, "empty response")
+		require.True(t, rec.Body.String() == tc.emptyModelList, "empty response")
 	})
 }
 
@@ -681,9 +648,7 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 		match := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			matchHits++
 			body, _ := io.ReadAll(r.Body)
-			if string(body) != tc.inferenceBody() {
-				t.Errorf("matching node got body %q", body)
-			}
+			assert.True(t, string(body) == tc.inferenceBody(), "matching node got body (%v)", body)
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer match.Close()
@@ -701,29 +666,24 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 		p.soleFacade().SetSelected("selected-miss")
 		p.SetPriority([]string{"a-unknown", "selected-miss", "z-match"})
 		candidates := p.soleFacade().resolveCandidates(tc.requestedModel)
-		if len(candidates) != 1 || candidates[0].id != "z-match" {
-			t.Fatalf("model candidates = %v, want only z-match", candidates)
-		}
+		require.Len(t, candidates, 1, "model candidates")
+		require.Equal(t, "z-match", candidates[0].id, "model candidates (%v)", candidates)
 
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-		if missHits != 0 || unknownHits != 0 || matchHits != 1 {
-			t.Fatalf("hits miss=%d unknown=%d match=%d, want 0/0/1", missHits, unknownHits, matchHits)
-		}
+		require.True(t, rec.Code == http.StatusOK, "status")
+		require.Equal(t, 0, missHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 0, unknownHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 1, matchHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
 
 		// Capability filtering applies only to model-bearing inference.
 		rec = httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.nonInferencePath, nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("non-inference status = %d, want 200", rec.Code)
-		}
-		if missHits != 1 || unknownHits != 0 || matchHits != 1 {
-			t.Fatalf("non-inference hits miss=%d unknown=%d match=%d, want 1/0/1", missHits, unknownHits, matchHits)
-		}
+		require.True(t, rec.Code == http.StatusOK, "non-inference status")
+		require.Equal(t, 1, missHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 0, unknownHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 1, matchHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
 	})
 }
 
@@ -739,15 +699,16 @@ func TestHandleHTTP_InferenceRouting(t *testing.T) {
 					advertisedModel := profile.normalizeModel(requestedModel)
 
 					wrongModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-						t.Error("wrong-model node should not receive request")
+						assert.Fail(t, "test expectation failed", "wrong-model node should not receive request")
 						w.WriteHeader(http.StatusOK)
 					}))
 					defer wrongModel.Close()
 
 					missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(http.StatusNotFound)
-						if _, err := io.WriteString(w, `{"error":"model not found"}`); err != nil {
-							t.Errorf("write missing-model response: %v", err)
+						{
+							_, err := io.WriteString(w, `{"error":"model not found"}`)
+							assert.NoError(t, err, "write missing-model response")
 						}
 					}))
 					defer missing.Close()
@@ -757,7 +718,7 @@ func TestHandleHTTP_InferenceRouting(t *testing.T) {
 					good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						body, err := io.ReadAll(r.Body)
 						if err != nil {
-							t.Errorf("read forwarded request body: %v", err)
+							assert.Fail(t, "test expectation failed", "read forwarded request body: %v", err)
 							w.WriteHeader(http.StatusInternalServerError)
 							return
 						}
@@ -782,15 +743,9 @@ func TestHandleHTTP_InferenceRouting(t *testing.T) {
 					rec := httptest.NewRecorder()
 					p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
 
-					if rec.Code != http.StatusOK {
-						t.Fatalf("status = %d, want 200 after 404 failover", rec.Code)
-					}
-					if gotBody != body {
-						t.Errorf("node got body %q, want %q", gotBody, body)
-					}
-					if gotPath != path {
-						t.Errorf("path = %q, want %q", gotPath, path)
-					}
+					require.True(t, rec.Code == http.StatusOK, "status")
+					assert.True(t, gotBody == body, "node got body (%v, %v)", gotBody, body)
+					assert.True(t, gotPath == path, "path (%v, %v)", gotPath, path)
 				})
 			}
 		})
@@ -832,16 +787,10 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusBadGateway ||
-			!strings.Contains(rec.Body.String(), "no available node advertises the requested model") {
-			t.Fatalf("response = %d %s, want actionable local 502", rec.Code, rec.Body.String())
-		}
-		if hits != 0 {
-			t.Fatalf("ineligible upstreams received %d requests, want 0", hits)
-		}
-		if !events.has("no node advertises requested model") {
-			t.Fatalf("missing rejected request event: %s", events.b)
-		}
+		require.True(t, rec.Code == http.StatusBadGateway, "response")
+		require.Contains(t, rec.Body.String(), "no available node advertises the requested model")
+		require.Equal(t, 0, hits, "ineligible upstreams received")
+		require.True(t, events.has("no node advertises requested model"), "missing rejected request event")
 	})
 }
 
@@ -858,15 +807,11 @@ func TestResolveCandidates_SelfGuard(t *testing.T) {
 		cands := p.soleFacade().resolveCandidates("")
 		var haveReal bool
 		for _, c := range cands {
-			if c.id == "self" {
-				t.Errorf("self-target node must be excluded, got candidate %+v", c)
-			}
+			assert.NotEqual(t, "self", c.id, "self-target node must be excluded, got candidate (%v)", c)
 			if c.id == "real" {
 				haveReal = true
 			}
 		}
-		if !haveReal {
-			t.Errorf("expected the real node to survive the self-guard, candidates = %+v", cands)
-		}
+		assert.True(t, haveReal, "expected the real node to survive the self-guard, candidates (%v)", cands)
 	})
 }

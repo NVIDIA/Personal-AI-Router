@@ -11,12 +11,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"reflect"
+
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	settings "nvpair-shared/enginesettings"
 )
@@ -40,9 +42,7 @@ func settingsExecutor(t *testing.T, command bool) *Executor {
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
 	port, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	p.Runtime.Port = port
 	p.Runtime.Args = []string{"serve"}
 	p.Runtime.EditableLaunch = &EditableLaunch{FixedArgs: []string{"serve"}, Controls: []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"OLLAMA_HOST"}}, {Value: "{cors.origins}", Env: []string{"OLLAMA_ORIGINS"}}}}
@@ -55,8 +55,9 @@ func settingsExecutor(t *testing.T, command bool) *Executor {
 	m.Platforms[key] = p
 	e := newTestExecutor(t, m)
 	e.overrideDir = t.TempDir()
-	if _, err := e.Detect("fake"); err != nil {
-		t.Fatal(err)
+	{
+		_, err := e.Detect("fake")
+		require.NoError(t, err)
 	}
 	t.Cleanup(func() { _ = e.Stop("fake") })
 	return e
@@ -65,9 +66,7 @@ func settingsExecutor(t *testing.T, command bool) *Executor {
 func settingsRequest(t *testing.T, e *Executor) settings.Request {
 	t.Helper()
 	s, err := e.LaunchSettings("fake")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return settings.Request{Engine: "fake", Settings: settings.Config{ServerPort: s.ServerPort, ProxyPort: 54301, LaunchText: s.LaunchText}}
 }
 
@@ -85,30 +84,22 @@ func eachEngineMode(t *testing.T, test func(*testing.T, *Executor)) {
 func previewSettings(t *testing.T, e *Executor, request settings.Request) settings.Preview {
 	t.Helper()
 	preview, err := e.PreviewLaunch(request)
-	if err != nil {
-		t.Fatalf("PreviewLaunch: %v", err)
-	}
+	require.NoError(t, err, "PreviewLaunch")
 	return preview
 }
 
 func settingsState(t *testing.T, e *Executor) *engineState {
 	t.Helper()
 	state, err := e.state("fake")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return state
 }
 
 func assertNoSettingsOverride(t *testing.T, e *Executor) {
 	t.Helper()
 	entries, err := os.ReadDir(e.overrideDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatal("rejected operation wrote configuration")
-	}
+	require.NoError(t, err)
+	require.Len(t, entries, 0, "rejected operation wrote configuration")
 }
 
 func TestSettingsPreviewPreservesLiteralArguments(t *testing.T) {
@@ -116,13 +107,10 @@ func TestSettingsPreviewPreservesLiteralArguments(t *testing.T) {
 		request := settingsRequest(t, e)
 		request.Settings.LaunchText += ` --parallel 3 "two words" "" "{port}" "$HOME"`
 		preview := previewSettings(t, e, request)
-		if len(preview.Errors) != 0 || preview.Conflict != nil {
-			t.Fatalf("valid preview: %+v", preview)
-		}
+		require.Len(t, preview.Errors, 0, "valid preview (%v)", preview)
+		require.Nil(t, preview.Conflict, "valid preview (%v)", preview)
 		want := []string{"--parallel", "3", "two words", "", "{port}", "$HOME"}
-		if !reflect.DeepEqual(preview.Args, want) {
-			t.Fatalf("literal args: %#v, want %#v", preview.Args, want)
-		}
+		require.Equal(t, want, preview.Args, "literal args")
 		assertNoSettingsOverride(t, e)
 	})
 }
@@ -136,22 +124,19 @@ func TestSettingsPreviewPortConflict(t *testing.T) {
 				request.Settings.ServerPort++
 				request.Resolution = resolution
 				preview := previewSettings(t, e, request)
-				if len(preview.Errors) != 0 {
-					t.Fatalf("unexpected errors: %v", preview.Errors)
-				}
+				require.Len(t, preview.Errors, 0, "unexpected errors")
 				if resolution == "" {
-					if preview.Conflict == nil || preview.Conflict.ServerPort != request.Settings.ServerPort || preview.Conflict.LaunchPort != launchPort {
-						t.Fatalf("missing port conflict: %+v", preview)
-					}
+					require.NotNil(t, preview.Conflict, "missing port conflict (%v)", preview)
+					require.True(t, preview.Conflict.ServerPort == request.Settings.ServerPort, "missing port conflict (%v)", preview)
+					require.True(t, preview.Conflict.LaunchPort == launchPort, "missing port conflict (%v)", preview)
 					return
 				}
 				want := request.Settings.ServerPort
 				if resolution == "launch" {
 					want = launchPort
 				}
-				if preview.Conflict != nil || preview.Settings.ServerPort != want {
-					t.Fatalf("resolution %s: %+v, want port %d", resolution, preview, want)
-				}
+				require.Nil(t, preview.Conflict, "resolution (%v, %v, %v)", resolution, preview, want)
+				require.True(t, preview.Settings.ServerPort == want, "resolution (%v, %v, %v)", resolution, preview, want)
 			})
 		})
 	}
@@ -165,8 +150,9 @@ func TestSettingsPreviewChecksOnlyDeclaredControls(t *testing.T) {
 		for _, suffix := range []string{" | other", " && other"} {
 			p := settingsRequest(t, e)
 			p.Settings.LaunchText += suffix
-			if result := previewSettings(t, e, p); result.Errors["launchText"] == "" {
-				t.Fatalf("accepted shell syntax: %q", suffix)
+			{
+				result := previewSettings(t, e, p)
+				require.NotEqual(t, "", result.Errors["launchText"], "accepted shell syntax (%v)", suffix)
 			}
 		}
 		policy := settingsState(t, e).plat.Runtime.EditableLaunch
@@ -174,15 +160,17 @@ func TestSettingsPreviewChecksOnlyDeclaredControls(t *testing.T) {
 			for _, suffix := range []string{" --bind 0.0.0.0", " --port 0", " -- --bind 0.0.0.0"} {
 				p := settingsRequest(t, e)
 				p.Settings.LaunchText += suffix
-				if result := previewSettings(t, e, p); result.Errors["launchText"] == "" {
-					t.Fatalf("accepted invalid managed control: %q", suffix)
+				{
+					result := previewSettings(t, e, p)
+					require.NotEqual(t, "", result.Errors["launchText"], "accepted invalid managed control (%v)", suffix)
 				}
 			}
 		} else {
 			p := settingsRequest(t, e)
 			p.Settings.LaunchText = "OLLAMA_HOST=0.0.0.0:12345"
-			if result := previewSettings(t, e, p); result.Errors["launchText"] == "" {
-				t.Fatal("accepted invalid managed host")
+			{
+				result := previewSettings(t, e, p)
+				require.NotEqual(t, "", result.Errors["launchText"], "accepted invalid managed host")
 			}
 		}
 		assertNoSettingsOverride(t, e)
@@ -194,14 +182,11 @@ func TestSettingsDoesNotGuessNetworkOptionSemantics(t *testing.T) {
 		p := settingsRequest(t, e)
 		want := []string{"--bind-address", "0.0.0.0", "--set", "host=0.0.0.0", "--set=port=22", "--set=--bind=0.0.0.0", "--hostname=anything", "--listen=anything"}
 		text, err := formatLaunchText(want)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		p.Settings.LaunchText += " " + text
 		result := previewSettings(t, e, p)
-		if len(result.Errors) != 0 || !reflect.DeepEqual(result.Args, want) {
-			t.Fatalf("opaque options changed or rejected: %+v", result)
-		}
+		require.Len(t, result.Errors, 0, "opaque options changed or rejected (%v)", result)
+		require.Equal(t, want, result.Args, "opaque options changed or rejected (%v)", result)
 	})
 }
 
@@ -214,43 +199,34 @@ func TestSettingsPreviewAcceptsUnrelatedOptions(t *testing.T) {
 			"--token=test-value", "--password=test-value", "--secret=test-value",
 			"--set=transport=grpc", "--label=host", "--set=api-key=test-value", "--set=token=test-value"}
 		text, err := formatLaunchText(want)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		request.Settings.LaunchText += " " + text
 		preview := previewSettings(t, e, request)
-		if len(preview.Errors) != 0 || preview.Conflict != nil {
-			t.Fatalf("safe options rejected: %+v", preview)
-		}
-		if !reflect.DeepEqual(preview.Args, want) {
-			t.Fatalf("args = %v, want %v", preview.Args, want)
-		}
+		require.Len(t, preview.Errors, 0, "safe options rejected (%v)", preview)
+		require.Nil(t, preview.Conflict, "safe options rejected (%v)", preview)
+		require.Equal(t, want, preview.Args, "args")
 	})
 }
 
 func TestSettingsArgumentsDoNotIncludeExecutableOrSubcommand(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
-		if strings.Contains(p.Settings.LaunchText, fakeEngineBin) || strings.Contains(p.Settings.LaunchText, "server start") || strings.Contains(p.Settings.LaunchText, "serve") {
-			t.Fatalf("manifest command leaked into editor: %q", p.Settings.LaunchText)
-		}
+		require.NotContains(t, p.Settings.LaunchText, fakeEngineBin, "manifest command leaked into editor")
+		require.NotContains(t, p.Settings.LaunchText, "server start", "manifest command leaked into editor")
+		require.NotContains(t, p.Settings.LaunchText, "serve", "manifest command leaked into editor")
 		p.Settings.LaunchText = "different serve"
 		result := previewSettings(t, e, p)
-		if len(result.Errors) != 0 {
-			t.Fatalf("positional arguments rejected: %+v", result)
-		}
+		require.Len(t, result.Errors, 0, "positional arguments rejected (%v)", result)
 		st := settingsState(t, e)
 		rt := st.plat.Runtime
 		rt.LaunchArgs = &result.Args
 		rt.LaunchEnv = &result.Env
 		launch, err := launchForState(st, p.Settings.ServerPort)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		actual, err := applyLiteralLaunch(rt, launch, map[string]string{"host": "127.0.0.1", "port": fmt.Sprint(p.Settings.ServerPort)})
-		if err != nil || actual.Bin != fakeEngineBin || !slices.Equal(actual.Args[:len(rt.EditableLaunch.FixedArgs)], rt.EditableLaunch.FixedArgs) {
-			t.Fatalf("arguments changed the executable/subcommand: %+v %v", actual, err)
-		}
+		require.NoError(t, err, "arguments changed the executable/subcommand (%v, %v)", actual, err)
+		require.True(t, actual.Bin == fakeEngineBin, "arguments changed the executable/subcommand (%v, %v)", actual, err)
+		assert.Equal(t, rt.EditableLaunch.FixedArgs, actual.Args[:len(rt.EditableLaunch.FixedArgs)], "arguments changed the executable/subcommand")
 	})
 }
 
@@ -258,19 +234,15 @@ func TestSettingsMigratesFullCommandWithoutChangingArguments(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
 		launch, err := launchForState(settingsState(t, e), p.Settings.ServerPort)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		p.Settings.LaunchText, err = launch.text()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		p.Settings.LaunchText += ` --future-option "two words"`
 		p.Format = "pair-launch-v1"
 		result := previewSettings(t, e, p)
-		if len(result.Errors) != 0 || !reflect.DeepEqual(result.Args, []string{"--future-option", "two words"}) || strings.Contains(result.Settings.LaunchText, fakeEngineBin) {
-			t.Fatalf("migration changed arguments: %+v", result)
-		}
+		require.Len(t, result.Errors, 0, "migration changed arguments (%v)", result)
+		require.Equal(t, []string{"--future-option", "two words"}, result.Args, "migration changed arguments (%v)", result)
+		require.NotContains(t, result.Settings.LaunchText, fakeEngineBin, "migration changed arguments (%v)", result)
 	})
 }
 
@@ -279,30 +251,25 @@ func TestSettingsEmptyArgumentsRestoreManagedDefaults(t *testing.T) {
 		p := settingsRequest(t, e)
 		p.Settings.LaunchText = ""
 		result := previewSettings(t, e, p)
-		if len(result.Errors) != 0 || len(result.Args) != 0 || len(result.Env) != 0 || result.Settings.ServerPort != p.Settings.ServerPort {
-			t.Fatalf("empty arguments did not restore defaults: %+v", result)
-		}
+		require.Len(t, result.Errors, 0, "empty arguments did not restore defaults (%v)", result)
+		require.Len(t, result.Args, 0, "empty arguments did not restore defaults (%v)", result)
+		require.Len(t, result.Env, 0, "empty arguments did not restore defaults (%v)", result)
+		require.True(t, result.Settings.ServerPort == p.Settings.ServerPort, "empty arguments did not restore defaults (%v)", result)
 	})
 }
 
 func readSettingsOverride(t *testing.T, e *Executor) Runtime {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(e.overrideDir, "fake.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var override struct {
 		Platforms map[string]struct {
 			Runtime Runtime `json:"runtime"`
 		} `json:"platforms"`
 	}
-	if err := json.Unmarshal(data, &override); err != nil {
-		t.Fatalf("decode override: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(data, &override), "decode override")
 	platform, ok := override.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
-	if !ok {
-		t.Fatal("host platform missing from override")
-	}
+	require.True(t, ok, "host platform missing from override")
 	return platform.Runtime
 }
 
@@ -323,9 +290,7 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 			startLog := filepath.Join(t.TempDir(), "starts.jsonl")
 			st.plat.Runtime.Env["FAKE_START_LOG"] = startLog
 			if want != staysStopped {
-				if err := e.Start(context.Background(), "fake"); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, e.Start(context.Background(), "fake"))
 			}
 			pid := func() int {
 				st.mu.Lock()
@@ -339,14 +304,11 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 			request := settingsRequest(t, e)
 			edit(t, &request)
 			preview := previewSettings(t, e, request)
-			if len(preview.Errors) != 0 || preview.Conflict != nil {
-				t.Fatalf("preview: %+v", preview)
-			}
+			require.Len(t, preview.Errors, 0, "preview (%v)", preview)
+			require.Nil(t, preview.Conflict, "preview (%v)", preview)
 			rebinds := 0
 			result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func() error { rebinds++; return nil })
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			got := staysStopped
 			if result.Running {
 				got = preservesProcess
@@ -354,30 +316,28 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 			if pid() != before {
 				got = restartsProcess
 			}
-			if got != want || rebinds != 1 {
-				t.Fatalf("result=%+v pid=%d previous=%d rebinds=%d", result, pid(), before, rebinds)
-			}
-			if result.ServerPort != preview.Settings.ServerPort {
-				t.Fatalf("port=%d, want %d", result.ServerPort, preview.Settings.ServerPort)
-			}
+			require.True(t, got == want, "result (%v, %v, %v)", result, before, rebinds)
+			require.Equal(t, 1, rebinds, "result (%v, %v, %v)", result, before, rebinds)
+			require.True(t, result.ServerPort == preview.Settings.ServerPort, "port")
 			override := readSettingsOverride(t, e)
-			if override.LaunchArgs == nil || !reflect.DeepEqual(*override.LaunchArgs, preview.Args) {
-				t.Fatalf("persisted arguments = %v, want %v", override.LaunchArgs, preview.Args)
-			}
+			require.NotNil(t, override.LaunchArgs, "persisted arguments")
+			require.Equal(t, preview.Args, *override.LaunchArgs, "persisted arguments")
 			if want != staysStopped {
 				data, err := os.ReadFile(startLog)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				launches := 1
 				if want == restartsProcess {
 					launches++
 				}
-				if count := bytes.Count(data, []byte("\n")); count != launches {
-					t.Fatalf("launch count=%d, want %d", count, launches)
+				{
+					count := bytes.Count(data, []byte("\n"))
+					require.True(t, count == launches, "launch count (%v, %v)", count, launches)
 				}
-			} else if _, err := os.Stat(startLog); !os.IsNotExist(err) {
-				t.Fatalf("stopped engine launched: %v", err)
+			} else {
+				{
+					_, err := os.Stat(startLog)
+					require.True(t, os.IsNotExist(err), "stopped engine launched (%v)", err)
+				}
 			}
 		})
 	}
@@ -390,9 +350,7 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 	})
 	test("server port restarts process", restartsProcess, func(t *testing.T, request *settings.Request) {
 		port, err := freePort()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		request.Settings.ServerPort = port
 		request.Resolution = "server"
 	})
@@ -406,61 +364,45 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 func TestSettingsNoOpApplyKeepsEngineLogCapture(t *testing.T) {
 	e := settingsExecutor(t, false)
 	st := settingsState(t, e)
-	if err := e.Start(context.Background(), "fake"); err != nil {
-		t.Fatal(err)
-	}
-	if len(st.logs.snapshot()) == 0 {
-		t.Fatal("no engine output captured before Apply")
-	}
+	require.NoError(t, e.Start(context.Background(), "fake"))
+	require.NotEqual(t, 0, len(st.logs.snapshot()), "no engine output captured before Apply")
 	request := settingsRequest(t, e)
 	preview, err := e.PreviewLaunch(request)
-	if err != nil || len(preview.Errors) > 0 {
-		t.Fatalf("preview: %+v %v", preview, err)
-	}
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func() error { return nil }); err != nil {
-		t.Fatal(err)
+	require.NoError(t, err, "preview (%v, %v)", preview, err)
+	require.LessOrEqual(t, len(preview.Errors), 0, "preview (%v, %v)", preview, err)
+	{
+		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func() error { return nil })
+		require.NoError(t, err)
 	}
 	st.mu.Lock()
 	persisted := st.plat.Runtime.LaunchEnv
 	st.mu.Unlock()
-	if persisted == nil || len(*persisted) != 0 {
-		t.Fatalf("expected a no-op Apply to leave an empty launch_env, got %v", persisted)
-	}
-	if err := e.Stop("fake"); err != nil {
-		t.Fatal(err)
-	}
+	require.NotNil(t, persisted, "expected a no-op Apply to leave an empty launch_env")
+	require.Len(t, *persisted, 0, "expected a no-op Apply to leave an empty launch_env (%v)", persisted)
+	require.NoError(t, e.Stop("fake"))
 	before := len(st.logs.snapshot())
-	if err := e.Start(context.Background(), "fake"); err != nil {
-		t.Fatal(err)
-	}
-	if len(st.logs.snapshot()) == before {
-		t.Fatal("engine log capture stopped after a no-op Apply persisted an empty launch_env")
-	}
+	require.NoError(t, e.Start(context.Background(), "fake"))
+	require.True(t, len(st.logs.snapshot()) != before, "engine log capture stopped after a no-op Apply persisted an empty launch_env")
 }
 
 func TestSettingsEarlyLaunchFailureRetainsDesiredOptions(t *testing.T) {
 	e := settingsExecutor(t, false)
-	if err := e.Start(context.Background(), "fake"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, e.Start(context.Background(), "fake"))
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += " --fail-launch private-value"
 	started := time.Now()
 	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil })
-	if err == nil || result.Running || !strings.Contains(err.Error(), "exited before readiness") {
-		t.Fatalf("early failure misreported: %+v %v", result, err)
-	}
-	if time.Since(started) > 5*time.Second {
-		t.Fatal("early exit waited through readiness timeout")
-	}
-	if !strings.Contains(result.LaunchText, "--fail-launch") {
-		t.Fatal("failed desired arguments lost")
-	}
-	if !strings.Contains(err.Error(), "invalid launch") || strings.Contains(err.Error(), "private-value") {
-		t.Fatal("vendor echo escaped into error")
-	}
-	if errors := e.Errors(); hasErr(errors, startFailedID("fake")) || hasErr(errors, exitedID("fake")) {
-		t.Fatalf("settings failure was also reported through the global dialog: %+v", errors)
+	require.Error(t, err, "early failure misreported (%v, %v)", result, err)
+	require.False(t, result.Running, "early failure misreported (%v, %v)", result, err)
+	require.Contains(t, err.Error(), "exited before readiness", "early failure misreported (%v, %v)", result, err)
+	require.LessOrEqual(t, time.Since(started), 5*time.Second, "early exit waited through readiness timeout")
+	require.Contains(t, result.LaunchText, "--fail-launch", "failed desired arguments lost")
+	require.Contains(t, err.Error(), "invalid launch", "vendor echo escaped into error")
+	require.NotContains(t, err.Error(), "private-value", "vendor echo escaped into error")
+	{
+		errors := e.Errors()
+		require.False(t, hasErr(errors, startFailedID("fake")), "settings failure was also reported through the global dialog (%v)", errors)
+		require.False(t, hasErr(errors, exitedID("fake")), "settings failure was also reported through the global dialog (%v)", errors)
 	}
 }
 
@@ -468,14 +410,16 @@ func TestEarlyExitHasOneStartError(t *testing.T) {
 	e := settingsExecutor(t, false)
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += " --fail-launch"
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil }); err != nil {
-		t.Fatal(err)
+	{
+		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil })
+		require.NoError(t, err)
 	}
-	if err := e.Start(context.Background(), "fake"); err == nil {
-		t.Fatal("expected failed start")
-	}
-	if errors := e.Errors(); len(errors) != 1 || !hasErr(errors, startFailedID("fake")) || hasErr(errors, exitedID("fake")) {
-		t.Fatalf("expected one start failure, got %+v", errors)
+	require.Error(t, e.Start(context.Background(), "fake"), "expected failed start")
+	{
+		errors := e.Errors()
+		require.Len(t, errors, 1, "expected one start failure")
+		require.True(t, hasErr(errors, startFailedID("fake")), "expected one start failure (%v)", errors)
+		require.False(t, hasErr(errors, exitedID("fake")), "expected one start failure (%v)", errors)
 	}
 }
 
@@ -487,19 +431,15 @@ func TestSettingsCORSOriginsValidationAndNormalization(t *testing.T) {
 			request.Settings.LaunchText = `OLLAMA_ORIGINS="` + origins + `" ` + request.Settings.LaunchText
 			result := previewSettings(t, e, request)
 			if wantError != "" {
-				if !strings.Contains(result.Errors["launchText"], wantError) {
-					t.Fatalf("expected %q: %+v", wantError, result)
-				}
+				require.Contains(t, result.Errors["launchText"], wantError, "expected (%v, %v)", wantError, result)
 			} else {
-				if len(result.Errors) != 0 {
-					t.Fatalf("valid origins rejected: %+v", result)
-				}
+				require.Len(t, result.Errors, 0, "valid origins rejected (%v)", result)
 				env, err := literalEnvironment(result.Env)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if value, ok := env["OLLAMA_ORIGINS"]; !ok || value != origins {
-					t.Fatalf("origins = %q (present %v), want %q", value, ok, origins)
+				require.NoError(t, err)
+				{
+					value, ok := env["OLLAMA_ORIGINS"]
+					require.True(t, ok, "origins (%v, %v, %v)", value, ok, origins)
+					require.True(t, value == origins, "origins (%v, %v, %v)", value, ok, origins)
 				}
 			}
 			assertNoSettingsOverride(t, e)
@@ -534,12 +474,11 @@ func TestSettingsCORSIsOptionalAndIndependentOfEngine(t *testing.T) {
 			request := settingsRequest(t, e)
 			request.Settings.LaunchText = prefix + request.Settings.LaunchText + suffix
 			preview := previewSettings(t, e, request)
-			if (len(preview.Errors) != 0) != wantError {
-				t.Fatalf("preview errors = %v, want error %v", preview.Errors, wantError)
-			}
+			require.True(t, (len(preview.Errors) != 0) == wantError, "preview errors (%v)", wantError)
 			if !wantError {
-				if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil }); err != nil {
-					t.Fatal(err)
+				{
+					_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
+					require.NoError(t, err)
 				}
 			}
 		})
@@ -560,17 +499,12 @@ func TestSettingsPassesUnknownEnvironmentNamesAndValues(t *testing.T) {
 		want := []string{"FUTURE_ENGINE_SETTING=unknown-value", "OLLAMA_CONTEXT_LENGTH=not-a-number",
 			"OLLAMA_HOSTNAME=example.test", "PATH=/custom", "LD_LIBRARY_PATH=/custom/lib"}
 		text, err := formatLaunchText(want)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		request.Settings.LaunchText = text + " " + request.Settings.LaunchText
 		preview := previewSettings(t, e, request)
-		if len(preview.Errors) != 0 || preview.Conflict != nil {
-			t.Fatalf("opaque environment rejected: %+v", preview)
-		}
-		if !reflect.DeepEqual(preview.Env, want) {
-			t.Fatalf("environment = %v, want %v", preview.Env, want)
-		}
+		require.Len(t, preview.Errors, 0, "opaque environment rejected (%v)", preview)
+		require.Nil(t, preview.Conflict, "opaque environment rejected (%v)", preview)
+		require.Equal(t, want, preview.Env, "environment")
 		assertNoSettingsOverride(t, e)
 	})
 }
@@ -579,23 +513,16 @@ func manifestSettingsRequest(t *testing.T, platform string) (*Executor, settings
 	t.Helper()
 	reg := loadWithOverrides(t, t.TempDir())
 	manifest, ok := reg.Get("ollama")
-	if !ok {
-		t.Fatal("Ollama manifest missing")
-	}
+	require.True(t, ok, "Ollama manifest missing")
 	config, ok := manifest.Platforms[platform]
-	if !ok {
-		t.Fatalf("platform %q missing", platform)
-	}
+	require.True(t, ok, "platform (%v)", platform)
 	e := settingsExecutor(t, false)
 	graftPlatform(t, e, config)
 	request := settingsRequest(t, e)
 	tokens, err := parseLaunchText(request.Settings.LaunchText)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tokens) == 0 || !strings.HasPrefix(tokens[0], "LD_LIBRARY_PATH=") {
-		t.Fatalf("missing manifest library path: %v", tokens)
-	}
+	require.NoError(t, err)
+	require.NotEqual(t, 0, len(tokens), "missing manifest library path (%v)", tokens)
+	require.True(t, strings.HasPrefix(tokens[0], "LD_LIBRARY_PATH="), "missing manifest library path (%v)", tokens)
 	return e, request, tokens
 }
 
@@ -606,20 +533,19 @@ func TestSettingsManifestEnvironmentCanBeOverridden(t *testing.T) {
 			tokens[0] = "LD_LIBRARY_PATH=" + replacement
 			var err error
 			request.Settings.LaunchText, err = formatLaunchText(tokens)
-			if err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			{
+				preview := previewSettings(t, e, request)
+				require.Len(t, preview.Errors, 0, "rejected replacement library path (%v, %v)", replacement, preview)
 			}
-			if preview := previewSettings(t, e, request); len(preview.Errors) != 0 {
-				t.Fatalf("rejected replacement library path %q: %+v", replacement, preview)
-			}
-			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil }); err != nil {
-				t.Fatal(err)
+			{
+				_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
+				require.NoError(t, err)
 			}
 			override := readSettingsOverride(t, e)
 			env, err := literalEnvironment(*override.LaunchEnv)
-			if err != nil || env["LD_LIBRARY_PATH"] != replacement {
-				t.Fatalf("saved environment = %v, error %v", env, err)
-			}
+			require.NoError(t, err, "saved environment (%v, %v)", env, err)
+			require.True(t, env["LD_LIBRARY_PATH"] == replacement, "saved environment (%v, %v)", env, err)
 		})
 	}
 	test("amd64 custom directory", "linux/amd64", "/custom/libraries")
@@ -637,31 +563,24 @@ func TestSettingsSafeEditPreservesManifestEnvironment(t *testing.T) {
 			if omitFixed {
 				var err error
 				request.Settings.LaunchText, err = formatLaunchText(tokens[1:])
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 			}
 			request.Settings.LaunchText = "OLLAMA_NUM_PARALLEL=3 " + request.Settings.LaunchText
 			preview := previewSettings(t, e, request)
-			if len(preview.Errors) != 0 {
-				t.Fatalf("safe edit rejected: %+v", preview)
-			}
+			require.Len(t, preview.Errors, 0, "safe edit rejected (%v)", preview)
 			actual, err := parseLaunchText(preview.Settings.LaunchText)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(actual) == 0 || actual[0] != tokens[0] {
-				t.Fatalf("safe edit lost fixed library path: %v", actual)
-			}
-			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil }); err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			require.NotEqual(t, 0, len(actual), "safe edit lost fixed library path (%v)", actual)
+			require.True(t, actual[0] == tokens[0], "safe edit lost fixed library path (%v)", actual)
+			{
+				_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
+				require.NoError(t, err)
 			}
 			state := settingsState(t, e)
 			state.installDir = "/updated-install"
 			launch, err := launchForState(state, request.Settings.ServerPort)
-			if err != nil || launch.Env["LD_LIBRARY_PATH"] != "/updated-install/lib/ollama" {
-				t.Fatalf("default environment stopped following the manifest: %v, %v", launch.Env, err)
-			}
+			require.NoError(t, err, "default environment stopped following the manifest")
+			require.Equal(t, "/updated-install/lib/ollama", launch.Env["LD_LIBRARY_PATH"], "default environment stopped following the manifest (%v)", err)
 		})
 	}
 	test("amd64 retains fixed assignment", "linux/amd64", false)
@@ -674,9 +593,7 @@ func TestSettingsBudgetCoversBundledReadiness(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	for _, name := range reg.Names() {
 		manifest, ok := reg.Get(name)
-		if !ok {
-			t.Fatalf("manifest %q missing", name)
-		}
+		require.True(t, ok, "manifest (%v)", name)
 		for platform, config := range manifest.Platforms {
 			rt := config.Runtime
 			if rt.EditableLaunch == nil || rt.Ready == nil {
@@ -686,14 +603,12 @@ func TestSettingsBudgetCoversBundledReadiness(t *testing.T) {
 			if rt.Stop != nil {
 				required += time.Duration(rt.Stop.GraceS) * time.Second
 			}
-			if settings.ConfigureBudget <= required {
-				t.Errorf("%s/%s: configure budget %s cuts off stop/readiness allowance %s", name, platform, settings.ConfigureBudget, required)
-			}
+			assert.Greater(t, settings.ConfigureBudget, required, " (%v, %v, %v)", name, platform, required)
 		}
 	}
-	if settings.OperationBudget <= settings.ConfigureBudget || settings.CallBudget <= settings.OperationBudget || settings.RelayBudget <= settings.CallBudget {
-		t.Fatal("settings callers must leave headroom above the operation they await")
-	}
+	require.Greater(t, settings.OperationBudget, settings.ConfigureBudget, "settings callers must leave headroom above the operation they await")
+	require.Greater(t, settings.CallBudget, settings.OperationBudget, "settings callers must leave headroom above the operation they await")
+	require.Greater(t, settings.RelayBudget, settings.CallBudget, "settings callers must leave headroom above the operation they await")
 }
 
 func TestSavedLaunchOverridesManifestEnvironmentLiterally(t *testing.T) {
@@ -707,21 +622,16 @@ func TestSavedLaunchOverridesManifestEnvironmentLiterally(t *testing.T) {
 		env := []string{"LD_LIBRARY_PATH=" + value}
 		rt.LaunchEnv = &env
 		launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"})
-		if err != nil || launch.Env["LD_LIBRARY_PATH"] != value {
-			t.Errorf("saved launch environment = %v, error %v; want literal %q", launch.Env, err, value)
-		}
+		assert.NoError(t, err, "saved launch environment (%v, %v)", err, value)
+		assert.True(t, launch.Env["LD_LIBRARY_PATH"] == value, "saved launch environment (%v, %v)", err, value)
 	}
 }
 
 func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
 	e := settingsExecutor(t, false)
-	if err := e.Start(context.Background(), "fake"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, e.Start(context.Background(), "fake"))
 	proxy, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = proxy.Close() })
 	p := settingsRequest(t, e)
 	oldServer := p.Settings.ServerPort
@@ -729,9 +639,9 @@ func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
 	p.Settings.ProxyPort = oldServer
 	p.Resolution = "server"
 	preview, err := e.PreviewLaunch(p)
-	if err != nil || len(preview.Errors) != 0 || preview.Conflict != nil {
-		t.Fatalf("swap preview: %+v %v", preview, err)
-	}
+	require.NoError(t, err, "swap preview (%v, %v)", preview, err)
+	require.Len(t, preview.Errors, 0, "swap preview (%v, %v)", preview, err)
+	require.Nil(t, preview.Conflict, "swap preview (%v, %v)", preview, err)
 	rebinds := 0
 	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func() error {
 		rebinds++
@@ -745,9 +655,10 @@ func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
 		proxy = next
 		return nil
 	})
-	if err != nil || !result.Running || result.EffectivePort != p.Settings.ServerPort || rebinds != 1 {
-		t.Fatalf("live swap: %+v rebinds=%d err=%v", result, rebinds, err)
-	}
+	require.NoError(t, err, "live swap (%v, %v, %v)", result, rebinds, err)
+	require.True(t, result.Running, "live swap (%v, %v, %v)", result, rebinds, err)
+	require.True(t, result.EffectivePort == p.Settings.ServerPort, "live swap (%v, %v, %v)", result, rebinds, err)
+	require.Equal(t, 1, rebinds, "live swap (%v, %v, %v)", result, rebinds, err)
 }
 
 func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T) {
@@ -763,34 +674,32 @@ func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T
 	rt.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopped}}
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += ` "{port}" "$HOME" "two words" ""`
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil }); err != nil {
-		t.Fatal(err)
+	{
+		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil })
+		require.NoError(t, err)
 	}
-	if err := e.Start(context.Background(), "fake"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, e.Start(context.Background(), "fake"))
 	data, err := os.ReadFile(capture)
 	var args []string
-	if err != nil || json.Unmarshal(data, &args) != nil || len(args) < 4 || !reflect.DeepEqual(args[len(args)-4:], []string{"{port}", "$HOME", "two words", ""}) {
-		t.Fatalf("command mode expanded literal options: %s %v", data, err)
-	}
-	if err := e.Stop("fake"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(stopped); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "command mode expanded literal options (%v, %v)", data, err)
+	require.Nil(t, json.Unmarshal(data, &args), "command mode expanded literal options (%v, %v)", data, err)
+	require.GreaterOrEqual(t, len(args), 4, "command mode expanded literal options (%v, %v)", data, err)
+	require.Equal(t, []string{"{port}", "$HOME", "two words", ""}, args[len(args)-4:], "command mode expanded literal options (%v, %v)", data, err)
+	require.NoError(t, e.Stop("fake"))
+	require.NoError(t, os.Remove(stopped))
 	p = settingsRequest(t, e)
 	p.Settings.LaunchText += " --fail-launch private-value"
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil }); err != nil {
-		t.Fatal(err)
+	{
+		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil })
+		require.NoError(t, err)
 	}
 	err = e.Start(context.Background(), "fake")
-	if err == nil || !strings.Contains(err.Error(), "invalid launch") || strings.Contains(err.Error(), "private-value") {
-		t.Fatalf("failed command output was not classified safely: %v", err)
-	}
-	if _, err := os.Stat(stopped); err != nil {
-		t.Fatal("failed first command did not run official cleanup")
+	require.Error(t, err, "failed command output was not classified safely")
+	require.Contains(t, err.Error(), "invalid launch", "failed command output was not classified safely (%v)", err)
+	require.NotContains(t, err.Error(), "private-value", "failed command output was not classified safely (%v)", err)
+	{
+		_, err := os.Stat(stopped)
+		require.NoError(t, err, "failed first command did not run official cleanup")
 	}
 }
 
@@ -809,63 +718,47 @@ func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) 
 			}
 			captureEnv := filepath.Join(t.TempDir(), "env.json")
 			prefix, err := formatLaunchText([]string{"PAIR_TEST_ENV_FILE=" + captureEnv, "OLLAMA_ORIGINS=http://localhost", `PAIR_TEST_LITERAL=$HOME {port} C:\new\tools`, "PAIR_TEST_EMPTY="})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			p := settingsRequest(t, e)
 			p.Settings.LaunchText = prefix + " " + p.Settings.LaunchText
 			configure := func() settings.LaunchState {
 				result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil })
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				return result
 			}
-			if configure().Running {
-				t.Fatal("environment edit started stopped engine")
-			}
-			if err := e.Start(context.Background(), "fake"); err != nil {
-				t.Fatal(err)
-			}
+			require.False(t, configure().Running, "environment edit started stopped engine")
+			require.NoError(t, e.Start(context.Background(), "fake"))
 			readEnv := func() map[string]string {
 				data, err := os.ReadFile(captureEnv)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				var env map[string]string
-				if err := json.Unmarshal(data, &env); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, json.Unmarshal(data, &env))
 				return env
 			}
-			if env := readEnv(); env["OLLAMA_ORIGINS"] != "http://localhost" || env["PAIR_TEST_LITERAL"] != `$HOME {port} C:\new\tools` || env["PAIR_TEST_EMPTY"] != "" {
-				t.Fatalf("environment not passed literally: %#v", env)
+			{
+				env := readEnv()
+				require.Equal(t, "http://localhost", env["OLLAMA_ORIGINS"], "environment not passed literally (%v)", env)
+				require.Equal(t, `$HOME {port} C:\new\tools`, env["PAIR_TEST_LITERAL"], "environment not passed literally (%v)", env)
+				require.Equal(t, "", env["PAIR_TEST_EMPTY"], "environment not passed literally (%v)", env)
 			}
 			p = settingsRequest(t, e)
 			p.Settings.LaunchText = strings.Replace(p.Settings.LaunchText, `OLLAMA_ORIGINS="http://localhost"`, `OLLAMA_ORIGINS="http://example.test"`, 1)
-			if !configure().Running || readEnv()["OLLAMA_ORIGINS"] != "http://example.test" {
-				t.Fatal("environment-only edit did not restart with new value")
-			}
+			require.True(t, configure().Running, "environment-only edit did not restart with new value")
+			require.Equal(t, "http://example.test", readEnv()["OLLAMA_ORIGINS"], "environment-only edit did not restart with new value")
 			p = settingsRequest(t, e)
 			p.Settings.LaunchText = strings.Replace(p.Settings.LaunchText, `OLLAMA_ORIGINS="http://example.test" `, "", 1)
 			configure()
-			if readEnv()["OLLAMA_ORIGINS"] != "" {
-				t.Fatal("removed environment variable survived")
-			}
+			require.Equal(t, "", readEnv()["OLLAMA_ORIGINS"], "removed environment variable survived")
 			override := readSettingsOverride(t, e)
-			if override.LaunchEnv == nil {
-				t.Fatal("launch environment missing from override")
-			}
+			require.NotNil(t, override.LaunchEnv, "launch environment missing from override")
 			env, err := literalEnvironment(*override.LaunchEnv)
-			if err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			{
+				_, exists := env["OLLAMA_ORIGINS"]
+				require.False(t, exists, "removed environment variable remains in override")
 			}
-			if _, exists := env["OLLAMA_ORIGINS"]; exists {
-				t.Fatal("removed environment variable remains in override")
-			}
-			if env["PAIR_TEST_ENV_FILE"] != captureEnv || env["PAIR_TEST_LITERAL"] != `$HOME {port} C:\new\tools` {
-				t.Fatalf("unrelated environment values lost: %v", env)
-			}
+			require.True(t, env["PAIR_TEST_ENV_FILE"] == captureEnv, "unrelated environment values lost (%v)", env)
+			require.Equal(t, `$HOME {port} C:\new\tools`, env["PAIR_TEST_LITERAL"], "unrelated environment values lost (%v)", env)
 		})
 	}
 }
@@ -876,9 +769,8 @@ func TestSettingsEnvironmentValidation(t *testing.T) {
 		p := settingsRequest(t, e)
 		p.Settings.LaunchText = prefix + " " + p.Settings.LaunchText
 		result, err := e.PreviewLaunch(p)
-		if err != nil || len(result.Errors) == 0 {
-			t.Fatalf("invalid assignment accepted: %+v %v", result, err)
-		}
+		require.NoError(t, err, "invalid assignment accepted (%v, %v)", result, err)
+		require.NotEqual(t, 0, len(result.Errors), "invalid assignment accepted (%v, %v)", result, err)
 	}
 }
 
@@ -894,34 +786,22 @@ func TestSettingsFailedStopLeavesSavedConfigurationIntact(t *testing.T) {
 	rt.EditableLaunch.FixedArgs = []string{"captureargs", capture}
 	rt.Ready, rt.Health = nil, nil
 	rt.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "failmark", filepath.Join(t.TempDir(), "stop-attempts")}}
-	if err := e.Start(context.Background(), "fake"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, e.Start(context.Background(), "fake"))
 	override := filepath.Join(e.overrideDir, "fake.json")
 	before, err := os.ReadFile(override)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
+	require.False(t, err != nil && !os.IsNotExist(err))
 	request := settingsRequest(t, e)
 	request.Settings.LaunchText += " --parallel 7"
 	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error {
-		t.Error("rebound an engine that could not be stopped")
+		assert.Fail(t, "test expectation failed", "rebound an engine that could not be stopped")
 		return nil
 	})
-	if err == nil {
-		t.Fatalf("failed stop reported success: %+v", result)
-	}
+	require.Error(t, err, "failed stop reported success (%v)", result)
 	after, readErr := os.ReadFile(override)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatal(readErr)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatalf("stop failure still rewrote saved configuration: %q -> %q", before, after)
-	}
+	require.False(t, readErr != nil && !os.IsNotExist(readErr))
+	assert.Equal(t, before, after, "stop failure still rewrote saved configuration")
 	live := e.launchStateLocked("fake", st)
-	if strings.Contains(live.LaunchText, "--parallel 7") {
-		t.Fatalf("in-memory launch adopted the rejected change: %q", live.LaunchText)
-	}
+	require.NotContains(t, live.LaunchText, "--parallel 7", "in-memory launch adopted the rejected change")
 }
 
 func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
@@ -933,8 +813,9 @@ func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
 	st.adopted = true
 	st.mu.Unlock()
 	request.Settings.LaunchText += " --new"
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { t.Fatal("rebound adopted engine"); return nil }); err == nil {
-		t.Fatal("adopted process accepted")
+	{
+		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { assert.Fail(t, "rebound adopted engine"); return nil })
+		require.Error(t, err, "adopted process accepted")
 	}
 	assertNoSettingsOverride(t, e)
 	st.mu.Lock()
@@ -942,9 +823,9 @@ func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
 	st.adopted = false
 	st.mu.Unlock()
 	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return fmt.Errorf("bind failed") })
-	if err == nil || result.Running || !strings.Contains(result.LaunchText, "--new") {
-		t.Fatalf("accepted desired config not retained: %+v %v", result, err)
-	}
+	require.Error(t, err, "accepted desired config not retained (%v, %v)", result, err)
+	require.False(t, result.Running, "accepted desired config not retained (%v, %v)", result, err)
+	require.Contains(t, result.LaunchText, "--new", "accepted desired config not retained (%v, %v)", result, err)
 }
 
 func TestSettingsSupportsEngineWithoutStartupSubcommand(t *testing.T) {
@@ -952,13 +833,10 @@ func TestSettingsSupportsEngineWithoutStartupSubcommand(t *testing.T) {
 	st := settingsState(t, e)
 	st.plat.Runtime.Args = nil
 	st.plat.Runtime.EditableLaunch.FixedArgs = nil
-	if err := st.plat.validate(runtime.GOOS + "/" + runtime.GOARCH); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, st.plat.validate(runtime.GOOS+"/"+runtime.GOARCH))
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += " --future-option=opaque"
 	preview := previewSettings(t, e, p)
-	if len(preview.Errors) != 0 || !reflect.DeepEqual(preview.Args, []string{"--future-option=opaque"}) {
-		t.Fatalf("engine without subcommand rejected: %+v", preview)
-	}
+	require.Len(t, preview.Errors, 0, "engine without subcommand rejected (%v)", preview)
+	require.Equal(t, []string{"--future-option=opaque"}, preview.Args, "engine without subcommand rejected (%v)", preview)
 }

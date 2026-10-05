@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 )
 
@@ -34,17 +36,11 @@ func startBrokerInDir(t *testing.T, configDir string, extraArgs ...string) (io.W
 		"LOCALAPPDATA="+configDir,
 	)
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, cmd.Start(), "start broker")
 	msgs := startMsgReader(stdout)
 	cleanup := func() {
 		stdin.Close()
@@ -68,14 +64,12 @@ func waitForResponseID(t *testing.T, msgs <-chan jsonrpc.Message, id int, timeou
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatalf("broker stream closed before response id=%d", id)
-			}
+			require.True(t, ok, "broker stream closed before response id (%v)", id)
 			if msg.Method == "" && idEquals(msg.ID, id) {
 				return msg
 			}
 		case <-timer.C:
-			t.Fatalf("timed out waiting for response id=%d", id)
+			require.FailNow(t, "test expectation failed", "timed out waiting for response id=%d", id)
 		}
 	}
 }
@@ -98,18 +92,22 @@ func TestBrokerRestoresClusterIdentityAfterRestart(t *testing.T) {
 	waitForMethod(t, msgs1, "app:ready", 15*time.Second)
 
 	setReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":100,"method":"settings/set-cluster-id","params":{"value":%q}}`, clusterID) + "\n"
-	if _, err := stdin1.Write([]byte(setReq)); err != nil {
-		t.Fatalf("write settings/set-cluster-id: %v", err)
+	{
+		_, err := stdin1.Write([]byte(setReq))
+		require.NoError(t, err, "write settings/set-cluster-id")
 	}
-	if resp := waitForResponseID(t, msgs1, 100, 10*time.Second); resp.Error != nil {
-		t.Fatalf("settings/set-cluster-id errored: %d %s", resp.Error.Code, resp.Error.Message)
+	{
+		resp := waitForResponseID(t, msgs1, 100, 10*time.Second)
+		require.Nil(t, resp.Error, "settings/set-cluster-id errored")
 	}
 	nameReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":101,"method":"settings/set-cluster-friendly-name","params":{"value":%q}}`, friendly) + "\n"
-	if _, err := stdin1.Write([]byte(nameReq)); err != nil {
-		t.Fatalf("write settings/set-cluster-friendly-name: %v", err)
+	{
+		_, err := stdin1.Write([]byte(nameReq))
+		require.NoError(t, err, "write settings/set-cluster-friendly-name")
 	}
-	if resp := waitForResponseID(t, msgs1, 101, 10*time.Second); resp.Error != nil {
-		t.Fatalf("settings/set-cluster-friendly-name errored: %d %s", resp.Error.Code, resp.Error.Message)
+	{
+		resp := waitForResponseID(t, msgs1, 101, 10*time.Second)
+		require.Nil(t, resp.Error, "settings/set-cluster-friendly-name errored")
 	}
 	cleanup1()
 
@@ -125,32 +123,28 @@ func TestBrokerRestoresClusterIdentityAfterRestart(t *testing.T) {
 
 	sendReq(t, stdin2, 200, "cluster:get-node-id")
 	resp := waitForResponseID(t, msgs2, 200, 10*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("cluster:get-node-id errored: %d %s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "cluster:get-node-id errored")
 	var got struct {
 		ClusterID string `json:"clusterId"`
 	}
-	if err := json.Unmarshal(resp.Result, &got); err != nil {
-		t.Fatalf("decode cluster:get-node-id: %v\nraw: %s", err, resp.Result)
+	{
+		err := json.Unmarshal(resp.Result, &got)
+		require.NoError(t, err, "decode cluster:get-node-id")
 	}
-	if got.ClusterID != clusterID {
-		t.Fatalf("clusterId after restart = %q, want %q (identity was not restored)", got.ClusterID, clusterID)
-	}
+	require.True(t, got.ClusterID == clusterID, "clusterId after restart (%v)", clusterID)
 	t.Logf("cluster identity restored after restart: clusterId=%q", got.ClusterID)
 }
 
 // clusterIDOf decodes the clusterId from a cluster:get-node-id response.
 func clusterIDOf(t *testing.T, resp jsonrpc.Message) string {
 	t.Helper()
-	if resp.Error != nil {
-		t.Fatalf("response error: %d %s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "response error")
 	var r struct {
 		ClusterID string `json:"clusterId"`
 	}
-	if err := json.Unmarshal(resp.Result, &r); err != nil {
-		t.Fatalf("decode clusterId: %v\nraw: %s", err, resp.Result)
+	{
+		err := json.Unmarshal(resp.Result, &r)
+		require.NoError(t, err, "decode clusterId")
 	}
 	return r.ClusterID
 }
@@ -176,9 +170,7 @@ func waitSettingClusterID(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Mes
 				return
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("settings/get-cluster-id never became %q (last=%q)", want, last)
-		}
+		require.False(t, time.Now().After(deadline), "settings/get-cluster-id never became (%v, %v)", want, last)
 		time.Sleep(200 * time.Millisecond)
 	}
 }
@@ -202,13 +194,9 @@ func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
 
 	sendReq(t, stdin1, 300, "cluster:create")
 	createResp := waitForResponseID(t, msgs1, 300, 15*time.Second)
-	if createResp.Error != nil {
-		t.Fatalf("cluster:create errored: %d %s", createResp.Error.Code, createResp.Error.Message)
-	}
+	require.Nil(t, createResp.Error, "cluster:create errored")
 	created := clusterIDOf(t, createResp)
-	if created == "" {
-		t.Fatal("cluster:create returned an empty clusterId")
-	}
+	require.NotEqual(t, "", created, "cluster:create returned an empty clusterId")
 	waitSettingClusterID(t, stdin1, msgs1, 310, created)
 	cleanup1()
 
@@ -219,14 +207,16 @@ func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
 	)
 	waitForMethod(t, msgs2, "app:ready", 15*time.Second)
 	sendReq(t, stdin2, 320, "cluster:get-node-id")
-	if got := clusterIDOf(t, waitForResponseID(t, msgs2, 320, 10*time.Second)); got != created {
-		t.Fatalf("after restart clusterId = %q, want %q", got, created)
+	{
+		got := clusterIDOf(t, waitForResponseID(t, msgs2, 320, 10*time.Second))
+		require.True(t, got == created, "after restart clusterId (%v, %v)", got, created)
 	}
 
 	// 3. Leave: the broker must clear the id in settings.
 	sendReq(t, stdin2, 330, "cluster:leave")
-	if resp := waitForResponseID(t, msgs2, 330, 15*time.Second); resp.Error != nil {
-		t.Fatalf("cluster:leave errored: %d %s", resp.Error.Code, resp.Error.Message)
+	{
+		resp := waitForResponseID(t, msgs2, 330, 15*time.Second)
+		require.Nil(t, resp.Error, "cluster:leave errored")
 	}
 	waitSettingClusterID(t, stdin2, msgs2, 340, "")
 	cleanup2()
@@ -239,8 +229,9 @@ func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
 	t.Cleanup(cleanup3)
 	waitForMethod(t, msgs3, "app:ready", 15*time.Second)
 	sendReq(t, stdin3, 350, "cluster:get-node-id")
-	if got := clusterIDOf(t, waitForResponseID(t, msgs3, 350, 10*time.Second)); got != "" {
-		t.Fatalf("after leave+restart clusterId = %q, want empty (leave did not stick)", got)
+	{
+		got := clusterIDOf(t, waitForResponseID(t, msgs3, 350, 10*time.Second))
+		require.Equal(t, "", got, "after leave+restart clusterId")
 	}
 	t.Log("cluster lifecycle persisted: create restored, leave stayed cleared")
 }

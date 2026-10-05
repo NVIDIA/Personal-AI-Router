@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type signaledPipeBody struct {
@@ -36,9 +38,7 @@ func removeRequest(t *testing.T, remover *Manager, proof RemovalProof, body io.R
 	}
 	req := httptest.NewRequest(http.MethodPost, membersRemovePath, body)
 	cert, err := x509.ParseCertificate(remover.identity.Cert.Certificate[0])
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
 	return req
 }
@@ -49,9 +49,7 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	pinTrusted(t, victim, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
 	_, oldEpoch := victim.currentAdmission()
 	proof, err := remover.newRemovalProof(victim.identity.NodeUUID, oldEpoch)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	payload := mustJSON(t, membersRemoveRequest{NodeUUID: remover.identity.NodeUUID, Proof: proof})
 
 	pr, pw := io.Pipe()
@@ -68,7 +66,7 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("remove handler did not begin body read")
+		require.FailNow(t, "test expectation failed", "remove handler did not begin body read")
 	}
 
 	// The old request is authenticated but stalled. Tear down, re-admit into the
@@ -76,29 +74,29 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	// releasing the old body.
 	victim.teardownClusterLocal()
 	newEpoch := activateTestCluster(t, victim, "cluster-1")
-	if newEpoch <= oldEpoch {
-		t.Fatalf("new admission %d did not advance past %d", newEpoch, oldEpoch)
-	}
+	require.Greater(t, newEpoch, oldEpoch, "new admission")
 	pinTrusted(t, victim, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
 	victim.addSelfMember()
-	if _, err := pw.Write(payload); err != nil {
-		t.Fatal(err)
+	{
+		_, err := pw.Write(payload)
+		require.NoError(t, err)
 	}
 	_ = pw.Close()
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("remove handler did not finish")
+		require.FailNow(t, "test expectation failed", "remove handler did not finish")
 	}
-	if rr.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d for stale removal", rr.Code, http.StatusConflict)
+	require.True(t, rr.Code == http.StatusConflict, "status")
+	{
+		cid, epoch := victim.currentAdmission()
+		require.Equal(t, "cluster-1", cid, "stale request cleared new admission (%v, %v)", cid, epoch)
+		require.True(t, epoch == newEpoch, "stale request cleared new admission (%v, %v)", cid, epoch)
 	}
-	if cid, epoch := victim.currentAdmission(); cid != "cluster-1" || epoch != newEpoch {
-		t.Fatalf("stale request cleared new admission: (%q,%d)", cid, epoch)
-	}
-	if _, ok := victim.trust.Get(remover.identity.NodeUUID); !ok {
-		t.Fatal("stale request cleared the newly re-established remover pin")
+	{
+		_, ok := victim.trust.Get(remover.identity.NodeUUID)
+		require.True(t, ok, "stale request cleared the newly re-established remover pin")
 	}
 }
 
@@ -108,13 +106,9 @@ func TestMembersRemoveCurrentAdmissionSucceeds(t *testing.T) {
 	pinTrusted(t, victim, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
 	_, epoch := victim.currentAdmission()
 	proof, err := remover.newRemovalProof(victim.identity.NodeUUID, epoch)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rr := httptest.NewRecorder()
 	victim.handleMembersRemove(rr, removeRequest(t, remover, proof, nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
-	}
+	require.True(t, rr.Code == http.StatusOK, "status")
 	assertFullyUnclustered(t, victim)
 }

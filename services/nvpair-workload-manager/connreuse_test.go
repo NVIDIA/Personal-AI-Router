@@ -12,6 +12,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 )
 
@@ -50,13 +53,9 @@ func TestBroadcast_ReusesPeerConnections(t *testing.T) {
 	defer ts.Close()
 
 	host, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	peers := newPeerSet(14320)
 	peers.Replace([]PeerNode{{
@@ -78,9 +77,7 @@ func TestBroadcast_ReusesPeerConnections(t *testing.T) {
 	mu.Lock()
 	got := newConns
 	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("peer accepted %d connections for %d broadcast rounds, want 1 (a handshake per event is the leak that drops terminal events)", got, rounds)
-	}
+	assert.Equal(t, 1, got, "broadcast rounds must reuse the peer connection")
 }
 
 // TestInterNodeServer_ReapsIdleConnections: the listener half of connection
@@ -90,14 +87,7 @@ func TestBroadcast_ReusesPeerConnections(t *testing.T) {
 // a doubtful connection rather than picking one this side is closing.
 func TestInterNodeServer_ReapsIdleConnections(t *testing.T) {
 	srv := newInterNodeServer(http.NewServeMux())
-	if srv.IdleTimeout != clustertrust.PeerListenerIdleTimeout {
-		t.Errorf("IdleTimeout = %v, want %v", srv.IdleTimeout, clustertrust.PeerListenerIdleTimeout)
-	}
-	if clustertrust.PeerListenerIdleTimeout <= clustertrust.PeerIdleTimeout {
-		t.Errorf("listener idle (%v) must exceed the client's (%v), or the client can pick a connection the server is closing",
-			clustertrust.PeerListenerIdleTimeout, clustertrust.PeerIdleTimeout)
-	}
-	if srv.ReadHeaderTimeout != interNodeReadHeaderTimeout {
-		t.Errorf("ReadHeaderTimeout = %v, want %v", srv.ReadHeaderTimeout, interNodeReadHeaderTimeout)
-	}
+	assert.Equal(t, clustertrust.PeerListenerIdleTimeout, srv.IdleTimeout)
+	assert.Greater(t, clustertrust.PeerListenerIdleTimeout, clustertrust.PeerIdleTimeout, "the listener must outlast the client's idle connection")
+	assert.Equal(t, interNodeReadHeaderTimeout, srv.ReadHeaderTimeout)
 }

@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 )
 
@@ -39,16 +42,10 @@ func startNodeSettings(t *testing.T, settingsPath string) (io.WriteCloser, <-cha
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("node-settings stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "node-settings stdin pipe")
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("node-settings stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start node-settings: %v", err)
-	}
+	require.NoError(t, err, "node-settings stdout pipe")
+	require.NoError(t, cmd.Start(), "start node-settings")
 	t.Logf("node-settings started: pid=%d settings=%s", cmd.Process.Pid, settingsPath)
 
 	ch := startMsgReader(stdoutPipe)
@@ -86,9 +83,7 @@ func callRPC(t *testing.T, in io.Writer, msgs <-chan jsonrpc.Message, method str
 	var rawParams json.RawMessage
 	if params != nil {
 		b, err := json.Marshal(params)
-		if err != nil {
-			t.Fatalf("marshal params: %v", err)
-		}
+		require.NoError(t, err, "marshal params")
 		rawParams = b
 	}
 	sendLine(t, in, jsonrpc.Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: rawParams})
@@ -98,9 +93,7 @@ func callRPC(t *testing.T, in io.Writer, msgs <-chan jsonrpc.Message, method str
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatalf("stream closed before receiving response to %s (id=%d)", method, id)
-			}
+			require.True(t, ok, "stream closed before receiving response to (%v, %v)", method, id)
 			if msg.Method != "" {
 				// Skip notifications.
 				continue
@@ -110,7 +103,7 @@ func callRPC(t *testing.T, in io.Writer, msgs <-chan jsonrpc.Message, method str
 				return msg
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for response to %s (id=%d)", timeout, method, id)
+			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for response to %s (id=%d)", timeout, method, id)
 		}
 	}
 }
@@ -129,34 +122,22 @@ func TestNodeSettingsEndToEndStartReadyAndDefaults(t *testing.T) {
 	var params struct {
 		Version string `json:"version"`
 	}
-	if err := json.Unmarshal(ready.Params, &params); err != nil {
-		t.Fatalf("ready params: %v", err)
-	}
-	if params.Version == "" {
-		t.Fatal("ready notification missing version field")
-	}
+	require.NoError(t, json.Unmarshal(ready.Params, &params), "ready params")
+	require.NotEqual(t, "", params.Version, "ready notification missing version field")
 
 	resp := callRPC(t, in, msgs, "settings/get-cluster-id", nil, 3*time.Second)
 	var id struct {
 		Value string `json:"value"`
 	}
-	if err := json.Unmarshal(resp.Result, &id); err != nil {
-		t.Fatalf("decode cluster-id: %v", err)
-	}
-	if id.Value != "" {
-		t.Errorf("default cluster-id should be empty, got %q", id.Value)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &id), "decode cluster-id")
+	assert.Equal(t, "", id.Value, "default cluster-id should be empty")
 
 	resp = callRPC(t, in, msgs, "settings/get-force-ports", nil, 3*time.Second)
 	var fp struct {
 		Value bool `json:"value"`
 	}
-	if err := json.Unmarshal(resp.Result, &fp); err != nil {
-		t.Fatalf("decode force-ports: %v", err)
-	}
-	if !fp.Value {
-		t.Errorf("default force-ports should be true, got false")
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &fp), "decode force-ports")
+	assert.True(t, fp.Value, "default force-ports should be true, got false")
 }
 
 // TestNodeSettingsForcePortsRoundTripOverWire walks the simple bool
@@ -173,32 +154,20 @@ func TestNodeSettingsForcePortsRoundTripOverWire(t *testing.T) {
 
 	resp := callRPC(t, in, msgs, "settings/set-force-ports",
 		map[string]any{"value": true}, 3*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("set true rejected: %v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "set true rejected")
 	resp = callRPC(t, in, msgs, "settings/get-force-ports", nil, 3*time.Second)
 	var got struct {
 		Value bool `json:"value"`
 	}
-	if err := json.Unmarshal(resp.Result, &got); err != nil {
-		t.Fatalf("decode get-force-ports: %v", err)
-	}
-	if !got.Value {
-		t.Fatalf("force-ports did not round-trip true: %v", got.Value)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &got), "decode get-force-ports")
+	require.True(t, got.Value, "force-ports did not round-trip true")
 
 	resp = callRPC(t, in, msgs, "settings/set-force-ports",
 		map[string]any{"value": false}, 3*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("set false rejected: %v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "set false rejected")
 	resp = callRPC(t, in, msgs, "settings/get-force-ports", nil, 3*time.Second)
-	if err := json.Unmarshal(resp.Result, &got); err != nil {
-		t.Fatalf("decode get-force-ports: %v", err)
-	}
-	if got.Value {
-		t.Fatalf("force-ports did not round-trip false: %v", got.Value)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &got), "decode get-force-ports")
+	require.False(t, got.Value, "force-ports did not round-trip false")
 }
 
 // TestNodeSettingsClusterIdentityPushOnSetCrossProcess confirms the
@@ -216,19 +185,13 @@ func TestNodeSettingsClusterIdentityPushOnSetCrossProcess(t *testing.T) {
 
 	resp := callRPC(t, in, msgs, "settings/set-cluster-id",
 		map[string]any{"value": "cluster-xyz"}, 3*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("set-cluster-id rejected: %v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "set-cluster-id rejected")
 	push := waitForMethod(t, msgs, "connection/cluster-identity", 3*time.Second)
 	var pushParams struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(push.Params, &pushParams); err != nil {
-		t.Fatalf("decode connection/cluster-identity params: %v", err)
-	}
-	if pushParams.ID != "cluster-xyz" {
-		t.Errorf("push id = %q, want %q", pushParams.ID, "cluster-xyz")
-	}
+	require.NoError(t, json.Unmarshal(push.Params, &pushParams), "decode connection/cluster-identity params")
+	assert.Equal(t, "cluster-xyz", pushParams.ID, "push id")
 }
 
 // TestNodeSettingsPersistsAcrossProcessRestart is the most important
@@ -247,19 +210,13 @@ func TestNodeSettingsPersistsAcrossProcessRestart(t *testing.T) {
 	waitForMethod(t, msgs, "ready", 5*time.Second)
 	resp := callRPC(t, in, msgs, "settings/set-cluster-auto-sync",
 		map[string]any{"value": true}, 3*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("set cluster-auto-sync rejected: %v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "set cluster-auto-sync rejected")
 	resp = callRPC(t, in, msgs, "settings/set-cluster-id",
 		map[string]any{"value": "cluster-abc-123"}, 3*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("set cluster-id rejected: %v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "set cluster-id rejected")
 	resp = callRPC(t, in, msgs, "settings/set-cluster-friendly-name",
 		map[string]any{"value": "Lab 3 desks"}, 3*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("set cluster-friendly-name rejected: %v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "set cluster-friendly-name rejected")
 	// Graceful shutdown so we know the save completed before the
 	// pipe closes.
 	_ = callRPC(t, in, msgs, "shutdown", nil, 3*time.Second)
@@ -268,12 +225,11 @@ func TestNodeSettingsPersistsAcrossProcessRestart(t *testing.T) {
 	// Verify the on-disk file is real JSON (catches torn-write
 	// bugs).
 	data, err := os.ReadFile(settings)
-	if err != nil {
-		t.Fatalf("read persisted file: %v", err)
-	}
+	require.NoError(t, err, "read persisted file")
 	var onDisk map[string]any
-	if err := json.Unmarshal(data, &onDisk); err != nil {
-		t.Fatalf("persisted file is not valid JSON: %v\n%s", err, data)
+	{
+		err := json.Unmarshal(data, &onDisk)
+		require.NoError(t, err, "persisted file is not valid JSON (%v, %v)", err, data)
 	}
 
 	// Second process: same file, fresh subprocess. Values must
@@ -287,27 +243,21 @@ func TestNodeSettingsPersistsAcrossProcessRestart(t *testing.T) {
 		Value bool `json:"value"`
 	}
 	_ = json.Unmarshal(resp.Result, &sync)
-	if !sync.Value {
-		t.Errorf("cluster-auto-sync did not survive restart")
-	}
+	assert.True(t, sync.Value, "cluster-auto-sync did not survive restart")
 
 	resp = callRPC(t, in2, msgs2, "settings/get-cluster-id", nil, 3*time.Second)
 	var id struct {
 		Value string `json:"value"`
 	}
 	_ = json.Unmarshal(resp.Result, &id)
-	if id.Value != "cluster-abc-123" {
-		t.Errorf("cluster-id did not survive restart, got %q want %q", id.Value, "cluster-abc-123")
-	}
+	assert.Equal(t, "cluster-abc-123", id.Value, "cluster-id did not survive restart")
 
 	resp = callRPC(t, in2, msgs2, "settings/get-cluster-friendly-name", nil, 3*time.Second)
 	var name struct {
 		Value string `json:"value"`
 	}
 	_ = json.Unmarshal(resp.Result, &name)
-	if name.Value != "Lab 3 desks" {
-		t.Errorf("cluster-friendly-name did not survive restart, got %q want %q", name.Value, "Lab 3 desks")
-	}
+	assert.Equal(t, "Lab 3 desks", name.Value, "cluster-friendly-name did not survive restart")
 }
 
 // TestNodeSettingsShutdownIsClean confirms the `shutdown` RPC
@@ -328,7 +278,5 @@ func TestNodeSettingsShutdownIsClean(t *testing.T) {
 	// terminates without the cleanup func having to fall back to
 	// SIGKILL — both of which are implicit in the lack of a
 	// timeout failure above.
-	if resp.Error != nil {
-		t.Fatalf("shutdown returned an error: %v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "shutdown returned an error")
 }
