@@ -201,9 +201,18 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 // pullModelLlamaCPPSSE runs llama.cpp's asynchronous router download protocol.
 // The SSE response must be open before POST /models because terminal events are
 // one-shot broadcasts; subscribing afterward can miss a fast completion.
-func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model string, act Action, port int, params json.RawMessage, watchdog *pullProgressWatchdog) (json.RawMessage, error) {
+func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model string, act Action, port int, params json.RawMessage, watchdog *pullProgressWatchdog) (result json.RawMessage, pullErr error) {
 	if strings.TrimSpace(model) == "" {
 		return nil, fmt.Errorf("pull model is required for %s", pullProgressProtocolLlamaCPPModelsSSE)
+	}
+	var requested struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(params, &requested); err != nil {
+		return nil, fmt.Errorf("pull %q: decode model params: %w", model, err)
+	}
+	if requested.Model != model {
+		return nil, fmt.Errorf("pull %q: params.model must match the requested model", model)
 	}
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	sseReq, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models/sse", nil)
@@ -225,19 +234,27 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	if err != nil {
 		return nil, err
 	}
-	startReq, err := http.NewRequestWithContext(ctx, strings.ToUpper(act.HTTP.Method), baseURL+path, bytes.NewReader(params))
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, fmt.Errorf("pull %q: %w", model, cause)
+	}
+	// Cancelling POST /models does not cancel the router's download child. Keep
+	// the bounded handshake alive so cancellation cannot discard its acceptance.
+	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(ctx), e.pullStartTimeout)
+	defer cancelStart()
+	startReq, err := http.NewRequestWithContext(startCtx, strings.ToUpper(act.HTTP.Method), baseURL+path, bytes.NewReader(params))
 	if err != nil {
 		return nil, err
 	}
 	startReq.Header.Set("Content-Type", "application/json")
 	startResp, err := e.client.Do(startReq)
 	if err != nil {
-		return nil, fmt.Errorf("pull %q: start download: %w", model, watchdog.resolveError(ctx, err))
+		return nil, llamaCPPUnconfirmedStartError(ctx, model, err)
 	}
 	startData, readErr := io.ReadAll(io.LimitReader(startResp.Body, 64*1024))
 	startResp.Body.Close()
+	cancelStart()
 	if readErr != nil {
-		return nil, fmt.Errorf("pull %q: read start response: %w", model, watchdog.resolveError(ctx, readErr))
+		return nil, llamaCPPUnconfirmedStartError(ctx, model, readErr)
 	}
 	if startResp.StatusCode < 200 || startResp.StatusCode >= 300 {
 		return nil, fmt.Errorf("pull %q: engine returned HTTP %d: %s", model, startResp.StatusCode, strings.TrimSpace(string(startData)))
@@ -245,8 +262,28 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	var started struct {
 		Success bool `json:"success"`
 	}
-	if err := json.Unmarshal(startData, &started); err != nil || !started.Success {
+	if err := json.Unmarshal(startData, &started); err != nil {
+		return nil, llamaCPPUnconfirmedStartError(ctx, model, err)
+	}
+	if !started.Success {
 		return nil, fmt.Errorf("pull %q: engine did not accept the download", model)
+	}
+	terminal := false
+	defer func() {
+		if terminal {
+			return
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			pullErr = fmt.Errorf("pull %q: %w", model, cause)
+		}
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), e.pullCleanupTimeout)
+		defer cancelCleanup()
+		if err := e.stopLlamaCPPDownload(cleanupCtx, baseURL, model); err != nil {
+			pullErr = errors.Join(pullErr, fmt.Errorf("pull %q: could not confirm download stopped: %w", model, err))
+		}
+	}()
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, fmt.Errorf("pull %q: %w", model, cause)
 	}
 
 	lastPct := -1
@@ -270,9 +307,11 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 				e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "downloading", Percent: pct, Message: model})
 			}
 		case "download_finished":
+			terminal = true
 			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: model})
 			return json.RawMessage(startData), nil
 		case "download_failed":
+			terminal = true
 			return nil, fmt.Errorf("pull %q: llama.cpp reported download failure", model)
 		}
 	}
@@ -280,6 +319,85 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		return nil, fmt.Errorf("pull %q: progress stream: %w", model, watchdog.resolveError(ctx, err))
 	}
 	return nil, fmt.Errorf("pull %q: progress stream ended before completion", model)
+}
+
+// A lost acknowledgement gives us no ownership of a router download: another
+// caller may already be downloading this ID. Preserve the cause without blindly
+// unloading somebody else's model.
+func llamaCPPUnconfirmedStartError(ctx context.Context, model string, err error) error {
+	return fmt.Errorf("pull %q: download acceptance and cancellation could not be confirmed: %w", model, errors.Join(context.Cause(ctx), err))
+}
+
+// stopLlamaCPPDownload uses the same router as the start request. Inventory is
+// checked first because a missed terminal SSE may mean the model is now loaded;
+// unload would then interrupt inference rather than stop an active download.
+func (e *Executor) stopLlamaCPPDownload(ctx context.Context, baseURL, model string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("check download inventory: %w", err)
+	}
+	var inventory struct {
+		Data *[]struct {
+			ID     string `json:"id"`
+			Status struct {
+				Value string `json:"value"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 8*1024*1024)).Decode(&inventory)
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("check download inventory: HTTP %d", resp.StatusCode)
+	}
+	if decodeErr != nil {
+		return fmt.Errorf("decode download inventory: %w", decodeErr)
+	}
+	if inventory.Data == nil {
+		return errors.New("download inventory has no data array")
+	}
+	for _, entry := range *inventory.Data {
+		if entry.ID != model {
+			continue
+		}
+		if entry.Status.Value == "" {
+			return errors.New("download inventory has no model status")
+		}
+		if entry.Status.Value != "downloading" {
+			return nil
+		}
+		params, err := json.Marshal(map[string]string{"model": model})
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/models/unload", bytes.NewReader(params))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := e.client.Do(req)
+		if err != nil {
+			return fmt.Errorf("stop download: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("stop download: HTTP %d", resp.StatusCode)
+		}
+		var stopped struct {
+			Success bool `json:"success"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&stopped); err != nil {
+			return fmt.Errorf("decode download stop response: %w", err)
+		}
+		if !stopped.Success {
+			return errors.New("engine did not confirm download stopped")
+		}
+		return nil
+	}
+	return nil
 }
 
 type llamaCPPModelsEvent struct {

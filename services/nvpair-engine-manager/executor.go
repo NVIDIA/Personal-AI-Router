@@ -105,6 +105,11 @@ type Executor struct {
 	// without advancing a layer/file byte count. Advancing progress refreshes
 	// the deadline, allowing large active downloads to exceed actionTimeout.
 	pullProgressTimeout time.Duration
+	// pullStartTimeout lets an asynchronous pull finish its start handshake even
+	// after caller cancellation, so an accepted download can still be stopped.
+	pullStartTimeout time.Duration
+	// pullCleanupTimeout bounds the inventory check and download stop together.
+	pullCleanupTimeout time.Duration
 	// loadedPollInterval is the cadence of the loaded-model watcher
 	// (loadedwatch.go), which polls each running engine's resident set and emits
 	// engine:models-changed on change. 0 disables it. Overridable via
@@ -135,6 +140,8 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 		detectTimeout:       30 * time.Second,
 		actionTimeout:       30 * time.Minute,
 		pullProgressTimeout: 30 * time.Minute,
+		pullStartTimeout:    30 * time.Second,
+		pullCleanupTimeout:  5 * time.Second,
 		loadedPollInterval:  defaultLoadedPollSeconds * time.Second,
 		loadedPoke:          make(chan struct{}, 1),
 		engines:             make(map[string]*engineState),
