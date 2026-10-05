@@ -82,10 +82,17 @@ function toHubModel(raw: JsonValue): EngineHubModel | null {
  * An engine with no curated source is an error at the backend, reported here as
  * an empty hub so the modal shows its empty state rather than a failure the user
  * can do nothing about.
+ *
+ * A query is passed through for the backend to search with. Only a searchable
+ * source uses it; the others return their whole list, which the modal filters.
  */
-export async function getEngineHubModels(engineType: EngineType): Promise<EngineHubSearchResponse> {
+export async function getEngineHubModels(
+    engineType: EngineType,
+    query?: string
+): Promise<EngineHubSearchResponse> {
     const engine = BACKEND_ENGINE_NAME[engineType]
     if (!engine) return { models: [] }
+    const search = query?.trim()
     try {
         // No target machine is named. The hub only ever installs to this
         // machine, which is also the one answering, and omitting the target is
@@ -94,7 +101,7 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
         const result = await getModularSupervisor().callProcess(
             'broker',
             'engine:catalog',
-            { engine },
+            search ? { engine, query: search } : { engine },
             MODULAR_CATALOG_CALL_TIMEOUT_MS
         )
         const rows = isObject(result) && Array.isArray(result.models) ? result.models : []

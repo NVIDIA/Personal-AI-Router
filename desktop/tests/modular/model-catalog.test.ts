@@ -35,6 +35,25 @@ describe('model catalog relay', () => {
         )
     })
 
+    // The backend decides whether a source can search; the relay only carries
+    // the query, and a blank one is no query at all.
+    it('passes a search query through, trimmed, and leaves a blank one out', async () => {
+        await getEngineHubModels('lm-studio', '  gemma  ')
+        expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
+            'broker',
+            'engine:catalog',
+            { engine: 'lmstudio', query: 'gemma' },
+            MODULAR_CATALOG_CALL_TIMEOUT_MS
+        )
+        await getEngineHubModels('lm-studio', '   ')
+        expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
+            'broker',
+            'engine:catalog',
+            { engine: 'lmstudio' },
+            MODULAR_CATALOG_CALL_TIMEOUT_MS
+        )
+    })
+
     it('keeps only rows that can be pulled, and drops empty optional fields', async () => {
         mocks.supervisor.callProcess.mockResolvedValue({
             models: [
