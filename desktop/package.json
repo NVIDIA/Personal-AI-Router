@@ -23,7 +23,7 @@
         "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
         "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:test",
         "test": "npm run test:unit",
-        "test:vc-redist": "node --test ../scripts/stage-vc-redist.test.mjs ../scripts/windows-vc-runtime-installers.test.mjs",
+        "test:vc-redist": "node --test ../scripts/stage-vc-redist.test.mjs ../scripts/windows-pe-signature.test.mjs ../scripts/windows-vc-runtime-installers.test.mjs",
         "test:unit": "npm run test:vc-redist && vitest run --project unit --passWithNoTests",
         "test:unit:coverage": "vitest run --project unit --coverage --passWithNoTests && tsx scripts/coverage-summary.ts",
         "test:unit:watch": "vitest --project unit",

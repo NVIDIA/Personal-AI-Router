@@ -10,6 +10,13 @@
  * Authenticode establishes the publisher and integrity, while the minimum
  * version rejects a validly signed rollback. The observed version and SHA-256
  * are recorded for release provenance rather than pinned as build inputs.
+ *
+ * On Windows the operating system reads the signature. Everywhere else it is
+ * read out of the PE directly, because `build:electron:win:*` cross-builds the
+ * Windows installers from Linux and macOS, where there is no PowerShell to ask.
+ * Both paths report the same fields and meet the same policy below; see
+ * scripts/windows-pe-signature.mjs for what the direct read does and does not
+ * establish.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -17,6 +24,8 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import { readPeSignatureMetadata } from './windows-pe-signature.mjs'
 
 export const VC_REDIST_SOURCE_URL = 'https://aka.ms/vc14/vc_redist.x64.exe'
 export const VC_REDIST_MINIMUM_VERSION = '14.51.36247.0'
@@ -69,7 +78,7 @@ function isMicrosoftSigner(subject) {
 
 export function validateAuthenticodeMetadata(metadata) {
     if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-        throw new Error('PowerShell returned invalid Authenticode metadata.')
+        throw new Error('The Authenticode probe returned invalid metadata.')
     }
     if (metadata.status !== 'Valid') {
         throw new Error(
@@ -103,7 +112,7 @@ export function validateAuthenticodeMetadata(metadata) {
     }
 }
 
-function inspectAuthenticode(filePath) {
+function windowsAuthenticodeMetadata(filePath) {
     const command = [
         "$ErrorActionPreference = 'Stop'",
         '$signature = Get-AuthenticodeSignature -LiteralPath $env:NVPAIR_VC_REDIST_PATH',
@@ -137,14 +146,20 @@ function inspectAuthenticode(filePath) {
         )
     }
 
-    let metadata
     try {
-        metadata = JSON.parse(result.stdout.trim())
+        return JSON.parse(result.stdout.trim())
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         throw new Error(`Unable to parse Authenticode metadata: ${message}`)
     }
-    return validateAuthenticodeMetadata(metadata)
+}
+
+function inspectAuthenticode(filePath) {
+    return validateAuthenticodeMetadata(
+        process.platform === 'win32'
+            ? windowsAuthenticodeMetadata(filePath)
+            : readPeSignatureMetadata(filePath)
+    )
 }
 
 function sha256(filePath) {
