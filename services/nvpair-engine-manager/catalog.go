@@ -629,6 +629,15 @@ func (c *catalogService) fetchLlamaCPP(ctx context.Context) ([]CatalogModel, err
 	return normalizeLlamaCPPRows(rows), nil
 }
 
+// withoutURL drops the request URL a net/http error carries, keeping the cause.
+func withoutURL(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
+	}
+	return err
+}
+
 // llamaCPPListing is a GGUF listing request narrowed by one field, author or
 // search. It asks for the full entry, whose file list is what shows whether a
 // repo has the quantization offered.
@@ -644,20 +653,24 @@ func llamaCPPListing(field, value string) url.Values {
 }
 
 // fetchHF reads one page of the Hugging Face model listing.
+//
+// A failed request is reported without its URL. net/http puts the whole URL in
+// the error, and for a search that includes what the operator typed, which
+// would then be logged here and by every client the error is relayed to.
 func (c *catalogService) fetchHF(ctx context.Context, q url.Values) ([]hfModelRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, catalogHTTPTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint()+"?"+q.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build model catalog request: %w", withoutURL(err))
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "PAIR/1.0")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("model catalog request failed: %w", withoutURL(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

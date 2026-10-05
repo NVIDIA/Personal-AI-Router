@@ -599,6 +599,27 @@ func TestLlamaCPPSearch(t *testing.T) {
 	}
 }
 
+// TestFailedSearchDoesNotRevealTheQuery is the guard for search text leaking
+// into logs. net/http puts the request URL in its error, and a search's URL
+// carries what the operator typed; returned as-is, it was logged here and by
+// every client that relays the error.
+func TestFailedSearchDoesNotRevealTheQuery(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close() // every request now fails to connect
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	_, err := c.Catalog(context.Background(), "llamacpp", "", "", "private model name")
+	if err == nil {
+		t.Fatal("a search against an unreachable upstream succeeded")
+	}
+	for _, leak := range []string{"private", "search="} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("the error reveals the query: %v", err)
+		}
+	}
+}
+
 // TestLlamaCPPSearchesAreBounded checks the per-query caches are evicted least
 // recently used first, since the set of possible queries is unbounded.
 func TestLlamaCPPSearchesAreBounded(t *testing.T) {
