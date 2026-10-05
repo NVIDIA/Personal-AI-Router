@@ -166,6 +166,9 @@ type detailModelRow struct {
 	engine string
 	model  string
 	loaded bool
+	// loadKnown is whether the engine reports what it has in memory at all.
+	// One with no way to say leaves loaded meaningless, not false.
+	loadKnown bool
 }
 
 type detailEnginesMsg struct {
@@ -1686,14 +1689,18 @@ func (d *nodeDetail) refreshModels() {
 
 	d.modelRows = d.modelRows[:0]
 	for _, engine := range engines {
-		loaded := make(map[string]bool, len(d.models.LoadedByEngine[engine]))
-		for _, m := range d.models.LoadedByEngine[engine] {
+		// An engine with no loaded endpoint is left out of LoadedByEngine
+		// altogether, where an empty entry means nothing is in memory.
+		residents, known := d.models.LoadedByEngine[engine]
+		loaded := make(map[string]bool, len(residents))
+		for _, m := range residents {
 			loaded[m] = true
 		}
 		models := append([]string(nil), d.models.ModelsByEngine[engine]...)
 		sort.Strings(models)
 		for _, m := range models {
-			d.modelRows = append(d.modelRows, detailModelRow{engine: engine, model: m, loaded: loaded[m]})
+			d.modelRows = append(d.modelRows,
+				detailModelRow{engine: engine, model: m, loaded: loaded[m], loadKnown: known})
 		}
 	}
 
@@ -1718,7 +1725,11 @@ func (d *nodeDetail) refreshModels() {
 			// The node reported the model but not which engine serves it.
 			engine = "unknown"
 		}
-		rows = append(rows, table.Row{r.model, engine, yesNo(r.loaded)})
+		loaded := "?"
+		if r.loadKnown {
+			loaded = yesNo(r.loaded)
+		}
+		rows = append(rows, table.Row{r.model, engine, loaded})
 	}
 	// Put the cursor back on whatever was highlighted. This list is sorted and
 	// rebuilt wholesale on every engine:models-changed and every discovery

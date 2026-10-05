@@ -82,6 +82,33 @@ func TestRemoteDetailIgnoresOtherNodesDiscovery(t *testing.T) {
 	}
 }
 
+// TestUnreportedLoadStateIsUnknown is the regression guard for "not loaded"
+// shown for a model whose engine cannot say. An engine with no loaded endpoint
+// is left out of loadedByEngine, and reading that as an empty list marked every
+// one of its models as not in memory.
+func TestUnreportedLoadStateIsUnknown(t *testing.T) {
+	d := localDetail()
+	d.models = modelsResult{
+		ModelsByEngine: map[string][]string{
+			"ollama":   {"idle", "resident"},
+			"llamacpp": {"unreported"},
+		},
+		LoadedByEngine: map[string][]string{"ollama": {"resident"}},
+	}
+	d.refreshModels()
+
+	got := map[string]string{}
+	for _, row := range d.modelTable.Rows() {
+		got[row[0]] = row[2]
+	}
+	want := map[string]string{"idle": "no", "resident": "yes", "unreported": "?"}
+	for model, loaded := range want {
+		if got[model] != loaded {
+			t.Errorf("%s shows loaded %q, want %q", model, got[model], loaded)
+		}
+	}
+}
+
 // TestLocalDetailIgnoresDiscoveryModels checks this machine keeps using the
 // authoritative engine:models RPC rather than the discovery summary.
 func TestLocalDetailIgnoresDiscoveryModels(t *testing.T) {
