@@ -56,12 +56,16 @@ const osSegment =
               : null
 
 const output = osSegment ? `release/${pkg.version}/${osSegment}` : `release/${pkg.version}`
-// Only Windows uses the display name as the packaging product name (drives NSIS
-// branding; the install dir and executable are pinned to APP_EXECUTABLE_NAME via
-// win.executableName). macOS and Linux keep the technical name so the app bundle
-// (`PAIR.app`) and Linux install dir (`/opt/PAIR`) stay stable — existing
-// generated CLI launchers embed those absolute paths.
-const packagingProductName = osSegment === 'windows' ? APP_DISPLAY_NAME : APP_EXECUTABLE_NAME
+// Windows and macOS use the display name as the packaging product name. On
+// Windows it drives the NSIS branding; the install dir and executable are pinned
+// to APP_EXECUTABLE_NAME via win.executableName. On macOS it sets CFBundleName,
+// and mac.executableName names the bundle, `NVIDIA PAIR.app`: those are what
+// Finder, the Dock, Launchpad, Spotlight, and the menu bar show, and
+// CFBundleDisplayName alone is ignored there. Linux keeps the technical name so
+// its install dir stays `/opt/PAIR`, which the packaged `/usr/bin/nvpair`
+// wrapper embeds.
+const packagingProductName =
+    osSegment === 'windows' || osSegment === 'mac' ? APP_DISPLAY_NAME : APP_EXECUTABLE_NAME
 
 function packagingPlatform(): SupportedPlatform {
     const platform =
@@ -393,7 +397,9 @@ const config: Configuration = {
         afterRemove: 'scripts/build/linux/after-remove.sh'
     },
     mac: {
-        executableName: APP_EXECUTABLE_NAME,
+        // electron-builder names the bundle after the executable, so this is
+        // what makes it `NVIDIA PAIR.app`; see packagingProductName.
+        executableName: APP_DISPLAY_NAME,
         extendInfo: {
             CFBundleDisplayName: APP_DISPLAY_NAME
         },
