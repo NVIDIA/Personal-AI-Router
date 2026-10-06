@@ -17,7 +17,9 @@ set -eu
 # while `apt purge` also discards it. So this keeps per-user data — settings,
 # logs, cluster identity and certificates, and engines NVIDIA PAIR
 # installed — unless --purge is passed. Downloaded model weights live outside
-# these roots (e.g. ~/.ollama) and are never touched either way.
+# these roots (~/.ollama, ~/.llamacpp, ~/.lmstudio/models) and are never touched
+# either way: every engine declares its model store as models_dir, and a test in
+# services/nvpair-engine-manager fails if one resolves inside the app data root.
 
 PURGE_DATA=0
 case "${1:-}" in
@@ -26,6 +28,7 @@ case "${1:-}" in
   *)
     echo "usage: $(basename "$0") [--purge]" >&2
     echo "  --purge  also remove settings, logs, cluster identity, and PAIR-installed engines" >&2
+    echo "           (your downloaded models are kept)" >&2
     exit 2
     ;;
 esac
@@ -110,6 +113,22 @@ if [ -x "$CTL" ]; then
     sudo -u "$real_user" "$CTL" uninstall >/dev/null 2>&1 || true
   else
     "$CTL" uninstall >/dev/null 2>&1 || true
+  fi
+fi
+
+# Remove the engines PAIR installed, before the bundle that carries the binary
+# doing it and before the data root holding the records of which installs were
+# ours. Downloaded models are preserved: engine-manager always skips each
+# engine's model store. An engine the user installed themselves is left alone.
+if [ "$PURGE_DATA" = "1" ]; then
+  ENGINE_MANAGER="$APP_PATH/Contents/Resources/cli-bin/nvpair-engine-manager"
+  if [ -x "$ENGINE_MANAGER" ]; then
+    echo "Removing PAIR-installed engines..."
+    if [ -n "$real_user" ] && [ "$real_user" != "root" ]; then
+      sudo -u "$real_user" "$ENGINE_MANAGER" --uninstall-managed || true
+    else
+      "$ENGINE_MANAGER" --uninstall-managed || true
+    fi
   fi
 fi
 

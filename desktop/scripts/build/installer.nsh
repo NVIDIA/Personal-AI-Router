@@ -41,8 +41,11 @@
 ; of that section, so an appended customUnInstallSection would never execute.
 ;
 ; Per-user data here means settings, logs, cluster identity and certificates,
-; and engines NVIDIA PAIR installed. Downloaded model weights live
-; outside these roots and are never touched.
+; and engines NVIDIA PAIR installed (those are removed by
+; pairUninstallManagedEngines above, which runs first). Downloaded model weights
+; live outside these roots and are never touched: every engine declares its
+; model store as models_dir, and a test in services/nvpair-engine-manager fails
+; if one of them resolves inside the app data root.
 ;
 ; UNINSTALLER SAFETY: only ever delete the three per-user AppData roots below.
 ; Never touch $INSTDIR (C:\Program Files\...). The uninstaller itself lives at
@@ -76,6 +79,31 @@
   RMDir "$0\NVIDIA Corporation"
   RMDir /r "$0\nvpair-updater"
   ClearErrors
+!macroend
+
+; Remove the engines Personal AI Router installed, which the data-root removal
+; below cannot do on its own. Ollama and llama.cpp install under a data root and
+; so disappear with it, but LM Studio's vendor installer always lands in
+; %USERPROFILE%\.lmstudio and nothing here ever reached it — so "any engines
+; Personal AI Router installed" removed one engine and left the other.
+;
+; engine-manager owns this because the manifests do: it knows each engine's
+; install location, and it skips each engine's model store, so the prompt's
+; promise that downloaded models are kept holds for engine files too. It also
+; only removes an install PAIR recorded as its own, so a copy of LM Studio the
+; user installed themselves is left alone.
+;
+; ORDER MATTERS: this must run before pairRemoveUserData (the records of which
+; installs were ours live in the data root) and before the template's
+; RMDir /r $INSTDIR (which deletes the binary doing the work). Engines are
+; already stopped by pairCloseRunningProcesses and pairKillProcessesInDataDirs.
+;
+; nsExec::ExecToLog never aborts the (un)installer, and the binary exits 0 even
+; when an individual engine cannot be removed, so every failure mode here lets
+; the uninstall continue.
+!macro pairUninstallManagedEngines
+  DetailPrint "Removing engines Personal AI Router installed..."
+  nsExec::ExecToLog '"$INSTDIR\resources\cli-bin\nvpair-engine-manager.exe" --uninstall-managed'
 !macroend
 
 ; Best-effort: when the user opts to remove data, stop any process whose
@@ -347,13 +375,14 @@
     ${if} $PairInteractiveUninstall == "1"
       ; A plain MessageBox (no /SD) still displays in NSIS silent mode, so the
       ; one-click interactive uninstall shows this prompt. Default button = No.
-      MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also remove all NVIDIA PAIR data?$\n$\nThis permanently deletes your settings, logs, cluster identity and certificates, and any engines NVIDIA PAIR installed. Downloaded models are not removed. Click No to keep your data for a future reinstall." IDYES pairDataYes IDNO pairDataDone
+      MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also remove all NVIDIA PAIR data?$\n$\nThis permanently deletes your settings, logs, cluster identity and certificates, and any engines NVIDIA PAIR installed. Your downloaded models are not removed, and neither are engines you installed yourself. Click No to keep your data for a future reinstall." IDYES pairDataYes IDNO pairDataDone
       pairDataYes:
         StrCpy $8 "1"
       pairDataDone:
     ${endif}
     ${if} $8 == "1"
       !insertmacro pairKillProcessesInDataDirs
+      !insertmacro pairUninstallManagedEngines
       !insertmacro pairRemoveUserData
       !insertmacro pairWarnIfDataRemains
     ${endif}

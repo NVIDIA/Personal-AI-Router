@@ -38,6 +38,7 @@ func main() {
 	clusterDir := flag.String("cluster-dir", "", "cluster identity/pin directory; when set and this node holds a cluster identity, the ec remote-control surface (--control-port) turns on with pin-based mTLS")
 	loadedPollSec := flag.Int("loaded-poll-interval", defaultLoadedPollSeconds, "seconds between loaded-model polls that drive engine:models-changed pushes; 0 disables the watcher")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	uninstallManaged := flag.Bool("uninstall-managed", false, "remove every engine PAIR installed, preserving downloaded models, then exit; for the platform uninstallers")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
 
@@ -47,6 +48,18 @@ func main() {
 	}
 
 	applog.Init("nvpair-engine-manager", resolveLevel())
+
+	// Runs from the platform uninstallers, which have already stopped every
+	// engine process and have no broker to talk to, so this path takes no
+	// transport and starts no service. It always exits 0: an uninstaller that
+	// aborts here would leave the app half-removed.
+	if *uninstallManaged {
+		manifestDir, installBase := userPaths()
+		ctx, cancel := context.WithTimeout(context.Background(), uninstallManagedTimeout)
+		defer cancel()
+		uninstallManagedEngines(ctx, buildRegistry(manifestDir), installBase)
+		os.Exit(0)
+	}
 
 	var transport io.ReadWriteCloser
 	if *ipcPath != "" {

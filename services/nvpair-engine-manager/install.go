@@ -131,6 +131,11 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		e.reportInstallFailed(engine, err)
 		return err
 	}
+	// Claim the install now that it is real and detected. A failure to record it
+	// only costs the ability to uninstall later, so it must not fail the install.
+	if err := writeInstallMarker(st.installDir, engine); err != nil {
+		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
+	}
 	e.reporter.clear(installFailedID(engine))
 	e.emitInstallProgress(engine, "done", 100)
 	e.emitState(engine)
@@ -158,6 +163,15 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.mu.Unlock()
 	if st.plat.Runtime.modeOrDefault() == "process" && !isManagedInstallPath(binPath, st.installDir) {
 		err := fmt.Errorf("cannot uninstall engine %q: its executable is outside NVPAIR's managed install directory (%s)", engine, binPath)
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		return err
+	}
+	// A command-mode engine's vendor script picks its own destination, so the
+	// managed-path test above can never vouch for one. Without the install
+	// marker this could be the copy the user installed themselves, holding the
+	// model library they built up in it — decline rather than guess.
+	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir) {
+		err := fmt.Errorf("cannot uninstall engine %q: Personal AI Router has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
 	}
@@ -237,6 +251,7 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.mu.Lock()
 	st.binPath = ""
 	st.mu.Unlock()
+	clearInstallMarker(st.installDir)
 	e.reporter.clear(uninstallFailedID(engine))
 	e.emitState(engine)
 	return e.setDesiredEnabled(engine, false)
@@ -402,10 +417,17 @@ func (e *Executor) downloadWithProgress(
 // step), hiding the console window on Windows; on failure it returns the
 // combined output for diagnostics.
 func (e *Executor) runCommand(ctx context.Context, argv []string) error {
-	return e.runCommandWithEnv(ctx, argv, nil)
+	return runManifestCommand(ctx, argv, nil)
 }
 
 func (e *Executor) runCommandWithEnv(ctx context.Context, argv []string, environment map[string]string) error {
+	return runManifestCommand(ctx, argv, environment)
+}
+
+// runManifestCommand is independent of any Executor so the standalone
+// --uninstall-managed pass can run a manifest's uninstall command without
+// building the service's full runtime.
+func runManifestCommand(ctx context.Context, argv []string, environment map[string]string) error {
 	if len(argv) == 0 {
 		return nil
 	}
