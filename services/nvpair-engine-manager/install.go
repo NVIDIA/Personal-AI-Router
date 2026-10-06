@@ -456,8 +456,7 @@ func runManifestCommand(ctx context.Context, argv []string, environment map[stri
 }
 
 func (e *Executor) reportInstallFailed(engine string, err error) {
-	e.notify("engine:install-progress", map[string]any{"engine": engine, "stage": "failed", "percent": -1, "error": err.Error()})
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: "failed", Percent: -1, Message: err.Error()})
+	e.emitInstallFrame(engine, "failed", -1, err.Error())
 	e.reporter.report(serviceError{
 		ID: installFailedID(engine), Message: err.Error(),
 		Severity: "error", Action: "retry", EngineType: engine, Operation: "install",

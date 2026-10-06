@@ -232,6 +232,16 @@ function numberValue(value: JsonValue | undefined): number {
     return typeof value === 'number' ? value : 0
 }
 
+/**
+ * An install frame's percent, or undefined when the step is indeterminate. The
+ * engine-manager omits percent (or sends 0) for steps it cannot measure; each
+ * frame replaces the last, so a missing percent must not carry forward.
+ */
+function measuredPercent(value: JsonValue | undefined): number | undefined {
+    const pct = numberValue(value)
+    return pct > 0 ? pct : undefined
+}
+
 function booleanValue(value: JsonValue | undefined): boolean {
     return typeof value === 'boolean' ? value : false
 }
@@ -1568,11 +1578,10 @@ class ModularBridgeState {
                 ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
                 : ''
         const existingPull = pullKey ? this.activePulls.get(pullKey) : undefined
-        const framePercent = numberValue(obj.percent)
         const percent =
             operation === 'pull'
-                ? mergePullProgressPercent(framePercent, existingPull?.percent)
-                : framePercent
+                ? mergePullProgressPercent(numberValue(obj.percent), existingPull?.percent)
+                : measuredPercent(obj.percent)
         const progress: EngineProgress = {
             engineType,
             nodeId,
@@ -2142,7 +2151,7 @@ class ModularBridgeState {
             nodeName: node?.name ?? nodeId,
             operation: 'install',
             status: stage,
-            percent: numberValue(obj.percent)
+            percent: measuredPercent(obj.percent)
         }
         emitBridgePush('engines:progress-changed', progress)
     }

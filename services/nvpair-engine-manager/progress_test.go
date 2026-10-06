@@ -175,11 +175,19 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	stages := map[string]bool{}
+	measuredDownload := false
 	for _, f := range frames {
 		stage, _ := f["stage"].(string)
 		stages[stage] = true
 		pct, hasPct := f["percent"]
 		switch stage {
+		case "downloading":
+			if hasPct {
+				if p, _ := pct.(int); p <= 0 {
+					t.Errorf("downloading frame carried a non-positive percent: %+v", f)
+				}
+				measuredDownload = true
+			}
 		case "verified", "installing":
 			if hasPct {
 				t.Errorf("%s frame carried a percent: %+v", stage, f)
@@ -188,7 +196,12 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 			if pct != 100 {
 				t.Errorf("done frame percent = %v, want 100", pct)
 			}
+		default:
+			t.Errorf("unexpected install stage %q: %+v", stage, f)
 		}
+	}
+	if !measuredDownload {
+		t.Errorf("no downloading frame carried a measured percent; got %+v", frames)
 	}
 	for _, want := range []string{"downloading", "verified", "installing", "done"} {
 		if !stages[want] {
