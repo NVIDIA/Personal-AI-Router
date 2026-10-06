@@ -141,6 +141,7 @@ Requests (caller → service):
 | `engine:status` | `{ engine }` | `EngineStatus` |
 | `engine:install` | `{ engine }` | `EngineStatus` (after install) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
+| `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes the engines this service installed, selected by their install marker, each through the `engine:uninstall` path. Backs both clients' "reset all data"; the platform uninstallers reach the same code through `--uninstall-managed` because they have no broker. Neither `removed` nor `error` means the engine was left alone as not ours. |
 | `engine:start` | `{ engine }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
@@ -196,13 +197,20 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
   as `models_dir` outside that data dir (`~/.ollama`, `~/.llamacpp`,
   `~/.lmstudio/models`) so neither an engine uninstall nor the app-level data
   purge removes downloaded models; clearing one is the user's own choice, made
-  per model through `delete_model`. No database.
+  per model through `delete_model`.
+
+  One persisted file: `engine-bin/<engine>/installed-by-pair.json`, written after
+  an install this service performed. It is the only record distinguishing an
+  install PAIR made from one the user made themselves, which an engine whose
+  vendor script chooses its own destination cannot be told apart any other way,
+  and it gates both `engine:uninstall` for such an engine and
+  `engine:uninstall-managed`. No database.
 
 ## 10. Design Constraints
 - **Performance**: control plane, not inference; sub-second RPCs except install (network-bound) and start (bounded by the readiness timeout).
 - **Scalability**: a handful of engines per node; one managed instance per engine in v1.
 - **Reliability**: best-effort; readiness + health probes; automatic restart on crash is planned but **not yet implemented** (see §4); install is one-shot and idempotent (detect short-circuits).
-- **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install time); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN (Ollama defaults to `0.0.0.0`, overridable per-call); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
+- **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install and uninstall time: the Windows uninstaller is elevated and runs `--uninstall-managed`, which for that reason loads only the manifests compiled into the binary, never the user-writable override directory); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN (Ollama defaults to `0.0.0.0`, overridable per-call); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
 - **Compliance**: no PII; payloads carry engine/model identifiers and error messages only.
 
 ## 11. Assumptions

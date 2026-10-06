@@ -152,7 +152,11 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	if ok, _ := e.Detect(engine); !ok {
-		return e.setDesiredEnabled(engine, false) // already gone
+		// Already gone — by its own uninstaller, or by hand. Drop our ownership
+		// claim with it: left behind, it would authorise removing a copy the
+		// user installs later, which PAIR has no right to touch.
+		clearInstallMarker(st.installDir)
+		return e.setDesiredEnabled(engine, false)
 	}
 	un := st.plat.Uninstall
 	if un == nil || (len(un.Run) == 0 && len(un.Remove) == 0) {

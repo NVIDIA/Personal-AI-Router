@@ -287,7 +287,7 @@ its own.
 | `--cluster-dir <dir>` | _(none)_ | Cluster identity/pin directory; gates the `ec` surface on and supplies the leaf/pins used to serve it and to dial peers |
 | `--loaded-poll-interval <sec>` | `5` | Seconds between loaded-model polls that drive `engine:models-changed`; `0` disables the watcher |
 | `--log-level <level>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
-| `--uninstall-managed` | | Remove every engine PAIR installed, then exit; for the platform uninstallers. Starts no service and needs no transport. Preserves each engine's `models_dir`, and skips an engine PAIR has no record of installing. Always exits 0 so an uninstaller cannot stall |
+| `--uninstall-managed` | | Remove every engine PAIR installed, then exit; for the platform uninstallers, which have no broker to call `engine:uninstall-managed` through. Same selection and safety path as that method, loading only the manifests compiled into this binary. Always exits 0 so an uninstaller cannot stall |
 | `--version` | | Print version and exit |
 
 Logs go to **stderr** via the shared `nvpair-shared/applog` format; stdout is

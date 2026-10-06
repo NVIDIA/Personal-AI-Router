@@ -79,70 +79,59 @@ func installedByPAIR(installDir string) bool {
 	return err == nil
 }
 
-// uninstallManagedEngines removes every engine this service installed, for the
-// platform uninstallers' "also remove my data" path. Without it that prompt is
-// a false promise: it deletes the app data root, which happens to contain the
-// Ollama and llama.cpp install directories, but never reaches an engine a
-// vendor script placed in the user's home.
+// ManagedUninstall is one engine's outcome from UninstallManaged. Reported per
+// engine rather than as a single error, because the three callers need to tell
+// the three cases apart: an engine removed, an engine that was never PAIR's to
+// remove, and one that failed and therefore still has files on disk.
+type ManagedUninstall struct {
+	Engine  string `json:"engine"`
+	Removed bool   `json:"removed"`
+	// Error is empty for both a removal and a skip. A skipped engine is the
+	// expected outcome for an install the user made themselves, so it is not a
+	// failure and must not be reported as one.
+	Error string `json:"error,omitempty"`
+}
+
+// UninstallManaged removes every engine this service installed, and only those.
 //
-// Deliberately narrow. It runs the manifest's uninstall steps and nothing else
-// — no port probes, no desired-state writes, no notifications — because by the
-// time an uninstaller calls this, the engine processes are already killed and
-// there is no broker to talk to. Model stores are preserved, the same as an
-// interactive uninstall: removing PAIR does not delete the user's weights.
+// This backs the platform uninstallers' "also remove my data" and both clients'
+// data reset. Without it that promise is false: deleting the app data root
+// happens to remove the Ollama and llama.cpp install directories, but never
+// reaches an engine a vendor script placed in the user's home.
 //
-// Every failure is logged and skipped. An uninstaller must finish.
-func uninstallManagedEngines(ctx context.Context, reg *Registry, installBase string) {
-	if installBase == "" {
+// Selection is by install marker, so an engine the user installed themselves is
+// never a candidate. That matters beyond safety: the alternative — offering
+// every detected engine and letting Uninstall decline the rest — raises a
+// service error per decline, and those sync to cluster peers, so resetting a
+// machine with the user's own LM Studio would plant an error on its neighbours.
+//
+// Each removal goes through Uninstall, so it gets the whole safety path: the
+// ownership checks, the stop, the retries a vendor daemon needs when it holds
+// files open after being told to stop, model-store preservation, and detection
+// as the verdict. A client must not reimplement any of that.
+func (e *Executor) UninstallManaged(ctx context.Context) []ManagedUninstall {
+	if e.baseDir == "" {
 		slog.Warn("no app data directory; cannot identify PAIR-installed engines")
-		return
+		return nil
 	}
-	for _, engine := range reg.Names() {
-		installDir := filepath.Join(installBase, engine)
+	names := e.reg.Names()
+	results := make([]ManagedUninstall, 0, len(names))
+	for _, engine := range names {
+		installDir := filepath.Join(e.baseDir, engine)
 		if !installedByPAIR(installDir) {
 			slog.Info("leaving engine in place; PAIR did not install it", "engine", engine)
+			results = append(results, ManagedUninstall{Engine: engine})
 			continue
 		}
-		manifest, ok := reg.Get(engine)
-		if !ok {
+		if err := e.Uninstall(ctx, engine); err != nil {
+			slog.Error("could not remove a PAIR-installed engine", "engine", engine, "err", err)
+			// The marker stays. It is the only record that this engine is ours,
+			// so dropping it here would make the engine unremovable forever.
+			results = append(results, ManagedUninstall{Engine: engine, Error: err.Error()})
 			continue
 		}
-		platform, ok := manifest.HostPlatform()
-		if !ok {
-			continue
-		}
-		un := platform.Uninstall
-		if un == nil {
-			slog.Info("engine has no uninstall for this platform", "engine", engine)
-			continue
-		}
-		modelsDir := ""
-		if platform.ModelsDir != "" {
-			modelsDir = expandPath(platform.ModelsDir)
-		}
-		vars := map[string]string{"install_dir": installDir, "models_dir": modelsDir}
-		if argv, err := resolveArgs(un.Run, vars); err != nil {
-			slog.Warn("cannot resolve uninstall command", "engine", engine, "err", err)
-		} else if len(argv) > 0 {
-			for i := range argv {
-				argv[i] = expandPath(argv[i])
-			}
-			if err := runManifestCommand(ctx, argv, nil); err != nil {
-				slog.Warn("uninstall command failed; continuing", "engine", engine, "err", err)
-			}
-		}
-		targets, err := resolveArgs(un.Remove, vars)
-		if err != nil {
-			slog.Warn("cannot resolve uninstall removals", "engine", engine, "err", err)
-			continue
-		}
-		for _, target := range targets {
-			if err := removeTreePreserving(target, modelsDir); err != nil {
-				slog.Warn("could not remove engine files; continuing", "engine", engine, "path", target, "err", err)
-				continue
-			}
-			slog.Info("removed PAIR-installed engine files", "engine", engine, "path", target)
-		}
-		clearInstallMarker(installDir)
+		slog.Info("removed PAIR-installed engine", "engine", engine)
+		results = append(results, ManagedUninstall{Engine: engine, Removed: true})
 	}
+	return results
 }

@@ -212,6 +212,14 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.GetInstalled()})
 		}()
 
+	// Removes the engines PAIR installed. Long-running — each engine goes
+	// through the full uninstall — so it runs off the read loop like the other
+	// lifecycle operations.
+	case "engine:uninstall-managed":
+		go func() {
+			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.UninstallManaged(ctx)})
+		}()
+
 	case prepareShutdownMethod:
 		go func() {
 			m.exec.StopAll()

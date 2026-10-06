@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestInstallMarkerRoundTrip(t *testing.T) {
@@ -28,17 +29,22 @@ func TestInstallMarkerRoundTrip(t *testing.T) {
 	}
 }
 
-// managedEngineRegistry builds a registry with one vendor-script engine whose
-// files land outside the install directory, which is the LM Studio shape the
-// install marker exists for.
-func managedEngineRegistry(t *testing.T, vendorRoot, modelsDir string) *Registry {
-	t.Helper()
-	dir := t.TempDir()
-	stop := []string{"true"}
+// vendorEngineManifest describes one vendor-script engine whose files land
+// outside the install directory, which is the LM Studio shape the install
+// marker exists for. removeTargets empty leaves the engine in place, which is
+// how a failing uninstall is reproduced.
+func vendorEngineManifest(vendorRoot, modelsDir string, removeTargets []string) *Manifest {
+	ok := []string{"true"}
+	fail := []string{"false"}
 	if runtime.GOOS == "windows" {
-		stop = []string{"cmd", "/c", "exit", "0"}
+		ok = []string{"cmd", "/c", "exit", "0"}
+		fail = []string{"cmd", "/c", "exit", "1"}
 	}
-	writeManifest(t, dir, "vendor.json", Manifest{
+	uninstall := &Uninstall{Remove: removeTargets}
+	if len(removeTargets) == 0 {
+		uninstall = &Uninstall{Run: fail}
+	}
+	return &Manifest{
 		Engine:          "vendor",
 		DisplayName:     "Vendor Engine",
 		ManifestVersion: 1,
@@ -46,30 +52,24 @@ func managedEngineRegistry(t *testing.T, vendorRoot, modelsDir string) *Registry
 			runtime.GOOS + "/" + runtime.GOARCH: {
 				Detect:    []string{filepath.Join(vendorRoot, "bin", "engine")},
 				ModelsDir: modelsDir,
-				Uninstall: &Uninstall{Remove: []string{vendorRoot}},
+				Uninstall: uninstall,
 				Runtime: Runtime{
 					Mode:  "command",
-					Start: [][]string{stop},
-					Stop:  &StopSpec{Cmd: stop},
+					Port:  45999,
+					Start: [][]string{ok},
+					Stop:  &StopSpec{Cmd: ok},
 				},
 			},
 		},
-	})
-	reg := NewRegistry()
-	if err := reg.LoadDir(dir); err != nil {
-		t.Fatalf("LoadDir: %v", err)
 	}
-	return reg
 }
 
-func TestUninstallManagedEnginesRemovesOnlyWhatPAIRInstalled(t *testing.T) {
-	root := t.TempDir()
-	vendorRoot := filepath.Join(root, "vendor-home")
-	modelsDir := filepath.Join(vendorRoot, "models")
-	installBase := filepath.Join(root, "engine-bin")
-
-	binary := filepath.Join(vendorRoot, "bin", "engine")
-	weights := filepath.Join(modelsDir, "model.gguf")
+// vendorEngineOnDisk lays down an engine binary and a downloaded model, and
+// returns both paths.
+func vendorEngineOnDisk(t *testing.T, vendorRoot string) (binary, weights string) {
+	t.Helper()
+	binary = filepath.Join(vendorRoot, "bin", "engine")
+	weights = filepath.Join(vendorRoot, "models", "publisher", "model.gguf")
 	for _, file := range []string{binary, weights} {
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 			t.Fatal(err)
@@ -78,47 +78,132 @@ func TestUninstallManagedEnginesRemovesOnlyWhatPAIRInstalled(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	reg := managedEngineRegistry(t, vendorRoot, modelsDir)
+	return binary, weights
+}
 
-	// No marker: this is the user's own install and PAIR must leave it alone.
-	uninstallManagedEngines(context.Background(), reg, installBase)
+func managedExecutor(t *testing.T, manifest *Manifest) *Executor {
+	t.Helper()
+	ex := newTestExecutor(t, manifest)
+	ex.detectTimeout = 100 * time.Millisecond
+	return ex
+}
+
+func TestUninstallManagedRemovesOnlyWhatPAIRInstalled(t *testing.T) {
+	vendorRoot := t.TempDir()
+	binary, weights := vendorEngineOnDisk(t, vendorRoot)
+	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
+
+	// No marker: the user's own install, which PAIR must leave alone and must
+	// not report as a failure.
+	results := ex.UninstallManaged(context.Background())
+	if len(results) != 1 || results[0].Removed || results[0].Error != "" {
+		t.Fatalf("an unmarked engine should be skipped without error, got %+v", results)
+	}
 	if _, err := os.Stat(binary); err != nil {
 		t.Fatalf("removed an engine PAIR did not install: %v", err)
 	}
 
-	if err := writeInstallMarker(filepath.Join(installBase, "vendor"), "vendor"); err != nil {
+	installDir := filepath.Join(ex.baseDir, "vendor")
+	if err := writeInstallMarker(installDir, "vendor"); err != nil {
 		t.Fatal(err)
 	}
-	uninstallManagedEngines(context.Background(), reg, installBase)
+	results = ex.UninstallManaged(context.Background())
 
+	if len(results) != 1 || !results[0].Removed || results[0].Error != "" {
+		t.Fatalf("expected the marked engine to be removed, got %+v", results)
+	}
 	if _, err := os.Stat(binary); !os.IsNotExist(err) {
 		t.Errorf("engine binary survived (err=%v)", err)
 	}
 	if _, err := os.Stat(weights); err != nil {
-		t.Errorf("app uninstall deleted downloaded models: %v", err)
+		t.Errorf("removal deleted downloaded models: %v", err)
 	}
-	if installedByPAIR(filepath.Join(installBase, "vendor")) {
-		t.Error("install marker not cleared after removal")
+	if installedByPAIR(installDir) {
+		t.Error("install marker not cleared after a successful removal")
 	}
 }
 
-// TestUninstallManagedEnginesWithoutDataDirRemovesNothing covers losing the app
-// data directory, which is where ownership is recorded. With no way to tell
-// whose install an engine is, the safe answer is to remove none of them.
-func TestUninstallManagedEnginesWithoutDataDirRemovesNothing(t *testing.T) {
+// TestUninstallManagedKeepsTheMarkerWhenRemovalFails is the regression guard for
+// losing ownership. The marker is the only record that an engine is PAIR's, so
+// clearing it after a failure would leave the engine installed and every future
+// uninstall refusing it.
+func TestUninstallManagedKeepsTheMarkerWhenRemovalFails(t *testing.T) {
+	oldRetries, oldBackoff := uninstallRetries, uninstallBackoff
+	uninstallRetries, uninstallBackoff = 1, time.Millisecond
+	defer func() { uninstallRetries, uninstallBackoff = oldRetries, oldBackoff }()
+
 	vendorRoot := t.TempDir()
-	binary := filepath.Join(vendorRoot, "bin", "engine")
-	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+	binary, _ := vendorEngineOnDisk(t, vendorRoot)
+	// No remove targets, so the engine is still detected afterwards.
+	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), nil))
+	installDir := filepath.Join(ex.baseDir, "vendor")
+	if err := writeInstallMarker(installDir, "vendor"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(binary, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+
+	results := ex.UninstallManaged(context.Background())
+
+	if len(results) != 1 || results[0].Removed || results[0].Error == "" {
+		t.Fatalf("expected a reported failure, got %+v", results)
 	}
-	reg := managedEngineRegistry(t, vendorRoot, filepath.Join(vendorRoot, "models"))
+	if _, err := os.Stat(binary); err != nil {
+		t.Errorf("engine binary vanished despite the reported failure: %v", err)
+	}
+	if !installedByPAIR(installDir) {
+		t.Error("marker cleared after a failed removal; the engine is now unremovable")
+	}
+}
 
-	uninstallManagedEngines(context.Background(), reg, "")
+// TestUninstallManagedWithoutDataDirRemovesNothing covers losing the app data
+// directory, which is where ownership is recorded. With no way to tell whose
+// install an engine is, the safe answer is to remove none of them.
+func TestUninstallManagedWithoutDataDirRemovesNothing(t *testing.T) {
+	vendorRoot := t.TempDir()
+	binary, _ := vendorEngineOnDisk(t, vendorRoot)
+	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
+	ex.baseDir = ""
 
+	if results := ex.UninstallManaged(context.Background()); results != nil {
+		t.Errorf("expected no results without a data directory, got %+v", results)
+	}
 	if _, err := os.Stat(binary); err != nil {
 		t.Errorf("removed an engine with no ownership records available: %v", err)
+	}
+}
+
+// TestUninstallDeclinesUnmarkedCommandEngine pins the interactive refusal. A
+// vendor script picks its own destination, so the managed-path test can never
+// vouch for a command-mode engine; without a marker this could be the user's
+// own install, holding the model library they built up in it.
+func TestUninstallDeclinesUnmarkedCommandEngine(t *testing.T) {
+	vendorRoot := t.TempDir()
+	vendorEngineOnDisk(t, vendorRoot)
+	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
+
+	err := ex.Uninstall(context.Background(), "vendor")
+	if err == nil {
+		t.Fatal("expected uninstall to decline an engine PAIR has no record of installing")
+	}
+	if _, statErr := os.Stat(filepath.Join(vendorRoot, "bin", "engine")); statErr != nil {
+		t.Errorf("declined but still removed files: %v", statErr)
+	}
+}
+
+// TestUninstallClearsTheMarkerWhenAlreadyGone covers the engine removed by its
+// own uninstaller. Leaving the claim behind would authorise removing a copy the
+// user installs later.
+func TestUninstallClearsTheMarkerWhenAlreadyGone(t *testing.T) {
+	vendorRoot := t.TempDir() // nothing laid down, so detection fails
+	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
+	installDir := filepath.Join(ex.baseDir, "vendor")
+	if err := writeInstallMarker(installDir, "vendor"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ex.Uninstall(context.Background(), "vendor"); err != nil {
+		t.Fatalf("uninstalling an absent engine should succeed: %v", err)
+	}
+	if installedByPAIR(installDir) {
+		t.Error("stale marker left behind for an engine that is already gone")
 	}
 }

@@ -40,6 +40,7 @@ import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-jso
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
+    MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
     isModularLogLevel,
@@ -54,6 +55,7 @@ import type { ModularProcessName } from '@/shared/constants/modular-binaries'
 import type { ServiceError, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { ClusterNode } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
+import type { ManagedEngineUninstall } from '@/shared/types/engine-api'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 
 const log = createStructuredLogger('service-bridge')
@@ -1721,6 +1723,41 @@ class ModularSupervisor {
      * push. Without that context the error lands unattributed and the spinner
      * spins on to the safety-net timeout even though the operation is over.
      */
+    /**
+     * Remove the engines PAIR installed, for the "reset app data" flow.
+     *
+     * One backend call rather than a loop over engines: engine-manager owns
+     * which installs are PAIR's and what removing one safely involves, down to
+     * preserving each engine's model store. The TUI and the platform
+     * uninstallers reach the same method, so the rule has one implementation.
+     *
+     * Returns a per-engine outcome. An engine PAIR did not install comes back
+     * neither removed nor failed, which is the expected result and not an error.
+     */
+    async uninstallManagedEngines(): Promise<ManagedEngineUninstall[]> {
+        const result = await this.callProcess(
+            'broker',
+            'engine:uninstall-managed',
+            undefined,
+            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+        )
+        if (typeof result !== 'object' || result === null || Array.isArray(result)) return []
+        const engines = result.engines
+        if (!Array.isArray(engines)) return []
+        const outcomes: ManagedEngineUninstall[] = []
+        for (const entry of engines) {
+            if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+            const { engine, removed, error } = entry
+            if (typeof engine !== 'string' || engine === '') continue
+            outcomes.push({
+                engine,
+                removed: removed === true,
+                error: typeof error === 'string' ? error : ''
+            })
+        }
+        return outcomes
+    }
+
     async deleteModel(engine: string, engineType: EngineType, model: string): Promise<void> {
         const errorContext = { engineType, operation: 'delete', modelName: model } as const
         if (!this.brokerReady) {

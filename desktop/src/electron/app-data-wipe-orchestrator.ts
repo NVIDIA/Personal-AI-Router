@@ -6,9 +6,8 @@ import { destroyConnector } from '@/electron/connector'
 import { destroyTray } from '@/electron/tray'
 import { spawnWipeScript } from '@/electron/run-wipe-script'
 import { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
-import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import { createStructuredLogger } from '@/shared/utils/log'
-import type { JsonValue } from '@/shared/types/json'
+import type { ManagedEngineUninstall } from '@/shared/types/engine-api'
 
 const log = createStructuredLogger('app')
 
@@ -28,20 +27,6 @@ export function getAppDataWipePlan(): { willRelaunch: boolean } {
     return { willRelaunch: app.isPackaged }
 }
 
-/** Names of the engines the backend reports as installed on this node. */
-function installedEngineNames(result: JsonValue | undefined): string[] {
-    if (typeof result !== 'object' || result === null || Array.isArray(result)) return []
-    const engines = result.engines
-    if (!Array.isArray(engines)) return []
-    const names: string[] = []
-    for (const entry of engines) {
-        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
-        const { engine, installed } = entry
-        if (installed === true && typeof engine === 'string' && engine !== '') names.push(engine)
-    }
-    return names
-}
-
 /**
  * Remove the engines PAIR installed, before the wipe script deletes the app
  * data folder.
@@ -51,10 +36,11 @@ function installedEngineNames(result: JsonValue | undefined): string[] {
  * — so without this, resetting app data removed Ollama and llama.cpp and left
  * LM Studio behind.
  *
- * Runs through the broker while it is still up, so an engine is removed exactly
- * the way the Uninstall button removes it: the backend preserves each engine's
- * model store, and declines an install it has no record of making, which is how
- * an engine the user installed themselves survives a reset.
+ * One backend call, not a loop over engines: engine-manager owns which installs
+ * are PAIR's and what removing one safely involves, including preserving each
+ * engine's model store. Deciding that here would be a second implementation of
+ * a rule `services/` owns, and the TUI and the platform uninstallers go through
+ * the same method.
  *
  * Best-effort. A reset the user asked for still has to clear their data, so
  * every failure is logged and the sequence continues.
@@ -68,33 +54,33 @@ async function removeManagedEngines(): Promise<void> {
         })
         return
     }
-    let engines: string[] = []
+    let outcomes: ManagedEngineUninstall[] = []
     try {
-        engines = installedEngineNames(
-            await supervisor.callProcess('broker', 'engine:get-installed')
-        )
+        outcomes = await supervisor.uninstallManagedEngines()
     } catch (err) {
         log.warn({
             sublevel: 'wipe',
-            message: `Could not list engines to remove: ${err instanceof Error ? err.message : String(err)}`
+            message: `Could not remove PAIR-installed engines: ${err instanceof Error ? err.message : String(err)}`
         })
         return
     }
-    for (const engine of engines) {
-        try {
-            await supervisor.callProcess(
-                'broker',
-                'engine:uninstall',
-                { engine },
-                MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
-            )
-            log.info({ sublevel: 'wipe', message: `Removed PAIR-installed engine ${engine}` })
-        } catch (err) {
-            // Includes the backend declining an install PAIR has no record of
-            // making, which is the intended outcome rather than a failure.
+    for (const outcome of outcomes) {
+        if (outcome.removed) {
             log.info({
                 sublevel: 'wipe',
-                message: `Engine ${engine} not removed: ${err instanceof Error ? err.message : String(err)}`
+                message: `Removed PAIR-installed engine ${outcome.engine}`
+            })
+        } else if (outcome.error !== '') {
+            // Files are still on disk, and the record of who owns them is about
+            // to be deleted with the data folder.
+            log.error({
+                sublevel: 'wipe',
+                message: `Engine ${outcome.engine} not removed: ${outcome.error}`
+            })
+        } else {
+            log.info({
+                sublevel: 'wipe',
+                message: `Engine ${outcome.engine} left in place; PAIR did not install it`
             })
         }
     }

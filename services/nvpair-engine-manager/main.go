@@ -54,10 +54,7 @@ func main() {
 	// transport and starts no service. It always exits 0: an uninstaller that
 	// aborts here would leave the app half-removed.
 	if *uninstallManaged {
-		_, installBase := userPaths()
-		ctx, cancel := context.WithTimeout(context.Background(), uninstallManagedTimeout)
-		uninstallManagedEngines(ctx, buildBundledRegistry(), installBase)
-		cancel()
+		runUninstallManaged()
 		os.Exit(0)
 	}
 
@@ -157,6 +154,32 @@ func userPaths() (manifestDir, installBase string) {
 		return "", ""
 	}
 	return filepath.Join(root, "engines"), filepath.Join(root, "engine-bin")
+}
+
+// runUninstallManaged removes the engines PAIR installed, then returns.
+//
+// The same Executor.UninstallManaged the clients reach over JSON-RPC, so the
+// uninstaller gets the identical selection and safety path rather than a second
+// implementation of it. There is no broker here and no renderer listening, so
+// the reporter and notifier are inert; the work itself is unchanged.
+//
+// Never fails the caller. A platform uninstaller that aborted here would leave
+// the app half-removed, so every outcome is logged and the exit stays clean.
+func runUninstallManaged() {
+	_, installBase := userPaths()
+	exec := NewExecutor(buildBundledRegistry(), NewReporter(nil), func(string, any) {}, installBase)
+	ctx, cancel := context.WithTimeout(context.Background(), uninstallManagedTimeout)
+	defer cancel()
+	for _, result := range exec.UninstallManaged(ctx) {
+		switch {
+		case result.Removed:
+			slog.Info("engine removed", "engine", result.Engine)
+		case result.Error != "":
+			slog.Error("engine could not be removed", "engine", result.Engine, "err", result.Error)
+		default:
+			slog.Info("engine left in place; PAIR did not install it", "engine", result.Engine)
+		}
+	}
 }
 
 // buildBundledRegistry loads only the manifests compiled into this binary. A
