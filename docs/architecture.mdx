@@ -468,7 +468,8 @@ present downloads nothing and reports it as installed.
 llama.cpp uses PAIR's managed router rather than an arbitrary existing server.
 Its readiness check requires the listener to identify itself as a router, so a
 single-model `llama-server` on the configured port is rejected instead of
-adopted. Its model cache is separate and survives uninstall or reinstall.
+adopted. Its models live in `~/.llamacpp`, outside PAIR's own data directory, so
+they survive uninstalling the engine, resetting PAIR's data, and removing PAIR.
 
 Starting is similarly deferential. If something is already serving the engine's
 port, PAIR **adopts** that instance instead of spawning a second copy, and reports

@@ -23,8 +23,10 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.sh (Unix twin — update both in the same change)
 #
-# Explicit exclusions (never add): %USERPROFILE%\.ollama, .lmstudio, external
-# engine installs, and the application install tree (Program Files\PAIR).
+# Explicit exclusions (never add): %USERPROFILE%\.ollama, %USERPROFILE%\.llamacpp,
+# %USERPROFILE%\.lmstudio, external engine installs, and the application install
+# tree (Program Files\PAIR). Those three are the engines' model stores; each
+# engine declares its own as models_dir, and nothing PAIR removes may delete one.
 # ---------------------------------------------------------------------------
 
 [CmdletBinding()]

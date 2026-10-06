@@ -408,8 +408,11 @@ deletes finish. Unpackaged (`electron-vite dev`) builds omit relaunch and the UI
 tells the developer to run `npm start` again — quitting Electron tears down the Vite
 renderer server, so auto-relaunch would come up with nothing to load.
 
-Third-party model libraries (`~/.ollama`, `~/.lmstudio`) and the application install
-tree are never removed.
+The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`) and
+the application install tree are never removed. The reset does uninstall the
+engines PAIR installed, through `engine:uninstall-managed` while the broker is
+still running, so an engine a vendor installer placed in the user's home is
+removed too rather than only those inside the app data folder.
 
 ## Sources of truth
 

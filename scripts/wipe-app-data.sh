@@ -24,9 +24,10 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.ps1 (Windows twin — update both in the same change)
 #
-# Explicit exclusions (never add): ~/.ollama, ~/.lmstudio, external engine
-# installs, and the application install tree (Program Files / /opt/PAIR /
-# the macOS app bundle).
+# Explicit exclusions (never add): ~/.ollama, ~/.llamacpp, ~/.lmstudio, external
+# engine installs, and the application install tree (Program Files / /opt/PAIR /
+# the macOS app bundle). Those three are the engines' model stores; each engine
+# declares its own as models_dir, and nothing PAIR removes may delete one.
 # ---------------------------------------------------------------------------
 set -uo pipefail
 

@@ -122,7 +122,7 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `manifest_version` | int | yes | Must be `1`. A higher value is rejected (asks for behavior this binary lacks). Unknown optional fields within a supported version are ignored, so the schema can grow additively. |
 | `platforms` | object | yes | Map of `"<goos>/<goarch>"` → platform block (e.g. `"windows/amd64"`, `"darwin/arm64"`, `"linux/amd64"`). At least one entry. The runner selects the block matching the host. |
 | `actions` | object | no | Map of action name → action (see below). |
-| `detect` / `install` / `uninstall` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
+| `detect` / `install` / `uninstall` / `models_dir` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
 
 **Shared defaults & per-platform overrides.** The platform-level fields `detect`, `install`, `uninstall`, `models_dir`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
 
@@ -376,7 +376,7 @@ validation at load:
 | `{download}` | Path of the verified download | `install.run` |
 | `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
 | `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
-| `{models_dir}` | The platform's `models_dir`, expanded | runtime args/env, `uninstall.remove`, action `remove_path` |
+| `{models_dir}` | The platform's `models_dir`, expanded | `detect`, runtime args/env, `uninstall.run`, actions. **Not** `install`, which resolves only `{install_dir}` and the download paths — and not `uninstall.remove`, where naming the store is rejected at load. Unset when the platform declares no store, so a template referencing it then fails to resolve rather than silently becoming a path under `/` |
 
 A `cmd` action additionally templates the action's own `params` as
 placeholders (e.g. `{model}`), resolved at call time. HTTP actions send
@@ -393,7 +393,11 @@ field is missing, `manifest_version` is unsupported, a platform key isn't
 nor nonempty `artifacts`, `fetch` or nonempty `artifacts` is present without
 nonempty `install.run`, `install.script` is combined with
 `fetch`/`artifacts`/`run`, `install.mode` or
-`runtime.mode` is invalid, an action sets none or more than one of
+`runtime.mode` is invalid, `models_dir` is a template rather than a literal
+path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
+is present without a `models_dir` to preserve, an `uninstall.remove` target is
+the model store or inside it (whether spelled literally or as `{models_dir}`),
+an action sets none or more than one of
 `http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
 both `array` and `field` (or a
