@@ -4,6 +4,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,7 +48,7 @@ func bundledManifestSet(t *testing.T) map[string]*Manifest {
 // published release archive.
 //
 // Whether a path matches the archive is only knowable from the archive, so the
-// real check is TestLiveBundledInstallLayout, which downloads each one. What is
+// real check is TestBundledInstallLayout, which downloads each one. What is
 // checkable here is that the two paths agree: detecting one file and launching
 // another lets an engine report installed and then fail to start.
 //
@@ -99,15 +103,15 @@ func TestBundledInstallLayout(t *testing.T) {
 	}
 	for name, manifest := range bundledManifestSet(t) {
 		for key, platform := range manifest.Platforms {
-			urls := archiveURLs(platform)
-			if len(urls) == 0 {
+			downloads := archiveDownloads(platform)
+			if len(downloads) == 0 {
 				continue // vendor script or detect-only engine; nothing to unpack
 			}
 			t.Run(name+"/"+key, func(t *testing.T) {
 				installDir := t.TempDir()
 				strip := strings.Contains(strings.Join(platform.Install.Run, " "), "--strip-components=1")
-				for _, url := range urls {
-					extractArchive(t, url, installDir, strip)
+				for _, download := range downloads {
+					extractArchive(t, download, installDir, strip)
 				}
 				for _, candidate := range platform.Detect {
 					if !strings.HasPrefix(candidate, "{install_dir}") {
@@ -118,8 +122,8 @@ func TestBundledInstallLayout(t *testing.T) {
 					// separator is what the extracted tree uses.
 					relative = filepath.FromSlash(strings.ReplaceAll(relative, `\`, "/"))
 					if _, err := os.Stat(filepath.Join(installDir, relative)); err != nil {
-						t.Errorf("detect path %q is absent after extracting %v (strip=%v): %v",
-							candidate, urls, strip, err)
+						t.Errorf("detect path %q is absent after extraction (strip=%v): %v",
+							candidate, strip, err)
 					}
 				}
 			})
@@ -127,31 +131,40 @@ func TestBundledInstallLayout(t *testing.T) {
 	}
 }
 
-// archiveURLs lists the downloads a platform's install unpacks, in the order
-// the manifest extracts them.
-func archiveURLs(platform Platform) []string {
+// archiveDownloads lists the downloads a platform's install unpacks, with their
+// pinned checksums, in the order the manifest extracts them.
+func archiveDownloads(platform Platform) []Fetch {
 	if platform.Install == nil || len(platform.Install.Run) == 0 {
 		return nil
 	}
-	var urls []string
+	var downloads []Fetch
 	if platform.Install.Fetch != nil {
-		urls = append(urls, platform.Install.Fetch.URL)
+		downloads = append(downloads, *platform.Install.Fetch)
 	}
 	for _, artifact := range platform.Install.Artifacts {
-		urls = append(urls, artifact.URL)
+		downloads = append(downloads, Fetch{URL: artifact.URL, SHA256: artifact.SHA256})
 	}
-	return urls
+	return downloads
 }
 
-func extractArchive(t *testing.T, url, installDir string, strip bool) {
+func extractArchive(t *testing.T, download Fetch, installDir string, strip bool) {
 	t.Helper()
-	archive := filepath.Join(t.TempDir(), filepath.Base(url))
+	archive := filepath.Join(t.TempDir(), filepath.Base(download.URL))
 	// curl rather than net/http: these are large, redirected downloads and the
 	// point here is the archive's interior, not the transfer.
-	fetch := exec.Command("curl", "-sSL", "--fail", "--max-time", "900", "-o", archive, url)
+	fetch := exec.Command("curl", "-sSL", "--fail", "--max-time", "900", "-o", archive, download.URL)
 	if out, err := fetch.CombinedOutput(); err != nil {
-		t.Skipf("cannot download %s (%v): %s", url, err, strings.TrimSpace(string(out)))
+		// With --fail, curl exits 22 for an HTTP status of 400 or above. That is
+		// the manifest being wrong — a release tag that moved, most likely — so
+		// it has to fail. Skipping it would report the exact breakage this test
+		// exists to catch as "no result".
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 22 {
+			t.Fatalf("%s is not downloadable: %s", download.URL, strings.TrimSpace(string(out)))
+		}
+		t.Skipf("cannot reach %s (%v): %s", download.URL, err, strings.TrimSpace(string(out)))
 	}
+	verifyChecksum(t, archive, download)
 	args := []string{"-xf", archive, "-C", installDir}
 	if strip {
 		args = append(args, "--strip-components=1")
@@ -159,5 +172,29 @@ func extractArchive(t *testing.T, url, installDir string, strip bool) {
 	extract := exec.Command("tar", args...)
 	if out, err := extract.CombinedOutput(); err != nil {
 		t.Fatalf("tar %v on %s failed (%v): %s", args, runtime.GOOS, err, strings.TrimSpace(string(out)))
+	}
+}
+
+// verifyChecksum compares the download against the manifest's pin. The runner
+// does this at install time; doing it here too means a pin left behind by a
+// version bump is caught by the same test that checks the layout, rather than
+// by a user's failed install.
+func verifyChecksum(t *testing.T, archive string, download Fetch) {
+	t.Helper()
+	want := strings.TrimSpace(download.SHA256)
+	if want == "" {
+		return // an unpinned fetch; the runner warns rather than verifies
+	}
+	file, err := os.Open(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	digest := sha256.New()
+	if _, err := io.Copy(digest, file); err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(got, want) {
+		t.Errorf("%s checksum is %s, manifest pins %s", download.URL, got, want)
 	}
 }

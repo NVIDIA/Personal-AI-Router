@@ -21,6 +21,19 @@ import (
 	settings "nvpair-shared/enginesettings"
 )
 
+// graftPlatform points the fake engine at a bundled platform's runtime.
+//
+// Both fields move together: a runtime referencing {models_dir} — llama.cpp's
+// LLAMA_CACHE does — needs the store that goes with it, and an unset models_dir
+// is deliberately not published as a placeholder, so grafting the runtime alone
+// leaves a launch that cannot resolve.
+func graftPlatform(t *testing.T, e *Executor, platform Platform) {
+	t.Helper()
+	state := settingsState(t, e)
+	state.plat.Runtime = platform.Runtime
+	state.modelsDir = expandPath(platform.ModelsDir)
+}
+
 func settingsExecutor(t *testing.T, command bool) *Executor {
 	t.Helper()
 	m := testEngineManifest(fakeEngineBin)
@@ -574,7 +587,7 @@ func manifestSettingsRequest(t *testing.T, platform string) (*Executor, settings
 		t.Fatalf("platform %q missing", platform)
 	}
 	e := settingsExecutor(t, false)
-	settingsState(t, e).plat.Runtime = config.Runtime
+	graftPlatform(t, e, config)
 	request := settingsRequest(t, e)
 	tokens, err := parseLaunchText(request.Settings.LaunchText)
 	if err != nil {

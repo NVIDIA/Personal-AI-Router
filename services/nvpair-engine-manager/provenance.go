@@ -31,10 +31,12 @@ type installMarker struct {
 	InstalledAt string `json:"installed_at"`
 }
 
-// uninstallManagedTimeout bounds the whole --uninstall-managed pass. Removing a
-// model-adjacent tree walks a lot of files, and a vendor's stop command can
-// hang, but an uninstaller cannot wait forever for either.
-const uninstallManagedTimeout = 3 * time.Minute
+// uninstallManagedTimeout bounds the whole --uninstall-managed pass: the
+// commands each uninstall runs, plus the check between engines that stops the
+// sweep once it expires. A vendor's stop command can hang and an uninstaller
+// cannot wait forever, but an individual file walk is not interruptible, so the
+// budget has to be comfortably above one engine's worst case rather than tight.
+const uninstallManagedTimeout = 15 * time.Minute
 
 func installMarkerPath(installDir string) string {
 	if installDir == "" {
@@ -117,6 +119,12 @@ func (e *Executor) UninstallManaged(ctx context.Context) []ManagedUninstall {
 	names := e.reg.Names()
 	results := make([]ManagedUninstall, 0, len(names))
 	for _, engine := range names {
+		// Checked per engine, because the budget below bounds the commands an
+		// uninstall runs but not the file walks between them.
+		if err := ctx.Err(); err != nil {
+			slog.Warn("stopped removing engines before finishing", "err", err, "remaining", len(names)-len(results))
+			return results
+		}
 		installDir := filepath.Join(e.baseDir, engine)
 		if !installedByPAIR(installDir) {
 			slog.Info("leaving engine in place; PAIR did not install it", "engine", engine)

@@ -245,10 +245,14 @@ func (e *Executor) state(engine string) (*engineState, error) {
 // expand "~" itself — which it could not do, since only argv and a handful of
 // named fields pass through expandPath.
 func (st *engineState) pathVars() map[string]string {
-	return map[string]string{
-		"install_dir": st.installDir,
-		"models_dir":  st.modelsDir,
+	vars := map[string]string{"install_dir": st.installDir}
+	// Omitted rather than empty when the manifest declares no store, so a
+	// template that references it fails to resolve instead of quietly becoming
+	// a path rooted at "/".
+	if st.modelsDir != "" {
+		vars["models_dir"] = st.modelsDir
 	}
+	return vars
 }
 
 func progress(engine, stage string, pct int) map[string]any {

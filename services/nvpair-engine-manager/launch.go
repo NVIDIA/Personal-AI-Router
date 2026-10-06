@@ -117,11 +117,12 @@ func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (l
 		if err != nil {
 			return launchCommand{}, err
 		}
-		// Env values get the same expansion as argv. A manifest env value that
-		// names a directory ("~/.llamacpp") would otherwise reach the engine
-		// literally, and the engine would create a directory called "~" in its
-		// working directory instead of using the user's home.
-		env[key] = expandPath(resolved)
+		// Not path-expanded, here or in applyLiteralLaunch, so a default launch
+		// and a customised one produce the same environment. A manifest env
+		// value that names a directory therefore has to arrive already
+		// absolute: {models_dir} does, because the executor expands it once when
+		// it resolves the engine's state.
+		env[key] = resolved
 	}
 	return applyLiteralLaunch(rt, launchCommand{Bin: binPath, Args: args, Env: env}, resolvedVars)
 }
