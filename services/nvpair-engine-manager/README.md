@@ -83,7 +83,10 @@ Notifications (service → caller): `engine:ready{version}`,
 loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `loadedByEngine`) so a consumer swaps its whole snapshot,
-`engine:install-progress{engine, stage, percent}`,
+`engine:install-progress{engine, stage, percent?}` (`percent` is present only
+when measurable — download bytes — or terminal: `100` on `done` /
+`already-installed`, `-1` on `failed`; the `verified` and `installing` stages
+carry none, so a UI renders them as indeterminate),
 `engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in

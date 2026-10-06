@@ -71,7 +71,7 @@ describe('LM Studio install state', () => {
         vi.advanceTimersByTime(120_000)
         expect(statuses.at(-1)).toBe('installing')
 
-        state.applyEngineManagerProgress({ engine: 'lmstudio', stage: 'installing', percent: 75 })
+        state.applyEngineManagerProgress({ engine: 'lmstudio', stage: 'installing' })
         vi.advanceTimersByTime(30 * 60_000 - 1)
         expect(statuses.at(-1)).toBe('installing')
         vi.advanceTimersByTime(1)
