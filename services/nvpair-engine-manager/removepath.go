@@ -10,9 +10,65 @@ import (
 	"strings"
 )
 
-// lmstudioModelsDir is the default on-disk model cache for LM Studio.
-func lmstudioModelsDir() string {
-	return expandPath("~/.lmstudio/models")
+// removeTreePreserving deletes target, except for preserve and whatever leads
+// to it. This is what keeps an engine uninstall from taking the user's model
+// library: LM Studio installs into ~/.lmstudio and keeps its downloads in
+// ~/.lmstudio/models, so removing the engine means removing every other child
+// of that directory and stopping there.
+//
+// preserve may be empty (nothing to keep), outside target (a plain removal, as
+// for Ollama, whose models live in ~/.ollama), or below it (the descend case).
+// Equal paths are refused: the caller is asking to delete the model store under
+// the guise of preserving it, which is a manifest bug rather than a no-op.
+func removeTreePreserving(target, preserve string) error {
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("remove: target is required")
+	}
+	absTarget, err := filepath.Abs(filepath.Clean(expandPath(target)))
+	if err != nil {
+		return fmt.Errorf("remove: target: %w", err)
+	}
+	if _, err := os.Lstat(absTarget); err != nil {
+		if os.IsNotExist(err) {
+			return nil // already gone; uninstall is idempotent
+		}
+		return fmt.Errorf("remove: stat %q: %w", absTarget, err)
+	}
+	if strings.TrimSpace(preserve) == "" {
+		return os.RemoveAll(absTarget)
+	}
+	absPreserve, err := filepath.Abs(filepath.Clean(expandPath(preserve)))
+	if err != nil {
+		return fmt.Errorf("remove: preserve: %w", err)
+	}
+	if absPreserve == absTarget {
+		return fmt.Errorf("remove: %q is the preserved model store", absTarget)
+	}
+	if !pathWithinRoot(absTarget, absPreserve) {
+		return os.RemoveAll(absTarget)
+	}
+	entries, err := os.ReadDir(absTarget)
+	if err != nil {
+		return fmt.Errorf("remove: read %q: %w", absTarget, err)
+	}
+	for _, entry := range entries {
+		child := filepath.Join(absTarget, entry.Name())
+		if pathWithinRoot(child, absPreserve) {
+			// On the path to the model store. Recurse so siblings deeper down
+			// still go, and stop once the store itself is the next step.
+			if child == absPreserve {
+				continue
+			}
+			if err := removeTreePreserving(child, absPreserve); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.RemoveAll(child); err != nil {
+			return fmt.Errorf("remove: %q: %w", child, err)
+		}
+	}
+	return nil
 }
 
 // safeRemoveUnderRoot deletes target after verifying it resolves under root.

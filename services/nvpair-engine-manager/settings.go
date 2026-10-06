@@ -97,7 +97,9 @@ func resolveRuntimeCommand(rt Runtime, index int, vars map[string]string) (launc
 // settings read probes ports, starts processes or writes configuration.
 func launchForState(st *engineState, port int) (launchCommand, error) {
 	rt := st.plat.Runtime
-	vars := map[string]string{"host": effectiveBind(rt.Bind, ""), "port": strconv.Itoa(port), "install_dir": st.installDir}
+	vars := st.pathVars()
+	vars["host"] = effectiveBind(rt.Bind, "")
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -258,10 +260,11 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		return fail("Cannot resolve the engine executable.")
 	}
 	host := effectiveBind(rt.Bind, "")
-	vars := map[string]string{
-		"host": host, "port": strconv.Itoa(request.Settings.ServerPort),
-		"install_dir": st.installDir, "bin": base.Bin, "cli": expandPath(rt.CLI),
-	}
+	vars := st.pathVars()
+	vars["host"] = host
+	vars["port"] = strconv.Itoa(request.Settings.ServerPort)
+	vars["bin"] = base.Bin
+	vars["cli"] = expandPath(rt.CLI)
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return fail("PAIR-managed launch settings require a loopback bind.")
 	}

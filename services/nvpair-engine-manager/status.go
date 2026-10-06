@@ -29,9 +29,9 @@ func (e *Executor) Detect(engine string) (bool, error) {
 	installed := false
 	binPath := ""
 	for _, p := range st.plat.Detect {
-		r, err := resolvePlaceholders(p, map[string]string{"install_dir": st.installDir})
+		r, err := resolvePlaceholders(p, st.pathVars())
 		if err != nil {
-			continue // detect path references something other than {install_dir}
+			continue // detect path references something other than a known directory
 		}
 		if ep := expandPath(r); fileExists(ep) {
 			installed = true

@@ -48,6 +48,10 @@ type engineState struct {
 	plat       *Platform
 	logs       *logBuffer
 	installDir string
+	// modelsDir is the resolved {models_dir}: the engine's model store, which no
+	// removal this service performs may delete. Empty when the manifest declares
+	// none, in which case uninstall has nothing to preserve.
+	modelsDir string
 
 	// opMu serializes lifecycle operations (install / start / stop /
 	// restart / uninstall) for this engine, so concurrent calls can't
@@ -229,8 +233,22 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		port:       plat.Runtime.Port,
 		installDir: filepath.Join(e.baseDir, engine),
 	}
+	if plat.ModelsDir != "" {
+		st.modelsDir = expandPath(plat.ModelsDir)
+	}
 	e.engines[engine] = st
 	return st, nil
+}
+
+// pathVars are the directory placeholders every templated manifest string can
+// use. Both are absolute by the time they get here, so a manifest never has to
+// expand "~" itself — which it could not do, since only argv and a handful of
+// named fields pass through expandPath.
+func (st *engineState) pathVars() map[string]string {
+	return map[string]string{
+		"install_dir": st.installDir,
+		"models_dir":  st.modelsDir,
+	}
 }
 
 func progress(engine, stage string, pct int) map[string]any {

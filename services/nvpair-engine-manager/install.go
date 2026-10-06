@@ -150,7 +150,7 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		return e.setDesiredEnabled(engine, false) // already gone
 	}
 	un := st.plat.Uninstall
-	if un == nil || len(un.Run) == 0 {
+	if un == nil || (len(un.Run) == 0 && len(un.Remove) == 0) {
 		return fmt.Errorf("engine %q has no uninstall defined for this platform", engine)
 	}
 	st.mu.Lock()
@@ -182,16 +182,37 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		return werr
 	}
 
-	args, err := resolveArgs(un.Run, map[string]string{"install_dir": st.installDir})
+	vars := st.pathVars()
+	args, err := resolveArgs(un.Run, vars)
 	if err != nil {
 		return err
 	}
 	for i := range args {
 		args[i] = expandPath(args[i])
 	}
+	targets, err := resolveArgs(un.Remove, vars)
+	if err != nil {
+		return err
+	}
+	// One attempt is the command followed by the declared removals, so a retry
+	// re-runs the process-stopping command before trying the tree again — which
+	// is what clears the case this retry loop exists for.
+	attemptUninstall := func() error {
+		if len(args) > 0 {
+			if err := e.runCommand(ctx, args); err != nil {
+				return err
+			}
+		}
+		for _, target := range targets {
+			if err := removeTreePreserving(target, st.modelsDir); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	var runErr error
 	for attempt := 1; attempt <= uninstallRetries; attempt++ {
-		if runErr = e.runCommand(ctx, args); runErr == nil {
+		if runErr = attemptUninstall(); runErr == nil {
 			break
 		}
 		if attempt < uninstallRetries {

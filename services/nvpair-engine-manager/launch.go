@@ -117,7 +117,11 @@ func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (l
 		if err != nil {
 			return launchCommand{}, err
 		}
-		env[key] = resolved
+		// Env values get the same expansion as argv. A manifest env value that
+		// names a directory ("~/.llamacpp") would otherwise reach the engine
+		// literally, and the engine would create a directory called "~" in its
+		// working directory instead of using the user's home.
+		env[key] = expandPath(resolved)
 	}
 	return applyLiteralLaunch(rt, launchCommand{Bin: binPath, Args: args, Env: env}, resolvedVars)
 }
