@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -216,6 +217,60 @@ type logLevelSetMsg struct {
 // just removed.
 type wipeDataMsg struct{}
 
+// engineResetBudget bounds one engine's removal during a reset. An engine
+// uninstall retries a few times with a pause between, because a vendor daemon
+// can hold its own files open briefly after being told to stop, so this has to
+// exceed that whole sequence rather than a single round trip.
+const engineResetBudget = 90 * time.Second
+
+// resetEngines removes the engines PAIR installed, before the reset quits and
+// the data directory goes.
+//
+// It runs here, over the live broker connection, rather than against the data
+// directory afterwards: deleting that directory only reaches the engines that
+// happen to live inside it, and a vendor installer picks its own location — LM
+// Studio lands in the user's home. Going through engine:uninstall also means
+// the reset removes an engine exactly the way the operator's own `u` key does.
+//
+// Each engine's downloaded models survive; engine-manager preserves every
+// engine's model store. An engine PAIR did not install is declined by the
+// backend, which is the intended outcome and not reported as a failure here —
+// the reset clears PAIR's own installs, not the operator's.
+//
+// Always ends in wipeDataMsg. A reset that cannot remove an engine must still
+// clear the data it was asked to clear.
+func resetEngines(client *rpc.Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		defer cancel()
+		msg, err := client.Call(ctx, "engine:get-installed", map[string]any{})
+		if err != nil {
+			slog.Error("cannot list engines to remove; data reset continues", "err", err)
+			return wipeDataMsg{}
+		}
+		var reply struct {
+			Engines []engineStatus `json:"engines"`
+		}
+		decodeOrLog("engine:get-installed", msg.Result, &reply)
+		for _, engine := range reply.Engines {
+			if !engine.Installed {
+				continue
+			}
+			opCtx, opCancel := context.WithTimeout(context.Background(), engineResetBudget)
+			_, err := client.Call(opCtx, "engine:uninstall", map[string]any{"engine": engine.Engine})
+			opCancel()
+			if err != nil {
+				// Includes the backend declining an install PAIR has no record
+				// of making, which is why this is not an error.
+				slog.Info("engine not removed by reset", "engine", engine.Engine, "reason", err)
+				continue
+			}
+			slog.Info("reset removed PAIR-installed engine", "engine", engine.Engine)
+		}
+		return wipeDataMsg{}
+	}
+}
+
 var (
 	serviceUpKey       = key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("up/k", "up"))
 	serviceDownKey     = key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("down/j", "down"))
@@ -254,7 +309,7 @@ func newServiceView(client *rpc.Client) *serviceView {
 				getMethod: getClusterNameMethod, setMethod: setClusterNameMethod,
 				help: "this machine's own label for the cluster - not shared with peers"},
 			{kind: itemAction, label: "Reset all data and quit", destructive: true,
-				help: "deletes settings, cluster identity, and pairing"},
+				help: "deletes settings, cluster identity, pairing, and engines PAIR installed - downloaded models are kept"},
 		},
 	}
 	// Static: there is no per-worker operation, so a movable highlight would
@@ -562,7 +617,10 @@ func (v *serviceView) submitEdit() tea.Cmd {
 // runAction performs a confirmed action row.
 func (v *serviceView) runAction(idx int) tea.Cmd {
 	if v.items[idx].destructive {
-		return func() tea.Msg { return wipeDataMsg{} }
+		// Engines go first, while the broker is still up to remove them; the
+		// resulting wipeDataMsg quits and deletes the data directory.
+		v.status.busy("removing engines PAIR installed...")
+		return resetEngines(v.client)
 	}
 	return nil
 }

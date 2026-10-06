@@ -4,7 +4,10 @@
 package ui
 
 import (
+	"context"
+	"encoding/json"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 
@@ -322,12 +325,105 @@ func TestLogLevelPickerAppliesSelection(t *testing.T) {
 	}
 }
 
+// resetBroker answers the two calls a reset makes: engine:get-installed with
+// the given engines, then engine:uninstall for each. Every uninstall it is
+// asked for is reported on the returned channel, so a test can assert which
+// engines the reset tried to remove.
+func resetBroker(t *testing.T, installed []string) (*rpc.Client, <-chan string) {
+	t.Helper()
+	c1, c2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		c1.Close()
+		c2.Close()
+	})
+	client := rpc.NewClient(c1, c1)
+	go client.Run(ctx)
+
+	engines := make([]string, 0, len(installed))
+	for _, name := range installed {
+		engines = append(engines, `{"engine":"`+name+`","installed":true}`)
+	}
+	listed := `{"engines":[` + strings.Join(engines, ",") + `]}`
+
+	uninstalled := make(chan string, 8)
+	broker := rpc.NewCodec(c2, c2)
+	go func() {
+		for {
+			req, err := broker.Read()
+			if err != nil {
+				return
+			}
+			result := json.RawMessage(`{}`)
+			switch req.Method {
+			case "engine:get-installed":
+				result = json.RawMessage(listed)
+			case "engine:uninstall":
+				var params struct {
+					Engine string `json:"engine"`
+				}
+				_ = json.Unmarshal(req.Params, &params)
+				uninstalled <- params.Engine
+			}
+			_ = broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: result})
+		}
+	}()
+	return client, uninstalled
+}
+
+// TestResetRemovesInstalledEnginesBeforeWiping pins the order a reset works in:
+// engines go through engine:uninstall while the broker is still up, and only
+// then does the shell get the request to quit and delete the data directory.
+// Deleting the directory alone would miss an engine a vendor installer put in
+// the user's home, which is where LM Studio lands.
+func TestResetRemovesInstalledEnginesBeforeWiping(t *testing.T) {
+	client, uninstalled := resetBroker(t, []string{"ollama", "lmstudio"})
+	v := newServiceView(client)
+	resetIdx := -1
+	for i, it := range v.items {
+		if it.destructive {
+			resetIdx = i
+			break
+		}
+	}
+	if resetIdx < 0 {
+		t.Fatal("no destructive row found")
+	}
+	v.cursor = resetIdx
+	v.activate()
+
+	cmd := v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("confirmation produced no command")
+	}
+	if _, ok := cmd().(wipeDataMsg); !ok {
+		t.Fatal("reset did not end in a data wipe request")
+	}
+
+	removed := map[string]bool{}
+	for range 2 {
+		select {
+		case engine := <-uninstalled:
+			removed[engine] = true
+		default:
+			t.Fatalf("reset removed only %v", removed)
+		}
+	}
+	for _, want := range []string{"ollama", "lmstudio"} {
+		if !removed[want] {
+			t.Errorf("reset did not uninstall %q", want)
+		}
+	}
+}
+
 // TestResetRequiresConfirmation is the guard on the one irreversible action in
 // the TUI: activating the row must only arm it, and only the confirmation key
 // may fire it.
 func TestResetRequiresConfirmation(t *testing.T) {
 	resetIdx := -1
-	v := newServiceView(nil)
+	client, _ := resetBroker(t, nil)
+	v := newServiceView(client)
 	for i, it := range v.items {
 		if it.destructive {
 			resetIdx = i
