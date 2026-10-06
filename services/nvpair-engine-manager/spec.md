@@ -192,8 +192,11 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
   `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on
   Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, and
   `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on
-  macOS) plus bundled `manifests/*.json`. llama.cpp uses a managed sibling cache
-  that survives uninstall and must currently be removed manually. No database.
+  macOS) plus bundled `manifests/*.json`. Each engine's model store is declared
+  as `models_dir` outside that data dir (`~/.ollama`, `~/.llamacpp`,
+  `~/.lmstudio/models`) so neither an engine uninstall nor the app-level data
+  purge removes downloaded models; clearing one is the user's own choice, made
+  per model through `delete_model`. No database.
 
 ## 10. Design Constraints
 - **Performance**: control plane, not inference; sub-second RPCs except install (network-bound) and start (bounded by the readiness timeout).

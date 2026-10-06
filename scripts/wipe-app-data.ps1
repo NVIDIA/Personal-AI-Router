@@ -51,7 +51,7 @@ Usage: scripts\wipe-app-data.cmd [options]
 Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
 identity, chat history, PAIR-managed engines under the app data root).
 
-Does NOT delete third-party model libraries (e.g. %USERPROFILE%\.ollama).
+Does NOT delete model libraries (%USERPROFILE%\.ollama, .llamacpp, .lmstudio\models).
 Does NOT uninstall the application binary.
 
 Options:
@@ -225,7 +225,7 @@ if (-not $Confirmed) {
     }
     Write-Host ''
     Write-Host 'WARNING: This permanently deletes all NVIDIA PAIR app data.'
-    Write-Host 'Third-party model libraries (e.g. %USERPROFILE%\.ollama) are NOT removed.'
+    Write-Host 'Model libraries (%USERPROFILE%\.ollama, .llamacpp, .lmstudio\models) are NOT removed.'
     Write-Host ''
     Write-Host 'Paths to remove:'
     foreach ($t in $Targets) { Write-Host ("  - {0}" -f $t.Path) }

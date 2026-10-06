@@ -45,7 +45,7 @@ Usage: scripts/wipe-app-data.sh [options]
 Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
 identity, chat history, PAIR-managed engines under the app data root).
 
-Does NOT delete third-party model libraries (e.g. ~/.ollama, ~/.lmstudio).
+Does NOT delete model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models).
 Does NOT uninstall the application binary.
 
 Options:
@@ -215,7 +215,7 @@ if [[ "$CONFIRM" -eq 0 ]]; then
   fi
   echo ""
   echo "WARNING: This permanently deletes all NVIDIA PAIR app data."
-  echo "Third-party model libraries (e.g. ~/.ollama, ~/.lmstudio) are NOT removed."
+  echo "Model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models) are NOT removed."
   echo ""
   echo "Paths to remove:"
   for entry in "${TARGETS[@]}"; do

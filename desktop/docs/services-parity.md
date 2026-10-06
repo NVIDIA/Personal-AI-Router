@@ -152,8 +152,10 @@ Personal AI Router consequences (all reflection, no security implementation):
 
 The bundled backend manifest can install and start `llama-server`, list exact
 router model ids, stream model downloads over SSE, load or unload a model, and
-delete native cache entries by exact id. Its `LLAMA_CACHE` directory is a
-sibling of the install directory and survives uninstall and reinstall.
+delete native cache entries by exact id. `LLAMA_CACHE` points at the manifest's
+declared `models_dir`, `~/.llamacpp`, so downloaded models survive both an
+engine uninstall and the app-level "remove all data" uninstall — the latter
+deletes the whole app data root, so a model store inside it would not.
 Loaded models enter llama.cpp sleep mode after five idle minutes, release model
 and KV-cache memory, and wake on the next request. The router child remains alive
 and can retain a residual backend GPU context.
