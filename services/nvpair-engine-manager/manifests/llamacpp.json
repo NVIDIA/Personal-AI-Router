@@ -47,46 +47,46 @@
       "runtime": { "bin": "{install_dir}\\llama-server.exe" }
     },
     "linux/amd64": {
-      "detect": ["{install_dir}/build/bin/llama-server"],
+      "detect": ["{install_dir}/llama-server"],
       "install": {
         "artifacts": [
           { "name": "server", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-12.8-x64.tar.gz", "sha256": "c2ab9e19838513ff69d1af8d999ad717dd3c7ee4714ac04c7ed5ab9077c50e4e" },
           { "name": "cudart", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-12.8-x64.tar.gz", "sha256": "1466daea60aad1144819e151b2bae19d54556cf1da6c129c4f55a5ded2637c25" }
         ],
-        "run": ["sh", "-c", "tar -xzf \"$1\" -C \"$3\" && tar -xzf \"$2\" -C \"$3\"", "llamacpp-install", "{download_server}", "{download_cudart}", "{install_dir}"]
+        "run": ["sh", "-c", "tar -xzf \"$1\" -C \"$3\" --strip-components=1 && tar -xzf \"$2\" -C \"$3\" --strip-components=1", "llamacpp-install", "{download_server}", "{download_cudart}", "{install_dir}"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
-      "runtime": { "bin": "{install_dir}/build/bin/llama-server", "env": { "LD_LIBRARY_PATH": "{install_dir}/build/bin" } }
+      "runtime": { "bin": "{install_dir}/llama-server", "env": { "LD_LIBRARY_PATH": "{install_dir}" } }
     },
     "linux/arm64": {
-      "detect": ["{install_dir}/build/bin/llama-server"],
+      "detect": ["{install_dir}/llama-server"],
       "install": {
         "artifacts": [
           { "name": "server", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz", "sha256": "4e00496ab6cdee9c00afb11de3cb9d10f9da7e17147d8ed14ca3af05209b400f" },
           { "name": "cudart", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz", "sha256": "7f46057efcba6338c58ed9f91c06f268c290f3a228fdbdd4bea229dd60b0e094" }
         ],
-        "run": ["sh", "-c", "tar -xzf \"$1\" -C \"$3\" && tar -xzf \"$2\" -C \"$3\"", "llamacpp-install", "{download_server}", "{download_cudart}", "{install_dir}"]
+        "run": ["sh", "-c", "tar -xzf \"$1\" -C \"$3\" --strip-components=1 && tar -xzf \"$2\" -C \"$3\" --strip-components=1", "llamacpp-install", "{download_server}", "{download_cudart}", "{install_dir}"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
-      "runtime": { "bin": "{install_dir}/build/bin/llama-server", "env": { "LD_LIBRARY_PATH": "{install_dir}/build/bin" } }
+      "runtime": { "bin": "{install_dir}/llama-server", "env": { "LD_LIBRARY_PATH": "{install_dir}" } }
     },
     "darwin/arm64": {
-      "detect": ["{install_dir}/build/bin/llama-server"],
+      "detect": ["{install_dir}/llama-server"],
       "install": {
         "fetch": { "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-arm64.tar.gz", "sha256": "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711" },
-        "run": ["tar", "-xzf", "{download}", "-C", "{install_dir}"]
+        "run": ["tar", "-xzf", "{download}", "-C", "{install_dir}", "--strip-components=1"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
-      "runtime": { "bin": "{install_dir}/build/bin/llama-server" }
+      "runtime": { "bin": "{install_dir}/llama-server" }
     },
     "darwin/amd64": {
-      "detect": ["{install_dir}/build/bin/llama-server"],
+      "detect": ["{install_dir}/llama-server"],
       "install": {
         "fetch": { "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-x64.tar.gz", "sha256": "305f0e3a17d2c01eb205cd0a62128357f1ec3b55329cb084d94e5ec0115d7a3b" },
-        "run": ["tar", "-xzf", "{download}", "-C", "{install_dir}"]
+        "run": ["tar", "-xzf", "{download}", "-C", "{install_dir}", "--strip-components=1"]
       },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
-      "runtime": { "bin": "{install_dir}/build/bin/llama-server" }
+      "runtime": { "bin": "{install_dir}/llama-server" }
     }
   },
   "actions": {

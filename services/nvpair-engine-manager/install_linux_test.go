@@ -19,8 +19,14 @@ import (
 )
 
 func TestLlamaCPPInstallPreservesShellArtifactArguments(t *testing.T) {
-	serverArchive := testTarGZIP(t, "build/bin/llama-server", "server")
-	cudartArchive := testTarGZIP(t, "build/bin/libcudart.so.12", "runtime")
+	// Both archives wrap their contents in one top-level directory, as every
+	// llama.cpp release tarball does, and the two wrappers are named
+	// differently — the server's after the build tag, the CUDA runtime's after
+	// the whole artifact. The install strips one component from each so the
+	// binaries and their libraries land side by side in the install directory,
+	// which is where detect and runtime.bin look.
+	serverArchive := testTarGZIP(t, "llama-b11146/llama-server", "server")
+	cudartArchive := testTarGZIP(t, "cudart-llama-b11146-bin-ubuntu-cuda-12.8-x64/libcudart.so.12", "runtime")
 	archives := map[string][]byte{
 		"/server.tar.gz": serverArchive,
 		"/cudart.tar.gz": cudartArchive,
@@ -65,7 +71,7 @@ func TestLlamaCPPInstallPreservesShellArtifactArguments(t *testing.T) {
 		"llama-server":    "server",
 		"libcudart.so.12": "runtime",
 	} {
-		data, err := os.ReadFile(filepath.Join(baseDir, "llamacpp", "build", "bin", name))
+		data, err := os.ReadFile(filepath.Join(baseDir, "llamacpp", name))
 		if err != nil {
 			t.Fatalf("read extracted %s: %v", name, err)
 		}

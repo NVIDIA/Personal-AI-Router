@@ -51,7 +51,7 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 					}
 					want = []string{"LLAMA_CACHE=/test path-models", bin, "--sleep-idle-seconds", "300", "--host", "127.0.0.1", "--port", "12345", "--cors-origins", ""}
 					if strings.HasPrefix(platformKey, "linux/") {
-						want = append([]string{"LD_LIBRARY_PATH=/test path/build/bin"}, want...)
+						want = append([]string{"LD_LIBRARY_PATH=/test path"}, want...)
 					}
 				}
 				if err != nil {
