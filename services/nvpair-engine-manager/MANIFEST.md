@@ -133,24 +133,37 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `detect` | string[] | no | Paths that, if any exists, mean the engine is already installed. Supports OS env refs (`%VAR%`, `$VAR`), a leading `~`, and the `{install_dir}` placeholder. |
 | `install` | object | no | How to obtain the engine (see Install). Omit for engines that are only ever detected/launched. |
 | `uninstall` | object | no | How to remove a user-mode install (see Uninstall). Backs `engine:uninstall`. |
-| `models_dir` | string | yes in practice | The engine's on-disk model store, available as `{models_dir}`. **Must be a literal path** — a template is rejected, so the store can never be derived from `{install_dir}`. See Model stores. |
+| `models_dir` | string | required with `uninstall.remove` | The engine's on-disk model store, available as `{models_dir}`. **Must be a literal path** — a template is rejected, so the store can never be derived from `{install_dir}`. See Model stores. |
 | `runtime` | object | yes | How to launch + probe the engine (see Runtime). |
 
 ### Uninstall
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `run` | string[] | one of the two | argv for work only a command can do: stopping the engine's own daemon, or invoking a vendor uninstaller. Placeholders resolved, OS env refs expanded. |
-| `remove` | string[] | one of the two | Trees engine-manager deletes itself, **always skipping `models_dir`**. Prefer this over an `rm -rf` in `run`. |
+| `run` | string[] | at least one of the two | argv for work only a command can do: stopping the engine's own daemon, or invoking a vendor uninstaller. Placeholders resolved, OS env refs expanded. |
+| `remove` | string[] | at least one of the two | Trees engine-manager deletes itself, skipping `models_dir`. Prefer this over an `rm -rf` in `run`. |
+
+Both may be set, and `lmstudio.json` sets both: `run` executes first, then the
+`remove` targets in order, and the pair is retried as a unit.
 
 Use `remove` for deleting files. The runner knows what `remove` targets, so it
-can keep the model store out of it; it cannot inspect a shell string, so an
-`rm`/`rmdir` in `run` would bypass that guarantee and the tests reject one.
+can keep the model store out of it; it cannot inspect a shell string, so a
+deletion in `run` would bypass that guarantee. The tests scan each `run`
+argument for deleting constructs (`rm -r`, `rmdir`, `rd /s`, `Remove-Item`,
+`del /`) rather than just its executable name, because the uninstall this rule
+exists for was an entire shell script in one `sh -c` argument.
 
-A `remove` entry may contain the model store — LM Studio's engine and its
+A `remove` entry may **contain** the model store — LM Studio's engine and its
 downloads both live under `~/.lmstudio` — in which case everything except the
-store is removed. A `remove` entry that *is* the model store is rejected at
-load.
+store is removed. Rejected at load: a target that is the store, a target inside
+it, a target spelled `{models_dir}`, and `remove` without a `models_dir` to
+preserve.
+
+Removal is best-effort within a tree. An engine still holding one file open
+leaves that remnant behind rather than stopping the walk, and the uninstall's
+verdict comes from whether the engine is still detected — half-removing an
+engine and then reporting failure would leave the user retrying something that
+already worked. A symlinked target is unlinked, never descended into.
 
 ### Model stores
 
@@ -159,7 +172,9 @@ PAIR cannot replace for them. Two separate removals have to leave them alone:
 
 1. **`engine:uninstall`**, which removes the engine. The runner skips
    `models_dir` in every `uninstall.remove` target, so this is handled as long
-   as file deletion goes through `remove` rather than a command.
+   as file deletion goes through `remove` rather than a command. The same
+   applies to the app uninstaller's `--uninstall-managed` pass, which removes
+   the engines PAIR installed and preserves every store.
 2. **The app-level "remove all data" uninstall**, which deletes the entire app
    data directory. Nothing can exempt a subdirectory of it, so the only defense
    is for `models_dir` to resolve somewhere else entirely.
@@ -167,12 +182,24 @@ PAIR cannot replace for them. Two separate removals have to leave them alone:
 That second one is why `models_dir` must be a literal path: `{install_dir}` is
 inside the app data root, so any store derived from it is destroyed when a user
 uninstalls the app — even though the prompt promises their models are kept, and
-even though no engine uninstall ever touched them. Declare the engine's own
-default location (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`), which also
-means PAIR and a user's own copy of the engine share one library.
+even though no engine uninstall ever touched them.
 
-`TestBundledModelStoresOutliveTheAppDataRoot` enforces this for every bundled
-manifest on every target platform.
+Declare the engine's own default where it has one, so PAIR and a user's own copy
+of that engine share a library rather than downloading the same weights twice.
+Ollama (`~/.ollama`) and LM Studio (`~/.lmstudio/models`) both work that way:
+PAIR leaves their location alone and simply names it. `~/.llamacpp` is **PAIR's
+own choice** — llama.cpp defaults to a platform cache directory instead — which
+is why the manifest has to set `LLAMA_CACHE` explicitly. What matters for either
+kind is a stable path in the user's home, outside the app data root.
+
+Note that a store may be broader than the weights alone. `~/.ollama` also holds
+Ollama's keys and history; naming the parent protects those too, which is the
+safer side to err on.
+
+`TestBundledModelStoresOutliveTheAppDataRoot` checks every bundled manifest's
+platform blocks. Its app-data-root comparison is textual, so it holds for every
+target platform; the additional check against the resolved data directory
+applies to the host the test runs on.
 
 ### Install
 
@@ -441,7 +468,11 @@ script. It is still added with **no code** — using `mode: "command"`, a
         "run": ["bash", "{download}"],
         "mode": "user"
       },
-      "uninstall": { "run": ["rm", "-rf", "~/.lmstudio"] },
+      "models_dir": "~/.lmstudio/models",
+      "uninstall": {
+        "run": ["sh", "-c", "pkill -x lms 2>/dev/null; sleep 2; exit 0"],
+        "remove": ["~/.lmstudio"]
+      },
       "runtime": {
         "mode": "command",
         "cli": "~/.lmstudio/bin/lms",

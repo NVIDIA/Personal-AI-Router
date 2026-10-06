@@ -65,13 +65,92 @@ func TestBundledUninstallsKeepTheModelStore(t *testing.T) {
 					t.Errorf("%s/%s: uninstall.remove %q is the model store", name, key, target)
 				}
 			}
-			// An rm/rmdir left in Run is unreviewable: the runner cannot tell
-			// what it deletes, so the preserve guarantee would not apply to it.
 			for _, arg := range platform.Uninstall.Run {
-				if base := strings.ToLower(filepath.Base(arg)); base == "rm" || base == "rmdir" {
-					t.Errorf("%s/%s: uninstall.run shells out to %q — use uninstall.remove so the model store is preserved", name, key, arg)
+				if token := destructiveToken(arg); token != "" {
+					t.Errorf("%s/%s: uninstall.run deletes files with %q — use uninstall.remove so the model store is preserved", name, key, token)
 				}
 			}
+		}
+	}
+}
+
+// destructiveToken reports the file-deleting construct in a single uninstall.run
+// argument, or "" when there is none.
+//
+// Scanned as a substring rather than by executable name. A manifest's deletion
+// almost never arrives as argv[0]: the LM Studio uninstall this guard exists for
+// was a whole shell script in one `sh -c` argument, whose base name was the tail
+// of the script, and the Windows form buried Remove-Item inside a PowerShell
+// -Command string the same way.
+func destructiveToken(arg string) string {
+	lowered := strings.ToLower(arg)
+	for _, token := range []string{"rm -r", "rm -f", "rmdir", "rd /s", "remove-item", "del /", "unlink "} {
+		if strings.Contains(lowered, token) {
+			return token
+		}
+	}
+	// Bare `rm` as the executable, which the substring forms above miss.
+	if strings.ToLower(filepath.Base(arg)) == "rm" {
+		return "rm"
+	}
+	return ""
+}
+
+// TestDestructiveTokenCatchesTheOriginalUninstalls is the regression case for
+// the guard above: both spellings of the uninstall that deleted users' model
+// libraries have to be recognised, or the guard documents a protection it does
+// not provide.
+func TestDestructiveTokenCatchesTheOriginalUninstalls(t *testing.T) {
+	originals := map[string]string{
+		"posix": `pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf "$HOME/.lmstudio"; sleep 1; [ -d "$HOME/.lmstudio" ] && exit 1; exit 0`,
+		"windows": `$root = Join-Path $env:USERPROFILE '.lmstudio'; Start-Sleep -Seconds 3; ` +
+			`Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue`,
+	}
+	for name, argument := range originals {
+		if destructiveToken(argument) == "" {
+			t.Errorf("%s: the original LM Studio uninstall was not recognised as deleting files", name)
+		}
+	}
+	for _, harmless := range []string{
+		"pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; exit 0",
+		"server",
+		"--strip-components=1",
+	} {
+		if token := destructiveToken(harmless); token != "" {
+			t.Errorf("%q flagged on %q, but it deletes nothing", token, harmless)
+		}
+	}
+}
+
+// TestValidateRejectsRemovalsThatReachTheModelStore pins the load-time
+// rejections the manifest reference promises. Each of these was accepted before,
+// and each deletes part or all of a user's model library at uninstall time.
+func TestValidateRejectsRemovalsThatReachTheModelStore(t *testing.T) {
+	for name, uninstall := range map[string]struct {
+		modelsDir string
+		remove    []string
+	}{
+		"no store to preserve":  {modelsDir: "", remove: []string{"~/.engine"}},
+		"the store itself":      {modelsDir: "~/.engine/models", remove: []string{"~/.engine/models"}},
+		"inside the store":      {modelsDir: "~/.engine/models", remove: []string{"~/.engine/models/publisher"}},
+		"the store, templated":  {modelsDir: "~/.engine/models", remove: []string{"{models_dir}"}},
+		"inside it, templated":  {modelsDir: "~/.engine/models", remove: []string{"{models_dir}/publisher"}},
+		"the store, mixed case": {modelsDir: "~/.engine/models", remove: []string{"~/.engine/Models"}},
+	} {
+		platform := Platform{
+			Detect:    []string{"{install_dir}/engine"},
+			ModelsDir: uninstall.modelsDir,
+			Uninstall: &Uninstall{Remove: uninstall.remove},
+			Runtime:   Runtime{Bin: "{install_dir}/engine"},
+		}
+		err := platform.validate(runtime.GOOS + "/" + runtime.GOARCH)
+		if err == nil {
+			// The mixed-case entry is only the same path where the filesystem
+			// says so, which is where widening the removal would do harm.
+			if name == "the store, mixed case" && !caseInsensitiveFS() {
+				continue
+			}
+			t.Errorf("%s: accepted uninstall.remove %v with models_dir %q", name, uninstall.remove, uninstall.modelsDir)
 		}
 	}
 }
@@ -131,6 +210,87 @@ func TestRemoveTreePreservingRefusesTheStoreItself(t *testing.T) {
 	root := t.TempDir()
 	if err := removeTreePreserving(root, root); err == nil {
 		t.Error("expected an error when the target is the preserved model store")
+	}
+}
+
+// TestRemoveTreePreservingRefusesInsideTheStore covers a manifest asking to
+// remove part of the model library. Refusing matters more than it looks:
+// falling through to a plain removal here would delete the models.
+func TestRemoveTreePreservingRefusesInsideTheStore(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "models")
+	inside := filepath.Join(store, "publisher")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeTreePreserving(inside, store); err == nil {
+		t.Error("expected an error when the target is inside the model store")
+	}
+	if _, err := os.Stat(inside); err != nil {
+		t.Errorf("a refused removal still deleted %q: %v", inside, err)
+	}
+}
+
+// TestRemoveTreePreservingUnlinksSymlinkedTarget is the junction case. Reading
+// a symlinked target would follow it and delete the real directory's contents;
+// an elevated Windows uninstaller doing that can be pointed anywhere, since
+// mklink /J needs no privilege.
+func TestRemoveTreePreservingUnlinksSymlinkedTarget(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	if err := os.MkdirAll(filepath.Join(victim, "keep-me"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "engine-home")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	// models is nested under the link, so this is the descend branch.
+	if err := removeTreePreserving(link, filepath.Join(link, "models")); err != nil {
+		t.Fatalf("removeTreePreserving: %v", err)
+	}
+
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Errorf("the link survived (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(victim, "keep-me")); err != nil {
+		t.Errorf("followed the link and deleted the real directory's contents: %v", err)
+	}
+}
+
+// TestRemoveTreePreservingIsBestEffort pins that one undeletable entry does not
+// stop the rest. A vendor daemon holding a file open used to leave the engine
+// binary in place, so detection kept reporting the engine and the uninstall
+// failed having half-removed it.
+func TestRemoveTreePreservingIsBestEffort(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions this test relies on")
+	}
+	engineRoot := t.TempDir()
+	locked := filepath.Join(engineRoot, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(engineRoot, "bin", "engine")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Read-only parent: the child cannot be unlinked, so "locked" fails while
+	// "bin" — which sorts after it — must still go.
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	err := removeTreePreserving(engineRoot, filepath.Join(engineRoot, "models"))
+	if err == nil {
+		t.Error("expected the undeletable entry to be reported")
+	}
+	if _, statErr := os.Stat(binary); !os.IsNotExist(statErr) {
+		t.Errorf("stopped early: the engine binary survived (err=%v, remove err=%v)", statErr, err)
 	}
 }
 

@@ -54,10 +54,10 @@ func main() {
 	// transport and starts no service. It always exits 0: an uninstaller that
 	// aborts here would leave the app half-removed.
 	if *uninstallManaged {
-		manifestDir, installBase := userPaths()
+		_, installBase := userPaths()
 		ctx, cancel := context.WithTimeout(context.Background(), uninstallManagedTimeout)
-		defer cancel()
-		uninstallManagedEngines(ctx, buildRegistry(manifestDir), installBase)
+		uninstallManagedEngines(ctx, buildBundledRegistry(), installBase)
+		cancel()
 		os.Exit(0)
 	}
 
@@ -159,14 +159,28 @@ func userPaths() (manifestDir, installBase string) {
 	return filepath.Join(root, "engines"), filepath.Join(root, "engine-bin")
 }
 
-// buildRegistry loads the embedded manifests then overlays user
-// manifests. A bad bundled manifest is a build defect (fatal); a bad
-// user manifest is logged and skipped so it can't brick startup.
-func buildRegistry(userManifestDir string) *Registry {
+// buildBundledRegistry loads only the manifests compiled into this binary. A
+// bad one is a build defect, so it is fatal.
+//
+// This is the registry the uninstaller path uses. Overriding a manifest means
+// choosing commands to run and paths to delete, and the override directory sits
+// in the user's own data folder — writable by any process running as them —
+// while the Windows uninstaller is elevated (`perMachine`). Overlaying it there
+// would let an unprivileged user hand the uninstaller a command to run as
+// administrator.
+func buildBundledRegistry() *Registry {
 	reg := NewRegistry()
 	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
 		log.Fatalf("bundled manifests invalid: %v", err)
 	}
+	return reg
+}
+
+// buildRegistry loads the embedded manifests then overlays user
+// manifests. A bad bundled manifest is a build defect (fatal); a bad
+// user manifest is logged and skipped so it can't brick startup.
+func buildRegistry(userManifestDir string) *Registry {
+	reg := buildBundledRegistry()
 	if userManifestDir != "" {
 		// Deep-merge per-user overrides onto the bundled manifests (rather
 		// than wholesale replace) so a persisted port override pins only

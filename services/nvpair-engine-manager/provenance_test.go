@@ -102,8 +102,23 @@ func TestUninstallManagedEnginesRemovesOnlyWhatPAIRInstalled(t *testing.T) {
 	}
 }
 
-func TestUninstallManagedEnginesWithoutDataDirIsSafe(t *testing.T) {
-	reg := managedEngineRegistry(t, t.TempDir(), "")
-	// No install base means no way to tell whose install it is, so nothing goes.
+// TestUninstallManagedEnginesWithoutDataDirRemovesNothing covers losing the app
+// data directory, which is where ownership is recorded. With no way to tell
+// whose install an engine is, the safe answer is to remove none of them.
+func TestUninstallManagedEnginesWithoutDataDirRemovesNothing(t *testing.T) {
+	vendorRoot := t.TempDir()
+	binary := filepath.Join(vendorRoot, "bin", "engine")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := managedEngineRegistry(t, vendorRoot, filepath.Join(vendorRoot, "models"))
+
 	uninstallManagedEngines(context.Background(), reg, "")
+
+	if _, err := os.Stat(binary); err != nil {
+		t.Errorf("removed an engine with no ownership records available: %v", err)
+	}
 }

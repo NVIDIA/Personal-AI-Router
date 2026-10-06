@@ -238,15 +238,20 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 			}
 		}
 	}
-	if runErr != nil {
-		werr := fmt.Errorf("uninstall command failed after %d attempts: %w", uninstallRetries, runErr)
-		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: werr.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
-		return werr
-	}
+	// Detection is the verdict, not the delete errors. Removal is best-effort
+	// inside the tree, so a file the engine still holds open leaves a harmless
+	// remnant while the executable itself is gone — reporting that as a failure
+	// would tell the user to retry an uninstall that already worked.
 	if !e.waitDetect(engine, false, e.detectTimeout) {
 		uerr := fmt.Errorf("engine %q still detected after uninstall", engine)
-		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		if runErr != nil {
+			uerr = fmt.Errorf("uninstall failed after %d attempts: %w", uninstallRetries, runErr)
+		}
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
 		return uerr
+	}
+	if runErr != nil {
+		slog.Warn("engine removed, but some of its files could not be deleted", "engine", engine, "err", runErr)
 	}
 	st.mu.Lock()
 	st.binPath = ""

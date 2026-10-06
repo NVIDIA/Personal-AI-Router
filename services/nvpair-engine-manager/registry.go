@@ -733,11 +733,27 @@ func (p *Platform) validate(key string) error {
 		if len(p.Uninstall.Run) == 0 && len(p.Uninstall.Remove) == 0 {
 			return fmt.Errorf("platform %q: uninstall needs run, remove, or both when present", key)
 		}
-		// Removing exactly the model store is never a partial-preservation case
-		// the runner can rescue, so reject it here rather than at uninstall time.
+		// Without a model store there is nothing for the runner to preserve, so
+		// a removal would be the unconditional delete this field exists to
+		// prevent. Requiring it here is what makes the guarantee hold for a
+		// hand-written manifest and not only for the bundled ones.
+		if len(p.Uninstall.Remove) > 0 && strings.TrimSpace(p.ModelsDir) == "" {
+			return fmt.Errorf("platform %q: uninstall.remove requires models_dir, so the removal knows what to keep", key)
+		}
 		for _, target := range p.Uninstall.Remove {
-			if p.ModelsDir != "" && filepath.Clean(expandPath(target)) == filepath.Clean(expandPath(p.ModelsDir)) {
-				return fmt.Errorf("platform %q: uninstall.remove %q is the model store (models_dir) — uninstall removes the engine, not the user's models", key, target)
+			// {models_dir} resolves only at uninstall time, so a templated
+			// target would pass this check and fail every retry instead. Reject
+			// the token outright: every spelling of it names the store or a part
+			// of it, and neither may be removed.
+			if strings.Contains(target, "{models_dir}") {
+				return fmt.Errorf("platform %q: uninstall.remove %q names the model store — uninstall removes the engine, not the user's models", key, target)
+			}
+			resolved := filepath.Clean(expandPath(target))
+			store := filepath.Clean(expandPath(p.ModelsDir))
+			// At the store, or inside it. Removing part of a model library is
+			// as destructive as removing all of it.
+			if pathWithinRoot(store, resolved) {
+				return fmt.Errorf("platform %q: uninstall.remove %q is at or inside the model store %q — uninstall removes the engine, not the user's models", key, target, p.ModelsDir)
 			}
 		}
 	}

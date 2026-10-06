@@ -125,7 +125,11 @@ if [ "$PURGE_DATA" = "1" ]; then
   if [ -x "$ENGINE_MANAGER" ]; then
     echo "Removing PAIR-installed engines..."
     if [ -n "$real_user" ] && [ "$real_user" != "root" ]; then
-      sudo -u "$real_user" "$ENGINE_MANAGER" --uninstall-managed || true
+      # -H and an explicit HOME, because engine-manager derives both the data
+      # directory holding the ownership records and every "~" in a manifest
+      # from $HOME. macOS sudo keeps HOME by default, so without these it
+      # reads root's home, finds no records, and removes nothing.
+      sudo -H -u "$real_user" env HOME="$target_home" "$ENGINE_MANAGER" --uninstall-managed || true
     else
       "$ENGINE_MANAGER" --uninstall-managed || true
     fi
