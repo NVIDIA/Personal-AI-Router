@@ -112,6 +112,21 @@ export function validateAuthenticodeMetadata(metadata) {
     }
 }
 
+/**
+ * The environment for the Windows PowerShell child. A `PSModulePath` inherited
+ * from PowerShell 7 points Windows PowerShell at 7's incompatible
+ * Microsoft.PowerShell.Security, so `Get-AuthenticodeSignature` cannot load
+ * (PowerShell/PowerShell#18530). With the variable unset, Windows PowerShell
+ * builds its own default. Windows matches variable names case-insensitively.
+ */
+export function windowsPowerShellEnv(parentEnv, filePath) {
+    const env = Object.fromEntries(
+        Object.entries(parentEnv).filter(([name]) => name.toLowerCase() !== 'psmodulepath')
+    )
+    env.NVPAIR_VC_REDIST_PATH = filePath
+    return env
+}
+
 function windowsAuthenticodeMetadata(filePath) {
     const command = [
         "$ErrorActionPreference = 'Stop'",
@@ -131,7 +146,7 @@ function windowsAuthenticodeMetadata(filePath) {
         ['-NoProfile', '-NonInteractive', '-Command', command],
         {
             encoding: 'utf8',
-            env: { ...process.env, NVPAIR_VC_REDIST_PATH: filePath },
+            env: windowsPowerShellEnv(process.env, filePath),
             windowsHide: true
         }
     )

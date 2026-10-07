@@ -8,7 +8,8 @@ import {
     compareVersions,
     createProvenance,
     validateAuthenticodeMetadata,
-    VC_REDIST_MINIMUM_VERSION
+    VC_REDIST_MINIMUM_VERSION,
+    windowsPowerShellEnv
 } from './stage-vc-redist.mjs'
 
 const MICROSOFT_SIGNATURE = {
@@ -62,6 +63,27 @@ test('validateAuthenticodeMetadata rejects a signed rollback', () => {
             }),
         /is older than the required/
     )
+})
+
+test('windowsPowerShellEnv drops a PSModulePath inherited from PowerShell 7', () => {
+    const parentEnv = {
+        Path: 'C:\\Windows\\system32',
+        PSModulePath: 'C:\\Program Files\\PowerShell\\7\\Modules'
+    }
+
+    assert.deepEqual(windowsPowerShellEnv(parentEnv, 'C:\\stage\\VC_redist.x64.exe'), {
+        Path: 'C:\\Windows\\system32',
+        NVPAIR_VC_REDIST_PATH: 'C:\\stage\\VC_redist.x64.exe'
+    })
+    assert.equal(parentEnv.PSModulePath, 'C:\\Program Files\\PowerShell\\7\\Modules')
+})
+
+test('windowsPowerShellEnv drops PSModulePath whatever its case', () => {
+    const parentEnv = { PSMODULEPATH: 'C:\\Program Files\\PowerShell\\7\\Modules' }
+
+    assert.deepEqual(windowsPowerShellEnv(parentEnv, 'C:\\stage\\VC_redist.x64.exe'), {
+        NVPAIR_VC_REDIST_PATH: 'C:\\stage\\VC_redist.x64.exe'
+    })
 })
 
 test('createProvenance records the verified package identity', () => {
