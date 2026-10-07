@@ -75,7 +75,7 @@ Release downloads include:
 - a macOS disk image.
 
 **On Windows and macOS,** double-click the download and follow the installer's
-usual prompts — on macOS that means dragging **PAIR** to your
+usual prompts — on macOS that means dragging **NVIDIA PAIR** to your
 **Applications** folder.
 
 **On Linux,** install the package from the directory you downloaded it into:
@@ -213,7 +213,8 @@ If this machine belongs to a cluster, deal with membership too — otherwise the
 other nodes keep listing it as a member. You have two options:
 
 - **Leave from this machine** before uninstalling: **Settings → Cluster →
-  Leave**, or press `L` on the terminal interface's **Cluster** tab.
+  Leave**, or press `l` on the terminal interface's **Nodes** tab and confirm
+  with `y`.
 - **Remove it from another node**, which any member can do from
   **Settings → Cluster** by removing that node from the list.
 

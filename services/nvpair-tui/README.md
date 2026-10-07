@@ -33,7 +33,7 @@ of its own.
 | **Jobs** | Inference work across the cluster (`workloads:get-initial` plus the live `workloads:upsert` / `workloads:remove` stream), headed by the proxy endpoints local clients connect to. `FROM` and `RAN ON` are the job's `originatedFrom` and `scheduledOn` nodes. `a` toggles finished work. `t` starts or stops the Inference Demo — a sixty-second burst of synthetic traffic through those endpoints, which is why it lives here rather than with the service controls: the ports it needs are already on this tab and the jobs it produces land in the table below. |
 | **Service** | Broker version and uptime (`ping`), a row per supervised worker derived from `supervisor:subprocess-crashed:*` errors, the cluster name, the fleet log level (a picker over the four `applog` levels), and a confirmed data reset. The reset uninstalls the engines PAIR installed before it quits and deletes the data directory — engine files live outside that directory when a vendor installer chose their location — and keeps every engine's downloaded models. Ports are not here — they live on the node detail screen beside the engine each one serves. `force-ports` and `cluster-auto-sync` are persisted by `nvpair-node-settings` but not offered: nothing currently acts on either. |
 | **Errors** | The service-error datastore (`errors:get-initial` plus live `errors:update`); `c` clears the selected entry. Only entries this node reported are clearable: `errors:clear` is delete-by-id on the receiving node and cross-node propagation is unbuilt (`shared/errors` stamps `ClearedBy` for it and ignores it), so clearing a peer's entry is reverted by the next sync. The broker acknowledges the relay rather than the outcome, so the reply cannot be used to detect it — the key is withdrawn for a peer's entry instead, naming the node to clear it from. Node ids are resolved to names, and a line under the table carries the selected entry's engine, operation, model, and suggested action. |
-| **Logs** | The broker's and workers' stderr, with a substring filter (`/`, cleared with `c`), a follow toggle (`t`, for tail — `f` belongs to the viewport's paging), and save-to-file (`s`). |
+| **Logs** | The broker's and workers' stderr, plus this program's own log lines while it runs, with a substring filter (`/`, cleared with `c`), a follow toggle (`t`, for tail — `f` belongs to the viewport's paging), and save-to-file (`s`). |
 
 Diagnostics come last, errors before logs, which is the order you consult them
 in. The **Errors** tab carries its active count in its own label (`Errors (2)`),
@@ -91,9 +91,9 @@ ships in `cli-bin` and the app's updater replaces it.
   arguments (`a`), all written together through `engine:get-settings` /
   `engine:preview-settings` / `engine:apply-settings`; and, on this machine
   only, restart (`r`) and uninstall (`u`, confirmed with `y`). On this machine
-  both ports are shown per engine because they are easily confused and were
-  previously configured on different tabs; a peer's screen shows the engine
-  port only.
+  both ports are shown per engine because they are easily confused; a peer's
+  screen shows the engine port only, though `p` still writes that peer's proxy
+  port.
 - **Models** — the inventory per engine with loaded state, plus browse-and-download
   (`p`), download by name (`n`), load (`enter`), eject (`e`), and delete (`d`,
   confirmed with `y`). Every destructive key arms on the first press and acts

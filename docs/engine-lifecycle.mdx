@@ -42,11 +42,7 @@ From there you can install or remove an engine, turn it on or off, change its
 port when PAIR manages it, download models, and review progress while long
 operations run.
 
-These actions need the UI:
-
-- Deleting models
-- Updating an engine
-- Managing another node's engines
+Updating an engine to a newer version needs the UI.
 
 In the terminal:
 
@@ -58,8 +54,11 @@ handles these engine lifecycle actions:
 - Stop an engine.
 - Restart an engine.
 - Uninstall an engine.
+- Change an engine's ports and startup arguments.
 - Pull a model.
-- List, load, and unload models.
+- List, load, unload, and delete models.
+- Do most of the above on another node in the cluster. Restart and uninstall
+  stay on the machine that owns the engine.
 
 It does not do everything that the application does.
 
@@ -166,9 +165,11 @@ After systems are paired, you can view another machine's engines from
 **Overview** and, where supported, start or stop engines and pull models on that
 peer.
 
-Some actions stay **local only** on each machine, for example uninstall, update,
-and changing ports. Perform those on the machine that owns the engine, or connect
-to that machine's PAIR application or terminal interface.
+Some actions stay **local only** on each machine: uninstalling, updating, and
+changing an engine's CORS settings. Perform those on the machine that owns the
+engine, or connect to that machine's PAIR application or terminal interface.
+Ports and startup arguments can be edited from a paired machine, as described in
+[Engine Settings](engine-settings.mdx).
 
 Everything you change is scoped to one machine. A port you set on this node moves
 that node's engine and nothing else. The other nodes keep the ports they already
@@ -215,8 +216,8 @@ brings it back without fetching it again.
 
 On a headless machine the terminal interface covers installing, starting,
 stopping, restarting, and uninstalling an engine; pulling a model; and listing,
-loading, or unloading models. Operations it does not have, such as deleting a
-model or updating an engine, need the desktop application on that machine.
+loading, unloading, or deleting models. Updating an engine needs the desktop
+application on that machine.
 
 PAIR does **not** warm models. Starting an engine does not pre-load models into
 memory, and it holds nothing ready in advance. Depending on the engine, a model
@@ -231,7 +232,7 @@ uninstalls every model at once.
 
 Applications need a **running** engine plus an available model. Copy API URLs
 from **Endpoints** after an engine is running. Do not assume a fixed port such as
-`11434` or `1234`.
+`11434`, `1234`, or `8080`.
 
 ## Tips
 

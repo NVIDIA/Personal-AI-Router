@@ -13,7 +13,7 @@ API and supervises the workers under `bin/`.
 ## 1. Extract
 
 ```bash
-tar xf NVIDIA-Personal-AI-Router-<version>-linux-amd64.tar.gz
+tar xf NVIDIA-Personal-AI-Router-<version>-linux-amd64.tar.gz   # or -linux-arm64
 cd NVIDIA-Personal-AI-Router-<version>
 ```
 
@@ -33,8 +33,7 @@ NVIDIA-Personal-AI-Router-<version>/
 │   ├── nvpair-node-settings
 │   ├── nvpair-cluster-manager
 │   ├── nvpair-job-scheduler
-│   ├── nvpair-tui                    # terminal interface; starts the broker beside it
-│   └── inference-dispatcher          # test-traffic client used by the TUI's Jobs tab
+│   └── nvpair-tui                    # terminal interface; starts the broker beside it
 └── INSTALL.md                     # this file
 ```
 
@@ -72,7 +71,8 @@ bundle or the configuration directory leaves them in place.
 
 ## Requirements
 
-- 64-bit Linux on `x86_64`. ARM builds are not produced yet.
+- 64-bit Linux on `x86_64` or `arm64` (`aarch64`). Use the archive whose name
+  matches your machine.
 - mDNS on UDP 5353. The workers run their own — a custom per-interface responder
   (`nvpair-shared/mdns`) plus a `grandcat/zeroconf` browser (`nvpair-shared/discovery`),
   bound with `SO_REUSEADDR` — and coexist fine with a system responder like

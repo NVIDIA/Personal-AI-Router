@@ -241,8 +241,8 @@ Two independent signals can vouch for a node inside that window and cancel the
 eviction:
 
 - a successful node-info enrichment in the last ten seconds;
-- inference response bytes from that node in the last minute. Both proxies raise
-  `node/activity` when a peer's engine streams a response back through them; the
+- inference response bytes from that node in the last minute. Every engine
+  facade raises `node/activity` when a peer's engine streams a response back through them; the
   broker relays it to the scanner as `discovery:node-activity`. This is the only
   liveness signal that gets stronger as a node gets busier, which is exactly when
   the probe-based signals fail.
