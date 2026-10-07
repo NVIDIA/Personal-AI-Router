@@ -863,6 +863,12 @@ func hasOfferedQuant(files []hfSibling) bool {
 	return false
 }
 
+// llamaCPPAuxiliaryGGUF names the GGUF files llama.cpp's own downloader will
+// not take as the model (gguf_filename_is_model in common/download.cpp). It
+// has to match the release manifests/llamacpp.json installs, or the catalog
+// offers a repo whose only matching file llama.cpp refuses to pull.
+var llamaCPPAuxiliaryGGUF = []string{"mmproj", "imatrix", "mtp-", "eagle3-", "dflash-", "dspark-"}
+
 // isOfferedQuantFile reports a model file at the offered quantization: a GGUF
 // that is the model itself rather than a vision projector, an importance
 // matrix, or a speculative-decoding head, and, for a model split across files,
@@ -873,7 +879,7 @@ func isOfferedQuantFile(path string) bool {
 		return false
 	}
 	file := lower[strings.LastIndex(lower, "/")+1:]
-	for _, auxiliary := range []string{"mmproj", "imatrix", "mtp-"} {
+	for _, auxiliary := range llamaCPPAuxiliaryGGUF {
 		if strings.Contains(file, auxiliary) {
 			return false
 		}
