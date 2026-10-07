@@ -230,10 +230,10 @@ func TestRemoveTreePreservingRefusesInsideTheStore(t *testing.T) {
 	}
 }
 
-// TestRemoveTreePreservingUnlinksSymlinkedTarget is the junction case. Reading
-// a symlinked target would follow it and delete the real directory's contents;
-// an elevated Windows uninstaller doing that can be pointed anywhere, since
-// mklink /J needs no privilege.
+// TestRemoveTreePreservingUnlinksSymlinkedTarget checks a symlinked target is
+// unlinked rather than read. Reading it would follow the link and delete the
+// real directory's contents. Go reports a Windows junction differently from a
+// symlink, so modelsdir_windows_test.go covers that case with a real junction.
 func TestRemoveTreePreservingUnlinksSymlinkedTarget(t *testing.T) {
 	root := t.TempDir()
 	victim := filepath.Join(root, "victim")

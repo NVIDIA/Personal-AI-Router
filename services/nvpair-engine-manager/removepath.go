@@ -34,9 +34,11 @@ import (
 // are collected and returned together, and the caller judges the outcome by
 // whether the engine is still detected.
 //
-// A symlink is removed as a link and never descended into. Deleting what it
-// points at is not what the manifest asked for, and on Windows a junction here
-// would let the elevated uninstaller be steered into an arbitrary tree.
+// Only a real directory is descended into. A symlink, or on Windows a junction,
+// is removed as a link: deleting what it points at is not what the manifest
+// asked for, and a junction followed here would let the elevated uninstaller be
+// steered into an arbitrary tree. Go reports a junction as an irregular file
+// rather than a symlink, so the test is "not a directory", not "a symlink".
 func removeTreePreserving(target, preserve string) error {
 	if strings.TrimSpace(target) == "" {
 		return fmt.Errorf("remove: target is required")
@@ -56,8 +58,8 @@ func removeTreePreserving(target, preserve string) error {
 		return os.RemoveAll(absTarget)
 	}
 	// Unlink rather than descend. On the descend path below, ReadDir would
-	// follow this to the real directory and delete its contents.
-	if info.Mode()&os.ModeSymlink != 0 {
+	// follow a link to the real directory and delete its contents.
+	if !info.IsDir() {
 		return os.Remove(absTarget)
 	}
 	absPreserve, err := filepath.Abs(filepath.Clean(expandPath(preserve)))
