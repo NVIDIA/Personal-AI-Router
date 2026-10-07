@@ -13,8 +13,9 @@ desktop environment, or over SSH, where the desktop application cannot run. If a
 desktop is available, use the desktop application.
 
 **It has known limitations.** It is an operations tool, not a full replacement.
-It cannot delete models, change an engine's port, update an engine, control
-engines on other nodes, or show which node served a workload. The full list is in
+It cannot list or delete models, change an engine's port, update an engine,
+control engines on other nodes, or show which node served a workload. The full
+list is in
 [What the Terminal Interface Cannot Do](#what-the-terminal-interface-cannot-do),
 and it is worth reading before you depend on it.
 
@@ -63,12 +64,8 @@ cd <directory containing nvpair-tui>
 | Flag | Effect |
 | --- | --- |
 | `--broker-path <path>` | Use a service binary that is not beside `nvpair-tui` |
-| `--proxy-engines <csv>` | Select the proxy facades to start and show. Defaults to `ollama,lmstudio,llamacpp` |
 | `--log-level <level>` | Verbosity of the terminal interface's own logging: `debug`, `info`, `warn`, or `error`. PAIR also reads this from `NVPAIR_LOG_LEVEL` |
 | `--version` | Print the version and exit |
-
-For example, limit the process to the llama.cpp facade with
-`nvpair-tui --proxy-engines llamacpp`.
 
 The interface's own log output goes to stderr, so it never corrupts the display.
 Service logs appear on the **Logs** tab instead.
@@ -133,14 +130,13 @@ Tab switching and `q` do not work until you do.
 | 1 | **Overview** | Service uptime and version, and an `ok` / `DOWN` table for each worker |
 | 2 | **Errors** | Active service errors by severity, age, node, and message |
 | 3 | **Nodes** | Nodes discovered on the network, with `Connected` or `In cluster` status |
-| 4 | **Proxies** | Selected compatible facades: listening port, discovered upstreams, and which node is selected |
+| 4 | **Proxies** | Both compatible proxies: listening port, discovered upstreams, and which node is selected |
 | 5 | **Workloads** | Live inference workloads: ID, model, engine, state, and age |
 | 6 | **Engines** | Local engines: installed, running, healthy, and port |
-| 7 | **Models** | Local models by engine, including loaded/idle state |
-| 8 | **Cluster** | This node's identity, cluster membership, and pairing |
-| 9 | **Manual** | Nodes you added by address, with reachability |
-| 10 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
-| 11 | **Logs** | Service log output, with live log-level control |
+| 7 | **Cluster** | This node's identity, cluster membership, and pairing |
+| 8 | **Manual** | Nodes you added by address, with reachability |
+| 9 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
+| 10 | **Logs** | Service log output, with live log-level control |
 
 ## Pair This Machine with Another
 
@@ -155,7 +151,7 @@ Pairing is the same six-digit PIN exchange the desktop application uses.
 This is the easier path, because there is no address to type. Prefer it whenever
 PAIR has already discovered the machine you want.
 
-**To invite a machine by address**, from the **Cluster** tab (8):
+**To invite a machine by address**, from the **Cluster** tab (7):
 
 1. Press `i`.
 2. Type the other machine's host, or `host:port` if it is not on the default
@@ -203,13 +199,7 @@ From the **Engines** tab (6), select an engine with `j` / `k`, then:
 | `p` | Download a model |
 
 Pressing `p` opens a prompt. Type the model name, for example `qwen4:12b`, and
-press `enter`. llama.cpp names include the repository and quantization, for
-example `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`. Progress appears on the status
-line.
-
-The **Models** tab (7) lists every running engine's local inventory. Select a
-model and press `enter` to load it into memory or `u` to unload it. State changes
-come from the engine manager and appear as `loaded`, `idle`, or `unknown`.
+press `enter`. Progress appears on the status line.
 
 A node can serve a request only when it is online, a compatible engine is
 running, and the requested model is present on that node. To route across several
@@ -224,8 +214,8 @@ engine, and state.
 
 The **Proxies** tab (4) shows each proxy's listening port and whether it is
 routing automatically (`selected=auto`) or pinned to one node. Press `g` to
-switch between the selected engines, `enter` to pin the highlighted upstream,
-and `a` to return to automatic routing. Leave it on automatic unless you are
+switch between the two engines, `enter` to pin the highlighted upstream, and `a`
+to return to automatic routing. Leave it on automatic unless you are
 deliberately testing one node.
 
 The **Overview** tab (1) reports whether each worker is up. Worker status is
@@ -235,13 +225,13 @@ best-effort. `DOWN` means a worker reported a crash.
 
 On **Errors** (2), press `c` to clear the selected entry.
 
-On **Logs** (11), scroll with `j` / `k` and the page keys. Set the log level for
+On **Logs** (10), scroll with `j` / `k` and the page keys. Set the log level for
 the whole service fleet with `d` (debug), `i` (info), `w` (warn), or `e` (error).
 This is the first place to look when something has not started.
 
 ## Change Settings
 
-On **Settings** (10), move with `j` / `k` and press `enter`. Booleans toggle
+On **Settings** (9), move with `j` / `k` and press `enter`. Booleans toggle
 immediately. Text fields open for editing, with `enter` to save and `esc` to
 cancel.
 
@@ -253,7 +243,8 @@ for how PAIR arranges ports.
 
 It is an operations tool, not a full replacement for the desktop application:
 
-- It cannot delete models.
+- It cannot list or delete models. You can download one, but the interface shows
+  no model inventory.
 - It cannot change an engine's port. The port column is read-only. Use the
   desktop application to change it.
 - It cannot update an engine or control engines on other cluster nodes.

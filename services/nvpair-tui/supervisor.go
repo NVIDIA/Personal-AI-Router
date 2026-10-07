@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"time"
 
-	"nvpair-shared/engines"
 	"nvpair-tui/rpc"
 )
 
@@ -78,8 +77,8 @@ func resolveBrokerPath(override string) (string, error) {
 // runs with its working directory set to the broker's own directory so
 // the broker's sibling-binary worker resolution finds nvpair-node-scanner et
 // al. ctx governs the client read loop; use Shutdown for an orderly stop.
-func Spawn(ctx context.Context, brokerPath string, proxyEngines []engines.Engine) (*Supervisor, error) {
-	cmd := exec.Command(brokerPath, brokerArgs(proxyEngines)...)
+func Spawn(ctx context.Context, brokerPath string) (*Supervisor, error) {
+	cmd := exec.Command(brokerPath)
 	cmd.Dir = filepath.Dir(brokerPath)
 	configureSubprocess(cmd)
 
@@ -104,10 +103,6 @@ func Spawn(ctx context.Context, brokerPath string, proxyEngines []engines.Engine
 	go client.Run(ctx)
 
 	return &Supervisor{cmd: cmd, stdin: stdin, Client: client, Stderr: stderr}, nil
-}
-
-func brokerArgs(proxyEngines []engines.Engine) []string {
-	return []string{"--proxy-engines", proxyEngineCSV(proxyEngines)}
 }
 
 // Shutdown asks the broker to stop cleanly: send the shutdown RPC, close

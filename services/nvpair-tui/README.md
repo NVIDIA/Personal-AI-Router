@@ -30,10 +30,9 @@ Tabs:
 | **Overview** | Broker liveness/version/uptime (`ping`) and a per-worker health table derived from the broker's `supervisor:subprocess-crashed:*` errors. |
 | **Errors** | The service-error datastore (`errors:get-initial` + live `errors:update`); `c` clears the selected entry. |
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
-| **Proxies** | Selected reverse-proxy facades: status, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). Defaults to Ollama, LM Studio, and llama.cpp. |
+| **Proxies** | Ollama and LM Studio reverse proxies: status, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). |
 | **Workloads** | Live cluster workloads (`workloads:subscribe` / `workloads:upsert` / `workloads:remove`). |
 | **Engines** | Local inference engines: install (`i`), start (`s`), stop (`x`), restart (`r`), uninstall (`u`). |
-| **Models** | Local model inventory and loaded/idle/unknown state for every running engine; load (`enter`) or unload (`u`) the selected model. |
 | **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, remove a member (`r`), leave (`L`). |
 | **Manual** | User-added nodes: add by address (`a`), remove (`r`). |
 | **Settings** | The node-settings store (force-ports, cluster auto-sync, cluster id/name). |
@@ -56,14 +55,9 @@ installed `bin/` layout). Override with `--broker-path`:
 ```sh
 nvpair-tui                                   # broker is a sibling binary
 nvpair-tui --broker-path /opt/nvpair/bin/nvpair-ui-broker
-nvpair-tui --proxy-engines llamacpp          # restrict facades when needed
 nvpair-tui --log-level debug                 # own logging (to stderr)
 nvpair-tui --version
 ```
-
-`--proxy-engines` accepts canonical engine ids from the shared engine table,
-passes the same selection to the broker, and builds the Proxies view from it.
-The default is `ollama,lmstudio,llamacpp`.
 
 Logging goes to stderr (the broker's logs are shown inside the **Logs**
 tab, not on the terminal), so it never corrupts the full-screen UI.

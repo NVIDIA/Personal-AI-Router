@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"io"
 
-	"nvpair-shared/engines"
 	"nvpair-tui/rpc"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,12 +15,12 @@ import (
 // Run builds the tabbed program over a connected broker client and the
 // broker's stderr stream, and blocks until the user quits. The caller is
 // responsible for shutting the broker down afterwards.
-func Run(client *rpc.Client, stderr io.Reader, proxyEngines []engines.Engine) error {
+func Run(client *rpc.Client, stderr io.Reader) error {
 	logCh := make(chan string, 2000)
 	go scanLines(stderr, logCh)
 
 	p := tea.NewProgram(
-		New(client, logCh, defaultViews(client, proxyEngines)),
+		New(client, logCh, defaultViews(client)),
 		tea.WithAltScreen(),
 	)
 	_, err := p.Run()
@@ -41,22 +40,17 @@ func scanLines(r io.Reader, out chan<- string) {
 }
 
 // defaultViews lists the tabs in display order.
-func defaultViews(client *rpc.Client, proxyEngines []engines.Engine) []View {
-	views := []View{
+func defaultViews(client *rpc.Client) []View {
+	return []View{
 		newHealthView(client),
 		newErrorsView(client),
 		newNodesView(client),
-	}
-	if len(proxyEngines) > 0 {
-		views = append(views, newProxiesView(client, proxyEngines))
-	}
-	return append(views,
+		newProxiesView(client),
 		newWorkloadsView(client),
 		newEnginesView(client),
-		newModelsView(client),
 		newClusterView(client),
 		newManualView(client),
 		newSettingsView(client),
 		newLogsView(client),
-	)
+	}
 }
