@@ -623,6 +623,49 @@ func TestFailedSearchDoesNotRevealTheQuery(t *testing.T) {
 	}
 }
 
+// TestOverLongSearchIsRefused checks a query past maxCatalogQuery is an error
+// that never reaches the upstream, rather than being shortened into a search
+// for something the operator did not type, and that the error does not repeat
+// the query.
+func TestOverLongSearchIsRefused(t *testing.T) {
+	srv, requests := llamaCPPServer(t, "")
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	query := strings.TrimSpace(strings.Repeat("private ", maxCatalogQuery/len("private ")+1))
+	_, err := c.Catalog(context.Background(), "llamacpp", "", "", query)
+	if err == nil {
+		t.Fatalf("a %d-character query was answered", len(query))
+	}
+	if strings.Contains(err.Error(), "private") {
+		t.Errorf("the error reveals the query: %v", err)
+	}
+	if got := requests(); len(got) != 0 {
+		t.Errorf("an over-long query reached the upstream: %v", got)
+	}
+}
+
+// TestSearchAtTheLengthLimitIsAnswered checks the limit counts the query the
+// operator meant: exactly maxCatalogQuery characters is searched in full, and
+// surrounding space does not count against it.
+func TestSearchAtTheLengthLimitIsAnswered(t *testing.T) {
+	srv, requests := llamaCPPServer(t, "")
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	query := strings.Repeat("a", maxCatalogQuery)
+	res, err := c.Catalog(context.Background(), "llamacpp", "", "", "  "+query+"  ")
+	if err != nil {
+		t.Fatalf("a query at the limit failed: %v", err)
+	}
+	if res.Query != query {
+		t.Errorf("searched for %d characters, want all %d", len(res.Query), len(query))
+	}
+	if got := len(requests()); got != 1 {
+		t.Errorf("a query at the limit made %d requests, want 1", got)
+	}
+}
+
 // TestLlamaCPPSearchesAreBounded checks the per-query caches are evicted least
 // recently used first, since the set of possible queries is unbounded.
 func TestLlamaCPPSearchesAreBounded(t *testing.T) {

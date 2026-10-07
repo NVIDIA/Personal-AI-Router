@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // engine:catalog serves the set of models an engine can download, as opposed to
@@ -162,7 +163,9 @@ const (
 	// use evicted first. Each is a short list, but the set of possible queries
 	// is not bounded at all.
 	llamaCPPSearchCacheLimit = 20
-	// maxCatalogQuery bounds a query passed upstream, in characters.
+	// maxCatalogQuery bounds a query passed upstream, in characters. A longer
+	// one is refused rather than shortened, which would search for something
+	// the operator did not type.
 	maxCatalogQuery = 100
 )
 
@@ -319,7 +322,10 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 			FetchedAt: fetchedAt.UTC().Format(time.RFC3339),
 		}, nil
 	case "llamacpp":
-		query = catalogQuery(query)
+		query, err := catalogQuery(query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
 		models, fetchedAt, err := c.llamaCPPCatalog(ctx, query)
 		if err != nil {
 			return CatalogResult{}, err
@@ -344,13 +350,14 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 	}
 }
 
-// catalogQuery trims a query and caps its length.
-func catalogQuery(query string) string {
+// catalogQuery trims a query and refuses one over maxCatalogQuery characters.
+// The error does not repeat the query; search text stays out of every log.
+func catalogQuery(query string) (string, error) {
 	query = strings.TrimSpace(query)
-	if r := []rune(query); len(r) > maxCatalogQuery {
-		query = strings.TrimSpace(string(r[:maxCatalogQuery]))
+	if utf8.RuneCountInString(query) > maxCatalogQuery {
+		return "", fmt.Errorf("a model search is limited to %d characters", maxCatalogQuery)
 	}
-	return query
+	return query, nil
 }
 
 // catalogTarget resolves the machine a catalogue is filtered for.
