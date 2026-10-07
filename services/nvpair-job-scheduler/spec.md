@@ -55,9 +55,9 @@ capacity, model locality, latency, and affinity can grow later behind the same
 - **Simultaneous local burst**: before each auto-routed inference forward, the
   proxy atomically increments a local reservation for its chosen node. Concurrent
   requests therefore see one another even before workload feedback completes.
-- **Cross-engine contention**: an Ollama workload and an LM Studio workload both
-  consume the destination node's execution resources, so either one changes both
-  engine outputs.
+- **Cross-engine contention**: Ollama, LM Studio, and llama.cpp workloads all
+  consume the destination node's execution resources, so any one of them changes
+  every engine output.
 - **Periodic reconciliation**: the runtime-adjustable timer recomputes the same
   order as a safety net even when no fresh event arrives.
 - **Load shifts**: as a node drains it rises toward the top; as it fills it sinks; a
@@ -147,7 +147,7 @@ capacity, model locality, latency, and affinity can grow later behind the same
   (`discovery:nodes-changed`).
 - After each meaningful input change, and on a fixed reconciliation interval
   (default 1 s, runtime-adjustable), compute one node-wide GPU-aware order (§7.2)
-  and publish it through both engine outputs. **Emit `schedule:priority` only when
+  and publish it through every engine output. **Emit `schedule:priority` only when
   its order, pending counts, or pressure changed** (a forced `scheduler:tick`
   re-emits regardless).
 - Emit `errors:report` / `errors:clear` for the Broker to forward to `nvpair-errors`

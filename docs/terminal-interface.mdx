@@ -68,8 +68,9 @@ cd <directory containing nvpair-tui>
 | `--appearance <mode>` | `auto`, `light`, or `dark`. See below |
 | `--version` | Print the version and exit |
 
-The interface's own log output goes to stderr, so it never corrupts the display.
-Service logs appear on the **Logs** tab instead.
+While the interface is running, its own log lines appear on the **Logs** tab
+beside the service logs, so nothing is written over the display. Before it
+starts and after it exits, they go to stderr.
 
 ### If the Colours Are Hard to Read
 
@@ -239,7 +240,7 @@ the rest are declined and their senders are told.
 | `d` | Decline an inbound pairing request |
 | `f` | Find a machine by address, without pairing with it |
 | `c` | Cancel the pairing request you sent |
-| `r` | Remove the selected machine from the cluster (asks you to confirm) |
+| `r` | Remove the selected machine from the cluster (asks you to confirm), or drop a hand-added entry (does not ask) |
 | `l` | Leave the cluster (asks you to confirm) |
 | `/` | Filter the list by name or address; `esc` clears it |
 
@@ -260,6 +261,8 @@ and for any cluster peer.
 The screen opens on that machine's GPU, CPU, and memory, then two panes you move
 between with `h` / `l`:
 
+![A machine's detail screen in the terminal interface, showing its GPU, CPU, and memory, the Engines pane with Ollama, LM Studio, and llama.cpp and their engine and proxy ports, and the Models pane listing each model's engine and whether it is loaded.](assets/onboarding/terminal-interface/04-tui-node-detail.png)
+
 **Engines** — select one with `j` / `k`:
 
 | Key | Action |
@@ -273,7 +276,8 @@ between with `h` / `l`:
 | `p` | Change the proxy port |
 | `a` | Edit the startup arguments |
 
-Each engine shows two ports, because they are easy to confuse:
+On this machine each engine shows two ports, because they are easy to confuse.
+A peer's screen shows only the engine port:
 
 - **ENGINE PORT** is where the engine itself listens. PAIR talks to it there.
 - **PROXY PORT** is where *your* clients connect, served by the proxy that
@@ -329,9 +333,9 @@ The `LOADED` column reads `?` for an engine that cannot report which models are
 in memory.
 
 Pressing `p` opens the catalog of models this engine can download. Press `/` to
-filter — by name, family, or parameter size, so both `llama` and `8b` narrow the
-list — `o` to change the sort between popularity, name, and size, `enter` to
-download the highlighted model, and `esc` to back out. The footer shows how many
+filter — by name, family, parameter size, or tag, so both `llama` and `8b` narrow
+the list — `c` to clear the filter, `o` to change the sort between popularity,
+name, and size, `enter` to download the highlighted model, and `esc` to back out. The footer shows how many
 models match and when the catalog was compiled. If the catalog cannot be loaded,
 press `r` to try again.
 
@@ -369,7 +373,7 @@ served it. They differ whenever work is routed to a peer, which is how you can
 see routing actually happening. An active job that has not been placed yet reads
 `choosing`.
 
-![The terminal interface Jobs tab listing live inference workloads with model, engine, state, and age.](assets/onboarding/terminal-interface/03-tui-workloads.png)
+![The terminal interface Jobs tab with the Ollama, LM Studio, and llama.cpp endpoints on top, and jobs listed by model, engine, state, the machine each arrived at, and the machine that ran it.](assets/onboarding/terminal-interface/03-tui-workloads.png)
 
 Routing is not something you set. PAIR chooses a node per request from pending
 work and GPU pressure, so the proxies always run in automatic mode.
@@ -413,7 +417,7 @@ acknowledged. On a narrow terminal the line shortens rather than pushing the
 dismiss key off the screen.
 
 It only tells you. It does not download or install anything, because the
-terminal interface is not a single program — it runs a broker and eleven
+terminal interface is not a single program — it runs a broker and ten
 workers from the directory beside it, and swapping some of them for a newer set
 while they are serving inference is how you get a client talking to workers that
 no longer understand it. Install the release the way you installed this one.
@@ -425,7 +429,8 @@ time you run it.
 
 Nothing is reported when the check cannot reach the network — an unreachable
 feed is not news. To stop it checking at all, set `NVPAIR_NO_UPDATE_CHECK=1`
-before starting `nvpair`. Builds run from source never check.
+before starting `nvpair`. A plain `go build` without a stamped release version
+never checks; a build made with `services/build.sh` or `services/build.bat` does.
 
 ## Look at Errors and Logs
 

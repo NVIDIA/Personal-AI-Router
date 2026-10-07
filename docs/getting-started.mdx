@@ -404,11 +404,21 @@ official installer: `~/.lmstudio/bin/lms`, or
 ~/.lmstudio/bin/lms status
 ```
 
+**llama.cpp** is installed inside PAIR's data directory, like Ollama, at
+`engine-bin/llamacpp/llama-server` (`llama-server.exe` on Windows). PAIR runs it
+as a router that serves every model in its cache, which is `~/.llamacpp`. It has
+no separate client CLI. Query the router over HTTP on its own port instead:
+
+```bash
+curl http://127.0.0.1:8081/models
+```
+
 **Set the port explicitly.** Set `OLLAMA_HOST` to the engine's own port.
 Otherwise, the CLI connects to `11434`, which is PAIR's proxy, and `ollama list`
 returns the cluster's view instead of the local machine's. Use the **Server**
 value under **Engine settings > Ports** to address the local engine directly.
-It defaults to `11435` for Ollama and `1235` for LM Studio.
+It defaults to `11435` for Ollama, `1235` for LM Studio, and `8081` for
+llama.cpp.
 
 Use the proxy port to check what your cluster can serve. Use the engine port to
 check what is installed on the local machine.

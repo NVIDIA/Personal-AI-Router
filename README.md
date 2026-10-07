@@ -101,9 +101,7 @@ you want by its full filename instead.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
   select **Install** next to Ollama, LM Studio, or llama.cpp. PAIR downloads and
-  sets the engine up for you, so nothing needs to be in place beforehand. The
-  llama.cpp install is a separate, on-demand download and is not selected during
-  first-run setup by default.
+  sets the engine up for you, so nothing needs to be in place beforehand.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
