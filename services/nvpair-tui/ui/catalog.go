@@ -217,6 +217,10 @@ func (b *catalogBrowser) search(query string) tea.Cmd {
 		b.refresh()
 		return nil
 	}
+	// The rows on screen answer the previous search. Left in place, enter would
+	// download one the operator can no longer see.
+	b.all = nil
+	b.refresh()
 	b.loading = true
 	return b.load()
 }
@@ -313,6 +317,8 @@ func (b *catalogBrowser) handleKey(msg tea.KeyMsg) (tea.Cmd, string, bool) {
 	case key.Matches(msg, catalogSortKey):
 		b.sortBy = (b.sortBy + 1) % 3
 		b.refresh()
+		return nil, "", true
+	case key.Matches(msg, catalogGetKey) && b.loading:
 		return nil, "", true
 	case key.Matches(msg, catalogGetKey):
 		if m := b.selected(); m != nil {

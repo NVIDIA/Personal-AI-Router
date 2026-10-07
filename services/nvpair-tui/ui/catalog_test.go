@@ -121,6 +121,38 @@ func TestSupersededSearchIsDropped(t *testing.T) {
 	}
 }
 
+// searchingBrowser has the browse list's one model selected, then starts a
+// search whose reply has not arrived.
+func searchingBrowser() *catalogBrowser {
+	b := newCatalogBrowser(nil, "llamacpp", "llama.cpp", "this-host", false)
+	b.SetSize(100, 24)
+	b.update(catalogLoadedMsg{engine: "llamacpp", gen: b.gen, searchable: true,
+		models: []catalogModel{{Name: "gemma"}}})
+	typeSearch(b, "qwen")
+	return b
+}
+
+// TestEnterDuringASearchDownloadsNothing is the guard for downloading a model
+// the operator can no longer see. While a search is in flight the list is
+// replaced by "Searching for ...", and enter used to download the row selected
+// before it.
+func TestEnterDuringASearchDownloadsNothing(t *testing.T) {
+	b := searchingBrowser()
+	if picked, open := browserKey(b, "enter"); picked != "" || !open {
+		t.Errorf("enter during a search picked %q, open %v; want nothing picked and the browser open", picked, open)
+	}
+}
+
+// TestEnterAfterAFailedSearchDownloadsNothing checks a failed search leaves no
+// earlier row to download behind its explanation.
+func TestEnterAfterAFailedSearchDownloadsNothing(t *testing.T) {
+	b := searchingBrowser()
+	b.update(catalogLoadedMsg{engine: "llamacpp", gen: b.gen, err: errFake{}})
+	if picked, open := browserKey(b, "enter"); picked != "" || !open {
+		t.Errorf("enter after a failed search picked %q, open %v; want nothing picked and the browser open", picked, open)
+	}
+}
+
 // TestUnsearchableCatalogStillFiltersLocally checks a source that cannot search
 // keeps the local filter, which issues no request.
 func TestUnsearchableCatalogStillFiltersLocally(t *testing.T) {
