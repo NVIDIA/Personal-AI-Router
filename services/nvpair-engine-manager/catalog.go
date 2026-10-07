@@ -842,10 +842,12 @@ func hasTag(tags []string, want string) bool {
 }
 
 // isGenerative reports a model that answers chat or completion requests, by
-// pipeline or, for a repo that declares none, by tag.
+// pipeline or, for a repo that declares none, by tag. A declared pipeline is
+// authoritative: an embedding model can still carry a conversational tag.
 func isGenerative(r hfModelRow) bool {
-	if generativePipelines[strings.ToLower(r.PipelineTag)] {
-		return true
+	pipeline := strings.ToLower(strings.TrimSpace(r.PipelineTag))
+	if pipeline != "" {
+		return generativePipelines[pipeline]
 	}
 	return hasTag(r.Tags, "text-generation") || hasTag(r.Tags, "conversational")
 }

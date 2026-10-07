@@ -452,7 +452,7 @@ func TestNormalizeLlamaCPPRowsKeepsOnlyDownloadable(t *testing.T) {
 	untagged := ggufRow("a/untagged", 1)
 	untagged.Tags = []string{"conversational"}
 	embedding := ggufRow("a/embedding", 1)
-	embedding.PipelineTag, embedding.Tags = "feature-extraction", []string{"gguf"}
+	embedding.PipelineTag = "feature-extraction"
 	undated := ggufRow("a/undated", 1)
 	undated.LastModified = "yesterday"
 
