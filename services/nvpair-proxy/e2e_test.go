@@ -148,7 +148,7 @@ func e2eEnableWithRetry(t *testing.T, stdin io.Writer, frames *e2eInbox, engine 
 			port = e2eFreePort(t)
 			continue
 		}
-		require.True(t, bound == port, "enabled port (%v, %v)", bound, port)
+		require.Equal(t, port, bound, "enabled port (%v, %v)", bound, port)
 		return port
 	}
 	require.FailNow(t, "test expectation failed", "enable %s: every probed port was taken before the child could bind", engine)
@@ -223,7 +223,7 @@ func TestE2EInboxPreservesInterleavedFrames(t *testing.T) {
 			}
 			e2eWaitResult(t, frames, "1", time.Second)
 			e2eWaitResult(t, frames, "2", time.Second)
-			require.Len(t, frames.pending, 0, "unconsumed frames")
+			require.Empty(t, frames.pending, "unconsumed frames")
 		})
 	}
 }
@@ -336,12 +336,12 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 			"application/json", strings.NewReader(body))
 		require.NoError(t, err, "inference POST")
 		defer resp.Body.Close()
-		require.True(t, resp.StatusCode == http.StatusOK, "status")
+		require.Equal(t, http.StatusOK, resp.StatusCode, "status")
 		{
 			got := resp.Header.Get("Access-Control-Allow-Origin")
 			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
 		}
-		assert.True(t, gotBody == body, "healthy upstream got body (%v, %v)", gotBody, body)
+		assert.Equal(t, body, gotBody, "healthy upstream got body (%v, %v)", gotBody, body)
 
 		e2eSend(t, stdin, 9, "shutdown", nil)
 		e2eWaitResult(t, frames, "9", 5*time.Second)

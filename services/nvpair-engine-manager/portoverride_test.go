@@ -44,7 +44,7 @@ func TestSetPortPreservesOtherOverrides(t *testing.T) {
 		reg := loadWithOverrides(t, dir)
 		manifest, _ := reg.Get("ollama")
 		platform, _ := manifest.HostPlatform()
-		require.True(t, platform.Runtime.Port == port, "restart restored (%v)", port)
+		require.Equal(t, port, platform.Runtime.Port, "restart restored")
 		require.Equal(t, "Custom Ollama", manifest.DisplayName, "port change lost unrelated overrides or inherited defaults")
 		require.Equal(t, []string{"serve", "--custom-option"}, platform.Runtime.Args, "port change lost unrelated overrides or inherited defaults")
 		require.Equal(t, "kept", platform.Runtime.Env["CUSTOM_SETTING"], "port change lost unrelated overrides or inherited defaults")
@@ -99,7 +99,7 @@ func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
 		require.NoError(t, reloaded.LoadOverrideDir(ex.overrideDir))
 		{
 			got := hostPort(t, reloaded, "platform-engine")
-			require.True(t, got == port, "host default shadowed saved port: (%v, %v)", got, port)
+			require.Equal(t, port, got, "host default shadowed saved port")
 		}
 	}
 }
@@ -121,7 +121,7 @@ func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
 			}
 			got, err := os.ReadFile(path)
 			require.NoError(t, err, "invalid override changed (%v, %v)", got, err)
-			require.True(t, string(got) == data, "invalid override changed (%v, %v)", got, err)
+			require.Equal(t, data, string(got), "invalid override changed")
 			{
 				got, _ := ex.Status("ollama")
 				require.Equal(t, 11434, got.Port, "failed persistence changed runtime port (%v)", got)
@@ -141,7 +141,7 @@ func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
 		{
 			err := json.Unmarshal(data, &got)
 			require.NoError(t, err, "replacement not readable (%v, %v)", data, err)
-			require.True(t, got["port"] == port, "replacement not readable (%v, %v)", data, err)
+			require.Equal(t, port, got["port"], "replacement not readable (%v, %v)", data, err)
 		}
 	}
 	entries, err := os.ReadDir(dir)

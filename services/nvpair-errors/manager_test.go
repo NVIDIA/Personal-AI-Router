@@ -196,7 +196,7 @@ func sampleError(id string, ts int64, msg string) ServiceError {
 func TestGetInitialEmpty(t *testing.T) {
 	m, rw := newTestManager(t)
 	got := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	require.Len(t, got, 0, "get-initial on empty manager")
+	require.Empty(t, got, "get-initial on empty manager")
 }
 
 // TestReportRequestUpsertsAndEmitsUpdate: an errors:report REQUEST gets
@@ -302,10 +302,10 @@ func TestClearRemovesEntryAndEmitsUpdate(t *testing.T) {
 
 	update := expectNotification(t, rw, "errors:update")
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
-	require.Len(t, got, 0, "after clear, update payload")
+	require.Empty(t, got, "after clear, update payload")
 
 	list := callAndDecode[[]ServiceError](t, m, rw, 2, "errors:get-initial", nil)
-	require.Len(t, list, 0, "after clear, get-initial")
+	require.Empty(t, list, "after clear, get-initial")
 }
 
 // TestClearAbsentIdIsNoOp: clearing an id that was never reported (or
@@ -363,7 +363,7 @@ func TestReportMissingFieldsRejected(t *testing.T) {
 
 	// And the store is still empty.
 	list := callAndDecode[[]ServiceError](t, m, rw, 3, "errors:get-initial", nil)
-	require.Len(t, list, 0, "after invalid reports, list")
+	require.Empty(t, list, "after invalid reports, list")
 }
 
 // TestClearMissingIdRejected: clear without an id is -32602 in request
@@ -420,7 +420,7 @@ func TestClearedByPassedThroughIgnored(t *testing.T) {
 	expectNotification(t, rw, "errors:update")
 
 	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	require.Len(t, list, 0, "after foreign-clearedBy clear, list")
+	require.Empty(t, list, "after foreign-clearedBy clear, list")
 }
 
 // TestNodeIdPreserved: the producer-supplied nodeId is stored verbatim

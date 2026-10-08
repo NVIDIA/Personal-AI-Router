@@ -74,11 +74,11 @@ func TestEngineHTTPClientsBoundResponseHeaders(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	{
 		got := responseHeaderTimeout(t, ex.client)
-		require.True(t, got == engineResponseHeaderTimeout, "ordinary response-header timeout (%v, %v)", got, engineResponseHeaderTimeout)
+		require.Equal(t, engineResponseHeaderTimeout, got, "ordinary response-header timeout")
 	}
 	{
 		got := responseHeaderTimeout(t, ex.ollamaLoadClient)
-		require.True(t, got == ollamaLoadResponseHeaderTimeout, "Ollama load response-header timeout (%v, %v)", got, ollamaLoadResponseHeaderTimeout)
+		require.Equal(t, ollamaLoadResponseHeaderTimeout, got, "Ollama load response-header timeout")
 	}
 }
 
@@ -115,7 +115,7 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	{
 		_, err := ex.Action(context.Background(), "ollama", "delete_model", json.RawMessage(`{"name":"tiny"}`))
 		require.Error(t, err, "ordinary action error")
-		require.Contains(t, err.Error(), "timeout awaiting response headers", "ordinary action error (%v)", err)
+		require.ErrorContains(t, err, "timeout awaiting response headers", "ordinary action error")
 	}
 
 	other := testEngineManifest(fakeEngineBin)
@@ -135,7 +135,7 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	{
 		_, err := otherEx.Action(context.Background(), "other", "run_model", json.RawMessage(`{"model":"tiny"}`))
 		require.Error(t, err, "non-Ollama run_model error")
-		require.Contains(t, err.Error(), "timeout awaiting response headers", "non-Ollama run_model error (%v)", err)
+		require.ErrorContains(t, err, "timeout awaiting response headers", "non-Ollama run_model error")
 	}
 }
 
@@ -336,7 +336,7 @@ func TestStartPortOverride(t *testing.T) {
 	const want = 17777
 	require.NoError(t, ex.StartWith(context.Background(), "fake", startOpts{Port: want}), "start with port override")
 	st, _ := ex.Status("fake")
-	require.True(t, st.Port == want, "expected port (%v)", want)
+	require.Equal(t, want, st.Port, "expected port")
 }
 
 func TestEffectiveBind(t *testing.T) {
@@ -349,7 +349,7 @@ func TestEffectiveBind(t *testing.T) {
 	for _, c := range cases {
 		{
 			got := effectiveBind(c.manifest, c.override)
-			assert.True(t, got == c.want, "effectiveBind (%v)", got)
+			assert.Equal(t, c.want, got, "effectiveBind")
 		}
 	}
 }
@@ -416,7 +416,7 @@ func TestStatusAtPortAdoptsLegacyListener(t *testing.T) {
 	require.True(t, st.Installed, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
 	require.True(t, st.Running, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
 	require.True(t, st.Healthy, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
-	require.True(t, st.Port == legacyPort, "legacy listener was not adopted at (%v, %v)", legacyPort, st)
+	require.Equal(t, legacyPort, st.Port, "legacy listener was not adopted (%v)", st)
 }
 
 func TestGetInstalledAdoptsExternallyRunningEngineWithoutDetectPath(t *testing.T) {
@@ -542,7 +542,7 @@ func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
 	ex := newTestExecutor(t, m)
 	err := ex.Install(context.Background(), m.Engine)
 	require.Error(t, err, "install over an unknown listener error")
-	require.Contains(t, err.Error(), "occupied", "install over an unknown listener error (%v)", err)
+	require.ErrorContains(t, err, "occupied", "install over an unknown listener error")
 	{
 		got := downloads.Load()
 		require.Equal(t, int32(0), got, "unknown listener triggered")
@@ -585,7 +585,7 @@ func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
 		require.False(t, st.Running, "live API without CLI status (%v, %v)", st, err)
 	}
 	require.NoError(t, ex.Install(context.Background(), m.Engine), "install missing command-mode CLI")
-	require.True(t, fileExists(cli), "live API incorrectly suppressed command-mode installer")
+	require.FileExists(t, cli, "live API incorrectly suppressed command-mode installer")
 }
 
 func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
@@ -599,7 +599,7 @@ func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
 	defer facade.Close()
 	backendPort, err := freePort()
 	require.NoError(t, err)
-	require.True(t, backendPort != portOf(t, facade.URL), "test requires distinct facade and backend ports")
+	require.NotEqual(t, backendPort, portOf(t, facade.URL), "test requires distinct facade and backend ports")
 
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	m := &Manifest{
@@ -691,12 +691,12 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 	{
 		err := ex.Install(context.Background(), "ollama")
 		require.Error(t, err, "install over proxy facade error")
-		require.Contains(t, err.Error(), "occupied", "install over proxy facade error (%v)", err)
+		require.ErrorContains(t, err, "occupied", "install over proxy facade error")
 	}
 	{
 		err := ex.Start(context.Background(), "ollama")
 		require.Error(t, err, "start over proxy facade error")
-		require.Contains(t, err.Error(), "occupied", "start over proxy facade error (%v)", err)
+		require.ErrorContains(t, err, "occupied", "start over proxy facade error")
 	}
 	state, _ := ex.state("ollama")
 	state.mu.Lock()
@@ -705,7 +705,7 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 	{
 		_, err := ex.Action(context.Background(), "ollama", "list_models", nil)
 		require.Error(t, err, "action through proxy facade error")
-		require.Contains(t, err.Error(), "HTTP 409", "action through proxy facade error (%v)", err)
+		require.ErrorContains(t, err, "HTTP 409", "action through proxy facade error")
 	}
 	require.NotEqual(t, int32(0), probes.Load(), "engine identity probe did not carry the proxy sentinel")
 }
@@ -755,12 +755,12 @@ func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
 	{
 		err := ex.Start(context.Background(), "ollama")
 		require.Error(t, err, "Start accepted foreign replacement")
-		require.Contains(t, err.Error(), "occupied", "Start accepted foreign replacement (%v)", err)
+		require.ErrorContains(t, err, "occupied", "Start accepted foreign replacement")
 	}
 	{
 		err := ex.Install(context.Background(), "ollama")
 		require.Error(t, err, "Install accepted foreign replacement")
-		require.Contains(t, err.Error(), "occupied", "Install accepted foreign replacement (%v)", err)
+		require.ErrorContains(t, err, "occupied", "Install accepted foreign replacement")
 	}
 }
 
@@ -833,9 +833,9 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 
 	err = ex.Uninstall(context.Background(), m.Engine)
 	require.Error(t, err, "uninstall external same-name owner error")
-	require.Contains(t, err.Error(), "external management", "uninstall external same-name owner error (%v)", err)
+	require.ErrorContains(t, err, "external management", "uninstall external same-name owner error")
 	require.True(t, portServing(port), "uninstall killed the externally owned process")
-	require.True(t, fileExists(managedBin), "uninstall removed managed files after refusing the external owner")
+	require.FileExists(t, managedBin, "uninstall removed managed files after refusing the external owner")
 }
 
 func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
@@ -851,8 +851,8 @@ func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
 	ex := newTestExecutor(t, m) // managed base is a different temp directory
 	err := ex.Uninstall(context.Background(), m.Engine)
 	require.Error(t, err, "external uninstall error")
-	require.Contains(t, err.Error(), "outside NVPAIR's managed install directory", "external uninstall error (%v)", err)
-	require.True(t, fileExists(externalBin), "external executable was removed")
+	require.ErrorContains(t, err, "outside NVPAIR's managed install directory", "external uninstall error")
+	require.FileExists(t, externalBin, "external executable was removed")
 }
 
 func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
@@ -880,8 +880,8 @@ func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
 	err := ex.Uninstall(context.Background(), m.Engine)
 	require.Error(t, err, "uninstall unidentified listener error")
-	require.Contains(t, err.Error(), "occupied by an unidentified service", "uninstall unidentified listener error (%v)", err)
-	require.True(t, fileExists(managedBin), "uninstall removed managed files while the target port was occupied")
+	require.ErrorContains(t, err, "occupied by an unidentified service", "uninstall unidentified listener error")
+	require.FileExists(t, managedBin, "uninstall removed managed files while the target port was occupied")
 }
 
 func waitPortServing(t *testing.T, port int) {
@@ -923,12 +923,12 @@ func TestDownloadVerify(t *testing.T) {
 	defer os.Remove(p)
 	require.Equal(t, ".ps1", filepath.Ext(p), "downloaded path (%v)", p)
 	got, _ := os.ReadFile(p)
-	require.True(t, string(got) == string(payload), "downloaded content mismatch")
+	require.Equal(t, string(payload), string(got), "downloaded content mismatch")
 
 	{
 		_, err := ex.download(ctx, "fake", &Fetch{URL: srv.URL + "/installer.ps1", SHA256: "deadbeef"})
 		require.Error(t, err, "expected checksum mismatch")
-		require.Contains(t, err.Error(), "checksum mismatch", "expected checksum mismatch (%v)", err)
+		require.ErrorContains(t, err, "checksum mismatch", "expected checksum mismatch")
 	}
 
 	notFound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -938,7 +938,7 @@ func TestDownloadVerify(t *testing.T) {
 	{
 		_, err := ex.download(ctx, "fake", &Fetch{URL: notFound.URL, SHA256: good})
 		require.Error(t, err, "expected HTTP 404")
-		require.Contains(t, err.Error(), "HTTP 404", "expected HTTP 404 (%v)", err)
+		require.ErrorContains(t, err, "HTTP 404", "expected HTTP 404")
 	}
 }
 
@@ -953,7 +953,7 @@ func TestInstallRefusesAdmin(t *testing.T) {
 	ex := newTestExecutor(t, m)
 	err := ex.Install(context.Background(), "fake")
 	require.Error(t, err, "expected admin-install refusal")
-	require.Contains(t, err.Error(), "refused", "expected admin-install refusal (%v)", err)
+	require.ErrorContains(t, err, "refused", "expected admin-install refusal")
 }
 
 func TestEngineUninstall(t *testing.T) {
@@ -1055,13 +1055,13 @@ func TestCommandModeLifecycle(t *testing.T) {
 	ex := newTestExecutor(t, m)
 
 	require.NoError(t, ex.Start(context.Background(), "daemon"), "start")
-	require.True(t, fileExists(startMarker), "expected the start command to have run")
+	require.FileExists(t, startMarker, "expected the start command to have run")
 	st, _ := ex.Status("daemon")
 	require.True(t, st.Running, "expected running+healthy (%v)", st)
 	require.True(t, st.Healthy, "expected running+healthy (%v)", st)
 
 	require.NoError(t, ex.Stop("daemon"), "stop")
-	require.True(t, fileExists(stopMarker), "expected the stop command to have run")
+	require.FileExists(t, stopMarker, "expected the stop command to have run")
 	st, _ = ex.Status("daemon")
 	require.False(t, st.Running, "expected stopped (%v)", st)
 }

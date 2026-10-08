@@ -5,7 +5,6 @@ package netpick
 
 import (
 	"net"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -252,7 +251,7 @@ func TestRankLocal_OverlayRunsWhenNoPhysicalAddressQualifies(t *testing.T) {
 // assertRanked compares a ranking to the exact list expected, in order.
 func assertRanked(t *testing.T, got, want []string) {
 	t.Helper()
-	require.Equal(t, strings.Join(want, ","), strings.Join(got, ","))
+	require.Equal(t, want, got)
 }
 
 // TestRankLocal_KeepsDirectConnectAsLastResort: a /30 link must not be canonical,
@@ -356,7 +355,7 @@ func TestFacingPeers(t *testing.T) {
 // seeing our own address is not evidence that any other machine is out there.
 func TestFacingPeers_IgnoresSelf(t *testing.T) {
 	ifaces := []localIface{{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}}}
-	require.Len(t, facingPeers(ifaces, []string{"10.0.0.5"}), 0, "facingPeers with only our own address")
+	require.Empty(t, facingPeers(ifaces, []string{"10.0.0.5"}), "facingPeers with only our own address")
 	{
 		got := facingPeers(ifaces, []string{"10.0.0.9"})
 		assert.True(t, got["eth0"], "facingPeers with a real peer")
@@ -365,8 +364,8 @@ func TestFacingPeers_IgnoresSelf(t *testing.T) {
 
 func TestFacingPeers_NoPeersOrUnknownPrefix(t *testing.T) {
 	ifaces := []localIface{{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: -1}}}}
-	assert.Len(t, facingPeers(ifaces, []string{"10.0.0.9"}), 0, "facingPeers with an unknown prefix")
-	assert.Len(t, facingPeers(sparkHost(), nil), 0, "facingPeers with no peers")
+	assert.Empty(t, facingPeers(ifaces, []string{"10.0.0.9"}), "facingPeers with an unknown prefix")
+	assert.Empty(t, facingPeers(sparkHost(), nil), "facingPeers with no peers")
 }
 
 // TestRankLocal_PeerProofRescuesUnqualified: hard disqualifiers are evidence, but
@@ -395,7 +394,7 @@ func TestRankLocal_DeterministicTieBreak(t *testing.T) {
 		reversed[i], reversed[j] = reversed[j], reversed[i]
 	}
 	got := rankLocal(reversed, Evidence{}, "")
-	assert.Equal(t, strings.Join(forward, ","), strings.Join(got, ","), "enumeration order changed the result")
+	assert.Equal(t, forward, got, "enumeration order changed the result")
 }
 
 func TestRankLocal_ExcludesLoopbackAndLinkLocal(t *testing.T) {
@@ -411,7 +410,7 @@ func TestRankLocal_ExcludesLoopbackAndLinkLocal(t *testing.T) {
 }
 
 func TestRankLocal_NoAddresses(t *testing.T) {
-	require.Len(t, rankLocal(nil, Evidence{}, ""), 0)
+	require.Empty(t, rankLocal(nil, Evidence{}, ""))
 }
 
 // TestLocalCandidates_Smoke is environment-dependent: it must not panic, and every

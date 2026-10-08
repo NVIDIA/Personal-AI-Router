@@ -131,7 +131,7 @@ func TestBrokerRestoresClusterIdentityAfterRestart(t *testing.T) {
 		err := json.Unmarshal(resp.Result, &got)
 		require.NoError(t, err, "decode cluster:get-node-id")
 	}
-	require.True(t, got.ClusterID == clusterID, "clusterId after restart (%v)", clusterID)
+	require.Equal(t, clusterID, got.ClusterID, "clusterId after restart (%v)", clusterID)
 	t.Logf("cluster identity restored after restart: clusterId=%q", got.ClusterID)
 }
 
@@ -209,7 +209,7 @@ func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
 	sendReq(t, stdin2, 320, "cluster:get-node-id")
 	{
 		got := clusterIDOf(t, waitForResponseID(t, msgs2, 320, 10*time.Second))
-		require.True(t, got == created, "after restart clusterId (%v, %v)", got, created)
+		require.Equal(t, created, got, "after restart clusterId (%v, %v)", got, created)
 	}
 
 	// 3. Leave: the broker must clear the id in settings.

@@ -117,7 +117,7 @@ func TestRestartPolicyBackoff(t *testing.T) {
 	for _, c := range cases {
 		{
 			got := p.backoff(c.attempt)
-			assert.True(t, got == c.want, "backoff (%v)", got)
+			assert.Equal(t, c.want, got, "backoff (%v)", got)
 		}
 	}
 }
@@ -195,7 +195,7 @@ func TestSupervisorGivesUpAfterBudget(t *testing.T) {
 		h.crash()
 		{
 			got := recvInt(t, crashes)
-			require.True(t, got == want, "onCrash attempt (%v, %v)", got, want)
+			require.Equal(t, want, got, "onCrash attempt (%v, %v)", got, want)
 		}
 	}
 

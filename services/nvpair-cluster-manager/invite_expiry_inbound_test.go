@@ -68,7 +68,7 @@ func TestExpireInboundInviteTearsDownReceiver(t *testing.T) {
 
 	inv, ok := m.getInvite(inviteID)
 	require.True(t, ok, "invite state (%v)", inv)
-	require.True(t, inv.State == inviteStateExpired, "invite state (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "invite state (%v)", inv)
 	require.Nil(t, inv.Pin, "expired invite must not carry a PIN")
 	{
 		_, ok := m.getSession(inviteID)
@@ -116,7 +116,7 @@ func TestExpireInboundInviteSignalsInviter(t *testing.T) {
 	select {
 	case env := <-got:
 		require.Equal(t, "expire", env.Phase, "inviter signal phase")
-		require.True(t, env.InviteID == inviteID, "inviter signal inviteId (%v)", inviteID)
+		require.Equal(t, inviteID, env.InviteID, "inviter signal inviteId")
 	case <-time.After(3 * time.Second):
 		require.FailNow(t, "test expectation failed", "receiver did not signal the inviter on inbound expiry")
 	}
@@ -138,7 +138,7 @@ func TestExpireInboundInvitePreservesFresh(t *testing.T) {
 
 	inv, ok := m.getInvite(inviteID)
 	require.True(t, ok, "fresh inbound invite state (%v)", inv)
-	require.True(t, inv.State == inviteStatePending, "fresh inbound invite state (%v)", inv)
+	require.Equal(t, inviteStatePending, inv.State, "fresh inbound invite state (%v)", inv)
 	{
 		_, ok := m.getSession(inviteID)
 		require.True(t, ok, "fresh inbound invite must keep its joiner session")
@@ -171,7 +171,7 @@ func TestExpireInboundInviteNoSession(t *testing.T) {
 
 	inv, ok := m.getInvite(inviteID)
 	require.True(t, ok, "sessionless inbound invite state (%v)", inv)
-	require.True(t, inv.State == inviteStateExpired, "sessionless inbound invite state (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "sessionless inbound invite state (%v)", inv)
 }
 
 // TestExpireInboundSkipsInFlightAccept guards the accept-vs-expiry race: while an
@@ -212,7 +212,7 @@ func TestExpireInboundSkipsInFlightAccept(t *testing.T) {
 	{
 		inv, _ := m.getInvite(inviteID)
 		require.NotNil(t, inv, "invite state")
-		require.True(t, inv.State == inviteStatePending, "invite state (%v)", inv)
+		require.Equal(t, inviteStatePending, inv.State, "invite state (%v)", inv)
 	}
 	{
 		_, ok := m.getSession(inviteID)
@@ -240,7 +240,7 @@ func TestHandlePairingExpiredTearsDownInviter(t *testing.T) {
 
 	inv, ok := m.getInvite("inv-expire")
 	require.True(t, ok, "invite state (%v)", inv)
-	require.True(t, inv.State == inviteStateExpired, "invite state (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "invite state (%v)", inv)
 	{
 		_, ok := m.getSession("inv-expire")
 		require.False(t, ok, "expire signal must drop the inviter's EAP session")

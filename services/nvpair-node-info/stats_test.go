@@ -59,9 +59,9 @@ func TestParseEngineInstance(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			luid, et, ok := parseEngineInstance(c.in)
-			require.True(t, ok == c.wantOK, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
-			require.True(t, luid == c.wantLuid, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
-			require.True(t, et == c.wantType, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
+			require.Equal(t, c.wantOK, ok, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
+			require.Equal(t, c.wantLuid, luid, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
+			require.Equal(t, c.wantType, et, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
 		})
 	}
 }
@@ -213,19 +213,13 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 			)
 			var typed NodeInfoResponse
 			require.NoError(t, json.Unmarshal(body, &typed), "decode response")
-			require.True(t, typed.TelemetryValid == c.wantValid, "telemetry = valid")
-			require.True(t, typed.MSSince == c.wantAge, "telemetry = valid")
+			require.Equal(t, c.wantValid, typed.TelemetryValid, "telemetry = valid")
+			require.Equal(t, c.wantAge, typed.MSSince, "telemetry = valid")
 
 			var raw map[string]any
 			require.NoError(t, json.Unmarshal(body, &raw), "decode raw response")
-			{
-				_, ok := raw["telemetryValid"]
-				require.True(t, ok, "telemetryValid missing from response")
-			}
-			{
-				_, ok := raw["msSince"]
-				require.True(t, ok, "msSince missing from response")
-			}
+			require.Contains(t, raw, "telemetryValid", "telemetryValid missing from response")
+			require.Contains(t, raw, "msSince", "msSince missing from response")
 		})
 	}
 }
@@ -263,7 +257,7 @@ func TestBuildResponseMerge(t *testing.T) {
 	require.Len(t, typed.GPUs, 2)
 	{
 		got := typed.GPUs[0].VramUsedBytes
-		assert.True(t, got == 4<<30, "gpu 0 VramUsedBytes (%v)", got)
+		assert.Equal(t, uint64(4<<30), got, "gpu 0 VramUsedBytes")
 	}
 	{
 		got := typed.GPUs[0].UtilizationPercent
@@ -316,11 +310,11 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 			typed, raw := buildResponseDecode(t, static, nil, 0, snap)
 			{
 				got := typed.GPUs[0].VramUsedBytes
-				assert.True(t, got == sysMemUsed, "VramUsedBytes (%v, %v)", got, sysMemUsed)
+				assert.Equal(t, sysMemUsed, got, "VramUsedBytes (%v, %v)", got, sysMemUsed)
 			}
 			{
 				got := typed.GPUs[0].UtilizationPercent
-				assert.True(t, got == c.wantUtil, "UtilizationPercent (%v)", got)
+				assert.Equal(t, c.wantUtil, got, "UtilizationPercent (%v)", got)
 			}
 
 			gpus, ok := raw["GPUs"].([]any)
@@ -328,10 +322,7 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 			require.Len(t, gpus, 1, "unexpected GPUs payload")
 			obj, ok := gpus[0].(map[string]any)
 			require.True(t, ok, "gpu 0 not an object")
-			{
-				_, present := obj["vram_used_bytes"]
-				assert.True(t, present, "vram_used_bytes should be present for unified memory (%v)", obj)
-			}
+			assert.Contains(t, obj, "vram_used_bytes", "vram_used_bytes should be present for unified memory")
 		})
 	}
 }
@@ -353,7 +344,7 @@ func TestBuildResponseAppleUnifiedMemoryUsesGPUAllocation(t *testing.T) {
 	}
 	typed, _ := buildResponseDecode(t, static, nil, 0, snap)
 	gpu := typed.GPUs[0]
-	require.True(t, gpu.VramUsedBytes == 8<<30, "unexpected Apple GPU metrics (%v)", gpu)
+	require.Equal(t, uint64(8<<30), gpu.VramUsedBytes, "unexpected Apple GPU metrics (%v)", gpu)
 	require.Equal(t, uint32(73), gpu.UtilizationPercent, "unexpected Apple GPU metrics (%v)", gpu)
 }
 
@@ -372,15 +363,15 @@ func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
 	require.Len(t, typed.GPUs, 1, "recovered GPU count")
 	gpu := typed.GPUs[0]
 	require.Equal(t, "Apple M3 Max", gpu.Name, "unexpected recovered GPU (%v)", gpu)
-	require.True(t, gpu.VramBytes == 36<<30, "unexpected recovered GPU (%v)", gpu)
-	require.True(t, gpu.VramUsedBytes == 8<<30, "unexpected recovered GPU (%v)", gpu)
+	require.Equal(t, uint64(36<<30), gpu.VramBytes, "unexpected recovered GPU (%v)", gpu)
+	require.Equal(t, uint64(8<<30), gpu.VramUsedBytes, "unexpected recovered GPU (%v)", gpu)
 	require.Equal(t, uint32(73), gpu.UtilizationPercent, "unexpected recovered GPU (%v)", gpu)
 
 	static := []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}}
 	{
 		merged := mergeGPUInventory(static, snap.GPUInventory)
 		require.Len(t, merged, 1, "matching recovered GPU did not enrich in place")
-		require.True(t, merged[0].VramBytes == 36<<30, "matching recovered GPU did not enrich in place (%v)", merged)
+		require.Equal(t, uint64(36<<30), merged[0].VramBytes, "matching recovered GPU did not enrich in place (%v)", merged)
 	}
 }
 
@@ -397,14 +388,8 @@ func TestBuildResponseOmitsZero(t *testing.T) {
 	require.Len(t, gpus, 1, "unexpected GPUs payload")
 	obj, ok := gpus[0].(map[string]any)
 	require.True(t, ok, "gpu 0 not an object")
-	{
-		_, present := obj["vram_used_bytes"]
-		assert.False(t, present, "vram_used_bytes should be absent when unknown (%v)", obj)
-	}
-	{
-		_, present := obj["utilization_percent"]
-		assert.False(t, present, "utilization_percent should be absent when unknown (%v)", obj)
-	}
+	assert.NotContains(t, obj, "vram_used_bytes", "vram_used_bytes should be absent when unknown")
+	assert.NotContains(t, obj, "utilization_percent", "utilization_percent should be absent when unknown")
 }
 
 // TestBuildResponseCPUMemoryMatrix exercises the four combinations of
@@ -483,25 +468,24 @@ func TestBuildResponseCPUMemoryMatrix(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			typed, raw := buildResponseDecode(t, nil, c.cpu, c.memTotal, c.snap)
 
-			_, cpuPresent := raw["cpu"]
-			assert.True(t, cpuPresent == c.wantCPUKey, "cpu key present (%v, %v)", cpuPresent, raw)
-			_, memPresent := raw["memory"]
-			assert.True(t, memPresent == c.wantMemKey, "memory key present (%v, %v)", memPresent, raw)
-
 			if c.wantCPUKey {
+				assert.Contains(t, raw, "cpu")
 				require.NotNil(t, typed.CPU, "typed.CPU is nil but cpu key was present in raw JSON")
-				assert.True(t, typed.CPU.Name == c.wantCPUName, "cpu.Name")
-				assert.True(t, typed.CPU.Cores == c.wantCPUCores, "cpu.Cores")
-				assert.True(t, typed.CPU.UtilizationPercent == c.wantCPUUtil, "cpu.UtilizationPercent")
+				assert.Equal(t, c.wantCPUName, typed.CPU.Name, "cpu.Name")
+				assert.Equal(t, c.wantCPUCores, typed.CPU.Cores, "cpu.Cores")
+				assert.Equal(t, c.wantCPUUtil, typed.CPU.UtilizationPercent, "cpu.UtilizationPercent")
 			} else {
+				assert.NotContains(t, raw, "cpu")
 				assert.Nil(t, typed.CPU)
 			}
 
 			if c.wantMemKey {
+				assert.Contains(t, raw, "memory")
 				require.NotNil(t, typed.Memory, "typed.Memory is nil but memory key was present in raw JSON")
-				assert.True(t, typed.Memory.TotalBytes == c.wantMemTotal, "memory.TotalBytes")
-				assert.True(t, typed.Memory.UsedBytes == c.wantMemUsed, "memory.UsedBytes")
+				assert.Equal(t, c.wantMemTotal, typed.Memory.TotalBytes, "memory.TotalBytes")
+				assert.Equal(t, c.wantMemUsed, typed.Memory.UsedBytes, "memory.UsedBytes")
 			} else {
+				assert.NotContains(t, raw, "memory")
 				assert.Nil(t, typed.Memory)
 			}
 		})

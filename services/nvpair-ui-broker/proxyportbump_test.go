@@ -286,19 +286,19 @@ func TestFacadeBindRaceRetriesInProcess(t *testing.T) {
 			IgnorePersistedPort: true,
 		},
 		func(failed int) int {
-			assert.True(t, failed == managedOllamaFacadePort, "fallback asked for port (%v, %v)", failed, managedOllamaFacadePort)
+			assert.Equal(t, managedOllamaFacadePort, failed, "fallback asked for port (%v, %v)", failed, managedOllamaFacadePort)
 			return fallback
 		})
 	require.NoError(t, err, "enable with fallback")
 
 	first := <-attempts
-	require.True(t, first.Port == managedOllamaFacadePort, "first attempt port (%v)", managedOllamaFacadePort)
+	require.Equal(t, managedOllamaFacadePort, first.Port, "first attempt port (%v)", managedOllamaFacadePort)
 	second := <-attempts
-	require.True(t, second.Port == fallback, "retry port (%v)", fallback)
+	require.Equal(t, fallback, second.Port, "retry port (%v)", fallback)
 	// The persisted port is the one that just failed to bind, so a retry that
 	// let the child restore it would land straight back on the taken port.
 	assert.True(t, second.IgnorePersistedPort, "retry did not set ignorePersistedPort, so the child could restore the port that just failed")
-	assert.True(t, second.Engine == first.Engine, "retry engine")
+	assert.Equal(t, first.Engine, second.Engine, "retry engine")
 }
 
 // A rejection no other port would fix must not be retried. Retrying an
@@ -359,11 +359,11 @@ func TestOllamaProxyFallbackAvoidsTheEnginesPorts(t *testing.T) {
 		b := &Broker{}
 		fallback := b.setOllamaProxyFallback()
 
-		require.True(t, fallback != managedOllamaFacadePort, "fallback (%v, %v, %v)", fallback, managedOllamaFacadePort, managedOllamaBackendStart)
-		require.True(t, fallback != managedOllamaBackendStart, "fallback (%v, %v, %v)", fallback, managedOllamaFacadePort, managedOllamaBackendStart)
+		require.NotEqual(t, managedOllamaFacadePort, fallback, "fallback (%v, %v, %v)", fallback, managedOllamaFacadePort, managedOllamaBackendStart)
+		require.NotEqual(t, managedOllamaBackendStart, fallback, "fallback (%v, %v, %v)", fallback, managedOllamaFacadePort, managedOllamaBackendStart)
 		{
 			got := int(b.ollamaState().startupPort.Load())
-			require.True(t, got == fallback, "startup port (%v, %v)", got, fallback)
+			require.Equal(t, fallback, got, "startup port (%v, %v)", got, fallback)
 		}
 	})
 
@@ -373,7 +373,7 @@ func TestOllamaProxyFallbackAvoidsTheEnginesPorts(t *testing.T) {
 
 		{
 			fallback := b.setOllamaProxyFallback()
-			require.True(t, fallback != managedOllamaBackendStart, "fallback (%v)", fallback)
+			require.NotEqual(t, managedOllamaBackendStart, fallback, "fallback (%v)", fallback)
 		}
 	})
 
@@ -386,7 +386,7 @@ func TestOllamaProxyFallbackAvoidsTheEnginesPorts(t *testing.T) {
 
 		{
 			fallback := b.blockManagedOllamaFacade("test")
-			require.True(t, fallback != managedOllamaBackendStart, "blocked fallback (%v)", fallback)
+			require.NotEqual(t, managedOllamaBackendStart, fallback, "blocked fallback (%v)", fallback)
 		}
 	})
 }
@@ -428,7 +428,7 @@ func TestBindFailureMovesTheNextSpawnOffTheContestedPort(t *testing.T) {
 
 		{
 			got := int(b.ollamaState().startupPort.Load())
-			require.True(t, got != contested, "startup port still (%v)", got)
+			require.NotEqual(t, contested, got, "startup port still (%v)", got)
 		}
 	})
 
@@ -443,7 +443,7 @@ func TestBindFailureMovesTheNextSpawnOffTheContestedPort(t *testing.T) {
 
 		{
 			got := int(b.lmstudioState().startupPort.Load())
-			require.True(t, got != contested, "startup port still (%v)", got)
+			require.NotEqual(t, contested, got, "startup port still (%v)", got)
 		}
 	})
 }

@@ -180,7 +180,7 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "test expectation failed", "command-mode start did not return after StopAll")
 	}
-	require.True(t, fileExists(stopMarker), "StopAll skipped the command-mode stop CLI after start detached")
+	require.FileExists(t, stopMarker, "StopAll skipped the command-mode stop CLI after start detached")
 	require.True(t, waitPortClosed(port, 5*time.Second), "detached command daemon remained on port (%v)", port)
 	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "shutdown cancellation retained a command-mode start-failed error")
 }

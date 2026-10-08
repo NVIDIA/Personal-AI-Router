@@ -69,7 +69,7 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 		require.NoError(t, err, "POST through inherited OLLAMA_HOST alias (%v, %v)", host, err)
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		require.True(t, resp.StatusCode == http.StatusOK, "alias (%v, %v)", host, body)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "alias (%v, %v)", host, body)
 		require.Contains(t, string(body), "routed-through-alias", "alias (%v, %v)", host, body)
 	}
 

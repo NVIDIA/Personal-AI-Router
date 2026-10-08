@@ -104,7 +104,7 @@ func TestOllamaProxyActivityReachesTheScanner(t *testing.T) {
 		noderec.NotifyNodeActivity, json.RawMessage(`{"hostUuid":"busy-peer"}`))
 
 	msg := awaitRelay(t, relayed)
-	require.True(t, msg.Method == noderec.MethodNodeActivity, "relayed method")
+	require.Equal(t, noderec.MethodNodeActivity, msg.Method, "relayed method")
 	var got noderec.NodeActivityParams
 	{
 		err := json.Unmarshal(msg.Params, &got)
@@ -123,7 +123,7 @@ func TestLMStudioProxyActivityReachesTheScanner(t *testing.T) {
 		json.RawMessage(`{"hostUuid":"busy-peer"}`))
 
 	msg := awaitRelay(t, relayed)
-	require.True(t, msg.Method == noderec.MethodNodeActivity, "relayed method")
+	require.Equal(t, noderec.MethodNodeActivity, msg.Method, "relayed method")
 }
 
 // The report crosses two pipes and a goroutine hop, and the scanner measures
@@ -137,7 +137,7 @@ func TestRelayedActivityAgeAccumulatesTransitDelay(t *testing.T) {
 
 	var got noderec.NodeActivityParams
 	require.NoError(t, json.Unmarshal(awaitRelay(t, relayed).Params, &got), "decode relayed params")
-	require.True(t, got.MSSince >= 4000, "relayed msSince")
+	require.GreaterOrEqual(t, got.MSSince, int64(4000), "relayed msSince")
 }
 
 // The reported age crosses a process boundary and is multiplied into a duration,
@@ -157,8 +157,8 @@ func TestReportedAgeIsClampedAtBothEnds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := clampActivityAge(tc.msSince)
-			require.True(t, got == tc.want, "clampActivityAge (%v)", got)
-			require.True(t, got >= 0, "clampActivityAge")
+			require.Equal(t, tc.want, got, "clampActivityAge (%v)", got)
+			require.GreaterOrEqual(t, got, time.Duration(0), "clampActivityAge")
 		})
 	}
 }

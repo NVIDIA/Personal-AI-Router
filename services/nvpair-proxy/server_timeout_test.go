@@ -30,8 +30,8 @@ func TestHTTPServersConfigureIdleTimeouts(t *testing.T) {
 		"plain": {p.soleFacade().plainSrv.ReadHeaderTimeout, p.soleFacade().plainSrv.IdleTimeout},
 		"tls":   {p.soleFacade().tlsSrv.ReadHeaderTimeout, p.soleFacade().tlsSrv.IdleTimeout},
 	} {
-		assert.True(t, srv.readHeader == proxyReadHeaderTimeout, " (%v, %v)", name, proxyReadHeaderTimeout)
-		assert.True(t, srv.idle == proxyServerIdleTimeout, " (%v, %v)", name, proxyServerIdleTimeout)
+		assert.Equal(t, proxyReadHeaderTimeout, srv.readHeader, " (%v, %v)", name, proxyReadHeaderTimeout)
+		assert.Equal(t, proxyServerIdleTimeout, srv.idle, " (%v, %v)", name, proxyServerIdleTimeout)
 	}
-	require.True(t, proxyServerIdleTimeout == proxyIdleConnTimeout, "server IdleTimeout (%v, %v)", proxyServerIdleTimeout, proxyIdleConnTimeout)
+	require.Equal(t, proxyIdleConnTimeout, proxyServerIdleTimeout, "server IdleTimeout (%v, %v)", proxyServerIdleTimeout, proxyIdleConnTimeout)
 }

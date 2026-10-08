@@ -187,7 +187,7 @@ func TestRefreshSelfDialsLoopback(t *testing.T) {
 		want := []string{"llama3:8b"}
 		assert.Equal(t, want, got.Models, "self Models")
 	}
-	assert.True(t, got.IP == unreachableLAN, "self IP (%v)", unreachableLAN)
+	assert.Equal(t, unreachableLAN, got.IP, "self IP (%v)", unreachableLAN)
 }
 
 // TestRefreshPullDeleteAndUnchanged covers three required behaviors together: a
@@ -236,7 +236,7 @@ func TestRefreshPullDeleteAndUnchanged(t *testing.T) {
 	require.True(t, d.refreshNodeModels("peer-B", "127.0.0.1", port, ""), "deleting the last model should report a change")
 	assert.False(t, d.refreshNodeModels("peer-B", "127.0.0.1", port, ""), "re-reading the same explicit empty inventory should not report a change")
 	got, _ = d.dir.get("peer-B")
-	assert.Len(t, got.Models, 0, "Models after last delete")
+	assert.Empty(t, got.Models, "Models after last delete")
 	{
 		want := map[string][]string{"ollama": {}}
 		assert.Equal(t, want, got.ModelsByEngine, "ModelsByEngine after last delete")

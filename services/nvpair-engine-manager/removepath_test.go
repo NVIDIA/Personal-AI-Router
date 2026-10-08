@@ -20,7 +20,7 @@ func TestSafeRemoveUnderRootDeletesNestedFile(t *testing.T) {
 	require.NoError(t, safeRemoveUnderRoot(root, target), "safeRemoveUnderRoot")
 	{
 		_, err := os.Stat(target)
-		require.True(t, os.IsNotExist(err), "target still exists after delete (%v)", err)
+		require.ErrorIs(t, err, os.ErrNotExist, "target still exists after delete")
 	}
 }
 

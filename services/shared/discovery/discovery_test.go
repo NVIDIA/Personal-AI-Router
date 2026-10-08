@@ -45,7 +45,7 @@ func TestReconcileDiscoveredUpdatedRemoved(t *testing.T) {
 		assert.Equal(t, 1, got[Discovered], "first scan:")
 	}
 	// Same node, no change → no event.
-	require.Len(t, b.reconcile(seenSet(node("a"))), 0, "unchanged scan emitted")
+	require.Empty(t, b.reconcile(seenSet(node("a"))), "unchanged scan emitted")
 	// Changed TXT → updated.
 	{
 		got := eventsByType(b.reconcile(seenSet(node("a", "v=2"))))
@@ -53,14 +53,14 @@ func TestReconcileDiscoveredUpdatedRemoved(t *testing.T) {
 	}
 	// Absent for < threshold: no removal yet.
 	for i := 0; i < 2; i++ {
-		require.Len(t, b.reconcile(seenSet()), 0)
+		require.Empty(t, b.reconcile(seenSet()))
 	}
 	// Third consecutive miss reaches the threshold → removed.
 	{
 		got := eventsByType(b.reconcile(seenSet()))
 		assert.Equal(t, 1, got[Removed], "threshold miss:")
 	}
-	require.Len(t, b.Nodes(), 0, "node not evicted")
+	require.Empty(t, b.Nodes(), "node not evicted")
 }
 
 // TestDefaultMissThresholdOutlastsASaturatedNode pins the eviction window a
@@ -77,7 +77,7 @@ func TestDefaultMissThresholdOutlastsASaturatedNode(t *testing.T) {
 
 	b.reconcile(seenSet(node("a")))
 	for i := 1; i < missThresholdDefault; i++ {
-		require.Len(t, b.reconcile(seenSet()), 0)
+		require.Empty(t, b.reconcile(seenSet()))
 	}
 	{
 		got := eventsByType(b.reconcile(seenSet()))
@@ -105,7 +105,7 @@ func TestLivenessProbeRunsThroughoutTheWindowNotJustAtTheEnd(t *testing.T) {
 	// From probeAfterMisses onward every scan asks again, and no failed answer may
 	// evict before the threshold.
 	for i := probeAfterMisses; i < missThresholdDefault; i++ {
-		require.Len(t, b.reconcile(seenSet()), 0)
+		require.Empty(t, b.reconcile(seenSet()))
 	}
 	asked := probes.Load()
 	assert.Equal(t, int32(missThresholdDefault-probeAfterMisses), asked, "probe ran")
@@ -125,12 +125,12 @@ func TestAProbeThatAnswersMidWindowFullyRecoversTheNode(t *testing.T) {
 	}
 	// One answer, one scan short of eviction.
 	alive = true
-	require.Len(t, b.reconcile(seenSet()), 0, "a node that answered its probe emitted")
+	require.Empty(t, b.reconcile(seenSet()), "a node that answered its probe emitted")
 	assert.Equal(t, 0, b.misses["a"], "miss counter")
 	// And the full window is available again from scratch.
 	alive = false
 	for i := 1; i < missThresholdDefault; i++ {
-		require.Len(t, b.reconcile(seenSet()), 0)
+		require.Empty(t, b.reconcile(seenSet()))
 	}
 }
 
@@ -145,7 +145,7 @@ func TestAShortThresholdStillProbesBeforeEvicting(t *testing.T) {
 	}))
 	b.reconcile(seenSet(node("a")))
 
-	require.Len(t, b.reconcile(seenSet()), 0, "a reachable node was evicted at a threshold of 1")
+	require.Empty(t, b.reconcile(seenSet()), "a reachable node was evicted at a threshold of 1")
 	assert.Equal(t, int32(1), probes.Load(), "probe ran")
 }
 
@@ -159,9 +159,9 @@ func TestEmptyScanDoesNotEvictTheWholeFleet(t *testing.T) {
 	b.reconcile(seenSet(node("a"), node("b"), node("c")))
 
 	for i := 1; i <= emptyScanGrace; i++ {
-		require.Len(t, b.reconcile(seenSet()), 0, "empty scan")
+		require.Empty(t, b.reconcile(seenSet()), "empty scan")
 	}
-	assert.Equal(t, 3, len(b.Nodes()))
+	assert.Len(t, b.Nodes(), 3)
 	assert.Equal(t, 0, b.misses["a"])
 	assert.Equal(t, 0, b.misses["b"])
 	assert.Equal(t, 0, b.misses["c"])
@@ -234,7 +234,7 @@ func TestEmptyScanWithNoKnownNodesBanksNothing(t *testing.T) {
 
 	// And the excuses it did not bank are not spent on the nodes that arrive next.
 	b.reconcile(seenSet(node("a"), node("b")))
-	require.Len(t, b.reconcile(seenSet()), 0, "first empty scan after discovery emitted")
+	require.Empty(t, b.reconcile(seenSet()), "first empty scan after discovery emitted")
 	assert.Equal(t, 1, b.emptyScans, "empty run")
 }
 
@@ -243,14 +243,14 @@ func TestReconcileOrderInsensitive(t *testing.T) {
 	a1 := Node{ID: "a", Host: "a.local.", Port: 1, Addresses: []string{"10.0.0.1", "10.0.0.2"}, TXT: []string{"x=1", "y=2"}}
 	a2 := Node{ID: "a", Host: "a.local.", Port: 1, Addresses: []string{"10.0.0.2", "10.0.0.1"}, TXT: []string{"y=2", "x=1"}}
 	b.reconcile(seenSet(a1))
-	require.Len(t, b.reconcile(seenSet(a2)), 0, "reordered addresses/TXT emitted a spurious event")
+	require.Empty(t, b.reconcile(seenSet(a2)), "reordered addresses/TXT emitted a spurious event")
 }
 
 func TestNoEviction(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithNoEviction(), WithMissThreshold(1))
 	b.reconcile(seenSet(node("a")))
 	for i := 0; i < 5; i++ {
-		require.Len(t, b.reconcile(seenSet()), 0, "no-evict browser emitted")
+		require.Empty(t, b.reconcile(seenSet()), "no-evict browser emitted")
 	}
 	require.Len(t, b.Nodes(), 1, "no-evict browser dropped the node")
 }
@@ -260,7 +260,7 @@ func TestLivenessProbeRetainsReachable(t *testing.T) {
 	b.reconcile(seenSet(node("a")))
 	// Two misses cross the threshold, but the probe says the node is still up.
 	b.reconcile(seenSet())
-	require.Len(t, b.reconcile(seenSet()), 0, "reachable threshold-missed node was evicted")
+	require.Empty(t, b.reconcile(seenSet()), "reachable threshold-missed node was evicted")
 	require.Len(t, b.Nodes(), 1, "reachable node dropped")
 }
 
@@ -272,7 +272,7 @@ func TestLivenessProbeEvictsUnreachable(t *testing.T) {
 		got := eventsByType(b.reconcile(seenSet()))
 		assert.Equal(t, 1, got[Removed], "unreachable threshold-missed node not evicted")
 	}
-	require.Len(t, b.Nodes(), 0, "unreachable node retained")
+	require.Empty(t, b.Nodes(), "unreachable node retained")
 }
 
 // TestLivenessProbesOverlap pins the concurrency bound: one probe stuck on an
@@ -483,7 +483,6 @@ func TestSendFailuresForgetAnInterfaceThatIsGone(t *testing.T) {
 	assert.False(t, got["tun0"], "an interface that is no longer attempted must not stay asserted as failed")
 	assert.True(t, got["eth0"], "eth0 is still being attempted and still failing; its run must survive")
 	b.mu.RLock()
-	_, stale := b.sendMisses["tun0"]
+	assert.NotContains(t, b.sendMisses, "tun0", "the counter for a departed interface was retained")
 	b.mu.RUnlock()
-	assert.False(t, stale, "the counter for a departed interface was retained")
 }

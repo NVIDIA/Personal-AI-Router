@@ -97,7 +97,7 @@ func TestExpirePendingInviteCleansThrowaway(t *testing.T) {
 
 	inv, ok := m.getInvite("inv-stale")
 	require.True(t, ok, "invite state (%v)", inv)
-	require.True(t, inv.State == inviteStateExpired, "invite state (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "invite state (%v)", inv)
 	{
 		_, ok := m.getSession("inv-stale")
 		require.False(t, ok, "expired invite must drop its EAP session")
@@ -173,7 +173,7 @@ func TestExpirePendingInviteClearsBothSides(t *testing.T) {
 	// The receiver cleared itself as expired.
 	inv, ok := receiver.getInvite(inviteID)
 	require.True(t, ok, "receiver invite (%v)", inv)
-	require.True(t, inv.State == inviteStateExpired, "receiver invite (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "receiver invite (%v)", inv)
 	{
 		_, ok := receiver.getSession(inviteID)
 		require.False(t, ok, "receiver retained session after expiry")
@@ -221,7 +221,7 @@ func TestExpirePendingInvitePreservesIntentionalSolo(t *testing.T) {
 
 	inv, ok := m.getInvite("inv-stale")
 	require.True(t, ok, "invite state (%v)", inv)
-	require.True(t, inv.State == inviteStateExpired, "invite state (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "invite state (%v)", inv)
 	{
 		id, _ := m.clusterIdentity()
 		require.NotEqual(t, "", id, "intentional solo cluster must survive invite expiry")

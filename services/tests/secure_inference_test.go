@@ -283,11 +283,11 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		resp := postInference(t, fmt.Sprintf("http://127.0.0.1:%d/api/generate", proxyA.port), genBody)
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
-		require.True(t, resp.StatusCode == http.StatusOK, "A->B inference status (%v)", body)
-		require.True(t, bytes.Contains(body, []byte("hello from the backend")), "A->B response did not come from B's engine (%v)", body)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "A->B inference status (%v)", body)
+		require.Contains(t, string(body), "hello from the backend", "A->B response did not come from B's engine")
 		{
 			got := atomic.LoadInt32(bGenerates)
-			require.True(t, got == before+1, "B engine generate count (%v)", got)
+			require.Equal(t, before+1, got, "B engine generate count (%v)", got)
 		}
 	})
 
@@ -309,18 +309,15 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 	//    pins are reloaded per request, so a removed member loses access at once.
 	t.Run("deleting pin rejects immediately", func(t *testing.T) {
 		pin := filepath.Join(clusterB, "trusted", aInfo.NodeUUID+".json")
-		{
-			_, err := os.Stat(pin)
-			require.NoError(t, err, "expected A's pin in B's trust store at (%v, %v)", pin, err)
-		}
+		require.FileExists(t, pin, "expected A's pin in B's trust store")
 		require.NoError(t, os.Remove(pin), "remove A's pin")
 		before := atomic.LoadInt32(bGenerates)
 		resp := postInference(t, fmt.Sprintf("http://127.0.0.1:%d/api/generate", proxyA.port), genBody)
 		defer resp.Body.Close()
-		require.True(t, resp.StatusCode != http.StatusOK, "A->B still succeeded (status")
+		require.NotEqual(t, http.StatusOK, resp.StatusCode, "A->B still succeeded (status")
 		{
 			got := atomic.LoadInt32(bGenerates)
-			require.True(t, got == before, "B engine was reached (%v, %v)", got, before)
+			require.Equal(t, before, got, "B engine was reached (%v, %v)", got, before)
 		}
 	})
 }

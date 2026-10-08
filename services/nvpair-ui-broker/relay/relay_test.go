@@ -24,8 +24,8 @@ func TestRegistrationCache(t *testing.T) {
 	snap := c.Snapshot()
 	require.Len(t, snap, 2, "snapshot len")
 	// Sorted by service key: ni before ol.
-	assert.True(t, snap[0].Service == noderec.ServiceNodeInfo, "snapshot not sorted by service (%v)", snap)
-	assert.True(t, snap[1].Service == noderec.ServiceOllama, "snapshot not sorted by service (%v)", snap)
+	assert.Equal(t, noderec.ServiceNodeInfo, snap[0].Service, "snapshot not sorted by service (%v)", snap)
+	assert.Equal(t, noderec.ServiceOllama, snap[1].Service, "snapshot not sorted by service (%v)", snap)
 
 	assert.True(t, c.Unregister(noderec.ServiceNodeInfo), "unregister existing should be true")
 	assert.False(t, c.Unregister(noderec.ServiceNodeInfo), "unregister absent should be false")
@@ -131,9 +131,9 @@ func TestDirectoryRemoveAndUnsubscribe(t *testing.T) {
 
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
 	d.Apply(noderec.NotifyNodeRemoved, olNode("a"))
-	assert.Len(t, d.Snapshot(""), 0, "node should be gone after removed")
+	assert.Empty(t, d.Snapshot(""), "node should be gone after removed")
 	// The removal re-pushes an empty snapshot (the node is simply absent).
-	assert.Len(t, sub.last(), 0, "subscriber last snapshot")
+	assert.Empty(t, sub.last(), "subscriber last snapshot")
 
 	// After unsubscribe, no more pushes.
 	before := len(sub.snaps)

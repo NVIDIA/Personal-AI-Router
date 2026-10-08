@@ -72,7 +72,7 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 					_, ok := m.trust.Get(p1.uuid)
 					require.False(t, ok, "a pin survived teardown+stale-restore; want an empty pin set")
 				}
-				require.Len(t, m.snapshotNodes(), 0)
+				require.Empty(t, m.snapshotNodes())
 			},
 		},
 		{

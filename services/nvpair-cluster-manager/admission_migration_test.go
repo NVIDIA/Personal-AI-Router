@@ -23,7 +23,7 @@ func TestLegacyPairingInfoMapsToFirstAdmission(t *testing.T) {
 	require.NoError(t, err)
 	info, _, err := parsePairingInfo(raw)
 	require.NoError(t, err, "parse legacy pairing info")
-	require.True(t, info.AdmissionEpoch == legacyAdmissionEpoch, "legacy admission epoch (%v)", legacyAdmissionEpoch)
+	require.Equal(t, legacyAdmissionEpoch, info.AdmissionEpoch, "legacy admission epoch")
 
 	info.AdmissionEpoch = 0
 	info.V = pairingInfoVersion
@@ -56,7 +56,7 @@ func TestRestartMigratesLegacyPinnedMemberAdmission(t *testing.T) {
 	pin, ok := restarted.trust.Get(peer.identity.NodeUUID)
 	require.True(t, ok, "migrated pin (%v)", pin)
 	require.Equal(t, "cluster-1", pin.ClusterID, "migrated pin (%v)", pin)
-	require.True(t, pin.AdmissionEpoch == legacyAdmissionEpoch, "migrated pin (%v)", pin)
+	require.Equal(t, legacyAdmissionEpoch, pin.AdmissionEpoch, "migrated pin (%v)", pin)
 	hasLocalV2 := false
 	_, selfEpoch := restarted.currentAdmission()
 	for _, end := range pin.Endorsements {
@@ -69,7 +69,7 @@ func TestRestartMigratesLegacyPinnedMemberAdmission(t *testing.T) {
 	member, ok := restarted.memberByNodeID(peer.identity.NodeUUID)
 	require.True(t, ok, "migrated member (%v)", member)
 	require.Equal(t, "cluster-1", member.ClusterID, "migrated member (%v)", member)
-	require.True(t, member.AdmissionEpoch == legacyAdmissionEpoch, "migrated member (%v)", member)
+	require.Equal(t, legacyAdmissionEpoch, member.AdmissionEpoch, "migrated member (%v)", member)
 	proof, err := restarted.newRemovalProof(peer.identity.NodeUUID, member.AdmissionEpoch)
 	require.NoError(t, err, "migrated offline member is not removable")
 	{

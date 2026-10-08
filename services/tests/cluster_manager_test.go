@@ -184,7 +184,7 @@ func TestClusterManagerPairing(t *testing.T) {
 		InviteID string `json:"inviteId"`
 	}
 	require.NoError(t, json.Unmarshal(rcv.Params, &rcvInvite), "decode invite-received")
-	require.True(t, rcvInvite.InviteID == inv.InviteID, "invite-received id")
+	require.Equal(t, inv.InviteID, rcvInvite.InviteID, "invite-received id")
 
 	// B accepts with the PIN -> paired, adopts A's cluster.
 	type invite struct {
@@ -267,7 +267,7 @@ func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
 
 	// A is now clustered (reporting the founded id) and is its own sole member.
 	aAfter := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	require.True(t, aAfter.ClusterID == id.ClusterID, "get-node-id clusterId")
+	require.Equal(t, id.ClusterID, aAfter.ClusterID, "get-node-id clusterId")
 	{
 		got := memberCount(t, a)
 		require.Equal(t, 1, got, "after auto-found node A members")
@@ -280,7 +280,7 @@ func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
 	require.Equal(t, "pending", inv2.State, "second invite-node (%v)", inv2)
 	require.Len(t, inv2.Pin, 6, "second invite-node (%v)", inv2)
 	aFinal := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	require.True(t, aFinal.ClusterID == id.ClusterID, "clusterId changed on a second invite")
+	require.Equal(t, id.ClusterID, aFinal.ClusterID, "clusterId changed on a second invite")
 }
 
 // TestRepeatedInviteSameSenderSupersedesPrior verifies that re-inviting the same
@@ -314,17 +314,17 @@ func TestRepeatedInviteSameSenderSupersedesPrior(t *testing.T) {
 	second := invite()
 	require.Equal(t, "pending", second.State, "second invite (%v)", second)
 	require.Len(t, second.Pin, 6, "second invite (%v)", second)
-	require.True(t, second.InviteID != first.InviteID, "second invite (%v)", second)
+	require.NotEqual(t, first.InviteID, second.InviteID, "second invite (%v)", second)
 
 	canceledMsg := b.waitNotify("cluster:invite-canceled")
 	var canceled inviteResult
 	require.NoError(t, json.Unmarshal(canceledMsg.Params, &canceled), "decode cluster:invite-canceled")
-	require.True(t, canceled.InviteID == first.InviteID, "canceled invite (%v)", canceled)
+	require.Equal(t, first.InviteID, canceled.InviteID, "canceled invite (%v)", canceled)
 	require.Equal(t, "canceled", canceled.State, "canceled invite (%v)", canceled)
 	receivedMsg := b.waitNotify("cluster:invite-received")
 	var received inviteResult
 	require.NoError(t, json.Unmarshal(receivedMsg.Params, &received), "decode second cluster:invite-received")
-	require.True(t, received.InviteID == second.InviteID, "received inviteId")
+	require.Equal(t, second.InviteID, received.InviteID, "received inviteId")
 
 	waitInviteState(t, a, first.InviteID, "declined")
 	waitInviteState(t, b, first.InviteID, "canceled")
@@ -424,14 +424,14 @@ func TestClusterFanout(t *testing.T) {
 	waitMembers(t, c, 3)
 
 	// The key property: B and C trust each other despite never pairing directly.
-	require.True(t, memberUUIDs(t, b)[cInfo.NodeUUID], "B did not transitively learn C")
-	require.True(t, memberUUIDs(t, c)[bInfo.NodeUUID], "C did not transitively learn B")
+	require.Contains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B did not transitively learn C")
+	require.Contains(t, memberUUIDs(t, c), bInfo.NodeUUID, "C did not transitively learn B")
 
 	// Removal fans out: A removes C, and B drops C too (not just A).
 	a.call("nodes:remove", map[string]any{"nodeUuid": cInfo.NodeUUID})
 	waitMembers(t, a, 2)
 	waitMembers(t, b, 2)
-	require.False(t, memberUUIDs(t, b)[cInfo.NodeUUID], "B still trusts C after a cluster-wide removal")
+	require.NotContains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B still trusts C after a cluster-wide removal")
 
 	// The removed node itself must become unclustered (not merely drop the
 	// remover while keeping clusterId + remaining peers — the online-remove
@@ -481,8 +481,8 @@ func TestClusterLeave(t *testing.T) {
 	// A and B drop C and converge back to 2 members.
 	waitMembers(t, a, 2)
 	waitMembers(t, b, 2)
-	require.False(t, memberUUIDs(t, a)[cInfo.NodeUUID], "A still lists C after C left")
-	require.False(t, memberUUIDs(t, b)[cInfo.NodeUUID], "B still lists C after C left")
+	require.NotContains(t, memberUUIDs(t, a), cInfo.NodeUUID, "A still lists C after C left")
+	require.NotContains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B still lists C after C left")
 }
 
 // TestClusterCancelInvite verifies the inviter can abort a pending invite: after
@@ -535,7 +535,7 @@ func TestClusterCancelInvite(t *testing.T) {
 	require.NotNil(t, resp.Error, "respond-to-invite after cancel should be rejected, but succeeded")
 
 	// Neither side ended up paired.
-	require.False(t, memberUUIDs(t, a)[bInfo.NodeUUID], "A paired with B despite canceling the invite")
+	require.NotContains(t, memberUUIDs(t, a), bInfo.NodeUUID, "A paired with B despite canceling the invite")
 	bAfter := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
 	require.Equal(t, "", bAfter.ClusterID, "B joined a cluster despite the cancel")
 	{
@@ -549,7 +549,7 @@ func TestClusterCancelInvite(t *testing.T) {
 	// cancel-invite on an unknown invite → -32001.
 	unk := a.callExpectError("cluster:cancel-invite", map[string]any{"inviteId": "inv-does-not-exist"})
 	require.NotNil(t, unk.Error, "cancel unknown invite:")
-	require.True(t, unk.Error.Code == -32001, "cancel unknown invite:")
+	require.Equal(t, -32001, unk.Error.Code, "cancel unknown invite:")
 }
 
 // TestClusterCancelInviteRace drives the cancel-vs-Completion race directly at
@@ -719,7 +719,7 @@ func TestClusterDeclineInvite(t *testing.T) {
 		"inviteId": inv.InviteID, "accept": true, "pin": inv.Pin,
 	})
 	require.NotNil(t, resp.Error, "respond-to-invite after decline should be rejected, but succeeded")
-	require.False(t, memberUUIDs(t, a)[bInfo.NodeUUID], "A paired with B despite the decline")
+	require.NotContains(t, memberUUIDs(t, a), bInfo.NodeUUID, "A paired with B despite the decline")
 }
 
 // TestClusterInviteExpiresBothSides verifies that when the receiving node never
@@ -780,7 +780,7 @@ func TestClusterInviteExpiresBothSides(t *testing.T) {
 	}))
 	require.Equal(t, "pending", inv2.State, "retry invite-node (%v)", inv2)
 	require.Len(t, inv2.Pin, 6, "retry invite-node (%v)", inv2)
-	require.True(t, inv2.InviteID != inv.InviteID, "retry must mint a fresh inviteId")
+	require.NotEqual(t, inv.InviteID, inv2.InviteID, "retry must mint a fresh inviteId")
 	b.waitNotify("cluster:invite-received")
 }
 
@@ -819,7 +819,7 @@ func TestClusterDeclinePreservesIntentionalSolo(t *testing.T) {
 	waitInviteState(t, a, inv.InviteID, "declined")
 
 	after := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	require.True(t, after.ClusterID == before.ClusterID, "intentional solo cluster changed: before")
+	require.Equal(t, before.ClusterID, after.ClusterID, "intentional solo cluster changed: before")
 	{
 		got := memberCount(t, a)
 		require.Equal(t, 1, got, "A members")
@@ -868,7 +868,7 @@ func TestClusterDeclineKeepsSiblingPendingInvite(t *testing.T) {
 	waitInviteState(t, a, invB.InviteID, "declined")
 
 	mid := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	require.True(t, mid.ClusterID == before.ClusterID, "A left while sibling invite still pending: before")
+	require.Equal(t, before.ClusterID, mid.ClusterID, "A left while sibling invite still pending: before")
 	waitInviteState(t, a, invC.InviteID, "pending")
 
 	// C declines — now no pending outbound remains, so the invite-created cluster leaves.
@@ -939,8 +939,8 @@ func TestClusterWrongPinFailsBothSides(t *testing.T) {
 	waitMembers(t, a, 0)
 
 	// Neither side pinned the other.
-	require.False(t, memberUUIDs(t, a)[bInfo.NodeUUID], "A paired with B despite the wrong pin")
-	require.False(t, memberUUIDs(t, b)[aInfo.NodeUUID], "B paired with A despite the wrong pin")
+	require.NotContains(t, memberUUIDs(t, a), bInfo.NodeUUID, "A paired with B despite the wrong pin")
+	require.NotContains(t, memberUUIDs(t, b), aInfo.NodeUUID, "B paired with A despite the wrong pin")
 }
 
 // TestClusterWrongPinPreservesIntentionalSolo verifies an explicitly created
@@ -980,7 +980,7 @@ func TestClusterWrongPinPreservesIntentionalSolo(t *testing.T) {
 	waitInviteState(t, a, inv.InviteID, "failed")
 
 	after := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	require.True(t, after.ClusterID == before.ClusterID, "intentional solo cluster changed: before")
+	require.Equal(t, before.ClusterID, after.ClusterID, "intentional solo cluster changed: before")
 	{
 		got := memberCount(t, a)
 		require.Equal(t, 1, got, "A members")
@@ -1372,7 +1372,7 @@ func TestClusterInviteTwoPendingThenClustered(t *testing.T) {
 	waitInviteState(t, a, invA.InviteID, "paired")
 
 	bAfterA := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	require.True(t, bAfterA.ClusterID == aClu.ClusterID, "B cluster after accepting A")
+	require.Equal(t, aClu.ClusterID, bAfterA.ClusterID, "B cluster after accepting A")
 
 	// Now B accepts C's still-pending invite. B is already clustered, so the
 	// accept must be rejected -- the Completion Exchange must not run.
@@ -1383,8 +1383,8 @@ func TestClusterInviteTwoPendingThenClustered(t *testing.T) {
 
 	// B must still be in A's cluster, not C's, and must not trust C.
 	bAfterC := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	require.True(t, bAfterC.ClusterID == aClu.ClusterID, "B cluster after rejecting C")
-	require.False(t, memberUUIDs(t, b)[cInfo.NodeUUID], "B lists C as a member after a rejected accept")
+	require.Equal(t, aClu.ClusterID, bAfterC.ClusterID, "B cluster after rejecting C")
+	require.NotContains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B lists C as a member after a rejected accept")
 }
 
 // TestClusterInviteRejectedDissolvesAutoFoundedSolo covers the interaction

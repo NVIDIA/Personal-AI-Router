@@ -40,7 +40,7 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 			for i := 0; i < rounds; i++ {
 				{
 					got, want := ex.probe(context.Background(), probe, 1), i%2 == 0
-					require.True(t, got == want, "poll (%v, %v, %v)", i, got, want)
+					require.Equal(t, want, got, "poll (%v)", i)
 				}
 			}
 			{

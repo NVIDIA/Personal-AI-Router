@@ -77,7 +77,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	require.Equal(t, "1", string(*resp1.ID), "expected response id=1")
 	got1 := waitForUpdate(t, out, 5*time.Second)
 	require.Len(t, got1, 1, "first update payload")
-	require.True(t, got1[0].ID == upstreamID, "first update payload (%v)", got1)
+	require.Equal(t, upstreamID, got1[0].ID, "first update payload (%v)", got1)
 	require.Equal(t, "first emit", got1[0].Message, "first update payload (%v)", got1)
 
 	// 2. errors:report (NOTIFICATION form) with an OLDER timestamp.
@@ -103,7 +103,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	var initial []errors.ServiceError
 	require.NoError(t, json.Unmarshal(resp4.Result, &initial), "decode get-initial result")
 	require.Len(t, initial, 1, "get-initial")
-	require.True(t, initial[0].ID == upstreamID, "get-initial (%v)", initial)
+	require.Equal(t, upstreamID, initial[0].ID, "get-initial (%v)", initial)
 	require.Equal(t, "second emit", initial[0].Message, "get-initial (%v)", initial)
 
 	// 5. errors:clear (REQUEST form). Response + update with empty list.
@@ -116,7 +116,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	resp5 := waitForResponseOrTimeout(t, out, 5*time.Second)
 	require.Equal(t, "3", string(*resp5.ID), "expected response id=3")
 	got5 := waitForUpdate(t, out, 5*time.Second)
-	require.Len(t, got5, 0, "post-clear update")
+	require.Empty(t, got5, "post-clear update")
 
 	// 6. Re-emit the same id with a NEWER timestamp than the cleared
 	//    one. Ack-until-reemit: the user's clear is in-memory only,

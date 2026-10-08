@@ -73,7 +73,7 @@ func TestNodeInfoSilenceWhenNothingChanges(t *testing.T) {
 	for range 5 {
 		d.noteNodeInfo("peer-uuid", "10.0.0.5:14300", true)
 	}
-	require.Equal(t, 0, logs.Len(), "a healthy peer must log nothing")
+	require.Empty(t, logs.Bytes(), "a healthy peer must log nothing")
 }
 
 // TestNodeInfoConnectGivesUpBeforeTheRequestBudget covers the split itself. The

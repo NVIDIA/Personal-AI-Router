@@ -76,6 +76,6 @@ func TestRefreshSelfMemberIdentityOnRestart(t *testing.T) {
 
 	self, ok := m.memberByNodeID(m.identity.NodeUUID)
 	require.True(t, ok, "self member missing after refresh")
-	require.True(t, self.ID == m.identity.NodeID, "self not re-stamped: got id")
-	require.True(t, self.Name == m.identity.Name, "self not re-stamped: got id")
+	require.Equal(t, m.identity.NodeID, self.ID, "self not re-stamped: got id")
+	require.Equal(t, m.identity.Name, self.Name, "self not re-stamped: got id")
 }

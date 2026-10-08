@@ -54,8 +54,8 @@ func TestProxyIdentities(t *testing.T) {
 func TestFacadeAndEnginePortsDiffer(t *testing.T) {
 	for _, e := range All() {
 		assert.NotEqual(t, e.EnginePortBase, e.FacadePort)
-		assert.Greater(t, e.FacadePort, 0)
-		assert.Greater(t, e.EnginePortBase, 0)
+		assert.Positive(t, e.FacadePort)
+		assert.Positive(t, e.EnginePortBase)
 	}
 }
 
@@ -85,10 +85,10 @@ func TestIdentitiesAreUnique(t *testing.T) {
 		assert.NotEqual(t, "", e.DisplayName)
 		assert.NotEqual(t, "", e.PortFile)
 		assert.NotEqual(t, "", e.DiscoveryService)
-		assert.False(t, names[e.Name], "duplicate Name")
-		assert.False(t, components[e.ComponentName()], "duplicate ComponentName")
-		assert.False(t, services[e.DiscoveryService], "duplicate DiscoveryService")
-		assert.False(t, facades[e.FacadePort], "duplicate FacadePort")
+		assert.NotContains(t, names, e.Name, "duplicate Name")
+		assert.NotContains(t, components, e.ComponentName(), "duplicate ComponentName")
+		assert.NotContains(t, services, e.DiscoveryService, "duplicate DiscoveryService")
+		assert.NotContains(t, facades, e.FacadePort, "duplicate FacadePort")
 		names[e.Name] = true
 		components[e.ComponentName()] = true
 		services[e.DiscoveryService] = true

@@ -75,10 +75,7 @@ func TestReconcilePeerUpsertsAndEvicts(t *testing.T) {
 		localErr("b:two", "node-b", 1000),
 	})
 	require.True(t, changed, "first reconcile should report changed=true")
-	{
-		n := len(m.snapshot())
-		assert.Equal(t, 3, n, "after first reconcile snapshot len")
-	}
+	assert.Len(t, m.snapshot(), 3, "after first reconcile snapshot")
 
 	// Second push: b:one cleared (absent), b:two refreshed, b:three new.
 	changed = m.reconcilePeer("node-b", []ServiceError{
@@ -91,10 +88,10 @@ func TestReconcilePeerUpsertsAndEvicts(t *testing.T) {
 	for _, e := range m.snapshot() {
 		ids[e.NodeID+"/"+e.ID] = true
 	}
-	assert.False(t, ids["node-b/b:one"], "b:one should have been evicted (absent from authoritative push)")
-	assert.True(t, ids["node-b/b:two"], "expected b:two and b:three present (%v)", ids)
-	assert.True(t, ids["node-b/b:three"], "expected b:two and b:three present (%v)", ids)
-	assert.True(t, ids["node-a/a:keep"], "local entry a:keep must survive peer reconcile")
+	assert.NotContains(t, ids, "node-b/b:one", "b:one should have been evicted (absent from authoritative push)")
+	assert.Contains(t, ids, "node-b/b:two", "expected b:two and b:three present")
+	assert.Contains(t, ids, "node-b/b:three", "expected b:two and b:three present")
+	assert.Contains(t, ids, "node-a/a:keep", "local entry a:keep must survive peer reconcile")
 }
 
 // TestReconcilePeerStampsOrigin: a peer cannot inject an entry
@@ -116,10 +113,7 @@ func TestReconcilePeerRejectsSelf(t *testing.T) {
 	m := managerForNode("node-a")
 	m.upsert(localErr("a:one", "node-a", 1000))
 	assert.False(t, m.reconcilePeer("node-a", nil), "reconcile of own nodeId must be a no-op")
-	{
-		n := len(m.snapshot())
-		assert.Equal(t, 1, n, "self-reconcile altered store: len")
-	}
+	assert.Len(t, m.snapshot(), 1, "self-reconcile altered store")
 }
 
 // TestEvictNodeRemovesPeerEntries: when a peer leaves the network all
@@ -259,5 +253,5 @@ func TestUnclusteredNodeKeepsNoPeers(t *testing.T) {
 
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
-	require.Len(t, ps.peers, 0, "unclustered node retained")
+	require.Empty(t, ps.peers, "unclustered node retained")
 }

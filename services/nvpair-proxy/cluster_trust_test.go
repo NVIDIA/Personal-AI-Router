@@ -37,7 +37,7 @@ func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
 	// Pre-join: no identity, no pins, so the peer is not a routable target.
 	{
 		got := p.soleFacade().resolveCandidates("")
-		require.Len(t, got, 0, "pre-join candidates")
+		require.Empty(t, got, "pre-join candidates")
 	}
 
 	// The cluster-manager lands the join on disk while the proxy is running. No
@@ -47,7 +47,7 @@ func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
 	cands := p.soleFacade().resolveCandidates("")
 	require.Len(t, cands, 1, "post-join candidates")
 	require.Equal(t, "peer-a", cands[0].id, "post-join candidate (%v)", peerUUID)
-	require.True(t, cands[0].peerUUID == peerUUID, "post-join candidate (%v)", peerUUID)
+	require.Equal(t, peerUUID, cands[0].peerUUID, "post-join candidate (%v)", peerUUID)
 	require.Equal(t, "https", cands[0].url.Scheme, "post-join candidate (%v)", peerUUID)
 
 	// Removing the peer from the cluster retires it as a target just as promptly,
@@ -55,7 +55,7 @@ func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
 	clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
 	{
 		got := p.soleFacade().resolveCandidates("")
-		require.Len(t, got, 0, "post-removal candidates")
+		require.Empty(t, got, "post-removal candidates")
 	}
 }
 
@@ -79,6 +79,6 @@ func TestResolveCandidatesRejectsUnpinnedClusteredPeer(t *testing.T) {
 
 	{
 		got := p.soleFacade().resolveCandidates("")
-		require.Len(t, got, 0, "candidates")
+		require.Empty(t, got, "candidates")
 	}
 }

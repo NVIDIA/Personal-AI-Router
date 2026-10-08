@@ -81,6 +81,6 @@ func FuzzLaunchTextRoundTrip(f *testing.F) {
 		require.Equal(t, tokens, again, "round trip changed tokens (%v, %v, %v)", tokens, again, err)
 		stable, err := formatLaunchText(again)
 		require.NoError(t, err, "normalization is not stable")
-		require.True(t, stable == formatted, "normalization is not stable (%v)", err)
+		require.Equal(t, formatted, stable, "normalization is not stable")
 	})
 }

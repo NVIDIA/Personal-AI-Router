@@ -202,7 +202,7 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 	p.Settings.LaunchText += " --parallel 2"
 	receipt, err = h.b.applyEngineSettings(context.Background(), p, "")
 	require.NoError(t, err)
-	require.True(t, receipt.Revision == p.ExpectedRevision+1, "receipt (%v)", receipt)
+	require.Equal(t, p.ExpectedRevision+1, receipt.Revision, "receipt (%v)", receipt)
 	require.Equal(t, "succeeded", receipt.Phase, "receipt (%v)", receipt)
 	require.Equal(t, int32(1), h.applies.Load(), "receipt (%v)", receipt)
 	{
@@ -228,7 +228,7 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 	require.NoError(t, err, "failure receipt (%v, %v)", receipt, err)
 	require.Equal(t, "failed", receipt.Phase, "failure receipt (%v, %v)", receipt, err)
 	s := h.b.engineSettings["ollama"].Snapshot
-	require.True(t, s.Settings == p.Settings, "untruthful failed snapshot (%v)", s)
+	require.Equal(t, p.Settings, s.Settings, "untruthful failed snapshot (%v)", s)
 	require.False(t, s.Running, "untruthful failed snapshot (%v)", s)
 	require.Less(t, s.AppliedRevision, s.Revision, "untruthful failed snapshot (%v)", s)
 	require.NotEqual(t, "", s.Error, "untruthful failed snapshot (%v)", s)
@@ -272,10 +272,10 @@ func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
 			registered := h.b.regCache.Snapshot()
 			if tc.advertised {
 				require.Len(t, registered, 1, "running engine lost registration")
-				require.True(t, registered[0].Service == noderec.ServiceOllama, "running engine lost registration (%v)", registered)
-				require.True(t, registered[0].Port == oldPort, "running engine lost registration (%v)", registered)
+				require.Equal(t, noderec.ServiceOllama, registered[0].Service, "running engine lost registration (%v)", registered)
+				require.Equal(t, oldPort, registered[0].Port, "running engine lost registration (%v)", registered)
 			} else {
-				require.Len(t, registered, 0, "unavailable service advertised")
+				require.Empty(t, registered, "unavailable service advertised")
 			}
 		})
 	}
@@ -382,24 +382,24 @@ func TestSettingsPortValidationIncludesStoppedEnginesAndAliases(t *testing.T) {
 	p.Settings.ProxyPort = p.Settings.ServerPort
 	preview, err := h.b.previewEngineSettings(context.Background(), p, "")
 	require.NoError(t, err)
-	require.NotEqual(t, 0, len(preview.Errors), "equal ports accepted")
+	require.NotEmpty(t, preview.Errors, "equal ports accepted")
 	p = h.request(t)
 	p.Settings.ServerPort = engineControlPort
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
 	require.NoError(t, err, "reserved control port accepted (%v, %v)", preview, err)
-	require.NotEqual(t, 0, len(preview.Errors), "reserved control port accepted (%v, %v)", preview, err)
+	require.NotEmpty(t, preview.Errors, "reserved control port accepted (%v, %v)", preview, err)
 	p = h.request(t)
 	h.otherEnginePort.Store(int32(p.Settings.ServerPort))
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
 	require.NoError(t, err, "stopped engine reservation ignored (%v, %v)", preview, err)
-	require.NotEqual(t, 0, len(preview.Errors), "stopped engine reservation ignored (%v, %v)", preview, err)
+	require.NotEmpty(t, preview.Errors, "stopped engine reservation ignored (%v, %v)", preview, err)
 	h.otherEnginePort.Store(0)
 	h.b.ollamaHostAliasMu.Lock()
 	h.b.ollamaHostAlias.Port = p.Settings.ProxyPort
 	h.b.ollamaHostAliasMu.Unlock()
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
 	require.NoError(t, err, "proxy alias reservation ignored (%v, %v)", preview, err)
-	require.NotEqual(t, 0, len(preview.Errors), "proxy alias reservation ignored (%v, %v)", preview, err)
+	require.NotEmpty(t, preview.Errors, "proxy alias reservation ignored (%v, %v)", preview, err)
 }
 
 func TestSettingsMigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {

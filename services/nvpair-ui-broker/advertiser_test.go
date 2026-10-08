@@ -50,8 +50,8 @@ func TestRunningEnginePort(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			port, ok := runningEnginePort([]byte(tc.raw))
-			require.True(t, port == tc.port, "runningEnginePort (%v, %v)", port, ok)
-			require.True(t, ok == tc.ok, "runningEnginePort (%v, %v)", port, ok)
+			require.Equal(t, tc.port, port, "runningEnginePort (%v, %v)", port, ok)
+			require.Equal(t, tc.ok, ok, "runningEnginePort (%v, %v)", port, ok)
 		})
 	}
 }
@@ -88,7 +88,7 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 	b.reconcileAdvertiseLMStudio(nil)
 	{
 		got := b.regCache.Snapshot()
-		require.Len(t, got, 0, "LM Studio proxy was advertised as an engine")
+		require.Empty(t, got, "LM Studio proxy was advertised as an engine")
 	}
 	select {
 	case got := <-localBackend:
@@ -114,7 +114,7 @@ func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 
 	{
 		got := int(b.lmstudioState().backendPort.Load())
-		require.True(t, got == managedLMStudioBackendStart, "backend cache (%v, %v)", got, managedLMStudioBackendStart)
+		require.Equal(t, managedLMStudioBackendStart, got, "backend cache (%v, %v)", got, managedLMStudioBackendStart)
 	}
 }
 

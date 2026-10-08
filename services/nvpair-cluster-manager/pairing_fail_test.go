@@ -55,8 +55,8 @@ func TestHandlePairingFailedReasonGuard(t *testing.T) {
 
 			inv, ok := m.getInvite("inv-fail")
 			require.True(t, ok, "invite missing after fail signal; want a failed record")
-			require.True(t, inv.State == inviteStateFailed, "invite state (%v)", inviteStateFailed)
-			require.True(t, inv.Reason == tc.wantReason, "invite reason")
+			require.Equal(t, inviteStateFailed, inv.State, "invite state")
+			require.Equal(t, tc.wantReason, inv.Reason, "invite reason")
 			// The EAP session is always torn down (PIN invalidated), whatever
 			// the reason.
 			{
@@ -86,8 +86,8 @@ func TestHandlePairingFailedIdempotent(t *testing.T) {
 
 	inv, ok := m.getInvite("inv-dup")
 	require.True(t, ok, "after first fail: invite (%v)", inv)
-	require.True(t, inv.State == inviteStateFailed, "after first fail: invite (%v)", inv)
-	require.True(t, inv.Reason == reasonIncorrectPIN, "after first fail: invite (%v)", inv)
+	require.Equal(t, inviteStateFailed, inv.State, "after first fail: invite (%v)", inv)
+	require.Equal(t, reasonIncorrectPIN, inv.Reason, "after first fail: invite (%v)", inv)
 
 	// Redeliver with a different reason; the session is gone so it must no-op.
 	m.handlePairingFailed(httptest.NewRecorder(), &pairingEnvelope{
@@ -96,8 +96,8 @@ func TestHandlePairingFailedIdempotent(t *testing.T) {
 
 	inv, ok = m.getInvite("inv-dup")
 	require.True(t, ok, "after duplicate fail: invite (%v)", inv)
-	require.True(t, inv.State == inviteStateFailed, "after duplicate fail: invite (%v)", inv)
-	require.True(t, inv.Reason == reasonIncorrectPIN, "after duplicate fail: invite (%v)", inv)
+	require.Equal(t, inviteStateFailed, inv.State, "after duplicate fail: invite (%v)", inv)
+	require.Equal(t, reasonIncorrectPIN, inv.Reason, "after duplicate fail: invite (%v)", inv)
 }
 
 // TestHandlePairingFailedNonInviterIgnored verifies the guard on session role:
@@ -131,7 +131,7 @@ func TestHandlePairingFailedNonInviterIgnored(t *testing.T) {
 
 	inv, ok := m.getInvite("inv-inbound")
 	require.True(t, ok, "inbound invite state (%v)", inv)
-	require.True(t, inv.State == inviteStatePending, "inbound invite state (%v)", inv)
+	require.Equal(t, inviteStatePending, inv.State, "inbound invite state (%v)", inv)
 	{
 		_, ok := m.getSession("inv-inbound")
 		require.True(t, ok, "joiner session wrongly evicted by an inviter fail signal")

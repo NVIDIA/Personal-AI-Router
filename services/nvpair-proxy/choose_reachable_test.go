@@ -96,7 +96,7 @@ func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
 	{
 		u := p.soleFacade().targetURL(n)
 		require.NotNil(t, u, "first selection")
-		require.True(t, u.Host == net.JoinHostPort("192.0.2.10", "11434"), "first selection (%v)", u)
+		require.Equal(t, net.JoinHostPort("192.0.2.10", "11434"), u.Host, "first selection (%v)", u)
 	}
 	waitForTarget(t, p, n, net.JoinHostPort(reachable, "11434"))
 	require.Equal(t, int32(2), dials.Load(), "pinned peer triggered")
@@ -161,9 +161,7 @@ func TestNodeCandidatesKeepsPublishedOrder(t *testing.T) {
 		net.JoinHostPort("10.172.55.129", "11434"),
 		net.JoinHostPort("192.168.240.1", "11434"),
 	}
-	require.Len(t, got, len(want), "nodeCandidates (%v, %v)", got, want)
-	require.True(t, got[0] == want[0], "nodeCandidates (%v, %v)", got, want)
-	require.True(t, got[1] == want[1], "nodeCandidates (%v, %v)", got, want)
+	require.Equal(t, want, got, "nodeCandidates")
 }
 
 // fakeNetwork is a chooser dialer whose accepting address can be moved, so a test
@@ -229,7 +227,7 @@ func assertReprobed(t *testing.T, p *Proxy, n Node, fake *fakeNetwork, replaceme
 	fake.accept(replacement)
 
 	waitForTarget(t, p, n, net.JoinHostPort(replacement, strconv.Itoa(n.Port)))
-	require.True(t, fake.dials.Load() != probesBefore, "selection probed nothing: the failed address is still cached")
+	require.NotEqual(t, probesBefore, fake.dials.Load(), "selection probed nothing: the failed address is still cached")
 }
 
 // TestUpstreamTransportFailureReprobesTheNextSelection: a dial failure against a
@@ -243,7 +241,7 @@ func TestUpstreamTransportFailureReprobesTheNextSelection(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama"}`)))
-	require.True(t, rec.Code == http.StatusBadGateway, "status")
+	require.Equal(t, http.StatusBadGateway, rec.Code, "status")
 
 	assertReprobed(t, p, n, fake, replacement)
 }
@@ -257,7 +255,7 @@ func TestModelListTransportFailureReprobesTheNextSelection(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tags", nil))
-	require.True(t, rec.Code == http.StatusServiceUnavailable, "status")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "status")
 
 	assertReprobed(t, p, n, fake, replacement)
 }

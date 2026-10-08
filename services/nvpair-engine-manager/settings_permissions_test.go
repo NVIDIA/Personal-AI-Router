@@ -27,7 +27,7 @@ func TestSettingsOverrideRestrictsExistingPermissions(t *testing.T) {
 		require.NoError(t, err)
 		{
 			got := info.Mode().Perm()
-			require.True(t, got == want, " (%v, %v, %v)", path, got, want)
+			require.Equal(t, want, got, "permissions for %s", path)
 		}
 	}
 }

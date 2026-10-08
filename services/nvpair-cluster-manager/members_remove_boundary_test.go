@@ -88,11 +88,11 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "test expectation failed", "remove handler did not finish")
 	}
-	require.True(t, rr.Code == http.StatusConflict, "status")
+	require.Equal(t, http.StatusConflict, rr.Code, "status")
 	{
 		cid, epoch := victim.currentAdmission()
 		require.Equal(t, "cluster-1", cid, "stale request cleared new admission (%v, %v)", cid, epoch)
-		require.True(t, epoch == newEpoch, "stale request cleared new admission (%v, %v)", cid, epoch)
+		require.Equal(t, newEpoch, epoch, "stale request cleared new admission (%v, %v)", cid, epoch)
 	}
 	{
 		_, ok := victim.trust.Get(remover.identity.NodeUUID)
@@ -109,6 +109,6 @@ func TestMembersRemoveCurrentAdmissionSucceeds(t *testing.T) {
 	require.NoError(t, err)
 	rr := httptest.NewRecorder()
 	victim.handleMembersRemove(rr, removeRequest(t, remover, proof, nil))
-	require.True(t, rr.Code == http.StatusOK, "status")
+	require.Equal(t, http.StatusOK, rr.Code, "status")
 	assertFullyUnclustered(t, victim)
 }

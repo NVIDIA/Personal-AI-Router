@@ -51,7 +51,7 @@ func TestInProcessDiscovery(t *testing.T) {
 
 	select {
 	case entry := <-found:
-		assert.True(t, entry.Port == port, "port (%v)", port)
+		assert.Equal(t, port, entry.Port, "port (%v)", port)
 		assert.True(t, len(entry.Text) > 0 && entry.Text[0] == "env=test", "txt: %v", entry.Text)
 		assert.True(t, hasAddress(entry), "no addresses resolved")
 		t.Logf("OK: %s @ %s:%d addrs=%v txt=%v",
@@ -97,9 +97,9 @@ func TestInProcessMultipleInstances(t *testing.T) {
 	<-ctx.Done()
 	<-done
 
-	assert.True(t, foundSet["node-alpha"], "registered instance must be discovered")
-	assert.True(t, foundSet["node-beta"], "registered instance must be discovered")
-	assert.True(t, foundSet["node-gamma"], "registered instance must be discovered")
+	assert.Contains(t, foundSet, "node-alpha", "registered instance must be discovered")
+	assert.Contains(t, foundSet, "node-beta", "registered instance must be discovered")
+	assert.Contains(t, foundSet, "node-gamma", "registered instance must be discovered")
 	t.Logf("OK: discovered %d/%d instances", len(foundSet), len(instances))
 }
 

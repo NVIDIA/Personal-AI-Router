@@ -232,7 +232,7 @@ func TestHandleHTTP_RetriesTheOnlyOwner(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusOK, "status")
+		require.Equal(t, http.StatusOK, rec.Code, "status")
 		{
 			got := hits.Load()
 			require.Equal(t, int32(3), got, "upstream saw")
@@ -262,12 +262,12 @@ func TestHandleHTTP_StopsAtDispatchBudget(t *testing.T) {
 
 		{
 			got := hits()
-			require.True(t, got == maxDispatchAttempts, "upstream saw (%v, %v)", got, maxDispatchAttempts)
+			require.Equal(t, maxDispatchAttempts, got, "upstream saw (%v, %v)", got, maxDispatchAttempts)
 		}
-		require.True(t, rec.Code == http.StatusBadGateway, "status")
+		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
 		{
 			got := rec.Body.String()
-			require.True(t, got == upstreamBody, "body (%v, %v)", got, upstreamBody)
+			require.Equal(t, upstreamBody, got, "body (%v, %v)", got, upstreamBody)
 		}
 	})
 }
@@ -293,7 +293,7 @@ func TestHandleHTTP_NonInferenceIsNotRetriedBeyondItsCandidates(t *testing.T) {
 			got := hits()
 			require.Equal(t, 1, got, "upstream saw")
 		}
-		require.True(t, rec.Code == http.StatusInternalServerError, "status")
+		require.Equal(t, http.StatusInternalServerError, rec.Code, "status")
 	})
 }
 
@@ -330,7 +330,7 @@ func TestHandleHTTP_ReservationReleasedBetweenAttempts(t *testing.T) {
 
 	{
 		got := firstHits() + secondHits()
-		require.True(t, got == maxDispatchAttempts, "dispatches (%v, %v)", got, maxDispatchAttempts)
+		require.Equal(t, maxDispatchAttempts, got, "dispatches (%v, %v)", got, maxDispatchAttempts)
 	}
 	require.NotEqual(t, 0, firstHits(), "dispatches = broken-a")
 	require.NotEqual(t, 0, secondHits(), "dispatches = broken-a")
@@ -388,13 +388,13 @@ func TestHandleHTTP_WaitsForAnOwnerWithoutSpendingAttempts(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	require.True(t, rec.Code == http.StatusServiceUnavailable, "status")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "status")
 	// The distinguishing evidence: the budget was never spent, so the reason is
 	// the missing owner rather than exhausted dispatches.
 	const want = "no node advertising the requested model became available before the retry deadline"
 	{
 		got := decodeJSONBody(t, rec.Body.String())
-		require.True(t, got["error"] == want, "body error (%v)", want)
+		require.Equal(t, want, got["error"], "body error (%v)", want)
 	}
 	// It waited rather than giving up at once, which is the point of the wait.
 	require.GreaterOrEqual(t, elapsed, jobDeadline/2, "returned after (%v, %v)", elapsed, jobDeadline)
@@ -428,11 +428,11 @@ func TestHandleHTTP_DeadlineWithAnOwnerPresentSaysSo(t *testing.T) {
 		require.NotEqual(t, 0, got, "upstream saw")
 		require.Less(t, got, maxDispatchAttempts, "upstream saw")
 	}
-	require.True(t, rec.Code == http.StatusServiceUnavailable, "status")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "status")
 	const want = "the retry deadline passed while dispatch attempts were still failing"
 	{
 		got := decodeJSONBody(t, rec.Body.String())
-		require.True(t, got["error"] == want, "body error (%v)", want)
+		require.Equal(t, want, got["error"], "body error (%v)", want)
 	}
 }
 
@@ -499,7 +499,7 @@ func TestHandleHTTP_TargetLeavingDiscoveryAbortsAttempt(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.LessOrEqual(t, elapsed, 10*time.Second, "took")
-	require.True(t, resp.Code == http.StatusOK, "status")
+	require.Equal(t, http.StatusOK, resp.Code, "status")
 	require.Contains(t, resp.Body.String(), `"done":true`, "body came from the wrong node")
 	require.True(t, rec.has(`"state":"completed"`), "the job must complete: aborting an attempt is not the client disconnecting")
 	require.False(t, rec.has(`"state":"cancelled"`), "a retarget was misreported as cancelled: the attempt cancel was mistaken for the client leaving")

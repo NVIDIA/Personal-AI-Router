@@ -34,7 +34,7 @@ func TestLuidKey(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := luidKey(c.low, c.high)
-			require.True(t, got == c.want, "luidKey (%v)", got)
+			require.Equal(t, c.want, got, "luidKey (%v)", got)
 		})
 	}
 }
@@ -49,7 +49,7 @@ func TestPDHFmtCounterValueSize(t *testing.T) {
 	const expected = 16
 	{
 		got := unsafe.Sizeof(pdhFmtCounterValue{})
-		require.True(t, got == expected, "pdhFmtCounterValue size (%v, %v)", got, expected)
+		require.Equal(t, uintptr(expected), got, "pdhFmtCounterValue size")
 	}
 }
 
@@ -63,7 +63,7 @@ func TestPDHFmtCounterValueItemSize(t *testing.T) {
 	const expected = 24
 	{
 		got := unsafe.Sizeof(pdhFmtCounterValueItemW{})
-		require.True(t, got == expected, "pdhFmtCounterValueItemW size (%v, %v)", got, expected)
+		require.Equal(t, uintptr(expected), got, "pdhFmtCounterValueItemW size")
 	}
 }
 
@@ -78,6 +78,6 @@ func TestMemoryStatusExSize(t *testing.T) {
 	const expected = 64
 	{
 		got := unsafe.Sizeof(memoryStatusEx{})
-		require.True(t, got == expected, "memoryStatusEx size (%v, %v)", got, expected)
+		require.Equal(t, uintptr(expected), got, "memoryStatusEx size")
 	}
 }

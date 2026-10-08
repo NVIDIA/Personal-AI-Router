@@ -242,7 +242,7 @@ func TestStatusCapture_WriteDeadline(t *testing.T) {
 			_, err := sc.Write([]byte("tokens"))
 			require.NoError(t, err, "Write returned error")
 		}
-		require.Len(t, d.deadlines, 0, "SetWriteDeadline called")
+		require.Empty(t, d.deadlines, "SetWriteDeadline called")
 	})
 }
 

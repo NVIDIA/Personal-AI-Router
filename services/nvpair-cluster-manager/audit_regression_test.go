@@ -106,7 +106,7 @@ func TestTrustAndMembershipSnapshotsAreDeepCopies(t *testing.T) {
 	memberAgain, _ := m.memberByNodeID(peer.identity.NodeUUID)
 	require.Equal(t, uint64(1), pinAgain.AdmissionEpoch, "snapshot mutation escaped into internal state")
 	require.Equal(t, uint64(1), memberAgain.AdmissionEpoch, "snapshot mutation escaped into internal state")
-	require.True(t, *memberAgain.JoinedAt == joined, "snapshot mutation escaped into internal state")
+	require.Equal(t, joined, *memberAgain.JoinedAt, "snapshot mutation escaped into internal state")
 
 	to, code := "peer", "123456"
 	inv := &Invite{InviteID: "inv-copy", ToNodeID: &to, Pin: &code, State: inviteStatePending}
@@ -155,7 +155,7 @@ func TestRestartFinishesInterruptedTeardownAndRejectsStaleRestore(t *testing.T) 
 		_, ok := restarted.trust.Get(peer.identity.NodeUUID)
 		require.False(t, ok, "restart left a pin from interrupted teardown")
 	}
-	require.Len(t, restarted.snapshotNodes(), 0, "restart left membership from interrupted teardown")
+	require.Empty(t, restarted.snapshotNodes(), "restart left membership from interrupted teardown")
 	staleID := "cluster-1"
 	restarted.handleSetIdentity(&Message{Params: mustJSON(t, setIdentityParams{ClusterID: &staleID})})
 	{

@@ -118,10 +118,7 @@ func mgrWith(rw io.ReadWriter, nodes []string, wls ...workload) *Manager {
 
 func assertStrs(t *testing.T, got, want []string) {
 	t.Helper()
-	require.Len(t, got, len(want), "order (%v, %v)", got, want)
-	for i := range want {
-		require.Equal(t, want[i], got[i], "order (%v, %v)", got, want)
-	}
+	require.Equal(t, want, got, "order")
 }
 
 // TestApplyNodesChanged_KeysByHostUUID: the node universe keys on the stable
@@ -135,13 +132,10 @@ func TestApplyNodesChanged_KeysByHostUUID(t *testing.T) {
 		{"id":"host-b","hostUuid":"uuid-b"}
 	]`))
 	m.mu.Lock()
-	_, a := m.nodes["uuid-a"]
-	_, b := m.nodes["uuid-b"]
-	_, byName := m.nodes["host-a"]
+	assert.Contains(t, m.nodes, "uuid-a", "node universe should key by hostUuid")
+	assert.Contains(t, m.nodes, "uuid-b", "node universe should key by hostUuid")
+	assert.NotContains(t, m.nodes, "host-a", "must not key by hostname")
 	m.mu.Unlock()
-	require.True(t, a, "node universe should key by hostUuid")
-	require.True(t, b, "node universe should key by hostUuid")
-	require.False(t, byName, "must not key by hostname")
 
 	// A workload scheduledOn the UUID counts against that node — proving the
 	// scheduledOn value the proxy stamps (a UUID) matches the universe key.
@@ -374,7 +368,7 @@ func TestApplyRemove_DropsEveryEngineForID(t *testing.T) {
 	m.applyUpsert(upsertJSON(t, workload{ID: "1", Engine: "ollama", RunID: "r-oll", State: "running", OriginatedFrom: "x", ScheduledOn: "a"}))
 	m.applyUpsert(upsertJSON(t, workload{ID: "1", Engine: "lmstudio", RunID: "r-lms", State: "running", OriginatedFrom: "x", ScheduledOn: "b"}))
 	assert.True(t, m.applyRemove(removeJSON(t, "1", "x")), "removing pending work should report a load change")
-	require.Len(t, m.catalog, 0, "catalog len")
+	require.Empty(t, m.catalog, "catalog len")
 }
 
 func TestApplyUpsert_ActiveOnlyAndMeaningfulChanges(t *testing.T) {
@@ -393,7 +387,7 @@ func TestApplyUpsert_ActiveOnlyAndMeaningfulChanges(t *testing.T) {
 	assert.True(t, m.applyUpsert(upsertJSON(t, base)), "failover re-point should change node-wide load")
 	base.State = "completed"
 	assert.True(t, m.applyUpsert(upsertJSON(t, base)), "terminal transition should remove pending load")
-	require.Len(t, m.catalog, 0, "terminal workload retained in active catalog")
+	require.Empty(t, m.catalog, "terminal workload retained in active catalog")
 	assert.False(t, m.applyUpsert(upsertJSON(t, base)), "duplicate terminal should be a no-op")
 }
 
@@ -433,7 +427,7 @@ func TestHandleMessage_RebalancesImmediatelyAcrossEngines(t *testing.T) {
 		require.Len(t, got, 3, " (%v)", engine)
 		assertStrs(t, got[2], []string{"a", "b"})
 	}
-	require.Len(t, m.catalog, 0, "terminal event left")
+	require.Empty(t, m.catalog, "terminal event left")
 }
 
 func TestHandleMessage_RebalancesOnFailoverRepoint(t *testing.T) {
@@ -523,8 +517,8 @@ func TestFeedbackBurstBalancesPastDepthThree(t *testing.T) {
 			maxDepth = depth
 		}
 	}
-	assert.True(t, minDepth > 3, "simulation never crossed proposed threshold: depths (%v)", depths)
-	assert.True(t, maxDepth-minDepth <= 1, "50 mixed-engine assignments are imbalanced: depths (%v)", depths)
+	assert.Greater(t, minDepth, 3, "simulation never crossed proposed threshold: depths (%v)", depths)
+	assert.LessOrEqual(t, maxDepth-minDepth, 1, "50 mixed-engine assignments are imbalanced: depths (%v)", depths)
 }
 
 // TestEmit_OnChangeOnly: emit on the first snapshot and on changes, silent
@@ -585,7 +579,7 @@ func TestEmit_EmptyUniverseSilent(t *testing.T) {
 	m.recomputeAll(false)
 	{
 		got := rec.orders("ollama")
-		require.Len(t, got, 0, "empty universe should stay silent")
+		require.Empty(t, got, "empty universe should stay silent")
 	}
 }
 

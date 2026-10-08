@@ -60,7 +60,7 @@ func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
 
 			select {
 			case msg := <-relayed:
-				require.True(t, msg.Method == noderec.MethodSetObservedAddresses, "relayed method")
+				require.Equal(t, noderec.MethodSetObservedAddresses, msg.Method, "relayed method")
 				var got noderec.ObservedAddressesParams
 				{
 					err := json.Unmarshal(msg.Params, &got)

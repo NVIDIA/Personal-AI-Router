@@ -37,6 +37,6 @@ func TestResolveHostUUIDFallsBackToClusterRoot(t *testing.T) {
 	want := nodeid.Resolve(base)
 	{
 		got := resolveHostUUID("", filepath.Join(base, "cluster"))
-		require.True(t, got == want, "fallback resolve (%v, %v)", got, want)
+		require.Equal(t, want, got, "fallback resolve")
 	}
 }

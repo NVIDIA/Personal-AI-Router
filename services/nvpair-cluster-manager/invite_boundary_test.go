@@ -26,14 +26,8 @@ func assertFullyUnclustered(t *testing.T, m *Manager) {
 		id, _ := m.clusterIdentity()
 		require.Equal(t, "", id, "clusterId")
 	}
-	{
-		n := len(m.trust.List())
-		require.Equal(t, 0, n, "pins")
-	}
-	{
-		n := len(m.snapshotNodes())
-		require.Equal(t, 0, n, "members")
-	}
+	require.Empty(t, m.trust.List(), "pins")
+	require.Empty(t, m.snapshotNodes(), "members")
 }
 
 // TestInitialExchangeTeardownBoundary is the deterministic control for the
@@ -179,7 +173,7 @@ func TestInitialExchangeTeardownBoundary(t *testing.T) {
 			got, ok := m.getInvite("inv-4")
 			require.True(t, ok, "invite PIN not published for a live pairing (%v)", got)
 			require.NotNil(t, got.Pin, "invite PIN not published for a live pairing (%v)", got)
-			require.True(t, *got.Pin == pin, "invite PIN not published for a live pairing (%v)", got)
+			require.Equal(t, pin, *got.Pin, "invite PIN not published for a live pairing (%v)", got)
 		}
 	})
 }

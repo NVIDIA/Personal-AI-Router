@@ -167,7 +167,7 @@ func TestGraceForIgnoresBudgetOutsideTeardown(t *testing.T) {
 	// it must not arm anything.
 	{
 		got := graceFor("lmstudio-proxy")
-		require.True(t, got == workerStopGrace, "restart-path grace (%v, %v)", got, workerStopGrace)
+		require.Equal(t, workerStopGrace, got, "restart-path grace (%v, %v)", got, workerStopGrace)
 	}
 	stdin := &closeRecorder{}
 	done := make(chan struct{})
@@ -178,7 +178,7 @@ func TestGraceForIgnoresBudgetOutsideTeardown(t *testing.T) {
 	beginTeardown()
 	{
 		got := graceFor(engineManagerWorkerName)
-		require.True(t, got == engineManagerStopGrace, "engine-manager grace after an earlier restart (%v, %v)", got, engineManagerStopGrace)
+		require.Equal(t, engineManagerStopGrace, got, "engine-manager grace after an earlier restart (%v, %v)", got, engineManagerStopGrace)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestGraceForReservesEngineManagerAllowance(t *testing.T) {
 
 	{
 		got := graceFor("scanner")
-		require.True(t, got == minWorkerGrace, "ordinary worker grace (%v, %v)", got, minWorkerGrace)
+		require.Equal(t, minWorkerGrace, got, "ordinary worker grace (%v, %v)", got, minWorkerGrace)
 	}
 	// Its reserve survives what the others spent, give or take the clock ticking
 	// between these two calls.
@@ -208,7 +208,7 @@ func TestEngineShutdownDeadlineDrawsOnTheBudget(t *testing.T) {
 	resetTeardownClock()
 	{
 		got := engineShutdownDeadline()
-		require.True(t, got == engineStopAllBudget, "deadline outside teardown (%v, %v)", got, engineStopAllBudget)
+		require.Equal(t, engineStopAllBudget, got, "deadline outside teardown (%v, %v)", got, engineStopAllBudget)
 	}
 
 	setTeardownStart(time.Now().Add(-(teardownBudget - time.Second)))
@@ -219,7 +219,7 @@ func TestEngineShutdownDeadlineDrawsOnTheBudget(t *testing.T) {
 	setTeardownStart(time.Now().Add(-2 * teardownBudget))
 	{
 		got := engineShutdownDeadline()
-		require.True(t, got == minWorkerGrace, "deadline with a spent budget (%v, %v)", got, minWorkerGrace)
+		require.Equal(t, minWorkerGrace, got, "deadline with a spent budget (%v, %v)", got, minWorkerGrace)
 	}
 }
 
@@ -228,18 +228,18 @@ func TestGraceForClipsToRemainingBudget(t *testing.T) {
 
 	{
 		got := graceFor("scanner")
-		require.True(t, got == workerStopGrace, "first worker grace (%v, %v)", got, workerStopGrace)
+		require.Equal(t, workerStopGrace, got, "first worker grace (%v, %v)", got, workerStopGrace)
 	}
 	{
 		got := graceFor(engineManagerWorkerName)
-		require.True(t, got == engineManagerStopGrace, "engine-manager grace (%v, %v)", got, engineManagerStopGrace)
+		require.Equal(t, engineManagerStopGrace, got, "engine-manager grace (%v, %v)", got, engineManagerStopGrace)
 	}
 
 	// Pretend teardown began long enough ago that the budget is gone.
 	setTeardownStart(time.Now().Add(-2 * teardownBudget))
 	{
 		got := graceFor("scanner")
-		require.True(t, got == minWorkerGrace, "grace with a spent budget (%v, %v)", got, minWorkerGrace)
+		require.Equal(t, minWorkerGrace, got, "grace with a spent budget (%v, %v)", got, minWorkerGrace)
 	}
 
 	// Halfway through the budget a long grace is clipped, not refused.
@@ -261,11 +261,11 @@ func setTeardownStart(at time.Time) {
 func TestStopGraceForGivesEngineManagerRoom(t *testing.T) {
 	{
 		got := stopGraceFor(engineManagerWorkerName)
-		require.True(t, got == engineManagerStopGrace, "engine-manager grace (%v, %v)", got, engineManagerStopGrace)
+		require.Equal(t, engineManagerStopGrace, got, "engine-manager grace (%v, %v)", got, engineManagerStopGrace)
 	}
 	{
 		got := stopGraceFor("scanner")
-		require.True(t, got == workerStopGrace, "scanner grace (%v, %v)", got, workerStopGrace)
+		require.Equal(t, workerStopGrace, got, "scanner grace (%v, %v)", got, workerStopGrace)
 	}
 	require.Greater(t, engineManagerStopGrace, workerStopGrace, "engine-manager must get more room than an ordinary worker")
 	// Otherwise the longest grace is clipped the instant teardown starts and can

@@ -28,8 +28,8 @@ func TestSubscribedOverlayMerge(t *testing.T) {
 	for _, n := range nodes {
 		ids[n.ID] = true
 	}
-	require.True(t, ids["m1"], "Nodes() should include both manual and subscribed entries (%v)", ids)
-	require.True(t, ids["s1"], "Nodes() should include both manual and subscribed entries (%v)", ids)
+	require.Contains(t, ids, "m1", "Nodes() should include both manual and subscribed entries")
+	require.Contains(t, ids, "s1", "Nodes() should include both manual and subscribed entries")
 
 	// A subsequent snapshot that omits s1 drops it (wholesale replace); the manual
 	// overlay is untouched.
@@ -50,8 +50,8 @@ func TestSubscribedDiff(t *testing.T) {
 	disc, upd, rem := d.SetSubscribed([]Node{s1})
 	require.Len(t, disc, 1, "first snapshot: want discovered=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 	require.Equal(t, "s1", disc[0].ID, "first snapshot: want discovered=[s1], got disc (%v, %v, %v)", disc, upd, rem)
-	require.Len(t, upd, 0, "first snapshot: want discovered=[s1], got disc (%v, %v, %v)", disc, upd, rem)
-	require.Len(t, rem, 0, "first snapshot: want discovered=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, upd, "first snapshot: want discovered=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, rem, "first snapshot: want discovered=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 
 	// Same set again: no events.
 	disc, upd, rem = d.SetSubscribed([]Node{s1})
@@ -62,25 +62,25 @@ func TestSubscribedDiff(t *testing.T) {
 	s1Models := s1
 	s1Models.Models = []string{"llama"}
 	disc, upd, rem = d.SetSubscribed([]Node{s1Models})
-	require.Len(t, disc, 0, "changed models: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, disc, "changed models: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 	require.Len(t, upd, 1, "changed models: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 	require.Equal(t, "s1", upd[0].ID, "changed models: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
-	require.Len(t, rem, 0, "changed models: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, rem, "changed models: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 
 	// Changed IP: an update.
 	s1b := s1Models
 	s1b.IP = "10.0.0.9"
 	s1b.Addresses = []string{"10.0.0.9"}
 	disc, upd, rem = d.SetSubscribed([]Node{s1b})
-	require.Len(t, disc, 0, "changed node: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, disc, "changed node: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 	require.Len(t, upd, 1, "changed node: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 	require.Equal(t, "s1", upd[0].ID, "changed node: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
-	require.Len(t, rem, 0, "changed node: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, rem, "changed node: want updated=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 
 	// Dropped from the snapshot: a removal.
 	disc, upd, rem = d.SetSubscribed(nil)
-	require.Len(t, disc, 0, "omitted node: want removed=[s1], got disc (%v, %v, %v)", disc, upd, rem)
-	require.Len(t, upd, 0, "omitted node: want removed=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, disc, "omitted node: want removed=[s1], got disc (%v, %v, %v)", disc, upd, rem)
+	require.Empty(t, upd, "omitted node: want removed=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 	require.Len(t, rem, 1, "omitted node: want removed=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 	require.Equal(t, "s1", rem[0].ID, "omitted node: want removed=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 }
@@ -109,7 +109,7 @@ func TestSubscribedToNode(t *testing.T) {
 		got, ok := subscribedToNode(tc.profile, withService)
 		require.True(t, ok, "node advertising this engine + IP should project")
 		require.Equal(t, "uuid-a", got.ID, "unexpected projection (%v)", got)
-		require.True(t, got.Port == tc.profile.FacadePort, "unexpected projection (%v)", got)
+		require.Equal(t, tc.profile.FacadePort, got.Port, "unexpected projection (%v)", got)
 		require.Equal(t, "10.0.0.5", got.IP, "unexpected projection (%v)", got)
 		require.Len(t, got.Models, 1, "unexpected projection (%v)", got)
 		require.Equal(t, "llama", got.Models[0], "unexpected projection (%v)", got)
@@ -186,7 +186,7 @@ func TestSubscribedToNodeKeysByHostUUID(t *testing.T) {
 		}
 		got, ok := subscribedToNode(tc.profile, n)
 		require.True(t, ok, "node advertising this engine + IP should project")
-		require.True(t, got.ID == uuid, "ID (%v)", uuid)
+		require.Equal(t, uuid, got.ID, "ID (%v)", uuid)
 		require.Equal(t, "host-a", got.Host)
 	})
 }

@@ -332,7 +332,7 @@ func TestNodeAddValidationErrors(t *testing.T) {
 
 	{
 		got := m.listNodes()
-		require.Len(t, got, 0, "validation errors added nodes")
+		require.Empty(t, got, "validation errors added nodes")
 	}
 }
 
@@ -371,7 +371,7 @@ func TestNodeRemoveReturnsRemovedAndNotifies(t *testing.T) {
 	assert.True(t, result["removed"], "removed result (%v)", result)
 	{
 		got := m.listNodes()
-		require.Len(t, got, 0, "node still listed after removal")
+		require.Empty(t, got, "node still listed after removal")
 	}
 
 	m.handleMessage(requestMessage(2, "node/remove", map[string]string{"id": "lab"}))
@@ -413,7 +413,7 @@ func TestAddThenRemoveBeforeInitialProbeDoesNotRediscover(t *testing.T) {
 	assertNoCaptureMethod(t, rw, "node/discovered")
 	{
 		got := m.listNodes()
-		require.Len(t, got, 0, "node rediscovered in state")
+		require.Empty(t, got, "node rediscovered in state")
 	}
 }
 
@@ -476,8 +476,8 @@ func TestProbeFailuresClearAvailability(t *testing.T) {
 	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	assert.False(t, updated.OllamaUp, "services should be down (%v)", updated)
 	assert.False(t, updated.NodeInfoUp, "services should be down (%v)", updated)
-	require.Len(t, updated.OllamaModels, 0, "failed probe retained stale fields (%v)", updated)
-	require.Len(t, updated.GPUs, 0, "failed probe retained stale fields (%v)", updated)
+	require.Empty(t, updated.OllamaModels, "failed probe retained stale fields (%v)", updated)
+	require.Empty(t, updated.GPUs, "failed probe retained stale fields (%v)", updated)
 	require.Nil(t, updated.CPU, "failed probe retained stale fields (%v)", updated)
 	require.Nil(t, updated.Memory, "failed probe retained stale fields (%v)", updated)
 }
@@ -583,7 +583,7 @@ func TestNotificationIsIgnored(t *testing.T) {
 	m.handleMessage(notificationMessage("node/add", ManualEntry{Address: "node.local"}))
 	{
 		got := m.listNodes()
-		require.Len(t, got, 0, "notification mutated state")
+		require.Empty(t, got, "notification mutated state")
 	}
 	assertNoCaptureMethod(t, rw, "")
 }

@@ -108,10 +108,7 @@ func assertSchedulePair(t *testing.T, got map[string][]string, want []string) {
 
 func assertScheduleOrder(t *testing.T, engine string, got, want []string) {
 	t.Helper()
-	require.Len(t, got, len(want), " (%v, %v, %v)", engine, got, want)
-	for i := range want {
-		require.True(t, got[i] == want[i], " (%v, %v, %v)", engine, got, want)
-	}
+	require.Equal(t, want, got, "schedule order for %s", engine)
 }
 
 // TestSchedulerRanksNodeWideWithoutWaitingForTimer uses a one-hour periodic
@@ -210,9 +207,8 @@ func assertPriorityPair(
 		assertScheduleOrder(t, engine, priority.Nodes, wantOrder)
 		require.Len(t, priority.Ranks, len(wantPressure), " (%v, %v)", engine, wantPressure)
 		for _, rank := range priority.Ranks {
-			want, ok := wantPressure[rank.ID]
-			require.True(t, ok, " (%v, %v)", engine, rank)
-			require.True(t, rank.GPUPressure == want, " (%v, %v)", engine, want)
+			require.Contains(t, wantPressure, rank.ID, " (%v, %v)", engine, rank)
+			require.Equal(t, wantPressure[rank.ID], rank.GPUPressure, " (%v)", engine)
 		}
 	}
 }
@@ -257,8 +253,8 @@ func TestSchedulerSyntheticMixedEngineBurst(t *testing.T) {
 			maxDepth = depth
 		}
 	}
-	require.True(t, minDepth > 3, "50-job mixed-engine depths (%v)", depths)
-	require.True(t, maxDepth-minDepth <= 1, "50-job mixed-engine depths (%v)", depths)
+	require.Greater(t, minDepth, 3, "50-job mixed-engine depths (%v)", depths)
+	require.LessOrEqual(t, maxDepth-minDepth, 1, "50-job mixed-engine depths (%v)", depths)
 }
 
 func rankSyntheticDepths(depths map[string]int) []string {
@@ -579,7 +575,7 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 	require.NoError(t, err, "chat request failed")
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	require.True(t, resp.StatusCode == http.StatusOK, "proxy status")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "proxy status")
 
 	hitsMu.Lock()
 	defer hitsMu.Unlock()

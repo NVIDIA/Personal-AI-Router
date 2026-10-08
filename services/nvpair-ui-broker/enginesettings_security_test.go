@@ -45,11 +45,11 @@ func TestSettingsDerivesCORSGuardFromAuthenticatedCaller(t *testing.T) {
 			_, err := h.b.previewEngineSettings(context.Background(), request, caller)
 			require.NoError(t, err)
 		}
-		require.True(t, h.previewPreserveCORS.Load() == (caller != ""), "preview trusted client-supplied guard")
+		require.Equal(t, caller != "", h.previewPreserveCORS.Load(), "preview trusted client-supplied guard")
 		{
 			_, err := h.b.applyEngineSettings(context.Background(), request, caller)
 			require.NoError(t, err)
 		}
-		require.True(t, h.previewPreserveCORS.Load() == (caller != ""), "apply trusted client-supplied guard")
+		require.Equal(t, caller != "", h.previewPreserveCORS.Load(), "apply trusted client-supplied guard")
 	}
 }

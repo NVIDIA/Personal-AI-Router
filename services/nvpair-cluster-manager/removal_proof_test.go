@@ -71,12 +71,12 @@ func TestAdmissionEpochPersistsAndAdvancesOnReadmission(t *testing.T) {
 	{
 		cid, epoch := restarted.currentAdmission()
 		require.Equal(t, "cluster-1", cid, "restart admission (%v, %v, %v)", cid, epoch, epoch1)
-		require.True(t, epoch == epoch1, "restart admission (%v, %v, %v)", cid, epoch, epoch1)
+		require.Equal(t, epoch1, epoch, "restart admission (%v)", cid)
 	}
 	{
 		got, err := restarted.ensureAdmission("cluster-1")
 		require.NoError(t, err, "startup restore minted a new admission: (%v, %v)", got, err)
-		require.True(t, got == epoch1, "startup restore minted a new admission: (%v, %v)", got, err)
+		require.Equal(t, epoch1, got, "startup restore minted a new admission")
 	}
 
 	restarted.teardownClusterLocal()
@@ -159,7 +159,7 @@ func TestRemovalProofSurvivesRestartBeyondTwentyFourHours(t *testing.T) {
 	restarted := testManagerAt(t, relayDir, 15107)
 	persisted, ok := restarted.removalProofFor(victim.identity.NodeUUID)
 	require.True(t, ok, ">24-hour proof disappeared across restart")
-	require.True(t, persisted.Tombstone.RemovedAt == old, "removedAt (%v)", old)
+	require.Equal(t, old, persisted.Tombstone.RemovedAt, "removedAt")
 	require.True(t, victim.rejectionProvesRemoval(proofRejectionBody(t, persisted), restarted.identity.NodeUUID), "victim could not verify persisted proof after relay restart")
 }
 

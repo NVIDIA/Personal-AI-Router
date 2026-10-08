@@ -79,7 +79,7 @@ func TestAtomicWriteNonTransientRenameFailsFast(t *testing.T) {
 		got := attempts.Load()
 		require.Equal(t, int32(1), got, "rename attempts")
 	}
-	require.Contains(t, err.Error(), "no such file or directory", "error (%v)", err)
+	require.ErrorContains(t, err, "no such file or directory")
 }
 
 func TestIsTransientReplaceError(t *testing.T) {

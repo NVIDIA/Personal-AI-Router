@@ -319,7 +319,7 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 
 	failed := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 2*time.Minute)
 	require.Equal(t, "failed", failed.WorkloadInfo.State, "post-eviction upsert state")
-	assert.True(t, failed.WorkloadInfo.OriginatedFrom == peerUUID, "failed upsert originatedFrom (%v)", peerUUID)
+	assert.Equal(t, peerUUID, failed.WorkloadInfo.OriginatedFrom, "failed upsert originatedFrom (%v)", peerUUID)
 	t.Log("node-loss OK: UUID-stamped workload marked failed after the (name-distinct) peer went offline")
 }
 

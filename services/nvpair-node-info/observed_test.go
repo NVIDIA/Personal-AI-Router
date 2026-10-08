@@ -58,7 +58,7 @@ func TestObserverIgnoresLoopbackPeers(t *testing.T) {
 
 	{
 		got := o.addresses()
-		require.Len(t, got, 0, "addresses")
+		require.Empty(t, got, "addresses")
 	}
 }
 
@@ -74,7 +74,7 @@ func TestObserverIgnoresConnectionsThatSendNothing(t *testing.T) {
 
 	{
 		got := o.addresses()
-		require.Len(t, got, 0, "addresses")
+		require.Empty(t, got, "addresses")
 	}
 }
 
@@ -92,7 +92,7 @@ func TestObserverExpiresStaleObservations(t *testing.T) {
 	now = now.Add(observationTTL + time.Second)
 	{
 		got := o.addresses()
-		require.Len(t, got, 0, "addresses")
+		require.Empty(t, got, "addresses")
 	}
 }
 
@@ -110,8 +110,8 @@ func TestObserverReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {
 		Params noderec.ObservedAddressesParams `json:"params"`
 	}
 	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &msg), "decode report")
-	require.True(t, msg.Method == noderec.NotifyObservedAddresses, "method")
-	require.Len(t, msg.Params.Addresses, 0, "reported addresses")
+	require.Equal(t, noderec.NotifyObservedAddresses, msg.Method, "method")
+	require.Empty(t, msg.Params.Addresses, "reported addresses")
 }
 
 func TestObserverReportsASortedSet(t *testing.T) {

@@ -99,10 +99,9 @@ func runPipelineOpts(t *testing.T, path string, dedupe, models bool) pipelineRes
 // sectionJSON decodes a preserved section so its fields can be inspected.
 func sectionJSON(t *testing.T, res pipelineResult, name string) map[string]any {
 	t.Helper()
-	raw, ok := res.sections[name]
-	require.True(t, ok, "missing section %q", name)
+	require.Contains(t, res.sections, name, "missing section %q", name)
 	var out map[string]any
-	require.NoError(t, json.Unmarshal([]byte(raw), &out), "decode section %q", name)
+	require.NoError(t, json.Unmarshal([]byte(res.sections[name]), &out), "decode section %q", name)
 	return out
 }
 

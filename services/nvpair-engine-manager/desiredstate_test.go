@@ -133,8 +133,7 @@ func TestDeclinedAdoptedStopStillPersistsOffIntent(t *testing.T) {
 	}
 	{
 		err := first.Stop("fake")
-		require.Error(t, err, "stop error")
-		require.Contains(t, err.Error(), "external management", "stop error (%v)", err)
+		require.ErrorContains(t, err, "external management", "stop error")
 	}
 	{
 		enabled, known, err := first.desired.get("fake")

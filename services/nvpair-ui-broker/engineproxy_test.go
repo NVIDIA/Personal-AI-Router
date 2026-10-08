@@ -17,19 +17,19 @@ import (
 // preparation reserves any inherited OLLAMA_HOST alias that later engines have
 // to route around.
 func TestEngineProxyTableMatchesSharedEngines(t *testing.T) {
-	require.NotEqual(t, 0, len(engineProxyProfiles), "no engine proxy profiles")
+	require.NotEmpty(t, engineProxyProfiles, "no engine proxy profiles")
 	{
 		got := engineProxyProfiles[0].Name
 		require.Equal(t, "ollama", got, "first profile")
 	}
 	for _, p := range engineProxyProfiles {
-		assert.True(t, p.FacadePort != p.EnginePortBase)
-		assert.NotEqual(t, "", p.ComponentName())
-		assert.NotEqual(t, "", p.DisplayName)
+		assert.NotEqual(t, p.EnginePortBase, p.FacadePort)
+		assert.NotEmpty(t, p.ComponentName())
+		assert.NotEmpty(t, p.DisplayName)
 		// An empty probe path would silently become a GET of the root, which
 		// is Ollama's convention and wrong for anything OpenAI-compatible —
 		// the engine would read as down whenever it is actually up.
-		assert.NotEqual(t, "", p.HealthProbePath)
+		assert.NotEmpty(t, p.HealthProbePath)
 	}
 }
 
@@ -46,7 +46,7 @@ func TestEngineHealthProbePaths(t *testing.T) {
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		require.True(t, ok, "no profile for")
-		assert.True(t, p.HealthProbePath == tc.want)
+		assert.Equal(t, tc.want, p.HealthProbePath)
 	}
 }
 
@@ -67,17 +67,17 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 		t.Run(tc.engine, func(t *testing.T) {
 			p, ok := engineProxyProfileFor(tc.engine)
 			require.True(t, ok, "no profile for")
-			assert.True(t, tc.facade == p.FacadePort, "facade constant")
-			assert.True(t, tc.backendStart == p.EnginePortBase, "backend-start constant")
+			assert.Equal(t, tc.facade, p.FacadePort, "facade constant")
+			assert.Equal(t, tc.backendStart, p.EnginePortBase, "backend-start constant")
 			{
 				want := p.ComponentName() + ":port-ownership-blocked"
-				assert.True(t, tc.blockedID == want, "blocked error id (%v)", want)
+				assert.Equal(t, want, tc.blockedID, "blocked error id (%v)", want)
 			}
 		})
 	}
 	{
 		want := ollamaProxyProfile.ComponentName() + ":port-bumped"
-		assert.True(t, proxyPortBumpedID == want, "bumped error id (%v, %v)", proxyPortBumpedID, want)
+		assert.Equal(t, want, proxyPortBumpedID, "bumped error id (%v, %v)", proxyPortBumpedID, want)
 	}
 }
 
@@ -95,7 +95,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		require.True(t, ok, "no profile for")
-		assert.True(t, p.Ownership == tc.want)
+		assert.Equal(t, tc.want, p.Ownership)
 	}
 }
 
@@ -131,10 +131,10 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 
 			if tc.wantMove {
 				want := managedPortPlan{Enabled: true, BackendPort: p.EnginePortBase}
-				require.True(t, got == want, "plan (%v, %v)", got, want)
+				require.Equal(t, want, got, "plan (%v, %v)", got, want)
 				return
 			}
-			require.True(t, got.Blocked == tc.wantBlock, "plan (%v)", got)
+			require.Equal(t, tc.wantBlock, got.Blocked, "plan (%v)", got)
 		})
 	}
 }
@@ -165,7 +165,7 @@ func TestParseProxyEngines(t *testing.T) {
 			require.NoError(t, err, "parseProxyEngines")
 			require.Len(t, got, len(tc.want), "parseProxyEngines")
 			for i := range tc.want {
-				require.True(t, got[i] == tc.want[i], "parseProxyEngines (%v)", got)
+				require.Equal(t, tc.want[i], got[i], "parseProxyEngines (%v)", got)
 			}
 		})
 	}

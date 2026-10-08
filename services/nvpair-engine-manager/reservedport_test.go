@@ -24,17 +24,17 @@ func TestReservedAliasPortBlocksLocalAndRemoteStarts(t *testing.T) {
 	{
 		err := exec.StartWith(context.Background(), manifest.Engine, startOpts{Port: 15555})
 		require.Error(t, err, "local start error")
-		require.Contains(t, err.Error(), "reserved", "local start error (%v)", err)
+		require.ErrorContains(t, err, "reserved", "local start error")
 	}
 	{
 		_, err := exec.SetPort(context.Background(), manifest.Engine, 15555)
 		require.Error(t, err, "set-port error")
-		require.Contains(t, err.Error(), "reserved", "set-port error (%v)", err)
+		require.ErrorContains(t, err, "reserved", "set-port error")
 	}
 
 	req := httptest.NewRequest(http.MethodPost, controlStartPath, strings.NewReader(`{"engine":"fake","port":15555}`))
 	rec := httptest.NewRecorder()
 	(&controlServer{exec: exec}).handleStart(rec, req)
-	require.True(t, rec.Code == http.StatusInternalServerError, "remote start response")
+	require.Equal(t, http.StatusInternalServerError, rec.Code, "remote start response")
 	require.Contains(t, rec.Body.String(), "reserved", "remote start response")
 }

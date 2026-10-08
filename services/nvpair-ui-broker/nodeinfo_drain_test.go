@@ -69,7 +69,7 @@ func TestNodeInfoDrainSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 
 	got := drainFrames(t, strings.NewReader(stream))
 	require.Len(t, got, 1)
-	require.True(t, got[0].method == noderec.NotifyObservedAddresses, "method")
+	require.Equal(t, noderec.NotifyObservedAddresses, got[0].method, "method")
 	{
 		addrs := addressesOf(t, got[0].params)
 		require.Len(t, addrs, 1, "addresses")
@@ -82,7 +82,7 @@ func TestNodeInfoDrainSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 func TestNodeInfoDrainStopsOnAnUnterminatedOversizedFrame(t *testing.T) {
 	oversized := `{"method":"x","params":"` + strings.Repeat("a", 2*maxNodeInfoLine) + `"}`
 
-	require.Len(t, drainFrames(t, strings.NewReader(oversized)), 0)
+	require.Empty(t, drainFrames(t, strings.NewReader(oversized)))
 }
 
 // node-info can exit having written a frame but not its newline; that frame is
@@ -109,5 +109,5 @@ func TestNodeInfoDrainSkipsFramesThatAreNotNotifications(t *testing.T) {
 
 	got := drainFrames(t, strings.NewReader(stream))
 	require.Len(t, got, 1)
-	require.True(t, got[0].method == noderec.NotifyObservedAddresses, "method")
+	require.Equal(t, noderec.NotifyObservedAddresses, got[0].method, "method")
 }

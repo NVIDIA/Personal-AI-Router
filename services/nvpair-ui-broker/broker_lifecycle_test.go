@@ -28,7 +28,7 @@ func TestClusterManagerConfigDirTracksBrokerClusterDir(t *testing.T) {
 	b := &Broker{clusterDir: filepath.Join(base, "cluster")}
 	{
 		got := b.clusterManagerConfigDir()
-		require.True(t, got == base, "clusterManagerConfigDir (%v, %v)", got, base)
+		require.Equal(t, base, got, "clusterManagerConfigDir (%v, %v)", got, base)
 	}
 
 	// With no cluster dir there is nothing to pass, and the manager falls back to
@@ -91,7 +91,7 @@ func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
 
 	select {
 	case got := <-restore:
-		require.True(t, got == restoreEnabledEnginesMethod, "restore method (%v, %v)", got, restoreEnabledEnginesMethod)
+		require.Equal(t, restoreEnabledEnginesMethod, got, "restore method (%v, %v)", got, restoreEnabledEnginesMethod)
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "test expectation failed", "enabled-engine restore did not run after both proxy outcomes")
 	}
@@ -157,7 +157,7 @@ func TestInferenceShutdownStopsTheProxyBeforeEngines(t *testing.T) {
 	b.shutdownInferenceStack()
 
 	got := []string{<-order, <-order}
-	require.True(t, got[0] == engines.ProxyComponent, "shutdown order (%v)", got)
+	require.Equal(t, engines.ProxyComponent, got[0], "shutdown order (%v)", got)
 	require.Equal(t, "engine-manager", got[1], "shutdown order (%v)", got)
 }
 

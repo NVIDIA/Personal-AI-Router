@@ -89,8 +89,8 @@ func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
 	options := &recordingMulticastOptions{}
 
 	require.NoError(t, writePacket([]byte("unicast payload"), nil, source, target, writer, options), "writePacket")
-	require.Len(t, options.interfaces, 0, "multicast options used for unicast: interfaces")
-	require.Len(t, options.ttls, 0, "multicast options used for unicast: interfaces")
+	require.Empty(t, options.interfaces, "multicast options used for unicast: interfaces")
+	require.Empty(t, options.ttls, "multicast options used for unicast: interfaces")
 	assert.Equal(t, 1, writer.writes)
 }
 

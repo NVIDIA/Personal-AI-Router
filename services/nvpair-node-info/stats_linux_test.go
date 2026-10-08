@@ -56,12 +56,12 @@ func TestParseProcStat(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := parseProcStat(c.in)
-			require.True(t, got.valid == c.wantValid, "valid")
+			require.Equal(t, c.wantValid, got.valid, "valid")
 			if !c.wantValid {
 				return
 			}
-			require.True(t, got.idle == c.wantIdle, "idle/total")
-			require.True(t, got.total == c.wantTotal, "idle/total")
+			require.Equal(t, c.wantIdle, got.idle, "idle/total")
+			require.Equal(t, c.wantTotal, got.total, "idle/total")
 		})
 	}
 }
@@ -122,7 +122,7 @@ func TestCPUUtilization(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			{
 				got := cpuUtilization(c.prev, c.cur)
-				require.True(t, got == c.want, "cpuUtilization() (%v)", got)
+				require.Equal(t, c.want, got, "cpuUtilization() (%v)", got)
 			}
 		})
 	}
@@ -155,7 +155,7 @@ func TestInitialMemorySnapshot(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			snap := initialMemorySnapshot(c.readUsed)
-			require.True(t, snap.MemUsedBytes == c.wantUsed, "MemUsedBytes")
+			require.Equal(t, c.wantUsed, snap.MemUsedBytes, "MemUsedBytes")
 		})
 	}
 }
@@ -196,7 +196,7 @@ func TestParseMeminfoUsed(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			used, ok := parseMeminfoUsed(c.in)
-			require.True(t, ok == c.wantOK, "ok (%v)", ok)
+			require.Equal(t, c.wantOK, ok, "ok (%v)", ok)
 			require.False(t, ok && used != c.wantUsed, "used (%v)", used)
 		})
 	}
@@ -255,7 +255,7 @@ func TestParseNvidiaStatic(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got, uma := parseNvidiaStatic(c.in)
-			require.True(t, uma == c.wantUMA, "unifiedMemory (%v)", uma)
+			require.Equal(t, c.wantUMA, uma, "unifiedMemory (%v)", uma)
 			require.Equal(t, c.want, got, "parseNvidiaStatic()")
 		})
 	}
@@ -319,7 +319,7 @@ func TestParseNvidiaDynamic(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got, samples := parseNvidiaDynamic(c.in)
 			require.Equal(t, c.want, got, "parseNvidiaDynamic()")
-			require.True(t, samples == c.wantSamples, "parseNvidiaDynamic() samples (%v)", samples)
+			require.Equal(t, c.wantSamples, samples, "parseNvidiaDynamic() samples (%v)", samples)
 		})
 	}
 }
@@ -341,7 +341,7 @@ func TestIsNvidiaSmiNA(t *testing.T) {
 	for _, c := range cases {
 		{
 			got := isNvidiaSmiNA(c.in)
-			require.True(t, got == c.want, "isNvidiaSmiNA (%v)", got)
+			require.Equal(t, c.want, got, "isNvidiaSmiNA (%v)", got)
 		}
 	}
 }

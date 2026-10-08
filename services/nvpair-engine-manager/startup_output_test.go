@@ -20,7 +20,7 @@ func TestStartupOutputPreservesExplanationAndRedactsValues(t *testing.T) {
 	cause := errors.New("exit status 1")
 	err := o.failure(cause)
 	require.ErrorIs(t, err, cause, "lost diagnostic or leaked supplied value")
-	require.Contains(t, err.Error(), "unknown option --future-option", "lost diagnostic or leaked supplied value (%v)", err)
+	require.ErrorContains(t, err, "unknown option --future-option", "lost diagnostic or leaked supplied value")
 	require.NotContains(t, err.Error(), "private-value", "lost diagnostic or leaked supplied value (%v)", err)
 	require.NotContains(t, err.Error(), "private-env", "lost diagnostic or leaked supplied value (%v)", err)
 }
@@ -30,7 +30,7 @@ func TestStartupOutputBoundsLargeWritesAndStopsCapturing(t *testing.T) {
 	data := []byte(strings.Repeat("x", maxStartupOutput*4) + "last diagnostic")
 	{
 		n, err := o.Write(data)
-		require.True(t, n == len(data), "writer did not consume all output (%v, %v)", n, err)
+		require.Equal(t, len(data), n, "writer did not consume all output (%v)", err)
 		require.NoError(t, err, "writer did not consume all output (%v, %v)", n, err)
 	}
 	cause := errors.New("failed")
@@ -56,7 +56,7 @@ func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
 				chunk := output[offset:min(offset+chunkSize, len(output))]
 				{
 					n, err := o.Write([]byte(chunk))
-					require.True(t, n == len(chunk), "Write() (%v, %v)", n, err)
+					require.Equal(t, len(chunk), n, "Write() (%v)", err)
 					require.NoError(t, err, "Write() (%v, %v)", n, err)
 				}
 				require.LessOrEqual(t, len(o.tail), maxStartupOutput, "capture exceeded its diagnostic and boundary-context bounds")
@@ -71,7 +71,7 @@ func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
 			cause := errors.New("failed")
 			got := o.failure(cause)
 			require.ErrorIs(t, got, cause, "failure diagnostic differs from redact-before-truncate result")
-			require.True(t, got.Error() == "failed: "+want, "failure diagnostic differs from redact-before-truncate result")
+			require.EqualError(t, got, "failed: "+want, "failure diagnostic differs from redact-before-truncate result")
 		})
 	}
 

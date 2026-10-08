@@ -141,7 +141,7 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 
 			st, err := ex.SetPort(context.Background(), tc.engine, tc.port)
 			require.NoError(t, err, "SetPort")
-			assert.True(t, st.Port == tc.port, "returned status port:")
+			assert.Equal(t, tc.port, st.Port, "returned status port")
 
 			// The override file is the minimal port delta.
 			data, err := os.ReadFile(filepath.Join(dir, tc.engine+".json"))
@@ -150,13 +150,13 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 			require.NoError(t, json.Unmarshal(data, &got), "override file invalid JSON")
 			rt, _ := got["runtime"].(map[string]any)
 			if assert.NotNil(t, rt, "override file runtime.port:") {
-				assert.True(t, int(rt["port"].(float64)) == tc.port, "override file runtime.port:")
+				assert.Equal(t, tc.port, int(rt["port"].(float64)), "override file runtime.port")
 			}
 
 			// Restore: a fresh startup-style load comes up on the chosen port.
 			{
 				p := hostPort(t, loadWithOverrides(t, dir), tc.engine)
-				assert.True(t, p == tc.port, "restored port: (%v)", p)
+				assert.Equal(t, tc.port, p, "restored port")
 			}
 
 			// Reverting to the bundled default removes the override entirely.
@@ -166,11 +166,11 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 			}
 			{
 				_, err := os.Stat(filepath.Join(dir, tc.engine+".json"))
-				assert.True(t, os.IsNotExist(err), "override file should be removed when reverting to default, stat err (%v)", err)
+				assert.ErrorIs(t, err, os.ErrNotExist, "override file should be removed when reverting to default")
 			}
 			{
 				p := hostPort(t, loadWithOverrides(t, dir), tc.engine)
-				assert.True(t, p == tc.bundled, "port after revert: (%v)", p)
+				assert.Equal(t, tc.bundled, p, "port after revert")
 			}
 		})
 	}
@@ -211,7 +211,7 @@ func TestSetPortStillRejectsAdoptedProcessEngine(t *testing.T) {
 	}
 	{
 		_, err := os.Stat(filepath.Join(ex.overrideDir, "ollama.json"))
-		require.True(t, os.IsNotExist(err), "rejected process engine persisted an override (%v)", err)
+		require.ErrorIs(t, err, os.ErrNotExist, "rejected process engine persisted an override")
 	}
 }
 
@@ -229,7 +229,7 @@ func TestSetPortRejectsCommandEngineWithoutStopCommand(t *testing.T) {
 	}
 	{
 		_, err := os.Stat(filepath.Join(ex.overrideDir, "external.json"))
-		require.True(t, os.IsNotExist(err), "rejected command engine persisted an override (%v)", err)
+		require.ErrorIs(t, err, os.ErrNotExist, "rejected command engine persisted an override")
 	}
 }
 

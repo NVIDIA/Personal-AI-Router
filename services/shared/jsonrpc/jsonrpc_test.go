@@ -6,7 +6,6 @@ package jsonrpc
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -118,7 +117,7 @@ func TestReadMalformedFrameIsRecoverableDecodeError(t *testing.T) {
 	for _, frame := range []string{"{not json}\n", `{"jsonrpc":"1.0"}` + "\n"} {
 		_, err := readCodec(strings.NewReader(frame)).Read()
 		var de *DecodeError
-		assert.True(t, errors.As(err, &de), "frame")
+		assert.ErrorAs(t, err, &de, "frame")
 	}
 }
 
@@ -140,7 +139,7 @@ func TestRespondErrorDataRoundTrip(t *testing.T) {
 	var buf2 bytes.Buffer
 	_ = writeCodec(&buf2).RespondErrorData(&id, -32603, "boom", nil)
 	m2, _ := readCodec(&buf2).Read()
-	require.Len(t, m2.Error.Data, 0, "expected empty data for nil,")
+	require.Empty(t, m2.Error.Data, "expected empty data for nil,")
 }
 
 func TestNewCodecMaxFrameAcceptsLargeFrame(t *testing.T) {

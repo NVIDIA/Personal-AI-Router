@@ -143,7 +143,7 @@ func TestModels(t *testing.T) {
 	// Stopped: nothing queryable.
 	{
 		got := ex.Models(ctx)
-		require.Len(t, got, 0, "Models() on stopped engine")
+		require.Empty(t, got, "Models() on stopped engine")
 	}
 
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
@@ -154,7 +154,7 @@ func TestModels(t *testing.T) {
 	require.NoError(t, ex.Stop("fake"), "stop")
 	{
 		got := ex.Models(ctx)
-		require.Len(t, got, 0, "Models() after stop")
+		require.Empty(t, got, "Models() after stop")
 	}
 }
 
@@ -174,8 +174,8 @@ func TestModelsResult(t *testing.T) {
 
 	// Stopped: empty union, no attribution map.
 	res := ex.ModelsResult(ctx)
-	require.Len(t, res.Models, 0, "ModelsResult().Models on stopped engine")
-	require.Len(t, res.ByEngine, 0, "ModelsResult().ByEngine on stopped engine")
+	require.Empty(t, res.Models, "ModelsResult().Models on stopped engine")
+	require.Empty(t, res.ByEngine, "ModelsResult().ByEngine on stopped engine")
 
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	res = ex.ModelsResult(ctx)
@@ -191,7 +191,7 @@ func TestModelsResult(t *testing.T) {
 		require.NoError(t, err, "delete last model")
 	}
 	res = ex.ModelsResult(ctx)
-	require.Len(t, res.Models, 0, "ModelsResult().Models after last delete")
+	require.Empty(t, res.Models, "ModelsResult().Models after last delete")
 	{
 		want := map[string][]string{"fake": {}}
 		require.Equal(t, want, res.ByEngine, "ModelsResult().ByEngine after last delete")
@@ -296,7 +296,7 @@ func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
 
 	// No residency change -> no engine reported changed.
 	changed, prev, _ := ex.sweepLoaded(ctx, prev)
-	require.Len(t, changed, 0, "unchanged sweep reported")
+	require.Empty(t, changed, "unchanged sweep reported")
 
 	// Evict everything -> fake changes; payload carries the empty loaded set.
 	setLoaded(t, ex, nil)
@@ -318,7 +318,7 @@ func TestSweepLoadedRetainsLastGoodOnTransientMiss(t *testing.T) {
 	// The engine isn't started, so ModelsResult reports it neither running nor
 	// queryable: LoadedByEngine has no "fake" key this sweep.
 	changed, next, _ := ex.sweepLoaded(context.Background(), prev)
-	require.Len(t, changed, 0, "a disappeared engine reported")
+	require.Empty(t, changed, "a disappeared engine reported")
 	{
 		want := map[string][]string{"fake": {"llama3.2:1b"}}
 		require.Equal(t, want, next, "baseline after miss")
@@ -367,7 +367,7 @@ func TestSameStringSet(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			{
 				got := sameStringSet(tc.a, tc.b)
-				require.True(t, got == tc.want, "sameStringSet (%v)", got)
+				require.Equal(t, tc.want, got, "sameStringSet")
 			}
 		})
 	}

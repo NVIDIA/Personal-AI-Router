@@ -97,12 +97,9 @@ func TestHandleHTTP_HeadersWithoutContentFailsOver(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusOK, "status")
-		{
-			got := decodeJSONBody(t, rec.Body.String())
-			require.Equal(t, true, got["done"], "body has done")
-		}
-		assert.True(t, servedBody == tc.inferenceBody(), "failover node got body (%v)", servedBody)
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		require.Equal(t, true, decodeJSONBody(t, rec.Body.String())["done"], "body has done")
+		assert.Equal(t, tc.inferenceBody(), servedBody, "failover node got body (%v)", servedBody)
 	})
 }
 
@@ -142,14 +139,11 @@ func TestHandleHTTP_NoContentOnFinalAttemptTerminates(t *testing.T) {
 
 		{
 			got := stalled.hits()
-			assert.True(t, got == maxDispatchAttempts, "upstream saw (%v, %v)", got, maxDispatchAttempts)
+			assert.Equal(t, maxDispatchAttempts, got, "upstream saw (%v, %v)", got, maxDispatchAttempts)
 		}
-		require.True(t, rec.Code == http.StatusGatewayTimeout, "status")
+		require.Equal(t, http.StatusGatewayTimeout, rec.Code, "status")
 		want := "upstream error: " + errFirstBodyTimeout.Error()
-		{
-			got := decodeJSONBody(t, rec.Body.String())
-			require.True(t, got["error"] == want, "body error (%v)", want)
-		}
+		require.Equal(t, want, decodeJSONBody(t, rec.Body.String())["error"], "body error")
 	})
 }
 
@@ -174,10 +168,10 @@ func TestHandleHTTP_FirstBytePreservedOnCommit(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusOK, "status")
+		require.Equal(t, http.StatusOK, rec.Code, "status")
 		{
 			got := rec.Body.String()
-			require.True(t, got == payload, "body (%v, %v)", got, payload)
+			require.Equal(t, payload, got, "body (%v, %v)", got, payload)
 		}
 	})
 }
@@ -208,7 +202,7 @@ func TestHandleHTTP_EmptyBodyCommits(t *testing.T) {
 
 		select {
 		case code := <-done:
-			require.True(t, code == http.StatusOK, "status (%v)", code)
+			require.Equal(t, http.StatusOK, code, "status (%v)", code)
 		case <-time.After(5 * time.Second):
 			require.FailNow(t, "test expectation failed", "an empty 200 body blocked on the first-byte wait instead of committing")
 		}
@@ -256,6 +250,6 @@ func TestHandleHTTP_NonInferenceCommitsOnHeaders(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			require.FailNow(t, "test expectation failed", "a non-inference request did not complete after the upstream released")
 		}
-		require.True(t, rec.Code == http.StatusOK, "status")
+		require.Equal(t, http.StatusOK, rec.Code, "status")
 	})
 }

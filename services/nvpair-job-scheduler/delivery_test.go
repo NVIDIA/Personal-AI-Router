@@ -23,7 +23,7 @@ func TestFailedNotificationDoesNotAdvanceStatus(t *testing.T) {
 	for _, engine := range schedulerEngines {
 		status := m.status().Engines[engine]
 		assert.Equal(t, int64(0), status.LastEmittedAt, "failed notification was recorded as emitted (%v)", status)
-		require.Len(t, status.Emitted, 0, "failed notification was recorded as emitted (%v)", status)
+		require.Empty(t, status.Emitted, "failed notification was recorded as emitted (%v)", status)
 	}
 }
 
@@ -98,8 +98,5 @@ func TestFailedForcedNotificationRetainsDeliveredTimestamp(t *testing.T) {
 		assert.Equal(t, int64(1), got, "failed forced delivery advanced timestamp to")
 	}
 	m.recomputeAll(false)
-	{
-		got := len(writer.orders(engine))
-		assert.Equal(t, 1, got, "previously delivered unchanged ranks were emitted")
-	}
+	assert.Len(t, writer.orders(engine), 1, "previously delivered unchanged ranks were emitted")
 }

@@ -67,7 +67,7 @@ func TestLoadIdentityAndUUID(t *testing.T) {
 	id, err := LoadIdentity(dir)
 	require.NoError(t, err, "LoadIdentity")
 	assert.Equal(t, "uuid-self", id.NodeUUID)
-	assert.NotEqual(t, 0, len(id.Cert.Certificate), "identity cert not loaded")
+	assert.NotEmpty(t, id.Cert.Certificate, "identity cert not loaded")
 
 	// Missing keypair is an error (caller falls back to plain HTTP).
 	{

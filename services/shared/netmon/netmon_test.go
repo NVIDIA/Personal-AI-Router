@@ -39,7 +39,7 @@ func TestSnapshotCloneIsIndependent(t *testing.T) {
 	cp := orig.clone()
 	cp.LocalIPs["10.0.0.2"] = true
 	cp.IfaceV4[1][0] = net.IPv4(8, 8, 8, 8)
-	assert.False(t, orig.LocalIPs["10.0.0.2"], "clone shares LocalIPs map with original")
+	assert.NotContains(t, orig.LocalIPs, "10.0.0.2", "clone shares LocalIPs map with original")
 	assert.False(t, orig.IfaceV4[1][0].Equal(net.IPv4(8, 8, 8, 8)), "clone shares IfaceV4 backing array with original")
 }
 

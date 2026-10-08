@@ -36,7 +36,7 @@ func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
 	{
 		_, err := c.postJSON(context.Background(), controlStopPath, "ollama", stopRequest{Engine: "ollama"})
 		require.Error(t, err, "ordinary remote call error")
-		require.Contains(t, err.Error(), "timeout awaiting response headers", "ordinary remote call error (%v)", err)
+		require.ErrorContains(t, err, "timeout awaiting response headers", "ordinary remote call error")
 	}
 }
 
@@ -70,12 +70,12 @@ func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
 	{
 		_, err := c.postJSON(context.Background(), controlLoadPath, "lmstudio", lmstudio)
 		require.Error(t, err, "remote LM Studio load error")
-		require.Contains(t, err.Error(), "timeout awaiting response headers", "remote LM Studio load error (%v)", err)
+		require.ErrorContains(t, err, "timeout awaiting response headers", "remote LM Studio load error")
 	}
 	{
 		_, err := c.postJSON(context.Background(), controlUnloadPath, "ollama", ollama)
 		require.Error(t, err, "remote unload error")
-		require.Contains(t, err.Error(), "timeout awaiting response headers", "remote unload error (%v)", err)
+		require.ErrorContains(t, err, "timeout awaiting response headers", "remote unload error")
 	}
 }
 
@@ -97,7 +97,7 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 	for _, tc := range cases {
 		{
 			got := waitsForEngineReadiness(tc.path, tc.engine)
-			assert.True(t, got == tc.want, "waitsForEngineReadiness (%v)", got)
+			assert.Equal(t, tc.want, got, "waitsForEngineReadiness")
 		}
 	}
 }
@@ -122,7 +122,7 @@ func TestRemoteStartHeaderWaitRemainsBounded(t *testing.T) {
 	started := time.Now()
 	_, err := c.postJSON(context.Background(), controlStartPath, "ollama", startRequest{Engine: "ollama"})
 	require.Error(t, err, "remote start error")
-	require.Contains(t, err.Error(), "timeout awaiting response headers", "remote start error (%v)", err)
+	require.ErrorContains(t, err, "timeout awaiting response headers", "remote start error")
 	{
 		elapsed := time.Since(started)
 		require.LessOrEqual(t, elapsed, time.Second, "remote start took")

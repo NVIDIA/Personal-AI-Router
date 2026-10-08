@@ -44,8 +44,8 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 				if denied {
 					wantStatus, wantOrigin = http.StatusForbidden, ""
 				}
-				require.True(t, rec.Code == wantStatus, "status (%v, %v)", wantStatus, wantOrigin)
-				require.True(t, rec.Header().Get("Access-Control-Allow-Origin") == wantOrigin, "status (%v, %v)", wantStatus, wantOrigin)
+				require.Equal(t, wantStatus, rec.Code, "status (%v, %v)", wantStatus, wantOrigin)
+				require.Equal(t, wantOrigin, rec.Header().Get("Access-Control-Allow-Origin"), "status (%v, %v)", wantStatus, wantOrigin)
 				require.NotContains(t, rec.Body.String(), "private-model", "returned partial model inventory")
 				require.False(t, !denied && !strings.Contains(rec.Body.String(), "model inventory unavailable"), "missing readable error")
 			})
@@ -73,6 +73,6 @@ func TestModelListStripsCredentialsWithoutOrigin(t *testing.T) {
 		request.Header.Set("Cookie", "session=private")
 		rec := httptest.NewRecorder()
 		p.handlePlain(rec, request)
-		require.True(t, rec.Code == http.StatusOK, "status")
+		require.Equal(t, http.StatusOK, rec.Code, "status")
 	})
 }

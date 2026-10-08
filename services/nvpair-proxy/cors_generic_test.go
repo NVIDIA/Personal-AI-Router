@@ -28,8 +28,8 @@ func TestCORSPolicyIsIndependentOfEngineIdentity(t *testing.T) {
 				if method == http.MethodOptions {
 					wantStatus = http.StatusNoContent
 				}
-				require.True(t, rec.Code == wantStatus, " (%v)", method)
-				require.True(t, rec.Header().Get("Access-Control-Allow-Origin") == allowed, " (%v)", method)
+				require.Equal(t, wantStatus, rec.Code, " (%v)", method)
+				require.Equal(t, allowed, rec.Header().Get("Access-Control-Allow-Origin"), " (%v)", method)
 			}
 		})
 	}

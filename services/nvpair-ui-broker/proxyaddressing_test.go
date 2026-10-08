@@ -70,7 +70,7 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 			select {
 			case got := <-seen:
 				want := profile.addressed("nodes/list")
-				require.True(t, got == want, "relayed method (%v, %v)", got, want)
+				require.Equal(t, want, got, "relayed method (%v, %v)", got, want)
 			case <-time.After(2 * time.Second):
 				require.FailNow(t, "test expectation failed", "relay sent nothing downward")
 			}
@@ -113,7 +113,7 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 
 	{
 		got := b.currentOllamaHostAlias()
-		assert.True(t, got.Port == alias.Port, "blocking released the alias a retry still needs (%v)", got)
+		assert.Equal(t, alias.Port, got.Port, "blocking released the alias a retry still needs (%v)", got)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
 	b.setOllamaHostAlias(alias)
 	{
 		got := b.currentOllamaHostAlias()
-		require.True(t, got.Port == alias.Port, "alias not established for the test (%v)", got)
+		require.Equal(t, alias.Port, got.Port, "alias not established for the test (%v)", got)
 	}
 
 	b.blockAndFinishEngineProxy(ollamaProxyProfile)
@@ -184,7 +184,7 @@ func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			{
 				got := facadeCameUpAnyway(tc.pp, engine, tc.err)
-				require.True(t, got == tc.want, "facadeCameUpAnyway (%v)", got)
+				require.Equal(t, tc.want, got, "facadeCameUpAnyway (%v)", got)
 			}
 		})
 	}
@@ -222,7 +222,7 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 	for engine, wantPort := range map[string]int{first.Name: 11434, second.Name: 1234} {
 		ready, port := p.Status(engine)
 		assert.True(t, ready, " (%v)", engine)
-		assert.True(t, port == wantPort, " (%v, %v, %v)", engine, port, wantPort)
+		assert.Equal(t, wantPort, port, " (%v, %v, %v)", engine, port, wantPort)
 		assert.NotNil(t, p.ReadyParams(engine), " (%v)", engine)
 	}
 
@@ -359,10 +359,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 	seen := map[int]string{}
 	for engine, id := range p.subIDs {
 		assert.NotEqual(t, 0, id, "engine (%v)", engine)
-		{
-			other, dup := seen[id]
-			assert.False(t, dup, "engines (%v, %v, %v)", engine, other, id)
-		}
+		assert.NotContains(t, seen, id, "engine %s reused a subscription ID", engine)
 		seen[id] = engine
 	}
 }
@@ -413,8 +410,8 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	assert.True(t, p.subIDs[first.Name] != firstID, "re-subscribe kept (%v)", firstID)
-	assert.True(t, p.subIDs[second.Name] == secondID, "re-subscribing (%v)", secondID)
+	assert.NotEqual(t, firstID, p.subIDs[first.Name], "re-subscribe kept (%v)", firstID)
+	assert.Equal(t, secondID, p.subIDs[second.Name], "re-subscribing (%v)", secondID)
 }
 
 // The read pump reports ready and wires subscriptions by matching bare method
@@ -471,8 +468,10 @@ func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := facadeMethodFor(tc.profile, tc.method)
-			require.True(t, ok == tc.ok, "facadeMethodFor (%v)", ok)
-			require.False(t, ok && got != tc.want, "facadeMethodFor (%v)", got)
+			require.Equal(t, tc.ok, ok, "facadeMethodFor (%v)", ok)
+			if ok {
+				require.Equal(t, tc.want, got, "facadeMethodFor (%v)", got)
+			}
 		})
 	}
 }

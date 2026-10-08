@@ -35,7 +35,7 @@ func TestBundledManifestSetMatchesEngineTable(t *testing.T) {
 	}
 
 	for _, engine := range engines.All() {
-		assert.True(t, have[engine.Name], "no manifests/")
+		assert.Contains(t, have, engine.Name, "no manifests/")
 		delete(have, engine.Name)
 	}
 	for name := range have {
