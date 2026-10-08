@@ -154,6 +154,85 @@ func TestUninstallManagedKeepsTheMarkerWhenRemovalFails(t *testing.T) {
 	}
 }
 
+// TestUninstallManagedCarriesOnPastAPartialRemoval covers an engine whose files
+// are only partly deleted. Its uninstall fails, so it keeps the install marker
+// and reports the failure, and the engine after it is still removed: one stuck
+// engine must not leave the others behind, and the caller decides what a
+// failure means for the rest of its work.
+func TestUninstallManagedCarriesOnPastAPartialRemoval(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions this test relies on")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("a read-only directory does not stop a delete on Windows")
+	}
+	oldRetries, oldBackoff := uninstallRetries, uninstallBackoff
+	uninstallRetries, uninstallBackoff = 1, time.Millisecond
+	defer func() { uninstallRetries, uninstallBackoff = oldRetries, oldBackoff }()
+
+	stuckRoot := t.TempDir()
+	stuckBinary, stuckWeights := vendorEngineOnDisk(t, stuckRoot)
+	cache := filepath.Join(stuckRoot, "cache", "blob")
+	if err := os.MkdirAll(filepath.Dir(cache), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The engine's bin directory cannot be emptied, so the binary survives and
+	// the engine is still detected. Its cache can be, and goes.
+	if err := os.Chmod(filepath.Dir(stuckBinary), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(stuckBinary), 0o700) })
+	stuck := vendorEngineManifest(stuckRoot, filepath.Join(stuckRoot, "models"), []string{stuckRoot})
+	stuck.Engine = "stuck"
+
+	cleanRoot := t.TempDir()
+	cleanBinary, _ := vendorEngineOnDisk(t, cleanRoot)
+	clean := vendorEngineManifest(cleanRoot, filepath.Join(cleanRoot, "models"), []string{cleanRoot})
+	clean.Engine = "clean"
+
+	reg := NewRegistry()
+	reg.engines[stuck.Engine] = stuck
+	reg.engines[clean.Engine] = clean
+	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex.detectTimeout = 100 * time.Millisecond
+	for _, engine := range []string{stuck.Engine, clean.Engine} {
+		if err := writeInstallMarker(filepath.Join(ex.baseDir, engine), engine); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	outcomes := map[string]ManagedUninstall{}
+	for _, outcome := range ex.UninstallManaged(context.Background()) {
+		outcomes[outcome.Engine] = outcome
+	}
+
+	if got := outcomes[stuck.Engine]; got.Removed || got.Error == "" {
+		t.Errorf("the partly removed engine reported %+v, want a failure", got)
+	}
+	if !installedByPAIR(filepath.Join(ex.baseDir, stuck.Engine)) {
+		t.Error("the partly removed engine lost its marker, so nothing may finish removing it")
+	}
+	if _, err := os.Stat(stuckBinary); err != nil {
+		t.Errorf("the undeletable binary is gone, so this did not exercise a partial removal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(cache)); !os.IsNotExist(err) {
+		t.Errorf("the deletable part of the engine survived (err=%v)", err)
+	}
+	if _, err := os.Stat(stuckWeights); err != nil {
+		t.Errorf("a failed removal deleted downloaded models: %v", err)
+	}
+
+	if got := outcomes[clean.Engine]; !got.Removed || got.Error != "" {
+		t.Errorf("the engine after the failure reported %+v, want it removed", got)
+	}
+	if _, err := os.Stat(cleanBinary); !os.IsNotExist(err) {
+		t.Errorf("the engine after the failure survived (err=%v)", err)
+	}
+}
+
 // TestUninstallManagedWithoutDataDirRemovesNothing covers losing the app data
 // directory, which is where ownership is recorded. With no way to tell whose
 // install an engine is, the safe answer is to remove none of them.
