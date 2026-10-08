@@ -11,6 +11,15 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 0.1.12 — A rebuilt terminal interface, and one model catalogue for both front ends (#117)
+
+- The terminal interface is organised around machines: Nodes, Jobs, Service, Errors, and Logs, with a per-machine drill-down for engines, models, ports, and hardware.
+- Engines can be started with your own arguments and environment variables, edited from the terminal interface on this machine or on a paired one. Changes are validated before they are saved.
+- Downloadable models are served by the engine manager, so the terminal interface and the desktop application browse the same catalogue.
+- The Inference Demo runs from the terminal interface's Jobs tab, so a headless machine can demonstrate routing.
+- The terminal interface says when a newer release of PAIR is published, on every tab until dismissed. It installs nothing.
+- Pairing keys follow the words on screen: `p` pairs, `a` accepts, `f` finds a machine by address.
+
 ## 0.1.11 — llama.cpp is a PAIR-managed engine (#148)
 
 - llama.cpp can be installed, started, stopped, and updated from PAIR, alongside Ollama and LM Studio.
