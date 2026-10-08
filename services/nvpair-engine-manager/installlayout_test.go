@@ -157,7 +157,8 @@ func extractArchive(t *testing.T, download Fetch, installDir string, strip bool)
 		// With --fail, curl exits 22 for an HTTP status of 400 or above. That is
 		// the manifest being wrong — a release tag that moved, most likely — so
 		// it has to fail. Skipping it would report the exact breakage this test
-		// exists to catch as "no result".
+		// exists to catch as "no result". 22 is curl's own code, the same on
+		// every platform; on Windows this runs curl.exe, not PowerShell's alias.
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == 22 {
 			t.Fatalf("%s is not downloadable: %s", download.URL, strings.TrimSpace(string(out)))
