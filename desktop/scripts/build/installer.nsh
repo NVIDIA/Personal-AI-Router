@@ -81,11 +81,11 @@
   ClearErrors
 !macroend
 
-; Remove the engines Personal AI Router installed, which the data-root removal
-; below cannot do on its own. Ollama and llama.cpp install under a data root and
-; so disappear with it, but LM Studio's vendor installer always lands in
-; %USERPROFILE%\.lmstudio and nothing here ever reached it — so "any engines
-; Personal AI Router installed" removed one engine and left the other.
+; Remove the engines NVIDIA PAIR installed, which the data-root removal below
+; cannot do on its own. Ollama and llama.cpp install under a data root and so
+; disappear with it, but LM Studio's vendor installer always lands in
+; %USERPROFILE%\.lmstudio and nothing here ever reached it — so removing "the
+; engines NVIDIA PAIR installed" removed one engine and left the other.
 ;
 ; engine-manager owns this because the manifests do: it knows each engine's
 ; install location, and it skips each engine's model store, so the prompt's
@@ -102,7 +102,7 @@
 ; when an individual engine cannot be removed, so every failure mode here lets
 ; the uninstall continue.
 !macro pairUninstallManagedEngines
-  DetailPrint "Removing engines Personal AI Router installed..."
+  DetailPrint "Removing engines NVIDIA PAIR installed..."
   nsExec::ExecToLog '"$INSTDIR\resources\cli-bin\nvpair-engine-manager.exe" --uninstall-managed'
 !macroend
 
