@@ -17,10 +17,10 @@ type ProgressEvent struct {
 	Message string `json:"message,omitempty"`
 }
 
-// wirePercentIncluded reports whether a pull progress percent should appear on
-// the wire. Zero means indeterminate (CLI pulls without byte progress); negative
-// values are terminal error sentinels. Install progress still always includes
-// percent (including 0) via emitInstallProgress.
+// wirePercentIncluded reports whether an install or pull progress percent should
+// appear on the wire. Zero means indeterminate (an opaque install command, or a
+// CLI pull or download without byte progress); negative values are terminal
+// error sentinels.
 func wirePercentIncluded(pct int) bool {
 	return pct > 0 || pct < 0
 }

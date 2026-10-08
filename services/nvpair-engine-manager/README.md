@@ -83,14 +83,15 @@ Notifications (service → caller): `engine:ready{version}`,
 loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `loadedByEngine`) so a consumer swaps its whole snapshot,
-`engine:install-progress{engine, stage, percent}`,
-`engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
+`engine:install-progress{engine, stage, percent?, error?}` (`error` on the
+terminal `failed` frame),
+`engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
 stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
 a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
 UI converges even if its synchronous call already timed out),
-`engine:remote-progress{opId, node, engine, op, stage, percent, message}`
+`engine:remote-progress{opId, node, engine, op, stage, percent?, message}`
 (relayed live progress for a remote install/pull), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
@@ -116,6 +117,12 @@ the download could not be confirmed stopped alongside the original pull error.
 If the start acknowledgement is lost or unreadable, acceptance and cancellation
 are reported as unconfirmed without unloading an unowned download. The monitored
 model must match `params.model`; mismatches are rejected before subscribing.
+
+`percent` on all three progress notifications is present only when the step is
+measurable (download bytes, byte-progress pulls) or terminal (`100` on install
+`done` / `already-installed`, `-1` on install `failed` and pull `error`). An
+indeterminate step omits it — the install `verified` and `installing` stages
+always do — so a UI renders the stage alone.
 
 The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer

@@ -255,16 +255,26 @@ func (st *engineState) pathVars() map[string]string {
 	return vars
 }
 
-func progress(engine, stage string, pct int) map[string]any {
-	return map[string]any{"engine": engine, "stage": stage, "percent": pct}
-}
-
 // emitInstallProgress reports one install-progress step to both consumers: the
 // local engine:install-progress notification (this node's UI) and the progress
-// hub (so an ec streaming handler can relay it to a remote initiator).
+// hub (so an ec streaming handler can relay it to a remote initiator). A pct of
+// 0 marks a step with no measurable progress and is omitted from the wire.
 func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
-	e.notify("engine:install-progress", progress(engine, stage, pct))
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct})
+	e.emitInstallFrame(engine, stage, pct, "")
+}
+
+// emitInstallFrame is emitInstallProgress with an optional failure reason,
+// carried as "error" on the notification and Message on the hub event.
+func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string) {
+	params := map[string]any{"engine": engine, "stage": stage}
+	if wirePercentIncluded(pct) {
+		params["percent"] = pct
+	}
+	if errMsg != "" {
+		params["error"] = errMsg
+	}
+	e.notify("engine:install-progress", params)
+	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct, Message: errMsg})
 }
 
 // emitPullProgress reports one model-pull step to both consumers: the local

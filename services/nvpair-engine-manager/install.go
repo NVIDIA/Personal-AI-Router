@@ -70,7 +70,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		// Escape hatch: vendor-script install with no checksum. Logged
 		// loudly so the weaker guarantee is never silent.
 		slog.Warn("running UNPINNED script install (no checksum verification)", "engine", engine)
-		e.emitInstallProgress(engine, "installing", 50)
+		e.emitInstallProgress(engine, "installing", 0)
 		argv, err := resolveArgs(inst.Script, vars)
 		if err != nil {
 			e.reportInstallFailed(engine, err)
@@ -94,7 +94,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			}
 			defer os.Remove(dp)
 			vars["download"] = dp
-			e.emitInstallProgress(engine, "verified", 50)
+			e.emitInstallProgress(engine, "verified", 0)
 		}
 		if len(inst.Artifacts) > 0 {
 			paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
@@ -109,7 +109,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			e.emitInstallProgress(engine, "verified", 50)
 		}
 		if len(inst.Run) > 0 {
-			e.emitInstallProgress(engine, "installing", 75)
+			e.emitInstallProgress(engine, "installing", 0)
 			args, err := resolveArgs(inst.Run, vars)
 			if err != nil {
 				e.reportInstallFailed(engine, err)
@@ -456,8 +456,7 @@ func runManifestCommand(ctx context.Context, argv []string, environment map[stri
 }
 
 func (e *Executor) reportInstallFailed(engine string, err error) {
-	e.notify("engine:install-progress", map[string]any{"engine": engine, "stage": "failed", "percent": -1, "error": err.Error()})
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: "failed", Percent: -1, Message: err.Error()})
+	e.emitInstallFrame(engine, "failed", -1, err.Error())
 	e.reporter.report(serviceError{
 		ID: installFailedID(engine), Message: err.Error(),
 		Severity: "error", Action: "retry", EngineType: engine, Operation: "install",
