@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 0.1.10 — The desktop app is called NVIDIA PAIR (#147)
+
+- The application now appears as **NVIDIA PAIR** in Finder, the Dock, and the macOS menu bar, instead of the abbreviated `PAIR`.
+
 ## 0.1.9 — Clearer in-flight jobs (#141)
 
 - Jobs that have not started yet are labeled In flight, and they and their connection lines use the same yellow as the GPU chart.
