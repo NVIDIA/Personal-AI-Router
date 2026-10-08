@@ -83,6 +83,7 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	}{
 		{"ollama native chat", ollama, "POST", "/api/chat", roleInferencePOST, true},
 		{"ollama openai chat", ollama, "POST", "/v1/chat/completions", roleInferencePOST, true},
+		{"ollama openai responses", ollama, "POST", "/v1/responses", roleInferencePOST, true},
 		{"ollama anthropic messages", ollama, "POST", "/v1/messages", roleInferencePOST, true},
 		{"ollama native list", ollama, "GET", "/api/tags", roleModelListNativeGET, true},
 		{"ollama openai list", ollama, "GET", "/v1/models", roleModelListOpenAIGET, true},
@@ -91,6 +92,7 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		{"ollama models passthrough", ollama, http.MethodGet, "/models", 0, false},
 
 		{"lmstudio chat", lmstudio, "POST", "/v1/chat/completions", roleInferencePOST, true},
+		{"lmstudio responses", lmstudio, "POST", "/v1/responses", roleInferencePOST, true},
 		{"lmstudio anthropic messages", lmstudio, "POST", "/v1/messages", roleInferencePOST, true},
 		{"lmstudio list", lmstudio, "GET", "/v1/models", roleModelListOpenAIGET, true},
 		{"lmstudio models passthrough", lmstudio, http.MethodGet, "/models", 0, false},
@@ -103,7 +105,9 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		// inference path would emit a workload.
 		{"wrong method on list", ollama, "POST", "/v1/models", 0, false},
 		{"wrong method on inference", ollama, "GET", "/api/chat", 0, false},
+		{"wrong method on responses", ollama, "GET", "/v1/responses", 0, false},
 		{"llamacpp models post passthrough", llamacpp, http.MethodPost, "/models", 0, false},
+		{"llamacpp responses", llamacpp, "POST", "/v1/responses", roleInferencePOST, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			role, ok := tc.profile.roleFor(tc.method, tc.path)
@@ -123,6 +127,12 @@ func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
 
 	if !isInferenceRequest(ollama, "POST", "/api/generate") {
 		t.Error("ollama /api/generate must be inference")
+	}
+	if !isInferenceRequest(ollama, "POST", "/v1/responses") {
+		t.Error("ollama /v1/responses must be inference so model-owner filtering applies")
+	}
+	if !isInferenceRequest(lmstudio, "POST", "/v1/responses") {
+		t.Error("lmstudio /v1/responses must be inference so model-owner filtering applies")
 	}
 	if isInferenceRequest(lmstudio, "POST", "/api/generate") {
 		t.Error("lmstudio serves no native routes, so /api/generate is not inference for it")
