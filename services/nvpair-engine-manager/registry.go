@@ -751,8 +751,10 @@ func (p *Platform) validate(key string) error {
 			resolved := filepath.Clean(expandPath(target))
 			store := filepath.Clean(expandPath(p.ModelsDir))
 			// At the store, or inside it. Removing part of a model library is
-			// as destructive as removing all of it.
-			if pathWithinRoot(store, resolved) {
+			// as destructive as removing all of it. Compared without case: one
+			// manifest runs on filesystems of both kinds, and wherever case is
+			// ignored a second spelling is the store.
+			if pathWithinRoot(strings.ToLower(store), strings.ToLower(resolved)) {
 				return fmt.Errorf("platform %q: uninstall.remove %q is at or inside the model store %q — uninstall removes the engine, not the user's models", key, target, p.ModelsDir)
 			}
 		}

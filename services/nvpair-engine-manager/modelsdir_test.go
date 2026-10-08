@@ -145,11 +145,6 @@ func TestValidateRejectsRemovalsThatReachTheModelStore(t *testing.T) {
 		}
 		err := platform.validate(runtime.GOOS + "/" + runtime.GOARCH)
 		if err == nil {
-			// The mixed-case entry is only the same path where the filesystem
-			// says so, which is where widening the removal would do harm.
-			if name == "the store, mixed case" && !caseInsensitiveFS() {
-				continue
-			}
 			t.Errorf("%s: accepted uninstall.remove %v with models_dir %q", name, uninstall.remove, uninstall.modelsDir)
 		}
 	}
@@ -184,6 +179,100 @@ func TestRemoveTreePreservingKeepsNestedStore(t *testing.T) {
 		if _, err := os.Stat(gone); !os.IsNotExist(err) {
 			t.Errorf("%q survived the uninstall (err=%v)", gone, err)
 		}
+	}
+}
+
+// TestRemoveTreePreservingKeepsASymlinkedStore is the guard for a model library
+// moved and linked back. With ~/.lmstudio/models a symlink to a sibling
+// directory, a removal that matched the store by path kept the link and deleted
+// the sibling, which is where the models were.
+func TestRemoveTreePreservingKeepsASymlinkedStore(t *testing.T) {
+	engineRoot := filepath.Join(t.TempDir(), ".lmstudio")
+	weights := filepath.Join(engineRoot, "weights")
+	model := filepath.Join(weights, "model.gguf")
+	binary := filepath.Join(engineRoot, "bin", "lms")
+	for _, file := range []string{model, binary} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := filepath.Join(engineRoot, "models")
+	if err := os.Symlink(weights, store); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	if err := removeTreePreserving(engineRoot, store); err != nil {
+		t.Fatalf("removeTreePreserving: %v", err)
+	}
+
+	if _, err := os.Stat(model); err != nil {
+		t.Errorf("deleted the directory the store links to: %v", err)
+	}
+	if _, err := os.Lstat(store); err != nil {
+		t.Errorf("removed the store's link: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(binary)); !os.IsNotExist(err) {
+		t.Errorf("the engine's own files survived (err=%v)", err)
+	}
+}
+
+// TestRemoveTreePreservingKeepsADeeperStore covers a store more than one level
+// below the removal, where the removal recurses: the siblings at every level on
+// the way go, and the store stays.
+func TestRemoveTreePreservingKeepsADeeperStore(t *testing.T) {
+	engineRoot := filepath.Join(t.TempDir(), ".engine")
+	model := filepath.Join(engineRoot, "data", "models", "model.gguf")
+	binary := filepath.Join(engineRoot, "bin", "engine")
+	cache := filepath.Join(engineRoot, "data", "cache", "blob")
+	for _, file := range []string{model, binary, cache} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := removeTreePreserving(engineRoot, filepath.Join(engineRoot, "data", "models")); err != nil {
+		t.Fatalf("removeTreePreserving: %v", err)
+	}
+
+	if _, err := os.Stat(model); err != nil {
+		t.Errorf("model weights were removed: %v", err)
+	}
+	for _, gone := range []string{filepath.Join(engineRoot, "bin"), filepath.Join(engineRoot, "data", "cache")} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%q survived the uninstall (err=%v)", gone, err)
+		}
+	}
+}
+
+// TestRemoveTreePreservingKeepsAStoreSpelledInAnotherCase checks a store named
+// in a different case is kept wherever the filesystem treats both spellings as
+// one directory. That is a property of the filesystem, not the operating
+// system: a macOS volume can be case-sensitive.
+func TestRemoveTreePreservingKeepsAStoreSpelledInAnotherCase(t *testing.T) {
+	engineRoot := filepath.Join(t.TempDir(), ".engine")
+	model := filepath.Join(engineRoot, "Models", "model.gguf")
+	if err := os.MkdirAll(filepath.Dir(model), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(model, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(engineRoot, "models")); err != nil {
+		t.Skip("this filesystem is case-sensitive, so models and Models are different directories")
+	}
+
+	if err := removeTreePreserving(engineRoot, filepath.Join(engineRoot, "models")); err != nil {
+		t.Fatalf("removeTreePreserving: %v", err)
+	}
+
+	if _, err := os.Stat(model); err != nil {
+		t.Errorf("model weights were removed: %v", err)
 	}
 }
 
