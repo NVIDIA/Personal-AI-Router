@@ -1039,12 +1039,9 @@ func TestUninstallNoOpWhenAbsent(t *testing.T) {
 }
 
 // TestUninstallRemovesALinkedInstallDirNotItsTarget checks that {install_dir}
-// reaches the uninstall command as configured. When the install directory is a
-// symlink, rm -rf removes the link and leaves the directory it points to.
+// reaches uninstall.remove as configured. When the install directory is a
+// symlink, the removal deletes the link and leaves the directory it points to.
 func TestUninstallRemovesALinkedInstallDirNotItsTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses rm -rf on a directory symlink")
-	}
 	base := t.TempDir()
 	target := t.TempDir()
 	keep := filepath.Join(target, "keep")
@@ -1057,7 +1054,8 @@ func TestUninstallRemovesALinkedInstallDirNotItsTarget(t *testing.T) {
 	}
 	m := testEngineManifest(writeFakeBinary(t, link, "engine"))
 	platform := m.Platforms[hostKey()]
-	platform.Uninstall = &Uninstall{Run: []string{"rm", "-rf", "{install_dir}"}}
+	platform.ModelsDir = t.TempDir()
+	platform.Uninstall = &Uninstall{Remove: []string{"{install_dir}"}}
 	m.Platforms[hostKey()] = platform
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m

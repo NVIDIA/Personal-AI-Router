@@ -231,10 +231,9 @@ would only collide on the port. Consequences worth knowing:
   not.** If `<baseDir>/<engine>` is a symlink, the containment guard resolves
   it when it checks, so a binary under the target counts as managed. A symlink
   *inside* the install directory pointing outward is judged outside it, so a
-  planted link cannot nominate an unrelated file. Manifest commands receive
-  `{install_dir}` as configured, unresolved, so an uninstall's `rm -rf` or
-  `rmdir /s /q` removes a linked install directory's link, not the directory
-  it points to.
+  planted link cannot nominate an unrelated file. An uninstall receives
+  `{install_dir}` as configured, unresolved, so `uninstall.remove` deletes a
+  linked install directory's link, not the directory it points to.
 - **`engine:stop` may return an error while still saving OFF.** When stop
   declines a foreign listener it returns an actionable error, but the user's
   OFF choice is persisted anyway — UI layers should treat the saved desired
