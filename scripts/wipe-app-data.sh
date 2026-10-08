@@ -26,7 +26,7 @@
 #
 # Explicit exclusions (never add): ~/.ollama, ~/.lmstudio, external engine
 # installs, and the application install tree (Program Files / /opt/PAIR /
-# PAIR.app).
+# the macOS app bundle).
 # ---------------------------------------------------------------------------
 set -uo pipefail
 

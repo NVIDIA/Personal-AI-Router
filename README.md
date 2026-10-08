@@ -180,10 +180,12 @@ removes its firewall rules, unregisters its privileged helper, and then removes
 the application:
 
 ```bash
-sudo "/Applications/PAIR.app/Contents/Resources/installer-tools/uninstall-macos.sh"
+sudo "/Applications/NVIDIA PAIR.app/Contents/Resources/installer-tools/uninstall-macos.sh"
 ```
 
-Add `--purge` to remove your data as well. Dragging PAIR to the Trash instead
+An install from before the app was renamed is still called `PAIR.app`; use
+`/Applications/PAIR.app` in the path instead. Add `--purge` to remove your data
+as well. Dragging PAIR to the Trash instead
 leaves the privileged helper registered, so use the uninstaller.
 
 Your data means settings, logs, cluster identity and certificates, and any engine
