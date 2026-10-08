@@ -97,7 +97,7 @@ func startProxyWithLog(t *testing.T, level string) (stdin io.WriteCloser, msgs <
 				enabled = true
 			}
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out waiting for facade/enable")
+			require.FailNow(t, "timed out waiting for facade/enable")
 		}
 	}
 
@@ -120,10 +120,8 @@ func sendLine(t *testing.T, w io.Writer, v any) {
 	data, err := json.Marshal(v)
 	require.NoError(t, err, "marshal")
 	data = append(data, '\n')
-	{
-		_, err := w.Write(data)
-		require.NoError(t, err, "write")
-	}
+	_, err = w.Write(data)
+	require.NoError(t, err, "write")
 }
 
 // countLogLinesAtLevel counts stderr lines whose level tag matches `tag`
@@ -174,10 +172,7 @@ func TestLogSetLevelViaRPC(t *testing.T) {
 	var result struct {
 		Level string `json:"level"`
 	}
-	{
-		err := json.Unmarshal(resp.Result, &result)
-		require.NoError(t, err, "unmarshal result")
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &result), "unmarshal result")
 	require.Equal(t, "error", result.Level)
 
 	// Clear the buffer, wait long enough for at least one more mDNS scan
@@ -188,14 +183,8 @@ func TestLogSetLevelViaRPC(t *testing.T) {
 	time.Sleep(6 * time.Second)
 	postSwitch := stderr.String()
 
-	{
-		got := countLogLinesAtLevel(postSwitch, "DEBUG")
-		assert.Equal(t, 0, got, "expected 0 DEBUG lines after lowering to error (%v, %v)", got, postSwitch)
-	}
-	{
-		got := countLogLinesAtLevel(postSwitch, "INFO")
-		assert.Equal(t, 0, got, "expected 0 INFO lines after lowering to error (%v, %v)", got, postSwitch)
-	}
+	assert.Equal(t, 0, countLogLinesAtLevel(postSwitch, "DEBUG"), "expected 0 DEBUG lines after lowering to error, output: %s", postSwitch)
+	assert.Equal(t, 0, countLogLinesAtLevel(postSwitch, "INFO"), "expected 0 INFO lines after lowering to error, output: %s", postSwitch)
 
 	// Invalid level should produce a JSON-RPC error response.
 	sendLine(t, stdin, map[string]any{

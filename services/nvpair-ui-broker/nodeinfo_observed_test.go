@@ -6,7 +6,6 @@ package main
 import (
 	"encoding/json"
 	"net"
-	"reflect"
 	"testing"
 	"time"
 
@@ -62,14 +61,10 @@ func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
 			case msg := <-relayed:
 				require.Equal(t, noderec.MethodSetObservedAddresses, msg.Method, "relayed method")
 				var got noderec.ObservedAddressesParams
-				{
-					err := json.Unmarshal(msg.Params, &got)
-					require.NoError(t, err, "decode relayed params")
-				}
-				require.Len(t, got.Addresses, len(tc.addrs), "relayed addresses")
-				require.False(t, len(tc.addrs) > 0 && !reflect.DeepEqual(got.Addresses, tc.addrs), "relayed addresses")
+				require.NoError(t, json.Unmarshal(msg.Params, &got), "decode relayed params")
+				require.Equal(t, tc.addrs, append([]string{}, got.Addresses...), "relayed addresses")
 			case <-time.After(2 * time.Second):
-				require.FailNow(t, "test expectation failed", "observed addresses never reached the scanner")
+				require.FailNow(t, "observed addresses never reached the scanner")
 			}
 		})
 	}

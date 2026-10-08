@@ -37,9 +37,9 @@ func TestSetLoopbackAliasValidation(t *testing.T) {
 	} {
 		p := newTestProxy(ollamaOnlyProfile(t), NewCodec(rwNop{}), NewDiscovery(), 11434)
 		if err := p.soleFacade().setLoopbackAlias(tc.address); (err != nil) != tc.wantErr {
-			assert.Fail(t, "test expectation failed", "setLoopbackAlias(%q) error = %v, wantErr %v", tc.address, err, tc.wantErr)
-		} else {
-			assert.False(t, err == nil && p.soleFacade().aliasAddr != tc.wantAddr, "setLoopbackAlias")
+			assert.Fail(t, fmt.Sprintf("setLoopbackAlias(%q) error = %v, wantErr %v", tc.address, err, tc.wantErr))
+		} else if err == nil {
+			assert.Equal(t, tc.wantAddr, p.soleFacade().aliasAddr, "setLoopbackAlias")
 		}
 	}
 }
@@ -79,8 +79,8 @@ func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 	}
 	assertRouted(primaryPort)
 	assertRouted(aliasPort)
-	require.True(t, rec.has("workload:started"), "alias inference did not use the workload-producing router")
-	require.True(t, rec.has("workload:completed"), "alias inference did not use the workload-producing router")
+	require.Contains(t, rec.String(), "workload:started", "alias inference did not use the workload-producing router")
+	require.Contains(t, rec.String(), "workload:completed", "alias inference did not use the workload-producing router")
 
 	newPrimary := freeTCPPort(t)
 	require.NoError(t, p.soleFacade().setPort(newPrimary), "rebind primary")
@@ -121,7 +121,7 @@ func TestOccupiedLoopbackAliasLeavesOwnerAndPrimaryRunning(t *testing.T) {
 	_ = resp.Body.Close()
 	require.Equal(t, "owner", string(body), "existing owner response (%v)", body)
 	if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", primaryPort), time.Second); err != nil {
-		require.FailNow(t, "test expectation failed", "primary stopped after alias conflict: %v", err)
+		require.FailNow(t, fmt.Sprintf("primary stopped after alias conflict: %v", err))
 	} else {
 		_ = conn.Close()
 	}
@@ -129,7 +129,7 @@ func TestOccupiedLoopbackAliasLeavesOwnerAndPrimaryRunning(t *testing.T) {
 		rec.mu.Lock()
 		got := string(rec.b)
 		rec.mu.Unlock()
-		require.FailNow(t, "test expectation failed", "missing actionable alias warning: %s", got)
+		require.FailNow(t, fmt.Sprintf("missing actionable alias warning: %s", got))
 	}
 }
 

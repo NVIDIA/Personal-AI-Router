@@ -98,19 +98,16 @@ func TestExtractStrings(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractStrings(json.RawMessage(tc.raw), tc.spec)
-			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want, extractStrings(json.RawMessage(tc.raw), tc.spec))
 		})
 	}
 }
 
 func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
 	spec := &ActionResult{Array: "models", Field: "key"}
-	{
-		got, ok := extractStringsResult(json.RawMessage(`{"models":[]}`), spec)
-		require.True(t, ok, "explicit empty inventory (%v, %v)", got, ok)
-		assert.Empty(t, got, "explicit empty inventory")
-	}
+	got, ok := extractStringsResult(json.RawMessage(`{"models":[]}`), spec)
+	require.True(t, ok, "explicit empty inventory (%v, %v)", got, ok)
+	assert.Empty(t, got, "explicit empty inventory")
 	for _, raw := range []string{
 		`{}`,
 		`{"models":null}`,
@@ -119,11 +116,9 @@ func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
 		`{"models":[null]}`,
 		`not-json`,
 	} {
-		{
-			got, ok := extractStringsResult(json.RawMessage(raw), spec)
-			assert.False(t, ok, "invalid inventory (%v, %v, %v)", raw, got, ok)
-			assert.Empty(t, got, "invalid inventory (%v)", raw)
-		}
+		got, ok := extractStringsResult(json.RawMessage(raw), spec)
+		assert.False(t, ok, "invalid inventory (%v, %v, %v)", raw, got, ok)
+		assert.Empty(t, got, "invalid inventory (%v)", raw)
 	}
 }
 
@@ -141,21 +136,14 @@ func TestModels(t *testing.T) {
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 
 	// Stopped: nothing queryable.
-	{
-		got := ex.Models(ctx)
-		require.Empty(t, got, "Models() on stopped engine")
-	}
+	require.Empty(t, ex.Models(ctx), "Models() on stopped engine")
 
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
-	got := ex.Models(ctx)
-	want := []string{"llama3.2:1b"} // fake engine's seeded model
-	require.Equal(t, want, got, "Models() on running engine")
+	// The fake engine's seeded model.
+	require.Equal(t, []string{"llama3.2:1b"}, ex.Models(ctx), "Models() on running engine")
 
 	require.NoError(t, ex.Stop("fake"), "stop")
-	{
-		got := ex.Models(ctx)
-		require.Empty(t, got, "Models() after stop")
-	}
+	require.Empty(t, ex.Models(ctx), "Models() after stop")
 }
 
 // TestModelsResult drives ModelsResult() against the running fake engine: the
@@ -179,23 +167,17 @@ func TestModelsResult(t *testing.T) {
 
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	res = ex.ModelsResult(ctx)
-	wantModels := []string{"llama3.2:1b"} // fake engine's seeded model
-	require.Equal(t, wantModels, res.Models, "ModelsResult().Models")
-	wantByEngine := map[string][]string{"fake": {"llama3.2:1b"}}
-	require.Equal(t, wantByEngine, res.ByEngine, "ModelsResult().ByEngine")
+	// The fake engine's seeded model.
+	require.Equal(t, []string{"llama3.2:1b"}, res.Models, "ModelsResult().Models")
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.ByEngine, "ModelsResult().ByEngine")
 
 	// Deleting the last model is a successful empty inventory, not an unknown
 	// response: preserve the engine key so consumers can clear stale state.
-	{
-		_, err := ex.Action(ctx, "fake", "delete_model", json.RawMessage(`{"name":"llama3.2:1b"}`))
-		require.NoError(t, err, "delete last model")
-	}
+	_, err := ex.Action(ctx, "fake", "delete_model", json.RawMessage(`{"name":"llama3.2:1b"}`))
+	require.NoError(t, err, "delete last model")
 	res = ex.ModelsResult(ctx)
 	require.Empty(t, res.Models, "ModelsResult().Models after last delete")
-	{
-		want := map[string][]string{"fake": {}}
-		require.Equal(t, want, res.ByEngine, "ModelsResult().ByEngine after last delete")
-	}
+	require.Equal(t, map[string][]string{"fake": {}}, res.ByEngine, "ModelsResult().ByEngine after last delete")
 }
 
 // loadedActionManifest is testEngineManifest with both list_models (/api/tags)
@@ -238,22 +220,13 @@ func TestModelsResultLoaded(t *testing.T) {
 
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	res := ex.ModelsResult(ctx)
-	{
-		want := map[string][]string{"fake": {"llama3.2:1b"}}
-		require.Equal(t, want, res.LoadedByEngine, "LoadedByEngine")
-	}
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.LoadedByEngine, "LoadedByEngine")
 
 	// Evict everything: the key stays with an empty list.
 	setLoaded(t, ex, nil)
 	res = ex.ModelsResult(ctx)
-	{
-		want := map[string][]string{"fake": {}}
-		require.Equal(t, want, res.LoadedByEngine, "LoadedByEngine after evict")
-	}
-	{
-		want := []string{"llama3.2:1b"}
-		require.Equal(t, want, res.Models, "Models after evict")
-	}
+	require.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "LoadedByEngine after evict")
+	require.Equal(t, []string{"llama3.2:1b"}, res.Models, "Models after evict")
 }
 
 // TestModelsResultNoLoadedActionOmitsKey confirms an engine with no loaded_models
@@ -270,10 +243,7 @@ func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
-	{
-		res := ex.ModelsResult(ctx)
-		require.Nil(t, res.LoadedByEngine)
-	}
+	require.Nil(t, ex.ModelsResult(ctx).LoadedByEngine)
 }
 
 // TestSweepLoadedSeedsThenEmitsOnChange covers the watcher's core diff without
@@ -289,10 +259,7 @@ func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
 
 	// Seed sweep: baseline is {fake:[llama3.2:1b]}.
 	_, prev, _ := ex.sweepLoaded(ctx, nil)
-	{
-		want := map[string][]string{"fake": {"llama3.2:1b"}}
-		require.Equal(t, want, prev, "seed baseline")
-	}
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, prev, "seed baseline")
 
 	// No residency change -> no engine reported changed.
 	changed, prev, _ := ex.sweepLoaded(ctx, prev)
@@ -302,10 +269,7 @@ func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
 	setLoaded(t, ex, nil)
 	changed, _, res := ex.sweepLoaded(ctx, prev)
 	require.Equal(t, []string{"fake"}, changed, "changed")
-	{
-		want := map[string][]string{"fake": {}}
-		require.Equal(t, want, res.LoadedByEngine, "pushed LoadedByEngine")
-	}
+	require.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "pushed LoadedByEngine")
 }
 
 // TestSweepLoadedRetainsLastGoodOnTransientMiss covers the anti-churn guard: an
@@ -319,10 +283,7 @@ func TestSweepLoadedRetainsLastGoodOnTransientMiss(t *testing.T) {
 	// queryable: LoadedByEngine has no "fake" key this sweep.
 	changed, next, _ := ex.sweepLoaded(context.Background(), prev)
 	require.Empty(t, changed, "a disappeared engine reported")
-	{
-		want := map[string][]string{"fake": {"llama3.2:1b"}}
-		require.Equal(t, want, next, "baseline after miss")
-	}
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, next, "baseline after miss")
 }
 
 func TestChangedEngines(t *testing.T) {
@@ -341,10 +302,7 @@ func TestChangedEngines(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			{
-				got := changedEngines(tc.prev, tc.cur)
-				require.Equal(t, tc.want, got, "changedEngines")
-			}
+			require.Equal(t, tc.want, changedEngines(tc.prev, tc.cur), "changedEngines")
 		})
 	}
 }
@@ -365,10 +323,7 @@ func TestSameStringSet(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			{
-				got := sameStringSet(tc.a, tc.b)
-				require.Equal(t, tc.want, got, "sameStringSet")
-			}
+			require.Equal(t, tc.want, sameStringSet(tc.a, tc.b), "sameStringSet")
 		})
 	}
 }

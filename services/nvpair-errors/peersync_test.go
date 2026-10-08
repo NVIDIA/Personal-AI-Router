@@ -43,8 +43,7 @@ func TestCompositeKeyAvoidsCrossNodeCollision(t *testing.T) {
 	m.upsert(localErr(id, "node-a", 1000))
 	m.upsert(localErr(id, "node-b", 1000))
 
-	got := m.snapshot()
-	require.Len(t, got, 2, "snapshot len")
+	require.Len(t, m.snapshot(), 2, "snapshot len")
 }
 
 // TestLocalSnapshotFiltersToLocalOrigin: localSnapshot (what we serve
@@ -229,8 +228,7 @@ func TestPeerHostPorts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := peerHostPorts(tc.node)
-			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want, peerHostPorts(tc.node))
 		})
 	}
 }

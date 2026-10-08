@@ -42,9 +42,7 @@ func TestObserverRecordsTheAddressARemotePeerReached(t *testing.T) {
 		remote: tcpAddr(t, "10.172.55.129:51000"),
 	}, http.StateActive)
 
-	got := o.addresses()
-	require.Len(t, got, 1, "addresses")
-	require.Equal(t, "10.172.54.70", got[0], "addresses (%v)", got)
+	require.Equal(t, []string{"10.172.54.70"}, o.addresses(), "addresses")
 }
 
 // A loopback caller is this machine talking to itself and proves nothing about
@@ -56,10 +54,7 @@ func TestObserverIgnoresLoopbackPeers(t *testing.T) {
 		remote: tcpAddr(t, "127.0.0.1:51000"),
 	}, http.StateActive)
 
-	{
-		got := o.addresses()
-		require.Empty(t, got, "addresses")
-	}
+	require.Empty(t, o.addresses(), "addresses")
 }
 
 // A connection that never became a request is not evidence; only StateActive is.
@@ -72,10 +67,7 @@ func TestObserverIgnoresConnectionsThatSendNothing(t *testing.T) {
 	o.connState(conn, http.StateNew)
 	o.connState(conn, http.StateClosed)
 
-	{
-		got := o.addresses()
-		require.Empty(t, got, "addresses")
-	}
+	require.Empty(t, o.addresses(), "addresses")
 }
 
 // An address peers have stopped reaching must stop being reported, or a link that
@@ -90,10 +82,7 @@ func TestObserverExpiresStaleObservations(t *testing.T) {
 	}, http.StateActive)
 
 	now = now.Add(observationTTL + time.Second)
-	{
-		got := o.addresses()
-		require.Empty(t, got, "addresses")
-	}
+	require.Empty(t, o.addresses(), "addresses")
 }
 
 func TestObserverReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {

@@ -111,10 +111,8 @@ func TestPairingAllSuitesAndDirections(t *testing.T) {
 
 func TestExportBeforeRegistrationFails(t *testing.T) {
 	peer := NewPeer(PeerConfig{}, nil)
-	{
-		_, err := peer.Export("app", nil, 16)
-		assert.True(t, err == ErrNotRegistered, "Export before registration: expected ErrNotRegistered, got %v", err)
-	}
+	_, err := peer.Export("app", nil, 16)
+	assert.ErrorIs(t, err, ErrNotRegistered, "Export before registration")
 }
 
 func TestTamperedMACFails(t *testing.T) {

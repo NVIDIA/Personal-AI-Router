@@ -36,10 +36,7 @@ func TestFirstMintAdoptsExistingNodeUUID(t *testing.T) {
 
 	// And every subsequent resolution (now preferring identity.json) agrees:
 	// this is the empty-config equality invariant the whole fleet relies on.
-	{
-		got := nodeid.Resolve(base)
-		require.Equal(t, a, got, "post-mint nodeid.Resolve")
-	}
+	require.Equal(t, a, nodeid.Resolve(base), "post-mint nodeid.Resolve")
 }
 
 // TestFirstMintWhenClusterManagerIsFirst verifies the other ordering: when
@@ -52,8 +49,5 @@ func TestFirstMintWhenClusterManagerIsFirst(t *testing.T) {
 	id, err := loadOrMintIdentity(clusterDir)
 	require.NoError(t, err, "loadOrMintIdentity")
 	require.NotEqual(t, "", id.NodeUUID, "minted empty UUID")
-	{
-		got := nodeid.Resolve(base)
-		require.Equal(t, id.NodeUUID, got, "nodeid.Resolve")
-	}
+	require.Equal(t, id.NodeUUID, nodeid.Resolve(base), "nodeid.Resolve")
 }

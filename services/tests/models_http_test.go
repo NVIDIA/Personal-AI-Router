@@ -60,7 +60,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 	// address in the daemon's enrichment target selection).
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
 	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	require.NoError(t, err, "register (%v, %v)", instance, err)
+	require.NoError(t, err, "register (%v)", instance)
 	t.Cleanup(zsrv.Shutdown)
 	t.Logf("advertising %s @ %s (em=%d)", instance, nodeRecordService, emPort)
 
@@ -91,7 +91,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out waiting for %q with an enriched model list", instance)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for %q with an enriched model list", instance))
 		}
 	}
 }

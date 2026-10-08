@@ -197,10 +197,8 @@ func writeFrame(t *testing.T, w io.Writer, msg jsonrpc.Message) {
 	require.NoError(t, err, "marshal frame")
 	writeMu.Lock()
 	defer writeMu.Unlock()
-	{
-		_, err := w.Write(append(data, '\n'))
-		require.NoError(t, err, "write frame")
-	}
+	_, err = w.Write(append(data, '\n'))
+	require.NoError(t, err, "write frame")
 }
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
@@ -227,7 +225,7 @@ func waitForMethodOrTimeout(t *testing.T, ch <-chan jsonrpc.Message, method stri
 				return msg
 			}
 		case <-timer.C:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for method %q", timeout, method)
+			require.FailNowf(t, "timed out waiting for method", "%q after %s", method, timeout)
 		}
 	}
 }
@@ -248,7 +246,7 @@ func waitForResponseOrTimeout(t *testing.T, ch <-chan jsonrpc.Message, timeout t
 				return msg
 			}
 		case <-timer.C:
-			require.FailNow(t, "test expectation failed", "timed out waiting for JSON-RPC response")
+			require.FailNow(t, "timed out waiting for JSON-RPC response")
 		}
 	}
 }
@@ -264,10 +262,7 @@ func waitForUpdate(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Duratio
 		return nil
 	}
 	var list []errors.ServiceError
-	{
-		err := json.Unmarshal(msg.Params, &list)
-		require.NoError(t, err, "decode errors:update payload")
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &list), "decode errors:update payload")
 	return list
 }
 

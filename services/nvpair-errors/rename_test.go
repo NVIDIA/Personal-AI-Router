@@ -38,10 +38,7 @@ func TestDirectoryToPeerKeysByHostUUID(t *testing.T) {
 	require.True(t, ok, "node advertising er with an IP should project")
 	assert.Equal(t, "uuid-x", p.ID, "peer ID")
 	assert.Equal(t, "host-x", p.Host, "peer Host")
-	{
-		want := []string{"10.0.0.4", "192.168.1.4"}
-		assert.Equal(t, want, p.Addresses, "peer addresses")
-	}
+	assert.Equal(t, []string{"10.0.0.4", "192.168.1.4"}, p.Addresses, "peer addresses")
 }
 
 // TestSetLocalNodeID: the broker's --node-id override replaces the hostname

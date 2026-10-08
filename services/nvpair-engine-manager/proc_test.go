@@ -24,10 +24,7 @@ func TestIsOurEngineImage(t *testing.T) {
 		{``, false},
 	}
 	for _, tc := range cases {
-		{
-			got := isOurEngineImage(tc.image, bin)
-			assert.Equal(t, tc.want, got, "isOurEngineImage (%v)", bin)
-		}
+		assert.Equal(t, tc.want, isOurEngineImage(tc.image, bin), "isOurEngineImage (%v)", bin)
 	}
 	require.False(t, isOurEngineImage(bin, ``), "empty binPath must not match")
 }

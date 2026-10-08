@@ -103,7 +103,7 @@ func callRPC(t *testing.T, in io.Writer, msgs <-chan jsonrpc.Message, method str
 				return msg
 			}
 		case <-timer.C:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for response to %s (id=%d)", timeout, method, id)
+			require.FailNowf(t, "timed out waiting for response", "method %s (id=%d) after %s", method, id, timeout)
 		}
 	}
 }
@@ -227,10 +227,7 @@ func TestNodeSettingsPersistsAcrossProcessRestart(t *testing.T) {
 	data, err := os.ReadFile(settings)
 	require.NoError(t, err, "read persisted file")
 	var onDisk map[string]any
-	{
-		err := json.Unmarshal(data, &onDisk)
-		require.NoError(t, err, "persisted file is not valid JSON (%v, %v)", err, data)
-	}
+	require.NoError(t, json.Unmarshal(data, &onDisk), "persisted file is not valid JSON: %s", data)
 
 	// Second process: same file, fresh subprocess. Values must
 	// reappear.

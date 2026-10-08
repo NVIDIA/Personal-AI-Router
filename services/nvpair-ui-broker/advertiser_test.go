@@ -24,16 +24,12 @@ import (
 // running without engine-manager still advertises at the sensible default.
 func TestLocalEnginePortFallback(t *testing.T) {
 	b := &Broker{} // no engine-manager worker
-	{
-		got, ok := b.localEnginePort("ollama", defaultOllamaPort)
-		assert.True(t, ok, "no engine-manager: Ollama port fallback")
-		assert.Equal(t, defaultOllamaPort, got, "no engine-manager: Ollama port fallback")
-	}
-	{
-		got, ok := b.localEnginePort("lmstudio", defaultLMStudioPort)
-		assert.True(t, ok, "no engine-manager: LM Studio port fallback")
-		assert.Equal(t, defaultLMStudioPort, got, "no engine-manager: LM Studio port fallback")
-	}
+	got, ok := b.localEnginePort("ollama", defaultOllamaPort)
+	assert.True(t, ok, "no engine-manager: Ollama port fallback")
+	assert.Equal(t, defaultOllamaPort, got, "no engine-manager: Ollama port fallback")
+	got, ok = b.localEnginePort("lmstudio", defaultLMStudioPort)
+	assert.True(t, ok, "no engine-manager: LM Studio port fallback")
+	assert.Equal(t, defaultLMStudioPort, got, "no engine-manager: LM Studio port fallback")
 }
 
 func TestRunningEnginePort(t *testing.T) {
@@ -50,8 +46,8 @@ func TestRunningEnginePort(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			port, ok := runningEnginePort([]byte(tc.raw))
-			require.Equal(t, tc.port, port, "runningEnginePort (%v, %v)", port, ok)
-			require.Equal(t, tc.ok, ok, "runningEnginePort (%v, %v)", port, ok)
+			require.Equal(t, tc.port, port, "runningEnginePort")
+			require.Equal(t, tc.ok, ok, "runningEnginePort")
 		})
 	}
 }
@@ -86,16 +82,13 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 	// A nil client is intentional: collision detection must short-circuit before
 	// any health request can mistake the proxy for LM Studio.
 	b.reconcileAdvertiseLMStudio(nil)
-	{
-		got := b.regCache.Snapshot()
-		require.Empty(t, got, "LM Studio proxy was advertised as an engine")
-	}
+	require.Empty(t, b.regCache.Snapshot(), "LM Studio proxy was advertised as an engine")
 	select {
 	case got := <-localBackend:
 		require.Equal(t, 0, got.Port, "proxy listener was retained as the local backend (%v)", got)
 		require.False(t, got.Healthy, "proxy listener was retained as the local backend (%v)", got)
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "LM Studio proxy did not receive a cleared local backend")
+		require.FailNow(t, "LM Studio proxy did not receive a cleared local backend")
 	}
 }
 
@@ -112,10 +105,7 @@ func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 	// the cache with defaultLMStudioPort.
 	b.reconcileAdvertiseLMStudio(nil)
 
-	{
-		got := int(b.lmstudioState().backendPort.Load())
-		require.Equal(t, managedLMStudioBackendStart, got, "backend cache (%v, %v)", got, managedLMStudioBackendStart)
-	}
+	require.Equal(t, managedLMStudioBackendStart, int(b.lmstudioState().backendPort.Load()), "fallback must not overwrite the confirmed backend")
 }
 
 func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
@@ -224,10 +214,7 @@ func attachAdvertiserProxy(
 // so the self-forward collision check (port == proxy port) never falsely trips.
 func TestProxyListenPortNoProxy(t *testing.T) {
 	b := &Broker{} // no proxy worker
-	{
-		got := b.proxyListenPort()
-		assert.Equal(t, 0, got, "no proxy: proxyListenPort")
-	}
+	assert.Equal(t, 0, b.proxyListenPort(), "no proxy: proxyListenPort")
 }
 
 func TestOllamaFacadeIsPendingBackend(t *testing.T) {

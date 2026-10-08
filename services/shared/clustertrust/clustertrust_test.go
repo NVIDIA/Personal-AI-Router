@@ -70,10 +70,8 @@ func TestLoadIdentityAndUUID(t *testing.T) {
 	assert.NotEmpty(t, id.Cert.Certificate, "identity cert not loaded")
 
 	// Missing keypair is an error (caller falls back to plain HTTP).
-	{
-		_, err := LoadIdentity(t.TempDir())
-		require.Error(t, err, "expected error loading identity from an empty dir")
-	}
+	_, err = LoadIdentity(t.TempDir())
+	require.Error(t, err, "expected error loading identity from an empty dir")
 }
 
 func TestTrustPinMatchAndGate(t *testing.T) {
@@ -98,15 +96,11 @@ func TestTrustPinMatchAndGate(t *testing.T) {
 	// caller can build a pinned client), an unknown peer does not.
 	der, okDER := tr.DER("uuid-peer")
 	require.True(t, okDER, "pinned peer DER should resolve")
-	{
-		cfg := ClientTLSConfig(id.Cert, der)
-		require.NotNil(t, cfg, "ClientTLSConfig should present our leaf")
-		require.Len(t, cfg.Certificates, 1, "ClientTLSConfig should present our leaf")
-	}
-	{
-		_, ok := tr.DER("uuid-unknown")
-		require.False(t, ok, "an unpinned peer must not resolve a DER (cluster gate)")
-	}
+	cfg := ClientTLSConfig(id.Cert, der)
+	require.NotNil(t, cfg, "ClientTLSConfig should present our leaf")
+	require.Len(t, cfg.Certificates, 1, "ClientTLSConfig should present our leaf")
+	_, ok := tr.DER("uuid-unknown")
+	require.False(t, ok, "an unpinned peer must not resolve a DER (cluster gate)")
 
 	// Server config presents our leaf and requires a client cert.
 	sc := ServerTLSConfig(id.Cert)
@@ -136,19 +130,13 @@ func TestVerifyClientPin(t *testing.T) {
 		return r
 	}
 
-	{
-		uuid, ok := VerifyClientPin(reqWith(parse(peerCertPEM)), tr.MatchDER)
-		require.True(t, ok, "pinned client should verify,")
-		assert.Equal(t, "uuid-peer", uuid, "pinned client should verify,")
-	}
-	{
-		_, ok := VerifyClientPin(reqWith(parse(otherCertPEM)), tr.MatchDER)
-		require.False(t, ok, "an unpinned client must be rejected")
-	}
-	{
-		_, ok := VerifyClientPin(reqWith(nil), tr.MatchDER)
-		require.False(t, ok, "a request with no client cert must be rejected")
-	}
+	uuid, ok := VerifyClientPin(reqWith(parse(peerCertPEM)), tr.MatchDER)
+	require.True(t, ok, "pinned client should verify")
+	assert.Equal(t, "uuid-peer", uuid, "pinned client should verify")
+	_, ok = VerifyClientPin(reqWith(parse(otherCertPEM)), tr.MatchDER)
+	require.False(t, ok, "an unpinned client must be rejected")
+	_, ok = VerifyClientPin(reqWith(nil), tr.MatchDER)
+	require.False(t, ok, "a request with no client cert must be rejected")
 }
 
 // TestMeshClusterOfOneTrustsOnlyItself covers the "identity, zero peers" state

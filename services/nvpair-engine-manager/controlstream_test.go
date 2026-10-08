@@ -37,10 +37,7 @@ func TestStreamOpEmitsProgressThenResult(t *testing.T) {
 	require.Equal(t, "result", frames[1].Type, "bad result frame")
 	require.NotNil(t, frames[1].Status, "bad result frame")
 	require.True(t, frames[1].Status.Running, "bad result frame")
-	{
-		ct := rec.Header().Get("Content-Type")
-		require.Equal(t, "application/x-ndjson", ct, "expected ndjson content-type")
-	}
+	require.Equal(t, "application/x-ndjson", rec.Header().Get("Content-Type"), "expected ndjson content-type")
 }
 
 // TestStreamOpEmitsErrorFrame verifies a failing op yields a terminal error
@@ -81,10 +78,7 @@ func decodeFrames(t *testing.T, body string) []streamFrame {
 			continue
 		}
 		var f streamFrame
-		{
-			err := json.Unmarshal([]byte(line), &f)
-			require.NoError(t, err, "bad frame line (%v, %v)", line, err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(line), &f), "bad frame line (%v)", line)
 		out = append(out, f)
 	}
 	return out

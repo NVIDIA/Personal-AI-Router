@@ -77,7 +77,7 @@ func TestFailedChangedNotificationRetainsDeliveredRanks(t *testing.T) {
 	m.nodes["test-node-c"] = true
 	m.recomputeAll(false)
 	current := m.status().Engines[engine]
-	assert.True(t, equalRanks(current.Emitted, previous.Emitted), "failed update replaced the last successfully delivered snapshot")
+	assert.Equal(t, previous.Emitted, current.Emitted, "failed update replaced the last successfully delivered snapshot")
 	assert.Equal(t, previous.LastEmittedAt, current.LastEmittedAt, "failed update replaced the last successfully delivered snapshot")
 	m.recomputeAll(false)
 	orders := writer.orders(engine)
@@ -93,10 +93,7 @@ func TestFailedForcedNotificationRetainsDeliveredTimestamp(t *testing.T) {
 	m.emitted[engine] = engineState{ranks: m.emitted[engine].ranks, lastEmittedAt: 1}
 	writer.remaining = 1
 	m.recomputeAll(true)
-	{
-		got := m.status().Engines[engine].LastEmittedAt
-		assert.Equal(t, int64(1), got, "failed forced delivery advanced timestamp to")
-	}
+	assert.Equal(t, int64(1), m.status().Engines[engine].LastEmittedAt, "failed forced delivery advanced timestamp")
 	m.recomputeAll(false)
 	assert.Len(t, writer.orders(engine), 1, "previously delivered unchanged ranks were emitted")
 }

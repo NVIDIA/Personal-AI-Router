@@ -40,10 +40,8 @@ func TestPeerCallReturnsResult(t *testing.T) {
 	require.NoError(t, err, "Call err")
 	require.Nil(t, rpcErr, "Call err")
 	var out map[string]string
-	{
-		json.Unmarshal(res, &out)
-		assert.Equal(t, "ping", out["echo"], "unexpected result")
-	}
+	json.Unmarshal(res, &out)
+	assert.Equal(t, "ping", out["echo"], "unexpected result")
 }
 
 func TestPeerCallReturnsRPCError(t *testing.T) {
@@ -58,7 +56,7 @@ func TestPeerCallReturnsRPCError(t *testing.T) {
 	_, rpcErr, err := a.Call(ctx, "nope", nil)
 	require.NoError(t, err, "transport err")
 	require.NotNil(t, rpcErr, "want rpc error -32601")
-	assert.Equal(t, -32601, rpcErr.Code, "want rpc error -32601,")
+	assert.Equal(t, -32601, rpcErr.Code)
 }
 
 func TestPeerSimultaneousInboundRequest(t *testing.T) {
@@ -88,7 +86,7 @@ func TestPeerSimultaneousInboundRequest(t *testing.T) {
 		case r := <-ch:
 			require.NoError(t, r.err, "simultaneous call failed")
 		case <-time.After(3 * time.Second):
-			require.FailNow(t, "test expectation failed", "simultaneous calls deadlocked")
+			require.FailNow(t, "simultaneous calls deadlocked")
 		}
 	}
 }
@@ -106,9 +104,9 @@ func TestPeerNotificationOrdering(t *testing.T) {
 	for i := 0; i < n; i++ {
 		select {
 		case m := <-got:
-			assert.Equal(t, fmt.Sprintf("n%d", i), m, "out of order:")
+			assert.Equal(t, fmt.Sprintf("n%d", i), m, "out of order")
 		case <-time.After(2 * time.Second):
-			require.FailNow(t, "test expectation failed", "timed out waiting for notification")
+			require.FailNow(t, "timed out waiting for notification")
 		}
 	}
 }
@@ -121,7 +119,7 @@ func TestPeerCallCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	_, _, err := a.Call(ctx, "hang", nil)
-	assert.True(t, err == context.Canceled, "want context.Canceled,")
+	assert.ErrorIs(t, err, context.Canceled, "want context.Canceled")
 }
 
 func TestPeerCloseWakesPendingCall(t *testing.T) {
@@ -139,19 +137,17 @@ func TestPeerCloseWakesPendingCall(t *testing.T) {
 
 	select {
 	case e := <-errc:
-		assert.Equal(t, ErrPeerClosed, e, "want ErrPeerClosed,")
+		assert.Equal(t, ErrPeerClosed, e)
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "pending Call was not woken on close")
+		require.FailNow(t, "pending Call was not woken on close")
 	}
 }
 
 func TestPeerCallAfterCloseFailsFast(t *testing.T) {
 	a, _ := pipePeers(t)
 	a.Close()
-	{
-		_, _, err := a.Call(context.Background(), "m", nil)
-		assert.True(t, err == ErrPeerClosed, "want ErrPeerClosed after Close,")
-	}
+	_, _, err := a.Call(context.Background(), "m", nil)
+	assert.ErrorIs(t, err, ErrPeerClosed, "want ErrPeerClosed after Close")
 }
 
 func TestPeerRelayRequest(t *testing.T) {
@@ -173,11 +169,9 @@ func TestPeerRelayRequest(t *testing.T) {
 	case r := <-done:
 		require.NoError(t, r.err, "relay err")
 		var out map[string]int
-		{
-			json.Unmarshal(r.res, &out)
-			assert.Equal(t, 1, out["ok"], "unexpected relay result")
-		}
+		json.Unmarshal(r.res, &out)
+		assert.Equal(t, 1, out["ok"], "unexpected relay result")
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "relay respond not invoked")
+		require.FailNow(t, "relay respond not invoked")
 	}
 }

@@ -45,14 +45,8 @@ func TestToDirectoryNodeIgnoresSRVPort(t *testing.T) {
 	}
 	n, ok := toDirectoryNode(raw, false)
 	require.True(t, ok, "a record with uuid= should project")
-	{
-		got := n.Services[noderec.ServiceNodeInfo].Port
-		assert.Equal(t, 14318, got, "ni port")
-	}
-	{
-		got := n.Services[noderec.ServiceOllama].Port
-		assert.Equal(t, 11434, got, "ol port")
-	}
+	assert.Equal(t, 14318, n.Services[noderec.ServiceNodeInfo].Port, "ni port")
+	assert.Equal(t, 11434, n.Services[noderec.ServiceOllama].Port, "ol port")
 	for svc, st := range n.Services {
 		assert.NotEqual(t, 65000, st.Port, "the non-authoritative SRV port leaked into service (%v)", svc)
 	}
@@ -67,10 +61,8 @@ func TestToDirectoryNodeSkipsWithoutUUID(t *testing.T) {
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
 		TXT:       []string{"v=1", "er=14319"},
 	}
-	{
-		_, ok := toDirectoryNode(raw, false)
-		assert.False(t, ok, "a record without uuid= must be skipped, not projected")
-	}
+	_, ok := toDirectoryNode(raw, false)
+	assert.False(t, ok, "a record without uuid= must be skipped, not projected")
 }
 
 // TestToDirectoryNodeIPFallback: with a uuid= but no ip=, every advertised address
@@ -122,8 +114,7 @@ func TestToDirectoryNodeUnionsUnpublishedAddresses(t *testing.T) {
 	}
 	n, ok := toDirectoryNode(raw, false)
 	require.True(t, ok, "a record with uuid= should project")
-	want := []string{"10.0.0.5", "10.0.9.9"}
-	assert.Equal(t, want, n.IPs, "candidates")
+	assert.Equal(t, []string{"10.0.0.5", "10.0.9.9"}, n.IPs, "candidates")
 }
 
 func TestDirectoryUpsertRemoveSnapshot(t *testing.T) {
@@ -135,23 +126,17 @@ func TestDirectoryUpsertRemoveSnapshot(t *testing.T) {
 	assert.False(t, d.upsert(a), "second upsert of same hostUuid should not be new")
 	d.upsert(b)
 
-	{
-		all := d.snapshot("")
-		require.Len(t, all, 2, "snapshot(all)")
-		require.Equal(t, "a", all[0].HostUUID, "snapshot(all) (%v)", all)
-		require.Equal(t, "b", all[1].HostUUID, "snapshot(all) (%v)", all)
-	}
+	all := d.snapshot("")
+	require.Len(t, all, 2, "snapshot(all)")
+	require.Equal(t, "a", all[0].HostUUID, "snapshot(all) (%v)", all)
+	require.Equal(t, "b", all[1].HostUUID, "snapshot(all) (%v)", all)
 	// Service filter.
-	{
-		ol := d.snapshot(noderec.ServiceOllama)
-		require.Len(t, ol, 1, "snapshot(ol)")
-		require.Equal(t, "a", ol[0].HostUUID, "snapshot(ol) (%v)", ol)
-	}
+	ol := d.snapshot(noderec.ServiceOllama)
+	require.Len(t, ol, 1, "snapshot(ol)")
+	require.Equal(t, "a", ol[0].HostUUID, "snapshot(ol) (%v)", ol)
 	assert.True(t, d.remove("a"), "remove(a) should report existed")
 	assert.False(t, d.remove("a"), "remove(a) again should report not existed")
-	{
-		all := d.snapshot("")
-		require.Len(t, all, 1, "after remove, snapshot")
-		require.Equal(t, "b", all[0].HostUUID, "after remove, snapshot (%v)", all)
-	}
+	all = d.snapshot("")
+	require.Len(t, all, 1, "after remove, snapshot")
+	require.Equal(t, "b", all[0].HostUUID, "after remove, snapshot (%v)", all)
 }

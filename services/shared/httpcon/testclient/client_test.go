@@ -32,8 +32,5 @@ func TestConnectionCounterCountsDistinctConnections(t *testing.T) {
 		httpcon.DrainAndClose(resp.Body)
 	}
 
-	{
-		got := connections.Count()
-		assert.Equal(t, int32(requests), got)
-	}
+	assert.Equal(t, int32(requests), connections.Count())
 }

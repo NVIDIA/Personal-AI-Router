@@ -252,11 +252,7 @@ func TestValidateRejectsScriptWithFetch(t *testing.T) {
 	p := m.Platforms["linux/amd64"]
 	p.Install.Script = []string{"sh", "-c", "curl x | sh"} // coexists with fetch+run
 	m.Platforms["linux/amd64"] = p
-	{
-		err := m.Validate()
-		require.Error(t, err, "expected script+fetch rejection")
-		require.ErrorContains(t, err, "mutually exclusive", "expected script+fetch rejection")
-	}
+	require.ErrorContains(t, m.Validate(), "mutually exclusive", "expected script+fetch rejection")
 }
 
 func TestValidateRejects(t *testing.T) {
@@ -375,9 +371,7 @@ func TestValidateRejects(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := validManifest()
 			tc.mutate(&m)
-			err := m.Validate()
-			require.Error(t, err, "expected error containing")
-			require.ErrorContains(t, err, tc.want)
+			require.ErrorContains(t, m.Validate(), tc.want)
 		})
 	}
 }
@@ -385,14 +379,10 @@ func TestValidateRejects(t *testing.T) {
 func TestPlatformFor(t *testing.T) {
 	m := validManifest()
 	m.Platforms["windows/amd64"] = m.Platforms["linux/amd64"]
-	{
-		_, ok := m.PlatformFor("linux", "amd64")
-		require.True(t, ok, "expected linux/amd64 to resolve")
-	}
-	{
-		_, ok := m.PlatformFor("darwin", "arm64")
-		require.False(t, ok, "did not expect darwin/arm64 to resolve")
-	}
+	_, ok := m.PlatformFor("linux", "amd64")
+	require.True(t, ok, "expected linux/amd64 to resolve")
+	_, ok = m.PlatformFor("darwin", "arm64")
+	require.False(t, ok, "did not expect darwin/arm64 to resolve")
 }
 
 func TestResolvePlaceholders(t *testing.T) {
@@ -400,10 +390,8 @@ func TestResolvePlaceholders(t *testing.T) {
 	got, err := resolvePlaceholders("http://127.0.0.1:{port}/", vars)
 	require.NoError(t, err, "resolve")
 	require.Equal(t, "http://127.0.0.1:11434/", got, "got")
-	{
-		_, err := resolvePlaceholders("{download}", vars)
-		require.Error(t, err, "expected error for unresolved {download}")
-	}
+	_, err = resolvePlaceholders("{download}", vars)
+	require.Error(t, err, "expected error for unresolved {download}")
 }
 
 func TestResolveArgs(t *testing.T) {
@@ -477,10 +465,8 @@ func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
 func TestLoadRegistryRejectsInvalidFile(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.json"), []byte(`{"engine":"x"}`), 0o644))
-	{
-		_, err := LoadRegistry(dir)
-		require.Error(t, err, "expected LoadRegistry to reject an invalid manifest")
-	}
+	_, err := LoadRegistry(dir)
+	require.Error(t, err, "expected LoadRegistry to reject an invalid manifest")
 }
 
 func TestLoadRegistryMissingDirIsSkipped(t *testing.T) {
@@ -568,7 +554,7 @@ func TestBundledManifestsMerge(t *testing.T) {
 		assert.Equal(t, 11434, p.Runtime.Port, "ollama linux runtime: port")
 		assert.NotEqual(t, "", p.Runtime.Bin, "ollama linux runtime: port")
 	} else {
-		assert.Fail(t, "test expectation failed", "ollama linux/amd64 missing")
+		assert.Fail(t, "ollama linux/amd64 missing")
 	}
 
 	lm, ok := reg.Get("lmstudio")
@@ -579,7 +565,7 @@ func TestBundledManifestsMerge(t *testing.T) {
 		assert.Equal(t, 1235, p.Runtime.Port, "lmstudio darwin inherited runtime missing: port")
 		assert.NotEmpty(t, p.Runtime.Start, "lmstudio darwin inherited runtime missing: port")
 	} else {
-		assert.Fail(t, "test expectation failed", "lmstudio darwin/arm64 missing")
+		assert.Fail(t, "lmstudio darwin/arm64 missing")
 	}
 }
 
@@ -593,17 +579,11 @@ func TestBundledOllamaReadinessBudget(t *testing.T) {
 	require.True(t, ok, "ollama manifest not loaded")
 	for key, p := range m.Platforms {
 		if p.Runtime.Ready == nil {
-			assert.Fail(t, "test expectation failed", "%s: readiness probe missing", key)
+			assert.Failf(t, "readiness probe missing", "%s", key)
 			continue
 		}
-		{
-			got, want := p.Runtime.Ready.TimeoutS, 600
-			assert.Equal(t, want, got, " (%v)", key)
-		}
-		{
-			readiness := time.Duration(p.Runtime.Ready.TimeoutS) * time.Second
-			assert.Greater(t, remoteReadyResponseHeaderTimeout, readiness, " (%v, %v, %v)", key, remoteReadyResponseHeaderTimeout, readiness)
-		}
+		assert.Equal(t, 600, p.Runtime.Ready.TimeoutS, " (%v)", key)
+		assert.Greater(t, remoteReadyResponseHeaderTimeout, time.Duration(p.Runtime.Ready.TimeoutS)*time.Second, " (%v)", key)
 	}
 }
 
@@ -740,15 +720,13 @@ func TestLMStudioInstallBootstrapSafety(t *testing.T) {
 			if assert.NotNil(t, p.Install.Fetch, " (%v)", key) {
 				assert.Equal(t, "https://lmstudio.ai/install.ps1", p.Install.Fetch.URL, " (%v)", key)
 			}
-			wantRun := []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "{download}"}
-			assert.Equal(t, wantRun, p.Install.Run, " (%v)", key)
+			assert.Equal(t, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "{download}"}, p.Install.Run, " (%v)", key)
 			continue
 		}
 		assert.Empty(t, p.Install.Script, " (%v)", key)
 		if assert.NotNil(t, p.Install.Fetch, " (%v)", key) {
 			assert.Equal(t, "https://lmstudio.ai/install.sh", p.Install.Fetch.URL, " (%v)", key)
 		}
-		wantRun := []string{"bash", "{download}"}
-		assert.Equal(t, wantRun, p.Install.Run, " (%v)", key)
+		assert.Equal(t, []string{"bash", "{download}"}, p.Install.Run, " (%v)", key)
 	}
 }

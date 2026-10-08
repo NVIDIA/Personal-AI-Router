@@ -68,14 +68,10 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
 		require.NoError(t, err, "commitPairing err")
 		require.False(t, committed, "commitPairing committed after teardown; pin/member resurrected into an emptied cluster")
-		{
-			_, ok := m.trust.Get(f.uuid)
-			require.False(t, ok, "joiner pinned after teardown")
-		}
-		{
-			id, _ := m.clusterIdentity()
-			require.Equal(t, "", id, "clusterId")
-		}
+		_, ok := m.trust.Get(f.uuid)
+		require.False(t, ok, "joiner pinned after teardown")
+		id, _ := m.clusterIdentity()
+		require.Equal(t, "", id, "clusterId")
 		for _, n := range m.snapshotNodes() {
 			require.NotEqual(t, f.uuid, n.NodeUUID, "joiner recorded as a member after teardown")
 		}
@@ -90,10 +86,8 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
 		require.NoError(t, err, "commitPairing err")
 		require.True(t, committed, "commitPairing did not commit a normal pairing in the same cluster")
-		{
-			_, ok := m.trust.Get(f.uuid)
-			require.True(t, ok, "joiner not pinned after a normal pairing")
-		}
+		_, ok := m.trust.Get(f.uuid)
+		require.True(t, ok, "joiner not pinned after a normal pairing")
 		pin, _ := m.trust.Get(f.uuid)
 		require.Equal(t, "cluster-1", pin.ClusterID, "joiner pin clusterId")
 		found := false
@@ -120,10 +114,8 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
 		require.NoError(t, err, "commitPairing err")
 		require.False(t, committed, "commitPairing committed for a session the teardown abandoned")
-		{
-			_, ok := m.trust.Get(f.uuid)
-			require.False(t, ok, "joiner pinned via an abandoned session")
-		}
+		_, ok := m.trust.Get(f.uuid)
+		require.False(t, ok, "joiner pinned via an abandoned session")
 		for _, n := range m.snapshotNodes() {
 			require.NotEqual(t, f.uuid, n.NodeUUID, "joiner recorded as a member via an abandoned session")
 		}
@@ -154,7 +146,7 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		// run immediately and pin/record the joiner.
 		select {
 		case <-resCh:
-			require.FailNow(t, "test expectation failed", "commitPairing ran while the teardown boundary was held; not serialized")
+			require.FailNow(t, "commitPairing ran while the teardown boundary was held; not serialized")
 		case <-time.After(300 * time.Millisecond):
 		}
 
@@ -167,16 +159,12 @@ func TestCommitPairingEpochGate(t *testing.T) {
 			require.Nil(t, r.err, "commitPairing err")
 			require.False(t, r.committed, "commitPairing committed after the racing teardown; pin/member resurrected")
 		case <-time.After(5 * time.Second):
-			require.FailNow(t, "test expectation failed", "commitPairing did not return after the boundary was released")
+			require.FailNow(t, "commitPairing did not return after the boundary was released")
 		}
-		{
-			_, ok := m.trust.Get(f.uuid)
-			require.False(t, ok, "joiner pinned despite the racing teardown")
-		}
-		{
-			id, _ := m.clusterIdentity()
-			require.Equal(t, "", id, "clusterId")
-		}
+		_, ok := m.trust.Get(f.uuid)
+		require.False(t, ok, "joiner pinned despite the racing teardown")
+		id, _ := m.clusterIdentity()
+		require.Equal(t, "", id, "clusterId")
 	})
 }
 
@@ -192,14 +180,10 @@ func TestPairingCommitPersistenceFailureGrantsNoPin(t *testing.T) {
 	committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
 	require.Error(t, err, "commit (%v, %v)", committed, err)
 	require.False(t, committed, "commit (%v, %v)", committed, err)
-	{
-		_, ok := m.trust.Get(f.uuid)
-		require.False(t, ok, "pairing persistence failure still granted an mTLS pin")
-	}
-	{
-		_, ok := m.memberByNodeID(f.uuid)
-		require.False(t, ok, "pairing persistence failure left an in-memory member")
-	}
+	_, ok := m.trust.Get(f.uuid)
+	require.False(t, ok, "pairing persistence failure still granted an mTLS pin")
+	_, ok = m.memberByNodeID(f.uuid)
+	require.False(t, ok, "pairing persistence failure left an in-memory member")
 }
 
 // TestFinalizePairingAbortFailsLingeringInvite covers the post-commit bookkeeping
@@ -220,20 +204,15 @@ func TestFinalizePairingAbortFailsLingeringInvite(t *testing.T) {
 	// invite and session survive) before the Completion lands.
 	m.setClusterIdentity("cluster-2", "Switched")
 
-	err := m.finalizePairing(inviteID, sess, pi, cert)
-	require.ErrorIs(t, err, errPairingCommitStale, "finalizePairing error")
+	require.ErrorIs(t, m.finalizePairing(inviteID, sess, pi, cert), errPairingCommitStale, "finalizePairing error")
 
-	{
-		_, ok := m.trust.Get(f.uuid)
-		require.False(t, ok, "joiner pinned after a cluster switch")
-	}
+	_, ok := m.trust.Get(f.uuid)
+	require.False(t, ok, "joiner pinned after a cluster switch")
 	inv, ok := m.getInvite(inviteID)
 	require.True(t, ok, "invite missing; want a failed invite record, not a silent drop")
 	require.Equal(t, inviteStateFailed, inv.State, "invite state")
-	{
-		_, ok := m.getSession(inviteID)
-		require.False(t, ok, "session not deleted after an aborted completion")
-	}
+	_, ok = m.getSession(inviteID)
+	require.False(t, ok, "session not deleted after an aborted completion")
 }
 
 func TestPairingCommitFailureSuppressesEAPSuccess(t *testing.T) {

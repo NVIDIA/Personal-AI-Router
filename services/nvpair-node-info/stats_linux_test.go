@@ -120,10 +120,7 @@ func TestCPUUtilization(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			{
-				got := cpuUtilization(c.prev, c.cur)
-				require.Equal(t, c.want, got, "cpuUtilization() (%v)", got)
-			}
+			require.Equal(t, c.want, cpuUtilization(c.prev, c.cur), "cpuUtilization()")
 		})
 	}
 }
@@ -197,7 +194,9 @@ func TestParseMeminfoUsed(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			used, ok := parseMeminfoUsed(c.in)
 			require.Equal(t, c.wantOK, ok, "ok (%v)", ok)
-			require.False(t, ok && used != c.wantUsed, "used (%v)", used)
+			if ok {
+				require.Equal(t, c.wantUsed, used)
+			}
 		})
 	}
 }
@@ -339,9 +338,6 @@ func TestIsNvidiaSmiNA(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		{
-			got := isNvidiaSmiNA(c.in)
-			require.Equal(t, c.want, got, "isNvidiaSmiNA (%v)", got)
-		}
+		require.Equal(t, c.want, isNvidiaSmiNA(c.in), "isNvidiaSmiNA(%q)", c.in)
 	}
 }

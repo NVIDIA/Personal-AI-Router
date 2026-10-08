@@ -110,13 +110,10 @@ func readCaptureFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.responses:
 		var msg Message
-		{
-			err := json.Unmarshal(data, &msg)
-			require.NoError(t, err, "decode response frame (%v, %v)", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode response frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for response frame")
+		require.FailNow(t, "timed out waiting for response frame")
 		return Message{}
 	}
 }
@@ -131,13 +128,10 @@ func readNotificationFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.notifications:
 		var msg Message
-		{
-			err := json.Unmarshal(data, &msg)
-			require.NoError(t, err, "decode notification frame (%v, %v)", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode notification frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for notification frame")
+		require.FailNow(t, "timed out waiting for notification frame")
 		return Message{}
 	}
 }
@@ -160,7 +154,7 @@ func assertNoNotification(t *testing.T, rw *captureRW) {
 	t.Helper()
 	select {
 	case data := <-rw.notifications:
-		require.FailNow(t, "test expectation failed", "unexpected notification (%v)", data)
+		require.FailNow(t, fmt.Sprintf("unexpected notification (%v)", data))
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -169,10 +163,7 @@ func decodeResult[T any](t *testing.T, msg Message) T {
 	t.Helper()
 	require.Nil(t, msg.Error, "unexpected RPC error")
 	var result T
-	{
-		err := json.Unmarshal(msg.Result, &result)
-		require.NoError(t, err, "decode result")
-	}
+	require.NoError(t, json.Unmarshal(msg.Result, &result), "decode result")
 	return result
 }
 
@@ -382,7 +373,7 @@ func TestRunEmitsOnlyReadyOnStartup(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "Run did not return after cancel")
+		require.FailNow(t, "Run did not return after cancel")
 	}
 }
 
@@ -465,10 +456,7 @@ func TestSaveFailureRejectsValueAndDoesNotPersist(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err, "read settings")
 	var onDisk Settings
-	{
-		err := json.Unmarshal(data, &onDisk)
-		require.NoError(t, err, "decode settings (%v, %v)", err, data)
-	}
+	require.NoError(t, json.Unmarshal(data, &onDisk), "decode settings, raw: %s", data)
 	assert.Equal(t, "", onDisk.ClusterID, "rejected cluster_id was persisted to disk (%v)", onDisk)
 	assert.True(t, onDisk.ForcePorts, "subsequent successful set was not persisted (%v)", onDisk)
 }
@@ -600,10 +588,7 @@ func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
 	saved, err := os.ReadFile(path)
 	require.NoError(t, err, "re-read recovered file")
 	var asMap map[string]any
-	{
-		err := json.Unmarshal(saved, &asMap)
-		require.NoError(t, err, "recovered file is not valid JSON (%v, %v)", err, saved)
-	}
+	require.NoError(t, json.Unmarshal(saved, &asMap), "recovered file is not valid JSON, raw: %s", saved)
 	assert.Equal(t, "cluster-zzz", asMap["cluster_id"], "recovered file missing the new setting (%v)", saved)
 }
 
@@ -670,7 +655,7 @@ func TestLogSetLevelRequestAndNotification(t *testing.T) {
 	m.handleMessage(notificationMessage(applog.SetLevelMethod, applog.SetLevelParams{Level: "info"}))
 	select {
 	case f := <-rw.responses:
-		require.FailNow(t, "test expectation failed", "log/set-level notification should not respond (%v)", f)
+		require.FailNow(t, fmt.Sprintf("log/set-level notification should not respond (%v)", f))
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -715,7 +700,7 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 	case err := <-done:
 		require.NoError(t, err, "Run returned error")
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "Run did not return after shutdown")
+		require.FailNow(t, "Run did not return after shutdown")
 	}
 }
 
@@ -725,10 +710,7 @@ func readPipeFrame(t *testing.T, conn net.Conn, reader *bufio.Reader) Message {
 	line, err := reader.ReadBytes('\n')
 	require.NoError(t, err, "read pipe frame")
 	var msg Message
-	{
-		err := json.Unmarshal(line, &msg)
-		require.NoError(t, err, "decode pipe frame (%v, %v)", line, err)
-	}
+	require.NoError(t, json.Unmarshal(line, &msg), "decode pipe frame %q", line)
 	return msg
 }
 
@@ -754,8 +736,6 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 	data, err := json.Marshal(msg)
 	require.NoError(t, err, "marshal request")
 	data = append(data, '\n')
-	{
-		_, err := conn.Write(data)
-		require.NoError(t, err, "write request")
-	}
+	_, err = conn.Write(data)
+	require.NoError(t, err, "write request")
 }

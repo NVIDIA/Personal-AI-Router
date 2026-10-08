@@ -40,26 +40,17 @@ func eventsByType(evs []Event) map[string]int {
 func TestReconcileDiscoveredUpdatedRemoved(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(3))
 
-	{
-		got := eventsByType(b.reconcile(seenSet(node("a"))))
-		assert.Equal(t, 1, got[Discovered], "first scan:")
-	}
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet(node("a"))))[Discovered], "first scan")
 	// Same node, no change → no event.
 	require.Empty(t, b.reconcile(seenSet(node("a"))), "unchanged scan emitted")
 	// Changed TXT → updated.
-	{
-		got := eventsByType(b.reconcile(seenSet(node("a", "v=2"))))
-		assert.Equal(t, 1, got[Updated], "changed scan:")
-	}
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet(node("a", "v=2"))))[Updated], "changed scan")
 	// Absent for < threshold: no removal yet.
 	for i := 0; i < 2; i++ {
 		require.Empty(t, b.reconcile(seenSet()))
 	}
 	// Third consecutive miss reaches the threshold → removed.
-	{
-		got := eventsByType(b.reconcile(seenSet()))
-		assert.Equal(t, 1, got[Removed], "threshold miss:")
-	}
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet()))[Removed], "threshold miss")
 	require.Empty(t, b.Nodes(), "node not evicted")
 }
 
@@ -79,10 +70,7 @@ func TestDefaultMissThresholdOutlastsASaturatedNode(t *testing.T) {
 	for i := 1; i < missThresholdDefault; i++ {
 		require.Empty(t, b.reconcile(seenSet()))
 	}
-	{
-		got := eventsByType(b.reconcile(seenSet()))
-		assert.Equal(t, 1, got[Removed])
-	}
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet()))[Removed])
 }
 
 // A longer window must not mean a blind one. Probing and giving up are separate
@@ -107,9 +95,8 @@ func TestLivenessProbeRunsThroughoutTheWindowNotJustAtTheEnd(t *testing.T) {
 	for i := probeAfterMisses; i < missThresholdDefault; i++ {
 		require.Empty(t, b.reconcile(seenSet()))
 	}
-	asked := probes.Load()
-	assert.Equal(t, int32(missThresholdDefault-probeAfterMisses), asked, "probe ran")
-	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet()))[Removed], "node not evicted at the threshold after")
+	assert.Equal(t, int32(missThresholdDefault-probeAfterMisses), probes.Load(), "probe count")
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet()))[Removed], "node not evicted at the threshold")
 }
 
 // The reason for probing early is rescue: one answer clears the miss counter, so
@@ -193,7 +180,7 @@ func TestALoneNodeIsNotShieldedByTheEmptyScanGuard(t *testing.T) {
 	b.reconcile(seenSet(node("a")))
 
 	b.reconcile(seenSet())
-	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet()))[Removed], "a single known node was not evicted at its threshold (removed")
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet()))[Removed], "a single known node was not evicted at its threshold")
 }
 
 // One node answering proves the receive path works, so the run of excuses ends
@@ -219,7 +206,7 @@ func TestPartialScanStillPenalizesTheMissingNode(t *testing.T) {
 	b.reconcile(seenSet(node("a"), node("gone")))
 
 	b.reconcile(seenSet(node("a")))
-	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet(node("a"))))[Removed], "a node missing from scans that returned other nodes was not evicted (removed")
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet(node("a"))))[Removed], "a node missing from scans that returned other nodes was not evicted")
 }
 
 // A browser that knows about nobody is not failing when it hears nobody, so it
@@ -268,10 +255,7 @@ func TestLivenessProbeEvictsUnreachable(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(2), WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a")))
 	b.reconcile(seenSet())
-	{
-		got := eventsByType(b.reconcile(seenSet()))
-		assert.Equal(t, 1, got[Removed], "unreachable threshold-missed node not evicted")
-	}
+	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet()))[Removed], "unreachable threshold-missed node not evicted")
 	require.Empty(t, b.Nodes(), "unreachable node retained")
 }
 
@@ -333,8 +317,7 @@ func TestSeed(t *testing.T) {
 func TestPollReturnsSnapshot(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local")
 	b.browseFunc = func(context.Context) map[string]Node { return seenSet(node("a"), node("b")) }
-	got := b.Poll(context.Background())
-	require.Len(t, got, 2, "Poll returned")
+	require.Len(t, b.Poll(context.Background()), 2)
 }
 
 func TestRunEmitsAndCloses(t *testing.T) {
@@ -368,7 +351,7 @@ func TestRunEmitsAndCloses(t *testing.T) {
 			}
 		case <-timeout:
 			cancel()
-			require.FailNow(t, "test expectation failed", "timed out; events seen")
+			require.FailNow(t, "timed out", "events seen: %v", got)
 		}
 	}
 }
@@ -400,12 +383,12 @@ func TestSendMulticastQueryOnInterfaceUsesFirstIPv4AndMDNSTarget(t *testing.T) {
 		},
 	)
 	require.NoError(t, err, "sendMulticastQueryOnInterface")
-	assert.True(t, source.Equal(wantSource), "source")
-	assert.True(t, gotSource.Equal(wantSource), "source")
+	assert.Equal(t, wantSource.String(), source.String(), "source")
+	assert.Equal(t, wantSource.String(), gotSource.String(), "source")
 	assert.Same(t, ifi, gotInterface)
 	assert.Equal(t, string(payload), string(gotPayload))
 	require.NotNil(t, gotTarget)
-	assert.True(t, gotTarget.IP.Equal(net.IPv4(224, 0, 0, 251)), "target")
+	assert.Equal(t, "224.0.0.251", gotTarget.IP.String(), "target")
 	assert.Equal(t, 5353, gotTarget.Port)
 }
 
@@ -420,7 +403,7 @@ func TestSendMulticastQueryOnInterfaceReturnsSenderFailure(t *testing.T) {
 			return wantErr
 		},
 	)
-	assert.True(t, source.Equal(wantSource), "source")
+	assert.Equal(t, wantSource.String(), source.String(), "source")
 	require.ErrorIs(t, err, wantErr, "error")
 }
 
@@ -448,20 +431,11 @@ func TestSendFailuresNeedARunAndClearOnRecovery(t *testing.T) {
 	for range sendFailureThreshold - 1 {
 		b.recordSendOutcomes(map[string]bool{"eth0": false})
 	}
-	{
-		got := b.SendFailures()
-		assert.False(t, got["eth0"], "eth0 reported failed after")
-	}
+	assert.False(t, b.SendFailures()["eth0"], "eth0 reported failed before the consecutive-failure threshold")
 	b.recordSendOutcomes(map[string]bool{"eth0": false})
-	{
-		got := b.SendFailures()
-		assert.True(t, got["eth0"], "eth0 not reported failed after")
-	}
+	assert.True(t, b.SendFailures()["eth0"], "eth0 not reported failed after the consecutive-failure threshold")
 	b.recordSendOutcomes(map[string]bool{"eth0": true})
-	{
-		got := b.SendFailures()
-		assert.False(t, got["eth0"], "one successful send must clear the suppression outright")
-	}
+	assert.False(t, b.SendFailures()["eth0"], "one successful send must clear the suppression outright")
 }
 
 // TestSendFailuresForgetAnInterfaceThatIsGone: a VPN adapter that comes and goes
@@ -472,10 +446,7 @@ func TestSendFailuresForgetAnInterfaceThatIsGone(t *testing.T) {
 	for range sendFailureThreshold {
 		b.recordSendOutcomes(map[string]bool{"eth0": false, "tun0": false})
 	}
-	{
-		got := b.SendFailures()
-		assert.True(t, got["tun0"], "tun0 not reported failed after a full run")
-	}
+	assert.True(t, b.SendFailures()["tun0"], "tun0 not reported failed after a full run")
 
 	// tun0 is gone: the next scan attempts eth0 only.
 	b.recordSendOutcomes(map[string]bool{"eth0": false})

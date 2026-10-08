@@ -38,10 +38,7 @@ func TestIPCTransport(t *testing.T) {
 
 	waitNotify(t, frames, "engine:ready", 5*time.Second)
 	send(t, conn, 1, "engine:get-installed", nil)
-	{
-		r := waitResult(t, frames, "1", 5*time.Second)
-		require.Contains(t, string(r), "engines", "get-installed over IPC returned (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 5*time.Second)), "engines", "get-installed over IPC")
 	send(t, conn, 2, "shutdown", nil)
 	waitResult(t, frames, "2", 5*time.Second)
 }

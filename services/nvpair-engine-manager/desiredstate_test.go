@@ -27,26 +27,20 @@ func desiredTestExecutor(t *testing.T, manifest *Manifest, baseDir string) *Exec
 
 func TestDesiredStateStoresExplicitOffAndLeavesLegacyUnknown(t *testing.T) {
 	store := newDesiredStateStore(t.TempDir())
-	{
-		enabled, known, err := store.get("fake")
-		require.NoError(t, err, "legacy state (%v, %v, %v)", enabled, known, err)
-		require.False(t, known, "legacy state (%v, %v, %v)", enabled, known, err)
-		require.False(t, enabled, "legacy state (%v, %v, %v)", enabled, known, err)
-	}
+	enabled, known, err := store.get("fake")
+	require.NoError(t, err, "legacy state (%v, %v, %v)", enabled, known, err)
+	require.False(t, known, "legacy state (%v, %v, %v)", enabled, known, err)
+	require.False(t, enabled, "legacy state (%v, %v, %v)", enabled, known, err)
 	require.NoError(t, store.set("fake", false))
-	{
-		enabled, known, err := store.get("fake")
-		require.NoError(t, err, "saved OFF (%v, %v, %v)", enabled, known, err)
-		require.True(t, known, "saved OFF (%v, %v, %v)", enabled, known, err)
-		require.False(t, enabled, "saved OFF (%v, %v, %v)", enabled, known, err)
-	}
+	enabled, known, err = store.get("fake")
+	require.NoError(t, err, "saved OFF (%v, %v, %v)", enabled, known, err)
+	require.True(t, known, "saved OFF (%v, %v, %v)", enabled, known, err)
+	require.False(t, enabled, "saved OFF (%v, %v, %v)", enabled, known, err)
 	require.NoError(t, store.set("fake", true))
-	{
-		enabled, known, err := store.get("fake")
-		require.NoError(t, err, "saved ON (%v, %v, %v)", enabled, known, err)
-		require.True(t, known, "saved ON (%v, %v, %v)", enabled, known, err)
-		require.True(t, enabled, "saved ON (%v, %v, %v)", enabled, known, err)
-	}
+	enabled, known, err = store.get("fake")
+	require.NoError(t, err, "saved ON (%v, %v, %v)", enabled, known, err)
+	require.True(t, known, "saved ON (%v, %v, %v)", enabled, known, err)
+	require.True(t, enabled, "saved ON (%v, %v, %v)", enabled, known, err)
 }
 
 func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
@@ -60,20 +54,16 @@ func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 	second := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
 	t.Cleanup(second.StopAll)
 	require.NoError(t, second.RestoreEnabled(ctx), "restore ON")
-	{
-		st, err := second.Status("fake")
-		require.NoError(t, err, "restored status (%v, %v)", st, err)
-		require.True(t, st.Running, "restored status (%v, %v)", st, err)
-	}
+	st, err := second.Status("fake")
+	require.NoError(t, err, "restored status (%v, %v)", st, err)
+	require.True(t, st.Running, "restored status (%v, %v)", st, err)
 	require.NoError(t, second.Stop("fake"), "explicit stop")
 
 	third := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
 	require.NoError(t, third.RestoreEnabled(ctx), "restore after OFF")
-	{
-		st, err := third.Status("fake")
-		require.NoError(t, err, "OFF status (%v, %v)", st, err)
-		require.False(t, st.Running, "OFF status (%v, %v)", st, err)
-	}
+	st, err = third.Status("fake")
+	require.NoError(t, err, "OFF status (%v, %v)", st, err)
+	require.False(t, st.Running, "OFF status (%v, %v)", st, err)
 }
 
 func TestFailedRestoreRetainsDesiredOnForRetry(t *testing.T) {
@@ -93,11 +83,9 @@ func TestFailedRestoreRetainsDesiredOnForRetry(t *testing.T) {
 	retry := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
 	t.Cleanup(retry.StopAll)
 	require.NoError(t, retry.RestoreEnabled(context.Background()), "retry restore")
-	{
-		st, err := retry.Status("fake")
-		require.NoError(t, err, "retry status (%v, %v)", st, err)
-		require.True(t, st.Running, "retry status (%v, %v)", st, err)
-	}
+	st, err := retry.Status("fake")
+	require.NoError(t, err, "retry status (%v, %v)", st, err)
+	require.True(t, st.Running, "retry status (%v, %v)", st, err)
 }
 
 // TestDeclinedAdoptedStopStillPersistsOffIntent proves a user Stop that is
@@ -126,30 +114,21 @@ func TestDeclinedAdoptedStopStillPersistsOffIntent(t *testing.T) {
 	m.Platforms[key] = p
 
 	first := desiredTestExecutor(t, m, baseDir)
-	{
-		st, err := first.Status("fake")
-		require.NoError(t, err, "adopt foreign listener: status (%v, %v)", st, err)
-		require.True(t, st.Running, "adopt foreign listener: status (%v, %v)", st, err)
-	}
-	{
-		err := first.Stop("fake")
-		require.ErrorContains(t, err, "external management", "stop error")
-	}
-	{
-		enabled, known, err := first.desired.get("fake")
-		require.NoError(t, err, "desired after declined stop (%v, %v, %v)", enabled, known, err)
-		require.True(t, known, "desired after declined stop (%v, %v, %v)", enabled, known, err)
-		require.False(t, enabled, "desired after declined stop (%v, %v, %v)", enabled, known, err)
-	}
+	st, err := first.Status("fake")
+	require.NoError(t, err, "adopt foreign listener: status (%v, %v)", st, err)
+	require.True(t, st.Running, "adopt foreign listener: status (%v, %v)", st, err)
+	require.ErrorContains(t, first.Stop("fake"), "external management", "stop error")
+	enabled, known, err := first.desired.get("fake")
+	require.NoError(t, err, "desired after declined stop (%v, %v, %v)", enabled, known, err)
+	require.True(t, known, "desired after declined stop (%v, %v, %v)", enabled, known, err)
+	require.False(t, enabled, "desired after declined stop (%v, %v, %v)", enabled, known, err)
 
 	srv.Close()
 	fresh := desiredTestExecutor(t, m, baseDir)
 	require.NoError(t, fresh.RestoreEnabled(context.Background()), "restore after declined OFF")
-	{
-		st, err := fresh.Status("fake")
-		require.NoError(t, err, "declined-OFF engine was restarted: status (%v, %v)", st, err)
-		require.False(t, st.Running, "declined-OFF engine was restarted: status (%v, %v)", st, err)
-	}
+	st, err = fresh.Status("fake")
+	require.NoError(t, err, "declined-OFF engine was restarted: status (%v, %v)", st, err)
+	require.False(t, st.Running, "declined-OFF engine was restarted: status (%v, %v)", st, err)
 }
 
 func TestConfirmedStopPersistsOffDespiteCommandExitError(t *testing.T) {
@@ -187,18 +166,14 @@ func TestConfirmedStopPersistsOffDespiteCommandExitError(t *testing.T) {
 	}()
 	require.NoError(t, first.Stop("fake"), "endpoint-down stop should succeed despite command exit")
 	<-closed
-	{
-		enabled, known, err := first.desired.get("fake")
-		require.NoError(t, err, "saved state after confirmed stop (%v, %v, %v)", enabled, known, err)
-		require.True(t, known, "saved state after confirmed stop (%v, %v, %v)", enabled, known, err)
-		require.False(t, enabled, "saved state after confirmed stop (%v, %v, %v)", enabled, known, err)
-	}
+	enabled, known, err := first.desired.get("fake")
+	require.NoError(t, err, "saved state after confirmed stop (%v, %v, %v)", enabled, known, err)
+	require.True(t, known, "saved state after confirmed stop (%v, %v, %v)", enabled, known, err)
+	require.False(t, enabled, "saved state after confirmed stop (%v, %v, %v)", enabled, known, err)
 
 	fresh := desiredTestExecutor(t, manifest, baseDir)
 	require.NoError(t, fresh.RestoreEnabled(context.Background()), "restore after confirmed OFF")
-	{
-		st, err := fresh.Status("fake")
-		require.NoError(t, err, "confirmed OFF was restored unexpectedly: status (%v, %v)", st, err)
-		require.False(t, st.Running, "confirmed OFF was restored unexpectedly: status (%v, %v)", st, err)
-	}
+	st, err := fresh.Status("fake")
+	require.NoError(t, err, "confirmed OFF was restored unexpectedly: status (%v, %v)", st, err)
+	require.False(t, st.Running, "confirmed OFF was restored unexpectedly: status (%v, %v)", st, err)
 }

@@ -99,16 +99,13 @@ func TestHandleHTTP_ClientWriteError_MarksCancelled(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "handleHTTP did not return after the client write failed (zombie: handler blocked)")
+		require.FailNow(t, "handleHTTP did not return after the client write failed (zombie: handler blocked)")
 	}
 
 	require.True(t, cw.wrote, "reverse proxy never attempted a body write to the client; test did not exercise the streaming path")
-	{
-		got := rec.count("workload:errored")
-		require.Equal(t, 1, got, "workload:errored emitted")
-	}
-	require.False(t, rec.has("workload:completed"), "workload:completed emitted for a request whose client write failed")
-	require.True(t, rec.has(`"state":"cancelled"`), "a client that vanished mid-stream must terminate as cancelled, not failed")
+	require.Equal(t, 1, rec.count("workload:errored"), "workload:errored emitted")
+	require.NotContains(t, rec.String(), "workload:completed", "workload:completed emitted for a request whose client write failed")
+	require.Contains(t, rec.String(), `"state":"cancelled"`, "a client that vanished mid-stream must terminate as cancelled, not failed")
 }
 
 // TestHandleHTTP_ClientDisconnect_TerminalOnce covers the disconnect watcher: a
@@ -159,21 +156,18 @@ func TestHandleHTTP_ClientDisconnect_TerminalOnce(t *testing.T) {
 	select {
 	case <-received:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "upstream never started streaming")
+		require.FailNow(t, "upstream never started streaming")
 	}
 	cancel()
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "handleHTTP did not return after client disconnect (zombie: handler blocked)")
+		require.FailNow(t, "handleHTTP did not return after client disconnect (zombie: handler blocked)")
 	}
 
-	{
-		got := rec.count("workload:errored")
-		require.Equal(t, 1, got, "workload:errored emitted")
-	}
-	require.False(t, rec.has("workload:completed"), "workload:completed emitted for a cancelled request")
+	require.Equal(t, 1, rec.count("workload:errored"), "workload:errored emitted")
+	require.NotContains(t, rec.String(), "workload:completed", "workload:completed emitted for a cancelled request")
 }
 
 // deadlineRW records SetWriteDeadline calls and can force a Write error, so the
@@ -213,10 +207,8 @@ func TestStatusCapture_WriteDeadline(t *testing.T) {
 	t.Run("armed then cleared on success", func(t *testing.T) {
 		d := &deadlineRW{ResponseRecorder: httptest.NewRecorder()}
 		sc := &statusCapture{ResponseWriter: d, status: http.StatusOK, idle: 50 * time.Millisecond}
-		{
-			_, err := sc.Write([]byte("tokens"))
-			require.NoError(t, err, "Write returned error")
-		}
+		_, err := sc.Write([]byte("tokens"))
+		require.NoError(t, err, "Write returned error")
 		require.Len(t, d.deadlines, 2, "SetWriteDeadline called")
 		require.False(t, d.deadlines[0].IsZero(), "first SetWriteDeadline should arm a future deadline, got zero")
 		require.True(t, d.deadlines[1].IsZero(), "second SetWriteDeadline should clear the deadline (zero time)")
@@ -227,10 +219,8 @@ func TestStatusCapture_WriteDeadline(t *testing.T) {
 		boom := errors.New("i/o timeout")
 		d := &deadlineRW{ResponseRecorder: httptest.NewRecorder(), writeErr: boom}
 		sc := &statusCapture{ResponseWriter: d, status: http.StatusOK, idle: 50 * time.Millisecond}
-		{
-			_, err := sc.Write([]byte("tokens"))
-			require.ErrorIs(t, err, boom, "Write err")
-		}
+		_, err := sc.Write([]byte("tokens"))
+		require.ErrorIs(t, err, boom, "Write err")
 		require.ErrorIs(t, sc.wroteErr, boom, "wroteErr")
 		require.Len(t, d.deadlines, 1, "SetWriteDeadline called")
 	})
@@ -238,10 +228,8 @@ func TestStatusCapture_WriteDeadline(t *testing.T) {
 	t.Run("no deadline when idle is zero", func(t *testing.T) {
 		d := &deadlineRW{ResponseRecorder: httptest.NewRecorder()}
 		sc := &statusCapture{ResponseWriter: d, status: http.StatusOK}
-		{
-			_, err := sc.Write([]byte("tokens"))
-			require.NoError(t, err, "Write returned error")
-		}
+		_, err := sc.Write([]byte("tokens"))
+		require.NoError(t, err, "Write returned error")
 		require.Empty(t, d.deadlines, "SetWriteDeadline called")
 	})
 }
@@ -267,10 +255,7 @@ func TestStatusCapture_FlushDeadline(t *testing.T) {
 		boom := errors.New("i/o timeout")
 		d := &deadlineRW{ResponseRecorder: httptest.NewRecorder(), flushErr: boom}
 		sc := &statusCapture{ResponseWriter: d, status: http.StatusOK, idle: 50 * time.Millisecond}
-		{
-			err := sc.FlushError()
-			require.ErrorIs(t, err, boom, "FlushError")
-		}
+		require.ErrorIs(t, sc.FlushError(), boom, "FlushError")
 		require.ErrorIs(t, sc.wroteErr, boom, "wroteErr")
 		require.Len(t, d.deadlines, 1, "SetWriteDeadline called")
 	})
@@ -351,10 +336,8 @@ func TestHandleHTTP_RealSocketWriteDeadline(t *testing.T) {
 		"Content-Type: application/json\r\n" +
 		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
 		"\r\n" + body
-	{
-		_, err := conn.Write([]byte(reqText))
-		require.NoError(t, err, "write request")
-	}
+	_, err = conn.Write([]byte(reqText))
+	require.NoError(t, err, "write request")
 
 	// Read the status line only — enough to confirm the response committed and
 	// started streaming — then STOP reading so the proxy's send buffer backs
@@ -370,9 +353,9 @@ func TestHandleHTTP_RealSocketWriteDeadline(t *testing.T) {
 	for time.Now().Before(deadline) && !rec.has("workload:errored") {
 		time.Sleep(10 * time.Millisecond)
 	}
-	require.True(t, rec.has("workload:errored"), "workload never terminated after the client stopped reading (zombie: write deadline did not trip / no terminal emitted)")
-	require.False(t, rec.has("workload:completed"), "workload:completed emitted for a client that stopped reading")
-	require.True(t, rec.has(`"state":"cancelled"`), "a client that stopped reading must terminate as cancelled, not failed")
+	require.Contains(t, rec.String(), "workload:errored", "workload never terminated after the client stopped reading (zombie: write deadline did not trip / no terminal emitted)")
+	require.NotContains(t, rec.String(), "workload:completed", "workload:completed emitted for a client that stopped reading")
+	require.Contains(t, rec.String(), `"state":"cancelled"`, "a client that stopped reading must terminate as cancelled, not failed")
 }
 
 // TestHandleHTTP_RealSocketFlushDeadline is the flush-path counterpart to the
@@ -398,7 +381,7 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			assert.Fail(t, "test expectation failed", "upstream ResponseWriter is not a Flusher")
+			assert.Fail(t, "upstream ResponseWriter is not a Flusher")
 			return
 		}
 		chunk := bytes.Repeat([]byte("x"), 1500)
@@ -442,10 +425,8 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 		"Content-Type: application/json\r\n" +
 		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
 		"\r\n" + body
-	{
-		_, err := conn.Write([]byte(reqText))
-		require.NoError(t, err, "write request")
-	}
+	_, err = conn.Write([]byte(reqText))
+	require.NoError(t, err, "write request")
 
 	// Read the status line only, then stop reading so the proxy's send buffer
 	// backs up and a Flush blocks.
@@ -458,9 +439,9 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 	for time.Now().Before(deadline) && !rec.has("workload:errored") {
 		time.Sleep(10 * time.Millisecond)
 	}
-	require.True(t, rec.has("workload:errored"), "workload never terminated after the client stopped reading (flush path not deadline-aware)")
-	require.False(t, rec.has("workload:completed"), "workload:completed emitted for a stalled client")
-	require.True(t, rec.has(`"state":"cancelled"`), "a stalled client must terminate as cancelled, not failed")
+	require.Contains(t, rec.String(), "workload:errored", "workload never terminated after the client stopped reading (flush path not deadline-aware)")
+	require.NotContains(t, rec.String(), "workload:completed", "workload:completed emitted for a stalled client")
+	require.Contains(t, rec.String(), `"state":"cancelled"`, "a stalled client must terminate as cancelled, not failed")
 }
 
 // TestHandleHTTP_UpstreamDiesMidStream_EmitsTerminal is the other half of the
@@ -543,10 +524,8 @@ func TestHandleHTTP_UpstreamDiesMidStream_EmitsTerminal(t *testing.T) {
 		"Content-Type: application/json\r\n" +
 		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
 		"\r\n" + body
-	{
-		_, err := conn.Write([]byte(reqText))
-		require.NoError(t, err, "write request")
-	}
+	_, err = conn.Write([]byte(reqText))
+	require.NoError(t, err, "write request")
 
 	// Keep the client healthy by draining until the proxy hangs up. A client
 	// that stopped reading would trip the write deadline and cancel the
@@ -558,9 +537,6 @@ func TestHandleHTTP_UpstreamDiesMidStream_EmitsTerminal(t *testing.T) {
 	for time.Now().Before(deadline) && terminals() == 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	{
-		got := terminals()
-		require.Equal(t, 1, got, "terminal workload events")
-	}
-	require.True(t, rec.has("workload:completed"), "a truncated stream that had already committed 2xx must terminate as completed, not failed")
+	require.Equal(t, 1, terminals(), "terminal workload events")
+	require.Contains(t, rec.String(), "workload:completed", "a truncated stream that had already committed 2xx must terminate as completed, not failed")
 }

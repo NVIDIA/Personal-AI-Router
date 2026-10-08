@@ -44,19 +44,13 @@ func TestParseLaunchTextRejectsInvalidInput(t *testing.T) {
 		`lms && other`, `lms ; other`, "lms `other`", `lms $(other)`,
 		strings.Repeat("x", maxLaunchTextBytes+1), strings.Repeat("x ", maxLaunchTokens+1),
 	} {
-		{
-			_, err := parseLaunchText(text)
-			require.Error(t, err, "invalid input accepted")
-		}
+		_, err := parseLaunchText(text)
+		require.Error(t, err, "invalid input accepted")
 	}
-	{
-		_, err := parseLaunchText(strings.Repeat("x", maxLaunchTextBytes))
-		require.NoError(t, err, "exact byte limit rejected")
-	}
-	{
-		_, err := parseLaunchText(strings.Repeat("x ", maxLaunchTokens))
-		require.NoError(t, err, "exact token limit rejected")
-	}
+	_, err := parseLaunchText(strings.Repeat("x", maxLaunchTextBytes))
+	require.NoError(t, err, "exact byte limit rejected")
+	_, err = parseLaunchText(strings.Repeat("x ", maxLaunchTokens))
+	require.NoError(t, err, "exact token limit rejected")
 }
 
 func FuzzLaunchTextRoundTrip(f *testing.F) {

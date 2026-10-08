@@ -82,10 +82,8 @@ func TestWorkloadHistoryFlusherFlushesOnShutdown(t *testing.T) {
 	// proving the shutdown flush ran before stop() returned, not raced with exit.
 	s2 := workloadstore.New().WithPersistence(path)
 	require.NoError(t, s2.Load(), "load")
-	{
-		_, ok := s2.Get("host", "1")
-		require.True(t, ok, "terminal workload lost on shutdown before the first periodic flush")
-	}
+	_, ok := s2.Get("host", "1")
+	require.True(t, ok, "terminal workload lost on shutdown before the first periodic flush")
 }
 
 // TestWorkloadHistoryFlusherOutlivesParentCancel is the normal-cancellation-path
@@ -112,10 +110,8 @@ func TestWorkloadHistoryFlusherOutlivesParentCancel(t *testing.T) {
 
 	s2 := workloadstore.New().WithPersistence(path)
 	require.NoError(t, s2.Load(), "load")
-	{
-		_, ok := s2.Get("host", "1")
-		require.True(t, ok, "terminal applied after parent cancel (during teardown) was lost — flusher exited too early")
-	}
+	_, ok := s2.Get("host", "1")
+	require.True(t, ok, "terminal applied after parent cancel (during teardown) was lost — flusher exited too early")
 }
 
 // TestFailWorkloadsForNodeMatchesByHostUUID: the node-loss sweep must match
@@ -129,15 +125,11 @@ func TestFailWorkloadsForNodeMatchesByHostUUID(t *testing.T) {
 
 	// Sweeping by the display name must NOT match (it's not the workload's key).
 	b.failWorkloadsForNode("peer-friendly-name", "peer-friendly-name")
-	{
-		r, _ := b.workloads.Get("peer-uuid", "7")
-		require.Equal(t, "running", r.State, "state after name-keyed sweep")
-	}
+	r, _ := b.workloads.Get("peer-uuid", "7")
+	require.Equal(t, "running", r.State, "state after name-keyed sweep")
 
 	// Sweeping by the HostUUID must fail it.
 	b.failWorkloadsForNode("peer-uuid", "peer-friendly-name")
-	{
-		r, _ := b.workloads.Get("peer-uuid", "7")
-		require.Equal(t, "failed", r.State, "state after UUID-keyed sweep")
-	}
+	r, _ = b.workloads.Get("peer-uuid", "7")
+	require.Equal(t, "failed", r.State, "state after UUID-keyed sweep")
 }

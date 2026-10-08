@@ -140,18 +140,14 @@ func TestErrorsPeerSync_MTLSGate(t *testing.T) {
 	}
 
 	// Pinned member B -> A: accepted (204).
-	{
-		code, err := push(mtlsB, "uuid-a")
-		require.NoError(t, err, "pinned member push: code (%v, %v)", code, err)
-		assert.Equal(t, http.StatusNoContent, code, "pinned member push: code (%v, %v)", code, err)
-	}
+	code, err := push(mtlsB, "uuid-a")
+	require.NoError(t, err, "pinned member push")
+	assert.Equal(t, http.StatusNoContent, code, "pinned member push")
 
 	// C completes the handshake (it pins A) but A doesn't pin C -> 403 at the gate.
-	{
-		code, err := push(mtlsC, "uuid-a")
-		require.NoError(t, err, "non-member push: code (%v, %v)", code, err)
-		assert.Equal(t, http.StatusForbidden, code, "non-member push: code (%v, %v)", code, err)
-	}
+	code, err = push(mtlsC, "uuid-a")
+	require.NoError(t, err, "non-member push")
+	assert.Equal(t, http.StatusForbidden, code, "non-member push")
 
 	// Client-side gate: B holds no pin for an unknown peer, so the DER lookup
 	// fails and it would never build a client to contact a non-member.

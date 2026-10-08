@@ -132,16 +132,12 @@ func TestModelSurface_PinGateIsUnconditional(t *testing.T) {
 		return resp.StatusCode, nil
 	}
 
-	{
-		code, err := get(peerMesh)
-		require.NoError(t, err, "pinned peer: code (%v, %v)", code, err)
-		require.Equal(t, http.StatusOK, code, "pinned peer")
-	}
-	{
-		code, err := get(strangerMesh)
-		require.NoError(t, err, "unpinned cluster identity: code (%v, %v)", code, err)
-		require.Equal(t, http.StatusForbidden, code, "unpinned cluster identity")
-	}
+	code, err := get(peerMesh)
+	require.NoError(t, err, "pinned peer: code (%v, %v)", code, err)
+	require.Equal(t, http.StatusOK, code, "pinned peer")
+	code, err = get(strangerMesh)
+	require.NoError(t, err, "unpinned cluster identity: code (%v, %v)", code, err)
+	require.Equal(t, http.StatusForbidden, code, "unpinned cluster identity")
 
 	// An unauthenticated request never carries a client cert, so it is refused
 	// whatever this node's membership is — the gate has no membership branch.

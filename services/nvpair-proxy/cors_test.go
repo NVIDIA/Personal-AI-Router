@@ -55,20 +55,16 @@ func corsEngine(t *testing.T, tc engineCase, allowed string, status int) *httpte
 		w.Header().Set("Content-Type", "application/json")
 		if status != 200 {
 			w.WriteHeader(status)
-			{
-				_, err := io.WriteString(w, "engine refused")
-				assert.NoError(t, err)
-			}
+			_, err := io.WriteString(w, "engine refused")
+			assert.NoError(t, err)
 			return
 		}
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)
 			return
 		}
-		{
-			_, err := io.WriteString(w, corsModels(tc))
-			assert.NoError(t, err)
-		}
+		_, err := io.WriteString(w, corsModels(tc))
+		assert.NoError(t, err)
 	}))
 }
 func proxyForCORSTargets(t *testing.T, tc engineCase, servers ...*httptest.Server) *facade {
@@ -94,7 +90,9 @@ func TestCORSOriginDenialIsNotRewritten(t *testing.T) {
 					}
 					require.Equal(t, want, rec.Code, " (%v)", method)
 					require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), " (%v)", method)
-					require.False(t, status != 200 && rec.Body.String() != "engine refused", "upstream error body changed")
+					if status != 200 {
+						require.Equal(t, "engine refused", rec.Body.String(), "upstream error body changed")
+					}
 				}
 			})
 		}
@@ -122,8 +120,12 @@ func TestCORSClusterRequiresEveryRespondingTarget(t *testing.T) {
 				rec := httptest.NewRecorder()
 				p.handlePlain(rec, corsRequest("OPTIONS", tc.inferencePath, "http://app.test"))
 				require.Equal(t, policy.want, rec.Code, "status")
-				require.False(t, policy.want != 204 && rec.Header().Get("Access-Control-Allow-Origin") != "", "granted denied origin")
-				require.False(t, policy.want == 204 && (rec.Header().Get("Access-Control-Max-Age") == "" || rec.Header().Get("Access-Control-Allow-Credentials") != "true"), "invalid agreement")
+				if policy.want == 204 {
+					require.NotEmpty(t, rec.Header().Get("Access-Control-Max-Age"), "invalid agreement")
+					require.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "invalid agreement")
+				} else {
+					require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"), "granted denied origin")
+				}
 			})
 		}
 	})
@@ -246,8 +248,10 @@ func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
 		defer sink.Close()
 		for _, redirect := range []bool{false, true} {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.False(t, r.Header.Get("Origin") != "http://app.test" || r.Header.Get("X-Test") != "end-to-end", "CORS inputs lost")
-				assert.False(t, r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "", "caller credentials forwarded to model-list candidate")
+				assert.Equal(t, "http://app.test", r.Header.Get("Origin"), "CORS inputs lost")
+				assert.Equal(t, "end-to-end", r.Header.Get("X-Test"), "CORS inputs lost")
+				assert.Empty(t, r.Header.Get("Authorization"), "caller credentials forwarded to model-list candidate")
+				assert.Empty(t, r.Header.Get("Cookie"), "caller credentials forwarded to model-list candidate")
 				assert.Equal(t, "", r.Header.Get("X-Hop"), "hop header forwarded")
 				w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
 				w.Header().Set("Vary", "X-Test")
@@ -255,10 +259,8 @@ func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
 					http.Redirect(w, r, sink.URL, 307)
 					return
 				}
-				{
-					_, err := io.WriteString(w, corsModels(tc))
-					assert.NoError(t, err)
-				}
+				_, err := io.WriteString(w, corsModels(tc))
+				assert.NoError(t, err)
 			}))
 			p := proxyForCORSTargets(t, tc, upstream, upstream)
 			req := corsRequest("GET", tc.modelListPath, "http://app.test")
@@ -274,7 +276,9 @@ func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
 				want = 502
 			}
 			require.Equal(t, want, rec.Code, "status")
-			require.False(t, !redirect && !strings.Contains(strings.Join(rec.Header().Values("Vary"), ","), "X-Test"), "Vary lost")
+			if !redirect {
+				require.Contains(t, strings.Join(rec.Header().Values("Vary"), ","), "X-Test", "Vary lost")
+			}
 			upstream.Close()
 		}
 		require.Equal(t, int32(0), leaked.Load(), "followed aggregate redirect")
@@ -337,10 +341,8 @@ func TestCORSBrowserFixture(t *testing.T) {
 		}
 		page := func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
-			{
-				_, err := io.WriteString(w, "<!doctype html><title>CORS test</title>")
-				assert.NoError(t, err)
-			}
+			_, err := io.WriteString(w, "<!doctype html><title>CORS test</title>")
+			assert.NoError(t, err)
 		}
 		allowed := httptest.NewServer(http.HandlerFunc(page))
 		defer allowed.Close()
@@ -364,7 +366,7 @@ func TestCORSBrowserFixture(t *testing.T) {
 		for {
 			select {
 			case <-deadline:
-				require.FailNow(t, "test expectation failed", "browser fixture timed out")
+				require.FailNow(t, "browser fixture timed out")
 			case <-tick.C:
 				if _, err := os.Stat(file + ".done"); err == nil {
 					require.NoError(t, os.Remove(file+".done"))
@@ -459,10 +461,8 @@ func TestCORSInvalidModelListIsNotPartiallyExposed(t *testing.T) {
 		for _, invalid := range []string{"not json", "{}", "null"} {
 			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
-				{
-					_, err := io.WriteString(w, invalid)
-					assert.NoError(t, err)
-				}
+				_, err := io.WriteString(w, invalid)
+				assert.NoError(t, err)
 			}))
 			p := proxyForCORSTargets(t, tc, good, bad)
 			rec := httptest.NewRecorder()
@@ -482,17 +482,13 @@ func TestCORSStreamingResponseIsPreserved(t *testing.T) {
 			w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
 			w.Header().Set("Access-Control-Expose-Headers", "X-Engine")
 			w.Header().Set("X-Engine", "metadata")
-			{
-				_, err := io.WriteString(w, "first")
-				assert.NoError(t, err)
-			}
+			_, err := io.WriteString(w, "first")
+			assert.NoError(t, err)
 			w.(http.Flusher).Flush()
 			select {
 			case <-release:
-				{
-					_, err := io.WriteString(w, "last")
-					assert.NoError(t, err)
-				}
+				_, err := io.WriteString(w, "last")
+				assert.NoError(t, err)
 			case <-r.Context().Done():
 			}
 		}))
@@ -517,10 +513,8 @@ func TestCORSStreamingResponseIsPreserved(t *testing.T) {
 			assert.NoError(t, resp.Body.Close())
 		}()
 		first := make([]byte, 5)
-		{
-			_, err = io.ReadFull(resp.Body, first)
-			require.NoError(t, err)
-		}
+		_, err = io.ReadFull(resp.Body, first)
+		require.NoError(t, err)
 		require.Equal(t, "first", string(first), "stream changed")
 		require.Equal(t, "http://app.test", resp.Header.Get("Access-Control-Allow-Origin"), "stream changed")
 		require.Equal(t, "X-Engine", resp.Header.Get("Access-Control-Expose-Headers"), "stream changed")

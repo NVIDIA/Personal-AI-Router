@@ -30,10 +30,7 @@ func TestPressureBandsAndDownwardHysteresis(t *testing.T) {
 		{100, 3},
 	}
 	for _, test := range bands {
-		{
-			got := pressureBand(test.utilization)
-			assert.Equal(t, test.want, got, "pressureBand")
-		}
+		assert.Equal(t, test.want, pressureBand(test.utilization), "pressureBand(%v)", test.utilization)
 	}
 
 	hysteresis := []struct {
@@ -54,10 +51,7 @@ func TestPressureBandsAndDownwardHysteresis(t *testing.T) {
 	}
 	for _, test := range hysteresis {
 		t.Run(test.name, func(t *testing.T) {
-			{
-				got := pressureWithHysteresis(test.utilization, test.previous)
-				assert.Equal(t, test.want, got, "pressureWithHysteresis")
-			}
+			assert.Equal(t, test.want, pressureWithHysteresis(test.utilization, test.previous), "pressureWithHysteresis")
 		})
 	}
 }
@@ -83,10 +77,7 @@ func TestApplyTelemetrySmoothsUtilizationBeforeChangingPressure(t *testing.T) {
 	secondEWMA := manager.telemetry["node-a"].ewma
 	manager.mu.Unlock()
 	assert.InDelta(t, 57.75, secondEWMA, 0.001, "EWMA after second hot sample")
-	{
-		got := manager.gpuPressureAt("node-a", now.Add(2*time.Second))
-		assert.Equal(t, 1, got, "pressure after smoothed hot samples")
-	}
+	assert.Equal(t, 1, manager.gpuPressureAt("node-a", now.Add(2*time.Second)), "pressure after smoothed hot samples")
 }
 
 func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
@@ -99,14 +90,8 @@ func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
 		MSSince:           9_999,
 	}
 	assert.True(t, manager.applyTelemetryAt(hot, now), "fresh hot sample should move unknown pressure to 3")
-	{
-		got := manager.gpuPressureAt("node-a", now.Add(time.Millisecond))
-		assert.Equal(t, 3, got, "pressure at exactly 10s effective age")
-	}
-	{
-		got := manager.gpuPressureAt("node-a", now.Add(2*time.Millisecond))
-		assert.Equal(t, unknownGPUPressure, got, "stale pressure")
-	}
+	assert.Equal(t, 3, manager.gpuPressureAt("node-a", now.Add(time.Millisecond)), "pressure at exactly 10s effective age")
+	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", now.Add(2*time.Millisecond)), "stale pressure")
 
 	cool := noderec.NodeTelemetry{
 		HostUUID:          "node-a",
@@ -124,10 +109,7 @@ func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
 	invalid := cool
 	invalid.TelemetryValid = false
 	assert.True(t, manager.applyTelemetryAt(invalid, recoveredAt.Add(time.Second)), "invalid telemetry should move pressure from 0 to unknown")
-	{
-		got := manager.gpuPressureAt("node-a", recoveredAt.Add(time.Second))
-		assert.Equal(t, unknownGPUPressure, got, "invalid pressure")
-	}
+	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", recoveredAt.Add(time.Second)), "invalid pressure")
 }
 
 func TestTelemetryOlderThanFreshnessStartsUnknown(t *testing.T) {
@@ -140,10 +122,7 @@ func TestTelemetryOlderThanFreshnessStartsUnknown(t *testing.T) {
 		MSSince:           10_001,
 	}, now)
 	require.False(t, changed, "stale first sample should remain at unknown pressure")
-	{
-		got := manager.gpuPressureAt("node-a", now)
-		assert.Equal(t, unknownGPUPressure, got, "stale first pressure")
-	}
+	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", now), "stale first pressure")
 }
 
 func TestNodeRemovalDropsTelemetryState(t *testing.T) {

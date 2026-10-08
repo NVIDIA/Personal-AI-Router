@@ -39,10 +39,10 @@ func (r *capRW) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (r *capRW) has(s string) bool {
+func (r *capRW) String() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return strings.Contains(string(r.b), s)
+	return string(r.b)
 }
 
 // priorities returns every schedule:priority snapshot emitted for an engine.
@@ -142,7 +142,9 @@ func TestApplyNodesChanged_KeysByHostUUID(t *testing.T) {
 	m.catalog[wlKey{origin: "uuid-a", id: "w1"}] = wl("w1", "ollama", "running", "uuid-a", "uuid-a")
 	_, ranks := m.rank()
 	for _, r := range ranks {
-		assert.False(t, r.ID == "uuid-a" && r.Pending != 1, "scheduledOn=uuid-a should count against uuid-a, ranks (%v)", ranks)
+		if r.ID == "uuid-a" {
+			assert.Equal(t, 1, r.Pending, "scheduledOn=uuid-a should count against uuid-a, ranks (%v)", ranks)
+		}
 	}
 }
 
@@ -189,10 +191,7 @@ func TestRank_CombinesPendingAndGPUPressure(t *testing.T) {
 	assertStrs(t, order, []string{"b", "c", "d", "a"})
 	assert.Equal(t, 1, pendingOf(ranks, "b"))
 	for id, want := range map[string]int{"a": 3, "b": 0, "c": 1, "d": 2} {
-		{
-			got := pressureOf(ranks, id)
-			assert.Equal(t, want, got, "gpuPressure[ (%v, %v, %v, %v)", id, got, want, ranks)
-		}
+		assert.Equal(t, want, pressureOf(ranks, id), "gpuPressure[%s], ranks %v", id, ranks)
 	}
 }
 
@@ -260,10 +259,7 @@ func TestRank_CancelledExcluded(t *testing.T) {
 	)
 	order, ranks := m.rank()
 	assertStrs(t, order, []string{"b", "a"})
-	{
-		got := pendingOf(ranks, "b")
-		assert.Equal(t, 0, got, "pending for b")
-	}
+	assert.Equal(t, 0, pendingOf(ranks, "b"), "pending for b")
 }
 
 // TestRank_NodeWideMixedEngineSynthetic verifies the requested synthetic
@@ -338,11 +334,9 @@ func TestApplyUpsert_CrossEngineSameIDDistinct(t *testing.T) {
 	m.applyUpsert(upsertJSON(t, workload{ID: "1", Engine: "lmstudio", RunID: "r-lms", State: "running", OriginatedFrom: "x", ScheduledOn: "b"}))
 
 	require.Len(t, m.catalog, 2, "catalog len")
-	{
-		_, ranks := m.rank()
-		assert.Equal(t, 1, pendingOf(ranks, "a"), "node-wide pending counts (%v)", ranks)
-		assert.Equal(t, 1, pendingOf(ranks, "b"), "node-wide pending counts (%v)", ranks)
-	}
+	_, ranks := m.rank()
+	assert.Equal(t, 1, pendingOf(ranks, "a"), "node-wide pending counts (%v)", ranks)
+	assert.Equal(t, 1, pendingOf(ranks, "b"), "node-wide pending counts (%v)", ranks)
 }
 
 // TestApplyUpsert_SameIDAcrossRestartDistinct: a proxy restart mints a fresh
@@ -354,10 +348,8 @@ func TestApplyUpsert_SameIDAcrossRestartDistinct(t *testing.T) {
 	m.applyUpsert(upsertJSON(t, workload{ID: "1", Engine: "ollama", RunID: "run-1", State: "running", OriginatedFrom: "x", ScheduledOn: "a"}))
 	m.applyUpsert(upsertJSON(t, workload{ID: "1", Engine: "ollama", RunID: "run-2", State: "running", OriginatedFrom: "x", ScheduledOn: "a"}))
 	require.Len(t, m.catalog, 2, "catalog len")
-	{
-		_, ranks := m.rank()
-		assert.Equal(t, 2, pendingOf(ranks, "a"), "node-wide pending[a]")
-	}
+	_, ranks := m.rank()
+	assert.Equal(t, 2, pendingOf(ranks, "a"), "node-wide pending[a]")
 }
 
 // TestApplyRemove_DropsEveryEngineForID: the removal wire carries no
@@ -378,10 +370,7 @@ func TestApplyUpsert_ActiveOnlyAndMeaningfulChanges(t *testing.T) {
 	assert.True(t, m.applyUpsert(upsertJSON(t, base)), "new placed work should change pending load")
 	base.State = "running"
 	assert.False(t, m.applyUpsert(upsertJSON(t, base)), "queued->running on the same node should not change pending load")
-	{
-		got := m.catalog[wlKey{origin: "x", engine: "ollama", runID: "run", id: "1"}].State
-		assert.Equal(t, "running", got, "catalog state")
-	}
+	assert.Equal(t, "running", m.catalog[wlKey{origin: "x", engine: "ollama", runID: "run", id: "1"}].State, "catalog state")
 
 	base.ScheduledOn = "b"
 	assert.True(t, m.applyUpsert(upsertJSON(t, base)), "failover re-point should change node-wide load")
@@ -463,7 +452,7 @@ func TestRecomputeAll_SerializesOlderAndNewerResults(t *testing.T) {
 	select {
 	case <-rw.blocked:
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "older recompute did not reach blocked write")
+		require.FailNow(t, "older recompute did not reach blocked write")
 	}
 	job := workload{ID: "1", Engine: "ollama", RunID: "run", State: "running", OriginatedFrom: "local", ScheduledOn: "a"}
 	assert.True(t, m.applyUpsert(upsertJSON(t, job)), "new workload should change pending load")
@@ -478,7 +467,7 @@ func TestRecomputeAll_SerializesOlderAndNewerResults(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(time.Second):
-			require.FailNow(t, "test expectation failed", " (%v)", name)
+			require.FailNow(t, fmt.Sprintf("%s did not complete", name))
 		}
 	}
 	for _, engine := range schedulerEngines {
@@ -577,10 +566,7 @@ func TestEmit_EmptyUniverseSilent(t *testing.T) {
 	rec := &capRW{}
 	m := mgrWith(rec, nil)
 	m.recomputeAll(false)
-	{
-		got := rec.orders("ollama")
-		require.Empty(t, got, "empty universe should stay silent")
-	}
+	require.Empty(t, rec.orders("ollama"), "empty universe should stay silent")
 }
 
 // TestSetInterval_Floor: a sub-floor interval is clamped to 200ms.
@@ -594,7 +580,7 @@ func TestSetInterval_Floor(t *testing.T) {
 		Method:  "scheduler:set-interval",
 		Params:  json.RawMessage(`{"interval_ms":50}`),
 	})
-	assert.True(t, rec.has(`"interval_ms":200`), "expected clamp to 200ms")
+	assert.Contains(t, rec.String(), `"interval_ms":200`, "expected clamp to 200ms")
 }
 
 // TestNewManager_Floor: the constructor clamps the initial interval too.

@@ -29,15 +29,10 @@ func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
 		readyHTTP: newRemoteHTTPClient(base, time.Second),
 		base:      srv.URL,
 	}
-	{
-		_, err := c.postJSON(context.Background(), controlStartPath, "remote-only", startRequest{Engine: "remote-only"})
-		require.NoError(t, err, "remote start was cut off by the ordinary response-header budget")
-	}
-	{
-		_, err := c.postJSON(context.Background(), controlStopPath, "ollama", stopRequest{Engine: "ollama"})
-		require.Error(t, err, "ordinary remote call error")
-		require.ErrorContains(t, err, "timeout awaiting response headers", "ordinary remote call error")
-	}
+	_, err := c.postJSON(context.Background(), controlStartPath, "remote-only", startRequest{Engine: "remote-only"})
+	require.NoError(t, err, "remote start was cut off by the ordinary response-header budget")
+	_, err = c.postJSON(context.Background(), controlStopPath, "ollama", stopRequest{Engine: "ollama"})
+	require.ErrorContains(t, err, "timeout awaiting response headers", "ordinary remote call error")
 }
 
 // A remote Ollama load can withhold headers while a cold model loads. A remote
@@ -58,25 +53,15 @@ func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
 		base:      srv.URL,
 	}
 	ollama := modelActionRequest{Engine: "ollama", Model: "qwen2.5"}
-	{
-		_, err := c.postJSON(context.Background(), controlLoadPath, "ollama", ollama)
-		require.NoError(t, err, "remote load was cut off by the ordinary response-header budget")
-	}
+	_, err := c.postJSON(context.Background(), controlLoadPath, "ollama", ollama)
+	require.NoError(t, err, "remote load was cut off by the ordinary response-header budget")
 	lmstudio := modelActionRequest{Engine: "lmstudio", Model: "qwen2.5"}
-	{
-		_, err := c.postJSON(context.Background(), controlDeletePath, "lmstudio", lmstudio)
-		require.NoError(t, err, "remote delete was cut off by the ordinary response-header budget")
-	}
-	{
-		_, err := c.postJSON(context.Background(), controlLoadPath, "lmstudio", lmstudio)
-		require.Error(t, err, "remote LM Studio load error")
-		require.ErrorContains(t, err, "timeout awaiting response headers", "remote LM Studio load error")
-	}
-	{
-		_, err := c.postJSON(context.Background(), controlUnloadPath, "ollama", ollama)
-		require.Error(t, err, "remote unload error")
-		require.ErrorContains(t, err, "timeout awaiting response headers", "remote unload error")
-	}
+	_, err = c.postJSON(context.Background(), controlDeletePath, "lmstudio", lmstudio)
+	require.NoError(t, err, "remote delete was cut off by the ordinary response-header budget")
+	_, err = c.postJSON(context.Background(), controlLoadPath, "lmstudio", lmstudio)
+	require.ErrorContains(t, err, "timeout awaiting response headers", "remote LM Studio load error")
+	_, err = c.postJSON(context.Background(), controlUnloadPath, "ollama", ollama)
+	require.ErrorContains(t, err, "timeout awaiting response headers", "remote unload error")
 }
 
 func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
@@ -95,10 +80,7 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 		{controlEnginesPath, "", false},
 	}
 	for _, tc := range cases {
-		{
-			got := waitsForEngineReadiness(tc.path, tc.engine)
-			assert.Equal(t, tc.want, got, "waitsForEngineReadiness")
-		}
+		assert.Equal(t, tc.want, waitsForEngineReadiness(tc.path, tc.engine), "waitsForEngineReadiness")
 	}
 }
 
@@ -121,10 +103,6 @@ func TestRemoteStartHeaderWaitRemainsBounded(t *testing.T) {
 	}
 	started := time.Now()
 	_, err := c.postJSON(context.Background(), controlStartPath, "ollama", startRequest{Engine: "ollama"})
-	require.Error(t, err, "remote start error")
 	require.ErrorContains(t, err, "timeout awaiting response headers", "remote start error")
-	{
-		elapsed := time.Since(started)
-		require.LessOrEqual(t, elapsed, time.Second, "remote start took")
-	}
+	require.LessOrEqual(t, time.Since(started), time.Second, "remote start took")
 }

@@ -52,10 +52,7 @@ func TestAtomicWriteRetriesTransientRename(t *testing.T) {
 	t.Cleanup(func() { renameFile = orig })
 
 	require.NoError(t, atomicWrite(path, []byte("new\n"), 0o600), "atomicWrite")
-	{
-		got := attempts.Load()
-		require.Equal(t, int32(3), got, "rename attempts")
-	}
+	require.Equal(t, int32(3), attempts.Load(), "rename attempts")
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, "new\n", string(got), "got (%v)", got)
@@ -75,10 +72,7 @@ func TestAtomicWriteNonTransientRenameFailsFast(t *testing.T) {
 
 	err := atomicWrite(path, []byte("x\n"), 0o600)
 	require.Error(t, err, "expected error")
-	{
-		got := attempts.Load()
-		require.Equal(t, int32(1), got, "rename attempts")
-	}
+	require.Equal(t, int32(1), attempts.Load(), "rename attempts")
 	require.ErrorContains(t, err, "no such file or directory")
 }
 

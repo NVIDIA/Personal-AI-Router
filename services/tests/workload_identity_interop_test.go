@@ -79,11 +79,8 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	{
-		err := json.Unmarshal(ack.Result, &sr)
-		require.NoError(t, err, "workloads:subscribe ack")
-		require.True(t, sr.Subscribed, "workloads:subscribe ack (%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(ack.Result, &sr), "workloads:subscribe ack")
+	require.True(t, sr.Subscribed, "workloads:subscribe ack")
 
 	ollamaProxyPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	lmstudioProxyPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
@@ -141,7 +138,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 				}
 			}
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out: only saw engine workloads %v, want both ollama and lmstudio (cross-engine records collapsed?)", engineIDs)
+			require.FailNow(t, fmt.Sprintf("timed out: only saw engine workloads %v, want both ollama and lmstudio (cross-engine records collapsed?)", engineIDs))
 		}
 	}
 
@@ -264,7 +261,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	}
 
 	pid2 := awaitInt(t, wmPids, 30*time.Second, "workload-manager respawn")
-	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid (%v)", pid1)
+	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid")
 	t.Logf("workload-manager respawned pid=%d", pid2)
 
 	// The rehydrated manager must re-assert the still-active workload to the
@@ -353,7 +350,7 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	}
 
 	pid2 := awaitInt(t, wmPids, 30*time.Second, "workload-manager respawn")
-	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid (%v)", pid1)
+	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid")
 	t.Logf("workload-manager respawned pid=%d", pid2)
 
 	// The rehydrated manager must re-assert the recent terminal. If the broker
@@ -387,7 +384,7 @@ func waitStubPeerWorkload(t *testing.T, received <-chan jsonrpc.Message, model, 
 				return
 			}
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for stub peer to receive %q workload in state %q", timeout, model, state)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for stub peer to receive %q workload in state %q", timeout, model, state))
 		}
 	}
 }
@@ -410,7 +407,7 @@ func awaitInt(t *testing.T, ch <-chan int, timeout time.Duration, what string) i
 	case v := <-ch:
 		return v
 	case <-time.After(timeout):
-		require.FailNow(t, "test expectation failed", "timed out (%s) waiting for %s", timeout, what)
+		require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for %s", timeout, what))
 		return 0
 	}
 }
@@ -419,10 +416,10 @@ func awaitInt(t *testing.T, ch <-chan int, timeout time.Duration, what string) i
 func portOfURL(t *testing.T, raw string) int {
 	t.Helper()
 	u, err := url.Parse(raw)
-	require.NoError(t, err, "parse url (%v, %v)", raw, err)
+	require.NoError(t, err, "parse url (%v)", raw)
 	_, portStr, err := net.SplitHostPort(u.Host)
 	require.NoError(t, err, "split host:port")
 	port, err := strconv.Atoi(portStr)
-	require.NoError(t, err, "atoi port (%v, %v)", portStr, err)
+	require.NoError(t, err, "atoi port (%v)", portStr)
 	return port
 }

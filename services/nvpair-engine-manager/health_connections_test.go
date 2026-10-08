@@ -38,15 +38,9 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 			probe := &Probe{HTTP: "http://127.0.0.1:{port}/api/version"}
 			const rounds = 32
 			for i := 0; i < rounds; i++ {
-				{
-					got, want := ex.probe(context.Background(), probe, 1), i%2 == 0
-					require.Equal(t, want, got, "poll (%v)", i)
-				}
+				require.Equal(t, i%2 == 0, ex.probe(context.Background(), probe, 1), "poll (%v)", i)
 			}
-			{
-				got := connections.Count()
-				require.Equal(t, int32(1), got, "accepted (%v, %v)", got, rounds)
-			}
+			require.Equal(t, int32(1), connections.Count(), "connection count after %d polls", rounds)
 		})
 	}
 

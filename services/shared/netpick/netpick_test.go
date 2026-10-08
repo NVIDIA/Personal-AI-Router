@@ -15,8 +15,9 @@ func TestRankRemote_DemotesOnlyUnusableClasses(t *testing.T) {
 	// Docker's default bridge, CGNAT and link-local rank below any real private
 	// or public address. The private blocks are NOT ranked against each other:
 	// which one the fleet shares is not a property of the prefix.
-	got := RankRemote([]string{"169.254.3.3", "172.17.0.2", "10.5.5.5", "100.64.0.1", "192.168.0.10"})
-	assert.Equal(t, []string{"10.5.5.5", "192.168.0.10", "172.17.0.2", "100.64.0.1", "169.254.3.3"}, got, "unusable classes must rank after usable addresses")
+	assert.Equal(t, []string{"10.5.5.5", "192.168.0.10", "172.17.0.2", "100.64.0.1", "169.254.3.3"},
+		RankRemote([]string{"169.254.3.3", "172.17.0.2", "10.5.5.5", "100.64.0.1", "192.168.0.10"}),
+		"unusable classes must rank after usable addresses")
 }
 
 // TestRankRemote_PrivateBlocksTie is the deliberate reversal of the old policy: a
@@ -25,19 +26,10 @@ func TestRankRemote_DemotesOnlyUnusableClasses(t *testing.T) {
 // and no address-only rule can tell those apart. Equal scores resolve by string
 // order, which is arbitrary but stable, and a connection attempt corrects it.
 func TestRankRemote_PrivateBlocksTie(t *testing.T) {
-	{
-		a, b := scoreIP(net.ParseIP("192.168.1.20")), scoreIP(net.ParseIP("10.5.5.5"))
-		assert.Equal(t, b, a, "scoreIP 192.168")
-	}
-	{
-		a, b := scoreIP(net.ParseIP("172.20.0.5")), scoreIP(net.ParseIP("10.5.5.5"))
-		assert.Equal(t, b, a, "scoreIP 172.16/12")
-	}
+	assert.Equal(t, scoreIP(net.ParseIP("10.5.5.5")), scoreIP(net.ParseIP("192.168.1.20")), "scoreIP 192.168")
+	assert.Equal(t, scoreIP(net.ParseIP("10.5.5.5")), scoreIP(net.ParseIP("172.20.0.5")), "scoreIP 172.16/12")
 	// Docker's default bridge is the one 172.16/12 address that stays demoted.
-	{
-		a, b := scoreIP(net.ParseIP("172.17.0.1")), scoreIP(net.ParseIP("172.20.0.5"))
-		assert.Less(t, a, b, "scoreIP 172.17 docker")
-	}
+	assert.Less(t, scoreIP(net.ParseIP("172.17.0.1")), scoreIP(net.ParseIP("172.20.0.5")), "scoreIP 172.17 docker")
 }
 
 func TestRankRemote_PrivateBeatsPublic(t *testing.T) {
@@ -47,9 +39,8 @@ func TestRankRemote_PrivateBeatsPublic(t *testing.T) {
 }
 
 func TestRankRemote_DropsUnparseableAndStableTie(t *testing.T) {
-	got := RankRemote([]string{"not-an-ip", "192.168.0.9", "192.168.0.3", ""})
-	want := []string{"192.168.0.3", "192.168.0.9"} // equal score -> string order, junk dropped
-	assert.Equal(t, want, got)
+	// Equal score -> string order, junk dropped.
+	assert.Equal(t, []string{"192.168.0.3", "192.168.0.9"}, RankRemote([]string{"not-an-ip", "192.168.0.9", "192.168.0.3", ""}))
 }
 
 func TestPrimary_TXTWins(t *testing.T) {
@@ -73,8 +64,8 @@ func TestIPFromTXT(t *testing.T) {
 }
 
 func TestIPsFromTXT(t *testing.T) {
-	got := IPsFromTXT([]string{"uuid=abc", "ips=10.172.54.70,192.168.240.2, 192.168.240.6 ,junk"})
-	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}, got)
+	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"},
+		IPsFromTXT([]string{"uuid=abc", "ips=10.172.54.70,192.168.240.2, 192.168.240.6 ,junk"}))
 	assert.Empty(t, IPsFromTXT([]string{"uuid=abc"}), "IPsFromTXT without ips")
 }
 
@@ -84,27 +75,23 @@ func TestIPsFromTXT(t *testing.T) {
 // used to promote a direct-connect link over the LAN.
 func TestCandidates_PreservesPublishedOrder(t *testing.T) {
 	txt := []string{"uuid=abc", "ip=10.172.54.70", "ips=10.172.54.70,192.168.240.2"}
-	got := Candidates(txt, []string{"192.168.240.2", "10.172.54.70"})
-	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2"}, got)
+	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2"}, Candidates(txt, []string{"192.168.240.2", "10.172.54.70"}))
 }
 
 func TestCandidates_AppendsUnrankedAdvertisedAddresses(t *testing.T) {
 	// An address the node did not rank is a fallback, not a competing opinion:
 	// it is appended, never promoted above a ranked entry.
-	got := Candidates(
+	assert.Equal(t, []string{"10.0.0.5", "172.20.0.5", "192.168.9.9"}, Candidates(
 		[]string{"ip=10.0.0.5", "ips=10.0.0.5,172.20.0.5"},
 		[]string{"192.168.9.9", "10.0.0.5"},
-	)
-	assert.Equal(t, []string{"10.0.0.5", "172.20.0.5", "192.168.9.9"}, got)
+	))
 }
 
 func TestCandidates_Deduplicates(t *testing.T) {
-	got := Candidates(
+	assert.Equal(t, []string{"10.0.0.5"}, Candidates(
 		[]string{"ip=10.0.0.5", "ips=10.0.0.5,10.0.0.5"},
 		[]string{"10.0.0.5"},
-	)
-	require.Len(t, got, 1)
-	assert.Equal(t, "10.0.0.5", got[0])
+	))
 }
 
 func TestVirtualIface(t *testing.T) {
@@ -130,10 +117,7 @@ func TestVirtualIface(t *testing.T) {
 // virtualIface first, and rankLocal does (see TestRankLocal_ExcludesVirtual).
 func TestPhysicalBonus_VEthernetIsCallerGated(t *testing.T) {
 	assert.Equal(t, 15, physicalBonus("vEthernet (Default Switch)"))
-	{
-		wifi, eth := physicalBonus("Wi-Fi"), physicalBonus("Ethernet")
-		assert.Greater(t, wifi, eth, "physicalBonus Wi-Fi")
-	}
+	assert.Greater(t, physicalBonus("Wi-Fi"), physicalBonus("Ethernet"), "physicalBonus Wi-Fi")
 	assert.Equal(t, 0, physicalBonus("someswitch0"))
 }
 
@@ -165,10 +149,9 @@ func TestRankLocal_PrefersLANOverDirectConnect(t *testing.T) {
 // by a host that has a physical address. Every Docker host has 172.17.0.1, so a
 // peer told to dial it reaches its own bridge rather than this node.
 func TestRankLocal_ExcludesVirtual(t *testing.T) {
-	for _, ip := range rankLocal(sparkHost(), Evidence{}, "") {
-		assert.NotEqual(t, "172.17.0.1", ip, "rankLocal published container bridge")
-		assert.NotEqual(t, "172.18.0.1", ip, "rankLocal published container bridge")
-	}
+	got := rankLocal(sparkHost(), Evidence{}, "")
+	assert.NotContains(t, got, "172.17.0.1", "rankLocal published container bridge")
+	assert.NotContains(t, got, "172.18.0.1", "rankLocal published container bridge")
 }
 
 // TestRankLocal_VirtualIsTheAnswerWhenItIsTheOnlyOne: a Windows host on a Hyper-V
@@ -180,9 +163,7 @@ func TestRankLocal_VirtualIsTheAnswerWhenItIsTheOnlyOne(t *testing.T) {
 		{name: "vEthernet (External Switch)", addrs: []localAddr{{ip: "192.168.1.40", prefixLen: 24}}},
 		{name: "docker0", addrs: []localAddr{{ip: "172.17.0.1", prefixLen: 16}}},
 	}
-	got := rankLocal(ifaces, Evidence{}, "192.168.1.40")
-	require.Len(t, got, 1)
-	assert.Equal(t, "192.168.1.40", got[0])
+	assert.Equal(t, []string{"192.168.1.40"}, rankLocal(ifaces, Evidence{}, "192.168.1.40"))
 }
 
 // TestRankLocal_VirtualNeverOutranksPhysical: the fallback is a last resort, not a
@@ -193,9 +174,7 @@ func TestRankLocal_VirtualNeverOutranksPhysical(t *testing.T) {
 		{name: "wg0", addrs: []localAddr{{ip: "10.99.0.2", prefixLen: 24}}},
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
 	}
-	got := rankLocal(ifaces, Evidence{}, "10.99.0.2")
-	require.Len(t, got, 1)
-	assert.Equal(t, "10.0.0.5", got[0])
+	assert.Equal(t, []string{"10.0.0.5"}, rankLocal(ifaces, Evidence{}, "10.99.0.2"))
 }
 
 // TestRankLocal_PeerProvenOverlayIsPublishedLast: qualification is judged from
@@ -209,12 +188,12 @@ func TestRankLocal_PeerProvenOverlayIsPublishedLast(t *testing.T) {
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
 	}
 	ev := Evidence{PeerObserved: map[string]bool{"10.99.0.2": true}}
-	assertRanked(t, rankLocal(ifaces, ev, "10.99.0.2"), []string{"10.0.0.5", "10.99.0.2"})
+	require.Equal(t, []string{"10.0.0.5", "10.99.0.2"}, rankLocal(ifaces, ev, "10.99.0.2"))
 
 	// Without that proof the tunnel stays unpublished: an overlay address no peer
 	// has used is an ambiguous entry that costs every dialer a confirmation.
 	ifaces[0].addrs[0].ip = "10.99.0.3"
-	assertRanked(t, rankLocal(ifaces, Evidence{}, ""), []string{"10.0.0.5"})
+	require.Equal(t, []string{"10.0.0.5"}, rankLocal(ifaces, Evidence{}, ""))
 }
 
 // TestRankLocal_OverlayLANSurvivesADirectConnectNIC is the headline defect in the
@@ -232,8 +211,7 @@ func TestRankLocal_OverlayLANSurvivesADirectConnectNIC(t *testing.T) {
 	}
 	// The /30 keeps its place at the back: it is the fast path for the machine
 	// cabled to it, and only the canonical answer was ever in dispute.
-	assertRanked(t, rankLocal(ifaces, Evidence{}, "192.168.1.40"),
-		[]string{"192.168.1.40", "192.168.240.2"})
+	require.Equal(t, []string{"192.168.1.40", "192.168.240.2"}, rankLocal(ifaces, Evidence{}, "192.168.1.40"))
 }
 
 // TestRankLocal_OverlayRunsWhenNoPhysicalAddressQualifies covers the other
@@ -245,21 +223,14 @@ func TestRankLocal_OverlayRunsWhenNoPhysicalAddressQualifies(t *testing.T) {
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
 	}
 	ev := Evidence{SendFailed: map[string]bool{"eth0": true}}
-	assertRanked(t, rankLocal(ifaces, ev, ""), []string{"100.101.102.103", "10.0.0.5"})
-}
-
-// assertRanked compares a ranking to the exact list expected, in order.
-func assertRanked(t *testing.T, got, want []string) {
-	t.Helper()
-	require.Equal(t, want, got)
+	require.Equal(t, []string{"100.101.102.103", "10.0.0.5"}, rankLocal(ifaces, ev, ""))
 }
 
 // TestRankLocal_KeepsDirectConnectAsLastResort: a /30 link must not be canonical,
 // but it is still real for the machine on its far end, so it stays in the list for
 // that pair to use.
 func TestRankLocal_KeepsDirectConnectAsLastResort(t *testing.T) {
-	got := rankLocal(sparkHost(), Evidence{}, "")
-	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}, got)
+	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}, rankLocal(sparkHost(), Evidence{}, ""))
 }
 
 // TestRankLocal_NarrowPrefixesAndPointToPoint pins both hard disqualifiers
@@ -271,27 +242,17 @@ func TestRankLocal_NarrowPrefixesAndPointToPoint(t *testing.T) {
 			{name: "eth1", addrs: []localAddr{{ip: "10.9.9.1", prefixLen: prefixLen}}},
 			{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
 		}
-		{
-			got := rankLocal(ifaces, Evidence{}, "")
-			assert.Equal(t, "10.0.0.5", got[0], "with a /")
-		}
+		assert.Equal(t, "10.0.0.5", rankLocal(ifaces, Evidence{}, "")[0], "with a /%d prefix", prefixLen)
 	}
 
 	ptp := []localIface{
 		{name: "eth1", pointToPoint: true, addrs: []localAddr{{ip: "10.9.9.1", prefixLen: 24}}},
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
 	}
-	{
-		got := rankLocal(ptp, Evidence{}, "")
-		assert.Equal(t, "10.0.0.5", got[0], "with a point-to-point interface present, canonical")
-	}
+	assert.Equal(t, "10.0.0.5", rankLocal(ptp, Evidence{}, "")[0], "with a point-to-point interface present")
 
 	unknown := []localIface{{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: -1}}}}
-	{
-		got := rankLocal(unknown, Evidence{}, "")
-		require.Len(t, got, 1, "unknown prefix length")
-		assert.Equal(t, "10.0.0.5", got[0], "unknown prefix length")
-	}
+	assert.Equal(t, []string{"10.0.0.5"}, rankLocal(unknown, Evidence{}, ""), "unknown prefix length")
 }
 
 // TestRankLocal_SendFailureDisqualifies: a send that fails at the socket reports
@@ -304,10 +265,7 @@ func TestRankLocal_SendFailureDisqualifies(t *testing.T) {
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
 	}
 	ev := Evidence{SendFailed: map[string]bool{"eth1": true}}
-	{
-		got := rankLocal(ifaces, ev, "")
-		assert.Equal(t, "10.0.0.5", got[0], "canonical")
-	}
+	assert.Equal(t, "10.0.0.5", rankLocal(ifaces, ev, "")[0], "canonical")
 }
 
 // TestRankLocal_EvidencePrecedence pins the tier order: proof from a peer beats a
@@ -321,22 +279,13 @@ func TestRankLocal_EvidencePrecedence(t *testing.T) {
 	}
 
 	// Route source beats nothing else.
-	{
-		got := rankLocal(ifaces, Evidence{}, "10.0.2.5")
-		assert.Equal(t, "10.0.2.5", got[0], "route source")
-	}
+	assert.Equal(t, "10.0.2.5", rankLocal(ifaces, Evidence{}, "10.0.2.5")[0], "route source")
 	// A peer on-link beats the route source.
 	ev := Evidence{PeerOnLink: map[string]bool{"eth1": true}}
-	{
-		got := rankLocal(ifaces, ev, "10.0.2.5")
-		assert.Equal(t, "10.0.1.5", got[0], "peer-on-link")
-	}
+	assert.Equal(t, "10.0.1.5", rankLocal(ifaces, ev, "10.0.2.5")[0], "peer-on-link")
 	// A peer's completed connection beats both.
 	ev.PeerObserved = map[string]bool{"10.0.0.5": true}
-	{
-		got := rankLocal(ifaces, ev, "10.0.2.5")
-		assert.Equal(t, "10.0.0.5", got[0], "peer-observed")
-	}
+	assert.Equal(t, "10.0.0.5", rankLocal(ifaces, ev, "10.0.2.5")[0], "peer-observed")
 }
 
 func TestFacingPeers(t *testing.T) {
@@ -356,10 +305,7 @@ func TestFacingPeers(t *testing.T) {
 func TestFacingPeers_IgnoresSelf(t *testing.T) {
 	ifaces := []localIface{{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}}}
 	require.Empty(t, facingPeers(ifaces, []string{"10.0.0.5"}), "facingPeers with only our own address")
-	{
-		got := facingPeers(ifaces, []string{"10.0.0.9"})
-		assert.True(t, got["eth0"], "facingPeers with a real peer")
-	}
+	assert.True(t, facingPeers(ifaces, []string{"10.0.0.9"})["eth0"], "facingPeers with a real peer")
 }
 
 func TestFacingPeers_NoPeersOrUnknownPrefix(t *testing.T) {
@@ -377,10 +323,7 @@ func TestRankLocal_PeerProofOutranksUnqualified(t *testing.T) {
 		{name: "eth1", addrs: []localAddr{{ip: "10.0.1.5", prefixLen: 30}}},
 	}
 	ev := Evidence{PeerObserved: map[string]bool{"10.0.1.5": true}}
-	{
-		got := rankLocal(ifaces, ev, "")
-		assert.Equal(t, "10.0.1.5", got[0], "canonical")
-	}
+	assert.Equal(t, "10.0.1.5", rankLocal(ifaces, ev, "")[0], "canonical")
 }
 
 // TestRankLocal_DeterministicTieBreak is the flap fix. Two equally-scored
@@ -393,8 +336,7 @@ func TestRankLocal_DeterministicTieBreak(t *testing.T) {
 	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
 		reversed[i], reversed[j] = reversed[j], reversed[i]
 	}
-	got := rankLocal(reversed, Evidence{}, "")
-	assert.Equal(t, forward, got, "enumeration order changed the result")
+	assert.Equal(t, forward, rankLocal(reversed, Evidence{}, ""), "enumeration order changed the result")
 }
 
 func TestRankLocal_ExcludesLoopbackAndLinkLocal(t *testing.T) {
@@ -404,9 +346,7 @@ func TestRankLocal_ExcludesLoopbackAndLinkLocal(t *testing.T) {
 		{ip: "fe80::1", prefixLen: 64},
 		{ip: "10.0.0.5", prefixLen: 24},
 	}}}
-	got := rankLocal(ifaces, Evidence{}, "")
-	require.Len(t, got, 1)
-	assert.Equal(t, "10.0.0.5", got[0])
+	assert.Equal(t, []string{"10.0.0.5"}, rankLocal(ifaces, Evidence{}, ""))
 }
 
 func TestRankLocal_NoAddresses(t *testing.T) {

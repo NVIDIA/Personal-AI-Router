@@ -33,8 +33,7 @@ func TestLuidKey(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := luidKey(c.low, c.high)
-			require.Equal(t, c.want, got, "luidKey (%v)", got)
+			require.Equal(t, c.want, luidKey(c.low, c.high), "luidKey")
 		})
 	}
 }
@@ -47,10 +46,7 @@ func TestLuidKey(t *testing.T) {
 // write into the CPU percentage.
 func TestPDHFmtCounterValueSize(t *testing.T) {
 	const expected = 16
-	{
-		got := unsafe.Sizeof(pdhFmtCounterValue{})
-		require.Equal(t, uintptr(expected), got, "pdhFmtCounterValue size")
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(pdhFmtCounterValue{}), "pdhFmtCounterValue size")
 }
 
 // TestPDHFmtCounterValueItemSize pins the in-Go layout of
@@ -61,10 +57,7 @@ func TestPDHFmtCounterValueSize(t *testing.T) {
 // and every lookup would silently fail.
 func TestPDHFmtCounterValueItemSize(t *testing.T) {
 	const expected = 24
-	{
-		got := unsafe.Sizeof(pdhFmtCounterValueItemW{})
-		require.Equal(t, uintptr(expected), got, "pdhFmtCounterValueItemW size")
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(pdhFmtCounterValueItemW{}), "pdhFmtCounterValueItemW size")
 }
 
 // TestMemoryStatusExSize pins the in-Go layout of memoryStatusEx to
@@ -76,8 +69,5 @@ func TestPDHFmtCounterValueItemSize(t *testing.T) {
 // stack when the OS writes past our struct.
 func TestMemoryStatusExSize(t *testing.T) {
 	const expected = 64
-	{
-		got := unsafe.Sizeof(memoryStatusEx{})
-		require.Equal(t, uintptr(expected), got, "memoryStatusEx size")
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(memoryStatusEx{}), "memoryStatusEx size")
 }

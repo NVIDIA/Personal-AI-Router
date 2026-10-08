@@ -96,10 +96,7 @@ func generateTestPKI(t *testing.T, host string) (caPEM, serverCertPEM, serverKey
 func writePEM(t *testing.T, dir, name string, data []byte) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	{
-		err := os.WriteFile(path, data, 0o600)
-		require.NoError(t, err, "write (%v, %v)", path, err)
-	}
+	require.NoError(t, os.WriteFile(path, data, 0o600), "write %s", path)
 	return path
 }
 
@@ -213,7 +210,7 @@ func waitForPort(t *testing.T, host string, port int, timeout time.Duration) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "port %s:%d did not start listening within %s", host, port, timeout)
+	require.FailNow(t, fmt.Sprintf("port %s:%d did not start listening within %s", host, port, timeout))
 }
 
 func TestNodeInfoHTTPSWithMTLS(t *testing.T) {
@@ -246,17 +243,17 @@ func TestNodeInfoHTTPSWithMTLS(t *testing.T) {
 	client := httpsClientWithCert(t, caPEM, ccPEM, ckPEM)
 	url := fmt.Sprintf("https://localhost:%d/v1/node-info", tlsPort)
 	resp, err := client.Get(url)
-	require.NoError(t, err, "authenticated mTLS GET (%v, %v)", url, err)
+	require.NoError(t, err, "authenticated mTLS GET (%v)", url)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "authenticated mTLS GET status (%v)", body)
-	assert.Contains(t, string(body), "GPUs", "response body missing GPUs key (%v)", body)
+	assert.Contains(t, string(body), "GPUs", "response body missing GPUs key")
 	t.Logf("mTLS-authenticated GET succeeded (%d bytes)", len(body))
 
 	// 2. HTTPS without any client cert fails the handshake.
 	noCertClient := httpsClientNoCert(t, caPEM)
 	if _, err := noCertClient.Get(url); err == nil {
-		require.FailNow(t, "test expectation failed", "expected unauthenticated GET to fail, got nil error")
+		require.FailNow(t, "expected unauthenticated GET to fail, got nil error")
 	} else {
 		t.Logf("unauthenticated GET correctly rejected: %v", err)
 	}
@@ -292,7 +289,7 @@ func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	httpURL := fmt.Sprintf("http://localhost:%d/v1/node-info", httpPort)
 	resp, err := httpClient.Get(httpURL)
-	require.NoError(t, err, "HTTP GET (%v, %v)", httpURL, err)
+	require.NoError(t, err, "HTTP GET (%v)", httpURL)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "HTTP GET status")
 
@@ -300,7 +297,7 @@ func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
 	tlsClient := httpsClientNoCert(t, caPEM)
 	tlsURL := fmt.Sprintf("https://localhost:%d/v1/node-info", tlsPort)
 	resp, err = tlsClient.Get(tlsURL)
-	require.NoError(t, err, "HTTPS GET (%v, %v)", tlsURL, err)
+	require.NoError(t, err, "HTTPS GET (%v)", tlsURL)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "HTTPS GET status")
 }
@@ -320,7 +317,7 @@ func TestNodeInfoPlainHTTPDefaultUnchanged(t *testing.T) {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	url := fmt.Sprintf("http://localhost:%d/v1/node-info", httpPort)
 	resp, err := httpClient.Get(url)
-	require.NoError(t, err, "HTTP GET (%v, %v)", url, err)
+	require.NoError(t, err, "HTTP GET (%v)", url)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "HTTP GET status")
 }

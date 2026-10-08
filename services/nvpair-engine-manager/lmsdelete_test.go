@@ -28,10 +28,7 @@ func TestLMSEntryMatchesModel(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		{
-			got := lmsEntryMatchesModel(entry, c.model)
-			assert.Equal(t, c.want, got, "lmsEntryMatchesModel")
-		}
+		assert.Equal(t, c.want, lmsEntryMatchesModel(entry, c.model), "lmsEntryMatchesModel")
 	}
 }
 

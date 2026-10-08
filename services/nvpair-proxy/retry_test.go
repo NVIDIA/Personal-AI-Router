@@ -63,7 +63,7 @@ func waitForCond(t *testing.T, timeout time.Duration, what string, cond func() b
 		}
 		time.Sleep(time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "timed out after %v waiting for %s", timeout, what)
+	require.FailNowf(t, "timed out waiting for condition", "waited %v for %s", timeout, what)
 }
 
 // decodeJSONBody parses a response body as a JSON object so an assertion can
@@ -72,10 +72,7 @@ func waitForCond(t *testing.T, timeout time.Duration, what string, cond func() b
 func decodeJSONBody(t *testing.T, body string) map[string]any {
 	t.Helper()
 	var got map[string]any
-	{
-		err := json.Unmarshal([]byte(body), &got)
-		require.NoError(t, err, "response body is not a JSON object (%v, %v)", err, body)
-	}
+	require.NoError(t, json.Unmarshal([]byte(body), &got), "response body is not a JSON object: %q", body)
 	return got
 }
 
@@ -125,14 +122,8 @@ func TestBackoffFor_NeverOutlastsTheDeadline(t *testing.T) {
 	setForTest(t, &retryBackoff, defaultRetryBackoff)
 
 	// Dispatch 3 alone would wait 4s.
-	{
-		got := backoffFor(3, 100*time.Millisecond)
-		assert.LessOrEqual(t, got, 100*time.Millisecond, "backoffFor with 100ms left")
-	}
-	{
-		got := backoffFor(1, 0)
-		assert.Equal(t, time.Duration(0), got, "backoffFor with no time left")
-	}
+	assert.LessOrEqual(t, backoffFor(3, 100*time.Millisecond), 100*time.Millisecond, "backoffFor with 100ms left")
+	assert.Equal(t, time.Duration(0), backoffFor(1, 0), "backoffFor with no time left")
 }
 
 // Committing an attempt and abandoning it because its target left discovery can
@@ -200,10 +191,7 @@ func TestAttemptClaim_ExactlyOneWinnerUnderContention(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		{
-			got := commits.Load() + abandons.Load()
-			require.Equal(t, int32(1), got, "winners")
-		}
+		require.Equal(t, int32(1), commits.Load()+abandons.Load(), "winners")
 	}
 }
 
@@ -233,10 +221,7 @@ func TestHandleHTTP_RetriesTheOnlyOwner(t *testing.T) {
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
 		require.Equal(t, http.StatusOK, rec.Code, "status")
-		{
-			got := hits.Load()
-			require.Equal(t, int32(3), got, "upstream saw")
-		}
+		require.Equal(t, int32(3), hits.Load(), "upstream saw")
 	})
 }
 
@@ -260,15 +245,9 @@ func TestHandleHTTP_StopsAtDispatchBudget(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		{
-			got := hits()
-			require.Equal(t, maxDispatchAttempts, got, "upstream saw (%v, %v)", got, maxDispatchAttempts)
-		}
+		require.Equal(t, maxDispatchAttempts, hits(), "upstream should consume the full dispatch budget")
 		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
-		{
-			got := rec.Body.String()
-			require.Equal(t, upstreamBody, got, "body (%v, %v)", got, upstreamBody)
-		}
+		require.Equal(t, upstreamBody, rec.Body.String(), "upstream response must pass through unchanged")
 	})
 }
 
@@ -289,10 +268,7 @@ func TestHandleHTTP_NonInferenceIsNotRetriedBeyondItsCandidates(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, tc.nonInferencePath, strings.NewReader(`{"name":"m"}`))
 		p.soleFacade().handleHTTP(rec, req)
 
-		{
-			got := hits()
-			require.Equal(t, 1, got, "upstream saw")
-		}
+		require.Equal(t, 1, hits(), "upstream saw")
 		require.Equal(t, http.StatusInternalServerError, rec.Code, "status")
 	})
 }
@@ -328,10 +304,7 @@ func TestHandleHTTP_ReservationReleasedBetweenAttempts(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-	{
-		got := firstHits() + secondHits()
-		require.Equal(t, maxDispatchAttempts, got, "dispatches (%v, %v)", got, maxDispatchAttempts)
-	}
+	require.Equal(t, maxDispatchAttempts, firstHits()+secondHits(), "dispatches must consume the full budget")
 	require.NotEqual(t, 0, firstHits(), "dispatches = broken-a")
 	require.NotEqual(t, 0, secondHits(), "dispatches = broken-a")
 
@@ -384,7 +357,7 @@ func TestHandleHTTP_WaitsForAnOwnerWithoutSpendingAttempts(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		require.FailNow(t, "test expectation failed", "handleHTTP never returned")
+		require.FailNow(t, "handleHTTP never returned")
 	}
 	elapsed := time.Since(start)
 
@@ -392,10 +365,7 @@ func TestHandleHTTP_WaitsForAnOwnerWithoutSpendingAttempts(t *testing.T) {
 	// The distinguishing evidence: the budget was never spent, so the reason is
 	// the missing owner rather than exhausted dispatches.
 	const want = "no node advertising the requested model became available before the retry deadline"
-	{
-		got := decodeJSONBody(t, rec.Body.String())
-		require.Equal(t, want, got["error"], "body error (%v)", want)
-	}
+	require.Equal(t, want, decodeJSONBody(t, rec.Body.String())["error"], "body error (%v)", want)
 	// It waited rather than giving up at once, which is the point of the wait.
 	require.GreaterOrEqual(t, elapsed, jobDeadline/2, "returned after (%v, %v)", elapsed, jobDeadline)
 }
@@ -423,17 +393,12 @@ func TestHandleHTTP_DeadlineWithAnOwnerPresentSaysSo(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-	{
-		got := stalled.hits()
-		require.NotEqual(t, 0, got, "upstream saw")
-		require.Less(t, got, maxDispatchAttempts, "upstream saw")
-	}
+	got := stalled.hits()
+	require.NotEqual(t, 0, got, "upstream saw")
+	require.Less(t, got, maxDispatchAttempts, "upstream saw")
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "status")
 	const want = "the retry deadline passed while dispatch attempts were still failing"
-	{
-		got := decodeJSONBody(t, rec.Body.String())
-		require.Equal(t, want, got["error"], "body error (%v)", want)
-	}
+	require.Equal(t, want, decodeJSONBody(t, rec.Body.String())["error"], "body error (%v)", want)
 }
 
 // TestHandleHTTP_TargetLeavingDiscoveryAbortsAttempt covers the in-flight
@@ -494,15 +459,15 @@ func TestHandleHTTP_TargetLeavingDiscoveryAbortsAttempt(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(20 * time.Second):
-		require.FailNow(t, "test expectation failed", "handleHTTP never returned: the target leaving discovery did not abort the attempt")
+		require.FailNow(t, "handleHTTP never returned: the target leaving discovery did not abort the attempt")
 	}
 	elapsed := time.Since(start)
 
 	require.LessOrEqual(t, elapsed, 10*time.Second, "took")
 	require.Equal(t, http.StatusOK, resp.Code, "status")
 	require.Contains(t, resp.Body.String(), `"done":true`, "body came from the wrong node")
-	require.True(t, rec.has(`"state":"completed"`), "the job must complete: aborting an attempt is not the client disconnecting")
-	require.False(t, rec.has(`"state":"cancelled"`), "a retarget was misreported as cancelled: the attempt cancel was mistaken for the client leaving")
+	require.Contains(t, rec.String(), `"state":"completed"`, "the job must complete: aborting an attempt is not the client disconnecting")
+	require.NotContains(t, rec.String(), `"state":"cancelled"`, "a retarget was misreported as cancelled: the attempt cancel was mistaken for the client leaving")
 }
 
 // TestHandleHTTP_AbandonedRequestStopsRetrying: a client that has gone away
@@ -543,12 +508,9 @@ func TestHandleHTTP_AbandonedRequestStopsRetrying(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "handleHTTP did not return after the client abandoned the request")
+		require.FailNow(t, "handleHTTP did not return after the client abandoned the request")
 	}
 
-	{
-		got := hits()
-		require.LessOrEqual(t, got, afterFirst, "upstream saw")
-	}
-	require.True(t, rec.has(`"state":"cancelled"`), "an abandoned request must terminate as cancelled")
+	require.LessOrEqual(t, hits(), afterFirst, "upstream saw")
+	require.Contains(t, rec.String(), `"state":"cancelled"`, "an abandoned request must terminate as cancelled")
 }

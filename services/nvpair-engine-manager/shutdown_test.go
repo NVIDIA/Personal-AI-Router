@@ -35,10 +35,7 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 
 	ports := make([]int, len(names))
 	for i, name := range names {
-		{
-			err := ex.Start(ctx, name)
-			require.NoError(t, err, "start (%v, %v)", name, err)
-		}
+		require.NoError(t, ex.Start(ctx, name), "start (%v)", name)
 		st, _ := ex.Status(name)
 		require.True(t, st.Running, " (%v, %v)", name, st)
 		require.NotEqual(t, 0, st.Port, " (%v, %v)", name, st)
@@ -49,10 +46,7 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 
 	require.True(t, waitPortClosed(ports[0], 5*time.Second), "engine (%v)", names[0])
 	require.True(t, waitPortClosed(ports[1], 5*time.Second), "engine (%v)", names[1])
-	{
-		err := ex.Start(ctx, names[0])
-		require.ErrorIs(t, err, context.Canceled, "start after StopAll error")
-	}
+	require.ErrorIs(t, ex.Start(ctx, names[0]), context.Canceled, "start after StopAll error")
 }
 
 func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
@@ -95,7 +89,7 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "command-mode start did not return after StopAll")
+		require.FailNow(t, "command-mode start did not return after StopAll")
 	}
 	require.False(t, pidAlive(pid), "command-mode fake engine PID (%v)", pid)
 	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "shutdown cancellation retained a command-mode start-failed error")
@@ -178,7 +172,7 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "command-mode start did not return after StopAll")
+		require.FailNow(t, "command-mode start did not return after StopAll")
 	}
 	require.FileExists(t, stopMarker, "StopAll skipped the command-mode stop CLI after start detached")
 	require.True(t, waitPortClosed(port, 5*time.Second), "detached command daemon remained on port (%v)", port)
@@ -203,11 +197,8 @@ func TestE2EStdinCloseStopsEngine(t *testing.T) {
 	m := startE2EManager(t, cfg, home)
 	send(t, m.stdin, 1, "engine:start", map[string]any{"engine": "fake"})
 	var started EngineStatus
-	{
-		err := json.Unmarshal(waitResult(t, m.frames, "1", 20*time.Second), &started)
-		require.NoError(t, err, "start status (%v, %v)", started, err)
-		require.True(t, started.Running, "start status (%v, %v)", started, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, m.frames, "1", 20*time.Second), &started), "start status")
+	require.True(t, started.Running, "start status (%v)", started)
 
 	// stop() closes stdin and waits for the process to exit on its own.
 	m.stop(t)

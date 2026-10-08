@@ -28,10 +28,8 @@ func TestLegacyPairingInfoMapsToFirstAdmission(t *testing.T) {
 	info.AdmissionEpoch = 0
 	info.V = pairingInfoVersion
 	raw, _ = json.Marshal(info)
-	{
-		_, _, err := parsePairingInfo(raw)
-		require.Error(t, err, "v2 pairing info without admission epoch was accepted")
-	}
+	_, _, err = parsePairingInfo(raw)
+	require.Error(t, err, "v2 pairing info without admission epoch was accepted")
 }
 
 func TestRestartMigratesLegacyPinnedMemberAdmission(t *testing.T) {
@@ -72,8 +70,6 @@ func TestRestartMigratesLegacyPinnedMemberAdmission(t *testing.T) {
 	require.Equal(t, legacyAdmissionEpoch, member.AdmissionEpoch, "migrated member (%v)", member)
 	proof, err := restarted.newRemovalProof(peer.identity.NodeUUID, member.AdmissionEpoch)
 	require.NoError(t, err, "migrated offline member is not removable")
-	{
-		_, err := restarted.putRemovalProof(proof)
-		require.NoError(t, err, "persist removal for migrated offline member")
-	}
+	_, err = restarted.putRemovalProof(proof)
+	require.NoError(t, err, "persist removal for migrated offline member")
 }

@@ -127,15 +127,15 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 				// Expected: the potentially blocking status work was dispatched.
 			case <-time.After(time.Second):
 				st.opMu.Unlock()
-				require.FailNow(t, "test expectation failed", "%s blocked message dispatch while an engine operation held opMu", tc.method)
+				require.FailNowf(t, "message dispatch blocked while an engine operation held opMu", "method %s", tc.method)
 			}
 
 			st.opMu.Unlock()
 			select {
 			case line := <-response:
-				require.Contains(t, line, `"id":1`, "")
+				require.Contains(t, line, `"id":1`)
 			case <-time.After(2 * time.Second):
-				require.FailNow(t, "test expectation failed", "%s did not respond after the engine operation completed", tc.method)
+				require.FailNowf(t, "no response after the engine operation completed", "method %s", tc.method)
 			}
 		})
 	}
@@ -143,5 +143,5 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 
 func mustContain(t *testing.T, s, sub string) {
 	t.Helper()
-	require.Contains(t, s, sub, "expected")
+	require.Contains(t, s, sub)
 }

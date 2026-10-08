@@ -128,8 +128,6 @@ func TestParseIORegistryGPUsPreservesDedicatedCounterPresence(t *testing.T) {
 }
 
 func TestParseIORegistryGPUsRejectsMalformedPlist(t *testing.T) {
-	{
-		_, err := parseIORegistryGPUs([]byte("<plist>"), 0)
-		require.Error(t, err, "malformed plist returned nil error")
-	}
+	_, err := parseIORegistryGPUs([]byte("<plist>"), 0)
+	require.Error(t, err, "malformed plist returned nil error")
 }

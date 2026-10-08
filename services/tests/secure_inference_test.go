@@ -89,11 +89,8 @@ func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc 
 		Engine string `json:"engine"`
 		Port   int    `json:"port"`
 	}
-	{
-		err := json.Unmarshal(resp.Result, &enabled)
-		require.NoError(t, err, "facade/enable result")
-		require.NotEqual(t, 0, enabled.Port, "facade/enable result (%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &enabled), "facade/enable result")
+	require.NotEqual(t, 0, enabled.Port, "facade/enable result")
 	p.port = enabled.Port
 	return p
 }
@@ -141,10 +138,9 @@ func (p *proxyProc) call(method string, params any) jsonrpc.Message {
 	if params != nil {
 		req["params"] = params
 	}
-	b, err := json.Marshal(req)
-	require.NoError(p.t, err, "encode %s", method)
+	b, _ := json.Marshal(req)
 	b = append(b, '\n')
-	_, err = p.stdin.Write(b)
+	_, err := p.stdin.Write(b)
 	require.NoError(p.t, err, "write %s", method)
 	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
 	require.Nil(p.t, resp.Error, "%s returned a JSON-RPC error", method)
@@ -157,10 +153,9 @@ func (p *proxyProc) notify(method string, params any) {
 	if params != nil {
 		req["params"] = params
 	}
-	b, err := json.Marshal(req)
-	require.NoError(p.t, err, "encode %s", method)
+	b, _ := json.Marshal(req)
 	b = append(b, '\n')
-	_, err = p.stdin.Write(b)
+	_, err := p.stdin.Write(b)
 	require.NoError(p.t, err, "notify %s", method)
 }
 
@@ -206,7 +201,7 @@ func (p *proxyProc) waitForRoutableNode(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "proxy never registered the pushed discovery node")
+	require.FailNow(t, "proxy never registered the pushed discovery node")
 }
 
 // startFakeOllama runs a loopback httptest server that answers the model-list
@@ -285,10 +280,7 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "A->B inference status (%v)", body)
 		require.Contains(t, string(body), "hello from the backend", "A->B response did not come from B's engine")
-		{
-			got := atomic.LoadInt32(bGenerates)
-			require.Equal(t, before+1, got, "B engine generate count (%v)", got)
-		}
+		require.Equal(t, before+1, atomic.LoadInt32(bGenerates), "request must reach B's engine")
 	})
 
 	// 2. Foreign node C is rejected by B's mTLS ingress: it can handshake (B
@@ -301,7 +293,7 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusForbidden {
 			b, _ := io.ReadAll(resp.Body)
-			require.FailNow(t, "test expectation failed", "foreign C status = %d, want 403; body=%s", resp.StatusCode, b)
+			require.FailNow(t, fmt.Sprintf("foreign C status = %d, want 403; body=%s", resp.StatusCode, b))
 		}
 	})
 
@@ -315,10 +307,7 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		resp := postInference(t, fmt.Sprintf("http://127.0.0.1:%d/api/generate", proxyA.port), genBody)
 		defer resp.Body.Close()
 		require.NotEqual(t, http.StatusOK, resp.StatusCode, "A->B still succeeded (status")
-		{
-			got := atomic.LoadInt32(bGenerates)
-			require.Equal(t, before, got, "B engine was reached (%v, %v)", got, before)
-		}
+		require.Equal(t, before, atomic.LoadInt32(bGenerates), "B's engine must not be reached after its pin for A is deleted")
 	})
 }
 
@@ -327,7 +316,7 @@ func postInference(t *testing.T, url string, body []byte) *http.Response {
 	t.Helper()
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
-	require.NoError(t, err, "POST (%v, %v)", url, err)
+	require.NoError(t, err, "POST (%v)", url)
 	return resp
 }
 
@@ -337,7 +326,7 @@ func postInference(t *testing.T, url string, body []byte) *http.Response {
 func mtlsClientWithIdentity(t *testing.T, clusterDir string) *http.Client {
 	t.Helper()
 	cert, err := tls.LoadX509KeyPair(filepath.Join(clusterDir, "node.crt"), filepath.Join(clusterDir, "node.key"))
-	require.NoError(t, err, "load identity from (%v, %v)", clusterDir, err)
+	require.NoError(t, err, "load identity from (%v)", clusterDir)
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{

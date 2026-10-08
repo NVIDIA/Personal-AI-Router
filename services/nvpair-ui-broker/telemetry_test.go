@@ -25,8 +25,8 @@ func TestTelemetryCacheAgesObservations(t *testing.T) {
 		MSSince:           137,
 	}
 	projected, ok := cache.Upsert(sourceScanner, input, receivedAt)
-	require.True(t, ok, "initial projection (%v, %v)", projected, ok)
-	require.Equal(t, int64(137), projected.MSSince, "initial projection (%v, %v)", projected, ok)
+	require.True(t, ok, "initial projection (%v)", projected)
+	require.Equal(t, int64(137), projected.MSSince, "initial projection (%v)", projected)
 	snapshot := cache.Snapshot(receivedAt.Add(250 * time.Millisecond))
 	require.Len(t, snapshot, 1, "snapshot length")
 	require.Equal(t, int64(387), snapshot[0].MSSince, "aged msSince")
@@ -49,23 +49,20 @@ func TestTelemetryCachePrefersScannerAndFallsBackToManual(t *testing.T) {
 
 	cache.Upsert(sourceScanner, scanner, now)
 	projected, ok := cache.Upsert(sourceManual, manual, now.Add(time.Second))
-	require.True(t, ok, "scanner projection (%v, %v)", projected, ok)
-	require.Equal(t, uint32(20), projected.GPUUtilizationPct, "scanner projection (%v, %v)", projected, ok)
+	require.True(t, ok, "scanner projection (%v)", projected)
+	require.Equal(t, uint32(20), projected.GPUUtilizationPct, "scanner projection (%v)", projected)
 
 	projected, ok = cache.Remove("node-a", sourceScanner, now.Add(2*time.Second))
-	require.True(t, ok, "manual fallback (%v, %v)", projected, ok)
-	require.Equal(t, uint32(70), projected.GPUUtilizationPct, "manual fallback (%v, %v)", projected, ok)
-	require.Equal(t, int64(1_000), projected.MSSince, "manual fallback (%v, %v)", projected, ok)
+	require.True(t, ok, "manual fallback (%v)", projected)
+	require.Equal(t, uint32(70), projected.GPUUtilizationPct, "manual fallback (%v)", projected)
+	require.Equal(t, int64(1_000), projected.MSSince, "manual fallback (%v)", projected)
 
 	projected, ok = cache.Remove("node-a", sourceManual, now.Add(3*time.Second))
-	require.True(t, ok, "final removal projection (%v, %v)", projected, ok)
-	require.Equal(t, "node-a", projected.HostUUID, "final removal projection (%v, %v)", projected, ok)
-	require.False(t, projected.TelemetryValid, "final removal projection (%v, %v)", projected, ok)
-	require.Equal(t, int64(0), projected.MSSince, "final removal projection (%v, %v)", projected, ok)
-	{
-		snapshot := cache.Snapshot(now.Add(4 * time.Second))
-		require.Empty(t, snapshot, "cache retained final removal")
-	}
+	require.True(t, ok, "final removal projection (%v)", projected)
+	require.Equal(t, "node-a", projected.HostUUID, "final removal projection (%v)", projected)
+	require.False(t, projected.TelemetryValid, "final removal projection (%v)", projected)
+	require.Equal(t, int64(0), projected.MSSince, "final removal projection (%v)", projected)
+	require.Empty(t, cache.Snapshot(now.Add(4*time.Second)), "cache retained final removal")
 }
 
 func TestTelemetryCacheSnapshotIsSortedAndNormalizesInvalidAge(t *testing.T) {
@@ -86,8 +83,8 @@ func TestTelemetryCacheSnapshotIsSortedAndNormalizesInvalidAge(t *testing.T) {
 	require.Len(t, got, 2, "snapshot order")
 	require.Equal(t, "node-a", got[0].HostUUID, "snapshot order (%v)", got)
 	require.Equal(t, "node-z", got[1].HostUUID, "snapshot order (%v)", got)
-	require.Equal(t, int64(0), got[0].MSSince, "normalized ages = [")
-	require.Equal(t, int64(0), got[1].MSSince, "normalized ages = [")
+	require.Equal(t, int64(0), got[0].MSSince, "normalized age")
+	require.Equal(t, int64(0), got[1].MSSince, "normalized age")
 }
 
 func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
@@ -114,10 +111,7 @@ func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
 	require.NoError(t, json.Unmarshal(message.Params, &got), "decode replay")
 	require.Equal(t, "node-a", got.HostUUID, "replayed telemetry (%v)", got)
 	require.GreaterOrEqual(t, got.MSSince, int64(350), "replayed telemetry (%v)", got)
-	{
-		count := <-replayed
-		require.Equal(t, 1, count, "replayed count")
-	}
+	require.Equal(t, 1, <-replayed, "replayed count")
 }
 
 func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
@@ -147,8 +141,5 @@ func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 	require.GreaterOrEqual(t, snapshot[0].MSSince, int64(2_100), "surviving alias reset telemetry age")
 
 	b.removeManualNode("first")
-	{
-		snapshot := b.telemetry.Snapshot(time.Now())
-		require.Empty(t, snapshot, "final manual alias left telemetry cached")
-	}
+	require.Empty(t, b.telemetry.Snapshot(time.Now()), "final manual alias left telemetry cached")
 }

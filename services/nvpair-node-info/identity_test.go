@@ -22,10 +22,7 @@ func TestResolveHostUUIDFlagWins(t *testing.T) {
 	if seeded == "broker-uuid" {
 		t.Skip("astronomically unlikely uuid collision with the flag literal")
 	}
-	{
-		got := resolveHostUUID("broker-uuid", filepath.Join(base, "cluster"))
-		require.Equal(t, "broker-uuid", got, "flag should win over any resolved identity:")
-	}
+	require.Equal(t, "broker-uuid", resolveHostUUID("broker-uuid", filepath.Join(base, "cluster")), "flag should win over any resolved identity:")
 }
 
 // TestResolveHostUUIDFallsBackToClusterRoot: standalone (no --node-id) node-info
@@ -35,8 +32,5 @@ func TestResolveHostUUIDFlagWins(t *testing.T) {
 func TestResolveHostUUIDFallsBackToClusterRoot(t *testing.T) {
 	base := t.TempDir()
 	want := nodeid.Resolve(base)
-	{
-		got := resolveHostUUID("", filepath.Join(base, "cluster"))
-		require.Equal(t, want, got, "fallback resolve")
-	}
+	require.Equal(t, want, resolveHostUUID("", filepath.Join(base, "cluster")), "fallback resolve")
 }

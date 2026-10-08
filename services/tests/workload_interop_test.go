@@ -113,10 +113,8 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 // broker. (The package's other writeFrame takes a typed brokerFrame.)
 func writeRawFrame(t *testing.T, w io.Writer, frame string) {
 	t.Helper()
-	{
-		_, err := w.Write([]byte(frame + "\n"))
-		require.NoError(t, err, "write frame")
-	}
+	_, err := w.Write([]byte(frame + "\n"))
+	require.NoError(t, err, "write frame")
 }
 
 // TestWorkloadManagerInboundRelay drives the inbound path: a peer-origin
@@ -138,11 +136,8 @@ func TestWorkloadManagerInboundRelay(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	{
-		err := json.Unmarshal(ack.Result, &sr)
-		require.NoError(t, err, "workloads:subscribe ack")
-		require.True(t, sr.Subscribed, "workloads:subscribe ack (%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(ack.Result, &sr), "workloads:subscribe ack")
+	require.True(t, sr.Subscribed, "workloads:subscribe ack")
 	t.Log("subscribed to workloads stream")
 
 	// POST a peer workload to the manager's inter-node endpoint over cluster mTLS.
@@ -177,11 +172,8 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	{
-		err := json.Unmarshal(ack.Result, &sr)
-		require.NoError(t, err, "subscribe ack")
-		require.True(t, sr.Subscribed, "subscribe ack (%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(ack.Result, &sr), "subscribe ack")
+	require.True(t, sr.Subscribed, "subscribe ack")
 
 	const endpoint = "https://127.0.0.1:14320/v1/workloads/events"
 	peer := fx.clientAsPeer(t)
@@ -222,10 +214,7 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 	var res struct {
 		Workloads []wlInfo `json:"workloads"`
 	}
-	{
-		err := json.Unmarshal(resp.Result, &res)
-		require.NoError(t, err, "get-initial result")
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &res), "get-initial result")
 	found := false
 	for _, w := range res.Workloads {
 		if w.ID == "ooo-1" {
@@ -268,11 +257,8 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	{
-		err := json.Unmarshal(ack.Result, &sr)
-		require.NoError(t, err, "workloads:subscribe ack")
-		require.True(t, sr.Subscribed, "workloads:subscribe ack (%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(ack.Result, &sr), "workloads:subscribe ack")
+	require.True(t, sr.Subscribed, "workloads:subscribe ack")
 	t.Log("subscribed to workloads stream")
 
 	// Advertise the peer as an identity-only _nvpair-node record (no service
@@ -319,7 +305,7 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 
 	failed := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 2*time.Minute)
 	require.Equal(t, "failed", failed.WorkloadInfo.State, "post-eviction upsert state")
-	assert.Equal(t, peerUUID, failed.WorkloadInfo.OriginatedFrom, "failed upsert originatedFrom (%v)", peerUUID)
+	assert.Equal(t, peerUUID, failed.WorkloadInfo.OriginatedFrom, "failed upsert originatedFrom")
 	t.Log("node-loss OK: UUID-stamped workload marked failed after the (name-distinct) peer went offline")
 }
 
@@ -398,10 +384,7 @@ func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
 				continue
 			}
 			var p wlParams
-			{
-				err := json.Unmarshal(msg.Params, &p)
-				require.NoError(t, err, "unmarshal broadcast params")
-			}
+			require.NoError(t, json.Unmarshal(msg.Params, &p), "unmarshal broadcast params")
 			if p.WorkloadInfo.Model != "test-model" {
 				continue
 			}
@@ -413,7 +396,7 @@ func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
 		case <-reqTick.C:
 			fire()
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out: stub peer never received a workload broadcast")
+			require.FailNow(t, "timed out: stub peer never received a workload broadcast")
 		}
 	}
 }
@@ -441,7 +424,7 @@ func postPeerEvent(t *testing.T, client *http.Client, endpoint, body string, tim
 		select {
 		case <-tick.C:
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out POSTing peer event to %s (last err: %v)", endpoint, err)
+			require.FailNow(t, fmt.Sprintf("timed out POSTing peer event to %s (last err: %v)", endpoint, err))
 		}
 	}
 }
@@ -507,7 +490,7 @@ func waitEngineProxyReady(t *testing.T, namespace string, stdin io.Writer, msgs 
 		case <-tick.C:
 			poll()
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for %s proxy to become ready", timeout, namespace)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for %s proxy to become ready", timeout, namespace))
 		}
 	}
 }
@@ -525,15 +508,12 @@ func waitForWorkloadEvent(t *testing.T, msgs <-chan jsonrpc.Message, method, id 
 				continue
 			}
 			var p wlParams
-			{
-				err := json.Unmarshal(msg.Params, &p)
-				require.NoError(t, err, "unmarshal (%v, %v)", method, err)
-			}
+			require.NoError(t, json.Unmarshal(msg.Params, &p), "unmarshal %s", method)
 			if p.WorkloadInfo.ID == id {
 				return p
 			}
 		case <-to:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for %s %q", timeout, method, id)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for %s %q", timeout, method, id))
 		}
 	}
 }

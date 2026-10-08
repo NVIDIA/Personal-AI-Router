@@ -43,7 +43,7 @@ func requireGateOpens(t *testing.T, gate <-chan struct{}, reason string) {
 	select {
 	case <-gate:
 	case <-time.After(gateSettleWindow):
-		require.FailNow(t, "test expectation failed", "ownership gate never opened: %s", reason)
+		require.FailNowf(t, "ownership gate never opened", "%s", reason)
 	}
 }
 
@@ -54,7 +54,7 @@ func requireGateStaysShut(t *testing.T, gate <-chan struct{}, reason string) {
 	t.Helper()
 	select {
 	case <-gate:
-		require.FailNow(t, "test expectation failed", "ownership gate opened when it should not have: %s", reason)
+		require.FailNowf(t, "ownership gate opened when it should not have", "%s", reason)
 	case <-time.After(gateQuietWindow):
 	}
 }
@@ -66,7 +66,7 @@ func requireGateShutNow(t *testing.T, gate <-chan struct{}, reason string) {
 	t.Helper()
 	select {
 	case <-gate:
-		require.FailNow(t, "test expectation failed", "ownership gate was already open: %s", reason)
+		require.FailNowf(t, "ownership gate was already open", "%s", reason)
 	default:
 	}
 }
@@ -79,7 +79,7 @@ func requireGateOpenNow(t *testing.T, gate <-chan struct{}, reason string) {
 	select {
 	case <-gate:
 	default:
-		require.FailNow(t, "test expectation failed", "ownership gate was not open: %s", reason)
+		require.FailNowf(t, "ownership gate was not open", "%s", reason)
 	}
 }
 

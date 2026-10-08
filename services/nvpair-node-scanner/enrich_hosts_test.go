@@ -71,11 +71,9 @@ func TestAskRememberedAsksOnlyTheAddressThatAnswered(t *testing.T) {
 	require.Equal(t, "inventory from 10.0.0.5", value, "askRemembered (%v, %v, %v)", host, value, ok)
 
 	for range 5 {
-		{
-			host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
-			require.True(t, ok, "askRemembered (%v, %v)", host, ok)
-			require.Equal(t, "10.0.0.5", host, "askRemembered (%v, %v)", host, ok)
-		}
+		host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+		require.True(t, ok, "askRemembered")
+		require.Equal(t, "10.0.0.5", host, "askRemembered")
 	}
 	asked := net.askedAddresses()
 	require.Len(t, asked, len(hosts)+5, "asked")
@@ -91,21 +89,17 @@ func TestAskRememberedKeepsAWorkingAddressWhenABetterRankedOneComesUp(t *testing
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"192.168.240.1", "10.0.0.5"}
-	{
-		host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
-		require.True(t, ok, "askRemembered (%v, %v)", host, ok)
-		require.Equal(t, "10.0.0.5", host, "askRemembered (%v, %v)", host, ok)
-	}
+	host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.5", host, "askRemembered")
 
 	net.mu.Lock()
 	net.accept["192.168.240.1"] = true
 	net.mu.Unlock()
 
-	{
-		host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
-		require.True(t, ok, "askRemembered (%v, %v)", host, ok)
-		require.Equal(t, "10.0.0.5", host, "askRemembered (%v, %v)", host, ok)
-	}
+	host, _, ok = askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.5", host, "askRemembered")
 }
 
 // TestAskRememberedWalksAgainWhenTheRememberedAddressStops: its failure is the one
@@ -121,21 +115,14 @@ func TestAskRememberedWalksAgainWhenTheRememberedAddressStops(t *testing.T) {
 	net.accept["10.0.0.6"] = true
 	net.mu.Unlock()
 
-	{
-		host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
-		require.True(t, ok, "askRemembered (%v, %v)", host, ok)
-		require.Equal(t, "10.0.0.6", host, "askRemembered (%v, %v)", host, ok)
-	}
+	host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.6", host, "askRemembered")
 	net.asked = nil
-	{
-		host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
-		require.True(t, ok, "askRemembered (%v, %v)", host, ok)
-		require.Equal(t, "10.0.0.6", host, "askRemembered (%v, %v)", host, ok)
-	}
-	{
-		asked := net.askedAddresses()
-		assert.Len(t, asked, 1, "asked")
-	}
+	host, _, ok = askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.6", host, "askRemembered")
+	assert.Len(t, net.askedAddresses(), 1, "asked")
 }
 
 // TestAskRememberedForgetsAnAddressNobodyAnswersAt: with nothing answering there is
@@ -150,14 +137,9 @@ func TestAskRememberedForgetsAnAddressNobodyAnswersAt(t *testing.T) {
 	net.mu.Lock()
 	net.accept["10.0.0.5"] = false
 	net.mu.Unlock()
-	{
-		_, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
-		require.False(t, ok, "askRemembered reported success with nothing answering")
-	}
-	{
-		got := mem.get(testKey())
-		assert.Equal(t, "", got, "still remembers")
-	}
+	_, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+	require.False(t, ok, "askRemembered reported success with nothing answering")
+	assert.Equal(t, "", mem.get(testKey()), "still remembers")
 }
 
 // TestAskTogetherPrefersRankOverArrivalOrder: the node's ranking decides, not the
@@ -199,8 +181,5 @@ func TestAskTogetherSkipsBlankHosts(t *testing.T) {
 	host, _, ok := askTogether([]string{"", "10.0.0.5"}, net.ask)
 	require.True(t, ok, "askTogether (%v, %v)", host, ok)
 	require.Equal(t, "10.0.0.5", host, "askTogether (%v, %v)", host, ok)
-	{
-		asked := net.askedAddresses()
-		assert.Len(t, asked, 1, "asked")
-	}
+	assert.Len(t, net.askedAddresses(), 1, "asked")
 }

@@ -87,7 +87,7 @@ func TestOnSpawnedDoesNotBlockStop(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "Stop blocked behind a long-running onSpawned callback")
+		require.FailNow(t, "Stop blocked behind a long-running onSpawned callback")
 	}
 }
 
@@ -96,7 +96,7 @@ func waitSupervisorSignal(t *testing.T, ch <-chan struct{}, failure string) {
 	select {
 	case <-ch:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", failure)
+		require.FailNow(t, failure)
 	}
 }
 
@@ -115,10 +115,7 @@ func TestRestartPolicyBackoff(t *testing.T) {
 		{100, 16 * time.Second},
 	}
 	for _, c := range cases {
-		{
-			got := p.backoff(c.attempt)
-			assert.Equal(t, c.want, got, "backoff (%v)", got)
-		}
+		assert.Equal(t, c.want, p.backoff(c.attempt), "backoff(%d)", c.attempt)
 	}
 }
 
@@ -153,10 +150,7 @@ func TestSupervisorSurfacesAndRestartsThenRecovers(t *testing.T) {
 	h0 := mustSpawn(t, spawned)
 	h0.crash()
 
-	{
-		got := recvInt(t, crashes)
-		require.Equal(t, 1, got, "first onCrash attempt")
-	}
+	require.Equal(t, 1, recvInt(t, crashes), "first onCrash attempt")
 
 	// A fresh handle must be spawned (the restart).
 	h1 := mustSpawn(t, spawned)
@@ -166,7 +160,7 @@ func TestSupervisorSurfacesAndRestartsThenRecovers(t *testing.T) {
 	select {
 	case <-recovered:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for onRecovered after a stable restart")
+		require.FailNow(t, "timed out waiting for onRecovered after a stable restart")
 	}
 
 	// Keep h1 referenced so it isn't flagged unused.
@@ -193,15 +187,12 @@ func TestSupervisorGivesUpAfterBudget(t *testing.T) {
 	for want := 1; want <= 3; want++ {
 		h := mustSpawn(t, spawned)
 		h.crash()
-		{
-			got := recvInt(t, crashes)
-			require.Equal(t, want, got, "onCrash attempt (%v, %v)", got, want)
-		}
+		require.Equal(t, want, recvInt(t, crashes), "onCrash attempt")
 	}
 
 	select {
 	case <-spawned:
-		require.FailNow(t, "test expectation failed", "supervisor spawned a 4th worker after exhausting its restart budget")
+		require.FailNow(t, "supervisor spawned a 4th worker after exhausting its restart budget")
 	case <-time.After(200 * time.Millisecond):
 		// No further spawn — correct.
 	}
@@ -224,13 +215,10 @@ func TestSupervisorNoRestartPolicy(t *testing.T) {
 	h0 := mustSpawn(t, spawned)
 	h0.crash()
 
-	{
-		got := recvInt(t, crashes)
-		require.Equal(t, 1, got, "onCrash attempt")
-	}
+	require.Equal(t, 1, recvInt(t, crashes), "onCrash attempt")
 	select {
 	case <-spawned:
-		require.FailNow(t, "test expectation failed", "noRestartPolicy spawned a replacement worker")
+		require.FailNow(t, "noRestartPolicy spawned a replacement worker")
 	case <-time.After(200 * time.Millisecond):
 		// No restart — correct.
 	}
@@ -253,12 +241,12 @@ func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
 	select {
 	case <-h0.stoppedC:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "Stop did not tear down the running handle")
+		require.FailNow(t, "Stop did not tear down the running handle")
 	}
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "Stop did not return")
+		require.FailNow(t, "Stop did not return")
 	}
 }
 
@@ -289,11 +277,11 @@ func TestSupervisorLeavesAHealthyWorkerAlone(t *testing.T) {
 
 	select {
 	case <-h0.stoppedC:
-		require.FailNow(t, "test expectation failed", "a healthy worker was stopped without exiting")
+		require.FailNow(t, "a healthy worker was stopped without exiting")
 	case h := <-spawned:
-		require.FailNow(t, "test expectation failed", "a second worker was spawned alongside a healthy one: %v", h)
+		require.FailNowf(t, "a second worker was spawned alongside a healthy one", "%v", h)
 	case a := <-crashes:
-		require.FailNow(t, "test expectation failed", "a healthy worker surfaced a crash (attempt %d)", a)
+		require.FailNowf(t, "a healthy worker surfaced a crash", "attempt %d", a)
 	case <-time.After(300 * time.Millisecond):
 	}
 
@@ -303,7 +291,7 @@ func TestSupervisorLeavesAHealthyWorkerAlone(t *testing.T) {
 	select {
 	case <-crashes:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "an actual exit did not surface a crash")
+		require.FailNow(t, "an actual exit did not surface a crash")
 	}
 }
 
@@ -313,7 +301,7 @@ func mustSpawn(t *testing.T, spawned <-chan *fakeHandle) *fakeHandle {
 	case h := <-spawned:
 		return h
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for a (re)spawn")
+		require.FailNow(t, "timed out waiting for a (re)spawn")
 	}
 	return nil
 }
@@ -324,7 +312,7 @@ func recvInt(t *testing.T, ch <-chan int) int {
 	case v := <-ch:
 		return v
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting on channel")
+		require.FailNow(t, "timed out waiting on channel")
 	}
 	return 0
 }

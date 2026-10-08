@@ -57,7 +57,7 @@ func TestInProcessDiscovery(t *testing.T) {
 		t.Logf("OK: %s @ %s:%d addrs=%v txt=%v",
 			entry.Instance, entry.HostName, entry.Port, entry.AddrIPv4, entry.Text)
 	case <-ctx.Done():
-		require.FailNow(t, "test expectation failed", "timed out waiting for discovery")
+		require.FailNow(t, "timed out waiting for discovery")
 	}
 }
 
@@ -125,7 +125,7 @@ func TestInProcessRemoval(t *testing.T) {
 	// Phase 2: verify no longer discoverable
 	entry = browseForInstance(t, service, instance, 5*time.Second)
 	if entry != nil {
-		assert.Fail(t, "test expectation failed", "service still discoverable after shutdown")
+		assert.Fail(t, "service still discoverable after shutdown")
 	} else {
 		t.Log("phase 2: service correctly absent after removal")
 	}

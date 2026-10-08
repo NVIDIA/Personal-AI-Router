@@ -33,10 +33,7 @@ func TestDarwinCPUUtilization(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			{
-				got := darwinCPUUtilization(c.prev, c.cur)
-				require.Equal(t, c.want, got, "darwinCPUUtilization() (%v)", got)
-			}
+			require.Equal(t, c.want, darwinCPUUtilization(c.prev, c.cur), "darwinCPUUtilization()")
 		})
 	}
 }
@@ -130,15 +127,9 @@ func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
 	c.latest.Store(&statsSnapshot{})
 
 	c.collectGPU(context.Background())
-	{
-		got := c.Snapshot().GPU
-		require.Empty(t, got, "failed GPU read published")
-	}
+	require.Empty(t, c.Snapshot().GPU, "failed GPU read published")
 	c.collectGPU(context.Background())
-	{
-		got := c.Snapshot().GPU["ioreg:2a"].UtilizationPct
-		require.Equal(t, uint32(77), got, "retry utilization")
-	}
+	require.Equal(t, uint32(77), c.Snapshot().GPU["ioreg:2a"].UtilizationPct, "retry utilization")
 }
 
 func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
@@ -181,7 +172,7 @@ func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
 	c.collectGPU(context.Background())
 	retained := c.Snapshot()
 	require.Equal(t, uint64(3<<30), retained.GPU["ioreg:2a"].VRAMUsed, "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
-	require.True(t, retained.GPUSampledAt.Equal(idle.GPUSampledAt), "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
+	require.WithinDuration(t, idle.GPUSampledAt, retained.GPUSampledAt, 0, "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
 }
 
 func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
@@ -207,10 +198,7 @@ func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	for c.Snapshot().CPUUtilPct != 80 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	{
-		got := c.Snapshot().CPUUtilPct
-		require.Equal(t, uint32(80), got, "CPUUtilPct")
-	}
+	require.Equal(t, uint32(80), c.Snapshot().CPUUtilPct, "CPUUtilPct")
 
 	stopped := make(chan struct{})
 	go func() {
@@ -220,7 +208,7 @@ func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(250 * time.Millisecond):
-		require.FailNow(t, "test expectation failed", "Stop did not cancel blocked GPU reader")
+		require.FailNow(t, "Stop did not cancel blocked GPU reader")
 	}
 }
 

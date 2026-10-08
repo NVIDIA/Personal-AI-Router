@@ -57,12 +57,9 @@ func TestLivePoundFixesOllama(t *testing.T) {
 	// so the spawned engine listens on loopback only — never directly
 	// LAN-reachable. Cluster peers reach it through the proxy's mTLS ingress.
 	send(t, stdin, 1, "engine:start", map[string]any{"engine": "ollama", "port": spare})
-	{
-		r := string(waitResult(t, frames, "1", 90*time.Second))
-		require.Contains(t, r, `"running":true`, "start{port}: expected running:true")
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 90*time.Second)), `"running":true`, "start{port}: expected running:true")
 	if addrs := listenAddrs(t, spare); !isLoopbackOnly(addrs) {
-		assert.Fail(t, "test expectation failed", "bind default: want loopback only (127.0.0.1/::1), got %v", addrs)
+		assert.Failf(t, "bind default: want loopback only (127.0.0.1/::1)", "got %v", addrs)
 	} else {
 		t.Logf("bind default OK: loopback only %v on %d", addrs, spare)
 	}
@@ -72,12 +69,9 @@ func TestLivePoundFixesOllama(t *testing.T) {
 
 	// Bind override to loopback: spawned engine must listen on loopback only.
 	send(t, stdin, 3, "engine:start", map[string]any{"engine": "ollama", "port": spare, "bind": "127.0.0.1"})
-	{
-		r := string(waitResult(t, frames, "3", 90*time.Second))
-		require.Contains(t, r, `"running":true`, "start{port,bind}: expected running:true")
-	}
+	require.Contains(t, string(waitResult(t, frames, "3", 90*time.Second)), `"running":true`, "start{port,bind}: expected running:true")
 	if addrs := listenAddrs(t, spare); !isLoopbackOnly(addrs) {
-		assert.Fail(t, "test expectation failed", "bind override: want loopback only (127.0.0.1/::1), got %v", addrs)
+		assert.Failf(t, "bind override: want loopback only (127.0.0.1/::1)", "got %v", addrs)
 	} else {
 		t.Logf("bind override OK: loopback only %v on %d", addrs, spare)
 	}
@@ -87,7 +81,7 @@ func TestLivePoundFixesOllama(t *testing.T) {
 
 	// The pre-existing Ollama on 11434 must be untouched the whole time.
 	if len(listenAddrs(t, 11434)) == 0 {
-		assert.Fail(t, "test expectation failed", "the pre-existing Ollama on 11434 must remain running")
+		assert.Fail(t, "the pre-existing Ollama on 11434 must remain running")
 	} else {
 		t.Logf("pre-existing Ollama on 11434 untouched")
 	}
@@ -130,5 +124,5 @@ func waitGone(t *testing.T, port int) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "port %d still listening after stop", port)
+	require.FailNowf(t, "port still listening after stop", "port %d", port)
 }

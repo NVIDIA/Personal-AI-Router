@@ -89,10 +89,7 @@ func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
 		Method  string                          `json:"method"`
 		Params  noderec.ObservedAddressesParams `json:"params"`
 	}
-	{
-		err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &frame)
-		require.NoError(t, err, "decode report")
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &frame), "decode report")
 	require.Equal(t, "2.0", frame.JSONRPC)
 	require.Equal(t, noderec.NotifyObservedAddresses, frame.Method, "report")
 	require.Contains(t, frame.Params.Addresses, local, "reported addresses")
@@ -166,7 +163,5 @@ func TestServerRecordsTheServingConnectionWhenARequestArrives(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 
-	got := observer.addresses()
-	require.Len(t, got, 1, "observed")
-	require.Equal(t, "10.172.54.70", got[0], "observed (%v)", got)
+	require.Equal(t, []string{"10.172.54.70"}, observer.addresses(), "observed")
 }

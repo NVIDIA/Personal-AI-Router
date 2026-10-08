@@ -24,9 +24,9 @@ func TestDiscoveryStoreRekeysOnRename(t *testing.T) {
 	s.Upsert(EnrichedNode{ID: "new-host", HostUUID: uuid}, sourceScanner)
 
 	snap := s.Snapshot()
-	require.Len(t, snap, 1, "a rename must not duplicate the node:")
-	require.Equal(t, "new-host", snap[0].ID, "store did not track the new name: got id")
-	require.Equal(t, uuid, snap[0].HostUUID, "hostUuid not projected to the wire: (%v)", uuid)
+	require.Len(t, snap, 1, "a rename must not duplicate the node")
+	require.Equal(t, "new-host", snap[0].ID, "store did not track the new name")
+	require.Equal(t, uuid, snap[0].HostUUID, "hostUuid not projected to the wire")
 }
 
 // TestDiscoveryStoreDistinctUUIDsSameName verifies the same-hostname collision
@@ -35,7 +35,7 @@ func TestDiscoveryStoreDistinctUUIDsSameName(t *testing.T) {
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "aaaaaaaa-0000-0000-0000-000000000001"}, sourceScanner)
 	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "bbbbbbbb-0000-0000-0000-000000000002"}, sourceScanner)
-	require.Len(t, s.Snapshot(), 2, "two machines sharing a hostname must not merge:")
+	require.Len(t, s.Snapshot(), 2, "two machines sharing a hostname must not merge")
 }
 
 // TestManualToEnrichedHostUUID verifies the manual-node ingestion boundary: a
@@ -139,11 +139,11 @@ func TestManualAliasesShareKeyUntilLastRemoved(t *testing.T) {
 
 			b.removeManualNode(tc.removeFirst)
 			snap := b.store.Snapshot()
-			require.Len(t, snap, 1, "removing one of two aliases evicted the shared node (got")
+			require.Len(t, snap, 1, "removing one of two aliases evicted the shared node")
 			// The surviving alias must be reprojected: its id and address, not
 			// the removed alias's stale payload.
-			require.Equal(t, tc.survivorID, snap[0].ID, "survivor not reprojected: got id")
-			require.Equal(t, tc.survivorAddr, snap[0].IPAddress, "survivor not reprojected: got id")
+			require.Equal(t, tc.survivorID, snap[0].ID, "survivor not reprojected")
+			require.Equal(t, tc.survivorAddr, snap[0].IPAddress, "survivor not reprojected")
 
 			b.removeManualNode(tc.survivorID)
 			require.Empty(t, b.store.Snapshot(), "record should be gone once the last alias left")
@@ -247,8 +247,8 @@ func TestHandleNotifyNodeLostUsesHostUUID(t *testing.T) {
 	sp.handleNotify(noderec.NotifyNodeRemoved, nodeRemovedFrame(t, name, uuid))
 
 	require.Equal(t, 1, calls, "onNodeLost calls")
-	assert.Equal(t, uuid, gotUUID, "onNodeLost uuid (%v, %v)", gotUUID, uuid)
-	assert.Equal(t, name, gotName, "onNodeLost name (%v, %v)", gotName, name)
+	assert.Equal(t, uuid, gotUUID, "onNodeLost must use HostUUID, not the hostname")
+	assert.Equal(t, name, gotName, "onNodeLost name")
 }
 
 func TestScannerProcessRoutesAndRemovesTelemetry(t *testing.T) {

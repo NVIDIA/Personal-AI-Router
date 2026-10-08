@@ -40,7 +40,7 @@ func waitForTarget(t *testing.T, p *Proxy, n Node, want string) {
 			if u != nil {
 				got = u.Host
 			}
-			require.FailNow(t, "test expectation failed", "targetURL settled on %s, want %s", got, want)
+			require.FailNowf(t, "targetURL did not settle on the expected target", "got %s, want %s", got, want)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -93,11 +93,9 @@ func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
 	}
 	// The first request is not made to wait for the confirmation, so it uses the
 	// node's own top-ranked address; the ones behind it use the one that answers.
-	{
-		u := p.soleFacade().targetURL(n)
-		require.NotNil(t, u, "first selection")
-		require.Equal(t, net.JoinHostPort("192.0.2.10", "11434"), u.Host, "first selection (%v)", u)
-	}
+	u := p.soleFacade().targetURL(n)
+	require.NotNil(t, u, "first selection")
+	require.Equal(t, net.JoinHostPort("192.0.2.10", "11434"), u.Host, "first selection (%v)", u)
 	waitForTarget(t, p, n, net.JoinHostPort(reachable, "11434"))
 	require.Equal(t, int32(2), dials.Load(), "pinned peer triggered")
 }
@@ -113,7 +111,7 @@ func TestChooseReachableProbesPlainMultiHomed(t *testing.T) {
 	require.NotNil(t, p.soleFacade().targetURL(n), "targetURL returned nil")
 	deadline := time.Now().Add(2 * time.Second)
 	for dials.Load() == 0 {
-		require.False(t, time.Now().After(deadline), "plain multi-homed target did not confirm reachability")
+		require.LessOrEqual(t, time.Now(), deadline, "plain multi-homed target did not confirm reachability")
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -156,12 +154,10 @@ func TestNodeCandidatesKeepsPublishedOrder(t *testing.T) {
 		Addresses: []string{"192.168.240.1", "10.172.55.129"},
 		TXT:       []string{"ip=10.172.55.129", "ips=10.172.55.129,192.168.240.1"},
 	}
-	got := nodeCandidates(n)
-	want := []string{
+	require.Equal(t, []string{
 		net.JoinHostPort("10.172.55.129", "11434"),
 		net.JoinHostPort("192.168.240.1", "11434"),
-	}
-	require.Equal(t, want, got, "nodeCandidates")
+	}, nodeCandidates(n), "nodeCandidates")
 }
 
 // fakeNetwork is a chooser dialer whose accepting address can be moved, so a test

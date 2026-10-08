@@ -82,10 +82,8 @@ func TestRemoteClient_ReusesPeerConnections(t *testing.T) {
 
 	const rounds = 5
 	for i := 0; i < rounds; i++ {
-		{
-			_, gerr := client.getEngines(context.Background())
-			require.NoError(t, gerr, "round (%v, %v)", i, gerr)
-		}
+		_, gerr := client.getEngines(context.Background())
+		require.NoError(t, gerr, "round (%v, %v)", i, gerr)
 	}
 
 	mu.Lock()

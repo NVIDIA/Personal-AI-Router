@@ -40,7 +40,7 @@ func TestSnapshotCloneIsIndependent(t *testing.T) {
 	cp.LocalIPs["10.0.0.2"] = true
 	cp.IfaceV4[1][0] = net.IPv4(8, 8, 8, 8)
 	assert.NotContains(t, orig.LocalIPs, "10.0.0.2", "clone shares LocalIPs map with original")
-	assert.False(t, orig.IfaceV4[1][0].Equal(net.IPv4(8, 8, 8, 8)), "clone shares IfaceV4 backing array with original")
+	assert.NotEqual(t, "8.8.8.8", orig.IfaceV4[1][0].String(), "clone shares IfaceV4 backing array with original")
 }
 
 func TestWatchProvidesInitialSnapshot(t *testing.T) {
@@ -50,10 +50,8 @@ func TestWatchProvidesInitialSnapshot(t *testing.T) {
 	require.NoError(t, err, "Watch")
 	// Snapshot should match a direct enumeration taken at roughly the same
 	// time (interfaces don't change during the test).
-	{
-		got, want := fingerprint(mon.Snapshot()), fingerprint(Enumerate())
-		assert.Equal(t, want, got, "monitor snapshot")
-	}
+	got, want := fingerprint(mon.Snapshot()), fingerprint(Enumerate())
+	assert.Equal(t, want, got, "monitor snapshot")
 	// Subscribe must hand back a usable channel that closes on cancel.
 	ch := mon.Subscribe()
 	cancel()
@@ -61,6 +59,6 @@ func TestWatchProvidesInitialSnapshot(t *testing.T) {
 	case <-ch:
 		// closed (or signalled) — both acceptable
 	case <-time.After(2 * time.Second):
-		assert.Fail(t, "test expectation failed", "subscription channel not closed after context cancel")
+		assert.Fail(t, "subscription channel not closed after context cancel")
 	}
 }

@@ -112,7 +112,7 @@ func TestApplyCancelledIsTerminal(t *testing.T) {
 	r, ok := s.Get("a", "1")
 	require.True(t, ok, "record should still be stored")
 	require.True(t, r.Terminal, "cancelled must be terminal (missing from isTerminal(): counts as pending forever and stays exposed to the staleness sweeps)")
-	require.Empty(t, s.ActiveSnapshot(), "active snapshot has")
+	require.Empty(t, s.ActiveSnapshot(), "a cancelled workload must leave the active snapshot")
 }
 
 // TestApplyCrossNodeIsolation: the same numeric id from two origins is two
@@ -122,14 +122,10 @@ func TestApplyCrossNodeIsolation(t *testing.T) {
 	require.True(t, s.Apply(mkIn("1", "A", "failed", "A", 100)), "A/1 should be accepted")
 	require.True(t, s.Apply(mkIn("1", "B", "running", "B", 100)), "B/1 has the same id but a different origin; must be independent")
 	require.Equal(t, 2, s.Len())
-	{
-		a, _ := s.Get("A", "1")
-		require.Equal(t, "failed", a.State, "A/1 state")
-	}
-	{
-		b, _ := s.Get("B", "1")
-		require.Equal(t, "running", b.State, "B/1 state")
-	}
+	a, _ := s.Get("A", "1")
+	require.Equal(t, "failed", a.State, "A/1 state")
+	b, _ := s.Get("B", "1")
+	require.Equal(t, "running", b.State, "B/1 state")
 }
 
 func TestApplyRejectsMalformed(t *testing.T) {
@@ -144,10 +140,8 @@ func TestRemove(t *testing.T) {
 	s.Apply(mkIn("1", "a", "running", "a", 100))
 	require.True(t, s.Remove("a", "1"), "Remove of present entry should report true")
 	require.False(t, s.Remove("a", "1"), "Remove of absent entry should report false")
-	{
-		_, ok := s.Get("a", "1")
-		require.False(t, ok, "entry should be gone after Remove")
-	}
+	_, ok := s.Get("a", "1")
+	require.False(t, ok, "entry should be gone after Remove")
 }
 
 func TestSnapshotOrderedByCreatedAt(t *testing.T) {
@@ -206,7 +200,7 @@ func TestActiveForNode(t *testing.T) {
 	require.Len(t, active, 2, "ActiveForNode(pc) len")
 	for _, r := range active {
 		require.False(t, r.Terminal, "ActiveForNode returned a terminal record (%v)", r)
-		require.False(t, r.Origin != "pc" && r.ScheduledOn != "pc", "ActiveForNode returned an unrelated record (%v)", r)
+		require.Contains(t, []string{r.Origin, r.ScheduledOn}, "pc", "ActiveForNode returned an unrelated record (%v)", r)
 	}
 }
 
@@ -228,18 +222,12 @@ func TestReplayForNode(t *testing.T) {
 	s.Apply(mkIn("4", "host", "completed", "host", 1))      // recent terminal local-origin → replay
 	s.ApplyInferred(mkIn("5", "host", "failed", "gone", 1)) // inferred terminal local-origin → never
 
-	{
-		got := replayIDSet(s.ReplayForNode("host", window))
-		require.ElementsMatch(t, []string{"1", "2", "4"}, got, "replay set")
-	}
+	require.ElementsMatch(t, []string{"1", "2", "4"}, replayIDSet(s.ReplayForNode("host", window)), "replay active and recent terminal records, excluding peers and inferred records")
 
 	// Age everything past the window: terminals drop; the still-running record
 	// (non-terminal) is always replayed regardless of age.
 	clock += window + 1
-	{
-		got := replayIDSet(s.ReplayForNode("host", window))
-		require.ElementsMatch(t, []string{"1"}, got, "post-window replay set")
-	}
+	require.ElementsMatch(t, []string{"1"}, replayIDSet(s.ReplayForNode("host", window)), "post-window replay includes only the still-active record")
 }
 
 // TestReplayForNodeAfterLoadUsesCompletionTime is the load-to-replay
@@ -265,8 +253,7 @@ func TestReplayForNodeAfterLoadUsesCompletionTime(t *testing.T) {
 	s := newStoreAt(path, testNow)
 	require.NoError(t, s.Load(), "load")
 
-	got := replayIDSet(s.ReplayForNode("host", window))
-	require.ElementsMatch(t, []string{"recent"}, got, "post-load replay set")
+	require.ElementsMatch(t, []string{"recent"}, replayIDSet(s.ReplayForNode("host", window)), "old history must not look recent after Load")
 }
 
 func replayIDSet(recs []Record) []string {
@@ -377,19 +364,15 @@ func TestGenerationBeforeProvenance(t *testing.T) {
 	s.Apply(mkInFull("1", "a", "ollama", "r", "running", "a", 200))
 	s.ApplyInferred(mkInFull("1", "a", "ollama", "r", "failed", "a", 200)) // inferred at gen 200
 	require.False(t, s.Apply(mkInFull("1", "a", "ollama", "r", "running", "a", 100)), "stale authoritative gen-100 must not replace the gen-200 record")
-	{
-		r, _ := s.Get("a", "1")
-		require.Equal(t, int64(200), r.CreatedAt)
-	}
+	r, _ := s.Get("a", "1")
+	require.Equal(t, int64(200), r.CreatedAt)
 
 	// (b) A stale inferred failure must not replace a newer authoritative running.
 	s.Apply(mkInFull("2", "a", "ollama", "r", "running", "a", 200))
 	require.False(t, s.ApplyInferred(mkInFull("2", "a", "ollama", "r", "failed", "a", 100)), "stale inferred gen-100 must not fail a gen-200 running")
-	{
-		r, _ := s.Get("a", "2")
-		require.Equal(t, "running", r.State, "record (%v)", r)
-		require.Equal(t, int64(200), r.CreatedAt, "record (%v)", r)
-	}
+	r, _ = s.Get("a", "2")
+	require.Equal(t, "running", r.State, "record (%v)", r)
+	require.Equal(t, int64(200), r.CreatedAt, "record (%v)", r)
 }
 
 func TestParseIncoming(t *testing.T) {
@@ -402,16 +385,10 @@ func TestParseIncoming(t *testing.T) {
 	require.Equal(t, "pc", in.ScheduledOn, "parsed (%v)", in)
 	require.Equal(t, int64(4242), in.CreatedAt, "parsed (%v)", in)
 
-	{
-		_, ok := ParseIncoming([]byte(`{"originatedFrom":"laptop","state":"running"}`))
-		require.False(t, ok, "missing id should not parse")
-	}
-	{
-		_, ok := ParseIncoming([]byte(`{"id":"1","state":"running"}`))
-		require.False(t, ok, "missing originatedFrom should not parse")
-	}
-	{
-		_, ok := ParseIncoming([]byte(`not json`))
-		require.False(t, ok, "invalid JSON should not parse")
-	}
+	_, ok = ParseIncoming([]byte(`{"originatedFrom":"laptop","state":"running"}`))
+	require.False(t, ok, "missing id should not parse")
+	_, ok = ParseIncoming([]byte(`{"id":"1","state":"running"}`))
+	require.False(t, ok, "missing originatedFrom should not parse")
+	_, ok = ParseIncoming([]byte(`not json`))
+	require.False(t, ok, "invalid JSON should not parse")
 }

@@ -41,10 +41,8 @@ func TestLMStudioDeleteModelRemovePath(t *testing.T) {
 
 	_, err := ex.Action(ctx, "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
 	require.NoError(t, err, "delete_model")
-	{
-		_, err := os.Stat(modelDir)
-		require.ErrorIs(t, err, os.ErrNotExist, "model dir still exists")
-	}
+	_, err = os.Stat(modelDir)
+	require.ErrorIs(t, err, os.ErrNotExist, "model dir still exists")
 }
 
 // deleteModelRestartManifest mirrors LM Studio's bundled delete_model: a guarded
@@ -100,10 +98,8 @@ func TestDeleteModelRestartAfterBouncesRunningEngine(t *testing.T) {
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	before, _ := engineRun(t, ex, "fake")
 
-	{
-		_, err := ex.Action(ctx, "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
-		require.NoError(t, err, "delete_model")
-	}
+	_, err := ex.Action(ctx, "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
+	require.NoError(t, err, "delete_model")
 
 	after, running := engineRun(t, ex, "fake")
 	require.Greater(t, after, before, "start generation")
@@ -119,19 +115,13 @@ func TestDeleteModelRestartAfterLeavesStoppedEngineDown(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, modelRel), 0o755))
 
 	ex := newTestExecutor(t, deleteModelRestartManifest(t, root, fakeEngineBin))
-	{
-		_, err := ex.Action(context.Background(), "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
-		require.NoError(t, err, "delete_model")
-	}
+	_, err := ex.Action(context.Background(), "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
+	require.NoError(t, err, "delete_model")
 
-	{
-		_, err := os.Stat(filepath.Join(root, modelRel))
-		require.ErrorIs(t, err, os.ErrNotExist, "model dir still exists")
-	}
-	{
-		_, running := engineRun(t, ex, "fake")
-		require.False(t, running, "delete_model started a stopped engine")
-	}
+	_, err = os.Stat(filepath.Join(root, modelRel))
+	require.ErrorIs(t, err, os.ErrNotExist, "model dir still exists")
+	_, running := engineRun(t, ex, "fake")
+	require.False(t, running, "delete_model started a stopped engine")
 }
 
 // TestDeleteModelWithoutRestartAfterDoesNotBounce is the Ollama side of the
@@ -155,10 +145,8 @@ func TestDeleteModelWithoutRestartAfterDoesNotBounce(t *testing.T) {
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	before, _ := engineRun(t, ex, "fake")
 
-	{
-		_, err := ex.Action(ctx, "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
-		require.NoError(t, err, "delete_model")
-	}
+	_, err := ex.Action(ctx, "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
+	require.NoError(t, err, "delete_model")
 
 	after, running := engineRun(t, ex, "fake")
 	require.Equal(t, before, after, "start generation")
@@ -190,14 +178,10 @@ func TestDeleteModelRestartFailureFailsTheAction(t *testing.T) {
 
 	_, err := ex.Action(ctx, "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
 	require.ErrorContains(t, err, "failed to restart", "delete_model reported success although the engine never came back")
-	{
-		_, statErr := os.Stat(filepath.Join(root, modelRel))
-		require.ErrorIs(t, statErr, os.ErrNotExist, "model dir still exists")
-	}
-	{
-		_, running := engineRun(t, ex, "fake")
-		require.False(t, running, "engine reports running after a failed restart")
-	}
+	_, statErr := os.Stat(filepath.Join(root, modelRel))
+	require.ErrorIs(t, statErr, os.ErrNotExist, "model dir still exists")
+	_, running := engineRun(t, ex, "fake")
+	require.False(t, running, "engine reports running after a failed restart")
 }
 
 // TestBundledManifestsRestartOnlyLMStudio guards the blast radius of
@@ -237,7 +221,7 @@ func TestRestartAfterFitsRemoteReadinessBudget(t *testing.T) {
 		}
 		for key, p := range m.Platforms {
 			if p.Runtime.Ready == nil {
-				assert.Fail(t, "test expectation failed", "%s/%s: restart_after without a readiness probe", engine, key)
+				assert.Failf(t, "restart_after without a readiness probe", "%s/%s", engine, key)
 				continue
 			}
 			readiness := time.Duration(p.Runtime.Ready.TimeoutS) * time.Second
@@ -264,9 +248,7 @@ func TestRestartAfterRequiresReadinessProbe(t *testing.T) {
 		p.Runtime.Ready = nil
 		m.Platforms[key] = p
 	}
-	err := m.Validate()
-	require.Error(t, err, "Validate accepted restart_after without a readiness probe")
-	require.ErrorContains(t, err, "runtime.ready")
+	require.ErrorContains(t, m.Validate(), "runtime.ready", "Validate accepted restart_after without a readiness probe")
 }
 
 func TestModelActionWireOllamaUnload(t *testing.T) {

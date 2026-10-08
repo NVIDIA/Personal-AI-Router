@@ -91,14 +91,10 @@ func TestMesh_ConvergesOnACluster_JoinedAfterOpen(t *testing.T) {
 	m := Open(dir)
 	assert.False(t, m.Clustered(), "an empty cluster dir must read as unclustered")
 	assert.False(t, m.hasIdentity(), "an empty cluster dir must read as unclustered")
-	{
-		_, ok := m.ClientTLSConfig("uuid-peer")
-		require.False(t, ok, "an unclustered mesh must not build a peer client")
-	}
-	{
-		_, ok := m.ClientTLSConfigAny()
-		require.False(t, ok, "an unclustered mesh must not build an any-pin client")
-	}
+	_, ok := m.ClientTLSConfig("uuid-peer")
+	require.False(t, ok, "an unclustered mesh must not build a peer client")
+	_, ok = m.ClientTLSConfigAny()
+	require.False(t, ok, "an unclustered mesh must not build an any-pin client")
 
 	// The user creates/joins a cluster: the cluster-manager mints the keypair,
 	// activates the admission, and writes the peer's pin.
@@ -111,14 +107,10 @@ func TestMesh_ConvergesOnACluster_JoinedAfterOpen(t *testing.T) {
 	m.Refresh()
 	assert.True(t, m.Clustered(), "the mesh must be clustered once the dir is populated")
 	assert.Equal(t, "uuid-self", m.NodeUUID())
-	{
-		_, ok := m.ClientTLSConfig("uuid-peer")
-		require.True(t, ok, "a pinned peer must be dialable after the transition")
-	}
-	{
-		_, ok := m.ClientTLSConfigAny()
-		require.True(t, ok, "the any-pin client must be available after the transition")
-	}
+	_, ok = m.ClientTLSConfig("uuid-peer")
+	require.True(t, ok, "a pinned peer must be dialable after the transition")
+	_, ok = m.ClientTLSConfigAny()
+	require.True(t, ok, "the any-pin client must be available after the transition")
 	// Refreshing again with nothing on disk changed must leave the answer alone:
 	// a repeat read is not a teardown.
 	m.Refresh()

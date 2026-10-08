@@ -159,7 +159,7 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 				return
 			}
 		}
-		require.FailNow(t, "test expectation failed", "stream ended: %v", scan.Err())
+		require.FailNowf(t, "stream ended", "%v", scan.Err())
 	}
 	read(scanB, 1)
 	read(scanC, 1)
@@ -186,7 +186,7 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 	select {
 	case <-ended:
 	case <-time.After(3 * time.Second):
-		require.FailNow(t, "test expectation failed", "revoked peer stream did not close")
+		require.FailNow(t, "revoked peer stream did not close")
 	}
 	// A reconnected remaining peer atomically receives the latest full state.
 	_, again := open(clientB)
@@ -223,41 +223,26 @@ func TestSettingsRemoteOnlyCORSIsLocalOnly(t *testing.T) {
 	}
 	arguments := settingsRequest(t, exec)
 	arguments.Settings.LaunchText += " --parallel 3"
-	{
-		code := post(arguments)
-		require.Equal(t, 200, code, "peer argument change refused")
-	}
+	require.Equal(t, 200, post(arguments), "peer argument change refused")
 	ports := settingsRequest(t, exec)
 	next := ports.Settings.ServerPort + 1
 	ports.Settings.LaunchText = strings.Replace(ports.Settings.LaunchText,
 		strconv.Itoa(ports.Settings.ServerPort), strconv.Itoa(next), 1)
 	ports.Settings.ServerPort = next
-	{
-		code := post(ports)
-		require.Equal(t, 200, code, "peer port change refused")
-	}
+	require.Equal(t, 200, post(ports), "peer port change refused")
 	environment := settingsRequest(t, exec)
 	environment.Settings.LaunchText = `FUTURE_ENGINE_SETTING="unknown-value" ` + environment.Settings.LaunchText
-	{
-		code := post(environment)
-		require.Equal(t, 200, code, "peer opaque environment change refused")
-	}
+	require.Equal(t, 200, post(environment), "peer opaque environment change refused")
 	environment = settingsRequest(t, exec)
 	environment.Settings.LaunchText = `OLLAMA_ORIGINS="http://localhost" ` + environment.Settings.LaunchText
-	{
-		code := post(environment)
-		require.Equal(t, 403, code, "peer CORS environment change accepted")
-	}
+	require.Equal(t, 403, post(environment), "peer CORS environment change accepted")
 	// Exercise switch-based policy on the same authenticated route.
 	state := settingsState(t, exec)
 	state.plat.Runtime.EditableLaunch.Controls[1] = LaunchControl{Value: "{cors.enabled}", Implicit: implicitLaunchValue("true"), Flags: []string{"--cors", "-c"}}
 	for _, text := range []string{"--cors", "-c", "--cors=false", "-- --cors", "-vc"} {
 		request := settingsRequest(t, exec)
 		request.Settings.LaunchText += " " + text
-		{
-			code := post(request)
-			require.Equal(t, 403, code, "peer CORS switch (%v, %v)", text, code)
-		}
+		require.Equal(t, 403, post(request), "peer CORS switch (%v)", text)
 	}
 }
 

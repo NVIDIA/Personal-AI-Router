@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,10 +20,8 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 				broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
 					w.Header().Set("Vary", "Origin")
-					{
-						_, err := io.WriteString(w, "{malformed")
-						assert.NoError(t, err)
-					}
+					_, err := io.WriteString(w, "{malformed")
+					assert.NoError(t, err)
 				}))
 				defer broken.Close()
 				status, origin := http.StatusOK, "http://app.test"
@@ -47,7 +44,9 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 				require.Equal(t, wantStatus, rec.Code, "status (%v, %v)", wantStatus, wantOrigin)
 				require.Equal(t, wantOrigin, rec.Header().Get("Access-Control-Allow-Origin"), "status (%v, %v)", wantStatus, wantOrigin)
 				require.NotContains(t, rec.Body.String(), "private-model", "returned partial model inventory")
-				require.False(t, !denied && !strings.Contains(rec.Body.String(), "model inventory unavailable"), "missing readable error")
+				if !denied {
+					require.Contains(t, rec.Body.String(), "model inventory unavailable", "missing readable error")
+				}
 			})
 		}
 		test("approved invalid inventory first", false, true)
@@ -60,11 +59,10 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 func TestModelListStripsCredentialsWithoutOrigin(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.False(t, r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "", "caller credentials forwarded to model-list candidate")
-			{
-				_, err := io.WriteString(w, corsModels(tc))
-				assert.NoError(t, err)
-			}
+			assert.Empty(t, r.Header.Get("Authorization"), "caller credentials forwarded to model-list candidate")
+			assert.Empty(t, r.Header.Get("Cookie"), "caller credentials forwarded to model-list candidate")
+			_, err := io.WriteString(w, corsModels(tc))
+			assert.NoError(t, err)
 		}))
 		defer upstream.Close()
 		p := proxyForCORSTargets(t, tc, upstream, upstream)

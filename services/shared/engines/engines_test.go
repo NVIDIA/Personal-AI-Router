@@ -33,8 +33,7 @@ func TestNames(t *testing.T) {
 // both so a new engine cannot reintroduce that ambiguity.
 func TestProxyIdentities(t *testing.T) {
 	for _, e := range All() {
-		want := e.Name + "-proxy"
-		assert.Equal(t, want, e.ComponentName())
+		assert.Equal(t, e.Name+"-proxy", e.ComponentName())
 		// The bare prefix Ollama used to relay under must not come back.
 		assert.NotEqual(t, "proxy", e.ComponentName())
 		// A facade identity that equals the process identity would make the
@@ -84,7 +83,7 @@ func TestIdentitiesAreUnique(t *testing.T) {
 		assert.NotEqual(t, "", e.Name)
 		assert.NotEqual(t, "", e.DisplayName)
 		assert.NotEqual(t, "", e.PortFile)
-		assert.NotEqual(t, "", e.DiscoveryService)
+		assert.NotEmpty(t, e.DiscoveryService)
 		assert.NotContains(t, names, e.Name, "duplicate Name")
 		assert.NotContains(t, components, e.ComponentName(), "duplicate ComponentName")
 		assert.NotContains(t, services, e.DiscoveryService, "duplicate DiscoveryService")
@@ -113,10 +112,8 @@ func TestLookups(t *testing.T) {
 		assert.Equal(t, e.ComponentName(), byName.ComponentName())
 	}
 
-	{
-		_, ok := ByName("vllm")
-		assert.False(t, ok, "ByName should report ok=false for an unknown engine")
-	}
+	_, ok := ByName("vllm")
+	assert.False(t, ok, "ByName should report ok=false for an unknown engine")
 }
 
 func TestAddressedMethodRoundTrip(t *testing.T) {

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-
 	"testing"
 	"time"
 
@@ -90,7 +89,7 @@ func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
 
 	require.NoError(t, writePacket([]byte("unicast payload"), nil, source, target, writer, options), "writePacket")
 	require.Empty(t, options.interfaces, "multicast options used for unicast: interfaces")
-	require.Empty(t, options.ttls, "multicast options used for unicast: interfaces")
+	require.Empty(t, options.ttls, "multicast options used for unicast: TTLs")
 	assert.Equal(t, 1, writer.writes)
 }
 
@@ -100,8 +99,7 @@ func TestWritePacketReturnsWriteFailure(t *testing.T) {
 	source := net.IPv4(127, 0, 0, 1)
 	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
 
-	err := writePacket([]byte("unicast payload"), nil, source, target, writer, &recordingMulticastOptions{})
-	require.ErrorIs(t, err, wantErr, "error")
+	require.ErrorIs(t, writePacket([]byte("unicast payload"), nil, source, target, writer, &recordingMulticastOptions{}), wantErr)
 	assert.Equal(t, 1, writer.writes)
 }
 
@@ -198,7 +196,7 @@ func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 	n, from, err := sink.ReadFromUDP(buf)
 	require.NoError(t, err, "read UDP sink")
 	assert.Equal(t, payload, buf[:n])
-	assert.True(t, from.IP.Equal(source), "source IP")
+	assert.Equal(t, source.String(), from.IP.String(), "source IP")
 	assert.Equal(t, mdnsPort, from.Port, "source port")
 }
 

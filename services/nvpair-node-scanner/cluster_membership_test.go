@@ -46,40 +46,28 @@ func TestModelFetchTransportFollowsMembership(t *testing.T) {
 	d.modelsHTTP = &http.Client{}
 
 	// Unclustered: loopback (self) still resolves a plain client...
-	{
-		_, scheme, ok := d.modelsClient("127.0.0.1", "")
-		require.True(t, ok, "unclustered loopback: scheme (%v, %v)", scheme, ok)
-		require.Equal(t, "http", scheme, "unclustered loopback: scheme (%v, %v)", scheme, ok)
-	}
+	_, scheme, ok := d.modelsClient("127.0.0.1", "")
+	require.True(t, ok, "unclustered loopback: scheme (%v, %v)", scheme, ok)
+	require.Equal(t, "http", scheme, "unclustered loopback: scheme (%v, %v)", scheme, ok)
 	// ...but no LAN peer is reachable at all, in either transport.
-	{
-		_, _, ok := d.modelsClient("192.168.1.42", "principal-peer")
-		require.False(t, ok, "an unclustered node must not fetch a peer's model inventory")
-	}
-	{
-		_, _, ok := d.modelsClient("192.168.1.42", "")
-		require.False(t, ok, "a peer advertising no cluster principal must not be fetched")
-	}
+	_, _, ok = d.modelsClient("192.168.1.42", "principal-peer")
+	require.False(t, ok, "an unclustered node must not fetch a peer's model inventory")
+	_, _, ok = d.modelsClient("192.168.1.42", "")
+	require.False(t, ok, "a peer advertising no cluster principal must not be fetched")
 
 	// Join a cluster that pins one peer.
 	clustertrusttest.Join(t, clusterDir, "cluster-models", "principal-self", "principal-peer")
 	d.mesh.Refresh()
 
-	{
-		_, scheme, ok := d.modelsClient("192.168.1.42", "principal-peer")
-		require.True(t, ok, "pinned peer: scheme (%v, %v)", scheme, ok)
-		require.Equal(t, "https", scheme, "pinned peer: scheme (%v, %v)", scheme, ok)
-	}
-	{
-		_, _, ok := d.modelsClient("192.168.1.99", "principal-stranger")
-		require.False(t, ok, "an unpinned peer must not be fetched")
-	}
+	_, scheme, ok = d.modelsClient("192.168.1.42", "principal-peer")
+	require.True(t, ok, "pinned peer: scheme (%v, %v)", scheme, ok)
+	require.Equal(t, "https", scheme, "pinned peer: scheme (%v, %v)", scheme, ok)
+	_, _, ok = d.modelsClient("192.168.1.99", "principal-stranger")
+	require.False(t, ok, "an unpinned peer must not be fetched")
 	// Self keeps its loopback plaintext path once clustered too.
-	{
-		_, scheme, ok := d.modelsClient("127.0.0.1", "principal-self")
-		require.True(t, ok, "clustered loopback: scheme (%v, %v)", scheme, ok)
-		require.Equal(t, "http", scheme, "clustered loopback: scheme (%v, %v)", scheme, ok)
-	}
+	_, scheme, ok = d.modelsClient("127.0.0.1", "principal-self")
+	require.True(t, ok, "clustered loopback: scheme (%v, %v)", scheme, ok)
+	require.Equal(t, "http", scheme, "clustered loopback: scheme (%v, %v)", scheme, ok)
 }
 
 // TestClusterUUIDGatedOnLiveMembership pins the invite-deadlock fix at the
@@ -92,10 +80,7 @@ func TestClusterUUIDGatedOnLiveMembership(t *testing.T) {
 	clustertrusttest.WriteKeypair(t, leftover, "principal-A")
 	d := newMembershipTestDaemon(leftover)
 	d.reloadIdentity()
-	{
-		got := d.reg.record().ClusterUUID
-		require.Equal(t, "", got, "leftover-keypair node advertised cluster-uuid")
-	}
+	require.Equal(t, "", d.reg.record().ClusterUUID, "leftover-keypair node advertised cluster-uuid")
 
 	// An already-clustered node on restart: keypair + live admission on disk. It
 	// must advertise its cluster principal so peers gate correctly.
@@ -104,10 +89,7 @@ func TestClusterUUIDGatedOnLiveMembership(t *testing.T) {
 	clustertrusttest.WriteAdmission(t, clustered, "cluster-xyz", 1)
 	d2 := newMembershipTestDaemon(clustered)
 	d2.reloadIdentity()
-	{
-		got := d2.reg.record().ClusterUUID
-		require.Equal(t, "principal-B", got, "clustered node advertised cluster-uuid")
-	}
+	require.Equal(t, "principal-B", d2.reg.record().ClusterUUID, "clustered node advertised cluster-uuid")
 }
 
 // TestClusterUUIDAppearsOnJoinWithoutRestart is the advertisement half of the
@@ -121,10 +103,7 @@ func TestClusterUUIDAppearsOnJoinWithoutRestart(t *testing.T) {
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	d := newMembershipTestDaemon(clusterDir)
 	d.reloadIdentity()
-	{
-		got := d.reg.record().ClusterUUID
-		require.Equal(t, "", got, "pre-join cluster-uuid")
-	}
+	require.Equal(t, "", d.reg.record().ClusterUUID, "pre-join cluster-uuid")
 
 	// The cluster-manager mints the identity and activates the admission while
 	// the scanner is already running.
@@ -132,10 +111,7 @@ func TestClusterUUIDAppearsOnJoinWithoutRestart(t *testing.T) {
 	clustertrusttest.WriteAdmission(t, clusterDir, "cluster-xyz", 1)
 
 	d.reloadIdentity()
-	{
-		got := d.reg.record().ClusterUUID
-		require.Equal(t, "principal-C", got, "post-join cluster-uuid")
-	}
+	require.Equal(t, "principal-C", d.reg.record().ClusterUUID, "post-join cluster-uuid")
 }
 
 // peerEntry is a directory entry for a peer already advertising a cluster
@@ -168,34 +144,25 @@ func TestReloadTrustAdoptsPeerPinnedAfterDiscovery(t *testing.T) {
 
 	// Discovered before we hold any cluster identity.
 	d.dir.upsert(toDirectoryNodeTrusted(peerEntry("peer-host", peerUUID), d))
-	{
-		n, _ := d.dir.get("peer-host")
-		require.False(t, n.Trusted, "peer annotated trusted while this node held no pins")
-	}
+	n, _ := d.dir.get("peer-host")
+	require.False(t, n.Trusted, "peer annotated trusted while this node held no pins")
 
 	// The join lands on disk and the cluster-manager announces it. No browse
 	// event accompanies it, and none ever will.
 	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
 	d.reloadTrust()
 
-	{
-		n, _ := d.dir.get("peer-host")
-		require.True(t, n.Trusted, "peer still untrusted after its pin landed; routing would drop it")
-	}
+	n, _ = d.dir.get("peer-host")
+	require.True(t, n.Trusted, "peer still untrusted after its pin landed; routing would drop it")
 	// The same pass converges what we advertise, so peers can pin us back.
-	{
-		got := d.reg.record().ClusterUUID
-		require.Equal(t, "principal-self", got, "advertised cluster-uuid")
-	}
+	require.Equal(t, "principal-self", d.reg.record().ClusterUUID, "advertised cluster-uuid")
 
 	// A removal is picked up just as promptly, and for the same reason.
 	clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
 	d.reloadTrust()
 
-	{
-		n, _ := d.dir.get("peer-host")
-		require.False(t, n.Trusted, "peer still trusted after its pin was removed")
-	}
+	n, _ = d.dir.get("peer-host")
+	require.False(t, n.Trusted, "peer still trusted after its pin was removed")
 }
 
 // TestTrustReconcileIsSilentWhenNothingChanged keeps the reconcile from becoming
@@ -212,10 +179,8 @@ func TestTrustReconcileIsSilentWhenNothingChanged(t *testing.T) {
 	d.dir.upsert(toDirectoryNodeTrusted(peerEntry("stranger", "principal-stranger"), d))
 
 	for _, hostUUID := range []string{"peer-host", "stranger"} {
-		{
-			_, changed := d.dir.applyClusterIdentity(hostUUID, nil, d.mesh.HasPin)
-			require.False(t, changed, " (%v)", hostUUID)
-		}
+		_, changed := d.dir.applyClusterIdentity(hostUUID, nil, d.mesh.HasPin)
+		require.False(t, changed, " (%v)", hostUUID)
 	}
 }
 
@@ -227,18 +192,12 @@ func TestReconcileIdentityFollowsMembership(t *testing.T) {
 	d := newMembershipTestDaemon(clusterDir)
 
 	d.reconcileIdentity()
-	{
-		got := d.reg.record().ClusterUUID
-		require.Equal(t, "", got, "pre-join cluster-uuid")
-	}
+	require.Equal(t, "", d.reg.record().ClusterUUID, "pre-join cluster-uuid")
 
 	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self")
 	d.mesh.Refresh()
 	d.reconcileIdentity()
-	{
-		got := d.reg.record().ClusterUUID
-		require.Equal(t, "principal-self", got, "post-join cluster-uuid")
-	}
+	require.Equal(t, "principal-self", d.reg.record().ClusterUUID, "post-join cluster-uuid")
 }
 
 // TestPeerLeavingItsClusterClearsInviteGate pins the directory half of the

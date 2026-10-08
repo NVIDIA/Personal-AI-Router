@@ -50,10 +50,8 @@ func TestCallerInjectedNoobPairs(t *testing.T) {
 	assert.Equal(t, StateWaiting, peer.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
 
 	noob := bytes.Repeat([]byte{0xAB}, 16)
-	{
-		_, err := srv.OOBOutputWith(noob)
-		require.NoError(t, err, "server OOBOutputWith:")
-	}
+	_, err := srv.OOBOutputWith(noob)
+	require.NoError(t, err, "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(noob), "peer OOBInputNoob:")
 	assert.Equal(t, StateOOBReceived, peer.State(), "peer state %s, want OOBReceived", peer.State())
 
@@ -76,10 +74,8 @@ func TestMismatchedInjectedNoobFails(t *testing.T) {
 
 	driveConversation(t, srv, peer)
 
-	{
-		_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16))
-		require.NoError(t, err, "server OOBOutputWith:")
-	}
+	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16))
+	require.NoError(t, err, "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
 
 	assert.True(t, driveAllowFail(srv, peer), "expected the Completion Exchange to fail with mismatched Noobs")
@@ -105,10 +101,8 @@ func TestPeerWrongPinYieldsProtocolError(t *testing.T) {
 	driveConversation(t, srv, peer)
 
 	// Server-to-peer OOB with MISMATCHED Noobs — the wrong-PIN condition.
-	{
-		_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16))
-		require.NoError(t, err, "server OOBOutputWith:")
-	}
+	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16))
+	require.NoError(t, err, "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
 
 	// Drive the Completion Exchange exactly as the joiner does: the server
@@ -141,8 +135,6 @@ func TestOOBOutputWithRejectsBadLength(t *testing.T) {
 	srv := NewServer(ServerConfig{Dirs: 2}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
 	driveConversation(t, srv, peer)
-	{
-		_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8))
-		require.Error(t, err, "expected OOBOutputWith to reject an 8-byte Noob")
-	}
+	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8))
+	require.Error(t, err, "expected OOBOutputWith to reject an 8-byte Noob")
 }

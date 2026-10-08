@@ -65,12 +65,8 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 			var request struct {
 				Model string `json:"model"`
 			}
-			{
-				err := json.NewDecoder(r.Body).Decode(&request)
-				if err != nil {
-					assert.Fail(t, "callback prerequisite failed", "decode request")
-					return
-				}
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request), "decode request") {
+				return
 			}
 			receivedModel = request.Model
 			_, _ = w.Write([]byte(`{"response":"hello"}`))
@@ -89,7 +85,7 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	assert.Equal(t, 0, exit)
+	assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 	assert.Equal(t, "a-completion", receivedModel, "selected model")
 	assert.Contains(t, stdout.String(), "Auto-selected available model", "missing auto-selection output")
 }
@@ -97,7 +93,7 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 func TestExplicitModelSkipsInventoryRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {
-			assert.Fail(t, "callback prerequisite failed", "explicit model unexpectedly queried inventory")
+			assert.Fail(t, "explicit model unexpectedly queried inventory")
 			return
 		}
 		_, _ = w.Write([]byte(`{"response":"ok"}`))
@@ -113,7 +109,7 @@ func TestExplicitModelSkipsInventoryRequest(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	assert.Equal(t, 0, exit)
+	assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 }
 
 func TestLMStudioFallsBackToOpenAIInventory(t *testing.T) {
@@ -140,7 +136,7 @@ func TestLMStudioFallsBackToOpenAIInventory(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	assert.Equal(t, 0, exit)
+	assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 	assert.Contains(t, stdout.String(), "live-model", "selected model missing from output")
 }
 
@@ -235,7 +231,7 @@ func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	assert.Equal(t, 0, exit)
+	assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 	var models []RegisteredModel
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &models), "invalid JSON")
 	byName := make(map[string]RegisteredModel, len(models))
@@ -266,7 +262,7 @@ func TestListModelsEmitsJSON(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	assert.Equal(t, 0, exit)
+	assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 	var models []RegisteredModel
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &models), "invalid JSON")
 	require.Len(t, models, 1)
@@ -281,7 +277,7 @@ func TestInvalidConfigurationDoesNotSendRequests(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	assert.Equal(t, 2, exit)
+	assert.Equal(t, 2, exit, "stderr: %s", stderr.String())
 	assert.Contains(t, stderr.String(), "--count")
 }
 
@@ -313,29 +309,29 @@ func TestCancellationStopsInFlightRequestCleanly(t *testing.T) {
 	case <-requestStarted:
 		cancel()
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "inference request did not start")
+		require.FailNow(t, "inference request did not start")
 	}
 	select {
 	case exit := <-done:
-		assert.Equal(t, 0, exit)
+		assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 		close(releaseServer)
 	case <-time.After(2 * time.Second):
 		close(releaseServer)
-		require.FailNow(t, "test expectation failed", "dispatcher did not stop after cancellation")
+		require.FailNow(t, "dispatcher did not stop after cancellation")
 	}
 }
 
 func TestHelpExitsSuccessfully(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	assert.Equal(t, 0, runMain(context.Background(), []string{"--help"}, &stdout, &stderr))
+	assert.Equal(t, 0, runMain(context.Background(), []string{"--help"}, &stdout, &stderr), "stderr: %s", stderr.String())
 }
 
 func TestConnectionIsLocalOnly(t *testing.T) {
 	for _, option := range []string{"--host", "--base-url"} {
 		var stdout, stderr bytes.Buffer
 		exit := runMain(context.Background(), []string{option, "example.test"}, &stdout, &stderr)
-		assert.Equal(t, 2, exit)
-		assert.Contains(t, stderr.String(), "flag provided but not defined")
+		assert.Equal(t, 2, exit, "%s stderr: %s", option, stderr.String())
+		assert.Contains(t, stderr.String(), "flag provided but not defined", "%s", option)
 	}
 }
 
@@ -376,7 +372,7 @@ func TestResponseTextNeverReachesStdout(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	exit := runAgainstServer(t, context.Background(), nil, server.URL, &stdout, &stderr)
-	assert.Equal(t, 0, exit)
+	assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 	combined := stdout.String() + stderr.String()
 	assert.NotContains(t, combined, "Paris", "response text reached the console")
 	assert.NotContains(t, combined, secret, "response text reached the console")
@@ -425,12 +421,12 @@ func TestUpstreamErrorBodyNeverReachesLogs(t *testing.T) {
 		"result log": string(results),
 		"error log":  string(errors),
 	} {
-		assert.NotContains(t, content, "quarterly")
-		assert.NotContains(t, content, echoed)
+		assert.NotContains(t, content, "quarterly", "%s leaked the upstream error body", name)
+		assert.NotContains(t, content, echoed, "%s leaked the upstream error body", name)
 		if name == "stdout" {
 			continue
 		}
-		assert.Contains(t, content, "400 Bad Request")
+		assert.Contains(t, content, "400 Bad Request", "%s dropped the HTTP status", name)
 	}
 }
 

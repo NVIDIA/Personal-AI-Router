@@ -52,26 +52,20 @@ func TestPersistedPortRoundTrip(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		redirectConfigDir(t)
 
-		{
-			_, ok := loadPersistedPort(tc.profile)
-			require.False(t, ok, "expected no persisted port before any save")
-		}
+		_, ok := loadPersistedPort(tc.profile)
+		require.False(t, ok, "expected no persisted port before any save")
 		require.NoError(t, savePersistedPort(tc.profile, 11500), "savePersistedPort")
-		{
-			p, ok := loadPersistedPort(tc.profile)
-			assert.True(t, ok, "round-trip: (%v, %v)", p, ok)
-			assert.Equal(t, 11500, p, "round-trip: (%v, %v)", p, ok)
-		}
+		p, ok := loadPersistedPort(tc.profile)
+		assert.True(t, ok, "round-trip: (%v, %v)", p, ok)
+		assert.Equal(t, 11500, p, "round-trip: (%v, %v)", p, ok)
 
 		// An out-of-range stored value is treated as "none" so startup falls
 		// back to the flag/default rather than trying to bind port 0.
 		path, err := proxyPortPath(tc.profile)
 		require.NoError(t, err, "proxyPortPath")
 		require.NoError(t, os.WriteFile(path, []byte(`{"port":0}`), 0o644))
-		{
-			_, ok := loadPersistedPort(tc.profile)
-			assert.False(t, ok, "port 0 should be treated as none")
-		}
+		_, ok = loadPersistedPort(tc.profile)
+		assert.False(t, ok, "port 0 should be treated as none")
 	})
 }
 
@@ -84,16 +78,12 @@ func TestPersistedPortIsPerEngine(t *testing.T) {
 	lmstudio := lmstudioCase(t).profile
 
 	require.NoError(t, savePersistedPort(ollama, 11500))
-	{
-		_, ok := loadPersistedPort(lmstudio)
-		require.False(t, ok, "LM Studio read a port only Ollama saved")
-	}
+	_, ok := loadPersistedPort(lmstudio)
+	require.False(t, ok, "LM Studio read a port only Ollama saved")
 	require.NoError(t, savePersistedPort(lmstudio, 1300))
-	{
-		p, ok := loadPersistedPort(ollama)
-		assert.True(t, ok, "Ollama's port changed when LM Studio saved: (%v, %v)", p, ok)
-		assert.Equal(t, 11500, p, "Ollama's port changed when LM Studio saved: (%v, %v)", p, ok)
-	}
+	p, ok := loadPersistedPort(ollama)
+	assert.True(t, ok, "Ollama's port changed when LM Studio saved: (%v, %v)", p, ok)
+	assert.Equal(t, 11500, p, "Ollama's port changed when LM Studio saved: (%v, %v)", p, ok)
 }
 
 // TestSetPortRebinds drives a live rebind: the proxy starts serving on one
@@ -129,15 +119,13 @@ func TestSetPortRebinds(t *testing.T) {
 		// Old port stopped accepting.
 		if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", portA), 500*time.Millisecond); err == nil {
 			c.Close()
-			assert.Fail(t, "test expectation failed", "old port %d should be closed after rebind", portA)
+			assert.Fail(t, fmt.Sprintf("old port %d should be closed after rebind", portA))
 		}
 
 		// Persisted for next startup.
-		{
-			p, ok := loadPersistedPort(tc.profile)
-			assert.True(t, ok, "persisted port: (%v, %v, %v)", p, ok, portB)
-			assert.Equal(t, portB, p, "persisted port: (%v, %v, %v)", p, ok, portB)
-		}
+		p, ok := loadPersistedPort(tc.profile)
+		assert.True(t, ok, "persisted port: (%v, %v, %v)", p, ok, portB)
+		assert.Equal(t, portB, p, "persisted port: (%v, %v, %v)", p, ok, portB)
 
 		// A fresh ready notification announced the new port.
 		assert.Contains(t, buf.String(), fmt.Sprintf("\"port\":%d", portB), "expected ready notification carrying port (%v)", portB)

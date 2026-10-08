@@ -84,12 +84,12 @@ func TestSchedulerFeedBaselinePrecedesConcurrentLiveWorkload(t *testing.T) {
 	case replayed := <-initDone:
 		require.Equal(t, 1, replayed, "replayed")
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "scheduler initialization did not finish")
+		require.FailNow(t, "scheduler initialization did not finish")
 	}
 	select {
 	case <-liveDone:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "live workload fanout did not finish")
+		require.FailNow(t, "live workload fanout did not finish")
 	}
 }
 
@@ -178,9 +178,9 @@ func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 	// generation the broker stamped on it, which is not part of what the
 	// scheduler produced.
 	require.True(t, applied[0].SameRanking(wantOld), "first applied snapshot (%v)", wantOld)
-	require.Equal(t, oldGeneration, applied[0].Generation, "first applied generation (%v)", oldGeneration)
+	require.Equal(t, oldGeneration, applied[0].Generation, "first applied generation")
 	require.True(t, applied[1].SameRanking(newPriority), "last applied snapshot (%v)", newPriority)
-	require.Equal(t, newGeneration, applied[1].Generation, "last applied generation (%v)", newGeneration)
+	require.Equal(t, newGeneration, applied[1].Generation, "last applied generation")
 }
 
 // The scheduler computes one node-wide ranking and emits it once per engine, so
@@ -200,7 +200,7 @@ func TestDuplicatePerEngineEmissionDoesNotMintAGeneration(t *testing.T) {
 
 	second, fresh := b.cachePrioritySnapshot(ranking)
 	require.False(t, fresh, "the sibling engine's identical emission minted a second generation")
-	require.Equal(t, first, second, "duplicate emission moved the generation from (%v, %v)", first, second)
+	require.Equal(t, first, second, "duplicate emission moved the generation")
 
 	// A genuinely changed ranking still advances, so the dedupe is not just
 	// swallowing everything after the first.
@@ -208,8 +208,8 @@ func TestDuplicatePerEngineEmissionDoesNotMintAGeneration(t *testing.T) {
 		Nodes: []string{"a", "b"},
 		Ranks: []schedulerwire.NodeRank{{ID: "a", Pending: 0}, {ID: "b", Pending: 5}},
 	})
-	require.True(t, fresh, "changed ranking = generation (%v, %v)", changed, fresh)
-	require.Greater(t, changed, first, "changed ranking = generation (%v, %v)", changed, fresh)
+	require.True(t, fresh, "changed ranking must be fresh")
+	require.Greater(t, changed, first, "changed ranking must advance its generation")
 }
 
 // An empty ranking is a legitimate state — it means the scheduler has no
@@ -217,10 +217,8 @@ func TestDuplicatePerEngineEmissionDoesNotMintAGeneration(t *testing.T) {
 // repush would either send nothing or send an uncached zero value.
 func TestEmptyRankingIsCachedNotTreatedAsAbsent(t *testing.T) {
 	b := &Broker{}
-	{
-		_, fresh := b.cachePrioritySnapshot(schedulerwire.Priority{})
-		require.True(t, fresh, "first empty ranking was treated as a duplicate")
-	}
+	_, fresh := b.cachePrioritySnapshot(schedulerwire.Priority{})
+	require.True(t, fresh, "first empty ranking was treated as a duplicate")
 	b.schedMu.Lock()
 	have := b.havePriority
 	b.schedMu.Unlock()
@@ -273,6 +271,6 @@ func waitSchedulerTestChannel(t *testing.T, ch <-chan struct{}, failure string) 
 	select {
 	case <-ch:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", failure)
+		require.FailNow(t, failure)
 	}
 }
