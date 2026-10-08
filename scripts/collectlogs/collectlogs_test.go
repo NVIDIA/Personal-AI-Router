@@ -150,9 +150,8 @@ func TestDiscoveryLinksNodeIdentifiers(t *testing.T) {
 func TestVersionStringIsNotTreatedAsAddress(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
-	for _, version := range []string{"14.8.178.33", "1.3.2.1"} {
-		assert.Nil(t, findEntity(res.entities, version), "version %q must not be treated as an address", version)
-	}
+	assert.Nil(t, findEntity(res.entities, "14.8.178.33"), "version must not be treated as an address")
+	assert.Nil(t, findEntity(res.entities, "1.3.2.1"), "version must not be treated as an address")
 
 	meta := sectionJSON(t, res, "Metadata")
 	versions, ok := meta["processVersions"].(map[string]any)
@@ -256,12 +255,11 @@ func TestVerificationPassesOnSanitizedOutput(t *testing.T) {
 	require.NoError(t, v.checkFile(res.path), "verify")
 	assert.True(t, v.ok(), "verification reported findings on clean output")
 
-	for _, secret := range []string{
-		"testuser", "TESTHOST-A", "TESTHOST-B",
-		"192.168.50.10", "192.168.50.11",
-	} {
-		assert.NotContains(t, res.output, secret)
-	}
+	assert.NotContains(t, res.output, "testuser")
+	assert.NotContains(t, res.output, "TESTHOST-A")
+	assert.NotContains(t, res.output, "TESTHOST-B")
+	assert.NotContains(t, res.output, "192.168.50.10")
+	assert.NotContains(t, res.output, "192.168.50.11")
 }
 
 // The verifier must fail when a learned value is present, otherwise it offers no
@@ -283,22 +281,19 @@ func TestVerificationDetectsALeak(t *testing.T) {
 }
 
 func TestIsHostnameRejectsNonHosts(t *testing.T) {
-	for _, s := range []string{
-		"qwen3.6:27b",                          // model tag
-		"engine:status",                        // JSON-RPC method
-		"ollama",                               // engine name
-		"lmstudio",                             // engine name
-		"127.0.0.1",                            // address
-		"11111111-2222-4333-8444-555555555555", // uuid
-		"C:\\Users\\bob",                       // path
-		"a b",                                  // free text
-		"",                                     // empty
-	} {
-		assert.False(t, isHostname(s), "isHostname(%q)", s)
-	}
-	for _, s := range []string{"TESTHOST-A", "SethWork2", "DESKTOP-N1D9NDS", "node-01.lan"} {
-		assert.True(t, isHostname(s), "isHostname(%q)", s)
-	}
+	assert.False(t, isHostname("qwen3.6:27b"))                          // model tag
+	assert.False(t, isHostname("engine:status"))                        // JSON-RPC method
+	assert.False(t, isHostname("ollama"))                               // engine name
+	assert.False(t, isHostname("lmstudio"))                             // engine name
+	assert.False(t, isHostname("127.0.0.1"))                            // address
+	assert.False(t, isHostname("11111111-2222-4333-8444-555555555555")) // uuid
+	assert.False(t, isHostname("C:\\Users\\bob"))                       // path
+	assert.False(t, isHostname("a b"))                                  // free text
+	assert.False(t, isHostname(""))                                     // empty
+	assert.True(t, isHostname("TESTHOST-A"))
+	assert.True(t, isHostname("SethWork2"))
+	assert.True(t, isHostname("DESKTOP-N1D9NDS"))
+	assert.True(t, isHostname("node-01.lan"))
 }
 
 func TestClassifyIP(t *testing.T) {
@@ -392,9 +387,8 @@ func TestBundleFormatIsPreservedAsOneFile(t *testing.T) {
 
 	assert.True(t, res.bundle, "fixture is an exported bundle but was not detected as one")
 	assert.True(t, strings.HasPrefix(res.output, "# NVIDIA PAIR Logs (sanitized)"), "bundle header missing from output")
-	for _, name := range []string{"Metadata", "Current Modular State"} {
-		assert.Contains(t, res.output, "## "+name+"\n")
-	}
+	assert.Contains(t, res.output, "## Metadata\n")
+	assert.Contains(t, res.output, "## Current Modular State\n")
 	assert.Equal(t, 1, strings.Count(res.output, "## "+recordSectionTitle), "want exactly one record section,")
 
 	// Sections are written back as text, so they must still parse.
@@ -515,12 +509,7 @@ func TestSameProducerTwiceStillNamesBothOutputs(t *testing.T) {
 		uniqueOutputName(groups[1], 1, used),
 	}
 
-	for i, name := range names {
-		assert.False(t, strings.HasPrefix(name, "source-"), "output %d", i)
-	}
-	assert.NotEqual(t, names[1], names[0], "both outputs named")
-	assert.Equal(t, "node-a.txt", names[0])
-	assert.Equal(t, "node-a-2.txt", names[1])
+	assert.Equal(t, []string{"node-a.txt", "node-a-2.txt"}, names, "both outputs must keep distinct producer names")
 }
 
 // A line that is not a record is dropped rather than sanitized. That is safe but
@@ -585,15 +574,11 @@ func TestInstallRootIsReplacedAtEveryEscapeDepth(t *testing.T) {
 // An install root must never be so shallow that replacing it swallows the drive
 // or the filesystem root.
 func TestInstallRootRejectsShallowPaths(t *testing.T) {
-	for _, in := range []string{
-		`C:\resources\cli-bin`, // one segment before resources
-		`/resources/cli-bin`,
-		`resources/cli-bin`,
-		`C:\Program Files\PAIR\cli-bin`, // no resources anchor at all
-		``,
-	} {
-		assert.Equal(t, "", installRoot(in))
-	}
+	assert.Equal(t, "", installRoot(`C:\resources\cli-bin`)) // one segment before resources
+	assert.Equal(t, "", installRoot(`/resources/cli-bin`))
+	assert.Equal(t, "", installRoot(`resources/cli-bin`))
+	assert.Equal(t, "", installRoot(`C:\Program Files\PAIR\cli-bin`)) // no resources anchor at all
+	assert.Equal(t, "", installRoot(``))
 	assert.Equal(t, `C:\Program Files\PAIR`, installRoot(`C:\Program Files\PAIR\resources\cli-bin`))
 }
 
@@ -636,9 +621,9 @@ func TestKeyTextIsNotTreatedAsAValue(t *testing.T) {
 
 	res := runPipelineOpts(t, path, true, true)
 
-	for _, bad := range []string{"model", "models", "clusterFriendlyName"} {
-		assert.Nil(t, findEntity(res.entities, bad), "key %q must not be treated as a value", bad)
-	}
+	assert.Nil(t, findEntity(res.entities, "model"), "key must not be treated as a value")
+	assert.Nil(t, findEntity(res.entities, "models"), "key must not be treated as a value")
+	assert.Nil(t, findEntity(res.entities, "clusterFriendlyName"), "key must not be treated as a value")
 	// The values themselves are still found.
 	assert.NotNil(t, findEntity(res.entities, "qwen3.6:27b"), "model value was not learned")
 	assert.NotNil(t, findEntity(res.entities, "Lab One"), "cluster label value was not learned")

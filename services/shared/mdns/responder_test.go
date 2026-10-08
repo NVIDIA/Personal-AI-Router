@@ -90,9 +90,7 @@ func TestSrvRR(t *testing.T) {
 func TestTxtRR(t *testing.T) {
 	r := testResponder([]string{"v=1", "ip=192.168.1.10"})
 	txt := r.txtRR(false)
-	require.Len(t, txt.Txt, 2, "TXT records")
-	assert.Equal(t, "v=1", txt.Txt[0], "TXT records")
-	assert.Equal(t, "ip=192.168.1.10", txt.Txt[1], "TXT records")
+	assert.Equal(t, []string{"v=1", "ip=192.168.1.10"}, txt.Txt, "TXT records")
 	assert.Equal(t, "myhost._nvpair-test._tcp.local.", txt.Hdr.Name, "TXT name")
 }
 
@@ -112,8 +110,7 @@ func TestUpdateTXTSwapsRecords(t *testing.T) {
 	r.UpdateTXT([]string{"v=1", "cluster-uuid=abc"})
 	got := r.currentTXT()
 	require.Len(t, got, 2, "currentTXT after UpdateTXT")
-	assert.Equal(t, "v=1", got[0], "currentTXT after UpdateTXT")
-	assert.Equal(t, "cluster-uuid=abc", got[1], "currentTXT after UpdateTXT")
+	assert.Equal(t, []string{"v=1", "cluster-uuid=abc"}, got, "currentTXT after UpdateTXT")
 
 	// currentTXT must return a copy, not the internal slice.
 	got[0] = "mutated"

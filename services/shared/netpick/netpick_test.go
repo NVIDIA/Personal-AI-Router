@@ -17,13 +17,7 @@ func TestRankRemote_DemotesOnlyUnusableClasses(t *testing.T) {
 	// or public address. The private blocks are NOT ranked against each other:
 	// which one the fleet shares is not a property of the prefix.
 	got := RankRemote([]string{"169.254.3.3", "172.17.0.2", "10.5.5.5", "100.64.0.1", "192.168.0.10"})
-	require.Len(t, got, 5)
-	assert.Equal(t, "10.5.5.5", got[0], "RankRemote leading entries")
-	assert.Equal(t, "192.168.0.10", got[1], "RankRemote leading entries")
-	want := []string{"172.17.0.2", "100.64.0.1", "169.254.3.3"}
-	for i, w := range want {
-		assert.Equal(t, w, got[2+i])
-	}
+	assert.Equal(t, []string{"10.5.5.5", "192.168.0.10", "172.17.0.2", "100.64.0.1", "169.254.3.3"}, got, "unusable classes must rank after usable addresses")
 }
 
 // TestRankRemote_PrivateBlocksTie is the deliberate reversal of the old policy: a
@@ -56,9 +50,7 @@ func TestRankRemote_PrivateBeatsPublic(t *testing.T) {
 func TestRankRemote_DropsUnparseableAndStableTie(t *testing.T) {
 	got := RankRemote([]string{"not-an-ip", "192.168.0.9", "192.168.0.3", ""})
 	want := []string{"192.168.0.3", "192.168.0.9"} // equal score -> string order, junk dropped
-	require.Len(t, got, len(want))
-	assert.Equal(t, want[0], got[0])
-	assert.Equal(t, want[1], got[1])
+	assert.Equal(t, want, got)
 }
 
 func TestPrimary_TXTWins(t *testing.T) {
@@ -83,11 +75,7 @@ func TestIPFromTXT(t *testing.T) {
 
 func TestIPsFromTXT(t *testing.T) {
 	got := IPsFromTXT([]string{"uuid=abc", "ips=10.172.54.70,192.168.240.2, 192.168.240.6 ,junk"})
-	want := []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}
-	require.Len(t, got, len(want))
-	for i := range want {
-		assert.Equal(t, want[i], got[i])
-	}
+	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}, got)
 	assert.Empty(t, IPsFromTXT([]string{"uuid=abc"}), "IPsFromTXT without ips")
 }
 
@@ -98,11 +86,7 @@ func TestIPsFromTXT(t *testing.T) {
 func TestCandidates_PreservesPublishedOrder(t *testing.T) {
 	txt := []string{"uuid=abc", "ip=10.172.54.70", "ips=10.172.54.70,192.168.240.2"}
 	got := Candidates(txt, []string{"192.168.240.2", "10.172.54.70"})
-	want := []string{"10.172.54.70", "192.168.240.2"}
-	require.Len(t, got, len(want))
-	for i := range want {
-		assert.Equal(t, want[i], got[i])
-	}
+	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2"}, got)
 }
 
 func TestCandidates_AppendsUnrankedAdvertisedAddresses(t *testing.T) {
@@ -112,11 +96,7 @@ func TestCandidates_AppendsUnrankedAdvertisedAddresses(t *testing.T) {
 		[]string{"ip=10.0.0.5", "ips=10.0.0.5,172.20.0.5"},
 		[]string{"192.168.9.9", "10.0.0.5"},
 	)
-	want := []string{"10.0.0.5", "172.20.0.5", "192.168.9.9"}
-	require.Len(t, got, len(want))
-	for i := range want {
-		assert.Equal(t, want[i], got[i])
-	}
+	assert.Equal(t, []string{"10.0.0.5", "172.20.0.5", "192.168.9.9"}, got)
 }
 
 func TestCandidates_Deduplicates(t *testing.T) {
@@ -129,12 +109,20 @@ func TestCandidates_Deduplicates(t *testing.T) {
 }
 
 func TestVirtualIface(t *testing.T) {
-	for _, n := range []string{"vEthernet (Default Switch)", "docker0", "br-1a2b", "tailscale0", "utun3", "VirtualBox Host-Only", "vEthernet (WSL)"} {
-		assert.True(t, virtualIface(n), "virtualIface")
-	}
-	for _, n := range []string{"Ethernet", "Wi-Fi", "eth0", "en0", "wlan0", "enP7s7", "enp1s0f0np0"} {
-		assert.False(t, virtualIface(n), "virtualIface")
-	}
+	assert.True(t, virtualIface("vEthernet (Default Switch)"))
+	assert.True(t, virtualIface("docker0"))
+	assert.True(t, virtualIface("br-1a2b"))
+	assert.True(t, virtualIface("tailscale0"))
+	assert.True(t, virtualIface("utun3"))
+	assert.True(t, virtualIface("VirtualBox Host-Only"))
+	assert.True(t, virtualIface("vEthernet (WSL)"))
+	assert.False(t, virtualIface("Ethernet"))
+	assert.False(t, virtualIface("Wi-Fi"))
+	assert.False(t, virtualIface("eth0"))
+	assert.False(t, virtualIface("en0"))
+	assert.False(t, virtualIface("wlan0"))
+	assert.False(t, virtualIface("enP7s7"))
+	assert.False(t, virtualIface("enp1s0f0np0"))
 }
 
 // TestPhysicalBonus_VEthernetIsCallerGated pins the contract physicalBonus
@@ -272,11 +260,7 @@ func assertRanked(t *testing.T, got, want []string) {
 // that pair to use.
 func TestRankLocal_KeepsDirectConnectAsLastResort(t *testing.T) {
 	got := rankLocal(sparkHost(), Evidence{}, "")
-	want := []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}
-	require.Len(t, got, len(want))
-	for i := range want {
-		assert.Equal(t, want[i], got[i])
-	}
+	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}, got)
 }
 
 // TestRankLocal_NarrowPrefixesAndPointToPoint pins both hard disqualifiers

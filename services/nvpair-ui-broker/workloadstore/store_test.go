@@ -169,10 +169,7 @@ func TestSnapshotOrderedByCreatedAt(t *testing.T) {
 		require.NoError(t, json.Unmarshal(raw, &hdr), "bad snapshot entry")
 		got = append(got, hdr.CreatedAt)
 	}
-	want := []int64{100, 200, 300}
-	for i := range want {
-		require.True(t, got[i] == want[i], "snapshot order (%v, %v)", got, want)
-	}
+	require.Equal(t, []int64{100, 200, 300}, got, "snapshot order")
 }
 
 func TestActiveSnapshotExcludesTerminalHistory(t *testing.T) {

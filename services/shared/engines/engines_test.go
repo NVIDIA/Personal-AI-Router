@@ -23,12 +23,7 @@ func TestOllamaIsPreparedFirst(t *testing.T) {
 }
 
 func TestNames(t *testing.T) {
-	got := Names()
-	want := []string{"ollama", "lmstudio", "llamacpp"}
-	require.Len(t, got, len(want))
-	for i := range want {
-		assert.Equal(t, want[i], got[i])
-	}
+	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp"}, Names())
 }
 
 // There are two proxy identities: ComponentName per facade, ProxyComponent per

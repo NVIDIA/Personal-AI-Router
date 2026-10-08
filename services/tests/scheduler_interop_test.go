@@ -102,9 +102,8 @@ func waitForSchedulePair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.D
 
 func assertSchedulePair(t *testing.T, got map[string][]string, want []string) {
 	t.Helper()
-	for _, engine := range []string{"ollama", "lmstudio"} {
-		assertScheduleOrder(t, engine, got[engine], want)
-	}
+	assertScheduleOrder(t, "ollama", got["ollama"], want)
+	assertScheduleOrder(t, "lmstudio", got["lmstudio"], want)
 }
 
 func assertScheduleOrder(t *testing.T, engine string, got, want []string) {

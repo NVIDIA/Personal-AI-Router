@@ -164,9 +164,9 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 			for _, message := range tc.wantMessages {
 				assert.Contains(t, gotLogs, message, "logs missing")
 			}
-			for _, field := range []string{"iface=eth0", "ip=192.0.2.10", "target=224.0.0.251:5353"} {
-				assert.Contains(t, gotLogs, field, "logs missing")
-			}
+			assert.Contains(t, gotLogs, "iface=eth0", "logs missing")
+			assert.Contains(t, gotLogs, "ip=192.0.2.10", "logs missing")
+			assert.Contains(t, gotLogs, "target=224.0.0.251:5353", "logs missing")
 		})
 	}
 }

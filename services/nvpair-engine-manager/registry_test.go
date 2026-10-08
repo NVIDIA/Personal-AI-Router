@@ -410,10 +410,7 @@ func TestResolveArgs(t *testing.T) {
 	vars := map[string]string{"download": "/tmp/x.tgz", "install_dir": "/opt/x"}
 	got, err := resolveArgs([]string{"tar", "xzf", "{download}", "-C", "{install_dir}"}, vars)
 	require.NoError(t, err, "resolveArgs")
-	want := []string{"tar", "xzf", "/tmp/x.tgz", "-C", "/opt/x"}
-	for i := range want {
-		require.True(t, got[i] == want[i], "arg (%v)", i)
-	}
+	require.Equal(t, []string{"tar", "xzf", "/tmp/x.tgz", "-C", "/opt/x"}, got, "resolved args")
 }
 
 func TestLoadRegistryOverride(t *testing.T) {
@@ -437,10 +434,7 @@ func TestLoadRegistryOverride(t *testing.T) {
 
 	reg, err := LoadRegistry(bundled, userDir)
 	require.NoError(t, err, "LoadRegistry")
-	names := reg.Names()
-	require.Len(t, names, 2, "unexpected names")
-	require.Equal(t, "ollama", names[0], "unexpected names (%v)", names)
-	require.Equal(t, "vllm", names[1], "unexpected names (%v)", names)
+	require.Equal(t, []string{"ollama", "vllm"}, reg.Names(), "unexpected names")
 	m, ok := reg.Get("ollama")
 	require.True(t, ok, "user override did not win (%v)", m)
 	require.Equal(t, "Ollama (user)", m.DisplayName, "user override did not win (%v)", m)

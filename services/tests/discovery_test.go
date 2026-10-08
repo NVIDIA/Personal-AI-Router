@@ -97,9 +97,9 @@ func TestInProcessMultipleInstances(t *testing.T) {
 	<-ctx.Done()
 	<-done
 
-	for _, inst := range instances {
-		assert.True(t, foundSet[inst], "instance (%v)", inst)
-	}
+	assert.True(t, foundSet["node-alpha"], "registered instance must be discovered")
+	assert.True(t, foundSet["node-beta"], "registered instance must be discovered")
+	assert.True(t, foundSet["node-gamma"], "registered instance must be discovered")
 	t.Logf("OK: discovered %d/%d instances", len(foundSet), len(instances))
 }
 

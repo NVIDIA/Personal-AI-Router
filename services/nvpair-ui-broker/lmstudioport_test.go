@@ -965,7 +965,5 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 	require.True(t, <-restoreDone, "restore waiter reported cancellation")
 	got := []string{<-order, <-order, <-order, <-order}
 	want := []string{"engine:status", lmstudioSetPort, lmstudioSetLocalBackend, restoreEnabledEnginesMethod}
-	for i := range want {
-		require.True(t, got[i] == want[i], "respawn reconciliation order (%v, %v)", got, want)
-	}
+	require.Equal(t, want, got, "respawn reconciliation order")
 }

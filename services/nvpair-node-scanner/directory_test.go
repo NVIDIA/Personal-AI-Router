@@ -89,9 +89,7 @@ func TestToDirectoryNodeIPFallback(t *testing.T) {
 	n, ok := toDirectoryNode(raw, false)
 	require.True(t, ok, "a record with uuid= should project")
 	assert.Equal(t, "10.221.0.9", n.IP, "IP fallback")
-	require.Len(t, n.IPs, 2)
-	assert.Equal(t, "10.221.0.9", n.IPs[0])
-	assert.Equal(t, "192.168.1.20", n.IPs[1])
+	assert.Equal(t, []string{"10.221.0.9", "192.168.1.20"}, n.IPs)
 	assert.False(t, n.Clustered(), "no cluster-uuid should mean not clustered")
 }
 
@@ -111,9 +109,7 @@ func TestToDirectoryNodePreservesPublishedOrder(t *testing.T) {
 	n, ok := toDirectoryNode(raw, false)
 	require.True(t, ok, "a record with uuid= should project")
 	assert.Equal(t, "10.172.54.70", n.IP, "canonical")
-	require.Len(t, n.IPs, 2)
-	assert.Equal(t, "10.172.54.70", n.IPs[0])
-	assert.Equal(t, "192.168.240.2", n.IPs[1])
+	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2"}, n.IPs)
 }
 
 // TestToDirectoryNodeUnionsUnpublishedAddresses: an address the browse resolved
