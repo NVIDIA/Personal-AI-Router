@@ -134,6 +134,12 @@ its data: those remove the engines PAIR installed, never your models. To reclaim
 that space, use **Delete** on individual models, or remove the engine's storage
 directory yourself.
 
+PAIR keeps the model folder at the engine's default location. If you moved LM
+Studio's models folder somewhere else inside `~/.lmstudio`, removing an LM
+Studio that PAIR installed — by uninstalling it, or by removing PAIR's data —
+deletes that folder with the rest of `~/.lmstudio`. A models folder outside
+`~/.lmstudio`, or one linked back to `~/.lmstudio/models`, is kept.
+
 PAIR also leaves alone any engine you installed yourself. **Uninstall** acts only
 on a copy PAIR installed; remove the others with the engine's own uninstaller.
 
