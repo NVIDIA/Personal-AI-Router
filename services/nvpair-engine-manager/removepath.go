@@ -96,7 +96,7 @@ func removeTreePreserving(target, preserve string) error {
 		switch {
 		case store.is(childInfo):
 			// The store, by the name it was given or the directory it leads to.
-		case childInfo.IsDir() && store.under(childInfo):
+		case store.under(childInfo):
 			// On the way to the store. Recurse so siblings deeper down still go.
 			if err := removeTreePreserving(child, absPreserve); err != nil {
 				failures = append(failures, err)
@@ -142,8 +142,12 @@ func (s modelStore) is(fi os.FileInfo) bool {
 	return false
 }
 
-// under reports whether fi is a directory the store sits below.
+// under reports whether fi is a directory the store sits below. Anything else,
+// a link to one included, is not: removal descends only into real directories.
 func (s modelStore) under(fi os.FileInfo) bool {
+	if !fi.IsDir() {
+		return false
+	}
 	for _, dir := range s.above {
 		if os.SameFile(fi, dir) {
 			return true
