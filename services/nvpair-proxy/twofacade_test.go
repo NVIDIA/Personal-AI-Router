@@ -72,7 +72,7 @@ func enableOnFreePort(t *testing.T, p *Proxy, engine string) int {
 		if err == nil {
 			return port
 		}
-		require.True(t, stderrors.Is(err, errFacadeBindFailed), "enable (%v, %v, %v)", engine, port, err)
+		require.ErrorIs(t, err, errFacadeBindFailed, "enable (%v, %v)", engine, port)
 		lastErr = err
 	}
 	require.FailNow(t, "test expectation failed", "enable %s facade: every probed port was taken before the bind: %v", engine, lastErr)
@@ -92,10 +92,7 @@ func twoFacadeProxy(t *testing.T) *Proxy {
 	}
 	t.Cleanup(func() { p.shutdown(t.Context()) })
 
-	{
-		got := len(p.enabledFacades())
-		require.True(t, got == len(engines.All()), "enabled (%v)", got)
-	}
+	require.Len(t, p.enabledFacades(), len(engines.All()), "enabled facades")
 	return p
 }
 
@@ -109,11 +106,8 @@ func TestTwoFacadesKeepSeparatePortsAndProfiles(t *testing.T) {
 	for _, e := range engines.All() {
 		f := p.facadeFor(e.Name)
 		require.NotNil(t, f, "no facade enabled for")
-		assert.True(t, f.profile.Name == e.Name, "facade for")
-		{
-			owner, clash := ports[f.port]
-			assert.False(t, clash, "facades for (%v)", owner)
-		}
+		assert.Equal(t, e.Name, f.profile.Name, "facade for")
+		assert.NotContains(t, ports, f.port, "facade %s must use a distinct port", e.Name)
 		ports[f.port] = e.Name
 	}
 }
@@ -132,12 +126,9 @@ func TestReEnablingOneFacadeLeavesBothIntact(t *testing.T) {
 		Port:   before.port,
 	})
 	require.NoError(t, err, "re-enable")
-	assert.True(t, result.Port == before.port, "re-enable reported port")
-	assert.True(t, p.facadeFor(first.Name) == before, "re-enable replaced the running facade")
-	{
-		got := len(p.enabledFacades())
-		assert.True(t, got == len(engines.All()), "after re-enable there are (%v)", got)
-	}
+	assert.Equal(t, before.port, result.Port, "re-enable reported port")
+	assert.Same(t, before, p.facadeFor(first.Name), "re-enable replaced the running facade")
+	assert.Len(t, p.enabledFacades(), len(engines.All()), "enabled facades after re-enable")
 }
 
 // An enable that loses a bind race withdraws only its own engine. This is the
@@ -168,14 +159,11 @@ func TestOneFacadeFailingToBindLeavesTheOthersServing(t *testing.T) {
 		Engine: failing.Name, Port: taken, IgnorePersistedPort: true,
 	})
 	require.Error(t, err, "enabling (%v)", taken)
-	assert.True(t, stderrors.Is(err, errFacadeBindFailed), "bind failure was not tagged retryable (%v)", err)
+	assert.ErrorIs(t, err, errFacadeBindFailed, "bind failure was not tagged retryable")
 
 	assert.Nil(t, p.facadeFor(failing.Name))
 	assert.NotNil(t, p.facadeFor(surviving.Name))
-	{
-		got := len(p.enabledFacades())
-		assert.Equal(t, 1, got, "enabled facades")
-	}
+	assert.Len(t, p.enabledFacades(), 1, "enabled facades")
 }
 
 // A facade-scoped request reaches only the engine it names, and an engine with
@@ -203,7 +191,7 @@ func TestAddressedRequestReachesOnlyItsOwnFacade(t *testing.T) {
 		require.Len(t, nodes, 1, "")
 		{
 			want := e.Name + "-node"
-			assert.True(t, nodes[0].ID == want, " (%v)", want)
+			assert.Equal(t, want, nodes[0].ID, " (%v)", want)
 		}
 	}
 
@@ -235,7 +223,7 @@ func TestFacadesShareSchedulerStateAndReservations(t *testing.T) {
 
 	require.True(t, firstRes.held, "a facade failed to take a reservation from the shared snapshot")
 	require.True(t, secondRes.held, "a facade failed to take a reservation from the shared snapshot")
-	require.True(t, firstRes.nodeID != secondRes.nodeID, "both facades dispatched to")
+	require.NotEqual(t, secondRes.nodeID, firstRes.nodeID, "both facades dispatched to")
 
 	// Releasing through one facade's request does not disturb the other's.
 	p.releaseReservation(firstRes)
@@ -283,10 +271,7 @@ func TestPanicHandlingOneEngineLeavesTheOtherServing(t *testing.T) {
 	}
 	p.handleMessage(bystanderMsg)
 
-	{
-		got := len(p.enabledFacades())
-		assert.True(t, got == len(all), "enabled facades (%v)", got)
-	}
+	assert.Len(t, p.enabledFacades(), len(all), "enabled facades")
 }
 
 // A panic during bring-up withdraws that facade and releases its port, while
@@ -431,6 +416,6 @@ func TestBothFacadesAddressTheirNotifications(t *testing.T) {
 	}
 
 	for _, e := range engines.All() {
-		assert.True(t, readyFor[e.Name], "no addressed ready notification for (%v)", readyFor)
+		assert.Contains(t, readyFor, e.Name, "no addressed ready notification")
 	}
 }

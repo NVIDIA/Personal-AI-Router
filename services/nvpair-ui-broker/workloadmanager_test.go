@@ -59,10 +59,7 @@ func TestActiveLocalReplayFrames(t *testing.T) {
 	assert.Equal(t, "workload:errored", got["2"], "id 2 (failed) method")
 	assert.Equal(t, "workload:submitted", got["4"], "id 4 (queued) method")
 	assert.Equal(t, "workload:completed", got["5"], "id 5 (completed) method")
-	{
-		_, ok := got["3"]
-		assert.False(t, ok, "peer-origin workload 3 must not be replayed")
-	}
+	assert.NotContains(t, got, "3", "peer-origin workload 3 must not be replayed")
 }
 
 // TestWorkloadHistoryFlusherFlushesOnShutdown is the shutdown-flush regression:

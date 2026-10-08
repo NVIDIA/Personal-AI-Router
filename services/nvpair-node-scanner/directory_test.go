@@ -123,9 +123,7 @@ func TestToDirectoryNodeUnionsUnpublishedAddresses(t *testing.T) {
 	n, ok := toDirectoryNode(raw, false)
 	require.True(t, ok, "a record with uuid= should project")
 	want := []string{"10.0.0.5", "10.0.9.9"}
-	require.Len(t, n.IPs, len(want), "candidates (%v)", want)
-	assert.True(t, n.IPs[0] == want[0], "candidates (%v)", want)
-	assert.True(t, n.IPs[1] == want[1], "candidates (%v)", want)
+	assert.Equal(t, want, n.IPs, "candidates")
 }
 
 func TestDirectoryUpsertRemoveSnapshot(t *testing.T) {

@@ -307,5 +307,5 @@ func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
 		Port int `json:"port"`
 	}
 	require.NoError(t, json.Unmarshal(data, &saved), "parse persisted lmstudio port")
-	require.True(t, saved.Port == persistedPort, "persisted lmstudio port (%v)", persistedPort)
+	require.Equal(t, persistedPort, saved.Port, "persisted lmstudio port (%v)", persistedPort)
 }

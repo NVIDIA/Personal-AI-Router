@@ -186,8 +186,8 @@ func TestRestartRollsBackProvisionalAdmission(t *testing.T) {
 		cid, _ := restarted.currentAdmission()
 		require.Equal(t, "", cid, "provisional admission became active after restart")
 	}
-	require.Len(t, restarted.trust.List(), 0, "restart retained provisional members or pins")
-	require.Len(t, restarted.snapshotNodes(), 0, "restart retained provisional members or pins")
+	require.Empty(t, restarted.trust.List(), "restart retained provisional members or pins")
+	require.Empty(t, restarted.snapshotNodes(), "restart retained provisional members or pins")
 }
 
 func TestBareRejectionRemovesDepartedPeerButKeepsCluster(t *testing.T) {
@@ -202,7 +202,7 @@ func TestBareRejectionRemovesDepartedPeerButKeepsCluster(t *testing.T) {
 	}
 	{
 		nodes := m.snapshotNodes()
-		require.Len(t, nodes, 0, "departed peer remained in roster")
+		require.Empty(t, nodes, "departed peer remained in roster")
 	}
 }
 

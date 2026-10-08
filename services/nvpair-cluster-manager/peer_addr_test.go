@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +45,7 @@ func TestReconcileWithFailsOverToAnAnsweringAddress(t *testing.T) {
 
 	working := net.JoinHostPort("127.0.0.1", strconv.Itoa(15031))
 	outcome, _ := mB.reconcileWith([]string{unreachableAddr, working}, mA.identity.NodeUUID)
-	require.True(t, outcome == reconcileAccepted, "reconcile outcome (%v)", outcome)
+	require.Equal(t, reconcileAccepted, outcome, "reconcile outcome")
 }
 
 // TestReconcileBudgetCoversTheWholeCandidateWalk: failover is worth one round
@@ -67,7 +66,7 @@ func TestReconcileBudgetCoversTheWholeCandidateWalk(t *testing.T) {
 	outcome, _ := m.reconcileWithin(ctx, blackholed, peerUUID)
 	elapsed := time.Since(start)
 
-	require.True(t, outcome == reconcileUnreachable, "outcome (%v)", outcome)
+	require.Equal(t, reconcileUnreachable, outcome, "outcome")
 	// Generous headroom over the budget, but far below the four-times-the-budget
 	// cost of a per-address deadline.
 	{
@@ -93,9 +92,7 @@ func TestResolvePeerAddrsPutsTheRecordedAddressFirst(t *testing.T) {
 
 	got := m.resolvePeerAddrs(ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "10.172.55.129", Port: 14321})
 	want := []string{"10.172.55.129:14321", "192.168.240.1:14321"}
-	require.Len(t, got, len(want), "resolvePeerAddrs (%v, %v)", got, want)
-	require.True(t, got[0] == want[0], "resolvePeerAddrs (%v, %v)", got, want)
-	require.True(t, got[1] == want[1], "resolvePeerAddrs (%v, %v)", got, want)
+	require.Equal(t, want, got, "resolvePeerAddrs")
 }
 
 // TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress: the stored address
@@ -143,10 +140,7 @@ func TestConfirmedFirst(t *testing.T) {
 	}
 	got := confirmedFirst(addrs, "c:1")
 	want := []string{"c:1", "a:1", "b:1"}
-	require.Len(t, got, len(want), "confirmedFirst (%v, %v)", got, want)
-	require.True(t, got[0] == want[0], "confirmedFirst (%v, %v)", got, want)
-	require.True(t, got[1] == want[1], "confirmedFirst (%v, %v)", got, want)
-	require.True(t, got[2] == want[2], "confirmedFirst (%v, %v)", got, want)
+	require.Equal(t, want, got, "confirmedFirst")
 }
 
 // TestReachableEndpointFirstLeadsWithTheAddressThatAnswers: pairing is
@@ -170,9 +164,7 @@ func TestReachableEndpointFirstLeadsWithTheAddressThatAnswers(t *testing.T) {
 	answering := net.JoinHostPort("127.0.0.1", portStr)
 
 	got := reachableEndpointFirst([]string{unreachableAddr, answering})
-	require.Len(t, got, 2, "reachableEndpointFirst")
-	require.True(t, got[0] == answering, "reachableEndpointFirst (%v)", got)
-	require.True(t, got[1] == unreachableAddr, "reachableEndpointFirst (%v)", got)
+	require.Equal(t, []string{answering, unreachableAddr}, got, "reachableEndpointFirst")
 }
 
 // TestReachableEndpointFirstSingleCandidateSkipsConfirmation: with one address
@@ -181,8 +173,7 @@ func TestReachableEndpointFirstLeadsWithTheAddressThatAnswers(t *testing.T) {
 func TestReachableEndpointFirstSingleCandidateSkipsConfirmation(t *testing.T) {
 	start := time.Now()
 	got := reachableEndpointFirst([]string{unreachableAddr})
-	require.Len(t, got, 1, "reachableEndpointFirst (%v, %v)", got, unreachableAddr)
-	require.True(t, got[0] == unreachableAddr, "reachableEndpointFirst (%v, %v)", got, unreachableAddr)
+	require.Equal(t, []string{unreachableAddr}, got, "reachableEndpointFirst")
 	{
 		elapsed := time.Since(start)
 		require.LessOrEqual(t, elapsed, 200*time.Millisecond, "single candidate took")
@@ -260,7 +251,7 @@ func TestPairingStopsAtAnExplicitRefusal(t *testing.T) {
 
 	_, _, err := m.pairAtFirstWorkingEndpoint("inv-refused", []string{refusing, second}, cid, m.sessGen.Load())
 	var rejected *pairingRejectedError
-	require.True(t, errors.As(err, &rejected), "err (%v)", err)
+	require.ErrorAs(t, err, &rejected)
 	assert.Equal(t, "already-clustered", rejected.reason)
 	assert.NotEqual(t, int64(0), refusedHits.Load(), "the refusing address was never asked")
 	{
@@ -323,7 +314,7 @@ func TestPairingStopsWhenTheInviteIsCanceledMidWalk(t *testing.T) {
 	{
 		inv, ok := m.getInvite("inv-cancel")
 		require.True(t, ok, "invite (%v)", inv)
-		require.True(t, inv.State == inviteStateCanceled, "invite (%v)", inv)
+		require.Equal(t, inviteStateCanceled, inv.State, "invite (%v)", inv)
 	}
 }
 
@@ -386,10 +377,10 @@ func TestCanceledInviteIsNotRepublishedByALaterAddress(t *testing.T) {
 	m.inviteMu.Unlock()
 
 	require.False(t, applied, "a canceled invite was republished by a later address's pairing")
-	require.True(t, recorded == inviteStateCanceled, "recorded state (%v, %v)", recorded, inviteStateCanceled)
+	require.Equal(t, inviteStateCanceled, recorded, "recorded state")
 	inv, ok := m.getInvite("inv-republish")
 	require.True(t, ok, "invite (%v)", inv)
-	require.True(t, inv.State == inviteStateCanceled, "invite (%v)", inv)
+	require.Equal(t, inviteStateCanceled, inv.State, "invite (%v)", inv)
 	assert.Nil(t, inv.Pin, "a PIN was published for a canceled invite")
 	{
 		_, live := m.getSession("inv-republish")

@@ -33,7 +33,7 @@ func TestSetObservedAddressesReplacesTheSet(t *testing.T) {
 	d.setObservedAddresses(nil)
 	{
 		got = d.observedAddresses()
-		require.Len(t, got, 0, "observed")
+		require.Empty(t, got, "observed")
 	}
 }
 

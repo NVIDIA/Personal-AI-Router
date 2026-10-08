@@ -313,7 +313,7 @@ func downloadTo(t *testing.T, url string) string {
 	resp, err := http.Get(url)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	require.True(t, resp.StatusCode == http.StatusOK, "download (%v)", url)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "download (%v)", url)
 	f, err := os.CreateTemp(t.TempDir(), "engine-dl-*")
 	require.NoError(t, err)
 	defer f.Close()

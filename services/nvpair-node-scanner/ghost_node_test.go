@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
@@ -257,7 +258,7 @@ func TestSupersedeCandidatesKeepFreshNeighbours(t *testing.T) {
 	d.upsert(ghost("peer-a", "192.168.1.10", supersedeMinAge-1))
 
 	candidates := d.supersedeCandidates(ghost("peer-b", "192.168.1.10", 0), "self-uuid")
-	require.Len(t, candidates, 0, "a gap under supersedeMinAge must not nominate")
+	require.Empty(t, candidates, "a gap under supersedeMinAge must not nominate")
 }
 
 // TestSupersedeCandidatesRequireSameHostname keeps the nomination narrow. Two
@@ -269,7 +270,7 @@ func TestSupersedeCandidatesRequireSameHostname(t *testing.T) {
 	d.upsert(named("old-uuid", "old-name", "192.168.1.10", 3600))
 
 	candidates := d.supersedeCandidates(named("new-uuid", "new-name", "192.168.1.10", 0), "self-uuid")
-	require.Len(t, candidates, 0, "a different hostname on the address must not be nominated")
+	require.Empty(t, candidates, "a different hostname on the address must not be nominated")
 }
 
 // TestSupersedeCandidatesIgnoreTheAddress covers the signal that was removed. A
@@ -292,7 +293,7 @@ func TestSupersedeCandidatesIgnoreTheAddress(t *testing.T) {
 	d2.upsert(ghost("peer-c", "192.168.1.10", 3600))
 	{
 		candidates := d2.supersedeCandidates(ghost("peer-d", "", 0), "self-uuid")
-		require.Len(t, candidates, 0, "an unaddressable arrival can prove nothing")
+		require.Empty(t, candidates, "an unaddressable arrival can prove nothing")
 	}
 }
 
@@ -306,14 +307,14 @@ func TestSupersedeCandidatesNeverIncludeSelf(t *testing.T) {
 	d.upsert(ghost("self-uuid", "192.168.1.10", 3600))
 
 	candidates := d.supersedeCandidates(ghost("peer-uuid", "192.168.1.10", 0), "self-uuid")
-	require.Len(t, candidates, 0, "self must never be nominated by a peer")
+	require.Empty(t, candidates, "self must never be nominated by a peer")
 
 	// Nor may the local record nominate peers on its way in.
 	d2 := newDirectory()
 	d2.upsert(ghost("peer-uuid", "192.168.1.10", 3600))
 	{
 		candidates := d2.supersedeCandidates(ghost("self-uuid", "192.168.1.10", 0), "self-uuid")
-		require.Len(t, candidates, 0, "self must not nominate peers")
+		require.Empty(t, candidates, "self must not nominate peers")
 	}
 }
 
@@ -328,7 +329,7 @@ func TestSupersedeCandidatesAreDeterministic(t *testing.T) {
 	got := candidateUUIDs(d.supersedeCandidates(ghost("uuid-live", "192.168.1.10", 0), "self-uuid"))
 	{
 		want := "uuid-a,uuid-b,uuid-c"
-		require.True(t, got == want, "candidate order (%v, %v)", got, want)
+		require.Equal(t, want, got, "candidate order (%v, %v)", got, want)
 	}
 }
 
@@ -348,7 +349,7 @@ func TestUpsertEvictingRejudgesRecordsThatMoved(t *testing.T) {
 	arriving := named("new-uuid", "wiped-host", "192.168.1.10", 0)
 	{
 		evicted := d.upsertEvicting(arriving, []noderec.DirectoryNode{judged})
-		require.Len(t, evicted, 0, "a record that changed during the probe must be judged again, not evicted")
+		require.Empty(t, evicted, "a record that changed during the probe must be judged again, not evicted")
 	}
 	{
 		_, ok := d.get("old-uuid")
@@ -476,7 +477,6 @@ func TestOnBrowseEmitsSupersededRemoval(t *testing.T) {
 		require.True(t, ok, "the arriving node must be stored")
 	}
 	d.infoMu.Lock()
-	_, cached := d.lastInfo["old-uuid"]
+	assert.NotContains(t, d.lastInfo, "old-uuid", "a superseded node's enrichment cache must be dropped")
 	d.infoMu.Unlock()
-	require.False(t, cached, "a superseded node's enrichment cache must be dropped")
 }

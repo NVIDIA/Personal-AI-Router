@@ -30,7 +30,7 @@ func TestLMSEntryMatchesModel(t *testing.T) {
 	for _, c := range cases {
 		{
 			got := lmsEntryMatchesModel(entry, c.model)
-			assert.True(t, got == c.want, "lmsEntryMatchesModel (%v)", got)
+			assert.Equal(t, c.want, got, "lmsEntryMatchesModel")
 		}
 	}
 }

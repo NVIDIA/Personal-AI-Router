@@ -172,11 +172,13 @@ func TestOneStepKDFDeterministic(t *testing.T) {
 
 	assert.Equal(t, km2.MSK, km1.MSK, "KDF not deterministic")
 	assert.Equal(t, km2.Kz, km1.Kz, "KDF not deterministic")
-	lengths := map[string]int{"MSK": len(km1.MSK), "EMSK": len(km1.EMSK), "AMSK": len(km1.AMSK), "MethodID": len(km1.MethodID), "Kms": len(km1.Kms), "Kmp": len(km1.Kmp), "Kz": len(km1.Kz)}
-	want := map[string]int{"MSK": 64, "EMSK": 64, "AMSK": 64, "MethodID": 32, "Kms": 32, "Kmp": 32, "Kz": 32}
-	for k, v := range want {
-		assert.Equal(t, v, lengths[k], "%s length %d, want %d", k, lengths[k], v)
-	}
+	assert.Len(t, km1.MSK, 64, "MSK length")
+	assert.Len(t, km1.EMSK, 64, "EMSK length")
+	assert.Len(t, km1.AMSK, 64, "AMSK length")
+	assert.Len(t, km1.MethodID, 32, "MethodID length")
+	assert.Len(t, km1.Kms, 32, "Kms length")
+	assert.Len(t, km1.Kmp, 32, "Kmp length")
+	assert.Len(t, km1.Kz, 32, "Kz length")
 }
 
 func TestJWKRoundTrip(t *testing.T) {

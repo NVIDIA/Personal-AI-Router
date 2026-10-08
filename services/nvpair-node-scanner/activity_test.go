@@ -105,7 +105,7 @@ func TestNegativeReportedAgeIsClamped(t *testing.T) {
 
 	since, ok := d.activitySince("node")
 	require.True(t, ok, "activity was not recorded")
-	require.True(t, since >= 0, "negative age was not clamped: recorded (%v)", since)
+	require.GreaterOrEqual(t, since, time.Duration(0), "negative age was not clamped")
 }
 
 func TestUnreportedNodeHasNoActivity(t *testing.T) {

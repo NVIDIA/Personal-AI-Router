@@ -248,10 +248,10 @@ func TestTrustStoreMissingEndorsementTargetStaysSilent(t *testing.T) {
 	ts, count := newAnnouncingStore(t)
 	require.NoError(t, ts.AddEndorsements("principal-stranger", []Endorsement{{By: "trusted-peer", SigV2: "signature-1"}}))
 	require.Equal(t, 0, count(), "missing-target merge changed live state: announcements")
-	require.Len(t, ts.List(), 0, "missing-target merge changed live state: announcements")
+	require.Empty(t, ts.List(), "missing-target merge changed live state: announcements")
 	entries, err := os.ReadDir(ts.dir)
 	require.NoError(t, err, "missing-target merge changed disk state: entries (%v, %v)", entries, err)
-	require.Len(t, entries, 0, "missing-target merge changed disk state: entries (%v, %v)", entries, err)
+	require.Empty(t, entries, "missing-target merge changed disk state: entries (%v, %v)", entries, err)
 }
 
 // TestTrustStoreStaysSilentWhenNothingChanged keeps the announcement meaningful.

@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 
@@ -62,7 +61,7 @@ func TestReconcile_ReusesPeerConnections(t *testing.T) {
 	for i := 0; i < rounds; i++ {
 		{
 			outcome, _ := m.reconcileWith([]string{addr}, peerUUID)
-			require.True(t, outcome == reconcileAccepted, "round (%v, %v)", i, outcome)
+			require.Equal(t, reconcileAccepted, outcome, "round (%v)", i)
 		}
 	}
 
@@ -93,17 +92,11 @@ func TestPeerClient_ForgetRevokesWithPinStillOnDisk(t *testing.T) {
 		require.NoError(t, err, "pinned peer must yield a client")
 	}
 	pinPath := m.trust.pinPath(peerUUID)
-	{
-		_, err := os.Stat(pinPath)
-		require.NoError(t, err, "stat pin before Forget")
-	}
+	require.FileExists(t, pinPath, "stat pin before Forget")
 
 	m.trust.Forget(peerUUID)
 
-	{
-		_, err := os.Stat(pinPath)
-		require.NoError(t, err, "Forget must leave the durable pin in place")
-	}
+	require.FileExists(t, pinPath, "Forget must leave the durable pin in place")
 	{
 		_, ok := m.trust.DER(peerUUID)
 		require.False(t, ok, "Forget must remove the TrustStore authorization")

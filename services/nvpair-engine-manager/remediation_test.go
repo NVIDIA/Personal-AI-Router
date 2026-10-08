@@ -73,7 +73,7 @@ func TestDownloadUnpinned(t *testing.T) {
 	defer os.Remove(p)
 	{
 		got, _ := os.ReadFile(p)
-		require.True(t, string(got) == string(payload), "downloaded content mismatch (%v)", got)
+		require.Equal(t, string(payload), string(got), "downloaded content mismatch")
 	}
 }
 
@@ -119,8 +119,7 @@ func TestUninstallRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := ex.Uninstall(context.Background(), "fake")
-	require.Error(t, err, "expected uninstall failure after 3 attempts")
-	require.Contains(t, err.Error(), "after 3 attempts", "expected uninstall failure after 3 attempts (%v)", err)
+	require.ErrorContains(t, err, "after 3 attempts", "expected uninstall failure after 3 attempts")
 	{
 		data, _ := os.ReadFile(marker)
 		require.Len(t, data, 3, "expected 3 uninstall attempts, marker has")
@@ -197,8 +196,7 @@ func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
 	}
 	ex, _ := capturingExecutor(t, m)
 	err := ex.Start(context.Background(), "slow")
-	require.Error(t, err, "expected readiness timeout")
-	require.Contains(t, err.Error(), "did not become ready", "expected readiness timeout (%v)", err)
+	require.ErrorContains(t, err, "did not become ready", "expected readiness timeout")
 	require.True(t, hasErr(ex.Errors(), startFailedID("slow")), "expected a start-failed error")
 	// Give the watcher a chance to (wrongly) fire before asserting silence.
 	time.Sleep(400 * time.Millisecond)
@@ -281,8 +279,7 @@ func TestInstallChecksumMismatchReported(t *testing.T) {
 	}
 	ex, c := capturingExecutor(t, m)
 	err := ex.Install(context.Background(), "fake")
-	require.Error(t, err, "expected checksum mismatch")
-	require.Contains(t, err.Error(), "checksum mismatch", "expected checksum mismatch (%v)", err)
+	require.ErrorContains(t, err, "checksum mismatch", "expected checksum mismatch")
 	require.True(t, hasErr(ex.Errors(), installFailedID("fake")), "expected install-failed to be reported")
 	require.True(t, c.has("engine:install-progress"), "expected an install-progress notification")
 }
@@ -362,13 +359,11 @@ func TestActionUnknownAndHTTPError(t *testing.T) {
 	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
 	{
 		_, err := ex.Action(context.Background(), "fake", "nope", nil)
-		require.Error(t, err, "expected unknown-action error")
-		require.Contains(t, err.Error(), "no action", "expected unknown-action error (%v)", err)
+		require.ErrorContains(t, err, "no action", "expected unknown-action error")
 	}
 	{
 		_, err := ex.Action(context.Background(), "fake", "err", nil)
-		require.Error(t, err, "expected HTTP 500 error")
-		require.Contains(t, err.Error(), "HTTP 500", "expected HTTP 500 error (%v)", err)
+		require.ErrorContains(t, err, "HTTP 500", "expected HTTP 500 error")
 	}
 }
 
@@ -388,7 +383,7 @@ func TestExpandPathForms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			{
 				got := expandPathForOS(tc.input, tc.goos)
-				assert.True(t, got == tc.want, "expandPathForOS (%v)", got)
+				assert.Equal(t, tc.want, got, "expandPathForOS")
 			}
 		})
 	}
@@ -396,7 +391,7 @@ func TestExpandPathForms(t *testing.T) {
 		for _, goos := range []string{"windows", "linux"} {
 			{
 				got, want := expandPathForOS("~/sub", goos), filepath.Join(home, "sub")
-				assert.True(t, got == want, " (%v, %v, %v)", goos, got, want)
+				assert.Equal(t, want, got, " (%v)", goos)
 			}
 		}
 	}
@@ -411,11 +406,11 @@ func TestBundledWindowsLMStudioUninstallExpansion(t *testing.T) {
 		p, ok := m.PlatformFor("windows", arch)
 		require.True(t, ok, "windows/ (%v)", arch)
 		require.NotNil(t, p.Uninstall, "windows/ (%v)", arch)
-		require.NotEqual(t, 0, len(p.Uninstall.Run), "windows/ (%v)", arch)
+		require.NotEmpty(t, p.Uninstall.Run, "windows/ (%v)", arch)
 		command := p.Uninstall.Run[len(p.Uninstall.Run)-1]
 		{
 			got := expandPathForOS(command, "windows")
-			assert.True(t, got == command, "windows/ (%v, %v, %v)", arch, got, command)
+			assert.Equal(t, command, got, "windows/ (%v)", arch)
 		}
 		assert.Contains(t, command, "$root", "Windows uninstall variable must be preserved for %s", arch)
 		assert.Contains(t, command, "$_", "Windows uninstall variable must be preserved for %s", arch)
@@ -431,10 +426,7 @@ func TestBundledManifestsGolden(t *testing.T) {
 	for _, want := range []string{"ollama", "lmstudio", "llamacpp"} {
 		m, ok := reg.Get(want)
 		require.True(t, ok, "missing bundled engine (%v)", want)
-		{
-			_, ok := m.Actions["list_models"]
-			assert.True(t, ok, "bundled (%v)", want)
-		}
+		assert.Contains(t, m.Actions, "list_models", "bundled (%v)", want)
 	}
 }
 
@@ -451,8 +443,7 @@ func TestDownloadSizeCap(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	{
 		_, err := ex.download(context.Background(), "x", &Fetch{URL: srv.URL, SHA256: "abc"})
-		require.Error(t, err, "expected size-cap error")
-		require.Contains(t, err.Error(), "exceeds", "expected size-cap error (%v)", err)
+		require.ErrorContains(t, err, "exceeds", "expected size-cap error")
 	}
 }
 

@@ -92,7 +92,7 @@ func TestCORSOriginDenialIsNotRewritten(t *testing.T) {
 					if method == "OPTIONS" && status == 200 {
 						want = 204
 					}
-					require.True(t, rec.Code == want, " (%v)", method)
+					require.Equal(t, want, rec.Code, " (%v)", method)
 					require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), " (%v)", method)
 					require.False(t, status != 200 && rec.Body.String() != "engine refused", "upstream error body changed")
 				}
@@ -121,7 +121,7 @@ func TestCORSClusterRequiresEveryRespondingTarget(t *testing.T) {
 				p := proxyForCORSTargets(t, tc, a, b)
 				rec := httptest.NewRecorder()
 				p.handlePlain(rec, corsRequest("OPTIONS", tc.inferencePath, "http://app.test"))
-				require.True(t, rec.Code == policy.want, "status")
+				require.Equal(t, policy.want, rec.Code, "status")
 				require.False(t, policy.want != 204 && rec.Header().Get("Access-Control-Allow-Origin") != "", "granted denied origin")
 				require.False(t, policy.want == 204 && (rec.Header().Get("Access-Control-Max-Age") == "" || rec.Header().Get("Access-Control-Allow-Credentials") != "true"), "invalid agreement")
 			})
@@ -150,7 +150,7 @@ func TestCORSModelListRequiresEveryRespondingTarget(t *testing.T) {
 				p := proxyForCORSTargets(t, tc, a, b)
 				rec := httptest.NewRecorder()
 				p.handlePlain(rec, corsRequest("GET", tc.modelListPath, "http://app.test"))
-				require.True(t, rec.Code == policy.want, "status")
+				require.Equal(t, policy.want, rec.Code, "status")
 				if policy.want != 200 {
 					require.NotContains(t, rec.Body.String(), "private-model", "partial inventory exposed")
 					require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "partial inventory exposed")
@@ -197,7 +197,7 @@ func TestCORSNoRetryOnPermissionDenial(t *testing.T) {
 			p := proxyForCORSTargets(t, tc, a, b)
 			rec := httptest.NewRecorder()
 			p.handlePlain(rec, corsRequest("GET", "/policy", "http://app.test"))
-			require.True(t, rec.Code == status, "retried a permission denial")
+			require.Equal(t, status, rec.Code, "retried a permission denial")
 			require.Equal(t, int32(0), calls.Load(), "retried a permission denial")
 			a.Close()
 			b.Close()
@@ -273,7 +273,7 @@ func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
 			if redirect {
 				want = 502
 			}
-			require.True(t, rec.Code == want, "status")
+			require.Equal(t, want, rec.Code, "status")
 			require.False(t, !redirect && !strings.Contains(strings.Join(rec.Header().Values("Vary"), ","), "X-Test"), "Vary lost")
 			upstream.Close()
 		}
@@ -320,8 +320,8 @@ func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
 				if origin == "http://app.test" {
 					expected = origin
 				}
-				require.True(t, rec.Header().Get("Access-Control-Allow-Origin") == expected, "paired policy lost")
-				require.False(t, rec.Code != 200 && rec.Code != 204, "paired status")
+				require.Equal(t, expected, rec.Header().Get("Access-Control-Allow-Origin"), "paired policy lost")
+				require.Contains(t, []int{http.StatusOK, http.StatusNoContent}, rec.Code, "paired status")
 			}
 		}
 		require.Equal(t, int32(0), unexpected.Load(), "paired ingress routed onward")
@@ -438,8 +438,8 @@ func TestCORSExternalEngineParity(t *testing.T) {
 			}
 			direct, directBody := fetch(base)
 			forwarded, body := fetch(proxy.URL)
-			require.True(t, direct.StatusCode == forwarded.StatusCode, " (%v, %v)", method, origin)
-			require.True(t, directBody == body, " (%v, %v)", method, origin)
+			require.Equal(t, direct.StatusCode, forwarded.StatusCode, " (%v, %v)", method, origin)
+			require.Equal(t, directBody, body, " (%v, %v)", method, origin)
 			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Origin"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Origin"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
 			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Headers"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Headers"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
 			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Methods"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Methods"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
@@ -467,7 +467,7 @@ func TestCORSInvalidModelListIsNotPartiallyExposed(t *testing.T) {
 			p := proxyForCORSTargets(t, tc, good, bad)
 			rec := httptest.NewRecorder()
 			p.handlePlain(rec, corsRequest("GET", tc.modelListPath, "http://app.test"))
-			require.True(t, rec.Code == http.StatusBadGateway, "invalid inventory exposed")
+			require.Equal(t, http.StatusBadGateway, rec.Code, "invalid inventory exposed")
 			require.Equal(t, "http://app.test", rec.Header().Get("Access-Control-Allow-Origin"), "invalid inventory exposed")
 			require.NotContains(t, rec.Body.String(), "private-model", "invalid inventory exposed")
 			bad.Close()

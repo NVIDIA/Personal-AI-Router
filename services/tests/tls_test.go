@@ -249,7 +249,7 @@ func TestNodeInfoHTTPSWithMTLS(t *testing.T) {
 	require.NoError(t, err, "authenticated mTLS GET (%v, %v)", url, err)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	require.True(t, resp.StatusCode == http.StatusOK, "authenticated mTLS GET status (%v)", body)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "authenticated mTLS GET status (%v)", body)
 	assert.Contains(t, string(body), "GPUs", "response body missing GPUs key (%v)", body)
 	t.Logf("mTLS-authenticated GET succeeded (%d bytes)", len(body))
 
@@ -294,7 +294,7 @@ func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
 	resp, err := httpClient.Get(httpURL)
 	require.NoError(t, err, "HTTP GET (%v, %v)", httpURL, err)
 	resp.Body.Close()
-	assert.True(t, resp.StatusCode == http.StatusOK, "HTTP GET status")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "HTTP GET status")
 
 	// HTTPS works too — server-only TLS, no client cert needed.
 	tlsClient := httpsClientNoCert(t, caPEM)
@@ -302,7 +302,7 @@ func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
 	resp, err = tlsClient.Get(tlsURL)
 	require.NoError(t, err, "HTTPS GET (%v, %v)", tlsURL, err)
 	resp.Body.Close()
-	assert.True(t, resp.StatusCode == http.StatusOK, "HTTPS GET status")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "HTTPS GET status")
 }
 
 func TestNodeInfoPlainHTTPDefaultUnchanged(t *testing.T) {
@@ -322,5 +322,5 @@ func TestNodeInfoPlainHTTPDefaultUnchanged(t *testing.T) {
 	resp, err := httpClient.Get(url)
 	require.NoError(t, err, "HTTP GET (%v, %v)", url, err)
 	resp.Body.Close()
-	assert.True(t, resp.StatusCode == http.StatusOK, "HTTP GET status")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "HTTP GET status")
 }

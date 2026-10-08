@@ -37,7 +37,7 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 			for engine, want := range before {
 				ready, got := p.Status(engine)
 				require.True(t, ready, " (%v, %v, %v, %v)", engine, ready, got, want)
-				require.True(t, got == want, " (%v, %v, %v, %v)", engine, ready, got, want)
+				require.Equal(t, want, got, " (%v, %v, %v, %v)", engine, ready, got, want)
 			}
 		})
 	}
@@ -64,7 +64,7 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 			}
 			{
 				got := b.engineProxy(profile).startupPort.Load()
-				require.True(t, got == requested, "bind notification changed chosen port to (%v)", got)
+				require.Equal(t, int32(requested), got, "bind notification changed chosen port to (%v)", got)
 			}
 			client, server := net.Pipe()
 			t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
@@ -100,7 +100,7 @@ func TestSettingsReservesStoppedProxySavedPort(t *testing.T) {
 			}
 			preview, err := h.b.previewEngineSettings(context.Background(), request, "")
 			require.NoError(t, err)
-			require.NotEqual(t, 0, len(preview.Errors), "accepted stopped proxy's saved port (%v)", preview)
+			require.NotEmpty(t, preview.Errors, "accepted stopped proxy's saved port (%v)", preview)
 		})
 	}
 	test("server port cannot reuse saved proxy port", true)
@@ -164,7 +164,7 @@ func TestEnabledEngineRestorationSurvivesInvalidSettingsJournal(t *testing.T) {
 	b.restoreEnabledEngines(worker)
 	select {
 	case method := <-restored:
-		require.True(t, method == restoreEnabledEnginesMethod, "method (%v)", method)
+		require.Equal(t, restoreEnabledEnginesMethod, method, "method (%v)", method)
 	case <-time.After(time.Second):
 		require.FailNow(t, "test expectation failed", "invalid journal suppressed enabled-engine restoration")
 	}
@@ -189,7 +189,7 @@ func TestSettingsFullCommandJournalMigratesBeforeRecovery(t *testing.T) {
 	require.Equal(t, "pair-arguments-v1", snapshot.Format, "migration lost accepted configuration (%v)", snapshot)
 	require.Equal(t, "succeeded", snapshot.Phase, "migration lost accepted configuration (%v)", snapshot)
 	require.Equal(t, "--fixture-option --future-option", snapshot.Settings.LaunchText, "migration lost accepted configuration (%v)", snapshot)
-	require.True(t, snapshot.Settings.ProxyPort == oldProxyPort, "migration lost accepted configuration (%v)", snapshot)
-	require.True(t, snapshot.Settings.ServerPort == request.Settings.ServerPort, "migration lost accepted configuration (%v)", snapshot)
+	require.Equal(t, oldProxyPort, snapshot.Settings.ProxyPort, "migration lost accepted configuration (%v)", snapshot)
+	require.Equal(t, request.Settings.ServerPort, snapshot.Settings.ServerPort, "migration lost accepted configuration (%v)", snapshot)
 	require.Equal(t, int32(1), h.applies.Load(), "pending operation was not applied exactly once")
 }

@@ -75,7 +75,7 @@ func TestSchedulerFeedBaselinePrecedesConcurrentLiveWorkload(t *testing.T) {
 
 	require.Equal(t, "workloads:upsert", first.Method, "first scheduler frame")
 	require.Equal(t, "active", workloadIDFromParams(t, first.Params), "first scheduler frame")
-	require.True(t, second.Method == schedulerwire.MethodTelemetry, "second scheduler frame")
+	require.Equal(t, schedulerwire.MethodTelemetry, second.Method, "second scheduler frame")
 	require.Equal(t, "discovery:nodes-changed", third.Method, "third scheduler frame")
 	require.Equal(t, "workloads:upsert", fourth.Method, "fourth scheduler frame")
 	require.Equal(t, "live", workloadIDFromParams(t, fourth.Params), "fourth scheduler frame")
@@ -178,9 +178,9 @@ func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 	// generation the broker stamped on it, which is not part of what the
 	// scheduler produced.
 	require.True(t, applied[0].SameRanking(wantOld), "first applied snapshot (%v)", wantOld)
-	require.True(t, applied[0].Generation == oldGeneration, "first applied generation (%v)", oldGeneration)
+	require.Equal(t, oldGeneration, applied[0].Generation, "first applied generation (%v)", oldGeneration)
 	require.True(t, applied[1].SameRanking(newPriority), "last applied snapshot (%v)", newPriority)
-	require.True(t, applied[1].Generation == newGeneration, "last applied generation (%v)", newGeneration)
+	require.Equal(t, newGeneration, applied[1].Generation, "last applied generation (%v)", newGeneration)
 }
 
 // The scheduler computes one node-wide ranking and emits it once per engine, so
@@ -200,7 +200,7 @@ func TestDuplicatePerEngineEmissionDoesNotMintAGeneration(t *testing.T) {
 
 	second, fresh := b.cachePrioritySnapshot(ranking)
 	require.False(t, fresh, "the sibling engine's identical emission minted a second generation")
-	require.True(t, second == first, "duplicate emission moved the generation from (%v, %v)", first, second)
+	require.Equal(t, first, second, "duplicate emission moved the generation from (%v, %v)", first, second)
 
 	// A genuinely changed ranking still advances, so the dedupe is not just
 	// swallowing everything after the first.

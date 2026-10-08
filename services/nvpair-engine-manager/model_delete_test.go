@@ -43,7 +43,7 @@ func TestLMStudioDeleteModelRemovePath(t *testing.T) {
 	require.NoError(t, err, "delete_model")
 	{
 		_, err := os.Stat(modelDir)
-		require.True(t, os.IsNotExist(err), "model dir still exists (%v)", err)
+		require.ErrorIs(t, err, os.ErrNotExist, "model dir still exists")
 	}
 }
 
@@ -126,7 +126,7 @@ func TestDeleteModelRestartAfterLeavesStoppedEngineDown(t *testing.T) {
 
 	{
 		_, err := os.Stat(filepath.Join(root, modelRel))
-		require.True(t, os.IsNotExist(err), "model dir still exists (%v)", err)
+		require.ErrorIs(t, err, os.ErrNotExist, "model dir still exists")
 	}
 	{
 		_, running := engineRun(t, ex, "fake")
@@ -161,7 +161,7 @@ func TestDeleteModelWithoutRestartAfterDoesNotBounce(t *testing.T) {
 	}
 
 	after, running := engineRun(t, ex, "fake")
-	require.True(t, after == before, "start generation (%v, %v)", after, before)
+	require.Equal(t, before, after, "start generation")
 	require.True(t, running, "engine is stopped after delete_model")
 }
 
@@ -189,11 +189,10 @@ func TestDeleteModelRestartFailureFailsTheAction(t *testing.T) {
 	require.NoError(t, os.Rename(bin, bin+".moved"), "move engine binary aside")
 
 	_, err := ex.Action(ctx, "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`))
-	require.Error(t, err, "delete_model reported success although the engine never came back")
-	require.Contains(t, err.Error(), "failed to restart", "error (%v)", err)
+	require.ErrorContains(t, err, "failed to restart", "delete_model reported success although the engine never came back")
 	{
 		_, statErr := os.Stat(filepath.Join(root, modelRel))
-		require.True(t, os.IsNotExist(statErr), "model dir still exists (%v)", statErr)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "model dir still exists")
 	}
 	{
 		_, running := engineRun(t, ex, "fake")
@@ -267,7 +266,7 @@ func TestRestartAfterRequiresReadinessProbe(t *testing.T) {
 	}
 	err := m.Validate()
 	require.Error(t, err, "Validate accepted restart_after without a readiness probe")
-	require.Contains(t, err.Error(), "runtime.ready", "error (%v)", err)
+	require.ErrorContains(t, err, "runtime.ready")
 }
 
 func TestModelActionWireOllamaUnload(t *testing.T) {

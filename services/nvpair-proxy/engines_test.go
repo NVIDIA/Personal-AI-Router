@@ -91,7 +91,7 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			role, ok := tc.profile.roleFor(tc.method, tc.path)
-			require.True(t, ok == tc.wantOK, "roleFor (%v)", ok)
+			require.Equal(t, tc.wantOK, ok, "roleFor (%v)", ok)
 			require.False(t, ok && role != tc.wantRole, "roleFor (%v)", role)
 		})
 	}
@@ -131,7 +131,7 @@ func TestModelNaming(t *testing.T) {
 	} {
 		{
 			got := tc.profile.normalizeModel(tc.in)
-			assert.True(t, got == tc.want, " (%v)", got)
+			assert.Equal(t, tc.want, got, " (%v)", got)
 		}
 	}
 }
@@ -159,12 +159,12 @@ func TestRoleForFindsAPathDeclaredUnderTwoMethods(t *testing.T) {
 	{
 		role, ok := p.roleFor("GET", "/v1/models")
 		assert.True(t, ok, "GET /v1/models (%v, %v)", role, ok)
-		assert.True(t, role == roleModelListOpenAIGET, "GET /v1/models (%v, %v)", role, ok)
+		assert.Equal(t, roleModelListOpenAIGET, role, "GET /v1/models (%v, %v)", role, ok)
 	}
 	{
 		role, ok := p.roleFor("POST", "/v1/models")
 		assert.True(t, ok, "POST /v1/models (%v, %v)", role, ok)
-		assert.True(t, role == roleInferencePOST, "POST /v1/models (%v, %v)", role, ok)
+		assert.Equal(t, roleInferencePOST, role, "POST /v1/models (%v, %v)", role, ok)
 	}
 	{
 		_, ok := p.roleFor("DELETE", "/v1/models")
@@ -179,7 +179,7 @@ func TestNoDuplicateRoutePerMethod(t *testing.T) {
 		seen := map[string]bool{}
 		for _, r := range p.Routes {
 			key := r.Role.method() + " " + r.Path
-			assert.False(t, seen[key], " (%v)", key)
+			assert.NotContains(t, seen, key)
 			seen[key] = true
 		}
 	}
@@ -238,7 +238,7 @@ func TestChooseStartupPort(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := chooseStartupPort(tc.profile, tc.flagPort, tc.ignorePersisted, tc.persisted, tc.hasPersisted)
-			require.True(t, got == tc.want, "chooseStartupPort (%v)", got)
+			require.Equal(t, tc.want, got, "chooseStartupPort (%v)", got)
 		})
 	}
 }

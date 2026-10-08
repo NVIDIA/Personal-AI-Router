@@ -23,8 +23,8 @@ func TestIdentityMintAndReload(t *testing.T) {
 
 	second, err := loadOrMintIdentity(dir)
 	require.NoError(t, err, "reload")
-	require.True(t, second.NodeUUID == first.NodeUUID, "UUID changed across reload")
-	require.True(t, second.CertFingerprint == first.CertFingerprint, "fingerprint changed across reload")
+	require.Equal(t, first.NodeUUID, second.NodeUUID, "UUID changed across reload")
+	require.Equal(t, first.CertFingerprint, second.CertFingerprint, "fingerprint changed across reload")
 }
 
 func TestIdentityLostKeyFailsLoud(t *testing.T) {
@@ -113,7 +113,7 @@ func TestTrustStoreAntiTamper(t *testing.T) {
 		_, ok := ts.Get(pin.NodeUUID)
 		require.False(t, ok, "tampered (renamed) pin should have been skipped on load")
 	}
-	require.Len(t, ts.List(), 0, "expected no valid pins")
+	require.Empty(t, ts.List(), "expected no valid pins")
 }
 
 func TestPINNoobRoundTrip(t *testing.T) {
@@ -124,11 +124,11 @@ func TestPINNoobRoundTrip(t *testing.T) {
 		got := new(big.Int).SetBytes(noob).String()
 		want := new(big.Int)
 		want.SetString(pin, 10)
-		require.True(t, got == want.String(), "noob decodes to (%v)", got)
+		require.Equal(t, want.String(), got, "noob decodes incorrectly")
 	}
 
 	gp, noob, err := generatePIN()
 	require.NoError(t, err, "generatePIN")
-	require.True(t, pinPattern.MatchString(gp), "generated PIN (%v)", gp)
-	require.True(t, string(noob) == string(noobFromPIN(gp)), "generatePIN's noob does not match noobFromPIN of its PIN")
+	require.Regexp(t, pinPattern, gp, "generated PIN")
+	require.Equal(t, string(noobFromPIN(gp)), string(noob), "generatePIN's noob does not match noobFromPIN of its PIN")
 }

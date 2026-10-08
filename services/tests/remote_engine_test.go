@@ -131,7 +131,7 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 		err := json.Unmarshal(resp.Result, &res)
 		require.NoError(t, err, "decode result")
 	}
-	require.NotEqual(t, 0, len(res.Engines), "expected B to report at least one engine")
+	require.NotEmpty(t, res.Engines, "expected B to report at least one engine")
 	t.Logf("node A read %d engine(s) from node B over ec mTLS", len(res.Engines))
 }
 

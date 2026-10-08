@@ -77,7 +77,7 @@ func TestCommitPairingEpochGate(t *testing.T) {
 			require.Equal(t, "", id, "clusterId")
 		}
 		for _, n := range m.snapshotNodes() {
-			require.True(t, n.NodeUUID != f.uuid, "joiner recorded as a member after teardown")
+			require.NotEqual(t, f.uuid, n.NodeUUID, "joiner recorded as a member after teardown")
 		}
 	})
 
@@ -125,7 +125,7 @@ func TestCommitPairingEpochGate(t *testing.T) {
 			require.False(t, ok, "joiner pinned via an abandoned session")
 		}
 		for _, n := range m.snapshotNodes() {
-			require.True(t, n.NodeUUID != f.uuid, "joiner recorded as a member via an abandoned session")
+			require.NotEqual(t, f.uuid, n.NodeUUID, "joiner recorded as a member via an abandoned session")
 		}
 	})
 
@@ -229,7 +229,7 @@ func TestFinalizePairingAbortFailsLingeringInvite(t *testing.T) {
 	}
 	inv, ok := m.getInvite(inviteID)
 	require.True(t, ok, "invite missing; want a failed invite record, not a silent drop")
-	require.True(t, inv.State == inviteStateFailed, "invite state (%v)", inviteStateFailed)
+	require.Equal(t, inviteStateFailed, inv.State, "invite state")
 	{
 		_, ok := m.getSession(inviteID)
 		require.False(t, ok, "session not deleted after an aborted completion")
@@ -240,11 +240,11 @@ func TestPairingCommitFailureSuppressesEAPSuccess(t *testing.T) {
 	success := []byte("synthetic-eap-success")
 	rr := httptest.NewRecorder()
 	respondPairingCommit(rr, success, errPairingCommitStale)
-	require.True(t, rr.Code == http.StatusConflict, "status")
+	require.Equal(t, http.StatusConflict, rr.Code, "status")
 	require.NotContains(t, rr.Body.String(), string(success), "response leaked EAP-Success after inviter-side commit refusal")
 
 	rr = httptest.NewRecorder()
 	respondPairingCommit(rr, success, nil)
-	require.True(t, rr.Code == http.StatusOK, "success status")
+	require.Equal(t, http.StatusOK, rr.Code, "success status")
 	require.Contains(t, rr.Body.String(), "msg", "successful commit did not return the pairing frame")
 }

@@ -117,7 +117,7 @@ func TestPeerWrongPinYieldsProtocolError(t *testing.T) {
 	require.NoError(t, err, "server start completion:")
 	var peerOut Outcome
 	for {
-		assert.NotEqual(t, 0, len(msg), "server ended completion unexpectedly before the peer went terminal")
+		assert.NotEmpty(t, msg, "server ended completion unexpectedly before the peer went terminal")
 		out, rerr := peer.Receive(msg)
 		// A wrong PIN must NOT come back as the returned error — the classifier
 		// only inspects out.Err.
@@ -132,7 +132,7 @@ func TestPeerWrongPinYieldsProtocolError(t *testing.T) {
 	}
 
 	require.NotNil(t, peerOut.Err, "peer completion produced no ProtocolError on a wrong PIN; the classifier would degrade the reason to empty")
-	assert.False(t, peerOut.Err.Code != ErrUnrecognizedOOBMsgID && peerOut.Err.Code != ErrHMACVerificationFailed, "peer ProtocolError code = %d, want %d (unrecognized NoobId) or %d (MAC mismatch)", peerOut.Err.Code, ErrUnrecognizedOOBMsgID, ErrHMACVerificationFailed)
+	assert.Contains(t, []int{ErrUnrecognizedOOBMsgID, ErrHMACVerificationFailed}, peerOut.Err.Code, "wrong PIN must produce an unrecognized NoobId or MAC mismatch")
 	assert.NotEqual(t, StateRegistered, peer.State(), "peer reached Registered despite a wrong PIN")
 }
 

@@ -111,20 +111,20 @@ func TestNodeInfoHandler_MTLSGate(t *testing.T) {
 	// Pinned member B -> A: accepted, real body.
 	{
 		code, body := get(meshB, "uuid-a")
-		require.True(t, code == http.StatusOK, "pinned member read: code (%v, %v, %v)", code, body, wantBody)
-		require.True(t, body == wantBody, "pinned member read: code (%v, %v, %v)", code, body, wantBody)
+		require.Equal(t, http.StatusOK, code, "pinned member read")
+		require.Equal(t, wantBody, body, "pinned member read")
 	}
 
 	// Self-read A -> A: accepted via self-trust (A isn't in its own trusted/).
 	{
 		code, body := get(meshA, "uuid-a")
-		require.True(t, code == http.StatusOK, "self read: code (%v, %v, %v)", code, body, wantBody)
-		require.True(t, body == wantBody, "self read: code (%v, %v, %v)", code, body, wantBody)
+		require.Equal(t, http.StatusOK, code, "self read")
+		require.Equal(t, wantBody, body, "self read")
 	}
 
 	// C completes the handshake (it pins A) but A doesn't pin C -> 403 at the gate.
 	{
 		code, _ := get(meshC, "uuid-a")
-		require.True(t, code == http.StatusForbidden, "non-member read: code (%v)", code)
+		require.Equal(t, http.StatusForbidden, code, "non-member read")
 	}
 }

@@ -57,7 +57,7 @@ func TestPlanManagedLMStudioPorts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			{
 				got := planManagedLMStudioPorts(tc.on, tc.st, tc.free)
-				require.True(t, got == tc.want, "planManagedLMStudioPorts() (%v)", got)
+				require.Equal(t, tc.want, got, "planManagedLMStudioPorts() (%v)", got)
 			}
 		})
 	}
@@ -91,7 +91,7 @@ func TestManagedLMStudioFacadeSpec(t *testing.T) {
 
 	// The alias stands in for an inherited host variable, which LM Studio does
 	// not have; the child rejects alias addresses for it outright.
-	require.Len(t, b.lmstudioFacadeSpec().AliasAddresses, 0, "LM Studio facade spec carried alias addresses")
+	require.Empty(t, b.lmstudioFacadeSpec().AliasAddresses, "LM Studio facade spec carried alias addresses")
 }
 
 func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
@@ -152,7 +152,7 @@ func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
 	select {
 	case got := <-backend:
 		require.Equal(t, "lmstudio", got.Engine, "local backend (%v, %v)", got, managedLMStudioBackendStart)
-		require.True(t, got.Port == managedLMStudioBackendStart, "local backend (%v, %v)", got, managedLMStudioBackendStart)
+		require.Equal(t, managedLMStudioBackendStart, got.Port, "local backend (%v, %v)", got, managedLMStudioBackendStart)
 		require.True(t, got.Healthy, "local backend (%v, %v)", got, managedLMStudioBackendStart)
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "test expectation failed", "LM Studio ready did not push the local backend")
@@ -227,20 +227,20 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 	require.False(t, b.lmstudioState().managedFacade.Load(), "managed LM Studio mode remained enabled after compatibility-port failure")
 	fallback := int(b.lmstudioState().startupPort.Load())
 	require.NotEqual(t, 0, fallback, "unsafe LM Studio fallback port")
-	require.True(t, fallback != managedLMStudioFacadePort, "unsafe LM Studio fallback port (%v)", fallback)
-	require.True(t, fallback != managedLMStudioBackendStart, "unsafe LM Studio fallback port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unsafe LM Studio fallback port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unsafe LM Studio fallback port (%v)", fallback)
 
 	for i, want := range []int{managedLMStudioFacadePort, fallback} {
 		select {
 		case got := <-requestedPorts:
-			require.True(t, got == want, "proxy set-port request (%v, %v, %v)", i, got, want)
+			require.Equal(t, want, got, "proxy set-port request (%v, %v, %v)", i, got, want)
 		case <-time.After(2 * time.Second):
 			require.FailNow(t, "test expectation failed", "missing proxy set-port request %d", i)
 		}
 	}
 	select {
 	case got := <-warnings:
-		require.True(t, got.ID == lmstudioPortOwnershipBlockedID, "warning (%v)", got)
+		require.Equal(t, lmstudioPortOwnershipBlockedID, got.ID, "warning (%v)", got)
 		require.NotEqual(t, "", got.Message, "warning (%v)", got)
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "test expectation failed", "LM Studio fallback did not report a warning")
@@ -309,7 +309,7 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 			close(b.lmstudioPortReady)
 			select {
 			case got := <-method:
-				require.True(t, got == tc.method, "method (%v)", got)
+				require.Equal(t, tc.method, got, "method (%v)", got)
 			case <-time.After(2 * time.Second):
 				require.FailNow(t, "test expectation failed", "%q was not relayed after the LM Studio port gate opened", tc.method)
 			}
@@ -344,7 +344,7 @@ func TestManagedLMStudioPortGateRequestMatcher(t *testing.T) {
 	} {
 		{
 			got := needsLMStudioPortGate(tc.method, json.RawMessage(tc.params))
-			assert.True(t, got == tc.want, "needsLMStudioPortGate (%v)", got)
+			assert.Equal(t, tc.want, got, "needsLMStudioPortGate (%v)", got)
 		}
 	}
 }
@@ -407,7 +407,7 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":1235}`))
 	select {
 	case method := <-requests:
-		require.True(t, method == lmstudioSetPort, "first proxy request (%v, %v)", method, lmstudioSetPort)
+		require.Equal(t, lmstudioSetPort, method, "first proxy request (%v, %v)", method, lmstudioSetPort)
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "test expectation failed", "missing compatibility-port rebind")
 	}
@@ -479,7 +479,7 @@ func TestManagedLMStudioExhaustedFallbacksFinishOnlyThatEngine(t *testing.T) {
 
 	{
 		got := <-attempts
-		assert.True(t, got == lmstudioSetPort, "first attempt was (%v, %v)", got, lmstudioSetPort)
+		assert.Equal(t, lmstudioSetPort, got, "first attempt was (%v, %v)", got, lmstudioSetPort)
 	}
 	// Same handle still published: the process was not replaced, so every other
 	// facade in it keeps serving. Handle identity is the observable form of
@@ -538,7 +538,7 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 	for i, want := range []string{"settings/get-force-ports", "engine:status", "engine:set-port"} {
 		select {
 		case got := <-calls:
-			require.True(t, got == want, "preparation call (%v, %v, %v)", i, got, want)
+			require.Equal(t, want, got, "preparation call (%v, %v, %v)", i, got, want)
 		case <-time.After(2 * time.Second):
 			require.FailNow(t, "test expectation failed", "missing preparation call %d (%s)", i, want)
 		}
@@ -546,11 +546,11 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 	require.True(t, b.lmstudioState().managedFacade.Load(), "managed LM Studio ownership was not enabled")
 	{
 		got := b.lmstudioState().backendPort.Load()
-		require.True(t, got == managedLMStudioBackendStart, "backend port (%v, %v)", got, managedLMStudioBackendStart)
+		require.Equal(t, managedLMStudioBackendStart, got, "backend port (%v, %v)", got, managedLMStudioBackendStart)
 	}
 	{
 		got := b.lmstudioState().startupPort.Load()
-		require.True(t, got == managedLMStudioFacadePort, "proxy startup port (%v, %v)", got, managedLMStudioFacadePort)
+		require.Equal(t, managedLMStudioFacadePort, got, "proxy startup port (%v, %v)", got, managedLMStudioFacadePort)
 	}
 	requireGateShutNow(t, b.lmstudioPortReady, "preparation before proxy readiness")
 }
@@ -603,8 +603,8 @@ func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
 	requireGateStaysShut(t, b.lmstudioPortReady, "a bind failure before a fallback proxy bound")
 	fallback := int(b.lmstudioState().startupPort.Load())
 	require.NotEqual(t, 0, fallback, "unsafe fallback port")
-	require.True(t, fallback != managedLMStudioFacadePort, "unsafe fallback port (%v)", fallback)
-	require.True(t, fallback != managedLMStudioBackendStart, "unsafe fallback port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unsafe fallback port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unsafe fallback port (%v)", fallback)
 
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
@@ -636,8 +636,8 @@ func TestManagedLMStudioRestartBindFailureChoosesFallback(t *testing.T) {
 	require.False(t, b.lmstudioState().managedFacade.Load(), "restart bind failure left managed ownership enabled")
 	fallback := int(b.lmstudioState().startupPort.Load())
 	require.NotEqual(t, 0, fallback, "restart bind failure selected unsafe fallback")
-	require.True(t, fallback != managedLMStudioFacadePort, "restart bind failure selected unsafe fallback (%v)", fallback)
-	require.True(t, fallback != managedLMStudioBackendStart, "restart bind failure selected unsafe fallback (%v)", fallback)
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "restart bind failure selected unsafe fallback (%v)", fallback)
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "restart bind failure selected unsafe fallback (%v)", fallback)
 }
 
 func TestManagedLMStudioStaleReadyDoesNotOpenCurrentGate(t *testing.T) {
@@ -696,7 +696,7 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 	for i, want := range []string{lmstudioSetPort, lmstudioSetLocalBackend} {
 		select {
 		case got := <-methods:
-			require.True(t, got == want, "proxy method (%v, %v, %v)", i, got, want)
+			require.Equal(t, want, got, "proxy method (%v, %v, %v)", i, got, want)
 		case <-time.After(2 * time.Second):
 			require.FailNow(t, "test expectation failed", "missing proxy method %d (%s)", i, want)
 		}
@@ -706,7 +706,7 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 	require.NotEqual(t, 12400, fallback, "collision fallback")
 	{
 		got := int(b.lmstudioState().startupPort.Load())
-		require.True(t, got == fallback, "cached proxy fallback (%v, %v)", got, fallback)
+		require.Equal(t, fallback, got, "cached proxy fallback (%v, %v)", got, fallback)
 	}
 	{
 		got := int(b.lmstudioState().backendPort.Load())
@@ -765,17 +765,17 @@ func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":12400}`))
 	requireGateOpens(t, b.lmstudioPortReady, "the opt-out collision")
 	got := []string{<-order, <-order, <-order}
-	require.True(t, got[0] == lmstudioSetPort, "collision reconciliation order (%v)", got)
+	require.Equal(t, lmstudioSetPort, got[0], "collision reconciliation order (%v)", got)
 	require.Equal(t, "engine:status", got[1], "collision reconciliation order (%v)", got)
-	require.True(t, got[2] == lmstudioSetLocalBackend, "collision reconciliation order (%v)", got)
+	require.Equal(t, lmstudioSetLocalBackend, got[2], "collision reconciliation order (%v)", got)
 }
 
 func TestUnknownLMStudioBackendFallbackSkipsUnprovenPorts(t *testing.T) {
 	b := &Broker{}
 	fallback := b.setLMStudioProxyFallback()
 	require.NotEqual(t, 0, fallback, "unknown-backend fallback selected unproven port")
-	require.True(t, fallback != managedLMStudioFacadePort, "unknown-backend fallback selected unproven port (%v)", fallback)
-	require.True(t, fallback != managedLMStudioBackendStart, "unknown-backend fallback selected unproven port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unknown-backend fallback selected unproven port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unknown-backend fallback selected unproven port (%v)", fallback)
 }
 
 func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
@@ -826,12 +826,12 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":1235}`))
 	requireGateOpens(t, b.lmstudioPortReady, "the unknown-backend fallback")
 	got := []string{<-order, <-order, <-order}
-	require.True(t, got[0] == lmstudioSetPort, "unknown-backend reconciliation order (%v)", got)
+	require.Equal(t, lmstudioSetPort, got[0], "unknown-backend reconciliation order (%v)", got)
 	require.Equal(t, "engine:status", got[1], "unknown-backend reconciliation order (%v)", got)
-	require.True(t, got[2] == lmstudioSetLocalBackend, "unknown-backend reconciliation order (%v)", got)
+	require.Equal(t, lmstudioSetLocalBackend, got[2], "unknown-backend reconciliation order (%v)", got)
 	fallback := <-fallbackPort
-	require.True(t, fallback != managedLMStudioFacadePort, "unknown-backend fallback used unsafe port (%v)", fallback)
-	require.True(t, fallback != managedLMStudioBackendStart, "unknown-backend fallback used unsafe port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unknown-backend fallback used unsafe port (%v)", fallback)
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unknown-backend fallback used unsafe port (%v)", fallback)
 }
 
 func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {

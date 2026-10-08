@@ -126,11 +126,9 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			require.NoError(t, err, "target-model request failed")
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			require.True(t, resp.StatusCode == http.StatusOK, "target-model response (%v)", body)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "target-model response (%v)", body)
 			after := snapshot()
-			require.True(t, after[0] == before[0]+1, "target-model hit deltas (%v, %v)", before, after)
-			require.True(t, after[1] == before[1]+1, "target-model hit deltas (%v, %v)", before, after)
-			require.True(t, after[2] == before[2], "target-model hit deltas (%v, %v)", before, after)
+			require.Equal(t, [3]int32{before[0] + 1, before[1] + 1, before[2]}, after, "target-model hit deltas")
 
 			before = snapshot()
 			resp, err = client.Post(endpoint, "application/json",
@@ -138,11 +136,11 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			require.NoError(t, err, "ownerless request failed")
 			body, _ = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			require.True(t, resp.StatusCode == http.StatusBadGateway, "ownerless response (%v)", body)
+			require.Equal(t, http.StatusBadGateway, resp.StatusCode, "ownerless response (%v)", body)
 			require.Contains(t, string(body), "no available node advertises the requested model", "ownerless response (%v)", body)
 			{
 				after = snapshot()
-				require.True(t, after == before, "ownerless request reached an upstream: hits (%v, %v)", before, after)
+				require.Equal(t, before, after, "ownerless request reached an upstream: hits (%v, %v)", before, after)
 			}
 		})
 	}

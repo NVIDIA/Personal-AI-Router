@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"slices"
 	"testing"
 	"time"
 
@@ -80,7 +79,7 @@ func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	require.True(t, resp.StatusCode == http.StatusOK, "inventory status")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "inventory status")
 
 	var out bytes.Buffer
 	observer.report(applog.NewNotifier(&out))
@@ -95,8 +94,8 @@ func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
 		require.NoError(t, err, "decode report")
 	}
 	require.Equal(t, "2.0", frame.JSONRPC)
-	require.True(t, frame.Method == noderec.NotifyObservedAddresses, "report")
-	require.True(t, slices.Contains(frame.Params.Addresses, local), "reported addresses (%v)", local)
+	require.Equal(t, noderec.NotifyObservedAddresses, frame.Method, "report")
+	require.Contains(t, frame.Params.Addresses, local, "reported addresses")
 }
 
 // addrConn presents a connection under the addresses a remote peer's connection

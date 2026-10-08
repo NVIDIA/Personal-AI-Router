@@ -136,7 +136,7 @@ func TestSetPortRebinds(t *testing.T) {
 		{
 			p, ok := loadPersistedPort(tc.profile)
 			assert.True(t, ok, "persisted port: (%v, %v, %v)", p, ok, portB)
-			assert.True(t, p == portB, "persisted port: (%v, %v, %v)", p, ok, portB)
+			assert.Equal(t, portB, p, "persisted port: (%v, %v, %v)", p, ok, portB)
 		}
 
 		// A fresh ready notification announced the new port.

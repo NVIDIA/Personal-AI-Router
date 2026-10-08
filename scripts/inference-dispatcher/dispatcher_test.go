@@ -243,10 +243,7 @@ func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
 		byName[model.Name] = model
 	}
 	require.Len(t, models, 3)
-	{
-		_, ok := byName["remote-chat"]
-		require.True(t, ok, "a model known only to the aggregated endpoint was dropped")
-	}
+	require.Contains(t, byName, "remote-chat", "a model known only to the aggregated endpoint was dropped")
 	assert.Equal(t, "embeddings", byName["local-embed"].Type, "native type metadata was not merged")
 	assert.False(t, supportsGeneration(byName["local-embed"]), "merged metadata did not restore the generation filter")
 	// No metadata arrived for the remote model, so it stays eligible rather than

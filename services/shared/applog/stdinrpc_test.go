@@ -38,7 +38,7 @@ func TestNotifyEmitsOneNewlineTerminatedNotification(t *testing.T) {
 	assert.Equal(t, "nodeinfo:observed-addresses", frame.Method)
 	// A notification carries no id: an id would make the parent's reader wait for
 	// a reply to a report nobody asked for.
-	assert.Len(t, frame.ID, 0, "frame carries an id")
+	assert.Empty(t, frame.ID, "frame carries an id")
 	assert.Equal(t, []string{"10.172.54.70", "10.0.0.5"}, frame.Params["addresses"], "params addresses")
 }
 

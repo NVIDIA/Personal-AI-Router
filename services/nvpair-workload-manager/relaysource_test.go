@@ -40,8 +40,8 @@ func TestSameNameDistinctUUIDPeersSurviveReplace(t *testing.T) {
 		ids[n.ID] = true
 		assert.Equal(t, wantAddresses[n.ID], n.Addresses, "addresses for %s", n.ID)
 	}
-	assert.True(t, ids["uuid-1"], "PeerNode.ID must be the hostUuid")
-	assert.True(t, ids["uuid-2"], "PeerNode.ID must be the hostUuid")
+	assert.Contains(t, ids, "uuid-1", "PeerNode.ID must be the hostUuid")
+	assert.Contains(t, ids, "uuid-2", "PeerNode.ID must be the hostUuid")
 
 	// peerSet.Replace keys the broadcast set by PeerNode.ID: both distinct-UUID
 	// peers must be added, not collapsed into one under the shared hostname.

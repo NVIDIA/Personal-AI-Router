@@ -154,9 +154,8 @@ func TestNodeRemovalDropsTelemetryState(t *testing.T) {
 	}, time.Now())
 	manager.applyNodesChanged(json.RawMessage(`[{"hostUuid":"node-b"}]`))
 	manager.mu.Lock()
-	_, retained := manager.telemetry["node-a"]
+	assert.NotContains(t, manager.telemetry, "node-a", "removed node retained telemetry state")
 	manager.mu.Unlock()
-	require.False(t, retained, "removed node retained telemetry state")
 }
 
 func TestHandleMessageAppliesTelemetryNotification(t *testing.T) {

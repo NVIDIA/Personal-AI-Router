@@ -107,16 +107,12 @@ func TestBuildResponseClusterUUIDWireStates(t *testing.T) {
 		return out
 	}
 
-	{
-		_, present := raw(nil)["clusterUuid"]
-		assert.False(t, present, "unknown membership emitted a clusterUuid key; a peer would read it as a claim")
-	}
+	assert.NotContains(t, raw(nil), "clusterUuid", "unknown membership emitted a clusterUuid key; a peer would read it as a claim")
 
 	unclustered := ""
 	got := raw(&unclustered)
-	value, present := got["clusterUuid"]
-	require.True(t, present, "unclustered membership omitted clusterUuid; a peer cannot tell it apart from unknown")
-	assert.Equal(t, "", value, "clusterUuid")
+	require.Contains(t, got, "clusterUuid", "unclustered membership omitted clusterUuid; a peer cannot tell it apart from unknown")
+	assert.Equal(t, "", got["clusterUuid"], "clusterUuid")
 
 	principal := "our-principal"
 	{

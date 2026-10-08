@@ -16,10 +16,7 @@ func TestResolveMintsAndPersists(t *testing.T) {
 	base := t.TempDir()
 	first := Resolve(base)
 	assert.NotEqual(t, "", first, "Resolve returned empty UUID")
-	{
-		_, err := os.Stat(filepath.Join(base, "node-id.json"))
-		require.NoError(t, err, "node-id.json not persisted")
-	}
+	require.FileExists(t, filepath.Join(base, "node-id.json"), "node-id.json not persisted")
 	// A second resolve must return the same persisted UUID.
 	{
 		second := Resolve(base)
@@ -42,6 +39,6 @@ func TestResolvePrefersClusterIdentity(t *testing.T) {
 	// cluster identity.
 	{
 		_, err := os.Stat(filepath.Join(base, "node-id.json"))
-		assert.True(t, os.IsNotExist(err), "node-id.json should not exist when cluster identity is present (err")
+		assert.ErrorIs(t, err, os.ErrNotExist, "node-id.json should not exist when cluster identity is present")
 	}
 }

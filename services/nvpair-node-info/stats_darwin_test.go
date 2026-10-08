@@ -35,7 +35,7 @@ func TestDarwinCPUUtilization(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			{
 				got := darwinCPUUtilization(c.prev, c.cur)
-				require.True(t, got == c.want, "darwinCPUUtilization() (%v)", got)
+				require.Equal(t, c.want, got, "darwinCPUUtilization() (%v)", got)
 			}
 		})
 	}
@@ -45,7 +45,7 @@ func TestInitialDarwinMemorySnapshot(t *testing.T) {
 	snap := initialDarwinMemorySnapshot(func() (uint64, bool) {
 		return 12 << 30, true
 	})
-	require.True(t, snap.MemUsedBytes == 12<<30, "MemUsedBytes")
+	require.Equal(t, uint64(12<<30), snap.MemUsedBytes, "MemUsedBytes")
 
 	snap = initialDarwinMemorySnapshot(func() (uint64, bool) {
 		return 0, false
@@ -103,7 +103,7 @@ func TestDarwinCollectorKeepsMemoryOnCPUFailure(t *testing.T) {
 	}
 	snap := c.decodeSystemSnapshot()
 	require.Equal(t, uint32(0), snap.CPUUtilPct, "unexpected partial snapshot (%v)", snap)
-	require.True(t, snap.MemUsedBytes == 8<<30, "unexpected partial snapshot (%v)", snap)
+	require.Equal(t, uint64(8<<30), snap.MemUsedBytes, "unexpected partial snapshot (%v)", snap)
 }
 
 func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
@@ -132,7 +132,7 @@ func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
 	c.collectGPU(context.Background())
 	{
 		got := c.Snapshot().GPU
-		require.Len(t, got, 0, "failed GPU read published")
+		require.Empty(t, got, "failed GPU read published")
 	}
 	c.collectGPU(context.Background())
 	{
@@ -169,18 +169,18 @@ func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
 
 	c.collectGPU(context.Background())
 	partial := c.Snapshot()
-	require.True(t, partial.GPU["ioreg:2a"].VRAMUsed == 2<<30, "pre-utilization reading (%v)", partial)
+	require.Equal(t, uint64(2<<30), partial.GPU["ioreg:2a"].VRAMUsed, "pre-utilization reading (%v)", partial)
 	require.True(t, partial.GPUSampledAt.IsZero(), "pre-utilization reading (%v)", partial)
 
 	c.collectGPU(context.Background())
 	idle := c.Snapshot()
-	require.True(t, idle.GPU["ioreg:2a"].VRAMUsed == 3<<30, "valid idle reading (%v)", idle)
+	require.Equal(t, uint64(3<<30), idle.GPU["ioreg:2a"].VRAMUsed, "valid idle reading (%v)", idle)
 	require.Equal(t, uint32(0), idle.GPU["ioreg:2a"].UtilizationPct, "valid idle reading (%v)", idle)
 	require.False(t, idle.GPUSampledAt.IsZero(), "valid idle reading (%v)", idle)
 
 	c.collectGPU(context.Background())
 	retained := c.Snapshot()
-	require.True(t, retained.GPU["ioreg:2a"].VRAMUsed == 3<<30, "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
+	require.Equal(t, uint64(3<<30), retained.GPU["ioreg:2a"].VRAMUsed, "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
 	require.True(t, retained.GPUSampledAt.Equal(idle.GPUSampledAt), "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
 }
 
@@ -228,11 +228,11 @@ func TestDynamicGPUReadingFromIORegistry(t *testing.T) {
 	reading, err := dynamicGPUReadingFromIORegistry([]byte(ioRegistryGPUFixture), 36<<30)
 	require.NoError(t, err, "dynamicGPUReadingFromIORegistry() error")
 	apple := reading.stats["ioreg:2a"]
-	require.True(t, apple.VRAMUsed == 8<<30, "unexpected Apple stats (%v)", apple)
+	require.Equal(t, uint64(8<<30), apple.VRAMUsed, "unexpected Apple stats (%v)", apple)
 	require.Equal(t, uint32(100), apple.UtilizationPct, "unexpected Apple stats (%v)", apple)
 	discrete := reading.stats["ioreg:63"]
-	require.True(t, discrete.VRAMUsed == 2<<30, "unexpected discrete stats (%v)", discrete)
+	require.Equal(t, uint64(2<<30), discrete.VRAMUsed, "unexpected discrete stats (%v)", discrete)
 	require.Equal(t, uint32(25), discrete.UtilizationPct, "unexpected discrete stats (%v)", discrete)
-	require.True(t, reading.inventory[0].VramBytes == 36<<30, "unexpected Apple inventory")
+	require.Equal(t, uint64(36<<30), reading.inventory[0].VramBytes, "unexpected Apple inventory")
 	require.Equal(t, 2, reading.utilizationSamples, "utilization samples")
 }

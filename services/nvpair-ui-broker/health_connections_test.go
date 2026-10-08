@@ -22,7 +22,7 @@ func TestHealthChecksReuseConnections(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					var requests atomic.Int32
 					client, connections := testclient.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						assert.True(t, r.URL.Path == path, "path (%v)", path)
+						assert.Equal(t, path, r.URL.Path, "path (%v)", path)
 						status := http.StatusOK
 						if requests.Add(1)%2 == 0 {
 							status = http.StatusServiceUnavailable
@@ -37,7 +37,7 @@ func TestHealthChecksReuseConnections(t *testing.T) {
 					for i := 0; i < rounds; i++ {
 						{
 							got, want := checkEngineHealth(profile, client, 1), i%2 == 0
-							require.True(t, got == want, "poll (%v, %v, %v)", i, got, want)
+							require.Equal(t, want, got, "poll (%v, %v, %v)", i, got, want)
 						}
 					}
 					{

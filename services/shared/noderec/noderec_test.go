@@ -33,7 +33,7 @@ func TestEngineModels(t *testing.T) {
 
 	// Attribution present but this engine has no entry: authoritatively empty —
 	// NOT the cross-engine union (the whole point of per-engine attribution).
-	assert.Len(t, attributed.EngineModels("llamacpp"), 0, "EngineModels(missing engine, attribution present)")
+	assert.Empty(t, attributed.EngineModels("llamacpp"), "EngineModels(missing engine, attribution present)")
 
 	// No attribution at all (pre-attribution / mixed-version peer): fall back to
 	// the flat union so a single-engine consumer doesn't regress to no inventory.
@@ -76,14 +76,8 @@ func TestParseTXT(t *testing.T) {
 		assert.False(t, ok, "lm should be absent")
 	}
 	// "unknown=" is not a service port; "bad=notaport" is skipped.
-	{
-		_, ok := r.Services["unknown"]
-		assert.False(t, ok, "unknown key leaked into Services")
-	}
-	{
-		_, ok := r.Services["bad"]
-		assert.False(t, ok, "malformed port leaked into Services")
-	}
+	assert.NotContains(t, r.Services, ServiceKey("unknown"), "unknown key leaked into Services")
+	assert.NotContains(t, r.Services, ServiceKey("bad"), "malformed port leaked into Services")
 }
 
 // TestTXTEmitsUnknownServiceKey guards the forward-compat path: an unknown/future

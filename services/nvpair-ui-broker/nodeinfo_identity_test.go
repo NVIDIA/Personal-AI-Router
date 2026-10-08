@@ -50,11 +50,11 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 				require.NoError(t, err, "decode frame (%v, %v)", line, err)
 			}
 			assert.Equal(t, "2.0", frame.JSONRPC)
-			assert.True(t, frame.Method == noderec.MethodSetClusterIdentity, "method")
+			assert.Equal(t, noderec.MethodSetClusterIdentity, frame.Method, "method")
 			// A notification, not a request: node-info's stdout is drained to
 			// io.Discard, so an id-bearing frame would strand a reply.
-			assert.Len(t, frame.ID, 0, "frame carries an id")
-			assert.True(t, frame.Params.ClusterUUID == tc.clusterUUID, "clusterUuid")
+			assert.Empty(t, frame.ID, "frame carries an id")
+			assert.Equal(t, tc.clusterUUID, frame.Params.ClusterUUID, "clusterUuid")
 			// The field must be on the wire even when empty, since that is how a
 			// departure is expressed.
 			assert.Contains(t, line, `"clusterUuid"`, "frame omitted clusterUuid")

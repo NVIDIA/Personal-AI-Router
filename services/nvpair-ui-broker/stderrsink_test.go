@@ -70,7 +70,7 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 
 	data, err := os.ReadFile(spill)
 	require.NoError(t, err, "overflow was not preserved")
-	require.NotEqual(t, 0, len(data), "spill file is empty; overflow was discarded rather than kept")
+	require.NotEmpty(t, data, "spill file is empty; overflow was discarded rather than kept")
 	require.NotEqual(t, int64(0), sink.spilledChunks.Load(), "no chunks recorded as spilled")
 	{
 		lost := sink.lostChunks.Load()
@@ -98,12 +98,11 @@ func TestStderrSinkPassesThroughWhenDrained(t *testing.T) {
 	sink.Close()
 
 	open.mu.Lock()
-	got := len(open.sunk)
+	assert.Len(t, open.sunk, len(want)*100, "forwarded")
 	open.mu.Unlock()
-	require.True(t, got == len(want)*100, "forwarded (%v)", got)
 
 	{
 		_, err := os.Stat(spill)
-		require.True(t, os.IsNotExist(err), "spill file was created for a reader that kept up (stat err (%v)", err)
+		require.ErrorIs(t, err, os.ErrNotExist, "spill file was created for a reader that kept up")
 	}
 }

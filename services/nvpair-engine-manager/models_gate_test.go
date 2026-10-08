@@ -89,7 +89,7 @@ func TestModelSurface_LoopbackOnlyForPlaintext(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, modelsPath, nil)
 		req.RemoteAddr = remote
 		h(rec, req)
-		require.True(t, rec.Code == http.StatusOK, "loopback (%v)", remote)
+		require.Equal(t, http.StatusOK, rec.Code, "loopback (%v)", remote)
 	}
 
 	for _, remote := range []string{"192.168.1.42:51234", "10.0.0.7:51234"} {
@@ -97,7 +97,7 @@ func TestModelSurface_LoopbackOnlyForPlaintext(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, modelsPath, nil)
 		req.RemoteAddr = remote
 		h(rec, req)
-		require.True(t, rec.Code == http.StatusForbidden, "LAN (%v)", remote)
+		require.Equal(t, http.StatusForbidden, rec.Code, "LAN (%v)", remote)
 	}
 }
 
@@ -135,12 +135,12 @@ func TestModelSurface_PinGateIsUnconditional(t *testing.T) {
 	{
 		code, err := get(peerMesh)
 		require.NoError(t, err, "pinned peer: code (%v, %v)", code, err)
-		require.True(t, code == http.StatusOK, "pinned peer: code (%v, %v)", code, err)
+		require.Equal(t, http.StatusOK, code, "pinned peer")
 	}
 	{
 		code, err := get(strangerMesh)
 		require.NoError(t, err, "unpinned cluster identity: code (%v, %v)", code, err)
-		require.True(t, code == http.StatusForbidden, "unpinned cluster identity: code (%v, %v)", code, err)
+		require.Equal(t, http.StatusForbidden, code, "unpinned cluster identity")
 	}
 
 	// An unauthenticated request never carries a client cert, so it is refused
@@ -152,6 +152,6 @@ func TestModelSurface_PinGateIsUnconditional(t *testing.T) {
 		}
 		rec := httptest.NewRecorder()
 		requirePinnedPeer(mesh, okHandler())(rec, httptest.NewRequest(http.MethodGet, modelsPath, nil))
-		require.True(t, rec.Code == http.StatusForbidden, " (%v)", name)
+		require.Equal(t, http.StatusForbidden, rec.Code, " (%v)", name)
 	}
 }

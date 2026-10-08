@@ -47,14 +47,14 @@ func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 
 	var message Message
 	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message), "decode notification")
-	require.True(t, message.Method == noderec.NotifyNodeTelemetry, "notification method")
+	require.Equal(t, noderec.NotifyNodeTelemetry, message.Method, "notification method")
 	var got noderec.NodeTelemetry
 	require.NoError(t, json.Unmarshal(message.Params, &got), "decode telemetry")
 	require.Equal(t, "node-a", got.HostUUID, "telemetry identity/validity (%v)", got)
 	require.True(t, got.TelemetryValid, "telemetry identity/validity (%v)", got)
 	require.Equal(t, uint32(84), got.GPUUtilizationPct, "GPU utilization")
-	require.True(t, got.MSSince >= 137, "age")
-	require.True(t, got.MSSince < 3_500, "age")
+	require.GreaterOrEqual(t, got.MSSince, int64(137), "age")
+	require.Less(t, got.MSSince, int64(3_500), "age")
 }
 
 func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
@@ -73,7 +73,7 @@ func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
 	var output bytes.Buffer
 	d := &daemon{codec: NewCodec(&output), http: server.Client()}
 	require.False(t, d.refreshNodeTelemetry(context.Background(), "node-a", serverURL.Hostname(), port), "mismatched host emitted telemetry")
-	require.Equal(t, 0, output.Len(), "mismatched host wrote notification")
+	require.Empty(t, output.Bytes(), "mismatched host wrote notification")
 }
 
 // TestRefreshTelemetryFailsOverToAnAnsweringAddress: this sweep is the only source
@@ -134,19 +134,19 @@ func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	key := hostKey{hostUUID: "node-a", service: noderec.ServiceNodeInfo}
 	{
 		remembered := d.enrichHosts.get(key)
-		require.True(t, remembered == serverURL.Hostname(), "remembered address (%v)", remembered)
+		require.Equal(t, serverURL.Hostname(), remembered, "remembered address (%v)", remembered)
 	}
 }
 
 func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
 	{
 		got := telemetryIntervalForNode("")
-		require.True(t, got == telemetryRefreshInterval, "empty identity interval (%v, %v)", got, telemetryRefreshInterval)
+		require.Equal(t, telemetryRefreshInterval, got, "empty identity interval (%v, %v)", got, telemetryRefreshInterval)
 	}
 	first := telemetryIntervalForNode("node-a")
 	{
 		again := telemetryIntervalForNode("node-a")
-		require.True(t, again == first, "node jitter changed from (%v, %v)", first, again)
+		require.Equal(t, first, again, "node jitter changed from (%v, %v)", first, again)
 	}
 	minimum := telemetryRefreshInterval - telemetryRefreshJitter
 	maximum := telemetryRefreshInterval + telemetryRefreshJitter
@@ -154,7 +154,7 @@ func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
 	require.LessOrEqual(t, first, maximum, "node-a interval (%v, %v, %v)", first, minimum, maximum)
 	{
 		second := telemetryIntervalForNode("node-b")
-		require.True(t, second != first, "distinct identities received identical test intervals (%v)", first)
+		require.NotEqual(t, first, second, "distinct identities received identical test intervals (%v)", first)
 	}
 }
 
@@ -173,7 +173,7 @@ func TestTelemetryRetryDelay(t *testing.T) {
 	for _, test := range cases {
 		{
 			got := telemetryRetryDelay(test.failures)
-			assert.True(t, got == test.want, "telemetryRetryDelay (%v)", got)
+			assert.Equal(t, test.want, got, "telemetryRetryDelay (%v)", got)
 		}
 	}
 }
@@ -198,7 +198,7 @@ func TestTelemetryRetryGateBacksOffAndResets(t *testing.T) {
 	}
 	second, ok := gate.claim("node-a", targetKey, startedAt.Add(4*time.Second))
 	require.True(t, ok, "failed telemetry was not due at its retry deadline")
-	require.True(t, second != first, "failed telemetry was not due at its retry deadline")
+	require.NotEqual(t, first, second, "failed telemetry was not due at its retry deadline")
 	gate.finish("node-a", second, true, startedAt.Add(4*time.Second))
 
 	{
@@ -607,7 +607,7 @@ func TestTelemetryLoopDoesNotOverlapNodePolls(t *testing.T) {
 	defer cancel()
 	d.runTelemetryLoop(ctx, 5*time.Millisecond)
 
-	require.True(t, calls.Load() >= 2, "telemetry loop made")
+	require.GreaterOrEqual(t, calls.Load(), int32(2), "telemetry loop request count")
 	require.Equal(t, int32(1), maxActive.Load(), "maximum concurrent requests for one node")
 }
 
@@ -699,6 +699,6 @@ func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
 	require.False(t, overflowed, "more than (%v)", telemetryRefreshConcurrency)
 	{
 		got := maxActive.Load()
-		require.True(t, got == telemetryRefreshConcurrency, "maximum concurrent telemetry work (%v, %v)", got, telemetryRefreshConcurrency)
+		require.Equal(t, int32(telemetryRefreshConcurrency), got, "maximum concurrent telemetry work (%v, %v)", got, telemetryRefreshConcurrency)
 	}
 }

@@ -40,7 +40,7 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 			request := settingsRequest(t, e)
 			request.Settings.LaunchText, request.Resolution = tc.Input+" --unrelated literal", "launch"
 			preview := previewSettings(t, e, request)
-			require.Len(t, preview.Errors, 0, " (%v)", preview)
+			require.Empty(t, preview.Errors, " (%v)", preview)
 			require.Nil(t, preview.Conflict, " (%v)", preview)
 			require.Equal(t, 23456, preview.Settings.ServerPort, " (%v)", preview)
 			policy, err := launchCORSAssignments(preview.Settings.LaunchText, rt.EditableLaunch)
@@ -57,7 +57,7 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 				request.Settings.LaunchText = invalid
 				{
 					result := previewSettings(t, e, request)
-					require.NotEqual(t, 0, len(result.Errors), "accepted (%v)", invalid)
+					require.NotEmpty(t, result.Errors, "accepted (%v)", invalid)
 				}
 			}
 			assertNoSettingsOverride(t, e)
@@ -101,7 +101,7 @@ func TestManagedBindingRoundTripsWithOverlappingSeparators(t *testing.T) {
 			values := launchValues{host: host}
 			normalized, err := values.accept(&control, rendered)
 			require.NoError(t, err, "format (%v, %v, %v, %v)", format, host, normalized, err)
-			require.True(t, normalized == rendered, "format (%v, %v, %v, %v)", format, host, normalized, err)
+			require.Equal(t, rendered, normalized, "format (%v, %v)", format, host)
 			require.Equal(t, 23456, values.serverPort(), "format (%v, %v, %v, %v)", format, host, normalized, err)
 		}
 	}
@@ -126,7 +126,7 @@ func FuzzLaunchBindings(f *testing.F) {
 		}
 		again, err := values.accept(&control, normalized)
 		require.NoError(t, err, "unstable binding normalization (%v, %v, %v)", normalized, again, err)
-		require.True(t, again == normalized, "unstable binding normalization (%v, %v, %v)", normalized, again, err)
+		require.Equal(t, normalized, again, "unstable binding normalization")
 		{
 			managed, ok := control.managedValue(values.host, strconv.Itoa(values.serverPort()))
 			require.False(t, ok && managed != normalized, "preview and launch disagree (%v, %v)", normalized, managed)

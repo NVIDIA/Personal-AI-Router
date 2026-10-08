@@ -111,18 +111,12 @@ func TestStaleForeignSelectsOnlySilentRemoteWork(t *testing.T) {
 	s.Apply(mkIn("fresh", "peer", "running", "peer", 100))
 
 	stale := s.StaleForeign("self", ttl)
-	if len(stale) != 1 {
-		ids := make([]string, 0, len(stale))
-		for _, r := range stale {
-			ids = append(ids, r.ID)
-		}
-		require.FailNow(t, "test expectation failed", "StaleForeign returned %v, want exactly [silent]", ids)
-	}
+	require.Len(t, stale, 1, "StaleForeign should return exactly [silent]")
 	require.Equal(t, "silent", stale[0].ID, "stale id")
 
 	// Once the origin speaks up again the record stops being stale.
 	s.Apply(mkIn("silent", "peer", "running", "peer", 100))
-	require.Len(t, s.StaleForeign("self", ttl), 0, "StaleForeign returned")
+	require.Empty(t, s.StaleForeign("self", ttl), "StaleForeign returned")
 }
 
 // TestApplyInferredUnchangedSinceGuardsTheSweepRace: the sweep selects candidates
@@ -207,9 +201,9 @@ func TestStaleForeignSweepsWorkThisNodeIsExecuting(t *testing.T) {
 	for _, r := range s.StaleForeign("self", ttl) {
 		got[r.ID] = true
 	}
-	assert.True(t, got["here"], "a remote-origin workload executing here must be swept: nothing else will ever clear it")
-	assert.True(t, got["there"], "a remote-origin workload executing elsewhere must be swept")
-	assert.False(t, got["mine"], "a local-origin workload must never be swept")
+	assert.Contains(t, got, "here", "a remote-origin workload executing here must be swept: nothing else will ever clear it")
+	assert.Contains(t, got, "there", "a remote-origin workload executing elsewhere must be swept")
+	assert.NotContains(t, got, "mine", "a local-origin workload must never be swept")
 	assert.Len(t, got, 2, "swept")
 }
 
@@ -232,13 +226,8 @@ func TestStaleForeignSkipsCollidingClientKeys(t *testing.T) {
 	*now = now.Add(ttl + time.Millisecond)
 
 	stale := s.StaleForeign("self", ttl)
-	if len(stale) != 1 || stale[0].ID != "solo" {
-		ids := make([]string, 0, len(stale))
-		for _, r := range stale {
-			ids = append(ids, r.ID)
-		}
-		require.FailNow(t, "test expectation failed", "StaleForeign returned %v, want exactly [solo] — a colliding client key must not be retired", ids)
-	}
+	require.Len(t, stale, 1, "a colliding client key must not be retired")
+	require.Equal(t, "solo", stale[0].ID, "a colliding client key must not be retired")
 
 	// Once the collision resolves (one generation reaches a real terminal), the
 	// survivor becomes eligible again.
@@ -271,7 +260,7 @@ func TestStaleForeignInferredFailIsReconcilable(t *testing.T) {
 		require.True(t, r.Terminal, "record (%v)", r)
 		require.True(t, r.Inferred, "record (%v)", r)
 	}
-	require.Len(t, s.StaleForeign("self", ttl), 0, "a retired record must not be swept again")
+	require.Empty(t, s.StaleForeign("self", ttl), "a retired record must not be swept again")
 
 	// The origin comes back and insists it is still running.
 	require.True(t, s.Apply(mkIn("1", "peer", "running", "peer", 100)), "an authoritative running must override the inferred failed")

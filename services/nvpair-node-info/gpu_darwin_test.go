@@ -22,14 +22,14 @@ func TestStaticGPUsFromIORegistry(t *testing.T) {
 
 	apple := gpus[0]
 	require.Equal(t, "Apple M3 Max", apple.Name, "unexpected Apple GPU (%v)", apple)
-	require.True(t, apple.VramBytes == systemMemory, "unexpected Apple GPU (%v)", apple)
+	require.Equal(t, systemMemory, apple.VramBytes, "unexpected Apple GPU (%v)", apple)
 	require.Equal(t, "ioreg:2a", apple.statsKey, "unexpected Apple GPU (%v)", apple)
 	require.Equal(t, uint64(0), apple.VramUsedBytes, "static detection published dynamic fields (%v)", apple)
 	require.Equal(t, uint32(0), apple.UtilizationPercent, "static detection published dynamic fields (%v)", apple)
 
 	discrete := gpus[1]
 	require.Equal(t, "AMD Radeon Pro", discrete.Name, "unexpected discrete GPU (%v)", discrete)
-	require.True(t, discrete.VramBytes == 8<<30, "unexpected discrete GPU (%v)", discrete)
+	require.Equal(t, uint64(8<<30), discrete.VramBytes, "unexpected discrete GPU (%v)", discrete)
 	require.Equal(t, "ioreg:63", discrete.statsKey, "unexpected discrete GPU (%v)", discrete)
 }
 

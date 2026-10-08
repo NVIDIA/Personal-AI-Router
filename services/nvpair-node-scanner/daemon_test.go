@@ -180,7 +180,7 @@ func TestPublishSelfLoopbackIPFallback(t *testing.T) {
 	d.publishSelf()
 	n, ok := d.dir.get("self-uuid")
 	require.True(t, ok, "self missing from directory")
-	assert.True(t, n.IP == loopbackHost, "self IP with no LAN address (%v)", loopbackHost)
+	assert.Equal(t, loopbackHost, n.IP, "self IP with no LAN address (%v)", loopbackHost)
 }
 
 // TestPeerStillAgesOut confirms the fix is scoped to self: a genuine remote peer

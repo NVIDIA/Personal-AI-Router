@@ -80,7 +80,7 @@ func TestRegistrySetAddresses(t *testing.T) {
 	{
 		rec := r.record()
 		assert.Equal(t, "", rec.IP, "record with no addresses (%v)", rec)
-		assert.Len(t, rec.IPs, 0, "record with no addresses (%v)", rec)
+		assert.Empty(t, rec.IPs, "record with no addresses (%v)", rec)
 	}
 }
 
@@ -89,10 +89,7 @@ func TestRegistrySetAddresses(t *testing.T) {
 func TestRegistryCapsAdvertisedAddresses(t *testing.T) {
 	many := []string{"10.0.0.1", "10.0.1.1", "10.0.2.1", "10.0.3.1", "10.0.4.1", "10.0.5.1"}
 	r := newRegistry("h", "", many)
-	{
-		got := len(r.record().IPs)
-		require.True(t, got == noderec.MaxAdvertisedIPs, "held (%v)", got)
-	}
+	require.Len(t, r.record().IPs, noderec.MaxAdvertisedIPs, "advertised addresses")
 	{
 		got := r.record().IP
 		assert.Equal(t, "10.0.0.1", got, "canonical")

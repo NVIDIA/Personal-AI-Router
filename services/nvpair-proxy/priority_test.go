@@ -47,10 +47,7 @@ func candidateIDsForModel(p *Proxy, model string) []string {
 
 func assertOrder(t *testing.T, got, want []string) {
 	t.Helper()
-	require.Len(t, got, len(want), "candidate order (%v, %v)", got, want)
-	for i := range want {
-		require.True(t, got[i] == want[i], "candidate order (%v, %v)", got, want)
-	}
+	require.Equal(t, want, got, "candidate order")
 }
 
 // TestResolveCandidates_PriorityOrder: the priority list dictates auto order.

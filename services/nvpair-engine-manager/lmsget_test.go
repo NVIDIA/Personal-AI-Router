@@ -146,8 +146,7 @@ func TestCmdActionLMSGetAllFail(t *testing.T) {
 	// "nope" makes even the Hugging Face URL candidate fail in resolvesim.
 	_, err := ex.Action(context.Background(), "fake", "pull_model",
 		json.RawMessage(`{"model":"owner/nope"}`))
-	require.Error(t, err, "expected an error when all candidates fail to resolve")
-	require.Contains(t, err.Error(), "action command failed", "unexpected error shape (%v)", err)
+	require.ErrorContains(t, err, "action command failed", "expected an error when all candidates fail to resolve")
 }
 
 // TestCmdActionLMSGetResumesTransientDownload proves a transient `lms get`
@@ -193,8 +192,7 @@ func TestCmdActionLMSGetResumeExhausted(t *testing.T) {
 
 	_, err := ex.Action(context.Background(), "fake", "pull_model",
 		json.RawMessage(`{"model":"owner/name"}`))
-	require.Error(t, err, "expected an error when the download never recovers")
-	require.Contains(t, err.Error(), "Timed-out", "expected the LM Studio timeout to surface (%v)", err)
+	require.ErrorContains(t, err, "Timed-out", "expected the LM Studio timeout to surface when the download never recovers")
 	{
 		got := readCount(t, counter)
 		require.Equal(t, 3, got, "expected exactly 3 attempts (resume budget, no source fallthrough)")
@@ -232,8 +230,11 @@ func TestModelResolutionValidation(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			err := c.action.validate("pull_model")
-			require.False(t, c.wantErr && err == nil, "expected a validation error, got nil")
-			require.False(t, !c.wantErr && err != nil, "expected no error (%v)", err)
+			if c.wantErr {
+				require.Error(t, err, "expected a validation error")
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }

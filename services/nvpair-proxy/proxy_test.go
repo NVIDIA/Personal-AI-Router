@@ -112,10 +112,10 @@ func TestNodeURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			u := nodeURL(tc.node)
 			require.NotNil(t, u, "nodeURL returned nil")
-			assert.True(t, u.Host == tc.wantHost, "Host")
+			assert.Equal(t, tc.wantHost, u.Host, "Host")
 			{
 				got := u.String()
-				assert.True(t, got == tc.wantURL, "String() (%v)", got)
+				assert.Equal(t, tc.wantURL, got, "String() (%v)", got)
 			}
 		})
 	}

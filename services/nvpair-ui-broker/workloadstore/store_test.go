@@ -112,10 +112,7 @@ func TestApplyCancelledIsTerminal(t *testing.T) {
 	r, ok := s.Get("a", "1")
 	require.True(t, ok, "record should still be stored")
 	require.True(t, r.Terminal, "cancelled must be terminal (missing from isTerminal(): counts as pending forever and stays exposed to the staleness sweeps)")
-	{
-		got := len(s.ActiveSnapshot())
-		require.Equal(t, 0, got, "active snapshot has")
-	}
+	require.Empty(t, s.ActiveSnapshot(), "active snapshot has")
 }
 
 // TestApplyCrossNodeIsolation: the same numeric id from two origins is two
@@ -188,10 +185,10 @@ func TestActiveSnapshotExcludesTerminalHistory(t *testing.T) {
 			State string `json:"state"`
 		}
 		require.NoError(t, json.Unmarshal(raw, &hdr), "bad active snapshot entry")
-		require.False(t, hdr.State != "queued" && hdr.State != "running", "active snapshot included terminal state")
+		require.Contains(t, []string{"queued", "running"}, hdr.State, "active snapshot included terminal state")
 		ids = append(ids, hdr.ID)
 	}
-	require.True(t, sameIDSet(ids, []string{"queued", "running"}), "active snapshot ids (%v)", ids)
+	require.ElementsMatch(t, []string{"queued", "running"}, ids, "active snapshot ids")
 }
 
 func TestActiveForNode(t *testing.T) {
@@ -233,7 +230,7 @@ func TestReplayForNode(t *testing.T) {
 
 	{
 		got := replayIDSet(s.ReplayForNode("host", window))
-		require.True(t, sameIDSet(got, []string{"1", "2", "4"}), "replay set (%v)", got)
+		require.ElementsMatch(t, []string{"1", "2", "4"}, got, "replay set")
 	}
 
 	// Age everything past the window: terminals drop; the still-running record
@@ -241,7 +238,7 @@ func TestReplayForNode(t *testing.T) {
 	clock += window + 1
 	{
 		got := replayIDSet(s.ReplayForNode("host", window))
-		require.True(t, sameIDSet(got, []string{"1"}), "post-window replay set (%v)", got)
+		require.ElementsMatch(t, []string{"1"}, got, "post-window replay set")
 	}
 }
 
@@ -269,7 +266,7 @@ func TestReplayForNodeAfterLoadUsesCompletionTime(t *testing.T) {
 	require.NoError(t, s.Load(), "load")
 
 	got := replayIDSet(s.ReplayForNode("host", window))
-	require.True(t, sameIDSet(got, []string{"recent"}), "post-load replay set (%v)", got)
+	require.ElementsMatch(t, []string{"recent"}, got, "post-load replay set")
 }
 
 func replayIDSet(recs []Record) []string {
@@ -278,25 +275,6 @@ func replayIDSet(recs []Record) []string {
 		ids = append(ids, r.ID)
 	}
 	return ids
-}
-
-func sameIDSet(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	seen := make(map[string]int, len(got))
-	for _, id := range got {
-		seen[id]++
-	}
-	for _, id := range want {
-		seen[id]--
-	}
-	for _, n := range seen {
-		if n != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // TestInferredMarksRunningFailed: the node-loss sweep may fail an authoritative

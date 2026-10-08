@@ -64,7 +64,7 @@ func TestTelemetryCachePrefersScannerAndFallsBackToManual(t *testing.T) {
 	require.Equal(t, int64(0), projected.MSSince, "final removal projection (%v, %v)", projected, ok)
 	{
 		snapshot := cache.Snapshot(now.Add(4 * time.Second))
-		require.Len(t, snapshot, 0, "cache retained final removal")
+		require.Empty(t, snapshot, "cache retained final removal")
 	}
 }
 
@@ -109,11 +109,11 @@ func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
 	go func() { replayed <- b.replayTelemetryToScheduler(worker) }()
 	require.NoError(t, schedulerSide.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 	message := readSchedulerTestMessage(t, NewCodec(schedulerSide))
-	require.True(t, message.Method == schedulerwire.MethodTelemetry, "replay method")
+	require.Equal(t, schedulerwire.MethodTelemetry, message.Method, "replay method")
 	var got noderec.NodeTelemetry
 	require.NoError(t, json.Unmarshal(message.Params, &got), "decode replay")
 	require.Equal(t, "node-a", got.HostUUID, "replayed telemetry (%v)", got)
-	require.True(t, got.MSSince >= 350, "replayed telemetry (%v)", got)
+	require.GreaterOrEqual(t, got.MSSince, int64(350), "replayed telemetry (%v)", got)
 	{
 		count := <-replayed
 		require.Equal(t, 1, count, "replayed count")
@@ -144,11 +144,11 @@ func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 	require.Len(t, snapshot, 1, "surviving manual telemetry")
 	require.Equal(t, "node-a", snapshot[0].HostUUID, "surviving manual telemetry (%v)", snapshot)
 	require.Equal(t, uint32(25), snapshot[0].GPUUtilizationPct, "surviving alias reset telemetry age")
-	require.True(t, snapshot[0].MSSince >= 2_100, "surviving alias reset telemetry age")
+	require.GreaterOrEqual(t, snapshot[0].MSSince, int64(2_100), "surviving alias reset telemetry age")
 
 	b.removeManualNode("first")
 	{
 		snapshot := b.telemetry.Snapshot(time.Now())
-		require.Len(t, snapshot, 0, "final manual alias left telemetry cached")
+		require.Empty(t, snapshot, "final manual alias left telemetry cached")
 	}
 }

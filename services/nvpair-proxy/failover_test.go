@@ -92,7 +92,7 @@ func TestHandlePlain_PreflightWithoutEngineFails(t *testing.T) {
 		req := corsRequest(http.MethodOptions, tc.inferencePath, "http://app.test")
 		rec := httptest.NewRecorder()
 		p.soleFacade().handlePlain(rec, req)
-		require.True(t, rec.Code == http.StatusBadGateway, "status")
+		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
 		require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"))
 	})
 }
@@ -104,7 +104,7 @@ func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		preflightSeen := make(chan struct{}, 1)
 		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.True(t, r.Method == http.MethodOptions, "engine method")
+			assert.Equal(t, http.MethodOptions, r.Method, "engine method")
 			preflightSeen <- struct{}{}
 			w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -131,7 +131,7 @@ func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
 		default:
 			require.FailNow(t, "test expectation failed", "engine did not receive the credentialed preflight")
 		}
-		assert.True(t, rec.Code == http.StatusNoContent, "status")
+		assert.Equal(t, http.StatusNoContent, rec.Code, "status")
 		{
 			got := rec.Header().Get("Access-Control-Allow-Origin")
 			assert.Equal(t, "https://app.example", got, "Access-Control-Allow-Origin")
@@ -222,8 +222,8 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusOK, "status")
-		assert.True(t, gotBody == tc.inferenceBody(), "node got body (%v)", gotBody)
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		assert.Equal(t, tc.inferenceBody(), gotBody, "node got body (%v)", gotBody)
 		{
 			got := rec.Header().Get("Access-Control-Allow-Origin")
 			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
@@ -256,7 +256,7 @@ func TestHandleHTTP_NoRetryOn400(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusBadRequest, "status")
+		require.Equal(t, http.StatusBadRequest, rec.Code, "status")
 		assert.Equal(t, 1, hits, "bad node hit")
 	})
 }
@@ -268,7 +268,7 @@ func TestHandleHTTP_RejectionHasNoCORS(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusBadGateway, "status")
+		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
 		{
 			got := rec.Header().Get("Access-Control-Allow-Origin")
 			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
@@ -304,8 +304,8 @@ func TestHandleHTTP_FailoverOn503(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusOK, "status")
-		assert.True(t, gotBody == tc.inferenceBody(), "failover node got body (%v)", gotBody)
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		assert.Equal(t, tc.inferenceBody(), gotBody, "failover node got body (%v)", gotBody)
 		{
 			got := rec.Header().Get("Access-Control-Allow-Origin")
 			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
@@ -333,7 +333,7 @@ func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusBadGateway, "status")
+		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
 		{
 			got := rec.Header().Get("Access-Control-Allow-Origin")
 			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
@@ -369,12 +369,12 @@ func TestHandleHTTP_404FailoverInferenceOnly(t *testing.T) {
 		// Inference POST: 404 on first → fail over → 200.
 		rec := httptest.NewRecorder()
 		newProxy().soleFacade().handleHTTP(rec, tc.inferenceRequest())
-		require.True(t, rec.Code == http.StatusOK, "inference 404: status")
+		require.Equal(t, http.StatusOK, rec.Code, "inference 404: status")
 
 		// An ordinary non-inference GET still returns the first node's 404.
 		rec = httptest.NewRecorder()
 		newProxy().soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.nonInferencePath, nil))
-		require.True(t, rec.Code == http.StatusNotFound, "non-inference 404: status")
+		require.Equal(t, http.StatusNotFound, rec.Code, "non-inference 404: status")
 	})
 }
 
@@ -438,7 +438,7 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 		require.FailNow(t, "test expectation failed", "aggregate request did not finish")
 	}
 
-	require.True(t, rec.Code == http.StatusOK, "status")
+	require.Equal(t, http.StatusOK, rec.Code, "status")
 	var got struct {
 		Models []struct {
 			Name   string `json:"name"`
@@ -497,7 +497,7 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 			} `json:"data"`
 		}
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-		require.True(t, rec.Code == http.StatusOK, "response (%v)", got)
+		require.Equal(t, http.StatusOK, rec.Code, "response (%v)", got)
 		require.Equal(t, "list", got.Object, "response (%v)", got)
 		require.Len(t, got.Data, 3, "response (%v)", got)
 		require.Equal(t, "a", got.Data[0].ID)
@@ -611,7 +611,7 @@ func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
 		rec := httptest.NewRecorder()
 		testProxy(tc.profile, disc, tc.profile.FacadePort).soleFacade().
 			handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.modelListPath, nil))
-		require.True(t, rec.Code == http.StatusServiceUnavailable, "unavailable status")
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code, "unavailable status")
 
 		// A reachable node with no models is 200 and this engine's own empty
 		// envelope, so its client can parse the response.
@@ -622,8 +622,8 @@ func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
 		rec = httptest.NewRecorder()
 		testProxy(tc.profile, disc, tc.profile.FacadePort).soleFacade().
 			handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.modelListPath, nil))
-		require.True(t, rec.Code == http.StatusOK, "empty response")
-		require.True(t, rec.Body.String() == tc.emptyModelList, "empty response")
+		require.Equal(t, http.StatusOK, rec.Code, "empty response")
+		require.Equal(t, tc.emptyModelList, rec.Body.String(), "empty response")
 	})
 }
 
@@ -648,7 +648,7 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 		match := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			matchHits++
 			body, _ := io.ReadAll(r.Body)
-			assert.True(t, string(body) == tc.inferenceBody(), "matching node got body (%v)", body)
+			assert.Equal(t, tc.inferenceBody(), string(body), "matching node got body (%v)", body)
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer match.Close()
@@ -672,7 +672,7 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusOK, "status")
+		require.Equal(t, http.StatusOK, rec.Code, "status")
 		require.Equal(t, 0, missHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
 		require.Equal(t, 0, unknownHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
 		require.Equal(t, 1, matchHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
@@ -680,7 +680,7 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 		// Capability filtering applies only to model-bearing inference.
 		rec = httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.nonInferencePath, nil))
-		require.True(t, rec.Code == http.StatusOK, "non-inference status")
+		require.Equal(t, http.StatusOK, rec.Code, "non-inference status")
 		require.Equal(t, 1, missHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
 		require.Equal(t, 0, unknownHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
 		require.Equal(t, 1, matchHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
@@ -743,9 +743,9 @@ func TestHandleHTTP_InferenceRouting(t *testing.T) {
 					rec := httptest.NewRecorder()
 					p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
 
-					require.True(t, rec.Code == http.StatusOK, "status")
-					assert.True(t, gotBody == body, "node got body (%v, %v)", gotBody, body)
-					assert.True(t, gotPath == path, "path (%v, %v)", gotPath, path)
+					require.Equal(t, http.StatusOK, rec.Code, "status")
+					assert.Equal(t, body, gotBody, "node got body (%v, %v)", gotBody, body)
+					assert.Equal(t, path, gotPath, "path (%v, %v)", gotPath, path)
 				})
 			}
 		})
@@ -787,7 +787,7 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		require.True(t, rec.Code == http.StatusBadGateway, "response")
+		require.Equal(t, http.StatusBadGateway, rec.Code, "response")
 		require.Contains(t, rec.Body.String(), "no available node advertises the requested model")
 		require.Equal(t, 0, hits, "ineligible upstreams received")
 		require.True(t, events.has("no node advertises requested model"), "missing rejected request event")

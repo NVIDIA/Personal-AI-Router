@@ -255,7 +255,7 @@ func TestValidateRejectsScriptWithFetch(t *testing.T) {
 	{
 		err := m.Validate()
 		require.Error(t, err, "expected script+fetch rejection")
-		require.Contains(t, err.Error(), "mutually exclusive", "expected script+fetch rejection (%v)", err)
+		require.ErrorContains(t, err, "mutually exclusive", "expected script+fetch rejection")
 	}
 }
 
@@ -377,7 +377,7 @@ func TestValidateRejects(t *testing.T) {
 			tc.mutate(&m)
 			err := m.Validate()
 			require.Error(t, err, "expected error containing")
-			require.Contains(t, err.Error(), tc.want)
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -486,7 +486,7 @@ func TestLoadRegistryRejectsInvalidFile(t *testing.T) {
 func TestLoadRegistryMissingDirIsSkipped(t *testing.T) {
 	reg, err := LoadRegistry(filepath.Join(t.TempDir(), "does-not-exist"))
 	require.NoError(t, err, "missing dir should be skipped")
-	require.Len(t, reg.Names(), 0, "expected empty registry")
+	require.Empty(t, reg.Names(), "expected empty registry")
 }
 
 // TestApplyPlatformDefaults covers the shared-base merge: a top-level
@@ -577,7 +577,7 @@ func TestBundledManifestsMerge(t *testing.T) {
 		// per-platform cli override + inherited shared runtime (port/start)
 		assert.Equal(t, "~/.lmstudio/bin/lms", p.Runtime.CLI, "lmstudio darwin cli")
 		assert.Equal(t, 1235, p.Runtime.Port, "lmstudio darwin inherited runtime missing: port")
-		assert.NotEqual(t, 0, len(p.Runtime.Start), "lmstudio darwin inherited runtime missing: port")
+		assert.NotEmpty(t, p.Runtime.Start, "lmstudio darwin inherited runtime missing: port")
 	} else {
 		assert.Fail(t, "test expectation failed", "lmstudio darwin/arm64 missing")
 	}
@@ -598,7 +598,7 @@ func TestBundledOllamaReadinessBudget(t *testing.T) {
 		}
 		{
 			got, want := p.Runtime.Ready.TimeoutS, 600
-			assert.True(t, got == want, " (%v, %v, %v)", key, got, want)
+			assert.Equal(t, want, got, " (%v)", key)
 		}
 		{
 			readiness := time.Duration(p.Runtime.Ready.TimeoutS) * time.Second
@@ -713,8 +713,8 @@ func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
 	require.True(t, ok, "lmstudio manifest not loaded")
-	action, ok := m.Actions["list_models"]
-	require.True(t, ok, "lmstudio list_models action is incomplete (%v)", action)
+	require.Contains(t, m.Actions, "list_models", "lmstudio list_models action is incomplete")
+	action := m.Actions["list_models"]
 	require.NotNil(t, action.HTTP, "lmstudio list_models action is incomplete (%v)", action)
 	require.NotNil(t, action.Result, "lmstudio list_models action is incomplete (%v)", action)
 	assert.Equal(t, "GET", action.HTTP.Method, "lmstudio list_models HTTP")
@@ -736,7 +736,7 @@ func TestLMStudioInstallBootstrapSafety(t *testing.T) {
 			continue
 		}
 		if strings.HasPrefix(key, "windows/") {
-			assert.Len(t, p.Install.Script, 0, " (%v)", key)
+			assert.Empty(t, p.Install.Script, " (%v)", key)
 			if assert.NotNil(t, p.Install.Fetch, " (%v)", key) {
 				assert.Equal(t, "https://lmstudio.ai/install.ps1", p.Install.Fetch.URL, " (%v)", key)
 			}
@@ -744,7 +744,7 @@ func TestLMStudioInstallBootstrapSafety(t *testing.T) {
 			assert.Equal(t, wantRun, p.Install.Run, " (%v)", key)
 			continue
 		}
-		assert.Len(t, p.Install.Script, 0, " (%v)", key)
+		assert.Empty(t, p.Install.Script, " (%v)", key)
 		if assert.NotNil(t, p.Install.Fetch, " (%v)", key) {
 			assert.Equal(t, "https://lmstudio.ai/install.sh", p.Install.Fetch.URL, " (%v)", key)
 		}

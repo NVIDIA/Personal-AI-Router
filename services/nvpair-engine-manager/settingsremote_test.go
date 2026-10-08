@@ -153,9 +153,9 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 		t.Helper()
 		for scan.Scan() {
 			var rows []settings.Snapshot
-			require.Nil(t, json.Unmarshal(scan.Bytes(), &rows), "invalid stream")
+			require.NoError(t, json.Unmarshal(scan.Bytes(), &rows), "invalid stream")
 			if len(rows) > 0 {
-				require.True(t, rows[0].Revision == want, "revision (%v)", want)
+				require.Equal(t, want, rows[0].Revision, "revision")
 				return
 			}
 		}
@@ -296,17 +296,16 @@ func TestSettingsRelayCorrelationCancellationAndCleanup(t *testing.T) {
 		relay.reply(data)
 	}
 	got := map[string]bool{<-results: true, <-results: true}
-	require.True(t, got[`"one"`], "responses were not correlated")
-	require.True(t, got[`"two"`], "responses were not correlated")
+	require.Contains(t, got, `"one"`, "responses were not correlated")
+	require.Contains(t, got, `"two"`, "responses were not correlated")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := relay.call(ctx, "apply", settings.Request{}, ""); done <- err }()
 	request := <-sent
 	cancel()
 	require.Error(t, <-done, "cancellation ignored")
-	require.True(t, <-canceled == request.ID, "wrong canceled correlation")
+	require.Equal(t, request.ID, <-canceled, "wrong canceled correlation")
 	relay.mu.Lock()
-	pending := len(relay.pending)
+	assert.Empty(t, relay.pending, "relay leaked requests")
 	relay.mu.Unlock()
-	require.Equal(t, 0, pending, "relay leaked requests")
 }

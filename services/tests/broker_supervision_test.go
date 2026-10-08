@@ -246,7 +246,7 @@ func TestBrokerCrashSurfacingAndRestart(t *testing.T) {
 	// a different pid (backoff is ~1s).
 	secondLine := waitForStderr(t, stderr, proxyPidRe, 15*time.Second)
 	pid2 := mustPid(t, secondLine)
-	require.True(t, pid2 != pid1, "proxy was not restarted: same pid (%v)", pid2)
+	require.NotEqual(t, pid1, pid2, "proxy was not restarted: same pid (%v)", pid2)
 	t.Logf("proxy auto-restarted: pid %d -> %d", pid1, pid2)
 }
 
@@ -521,7 +521,7 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 		err := json.Unmarshal(resp.Result, &sp)
 		require.NoError(t, err, "parse ollama-proxy:set-port result")
 	}
-	require.True(t, sp.Port == target, "set-port result port (%v)", target)
+	require.Equal(t, target, sp.Port, "set-port result port (%v)", target)
 
 	// ollama-proxy:get-status must now reflect the rebound port.
 	id = 870

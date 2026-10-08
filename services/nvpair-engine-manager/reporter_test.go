@@ -26,7 +26,7 @@ func TestReporterDedupCapClear(t *testing.T) {
 	}
 
 	r.clear("a")
-	require.Len(t, r.snapshot(), 0, "expected empty after clear")
+	require.Empty(t, r.snapshot(), "expected empty after clear")
 
 	// Both wire frames should have been emitted on the codec.
 	{

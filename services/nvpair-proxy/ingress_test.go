@@ -50,7 +50,7 @@ func TestHandlePlainRejectsNonLoopback(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	p.soleFacade().handlePlain(rec, req)
-	require.True(t, rec.Code == http.StatusForbidden, "non-loopback plaintext status")
+	require.Equal(t, http.StatusForbidden, rec.Code, "non-loopback plaintext status")
 	{
 		got := rec.Header().Get("Access-Control-Allow-Origin")
 		assert.Equal(t, "", got, "Access-Control-Allow-Origin")
@@ -65,7 +65,7 @@ func TestHandlePlainRejectsPreflightAtLoopbackGate(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	p.soleFacade().handlePlain(rec, req)
-	require.True(t, rec.Code == http.StatusForbidden, "preflight status")
+	require.Equal(t, http.StatusForbidden, rec.Code, "preflight status")
 	{
 		got := rec.Header().Get("Access-Control-Allow-Origin")
 		assert.Equal(t, "", got, "Access-Control-Allow-Origin")
@@ -85,7 +85,7 @@ func TestHandlePlainRejectsEngineIdentityProbe(t *testing.T) {
 		rec := httptest.NewRecorder()
 
 		p.soleFacade().handlePlain(rec, req)
-		require.True(t, rec.Code == http.StatusConflict, "identity probe status")
+		require.Equal(t, http.StatusConflict, rec.Code, "identity probe status")
 		{
 			body := rec.Body.String()
 			require.Contains(t, body, tc.profile.DisplayName, "rejection does not name")
@@ -102,7 +102,7 @@ func TestHandleClusterIngressUnclusteredForbids(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	p.soleFacade().handleClusterIngress(rec, req)
-	require.True(t, rec.Code == http.StatusForbidden, "unclustered ingress status")
+	require.Equal(t, http.StatusForbidden, rec.Code, "unclustered ingress status")
 }
 
 func TestIsLoopbackRemote(t *testing.T) {
@@ -119,7 +119,7 @@ func TestIsLoopbackRemote(t *testing.T) {
 	} {
 		{
 			got := isLoopbackRemote(c.addr)
-			assert.True(t, got == c.want, "isLoopbackRemote (%v)", got)
+			assert.Equal(t, c.want, got, "isLoopbackRemote (%v)", got)
 		}
 	}
 }
@@ -131,5 +131,5 @@ func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {
 	rp := p.soleFacade().newLocalReverseProxy(target)
 	tr, ok := rp.Transport.(*http.Transport)
 	require.True(t, ok, "Transport type")
-	require.True(t, tr == shared, "ingress reverse proxy did not use the shared plain Transport")
+	require.Same(t, shared, tr, "ingress reverse proxy did not use the shared plain Transport")
 }

@@ -79,7 +79,7 @@ func TestReserveCandidate_ConcurrentEqualLoadHasAtMostOneSkew(t *testing.T) {
 			max = counts[id]
 		}
 	}
-	require.True(t, max-min <= 1, "100 equal-load reservations are imbalanced (%v)", counts)
+	require.LessOrEqual(t, max-min, 1, "100 equal-load reservations are imbalanced (%v)", counts)
 }
 
 func TestReserveCandidate_ConvergesUnequalPendingDepths(t *testing.T) {
@@ -139,7 +139,7 @@ func TestSetPrioritySnapshotClampsGPUPressure(t *testing.T) {
 	high := p.priorityGPUPressure["high"]
 	p.priorityMu.RUnlock()
 	require.Equal(t, 0, low, "clamped GPU pressure = low (%v, %v)", low, high)
-	require.True(t, high == schedulerwire.MaxGPUPressure, "clamped GPU pressure = low (%v, %v)", low, high)
+	require.Equal(t, schedulerwire.MaxGPUPressure, high, "clamped GPU pressure = low (%v, %v)", low, high)
 }
 
 // A node/set-priority call can time out after the proxy already applied it, so
@@ -186,9 +186,8 @@ func TestSetPrioritySnapshot_RedeliveredGenerationKeepsReservations(t *testing.T
 		Ranks:      []schedulerwire.NodeRank{{ID: "a", Pending: 0}, {ID: "b", Pending: 0}},
 	})
 	p.priorityMu.RLock()
-	cleared := len(p.priorityReservations)
+	assert.Empty(t, p.priorityReservations, "reservations after a newer generation")
 	p.priorityMu.RUnlock()
-	require.Equal(t, 0, cleared, "reservations after a newer generation")
 }
 
 func TestReserveCandidate_LegacyNodesOnlyUsesZeroBaseline(t *testing.T) {
@@ -201,7 +200,7 @@ func TestReserveCandidate_LegacyNodesOnlyUsesZeroBaseline(t *testing.T) {
 	}
 	want := map[string]int{"a": 2, "b": 2, "c": 1}
 	for id, n := range want {
-		require.True(t, counts[id] == n, "legacy nodes-only assignments (%v, %v)", counts, want)
+		require.Equal(t, n, counts[id], "legacy nodes-only assignments (%v, %v)", counts, want)
 	}
 }
 
@@ -220,7 +219,7 @@ func TestReserveCandidate_UsesEligibleCandidates(t *testing.T) {
 
 	for range 8 {
 		got := reservedID(p, candidates)
-		require.False(t, got != "owner-a" && got != "owner-b", "reservation escaped eligible candidates to (%v)", got)
+		require.Contains(t, []string{"owner-a", "owner-b"}, got, "reservation escaped eligible candidates")
 	}
 }
 
@@ -238,7 +237,7 @@ func TestReserveCandidate_ManualPinBypassesReservations(t *testing.T) {
 	}
 	p.priorityMu.RLock()
 	defer p.priorityMu.RUnlock()
-	require.Len(t, p.priorityReservations, 0, "manual pin created optimistic reservations")
+	require.Empty(t, p.priorityReservations, "manual pin created optimistic reservations")
 }
 
 func TestReserveCandidate_IneligibleManualPinDoesNotBypassReservations(t *testing.T) {
@@ -328,9 +327,8 @@ func TestReleasedReservationStopsCountingAsLoad(t *testing.T) {
 	// The entry is deleted rather than left at zero, so the map cannot grow one
 	// key per node ever dispatched to.
 	p.priorityMu.RLock()
-	_, present := p.priorityReservations[held.nodeID]
+	assert.NotContains(t, p.priorityReservations, held.nodeID, "released reservation left a zero entry for")
 	p.priorityMu.RUnlock()
-	assert.False(t, present, "released reservation left a zero entry for")
 }
 
 // A snapshot supersedes every reservation taken before it, because its pending
@@ -355,7 +353,7 @@ func TestReleaseFromBeforeASnapshotIsIgnored(t *testing.T) {
 
 	{
 		got := reservationCount(p, fresh.nodeID)
-		require.True(t, got == freshCount, "a release from generation (%v, %v)", got, freshCount)
+		require.Equal(t, freshCount, got, "a release from generation (%v, %v)", got, freshCount)
 	}
 	require.GreaterOrEqual(t, reservationCount(p, "a"), 0, "reservation count must not be negative")
 	require.GreaterOrEqual(t, reservationCount(p, "b"), 0, "reservation count must not be negative")
@@ -376,7 +374,7 @@ func TestFailoverMovesTheReservationToTheServingNode(t *testing.T) {
 	}
 
 	moved := p.moveReservation(held, to)
-	require.True(t, moved.nodeID == to, "moved reservation node (%v)", to)
+	require.Equal(t, to, moved.nodeID, "moved reservation node (%v)", to)
 	{
 		got := reservationCount(p, from)
 		assert.Equal(t, 0, got, "refusing node (%v, %v)", from, got)
@@ -405,7 +403,7 @@ func TestReservationsAreSharedAcrossFacades(t *testing.T) {
 	_, first := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
 	_, second := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
 
-	require.True(t, first.nodeID != second.nodeID, "both dispatches chose")
+	require.NotEqual(t, second.nodeID, first.nodeID, "both dispatches chose")
 	assert.Equal(t, 1, reservationCount(p, first.nodeID), "node")
 	assert.Equal(t, 1, reservationCount(p, second.nodeID), "node")
 }

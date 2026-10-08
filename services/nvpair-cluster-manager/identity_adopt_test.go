@@ -32,13 +32,13 @@ func TestFirstMintAdoptsExistingNodeUUID(t *testing.T) {
 	require.NoError(t, err, "loadOrMintIdentity")
 
 	// It must have adopted the already-minted UUID, not minted a fresh one.
-	require.True(t, id.NodeUUID == a, "cluster-manager minted a divergent UUID: identity (%v)", a)
+	require.Equal(t, a, id.NodeUUID, "cluster-manager minted a divergent UUID")
 
 	// And every subsequent resolution (now preferring identity.json) agrees:
 	// this is the empty-config equality invariant the whole fleet relies on.
 	{
 		got := nodeid.Resolve(base)
-		require.True(t, got == a, "post-mint nodeid.Resolve (%v, %v)", got, a)
+		require.Equal(t, a, got, "post-mint nodeid.Resolve")
 	}
 }
 
@@ -54,6 +54,6 @@ func TestFirstMintWhenClusterManagerIsFirst(t *testing.T) {
 	require.NotEqual(t, "", id.NodeUUID, "minted empty UUID")
 	{
 		got := nodeid.Resolve(base)
-		require.True(t, got == id.NodeUUID, "nodeid.Resolve (%v)", got)
+		require.Equal(t, id.NodeUUID, got, "nodeid.Resolve")
 	}
 }

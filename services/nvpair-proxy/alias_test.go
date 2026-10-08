@@ -74,7 +74,7 @@ func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 		require.NoError(t, err, "POST through port (%v, %v)", port, err)
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		require.True(t, resp.StatusCode == http.StatusOK, "port (%v, %v)", port, body)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "port (%v, %v)", port, body)
 		require.Contains(t, string(body), "from-upstream", "port (%v, %v)", port, body)
 	}
 	assertRouted(primaryPort)

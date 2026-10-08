@@ -76,7 +76,7 @@ func TestFlushCoalescesOnDirty(t *testing.T) {
 	require.NoError(t, s.Flush(), "flush")
 	{
 		_, err := os.Stat(path)
-		require.True(t, os.IsNotExist(err), "no file should be written before any terminal record")
+		require.ErrorIs(t, err, os.ErrNotExist, "no file should be written before any terminal record")
 	}
 
 	// A terminal transition marks dirty and flush writes it.
@@ -84,10 +84,7 @@ func TestFlushCoalescesOnDirty(t *testing.T) {
 	require.True(t, s.dirty, "terminal apply should mark dirty")
 	require.NoError(t, s.Flush(), "flush")
 	require.False(t, s.dirty, "dirty should be cleared after a successful flush")
-	{
-		_, err := os.Stat(path)
-		require.NoError(t, err, "file should exist after terminal flush")
-	}
+	require.FileExists(t, path, "file should exist after terminal flush")
 }
 
 func TestCountCapEviction(t *testing.T) {
@@ -137,14 +134,8 @@ func TestCheckpointRotates(t *testing.T) {
 	require.NoError(t, s.Flush(), "flush")
 	s.Apply(mkTerm("2", "a", testNow-1000, testNow-50))
 	require.NoError(t, s.Checkpoint(), "checkpoint")
-	{
-		_, err := os.Stat(path)
-		require.NoError(t, err, "primary should exist after checkpoint")
-	}
-	{
-		_, err := os.Stat(path + ".1")
-		require.NoError(t, err, "rotation .1 should exist after checkpoint")
-	}
+	require.FileExists(t, path, "primary should exist after checkpoint")
+	require.FileExists(t, path+".1", "rotation .1 should exist after checkpoint")
 }
 
 func TestLoadFallsBackOnCorruptPrimary(t *testing.T) {

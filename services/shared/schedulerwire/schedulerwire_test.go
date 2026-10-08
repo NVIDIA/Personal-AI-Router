@@ -16,7 +16,7 @@ func TestPriorityAcceptsLegacyNodesOnlyPayload(t *testing.T) {
 	var got Priority
 	require.NoError(t, json.Unmarshal([]byte(`{"nodes":["a","b"]}`), &got), "unmarshal nodes-only priority")
 	assert.Equal(t, []string{"a", "b"}, got.Nodes)
-	require.Len(t, got.Ranks, 0, "nodes-only ranks")
+	require.Empty(t, got.Ranks, "nodes-only ranks")
 
 	encoded, err := json.Marshal(got)
 	require.NoError(t, err, "marshal nodes-only priority")

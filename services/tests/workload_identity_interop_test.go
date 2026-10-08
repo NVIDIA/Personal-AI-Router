@@ -145,7 +145,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 		}
 	}
 
-	require.True(t, engineIDs["ollama"] == engineIDs["lmstudio"], "expected the two proxies to collide on one workload id (both counters start at 1); got ollama")
+	require.Equal(t, engineIDs["lmstudio"], engineIDs["ollama"], "expected the two proxies to collide on one workload id (both counters start at 1)")
 	t.Logf("cross-engine OK: ollama and lmstudio both tracked distinct workloads sharing id %q", engineIDs["ollama"])
 }
 
@@ -264,7 +264,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	}
 
 	pid2 := awaitInt(t, wmPids, 30*time.Second, "workload-manager respawn")
-	require.True(t, pid2 != pid1, "respawned workload-manager reused pid (%v)", pid1)
+	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid (%v)", pid1)
 	t.Logf("workload-manager respawned pid=%d", pid2)
 
 	// The rehydrated manager must re-assert the still-active workload to the
@@ -353,7 +353,7 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	}
 
 	pid2 := awaitInt(t, wmPids, 30*time.Second, "workload-manager respawn")
-	require.True(t, pid2 != pid1, "respawned workload-manager reused pid (%v)", pid1)
+	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid (%v)", pid1)
 	t.Logf("workload-manager respawned pid=%d", pid2)
 
 	// The rehydrated manager must re-assert the recent terminal. If the broker

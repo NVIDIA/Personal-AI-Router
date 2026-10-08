@@ -123,8 +123,7 @@ func TestStopDoesNotReclaimSameExternalImage(t *testing.T) {
 	}
 	{
 		err := ex.Stop("fake")
-		require.Error(t, err, "external same-image stop error")
-		require.Contains(t, err.Error(), "external management", "external same-image stop error (%v)", err)
+		require.ErrorContains(t, err, "external management", "external same-image stop error")
 	}
 	require.True(t, portServing(port), "external same-image listener was terminated")
 }
@@ -157,10 +156,9 @@ func TestStopDeclinesForeignListenerWithActionableError(t *testing.T) {
 	}
 
 	err = ex.Stop("fake")
-	require.Error(t, err, "stop error")
-	require.Contains(t, err.Error(), "external management", "stop error (%v)", err)
-	require.Contains(t, err.Error(), strconv.Itoa(foreign.Process.Pid), "decline error must name the offending pid (%v)", err)
-	require.Contains(t, err.Error(), filepath.Base(foreignBin), "decline error must name the offending image (%v, %v)", foreignBin, err)
+	require.ErrorContains(t, err, "external management", "stop error")
+	require.ErrorContains(t, err, strconv.Itoa(foreign.Process.Pid), "decline error must name the offending pid")
+	require.ErrorContains(t, err, filepath.Base(foreignBin), "decline error must name the offending image (%v)", foreignBin)
 	require.True(t, portServing(port), "a genuinely foreign listener must be left running")
 	{
 		enabled, known, err := ex.desired.get("fake")
@@ -197,8 +195,7 @@ func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
 	}
 
 	err := ex.Stop("fake")
-	require.Error(t, err, "stop error")
-	require.Contains(t, err.Error(), "external management", "stop error (%v)", err)
+	require.ErrorContains(t, err, "external management", "stop error")
 	{
 		st, _ := ex.Status("fake")
 		require.True(t, st.Running, "rejected stop must keep the live engine running (%v)", st)
@@ -267,8 +264,7 @@ func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
 	unhealthy.Store(true)
 	{
 		err := ex.Stop("fake")
-		require.Error(t, err, "stop error")
-		require.Contains(t, err.Error(), "external management", "stop error (%v)", err)
+		require.ErrorContains(t, err, "external management", "stop error")
 	}
 	{
 		st, _ := ex.Status("fake")
@@ -285,9 +281,8 @@ func TestCommandStopFailureKeepsLiveEngineRunning(t *testing.T) {
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "failmark", marker}, 1, false)
 
 	err := ex.Stop("command")
-	require.Error(t, err, "stop error")
-	require.Contains(t, err.Error(), "stop command", "stop error (%v)", err)
-	require.True(t, fileExists(marker), "stop command did not run")
+	require.ErrorContains(t, err, "stop command", "stop error")
+	require.FileExists(t, marker, "stop command did not run")
 	{
 		st, _ := ex.Status("command")
 		require.True(t, st.Running, "failed stop must keep the live engine running (%v)", st)
@@ -331,7 +326,7 @@ func TestCommandStopWithoutReadinessProbeUsesConfiguredCommand(t *testing.T) {
 	st.plat.Runtime.Ready = nil
 
 	require.NoError(t, ex.Stop("command"), "stop without readiness probe")
-	require.True(t, fileExists(marker), "configured stop command did not run")
+	require.FileExists(t, marker, "configured stop command did not run")
 	{
 		status, _ := ex.Status("command")
 		require.False(t, status.Running, "legacy no-probe command stop must report stopped (%v)", status)
@@ -348,8 +343,7 @@ func TestCommandStopRejectsSuccessWhileEndpointIsLive(t *testing.T) {
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
 
 	err := ex.Stop("command")
-	require.Error(t, err, "stop error")
-	require.Contains(t, err.Error(), "still serving", "stop error (%v)", err)
+	require.ErrorContains(t, err, "still serving", "stop error")
 	{
 		st, _ := ex.Status("command")
 		require.True(t, st.Running, "live endpoint must remain reported running (%v)", st)
@@ -366,8 +360,7 @@ func TestCommandStopRejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
 
 	err := ex.Stop("command")
-	require.Error(t, err, "stop error")
-	require.Contains(t, err.Error(), "still serving", "stop error (%v)", err)
+	require.ErrorContains(t, err, "still serving", "stop error")
 	{
 		st, _ := ex.Status("command")
 		require.True(t, st.Running, "an unhealthy but reachable endpoint must remain running (%v)", st)

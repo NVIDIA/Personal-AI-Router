@@ -442,7 +442,7 @@ func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
 	{
 		err := json.Unmarshal(waitResult(t, restored.frames, "2", 5*time.Second), &launch)
 		require.NoError(t, err, "worker reload lost literal settings (%v, %v)", launch, err)
-		require.True(t, launch.LaunchText == saved, "worker reload lost literal settings (%v, %v)", launch, err)
+		require.Equal(t, saved, launch.LaunchText, "worker reload lost literal settings (%v, %v)", launch, err)
 	}
 	restored.stop(t)
 }

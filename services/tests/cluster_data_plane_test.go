@@ -158,7 +158,7 @@ func assertPlaintextRefused(t *testing.T, hostPath, body string) {
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
-	require.True(t, resp.StatusCode >= 400, "plaintext request to (%v)", hostPath)
+	require.GreaterOrEqual(t, resp.StatusCode, 400, "plaintext request to (%v)", hostPath)
 	t.Logf("plaintext request rejected with HTTP %d", resp.StatusCode)
 }
 
@@ -232,7 +232,7 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 	require.NoError(t, err, "loopback model fetch failed")
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	require.True(t, resp.StatusCode == http.StatusOK, "loopback model fetch: HTTP")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "loopback model fetch: HTTP")
 	t.Logf("loopback model fetch OK: %s", strings.TrimSpace(string(body)))
 
 	// The same request from this host's LAN address is a non-loopback caller with
@@ -307,7 +307,7 @@ func assertForbidden(t *testing.T, client *http.Client, url, body string) {
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
-	require.True(t, resp.StatusCode == http.StatusForbidden, "unpinned cluster peer got HTTP (%v)", url)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "unpinned cluster peer got HTTP (%v)", url)
 }
 
 // postUntil retries until the endpoint answers want, absorbing the listener's

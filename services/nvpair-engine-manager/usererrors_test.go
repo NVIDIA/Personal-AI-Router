@@ -29,7 +29,7 @@ func TestUnwrapPullCause(t *testing.T) {
 		}
 		{
 			got := unwrapPullCause(err)
-			require.True(t, got == c.want, "unwrapPullCause (%v)", got)
+			require.Equal(t, c.want, got, "unwrapPullCause")
 		}
 	}
 }
@@ -38,7 +38,7 @@ func TestFormatEnginePullError(t *testing.T) {
 	err := errors.New("action command failed: exit status 1: Error: Download failed: Timed-out. Please try to resume.")
 	got := formatEnginePullError("LM Studio", err)
 	want := "LM Studio experienced an error while downloading a model: Download failed: Timed-out. Please try to resume."
-	require.True(t, got == want, "got (%v, %v)", got, want)
+	require.Equal(t, want, got)
 
 	got = formatEnginePullError("LM Studio", errors.New(""))
 	require.Equal(t, "LM Studio experienced an error while downloading a model.", got, "empty detail:")

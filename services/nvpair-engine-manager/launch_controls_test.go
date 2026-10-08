@@ -36,7 +36,7 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 				request.Settings.LaunchText = "LISTEN_ALIAS=127.0.0.1:23456 ORIGIN_ALIAS=https://example.test -l127.0.0.1:23456 --future opaque"
 			}
 			preview := previewSettings(t, e, request)
-			require.LessOrEqual(t, len(preview.Errors), 0, " (%v)", preview)
+			require.Empty(t, preview.Errors, " (%v)", preview)
 			require.Nil(t, preview.Conflict, " (%v)", preview)
 			rt.LaunchArgs, rt.LaunchEnv = &preview.Args, &preview.Env
 			launch, err := launchForState(settingsState(t, e), preview.Settings.ServerPort)
@@ -45,7 +45,7 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 			for _, control := range rt.EditableLaunch.Controls {
 				if value, managed := control.managedValue("127.0.0.1", "23456"); managed {
 					for _, env := range control.Env {
-						require.True(t, launch.Env[env] == value, "managed alias (%v, %v)", env, value)
+						require.Equal(t, value, launch.Env[env], "managed alias (%v)", env)
 					}
 				}
 			}
@@ -56,7 +56,7 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 			}
 			{
 				result := previewSettings(t, e, request)
-				require.NotEqual(t, 0, len(result.Errors), "contradictory source aliases accepted")
+				require.NotEmpty(t, result.Errors, "contradictory source aliases accepted")
 			}
 		})
 	}
@@ -154,7 +154,7 @@ func TestBundledNetworkingControls(t *testing.T) {
 					p := settingsRequest(t, e)
 					p.Settings.LaunchText, p.Resolution = text, "launch"
 					preview := previewSettings(t, e, p)
-					require.Len(t, preview.Errors, 0, " (%v, %v)", text, preview)
+					require.Empty(t, preview.Errors, " (%v, %v)", text, preview)
 					require.Nil(t, preview.Conflict, " (%v, %v)", text, preview)
 					require.Equal(t, 23456, preview.Settings.ServerPort, " (%v, %v)", text, preview)
 					p.Settings = preview.Settings
@@ -168,7 +168,7 @@ func TestBundledNetworkingControls(t *testing.T) {
 					p.Settings.LaunchText = text
 					{
 						result := previewSettings(t, e, p)
-						require.NotEqual(t, 0, len(result.Errors), "accepted (%v, %v)", text, result)
+						require.NotEmpty(t, result.Errors, "accepted (%v, %v)", text, result)
 					}
 				}
 				assertNoSettingsOverride(t, e)
@@ -192,7 +192,7 @@ func TestNetworkingControlAliasesAreEngineIndependent(t *testing.T) {
 		request.Settings.LaunchText = text
 		request.Resolution = "launch"
 		result := previewSettings(t, e, request)
-		require.Len(t, result.Errors, 0, " (%v, %v)", text, result)
+		require.Empty(t, result.Errors, " (%v, %v)", text, result)
 		require.Equal(t, 23456, result.Settings.ServerPort, " (%v, %v)", text, result)
 		assert.Equal(t, []string{"--origins", "https://example.test"}, result.Args, " (%v)", text)
 	}
@@ -201,7 +201,7 @@ func TestNetworkingControlAliasesAreEngineIndependent(t *testing.T) {
 		request.Settings.LaunchText = text
 		{
 			result := previewSettings(t, e, request)
-			require.NotEqual(t, 0, len(result.Errors), "accepted (%v)", text)
+			require.NotEmpty(t, result.Errors, "accepted (%v)", text)
 		}
 	}
 }
@@ -222,7 +222,7 @@ func TestCORSCanonicalization(t *testing.T) {
 	} {
 		got, err := normalizeCORSOrigins(value.input)
 		assert.NoError(t, err, " (%v, %v)", got, err)
-		assert.True(t, got == value.want, " (%v, %v)", got, err)
+		assert.Equal(t, value.want, got)
 	}
 }
 
@@ -326,7 +326,7 @@ func FuzzCORSNormalization(f *testing.F) {
 		}
 		again, err := normalizeCORSOrigins(got)
 		require.NoError(t, err, "unstable normalization (%v, %v, %v)", value, got, again)
-		require.True(t, again == got, "unstable normalization (%v, %v, %v)", value, got, again)
+		require.Equal(t, got, again, "unstable normalization of %q", value)
 		require.False(t, strings.ContainsAny(got, "\"'"), "literal quote survives CORS validation")
 	})
 }

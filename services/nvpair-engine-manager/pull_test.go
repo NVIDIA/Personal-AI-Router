@@ -55,7 +55,7 @@ func TestModelFromParams(t *testing.T) {
 	for _, c := range cases {
 		{
 			got := modelFromParams([]byte(c.params))
-			require.True(t, got == c.want, "modelFromParams (%v)", got)
+			require.Equal(t, c.want, got, "modelFromParams")
 		}
 	}
 }
@@ -416,7 +416,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.NotEqual(t, 0, len(pulls), "engine:action{action:pull_model} emitted no engine:pull-progress notifications")
+	require.NotEmpty(t, pulls, "engine:action{action:pull_model} emitted no engine:pull-progress notifications")
 	sawPercent := false
 	for _, p := range pulls {
 		require.Equal(t, "pull", p["op"], "expected op=pull on every frame (%v)", p)
@@ -465,10 +465,7 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 	require.Equal(t, "pull", pulls[0]["op"], "unexpected CLI pull marker")
 	require.Equal(t, "pulling", pulls[0]["stage"], "unexpected CLI pull marker")
 	require.Equal(t, "demo:1b", pulls[0]["message"], "unexpected CLI pull marker")
-	{
-		_, hasPercent := pulls[0]["percent"]
-		require.False(t, hasPercent, "CLI pull marker must omit indeterminate percent")
-	}
+	require.NotContains(t, pulls[0], "percent", "CLI pull marker must omit indeterminate percent")
 }
 
 // TestActionPullModelFailureEmitsTerminalError proves a failed LOCAL pull emits
@@ -511,7 +508,7 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 	require.Equal(t, "error", pulls[0]["stage"], "expected a terminal error frame")
 	{
 		pct, _ := pulls[0]["percent"].(int)
-		require.True(t, pct == -1, "expected percent -1 on the error frame")
+		require.Equal(t, -1, pct, "expected percent -1 on the error frame")
 	}
 	msg, _ := pulls[0]["message"].(string)
 	require.Contains(t, msg, "Fake Engine experienced an error while downloading a model", "expected formatted error on the progress frame")

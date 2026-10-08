@@ -69,7 +69,7 @@ func TestCombine(t *testing.T) {
 			// preflight fan-out to every candidate engine.
 			maxAge, err := strconv.Atoi(h.Get("Access-Control-Max-Age"))
 			require.NoError(t, err, "preflight max-age is not a short positive window")
-			assert.Greater(t, maxAge, 0, "preflight max-age is not a short positive window")
+			assert.Positive(t, maxAge, "preflight max-age is not a short positive window")
 			assert.LessOrEqual(t, maxAge, 600, "preflight max-age is not a short positive window")
 			assert.Contains(t, strings.Join(h.Values("Vary"), ","), "Accept-Encoding", "lost Vary")
 		})
