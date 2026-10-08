@@ -6,9 +6,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"slices"
 	"strings"
@@ -606,6 +608,10 @@ func TestLlamaCPPSearch(t *testing.T) {
 // into logs. net/http puts the request URL in its error, and a search's URL
 // carries what the operator typed; returned as-is, it was logged here and by
 // every client that relays the error.
+//
+// The message cannot be compared whole: it ends in the operating system's
+// connection error, which names a random port. What has to hold is that the
+// error carrying the URL is gone.
 func TestFailedSearchDoesNotRevealTheQuery(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close() // every request now fails to connect
@@ -616,10 +622,9 @@ func TestFailedSearchDoesNotRevealTheQuery(t *testing.T) {
 	if err == nil {
 		t.Fatal("a search against an unreachable upstream succeeded")
 	}
-	for _, leak := range []string{"private", "search="} {
-		if strings.Contains(err.Error(), leak) {
-			t.Errorf("the error reveals the query: %v", err)
-		}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		t.Errorf("the error still carries the request URL: %v", err)
 	}
 }
 
@@ -634,11 +639,8 @@ func TestOverLongSearchIsRefused(t *testing.T) {
 
 	query := strings.TrimSpace(strings.Repeat("private ", maxCatalogQuery/len("private ")+1))
 	_, err := c.Catalog(context.Background(), "llamacpp", "", "", query)
-	if err == nil {
-		t.Fatalf("a %d-character query was answered", len(query))
-	}
-	if strings.Contains(err.Error(), "private") {
-		t.Errorf("the error reveals the query: %v", err)
+	if err == nil || err.Error() != "a model search is limited to 100 characters" {
+		t.Errorf("a %d-character query: error %v, want the limit stated without the query", len(query), err)
 	}
 	if got := requests(); len(got) != 0 {
 		t.Errorf("an over-long query reached the upstream: %v", got)
