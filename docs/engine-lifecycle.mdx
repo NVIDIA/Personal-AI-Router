@@ -130,8 +130,10 @@ Uninstalling an engine does **not** remove its models. Downloaded model files st
 on disk in the engine's own storage — `~/.ollama`, `~/.llamacpp`, or
 `~/.lmstudio/models` — so uninstalling and reinstalling does not cost you
 re-downloading them. The same is true of removing PAIR itself, or of resetting
-its data: those remove the engines PAIR installed, never your models. To reclaim
-that space, use **Delete** on individual models, or remove the engine's storage
+its data. Both remove the engines PAIR installed as far as they can, and never
+your models: a reset stops and tells you if an engine cannot be removed, while
+uninstalling PAIR leaves that engine in place and finishes. To reclaim that
+space, use **Delete** on individual models, or remove the engine's storage
 directory yourself.
 
 PAIR keeps the model folder at the engine's default location. If you moved LM
