@@ -468,6 +468,47 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 	return nil
 }
 
+// applyPortOverrides takes each engine's port from the user's override
+// manifest and nothing else from it. The uninstaller runs with privileges the
+// override's author may not have, so the commands it runs and the paths it
+// deletes stay bundled. A port decides only where it looks for the engine still
+// running, which is wherever the user moved it to.
+func (r *Registry) applyPortOverrides(dir string) {
+	if dir == "" {
+		return
+	}
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	for name, m := range r.engines {
+		data, err := os.ReadFile(filepath.Join(dir, name+".json"))
+		if err != nil {
+			continue
+		}
+		type portOnly struct {
+			Port int `json:"port"`
+		}
+		var override struct {
+			Engine    string   `json:"engine"`
+			Runtime   portOnly `json:"runtime"`
+			Platforms map[string]struct {
+				Runtime portOnly `json:"runtime"`
+			} `json:"platforms"`
+		}
+		if err := json.Unmarshal(data, &override); err != nil || override.Engine != name {
+			continue
+		}
+		port := override.Runtime.Port
+		if hostPort := override.Platforms[host].Runtime.Port; hostPort != 0 {
+			port = hostPort
+		}
+		platform, ok := m.Platforms[host]
+		if !ok || port <= 0 || port > 65535 {
+			continue
+		}
+		platform.Runtime.Port = port
+		m.Platforms[host] = platform
+	}
+}
+
 // bundledDefaultPort returns the host-platform runtime.port from the bundled
 // (un-overridden) manifest for an engine, used to decide whether a chosen
 // port is back at the default (so its override file can be dropped).

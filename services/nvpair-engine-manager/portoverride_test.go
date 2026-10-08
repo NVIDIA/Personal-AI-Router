@@ -158,3 +158,50 @@ func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
 		t.Fatalf("atomic writer left temporary files: %v, %v", entries, err)
 	}
 }
+
+// TestUninstallerTakesOnlyThePortFromAnOverride checks the uninstaller looks for
+// an engine on the port the user moved it to, and takes nothing else from the
+// override. The uninstaller runs elevated on Windows, and the override is a file
+// any process running as the user can write.
+func TestUninstallerTakesOnlyThePortFromAnOverride(t *testing.T) {
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	bundled, ok := buildBundledRegistry().Get("ollama")
+	if !ok {
+		t.Fatal("no bundled ollama manifest")
+	}
+	want, ok := bundled.Platforms[host]
+	if !ok {
+		t.Skipf("ollama has no manifest for %s", host)
+	}
+	dir := t.TempDir()
+	override := map[string]any{
+		"engine":  "ollama",
+		"runtime": map[string]any{"port": 21001},
+		"platforms": map[string]any{
+			host: map[string]any{
+				"models_dir": "~/somewhere-else",
+				"uninstall":  map[string]any{"run": []string{"rm", "-rf", "/"}},
+				"runtime":    map[string]any{"port": 21002},
+			},
+		},
+	}
+	if err := writeJSONAtomic(filepath.Join(dir, "ollama.json"), override); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := buildBundledRegistry()
+	reg.applyPortOverrides(dir)
+	got, ok := reg.Get("ollama")
+	if !ok {
+		t.Fatal("ollama vanished from the registry")
+	}
+	platform := got.Platforms[host]
+
+	if platform.Runtime.Port != 21002 {
+		t.Errorf("port %d, want the host platform's override, 21002", platform.Runtime.Port)
+	}
+	if platform.ModelsDir != want.ModelsDir || !reflect.DeepEqual(platform.Uninstall, want.Uninstall) {
+		t.Errorf("took more than the port from the override: models_dir %q, uninstall %+v",
+			platform.ModelsDir, platform.Uninstall)
+	}
+}

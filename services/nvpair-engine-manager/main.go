@@ -166,8 +166,10 @@ func userPaths() (manifestDir, installBase string) {
 // Never fails the caller. A platform uninstaller that aborted here would leave
 // the app half-removed, so every outcome is logged and the exit stays clean.
 func runUninstallManaged() {
-	_, installBase := userPaths()
-	exec := NewExecutor(buildBundledRegistry(), NewReporter(nil), func(string, any) {}, installBase)
+	manifestDir, installBase := userPaths()
+	reg := buildBundledRegistry()
+	reg.applyPortOverrides(manifestDir)
+	exec := NewExecutor(reg, NewReporter(nil), func(string, any) {}, installBase)
 	ctx, cancel := context.WithTimeout(context.Background(), uninstallManagedTimeout)
 	defer cancel()
 	for _, result := range exec.UninstallManaged(ctx) {
