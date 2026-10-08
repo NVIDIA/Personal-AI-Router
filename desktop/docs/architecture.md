@@ -391,7 +391,7 @@ from any prior version remain recoverable. No Node runtime is required.
 
 | Path                                                     | Behavior                                                                                               |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Settings → Service → **Reset app data**                  | Confirms stop → wipe; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
+| Settings → Service → **Reset app data**                  | Confirms → removes PAIR-installed engines → stop → wipe; stops before the wipe if an engine cannot be removed or the service is down; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
 | `scripts/wipe-app-data.sh` / `scripts/wipe-app-data.cmd` | Clean-only manual entrypoints; require confirmation; do not relaunch                                   |
 
 Packaged builds ship the same scripts under `resources/scripts/` so the app invokes

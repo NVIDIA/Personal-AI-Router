@@ -20,6 +20,10 @@ function wipeMessage() {
                 , and <code>~/.lmstudio/models</code>) are <strong>not</strong> deleted, and neither
                 are engines you installed yourself.
             </Text>
+            <Text kind="body/regular/sm">
+                If an engine {APP_DISPLAY_NAME} installed cannot be removed, the reset stops before
+                deleting anything and says which one.
+            </Text>
         </Stack>
     )
 }
