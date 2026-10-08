@@ -11,6 +11,12 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 0.1.13 — Uninstalling keeps your downloaded models (#150)
+
+- Uninstalling an engine keeps the models it downloaded. Uninstalling LM Studio no longer deletes `~/.lmstudio/models`.
+- llama.cpp keeps its downloaded models in `~/.llamacpp`, outside PAIR's data folder, so removing PAIR's data no longer deletes them.
+- Removing all data — when uninstalling PAIR, from Settings > Reset app data, or from the terminal interface's reset — now also uninstalls the engines PAIR installed, including LM Studio on Windows, and leaves engines you installed yourself alone. Downloaded models are kept.
+
 ## 0.1.12 — A rebuilt terminal interface, and one model catalogue for both front ends (#117)
 
 - The terminal interface is organised around machines: Nodes, Jobs, Service, Errors, and Logs, with a per-machine drill-down for engines, models, ports, and hardware.
