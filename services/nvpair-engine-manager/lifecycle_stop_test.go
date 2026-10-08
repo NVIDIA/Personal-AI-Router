@@ -33,9 +33,7 @@ func TestStopGrace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := stopGrace(Runtime{Stop: tt.stop}); got != tt.want {
-				t.Fatalf("stopGrace() = %s, want %s", got, tt.want)
-			}
+			require.Equal(t, tt.want, stopGrace(Runtime{Stop: tt.stop}))
 		})
 	}
 }

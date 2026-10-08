@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLlamaCPPProxyIsIncludedInBrokerDefaults(t *testing.T) {
@@ -24,9 +27,7 @@ func TestLlamaCPPProxyIsIncludedInBrokerDefaults(t *testing.T) {
 	}()
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
-	if port := waitEngineProxyReady(t, "llamacpp-proxy", stdin, msgs, 15*time.Second); port <= 0 {
-		t.Fatalf("default llama.cpp proxy port = %d, want a listening facade", port)
-	}
+	assert.Greater(t, waitEngineProxyReady(t, "llamacpp-proxy", stdin, msgs, 15*time.Second), 0, "default llama.cpp facade must listen")
 }
 
 func TestBrokerLlamaCPPProxySetPortRejectsInvalidPorts(t *testing.T) {
@@ -47,16 +48,14 @@ func TestBrokerLlamaCPPProxySetPortRejectsInvalidPorts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id := 7300 + i
-			if _, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:set-port","params":%s}`+"\n", id, tc.params); err != nil {
-				t.Fatalf("write proxy port request: %v", err)
-			}
+			_, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:set-port","params":%s}`+"\n", id, tc.params)
+			require.NoError(t, err, "write proxy port request")
 			response := waitForResponse(t, msgs, 10*time.Second)
-			if response.ID == nil || string(*response.ID) != fmt.Sprint(id) {
-				t.Fatalf("unexpected response ID: %+v", response)
-			}
-			if response.Error == nil || response.Error.Code != -32602 || response.Error.Message != "port must be between 1 and 65535" {
-				t.Fatalf("error = %+v, want broker invalid-port rejection", response.Error)
-			}
+			require.NotNil(t, response.ID, "response ID")
+			assert.Equal(t, fmt.Sprint(id), string(*response.ID), "response ID")
+			require.NotNil(t, response.Error, "broker invalid-port rejection")
+			assert.Equal(t, -32602, response.Error.Code)
+			assert.Equal(t, "port must be between 1 and 65535", response.Error.Message)
 		})
 	}
 }
@@ -109,9 +108,7 @@ func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 		t.Helper()
 		hitsBefore := modelListHits.Load()
 		response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", proxyPort, path))
-		if err != nil {
-			t.Fatalf("get model list: %v", err)
-		}
+		require.NoError(t, err, "get model list")
 		defer response.Body.Close()
 		var list struct {
 			Object string `json:"object"`
@@ -119,20 +116,17 @@ func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 				ID string `json:"id"`
 			} `json:"data"`
 		}
-		if err := json.NewDecoder(response.Body).Decode(&list); err != nil {
-			t.Fatalf("decode model list: %v", err)
-		}
+		require.NoError(t, json.NewDecoder(response.Body).Decode(&list), "decode model list")
 		found := false
 		for _, item := range list.Data {
 			if item.ID == model {
 				found = true
 			}
 		}
-		if response.StatusCode != http.StatusOK || list.Object != "list" ||
-			!found || modelListHits.Load() != hitsBefore+1 {
-			t.Fatalf("model list status=%d body=%+v upstreamHits=%d",
-				response.StatusCode, list, modelListHits.Load())
-		}
+		assert.Equal(t, http.StatusOK, response.StatusCode)
+		assert.Equal(t, "list", list.Object)
+		assert.True(t, found, "model list must include the advertised model")
+		assert.Equal(t, hitsBefore+1, modelListHits.Load(), "upstream model-list requests")
 	}
 	t.Run("remaps OpenAI model list to router inventory", func(t *testing.T) {
 		getModelList(t, "/v1/models")
@@ -146,26 +140,15 @@ func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 		endpoint := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", proxyPort)
 		response, err := client.Post(endpoint, "application/json",
 			bytes.NewBufferString(fmt.Sprintf(`{"model":%q,"messages":[]}`, requestedModel)))
-		if err != nil {
-			t.Fatalf("post inference: %v", err)
-		}
-		if _, err := io.Copy(io.Discard, response.Body); err != nil {
-			t.Fatalf("read inference response: %v", err)
-		}
-		if err := response.Body.Close(); err != nil {
-			t.Fatalf("close inference response: %v", err)
-		}
+		require.NoError(t, err, "post inference")
+		_, err = io.Copy(io.Discard, response.Body)
+		require.NoError(t, err, "read inference response")
+		require.NoError(t, response.Body.Close(), "close inference response")
 		return response.StatusCode
 	}
 	t.Run("routes only the exact advertised model id", func(t *testing.T) {
-		if status := post(t, model); status != http.StatusOK {
-			t.Fatalf("matching model status = %d, want 200", status)
-		}
-		if status := post(t, "org/router-model-GGUF:q4_k_m"); status != http.StatusBadGateway {
-			t.Fatalf("case-changed model status = %d, want 502", status)
-		}
-		if got := inferenceHits.Load(); got != 1 {
-			t.Fatalf("upstream inference hits = %d, want only the exact match", got)
-		}
+		assert.Equal(t, http.StatusOK, post(t, model), "matching model status")
+		assert.Equal(t, http.StatusBadGateway, post(t, "org/router-model-GGUF:q4_k_m"), "case-changed model status")
+		assert.Equal(t, int32(1), inferenceHits.Load(), "only the exact match must reach the upstream")
 	})
 }

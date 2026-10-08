@@ -98,9 +98,7 @@ func TestShutdownIsBoundedWhenTheBrokerIsSilent(t *testing.T) {
 	defer cancel()
 
 	sup, err := Spawn(ctx, os.Args[0])
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	go func() {
 		sc := bufio.NewScanner(sup.Stderr)
 		for sc.Scan() {
@@ -119,7 +117,7 @@ func TestShutdownIsBoundedWhenTheBrokerIsSilent(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(budget):
-		t.Fatalf("shutdown still running after %s against an unresponsive broker", budget)
+		require.FailNowf(t, "shutdown still running against an unresponsive broker", "budget: %s", budget)
 	}
 }
 
@@ -155,8 +153,6 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "shutdown did not complete")
 	}
-	if code := sup.cmd.ProcessState.ExitCode(); code == fakeBrokerPreemptedExit {
-		t.Error("the supervisor stopped the engines itself, ahead of the broker's " +
-			"proxy-first teardown")
-	}
+	assert.NotEqual(t, fakeBrokerPreemptedExit, sup.cmd.ProcessState.ExitCode(),
+		"the supervisor stopped the engines itself, ahead of the broker's proxy-first teardown")
 }

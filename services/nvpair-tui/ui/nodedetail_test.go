@@ -16,6 +16,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func localDetail() *nodeDetail {
@@ -56,12 +58,8 @@ func TestRemoteDetailFollowsDiscoveryModels(t *testing.T) {
 		ModelsByEngine: map[string][]string{"ollama": {"old-model", "new-model"}},
 	}))
 
-	if len(d.models.Models) != 2 {
-		t.Fatalf("models = %v, want the refreshed pair from discovery", d.models.Models)
-	}
-	if !contains(d.View(), "new-model") {
-		t.Error("a model that appeared on the peer is not on screen")
-	}
+	require.Len(t, d.models.Models, 2, "refreshed pair from discovery")
+	assert.Contains(t, d.View(), "new-model", "a model that appeared on the peer is not on screen")
 }
 
 // TestRemoteDetailIgnoresOtherNodesDiscovery checks the screen only takes the
@@ -77,9 +75,7 @@ func TestRemoteDetailIgnoresOtherNodesDiscovery(t *testing.T) {
 		Models:   []string{"theirs"},
 	}))
 
-	if len(d.models.Models) != 1 || d.models.Models[0] != "mine" {
-		t.Errorf("another node's discovery entry overwrote this one: %v", d.models.Models)
-	}
+	assert.Equal(t, []string{"mine"}, d.models.Models, "another node's discovery entry overwrote this one")
 }
 
 // TestUnreportedLoadStateIsUnknown is the regression guard for "not loaded"
@@ -103,9 +99,7 @@ func TestUnreportedLoadStateIsUnknown(t *testing.T) {
 	}
 	want := map[string]string{"idle": "no", "resident": "yes", "unreported": "?"}
 	for model, loaded := range want {
-		if got[model] != loaded {
-			t.Errorf("%s shows loaded %q, want %q", model, got[model], loaded)
-		}
+		assert.Equal(t, loaded, got[model], "%s loaded state", model)
 	}
 }
 
@@ -122,9 +116,7 @@ func TestLocalDetailIgnoresDiscoveryModels(t *testing.T) {
 		Models:   []string{"stale-summary"},
 	}))
 
-	if len(d.models.Models) != 1 || d.models.Models[0] != "authoritative" {
-		t.Errorf("local detail took models from discovery: %v", d.models.Models)
-	}
+	assert.Equal(t, []string{"authoritative"}, d.models.Models, "local detail took models from discovery")
 }
 
 // TestRemoteDetailPollsEngines checks a peer's engine state is re-read on a
@@ -133,20 +125,17 @@ func TestLocalDetailIgnoresDiscoveryModels(t *testing.T) {
 // screen notices an engine starting or stopping over there.
 func TestRemoteDetailPollsEngines(t *testing.T) {
 	d := remoteDetail()
-	if cmd, _ := d.update(detailEnginesTickMsg{gen: d.telemetryGen}); cmd == nil {
-		t.Error("remote detail did not re-read engines on its tick")
-	}
+	cmd, _ := d.update(detailEnginesTickMsg{gen: d.telemetryGen})
+	assert.NotNil(t, cmd, "remote detail did not re-read engines on its tick")
 
 	// A superseded screen's tick is dropped, matching the telemetry chain.
-	if cmd, _ := d.update(detailEnginesTickMsg{gen: d.telemetryGen + 1}); cmd != nil {
-		t.Error("a stale chain's tick was extended")
-	}
+	cmd, _ = d.update(detailEnginesTickMsg{gen: d.telemetryGen + 1})
+	assert.Nil(t, cmd, "a stale chain's tick was extended")
 
 	// This machine has real pushes, so it must not poll.
 	local := localDetail()
-	if cmd, _ := local.update(detailEnginesTickMsg{gen: local.telemetryGen}); cmd != nil {
-		t.Error("local detail polls engines despite receiving engine:state-changed")
-	}
+	cmd, _ = local.update(detailEnginesTickMsg{gen: local.telemetryGen})
+	assert.Nil(t, cmd, "local detail polls engines despite receiving engine:state-changed")
 }
 
 // TestDetailSectionsAreSeparated is the guard for the two tables reading as one
@@ -164,21 +153,15 @@ func TestDetailSectionsAreSeparated(t *testing.T) {
 			break
 		}
 	}
-	if modelsAt <= 0 {
-		t.Fatalf("no Models heading found in:\n%s", d.View())
-	}
-	if strings.TrimSpace(lines[modelsAt-1]) != "" {
-		t.Errorf("no blank line before the Models heading; previous line was %q", lines[modelsAt-1])
-	}
+	require.Greater(t, modelsAt, 0, "Models heading: %s", strings.Join(lines, "\n"))
+	assert.Empty(t, strings.TrimSpace(lines[modelsAt-1]), "blank line before the Models heading")
 }
 
 // TestLocalDetailShowsBothPorts is the guard for the two ports being managed in
 // different places: on this machine they sit side by side on the engine's row.
 func TestLocalDetailShowsBothPorts(t *testing.T) {
 	d := localDetail()
-	if d.proxy == nil {
-		t.Fatal("no proxy tracker on the local node")
-	}
+	require.NotNil(t, d.proxy, "no proxy tracker on the local node")
 	d.proxy.apply(proxyStatusMsg{idx: 0, ready: true, port: 11435})
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true, Port: 11434}}
 	d.refreshEngines()
@@ -189,37 +172,26 @@ func TestLocalDetailShowsBothPorts(t *testing.T) {
 		titles = append(titles, c.Title)
 	}
 	joined := strings.Join(titles, " ")
-	if !strings.Contains(joined, "ENGINE PORT") || !strings.Contains(joined, "PROXY PORT") {
-		t.Fatalf("local engine columns = %q, want both ports", joined)
-	}
+	require.Contains(t, joined, "ENGINE PORT", "local engine columns show both ports")
+	require.Contains(t, joined, "PROXY PORT", "local engine columns show both ports")
 
 	row := d.engineTable.Rows()[0]
-	if row[4] != "11434" {
-		t.Errorf("engine port cell = %q, want 11434", row[4])
-	}
-	if row[5] != "11435" {
-		t.Errorf("proxy port cell = %q, want 11435", row[5])
-	}
+	assert.Equal(t, "11434", row[4], "engine port cell")
+	assert.Equal(t, "11435", row[5], "proxy port cell")
 }
 
 // TestRemoteDetailHidesProxyPort checks a peer's endpoints are not presented as
 // ours to configure.
 func TestRemoteDetailHidesProxyPort(t *testing.T) {
 	d := remoteDetail()
-	if d.proxy != nil {
-		t.Error("a remote node should carry no proxy tracker")
-	}
+	assert.Nil(t, d.proxy, "a remote node should carry no proxy tracker")
 	for _, c := range detailEngineColumns(100, true) {
-		if c.Title == "PROXY PORT" {
-			t.Error("remote engine table offers a proxy port column")
-		}
+		assert.NotEqual(t, "PROXY PORT", c.Title, "remote engine table offers a proxy port column")
 	}
 
 	d.engines = []engineStatus{{Engine: "ollama", Port: 11434}}
 	d.refreshEngines()
-	if got := len(d.engineTable.Rows()[0]); got != 5 {
-		t.Errorf("remote row has %d cells, want 5", got)
-	}
+	assert.Len(t, d.engineTable.Rows()[0], 5, "remote row cells")
 }
 
 // TestProxyPortCellStates checks the cell distinguishes a live endpoint from a
@@ -228,37 +200,23 @@ func TestProxyPortCellStates(t *testing.T) {
 	d := localDetail()
 
 	d.proxy.apply(proxyStatusMsg{idx: 0, ready: true, port: 11435})
-	if got := d.proxyPortCell("ollama"); got != "11435" {
-		t.Errorf("live endpoint = %q", got)
-	}
+	assert.Equal(t, "11435", d.proxyPortCell("ollama"), "live endpoint")
 
 	d.proxy.engines[0].ready = false
-	if got := d.proxyPortCell("ollama"); !strings.Contains(got, "down") {
-		t.Errorf("endpoint with the proxy down = %q, want it marked down", got)
-	}
+	assert.Contains(t, d.proxyPortCell("ollama"), "down", "endpoint with the proxy down")
 
-	if got := d.proxyPortCell("not-an-engine"); got != "-" {
-		t.Errorf("engine with no proxy = %q, want %q", got, "-")
-	}
+	assert.Equal(t, "-", d.proxyPortCell("not-an-engine"), "engine with no proxy")
 }
 
 // TestProxyIndexForEngine pins the engine-to-proxy pairing the proxy port
 // column depends on.
 func TestProxyIndexForEngine(t *testing.T) {
 	p := newProxyTracker()
-	if got := p.indexForEngine("ollama"); got != 0 {
-		t.Errorf("ollama -> %d, want 0", got)
-	}
-	if got := p.indexForEngine("lmstudio"); got != 1 {
-		t.Errorf("lmstudio -> %d, want 1", got)
-	}
+	assert.Equal(t, 0, p.indexForEngine("ollama"))
+	assert.Equal(t, 1, p.indexForEngine("lmstudio"))
 	// Case and padding must not decide whether a port renders.
-	if got := p.indexForEngine("  OLLAMA "); got != 0 {
-		t.Errorf("normalisation failed: %d", got)
-	}
-	if got := p.indexForEngine("vllm"); got != -1 {
-		t.Errorf("unknown engine -> %d, want -1", got)
-	}
+	assert.Equal(t, 0, p.indexForEngine("  OLLAMA "), "normalisation")
+	assert.Equal(t, -1, p.indexForEngine("vllm"), "unknown engine")
 }
 
 // seedSettings puts a settings snapshot in the cache, as a fetch or a push
@@ -296,15 +254,10 @@ func TestSettingsKeysAskTheBackendBeforeOpening(t *testing.T) {
 	d.refreshEngines()
 
 	cmd := d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if d.mode != detailInputNone {
-		t.Errorf("opened a field before the snapshot arrived (mode %v)", d.mode)
-	}
-	if cmd == nil {
-		t.Fatal("no settings request was issued")
-	}
-	if d.settingsWanted == nil || d.settingsWanted.mode != detailInputEnginePort {
-		t.Fatalf("the requested edit was not remembered: %+v", d.settingsWanted)
-	}
+	assert.Equal(t, detailInputNone, d.mode, "opened a field before the snapshot arrived")
+	require.NotNil(t, cmd, "no settings request was issued")
+	require.NotNil(t, d.settingsWanted, "the requested edit was not remembered")
+	require.Equal(t, detailInputEnginePort, d.settingsWanted.mode, "the requested edit was not remembered")
 }
 
 // TestSettingsEditorsAreDistinct checks the three fields are told apart, so a
@@ -328,15 +281,9 @@ func TestSettingsEditorsAreDistinct(t *testing.T) {
 	for _, tc := range cases {
 		d.mode = detailInputNone
 		d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
-		if d.mode != tc.mode {
-			t.Fatalf("%q opened mode %v, want %v", tc.key, d.mode, tc.mode)
-		}
-		if got := d.input.Value(); got != tc.value {
-			t.Errorf("%q seeded with %q, want %q", tc.key, got, tc.value)
-		}
-		if !strings.Contains(d.inputLabel(), tc.label) {
-			t.Errorf("label %q does not say which field", d.inputLabel())
-		}
+		require.Equal(t, tc.mode, d.mode, "%q editor mode", tc.key)
+		assert.Equal(t, tc.value, d.input.Value(), "%q initial value", tc.key)
+		assert.Contains(t, d.inputLabel(), tc.label, "label identifies field")
 	}
 }
 
@@ -359,12 +306,8 @@ func TestSettingsRefusalComesFromTheBackend(t *testing.T) {
 	seedSettings(d, snap)
 
 	d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	if d.mode != detailInputNone {
-		t.Error("opened an editor for an engine the backend said is not editable")
-	}
-	if got := d.status.render(); !strings.Contains(got, "started outside PAIR") {
-		t.Errorf("status %q does not carry the backend's reason", got)
-	}
+	assert.Equal(t, detailInputNone, d.mode, "opened an editor for an engine the backend said is not editable")
+	assert.Contains(t, d.status.render(), "started outside PAIR", "status carries the backend's reason")
 }
 
 // TestSettingsWriteCarriesTheRevisionAndResolution checks the two things a
@@ -405,16 +348,9 @@ func TestSettingsWriteCarriesTheRevisionAndResolution(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req, ok := d.settingsRequest(snap, tc.mode, tc.value)
-			if !ok {
-				t.Fatal("the request was rejected")
-			}
-			if req.ExpectedRevision != snap.Revision {
-				t.Errorf("revision %d, want the snapshot's %d",
-					req.ExpectedRevision, snap.Revision)
-			}
-			if req.Resolution != tc.resolution {
-				t.Errorf("resolution %q, want %q", req.Resolution, tc.resolution)
-			}
+			require.True(t, ok, "the request was rejected")
+			assert.Equal(t, snap.Revision, req.ExpectedRevision, "snapshot revision")
+			assert.Equal(t, tc.resolution, req.Resolution)
 		})
 	}
 }
@@ -430,12 +366,8 @@ func TestLaunchTextIsSentAsTyped(t *testing.T) {
 	const typed = `  OLLAMA_ORIGINS="https://example.com"  `
 
 	req, ok := d.settingsRequest(snap, detailInputLaunchArgs, typed)
-	if !ok {
-		t.Fatal("the request was rejected")
-	}
-	if req.Settings.LaunchText != typed {
-		t.Errorf("sent %q, want the text exactly as typed", req.Settings.LaunchText)
-	}
+	require.True(t, ok, "the request was rejected")
+	assert.Equal(t, typed, req.Settings.LaunchText, "text exactly as typed")
 }
 
 // TestSettingsApplyUsesTheNormalizedDraft checks the commit sends what the
@@ -462,20 +394,10 @@ func TestSettingsApplyUsesTheNormalizedDraft(t *testing.T) {
 		preview: enginesettings.Preview{Settings: normalized},
 	})
 
-	if verdict != settingsWrite {
-		t.Fatalf("a clean preview did not write (verdict %v, problem %q)", verdict, problem)
-	}
-	if sent.Settings.LaunchText != normalized.LaunchText {
-		t.Errorf("applied %q, want the normalized %q",
-			sent.Settings.LaunchText, normalized.LaunchText)
-	}
-	if sent.Resolution != "" {
-		t.Errorf("resolution %q survived into the commit; the draft is already settled",
-			sent.Resolution)
-	}
-	if sent.ExpectedRevision != 7 {
-		t.Errorf("revision %d, want the one the draft was based on", sent.ExpectedRevision)
-	}
+	require.Equal(t, settingsWrite, verdict, "a clean preview writes; problem %q", problem)
+	assert.Equal(t, normalized.LaunchText, sent.Settings.LaunchText, "apply normalized draft")
+	assert.Empty(t, sent.Resolution, "resolution survived into the commit; the draft is already settled")
+	assert.Equal(t, uint64(7), sent.ExpectedRevision, "revision the draft was based on")
 	_ = d
 }
 
@@ -505,18 +427,14 @@ func TestLocalSettingsPushIsNotDiscarded(t *testing.T) {
 	moved.Revision = 8
 	d.handleNotification(settingsPush(moved).Msg)
 
-	if got := d.settings["ollama"].Revision; got != 8 {
-		t.Fatalf("cached revision is %d after a push for this machine, want 8", got)
-	}
+	require.Equal(t, uint64(8), d.settings["ollama"].Revision, "cached revision after a push for this machine")
 
 	// And a push for a different machine is still ignored.
 	other := ollamaSettings()
 	other.NodeID = "some-other-node"
 	other.Revision = 99
 	d.handleNotification(settingsPush(other).Msg)
-	if got := d.settings["ollama"].Revision; got != 8 {
-		t.Errorf("a peer's snapshot overwrote this machine's: revision %d", got)
-	}
+	assert.Equal(t, uint64(8), d.settings["ollama"].Revision, "a peer's snapshot overwrote this machine's")
 }
 
 // TestFailedSaveReloadsTheSnapshot checks a rejected write leaves the screen
@@ -537,15 +455,9 @@ func TestFailedSaveReloadsTheSnapshot(t *testing.T) {
 		err:    errors.New("settings changed on this device; reload before applying"),
 	})
 
-	if _, still := d.settings["ollama"]; still {
-		t.Error("the rejected snapshot is still cached, so the next attempt repeats the failure")
-	}
-	if cmd == nil {
-		t.Error("nothing re-read the settings, so the next edit has nothing to write against")
-	}
-	if got := d.status.render(); !strings.Contains(got, "try again") {
-		t.Errorf("status %q does not tell the operator what to do: %q", got, "try again")
-	}
+	assert.NotContains(t, d.settings, "ollama", "the rejected snapshot is still cached, so the next attempt repeats the failure")
+	assert.NotNil(t, cmd, "nothing re-read the settings, so the next edit has nothing to write against")
+	assert.Contains(t, d.status.render(), "try again", "status tells the operator what to do")
 }
 
 // TestSettingsCommitCarriesARequestIdentifier is the regression guard for a
@@ -567,31 +479,21 @@ func TestSettingsCommitCarriesARequestIdentifier(t *testing.T) {
 	}
 
 	_, first, _ := judgeSettingsPreview(previewOf(11500))
-	if first.RequestID == "" {
-		t.Fatal("the commit carries no request identifier; the backend will refuse it")
-	}
-	if len(first.RequestID) > 128 {
-		t.Errorf("identifier is %d characters; the broker allows 128", len(first.RequestID))
-	}
+	require.NotEmpty(t, first.RequestID, "the commit carries no request identifier; the backend will refuse it")
+	assert.LessOrEqual(t, len(first.RequestID), 128, "broker's identifier limit")
 
 	// Asserted on the wire form, not the Go field. `requestId` is omitempty, so
 	// an unset one does not travel as an empty string — it disappears from the
 	// object altogether, which is precisely how this shipped: the struct had
 	// the field, the JSON did not, and the broker refused the call.
 	wire, err := json.Marshal(first)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(wire), `"requestId"`) {
-		t.Errorf("the request sent to the broker has no requestId: %s", wire)
-	}
+	require.NoError(t, err, "marshal")
+	assert.Contains(t, string(wire), `"requestId"`, "request sent to the broker has requestId")
 
 	// A different change must not reuse it: the backend refuses an identifier
 	// replayed with settings that do not match its receipt.
 	_, second, _ := judgeSettingsPreview(previewOf(11501))
-	if second.RequestID == first.RequestID {
-		t.Error("two different changes share one identifier; the second would be refused")
-	}
+	assert.NotEqual(t, first.RequestID, second.RequestID, "two different changes share one identifier; the second would be refused")
 }
 
 // TestSettingsRestartIsConfirmed checks a change that restarts the engine asks
@@ -607,41 +509,25 @@ func TestSettingsRestartIsConfirmed(t *testing.T) {
 		preview: enginesettings.Preview{Settings: normalized, Restart: true},
 	}
 
-	if verdict, _, _ := judgeSettingsPreview(restarting); verdict != settingsConfirmFirst {
-		t.Fatalf("a restarting change was not held for confirmation (verdict %v)", verdict)
-	}
+	verdict, _, _ := judgeSettingsPreview(restarting)
+	require.Equal(t, settingsConfirmFirst, verdict, "a restarting change was not held for confirmation")
 
-	if cmd := d.applySettingsPreview(restarting); cmd != nil {
-		t.Fatal("a restarting change was sent without asking")
-	}
-	if d.settingsConfirm == nil {
-		t.Fatal("no confirmation was armed")
-	}
-	if got := d.status.render(); !strings.Contains(got, "restart") {
-		t.Errorf("prompt %q does not say the engine will restart", got)
-	}
+	require.Nil(t, d.applySettingsPreview(restarting), "a restarting change was sent without asking")
+	require.NotNil(t, d.settingsConfirm, "no confirmation was armed")
+	assert.Contains(t, d.status.render(), "restart", "prompt says the engine will restart")
 
 	// Anything other than y walks away, and the armed request goes with it.
-	if cmd := d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}); cmd != nil {
-		t.Error("a non-confirming key still applied the change")
-	}
-	if d.settingsConfirm != nil {
-		t.Error("the armed request outlived the cancellation")
-	}
+	assert.Nil(t, d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}), "a non-confirming key still applied the change")
+	assert.Nil(t, d.settingsConfirm, "the armed request outlived the cancellation")
 
 	d.applySettingsPreview(restarting)
 	armed := d.settingsConfirm
-	if armed == nil || armed.Settings.ServerPort != normalized.ServerPort {
-		t.Fatalf("armed the wrong request: %+v", armed)
-	}
+	require.NotNil(t, armed, "armed the wrong request")
+	require.Equal(t, normalized.ServerPort, armed.Settings.ServerPort, "armed the wrong request")
 	// The identifier is minted when the change is judged, not when it is sent,
 	// so confirming is a replay of the arming rather than a second write.
-	if armed.RequestID == "" {
-		t.Error("the armed request has no identifier, so confirming it would be refused")
-	}
-	if cmd := d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}); cmd == nil {
-		t.Error("y did not apply the armed change")
-	}
+	assert.NotEmpty(t, armed.RequestID, "the armed request has no identifier, so confirming it would be refused")
+	assert.NotNil(t, d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}), "y did not apply the armed change")
 }
 
 // TestSettingsPreviewFailuresAreExplained checks a rejected draft says why and
@@ -675,15 +561,9 @@ func TestSettingsPreviewFailuresAreExplained(t *testing.T) {
 				preview: tc.preview,
 				err:     tc.err,
 			})
-			if cmd != nil {
-				t.Error("a rejected draft was sent anyway")
-			}
-			if d.settingsConfirm != nil {
-				t.Error("a rejected draft was armed for confirmation")
-			}
-			if got := d.status.render(); !strings.Contains(got, tc.want) {
-				t.Errorf("status %q does not mention %q", got, tc.want)
-			}
+			assert.Nil(t, cmd, "a rejected draft was sent anyway")
+			assert.Nil(t, d.settingsConfirm, "a rejected draft was armed for confirmation")
+			assert.Contains(t, d.status.render(), tc.want)
 		})
 	}
 }
@@ -698,13 +578,9 @@ func TestSettingsErrorsReadTheSameEveryTime(t *testing.T) {
 	}
 	first := joinSettingsErrors(errs)
 	for i := 0; i < 20; i++ {
-		if got := joinSettingsErrors(errs); got != first {
-			t.Fatalf("attempt %d rendered %q, want the stable %q", i, got, first)
-		}
+		require.Equal(t, first, joinSettingsErrors(errs), "attempt %d stays stable", i)
 	}
-	if !strings.Contains(first, "unbalanced quote") {
-		t.Errorf("rendered %q, want every field's message", first)
-	}
+	assert.Contains(t, first, "unbalanced quote", "every field's message")
 }
 
 // TestNoBindingRequiresShift is the guard for the mixed-case keyboard: needing
@@ -732,7 +608,7 @@ func TestNoBindingRequiresShift(t *testing.T) {
 				// A single upper-case letter is the shift-dependent case; the
 				// named keys (esc, enter, shift+tab) are longer than one rune.
 				if len(k) == 1 && k >= "A" && k <= "Z" {
-					t.Errorf("%s: binding %q uses shift-dependent key %q", where, b.Help().Desc, k)
+					assert.Failf(t, "binding uses a shift-dependent key", "%s: binding %q, key %q", where, b.Help().Desc, k)
 				}
 			}
 		}
@@ -836,19 +712,13 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 			d.settingsAwaited = &awaitedSettings{engine: snap.Engine, requestID: "req-1"}
 			d.reportSettingsOutcome(snap)
 
-			if d.status.kind != tc.wantKind {
-				t.Errorf("toast kind = %v, want %v", d.status.kind, tc.wantKind)
-			}
+			assert.Equal(t, tc.wantKind, d.status.kind)
 			got := d.status.render()
 			for _, want := range tc.wantHas {
-				if !strings.Contains(got, want) {
-					t.Errorf("message %q does not mention %q", got, want)
-				}
+				assert.Contains(t, got, want)
 			}
 			for _, unwanted := range tc.wantNotIn {
-				if strings.Contains(got, unwanted) {
-					t.Errorf("message %q should not contain %q", got, unwanted)
-				}
+				assert.NotContains(t, got, unwanted)
 			}
 		})
 	}
@@ -871,9 +741,7 @@ func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
 	}
 
 	d.reportSettingsOutcome(snap)
-	if got := d.status.render(); got != "" {
-		t.Errorf("reported %q for a change this screen did not make", got)
-	}
+	assert.Empty(t, d.status.render(), "reported a change this screen did not make")
 
 	// The same engine, changed by someone else while this screen waits: the
 	// desktop app, say. Matching on the engine alone consumed the await and
@@ -882,23 +750,15 @@ func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
 	theirs := snap
 	theirs.RequestID = "theirs"
 	d.reportSettingsOutcome(theirs)
-	if got := d.status.render(); got != "" {
-		t.Errorf("reported another client's change as this screen's: %q", got)
-	}
-	if d.settingsAwaited == nil {
-		t.Fatal("another client's snapshot spent this screen's await")
-	}
+	assert.Empty(t, d.status.render(), "reported another client's change as this screen's")
+	require.NotNil(t, d.settingsAwaited, "another client's snapshot spent this screen's await")
 
 	// And it speaks exactly once for a change it did make.
 	d.reportSettingsOutcome(snap)
-	if d.status.render() == "" {
-		t.Fatal("said nothing about this screen's own change")
-	}
+	require.NotEmpty(t, d.status.render(), "said nothing about this screen's own change")
 	d.status = toast{}
 	d.reportSettingsOutcome(snap)
-	if got := d.status.render(); got != "" {
-		t.Errorf("repeated the outcome as %q on a later snapshot", got)
-	}
+	assert.Empty(t, d.status.render(), "repeated the outcome on a later snapshot")
 }
 
 // TestAcceptedIsNotApplied is the regression guard for a verdict reported
@@ -923,30 +783,22 @@ func TestAcceptedIsNotApplied(t *testing.T) {
 		EffectiveProxyPort: 11434,
 	}
 	d.reportSettingsOutcome(applying)
-	if got := d.status.render(); got != "" {
-		t.Errorf("reported %q while the change was still applying", got)
-	}
-	if d.settingsAwaited == nil {
-		t.Fatal("the applying snapshot spent the await, so the real verdict will be ignored")
-	}
+	assert.Empty(t, d.status.render(), "reported an outcome while the change was still applying")
+	require.NotNil(t, d.settingsAwaited, "the applying snapshot spent the await, so the real verdict will be ignored")
 
 	// A never-configured engine reports no phase at all; that is not a verdict
 	// either.
 	idle := applying
 	idle.Phase = ""
 	d.reportSettingsOutcome(idle)
-	if d.settingsAwaited == nil {
-		t.Fatal("an empty phase was read as a verdict")
-	}
+	require.NotNil(t, d.settingsAwaited, "an empty phase was read as a verdict")
 
 	// The terminal snapshot for the same request is the one that speaks.
 	done := applying
 	done.Phase = settingsPhaseSucceeded
 	done.EffectiveProxyPort = 11500
 	d.reportSettingsOutcome(done)
-	if got := d.status.render(); !strings.Contains(got, "saved") {
-		t.Errorf("the terminal snapshot reported %q, want a save", got)
-	}
+	assert.Contains(t, d.status.render(), "saved", "terminal snapshot reports a save")
 
 	// And a genuine failure after "applying" is reported, not lost.
 	d = localDetail()
@@ -957,9 +809,7 @@ func TestAcceptedIsNotApplied(t *testing.T) {
 	failed.Phase = settingsPhaseFailed
 	failed.Error = "engine did not become ready"
 	d.reportSettingsOutcome(failed)
-	if got := d.status.render(); !strings.Contains(got, "did not become ready") {
-		t.Errorf("the failure after applying reported %q", got)
-	}
+	assert.Contains(t, d.status.render(), "did not become ready", "failure after applying")
 }
 
 // TestSlowApplyIsStillApplying checks a deadline on the apply reply is not
@@ -977,41 +827,25 @@ func TestSlowApplyIsStillApplying(t *testing.T) {
 	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "req-1"}
 
 	cmd, _ := d.update(engineSettingsAppliedMsg{engine: "ollama", err: context.DeadlineExceeded})
-	if cmd != nil {
-		t.Error("a deadline triggered a re-read, as though the write had been rejected")
-	}
-	if d.settingsAwaited == nil {
-		t.Fatal("a deadline cleared the await, so the verdict that follows will be ignored")
-	}
-	if _, kept := d.settings["ollama"]; !kept {
-		t.Error("a deadline discarded the snapshot the in-flight write was based on")
-	}
-	if got := d.status.render(); strings.Contains(got, "fail") || !strings.Contains(got, "applying") {
-		t.Errorf("status %q does not say the change is still applying", got)
-	}
+	assert.Nil(t, cmd, "a deadline triggered a re-read, as though the write had been rejected")
+	require.NotNil(t, d.settingsAwaited, "a deadline cleared the await, so the verdict that follows will be ignored")
+	assert.Contains(t, d.settings, "ollama", "a deadline discarded the snapshot the in-flight write was based on")
+	got := d.status.render()
+	assert.NotContains(t, got, "fail", "change is still applying")
+	assert.Contains(t, got, "applying", "change is still applying")
 
 	d.reportSettingsOutcome(enginesettings.Snapshot{
 		Engine: "ollama", RequestID: "req-1", Phase: settingsPhaseSucceeded,
 	})
-	if got := d.status.render(); !strings.Contains(got, "saved") {
-		t.Errorf("the verdict after a deadline reported %q", got)
-	}
+	assert.Contains(t, d.status.render(), "saved", "verdict after a deadline")
 }
 
 // TestSettingsApplyBudgetIsTheBackends checks the apply call is given the time
 // the backend works to, not the one sized for control calls.
 func TestSettingsApplyBudgetIsTheBackends(t *testing.T) {
-	if got := settingsApplyBudget(enginesettings.Request{Engine: "ollama"}); got != enginesettings.CallBudget {
-		t.Errorf("a local apply is allowed %v, want the shared call budget %v",
-			got, enginesettings.CallBudget)
-	}
-	if got := settingsApplyBudget(enginesettings.Request{NodeID: "peer", Engine: "ollama"}); got != enginesettings.RelayBudget {
-		t.Errorf("a relayed apply is allowed %v, want the shared relay budget %v",
-			got, enginesettings.RelayBudget)
-	}
-	if settingsApplyBudget(enginesettings.Request{}) <= callTimeout {
-		t.Error("an apply is no longer allowed more than a control call")
-	}
+	assert.Equal(t, enginesettings.CallBudget, settingsApplyBudget(enginesettings.Request{Engine: "ollama"}), "local apply budget")
+	assert.Equal(t, enginesettings.RelayBudget, settingsApplyBudget(enginesettings.Request{NodeID: "peer", Engine: "ollama"}), "relayed apply budget")
+	assert.Greater(t, settingsApplyBudget(enginesettings.Request{}), callTimeout, "an apply is allowed more than a control call")
 }
 
 // TestSettingsPromptsHoldTheKeyboard checks the two settings waiting states
@@ -1024,15 +858,11 @@ func TestSettingsApplyBudgetIsTheBackends(t *testing.T) {
 func TestSettingsPromptsHoldTheKeyboard(t *testing.T) {
 	d := localDetail()
 	d.settingsConfirm = &enginesettings.Request{Engine: "ollama"}
-	if !d.CapturingInput() {
-		t.Error("an armed restart confirmation does not hold the keyboard")
-	}
+	assert.True(t, d.CapturingInput(), "an armed restart confirmation does not hold the keyboard")
 
 	d = localDetail()
 	d.settingsWanted = &pendingSettingsEdit{engine: "ollama", mode: detailInputEnginePort}
-	if !d.CapturingInput() {
-		t.Error("a settings read in flight does not hold the keyboard")
-	}
+	assert.True(t, d.CapturingInput(), "a settings read in flight does not hold the keyboard")
 }
 
 // TestSettingsWriteFollowsTheFieldNotTheCursor is the regression guard for a
@@ -1057,22 +887,17 @@ func TestSettingsWriteFollowsTheFieldNotTheCursor(t *testing.T) {
 	// Open Ollama's engine port field, then move the cursor to LM Studio.
 	d.openSettingsField(d.settings["ollama"], detailInputEnginePort)
 	d.engineTable.SetCursor(1)
-	if sel := d.selectedEngine(); sel == nil || sel.Engine != "lmstudio" {
-		t.Fatalf("setup: cursor is not on LM Studio (%+v)", sel)
-	}
+	sel := d.selectedEngine()
+	require.NotNil(t, sel, "setup: cursor is not on LM Studio")
+	require.Equal(t, "lmstudio", sel.Engine, "setup: cursor is not on LM Studio")
 
-	if d.submitSettings(detailInputEnginePort, "11600", "11600") == nil {
-		t.Fatal("the submit issued no preview")
-	}
+	require.NotNil(t, d.submitSettings(detailInputEnginePort, "11600", "11600"), "the submit issued no preview")
 	// The submit names the engine it built the request for. Resolved from the
 	// cursor, this read "checking LM Studio settings".
 	got := d.status.render()
-	if !strings.Contains(got, "Ollama") || strings.Contains(got, "LM Studio") {
-		t.Errorf("status %q: the write was aimed at the cursor, not the field", got)
-	}
-	if d.settingsEngine != "" {
-		t.Error("the field's engine outlived the submit")
-	}
+	assert.Contains(t, got, "Ollama", "write follows the field's engine")
+	assert.NotContains(t, got, "LM Studio", "write follows the field's engine")
+	assert.Empty(t, d.settingsEngine, "the field's engine outlived the submit")
 }
 
 // TestLateSettingsReplyDoesNotOpenAnotherNodesEditor is the regression guard
@@ -1090,17 +915,13 @@ func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
 		d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 		d.refreshEngines()
 		v.detail = d
-		if d.editSetting(&d.engines[0], detailInputEnginePort) == nil {
-			t.Fatalf("%s did not start a settings read", key)
-		}
+		require.NotNil(t, d.editSetting(&d.engines[0], detailInputEnginePort), "%s did not start a settings read", key)
 		return d
 	}
 
 	open("node-a")
 	v.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if v.detail != nil {
-		t.Fatal("node A's detail did not close while its settings read was pending")
-	}
+	require.Nil(t, v.detail, "node A's detail did not close while its settings read was pending")
 	second := open("node-b")
 
 	stale := ollamaSettings()
@@ -1110,25 +931,17 @@ func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
 	v.Update(detailReply{node: "node-a", msg: engineSettingsMsg{err: errors.New("node-a went away")}})
 	v.Update(detailReply{node: "node-a", msg: enginePreviewMsg{request: enginesettings.Request{NodeID: "node-a", Engine: "ollama"}}})
 
-	if second.mode != detailInputNone {
-		t.Errorf("node A's reply opened node B's editor with port %q", second.input.Value())
-	}
-	if _, cached := second.settings["ollama"]; cached {
-		t.Error("node A's settings reply was cached on node B")
-	}
-	if second.settingsWanted == nil {
-		t.Error("node A's reply consumed node B's pending settings edit")
-	}
+	assert.Equal(t, detailInputNone, second.mode, "node A's reply opened node B's editor with port %q", second.input.Value())
+	assert.NotContains(t, second.settings, "ollama", "node A's settings reply was cached on node B")
+	assert.NotNil(t, second.settingsWanted, "node A's reply consumed node B's pending settings edit")
 
 	// And node B's own reply still does what it is for; without this the
 	// assertions above would pass if every reply were dropped.
 	own := ollamaSettings()
 	own.NodeID = "node-b"
 	v.Update(detailReply{node: "node-b", msg: engineSettingsMsg{snapshot: own}})
-	if second.mode != detailInputEnginePort || second.input.Value() != "11434" {
-		t.Errorf("node B's own reply did not open its field (mode %v, value %q)",
-			second.mode, second.input.Value())
-	}
+	assert.Equal(t, detailInputEnginePort, second.mode, "node B's own reply opens its field")
+	assert.Equal(t, "11434", second.input.Value(), "node B's own reply opens its field")
 }
 
 // TestLateOperationReplyStaysWithItsNode is the regression guard for one
@@ -1144,14 +957,10 @@ func TestLateOperationReplyStaysWithItsNode(t *testing.T) {
 
 	failed := classifyOpResult("start", "ollama", "start", errors.New("engine did not come up"))
 	b.update(detailReply{node: "node-a", msg: failed})
-	if got := b.status.render(); strings.Contains(got, "failed") {
-		t.Errorf("node A's outcome was reported on node B: %q", got)
-	}
+	assert.NotContains(t, b.status.render(), "failed", "node A's outcome was reported on node B")
 
 	b.update(detailReply{node: "node-b", msg: failed})
-	if got := b.status.render(); !strings.Contains(got, "start (Ollama) failed") {
-		t.Errorf("node B's own outcome was not reported: %q", got)
-	}
+	assert.Contains(t, b.status.render(), "start (Ollama) failed", "node B's own outcome is reported")
 }
 
 // TestDetailRepliesCarryTheirNode checks the other half of the envelope: a
@@ -1162,15 +971,12 @@ func TestDetailRepliesCarryTheirNode(t *testing.T) {
 	reply := engineOpMsg{what: "start", engine: "ollama"}
 	got := a.own(func() tea.Msg { return reply })()
 	tagged, ok := got.(detailReply)
-	if !ok || tagged.node != "node-a" || tagged.msg != reply {
-		t.Errorf("reply left as %#v, want it addressed to node-a", got)
+	if assert.True(t, ok, "reply is addressed to its node") {
+		assert.Equal(t, "node-a", tagged.node)
+		assert.Equal(t, reply, tagged.msg)
 	}
-	if a.own(nil) != nil {
-		t.Error("no command was turned into one")
-	}
-	if msg := a.own(func() tea.Msg { return nil })(); msg != nil {
-		t.Errorf("a command with nothing to say was given an envelope: %#v", msg)
-	}
+	assert.Nil(t, a.own(nil), "no command was turned into one")
+	assert.Nil(t, a.own(func() tea.Msg { return nil })(), "a command with nothing to say was given an envelope")
 }
 
 // TestSecondSettingsChangeWaitsForTheFirst is the regression guard for a
@@ -1185,15 +991,10 @@ func TestSecondSettingsChangeWaitsForTheFirst(t *testing.T) {
 	d.refreshEngines()
 	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "first"}
 
-	if cmd := d.editSetting(&d.engines[1], detailInputEnginePort); cmd != nil {
-		t.Error("a second settings change started while the first was still applying")
-	}
-	if d.mode != detailInputNone || d.settingsWanted != nil {
-		t.Error("a second settings field was opened while the first change was applying")
-	}
-	if got := d.status.render(); !strings.Contains(got, "wait for the Ollama settings change") {
-		t.Errorf("the refusal did not say what to wait for: %q", got)
-	}
+	assert.Nil(t, d.editSetting(&d.engines[1], detailInputEnginePort), "a second settings change started while the first was still applying")
+	assert.Equal(t, detailInputNone, d.mode, "a second settings field was opened while the first change was applying")
+	assert.Nil(t, d.settingsWanted, "a second settings field was opened while the first change was applying")
+	assert.Contains(t, d.status.render(), "wait for the Ollama settings change", "refusal says what to wait for")
 }
 
 // progressPush builds a progress notification from its fields as sent.
@@ -1211,15 +1012,11 @@ func TestInstallProgressStaysOnThisMachine(t *testing.T) {
 
 	peer := remoteDetail()
 	peer.update(frame)
-	if got := peer.status.render(); strings.Contains(got, "install") {
-		t.Errorf("this machine's install was reported on a peer's screen: %q", got)
-	}
+	assert.NotContains(t, peer.status.render(), "install", "this machine's install was reported on a peer's screen")
 
 	local := localDetail()
 	local.update(frame)
-	if got := local.status.render(); !strings.Contains(got, "downloading (40%)") {
-		t.Errorf("this machine's install progress was not shown: %q", got)
-	}
+	assert.Contains(t, local.status.render(), "downloading (40%)", "this machine's install progress is shown")
 }
 
 // TestProgressWithoutAPercentShowsNone is the regression guard for progress
@@ -1230,28 +1027,24 @@ func TestProgressWithoutAPercentShowsNone(t *testing.T) {
 	peer := remoteDetail()
 	peer.update(progressPush("engine:remote-progress",
 		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "pulling manifest"}))
-	if got := peer.status.render(); !strings.Contains(got, "pulling manifest") || strings.Contains(got, "%") {
-		t.Errorf("indeterminate remote progress rendered as %q", got)
-	}
+	got := peer.status.render()
+	assert.Contains(t, got, "pulling manifest", "indeterminate remote progress")
+	assert.NotContains(t, got, "%", "indeterminate remote progress")
 	peer.update(progressPush("engine:remote-progress",
 		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "downloading", "percent": 25}))
-	if got := peer.status.render(); !strings.Contains(got, "downloading (25%)") {
-		t.Errorf("a reported percent was dropped: %q", got)
-	}
+	assert.Contains(t, peer.status.render(), "downloading (25%)", "reported percent is kept")
 
 	local := localDetail()
 	local.update(progressPush("engine:pull-progress",
 		map[string]any{"engine": "ollama", "stage": "pulling manifest"}))
-	if got := local.status.render(); strings.Contains(got, "%") {
-		t.Errorf("indeterminate pull progress rendered as %q", got)
-	}
+	assert.NotContains(t, local.status.render(), "%", "indeterminate pull progress")
 
 	local.update(progressPush("engine:install-progress",
 		map[string]any{"engine": "ollama", "stage": "failed", "percent": -1, "error": "disk full"}))
-	got := local.status.render()
-	if strings.Contains(got, "%") || !strings.Contains(got, "install") || !strings.Contains(got, "failed: disk full") {
-		t.Errorf("a failed install rendered as %q", got)
-	}
+	got = local.status.render()
+	assert.NotContains(t, got, "%", "failed install")
+	assert.Contains(t, got, "install", "failed install")
+	assert.Contains(t, got, "failed: disk full", "failed install")
 }
 
 // TestHiddenListsRefuseTheirKeys is the regression guard for keys acting on a
@@ -1276,33 +1069,26 @@ func TestHiddenListsRefuseTheirKeys(t *testing.T) {
 			both = h
 		}
 	}
-	if modelsOnly == 0 || both == 0 {
-		t.Fatalf("no height hid the lists (models only at %d, both at %d)", modelsOnly, both)
-	}
+	require.NotZero(t, modelsOnly, "some height must hide only the models")
+	require.NotZero(t, both, "some height must hide both lists")
 
 	d.SetSize(100, 30)
 	d.View()
-	if d.enginesHidden || d.modelsHidden {
-		t.Fatal("a tall screen still counted a list as hidden")
-	}
+	require.False(t, d.enginesHidden, "a tall screen still counted a list as hidden")
+	require.False(t, d.modelsHidden, "a tall screen still counted a list as hidden")
 
 	d.SetSize(100, modelsOnly)
 	d.View()
 	d.pane = detailModels
 	d.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	if d.pending != nil {
-		t.Error("a delete was armed against a model list that was not on screen")
-	}
-	if got := d.status.render(); !strings.Contains(got, "too little room to show the models") {
-		t.Errorf("the refusal did not say why: %q", got)
-	}
+	assert.Nil(t, d.pending, "a delete was armed against a model list that was not on screen")
+	assert.Contains(t, d.status.render(), "too little room to show the models", "refusal says why")
 
 	d.SetSize(100, both)
 	d.View()
 	d.pane = detailEngines
-	if cmd, _ := d.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {
-		t.Error("an engine was started from an engine list that was not on screen")
-	}
+	cmd, _ := d.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	assert.Nil(t, cmd, "an engine was started from an engine list that was not on screen")
 }
 
 // TestOpenDetailFollowsPresenceAndMembership is the regression guard for a
@@ -1324,28 +1110,19 @@ func TestOpenDetailFollowsPresenceAndMembership(t *testing.T) {
 	d := v.detail
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true}}
 	d.refreshEngines()
-	if d.node.membership != membershipMember || d.node.presence != presenceOnline {
-		t.Fatalf("setup: detail opened as %v/%v", d.node.presence, d.node.membership)
-	}
+	require.Equal(t, membershipMember, d.node.membership, "setup: detail membership")
+	require.Equal(t, presenceOnline, d.node.presence, "setup: detail presence")
 
 	// The peer leaves the cluster but is still on the network.
 	peer.Trusted = false
 	v.Update(discoveryPush(peer))
-	if d.node.membership == membershipMember {
-		t.Error("the detail still reads Member after the peer left the cluster")
-	}
-	if len(d.engines) != 0 {
-		t.Error("engine controls are still offered for a node no longer in the cluster")
-	}
-	if !contains(d.View(), "not in this cluster") {
-		t.Errorf("the engines pane does not say why the list went: %q", d.View())
-	}
+	assert.NotEqual(t, membershipMember, d.node.membership, "the detail still reads Member after the peer left the cluster")
+	assert.Empty(t, d.engines, "engine controls are still offered for a node no longer in the cluster")
+	assert.Contains(t, d.View(), "not in this cluster", "engines pane says why the list went")
 
 	// And then drops off the network entirely.
 	v.Update(discoveryPush())
-	if d.node.presence == presenceOnline {
-		t.Error("the detail still reads Online after the node dropped out of every feed")
-	}
+	assert.NotEqual(t, presenceOnline, d.node.presence, "the detail still reads Online after the node dropped out of every feed")
 }
 
 // TestEngineNameDoesNotDependOnTheEngineFetch is the regression guard for the
@@ -1366,19 +1143,12 @@ func TestEngineNameDoesNotDependOnTheEngineFetch(t *testing.T) {
 
 	for _, engine := range []string{"ollama", "lmstudio"} {
 		want := withList.engineLabel(engine)
-		if got := empty.engineLabel(engine); got != want {
-			t.Errorf("engine %q reads %q with no engine list but %q with one",
-				engine, got, want)
-		}
-		if want == engine {
-			t.Errorf("engine %q resolved to its own wire id, not a display name", engine)
-		}
+		assert.Equal(t, want, empty.engineLabel(engine), "engine %q has the same name without an engine list", engine)
+		assert.NotEqual(t, engine, want, "display name differs from wire id")
 	}
 
 	// A genuinely unknown engine still has to render as something.
-	if got := empty.engineLabel("some-new-engine"); got != "some-new-engine" {
-		t.Errorf("unknown engine rendered %q, want the id passed through", got)
-	}
+	assert.Equal(t, "some-new-engine", empty.engineLabel("some-new-engine"), "unknown engine id passes through")
 }
 
 // TestEmptyEngineListExplainsItself checks the empty states read differently.
@@ -1387,19 +1157,13 @@ func TestEngineNameDoesNotDependOnTheEngineFetch(t *testing.T) {
 // next move differs for each.
 func TestEmptyEngineListExplainsItself(t *testing.T) {
 	local := localDetail()
-	if got := local.emptyEnginesHint(); !strings.Contains(got, "engine manager") {
-		t.Errorf("local hint does not point at the engine manager: %q", got)
-	}
+	assert.Contains(t, local.emptyEnginesHint(), "engine manager", "local hint points at the engine manager")
 
 	member := remoteDetail()
 	member.node.membership = membershipMember
-	if got := member.emptyEnginesHint(); !strings.Contains(got, "this node") {
-		t.Errorf("remote member hint does not attribute the gap to the peer: %q", got)
-	}
+	assert.Contains(t, member.emptyEnginesHint(), "this node", "remote member hint attributes the gap to the peer")
 
-	if local.emptyEnginesHint() == member.emptyEnginesHint() {
-		t.Error("local and remote read identically; the causes are different")
-	}
+	assert.NotEqual(t, local.emptyEnginesHint(), member.emptyEnginesHint(), "local and remote read identically; the causes are different")
 }
 
 // TestUnpairedNodeIsNotCalledSilent is the regression guard for a machine that
@@ -1419,31 +1183,21 @@ func TestUnpairedNodeIsNotCalledSilent(t *testing.T) {
 		d := remoteDetail()
 		d.node.membership = membership
 
-		if d.enginesCmd() != nil {
-			t.Errorf("%v: asked for engines over a link that cannot carry the question", membership)
-		}
+		assert.Nil(t, d.enginesCmd(), "%v: asked for engines over a link that cannot carry the question", membership)
 		got := d.emptyEnginesHint()
-		if !strings.Contains(got, want) {
-			t.Errorf("%v: hint %q does not say %q", membership, got, want)
-		}
-		if strings.Contains(got, "not answering") {
-			t.Errorf("%v: hint %q calls a reachable node silent", membership, got)
-		}
+		assert.Contains(t, got, want, "%v: unpaired hint", membership)
+		assert.NotContains(t, got, "not answering", "%v: hint calls a reachable node silent", membership)
 		// Models come from what the node advertises over discovery, which
 		// needs no pairing, so the models pane must not blame a stopped engine
 		// for what it cannot see either way.
 		d.node.presence = presenceOnline
-		if m := d.emptyModelsHint(); strings.Contains(m, "start an engine") {
-			t.Errorf("%v: models hint %q claims an engine needs starting", membership, m)
-		}
+		assert.NotContains(t, d.emptyModelsHint(), "start an engine", "%v: models hint claims an engine needs starting", membership)
 	}
 
 	// A member is still asked, and is still allowed to be silent.
 	member := remoteDetail()
 	member.node.membership = membershipMember
-	if member.enginesCmd() == nil {
-		t.Error("a cluster member was not asked for its engines")
-	}
+	assert.NotNil(t, member.enginesCmd(), "a cluster member was not asked for its engines")
 }
 
 // TestUnpairedHintAgreesWithTheModelList checks the engines pane does not deny
@@ -1463,20 +1217,14 @@ func TestUnpairedHintAgreesWithTheModelList(t *testing.T) {
 	d.refreshModels()
 
 	hint := d.emptyEnginesHint()
-	if !strings.Contains(hint, "Ollama") {
-		t.Errorf("hint %q does not name the engine the model list attributes rows to", hint)
-	}
-	if !strings.Contains(hint, "manage") {
-		t.Errorf("hint %q does not say what pairing would actually add", hint)
-	}
+	assert.Contains(t, hint, "Ollama", "hint names the engine the model list attributes rows to")
+	assert.Contains(t, hint, "manage", "hint says what pairing adds")
 
 	// With nothing advertised there is nothing to name, and the sentence must
 	// not trail off into an empty list.
 	bare := remoteDetail()
 	bare.node.membership = membershipNone
-	if got := bare.emptyEnginesHint(); strings.Contains(got, "advertises") {
-		t.Errorf("hint %q claims advertised engines for a node reporting none", got)
-	}
+	assert.NotContains(t, bare.emptyEnginesHint(), "advertises", "hint claims advertised engines for a node reporting none")
 }
 
 // TestNodeKeysDoNotCollide checks no two verbs on the Nodes tab claim the same
@@ -1508,9 +1256,7 @@ func TestNodeKeysDoNotCollide(t *testing.T) {
 	seen := map[string]string{}
 	for verb, binding := range nodeKeys {
 		for _, k := range binding.Keys() {
-			if other, dup := seen[k]; dup {
-				t.Errorf("key %q is bound to both %q and %q", k, other, verb)
-			}
+			assert.NotContains(t, seen, k, "key must have one node binding; current verb %q", verb)
 			seen[k] = verb
 		}
 	}
@@ -1518,10 +1264,7 @@ func TestNodeKeysDoNotCollide(t *testing.T) {
 	shell := newGlobalKeyMap(len(defaultViews(nil)))
 	for _, g := range []key.Binding{shell.NextTab, shell.PrevTab, shell.JumpTab, shell.Help, shell.Quit} {
 		for _, k := range g.Keys() {
-			if verb, clash := seen[k]; clash {
-				t.Errorf("node verb %q claims %q, which the shell uses for %q",
-					verb, k, g.Help().Desc)
-			}
+			assert.NotContains(t, seen, k, "shell binding %q must not clash with a node verb", g.Help().Desc)
 		}
 	}
 }
@@ -1550,9 +1293,7 @@ func TestDetailResizesWhenHardwareArrives(t *testing.T) {
 	d.refreshModels()
 	d.status.error("something to push off the bottom")
 
-	if got := renderedRows(d.View()); got > budget {
-		t.Fatalf("setup already overflows: %d rows into %d", got, budget)
-	}
+	require.LessOrEqual(t, renderedRows(d.View()), budget, "setup already overflows")
 
 	// A dual-GPU reading is four hardware lines instead of the unavailable one.
 	d.update(nodeTelemetryMsg{nodeKey: d.node.key, gen: d.telemetryGen, telemetry: nodeTelemetry{
@@ -1565,19 +1306,12 @@ func TestDetailResizesWhenHardwareArrives(t *testing.T) {
 		Memory: &noderec.MemoryInfo{TotalBytes: 1 << 34, UsedBytes: 1 << 33},
 	}})
 
-	if d.hardwareHeight() < 4 {
-		t.Errorf("hardwareHeight = %d, want one row per reading", d.hardwareHeight())
-	}
+	assert.GreaterOrEqual(t, d.hardwareHeight(), 4, "one row per reading")
 	// The frame is what matters, not any particular table's height. Asserting on
 	// the height instead measured a value SetSize wrote and the renderer then
 	// overwrote — so it passed whether or not the frame actually fit.
-	if got := renderedRows(d.View()); got > budget {
-		t.Errorf("rendered %d rows into %d after the hardware block grew; "+
-			"the shell will delete the status line", got, budget)
-	}
-	if !contains(d.View(), "something to push off the bottom") {
-		t.Error("the status line was squeezed out by the hardware block")
-	}
+	assert.LessOrEqual(t, renderedRows(d.View()), budget, "after the hardware block grew; the shell will delete the status line")
+	assert.Contains(t, d.View(), "something to push off the bottom", "the status line was squeezed out by the hardware block")
 }
 
 // TestDetailResizesCatalogBrowser checks the browser follows a terminal resize
@@ -1587,14 +1321,11 @@ func TestDetailResizesCatalogBrowser(t *testing.T) {
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true}}
 	d.refreshEngines()
 	d.openCatalog()
-	if d.catalog == nil {
-		t.Fatal("catalog did not open")
-	}
+	require.NotNil(t, d.catalog, "catalog did not open")
 
 	d.SetSize(140, 40)
-	if d.catalog.width != 140 || d.catalog.height != 40 {
-		t.Errorf("catalog is %dx%d after resize, want 140x40", d.catalog.width, d.catalog.height)
-	}
+	assert.Equal(t, 140, d.catalog.width, "catalog width after resize")
+	assert.Equal(t, 40, d.catalog.height, "catalog height after resize")
 }
 
 // TestModelSelectionSurvivesARebuild is the regression guard for a delete
@@ -1612,9 +1343,9 @@ func TestModelSelectionSurvivesARebuild(t *testing.T) {
 	}
 	d.refreshModels()
 	d.modelTable.SetCursor(1)
-	if got := d.selectedModel(); got == nil || got.model != "charlie" {
-		t.Fatalf("setup: selected %v", got)
-	}
+	got := d.selectedModel()
+	require.NotNil(t, got, "setup: selected model")
+	require.Equal(t, "charlie", got.model, "setup: selected model")
 
 	// A background pull lands "alpha", which sorts first.
 	d.models = modelsResult{
@@ -1622,13 +1353,9 @@ func TestModelSelectionSurvivesARebuild(t *testing.T) {
 	}
 	d.refreshModels()
 
-	got := d.selectedModel()
-	if got == nil {
-		t.Fatal("nothing selected after the rebuild")
-	}
-	if got.model != "charlie" {
-		t.Errorf("selection slid to %q; a delete would now destroy the wrong model", got.model)
-	}
+	got = d.selectedModel()
+	require.NotNil(t, got, "nothing selected after the rebuild")
+	assert.Equal(t, "charlie", got.model, "selection slid; a delete would now destroy the wrong model")
 }
 
 // TestActionsWorkAfterAnEmptyRefresh is the regression guard for keys that went
@@ -1643,18 +1370,12 @@ func TestActionsWorkAfterAnEmptyRefresh(t *testing.T) {
 
 	d.models = modelsResult{ModelsByEngine: map[string][]string{"ollama": {"a", "b"}}}
 	d.refreshModels()
-	if d.selectedModel() == nil {
-		t.Errorf("no model selected after the inventory arrived (cursor %d); "+
-			"load, eject, and delete are all dead", d.modelTable.Cursor())
-	}
+	assert.NotNil(t, d.selectedModel(), "no model selected after the inventory arrived (cursor %d); load, eject, and delete are all dead", d.modelTable.Cursor())
 
 	// Same for the engines pane, which gates install/start/stop.
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 	d.refreshEngines()
-	if d.selectedEngine() == nil {
-		t.Errorf("no engine selected after engines arrived (cursor %d)",
-			d.engineTable.Cursor())
-	}
+	assert.NotNil(t, d.selectedEngine(), "no engine selected after engines arrived (cursor %d)", d.engineTable.Cursor())
 }
 
 // TestArmedActionOwnsTheKeyboard checks a pending confirmation cannot be
@@ -1667,19 +1388,11 @@ func TestArmedActionOwnsTheKeyboard(t *testing.T) {
 	d.pane = detailModels
 
 	d.deleteSelectedModel()
-	if d.pending == nil {
-		t.Fatal("delete did not arm")
-	}
-	if !d.CapturingInput() {
-		t.Error("an armed action does not capture input, so tab or a digit escapes it")
-	}
-	if !contains(d.status.render(), "press y to confirm") {
-		t.Error("the confirmation prompt is not on screen")
-	}
+	require.NotNil(t, d.pending, "delete did not arm")
+	assert.True(t, d.CapturingInput(), "an armed action does not capture input, so tab or a digit escapes it")
+	assert.Contains(t, d.status.render(), "press y to confirm", "confirmation prompt is on screen")
 	// The prompt must not expire out from under the armed state.
-	if d.status.expired() {
-		t.Error("the confirmation prompt expires while the action stays armed")
-	}
+	assert.False(t, d.status.expired(), "the confirmation prompt expires while the action stays armed")
 }
 
 // TestArmedActionRunsOnConfirmAndNotOtherwise covers the half of the gate that
@@ -1698,24 +1411,14 @@ func TestArmedActionRunsOnConfirmAndNotOtherwise(t *testing.T) {
 
 	// Any other key cancels, and says so.
 	d := build()
-	if cmd := d.handleKeyForTest(t, "n"); cmd != nil {
-		t.Error("a non-confirming key ran the destructive action")
-	}
-	if d.pending != nil {
-		t.Error("the action stayed armed after being cancelled")
-	}
-	if !contains(d.status.render(), "cancelled") {
-		t.Errorf("cancelling said nothing: %q", d.status.render())
-	}
+	assert.Nil(t, d.handleKeyForTest(t, "n"), "a non-confirming key ran the destructive action")
+	assert.Nil(t, d.pending, "the action stayed armed after being cancelled")
+	assert.Contains(t, d.status.render(), "cancelled", "cancelling said nothing")
 
 	// y runs it and disarms.
 	d = build()
-	if cmd := d.handleKeyForTest(t, "y"); cmd == nil {
-		t.Error("confirming produced no command; the delete never ran")
-	}
-	if d.pending != nil {
-		t.Error("the action stayed armed after being confirmed")
-	}
+	assert.NotNil(t, d.handleKeyForTest(t, "y"), "confirming produced no command; the delete never ran")
+	assert.Nil(t, d.pending, "the action stayed armed after being confirmed")
 }
 
 // TestUninstallRefusedOnAPeerBeforeArming checks the refusal comes before the
@@ -1729,12 +1432,8 @@ func TestUninstallRefusedOnAPeerBeforeArming(t *testing.T) {
 
 	d.handleKeyForTest(t, "u")
 
-	if d.pending != nil {
-		t.Error("armed a confirmation for an uninstall that cannot run on a peer")
-	}
-	if !contains(d.status.render(), "machine running it") {
-		t.Errorf("no explanation given: %q", d.status.render())
-	}
+	assert.Nil(t, d.pending, "armed a confirmation for an uninstall that cannot run on a peer")
+	assert.Contains(t, d.status.render(), "machine running it", "explanation given")
 }
 
 // handleKeyForTest presses one key through the detail screen's key handling.
@@ -1747,14 +1446,14 @@ func (d *nodeDetail) handleKeyForTest(t *testing.T, k string) tea.Cmd {
 func TestParsePort(t *testing.T) {
 	valid := map[string]int{"1": 1, "11434": 11434, "65535": 65535}
 	for in, want := range valid {
-		if got, ok := parsePort(in); !ok || got != want {
-			t.Errorf("parsePort(%q) = %d, %v", in, got, ok)
+		got, ok := parsePort(in)
+		if assert.True(t, ok, "parsePort(%q)", in) {
+			assert.Equal(t, want, got, "parsePort(%q)", in)
 		}
 	}
 	for _, in := range []string{"", "0", "-1", "65536", "abc", "80x"} {
-		if _, ok := parsePort(in); ok {
-			t.Errorf("parsePort(%q) accepted an invalid port", in)
-		}
+		_, ok := parsePort(in)
+		assert.False(t, ok, "parsePort(%q) accepted an invalid port", in)
 	}
 }
 
@@ -1763,8 +1462,6 @@ func TestParsePort(t *testing.T) {
 func TestServiceTabNoLongerOffersPorts(t *testing.T) {
 	v := newServiceView(nil)
 	for _, it := range v.items {
-		if strings.Contains(strings.ToLower(it.label), "port") {
-			t.Errorf("Service tab still offers %q; ports belong on the node", it.label)
-		}
+		assert.NotContains(t, strings.ToLower(it.label), "port", "Service tab still offers %q; ports belong on the node", it.label)
 	}
 }

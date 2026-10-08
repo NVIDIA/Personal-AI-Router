@@ -9,6 +9,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-tui/rpc"
 )
 
@@ -29,14 +32,10 @@ const sampleNodeUUID = "3f2a91c4-7b1e-4d55-9a02-8c6f1e2b7d40"
 // the id the workload manager reports is resolvable without any extra request.
 func TestNamerResolvesFromDiscovery(t *testing.T) {
 	n := newNodeNamer()
-	if got := n.name(sampleNodeUUID); got == "workstation-01" {
-		t.Fatal("resolved before learning anything")
-	}
+	require.NotEqual(t, "workstation-01", n.name(sampleNodeUUID), "resolved before learning anything")
 
 	n.learnDiscovered([]availableNode{{HostUUID: sampleNodeUUID, Name: "workstation-01"}})
-	if got := n.name(sampleNodeUUID); got != "workstation-01" {
-		t.Errorf("name = %q, want the discovered name", got)
-	}
+	assert.Equal(t, "workstation-01", n.name(sampleNodeUUID), "name must come from discovery")
 }
 
 // TestNamerResolvesFromMembership covers a peer known from the cluster roster
@@ -44,9 +43,7 @@ func TestNamerResolvesFromDiscovery(t *testing.T) {
 func TestNamerResolvesFromMembership(t *testing.T) {
 	n := newNodeNamer()
 	n.learnMembers([]clusterNode{{NodeUUID: sampleNodeUUID, Name: "peer-a"}})
-	if got := n.name(sampleNodeUUID); got != "peer-a" {
-		t.Errorf("name = %q, want the member name", got)
-	}
+	assert.Equal(t, "peer-a", n.name(sampleNodeUUID), "name must come from membership")
 }
 
 // TestNamerFallsBackToShortID checks an unresolved id is shortened rather than
@@ -55,24 +52,16 @@ func TestNamerFallsBackToShortID(t *testing.T) {
 	n := newNodeNamer()
 	got := n.name(sampleNodeUUID)
 
-	if got == sampleNodeUUID {
-		t.Error("unresolved id rendered in full")
-	}
+	assert.NotEqual(t, sampleNodeUUID, got, "unresolved id must not render in full")
 	// Counted in runes: the truncation marker is multi-byte, and the budget is
 	// about how many columns the cell occupies.
-	if width := utf8.RuneCountInString(got); width > shortNodeIDLen {
-		t.Errorf("fallback %q is %d runes, over the %d-column budget", got, width, shortNodeIDLen)
-	}
-	if !strings.HasPrefix(sampleNodeUUID, strings.TrimSuffix(got, "…")) {
-		t.Errorf("fallback %q is not a prefix of the id", got)
-	}
+	assert.LessOrEqual(t, utf8.RuneCountInString(got), shortNodeIDLen, "fallback must fit its column budget")
+	assert.True(t, strings.HasPrefix(sampleNodeUUID, strings.TrimSuffix(got, "…")), "fallback must be a prefix of the id")
 }
 
 func TestNamerHandlesEmptyReference(t *testing.T) {
 	n := newNodeNamer()
-	if got := n.name(""); got != unknownNodeLabel {
-		t.Errorf("empty reference = %q, want %q", got, unknownNodeLabel)
-	}
+	assert.Equal(t, unknownNodeLabel, n.name(""))
 }
 
 // TestNamerRetainsNamesAfterNodeLeaves checks a completed job keeps a readable
@@ -82,9 +71,7 @@ func TestNamerRetainsNamesAfterNodeLeaves(t *testing.T) {
 	n.learnDiscovered([]availableNode{{HostUUID: sampleNodeUUID, Name: "workstation-01"}})
 	n.learnDiscovered(nil) // node gone from the snapshot
 
-	if got := n.name(sampleNodeUUID); got != "workstation-01" {
-		t.Errorf("name = %q; a finished job outlives its node's reachability", got)
-	}
+	assert.Equal(t, "workstation-01", n.name(sampleNodeUUID), "a finished job outlives its node's reachability")
 }
 
 // TestNamerIgnoresBlankLearnings checks a payload missing either half does not
@@ -95,24 +82,18 @@ func TestNamerIgnoresBlankLearnings(t *testing.T) {
 		{HostUUID: sampleNodeUUID, Name: ""},
 		{HostUUID: "", Name: "nameless"},
 	})
-	if got := n.name(sampleNodeUUID); got == "" {
-		t.Error("resolved to an empty name")
-	}
+	assert.NotEmpty(t, n.name(sampleNodeUUID), "resolved to an empty name")
 }
 
 func TestNamerSelf(t *testing.T) {
 	n := newNodeNamer()
 	n.setSelf(clusterIdentity{NodeUUID: sampleNodeUUID, Name: "this-host"})
 
-	if got := n.name(sampleNodeUUID); got != "this-host" {
-		t.Errorf("self name = %q", got)
-	}
+	assert.Equal(t, "this-host", n.name(sampleNodeUUID))
 	// Falls back to nodeId when the manager reports no friendly name.
 	n2 := newNodeNamer()
 	n2.setSelf(clusterIdentity{NodeUUID: "u", NodeID: "host-b"})
-	if got := n2.name("u"); got != "host-b" {
-		t.Errorf("name = %q, want the nodeId fallback", got)
-	}
+	assert.Equal(t, "host-b", n2.name("u"), "nodeId fallback")
 }
 
 // TestJobsRendersNodeNames is the end-to-end guard: a job's origin and target
@@ -133,15 +114,9 @@ func TestJobsRendersNodeNames(t *testing.T) {
 	})
 
 	rows := v.table.Rows()
-	if len(rows) != 1 {
-		t.Fatalf("got %d rows", len(rows))
-	}
-	if rows[0][4] != "laptop" {
-		t.Errorf("FROM = %q, want laptop", rows[0][4])
-	}
-	if rows[0][5] != "gpu-box" {
-		t.Errorf("RAN ON = %q, want gpu-box", rows[0][5])
-	}
+	require.Len(t, rows, 1)
+	assert.Equal(t, "laptop", rows[0][4])
+	assert.Equal(t, "gpu-box", rows[0][5])
 }
 
 // TestJobsUnplacedWorkShowsPending checks an active job with no target yet says
@@ -151,15 +126,11 @@ func TestJobsUnplacedWorkShowsPending(t *testing.T) {
 
 	queued := workload{ID: "w1", State: "queued", OriginatedFrom: "o"}
 	v.upsert(queued)
-	if got := v.ranOn(v.byKey[workloadKey(queued)]); got == unknownNodeLabel {
-		t.Error("an active unplaced job should say a node is being chosen")
-	}
+	assert.NotEqual(t, unknownNodeLabel, v.ranOn(v.byKey[workloadKey(queued)]), "an active unplaced job should say a node is being chosen")
 
 	done := workload{ID: "w2", State: "completed", OriginatedFrom: "o"}
 	v.upsert(done)
-	if got := v.ranOn(v.byKey[workloadKey(done)]); got != unknownNodeLabel {
-		t.Errorf("a finished job with no target = %q, want %q", got, unknownNodeLabel)
-	}
+	assert.Equal(t, unknownNodeLabel, v.ranOn(v.byKey[workloadKey(done)]), "a finished job has no target")
 }
 
 // TestClusterLabelIsShown is the guard for a write-only setting: the cluster
@@ -170,15 +141,10 @@ func TestClusterLabelIsShown(t *testing.T) {
 	v.identity = clusterIdentity{ClusterID: "abcdef0123456789", Name: "host-a"}
 
 	// With no label, the id stands in — it is what anything operational uses.
-	if got := v.clusterLine(); !contains(got, "abcdef") {
-		t.Errorf("cluster line %q shows neither a label nor the id", got)
-	}
+	assert.Contains(t, v.clusterLine(), "abcdef", "cluster line must show the id when no label is set")
 
 	v.clusterName = "Lab 3 desks"
-	got := v.clusterLine()
-	if !contains(got, "Lab 3 desks") {
-		t.Errorf("cluster line %q omits the label that was set", got)
-	}
+	assert.Contains(t, v.clusterLine(), "Lab 3 desks", "cluster line must show the label that was set")
 }
 
 // TestClusterLabelFromIdentityPush checks the label follows the notification, so
@@ -187,12 +153,8 @@ func TestClusterLabelFromIdentityPush(t *testing.T) {
 	v := newNodesView(nil)
 	v.Update(NotificationMsg{Msg: identityChanged("cid-1", "Lab 3 desks")})
 
-	if v.clusterName != "Lab 3 desks" {
-		t.Errorf("clusterName = %q after the push", v.clusterName)
-	}
-	if v.identity.ClusterID != "cid-1" {
-		t.Errorf("clusterId = %q after the push", v.identity.ClusterID)
-	}
+	assert.Equal(t, "Lab 3 desks", v.clusterName)
+	assert.Equal(t, "cid-1", v.identity.ClusterID)
 }
 
 // TestRenameOnServiceTabReachesNodesTab is the regression guard for a rename
@@ -210,22 +172,16 @@ func TestRenameOnServiceTabReachesNodesTab(t *testing.T) {
 			idx = i
 		}
 	}
-	if idx < 0 {
-		t.Fatal("the Service tab has no cluster-name row")
-	}
+	require.GreaterOrEqual(t, idx, 0, "the Service tab has no cluster-name row")
 	saved := settingSavedMsg{idx: idx, method: setClusterNameMethod, value: "new name"}
 	svc.Update(saved)
 	nodes.Update(saved)
 
-	if nodes.clusterName != "new name" {
-		t.Errorf("Nodes tab shows %q after the rename, want %q", nodes.clusterName, "new name")
-	}
+	assert.Equal(t, "new name", nodes.clusterName)
 
 	// A failed save changes nothing.
 	nodes.Update(settingSavedMsg{idx: idx, method: setClusterNameMethod, value: "bad", err: errFake{}})
-	if nodes.clusterName != "new name" {
-		t.Errorf("a failed save changed the name to %q", nodes.clusterName)
-	}
+	assert.Equal(t, "new name", nodes.clusterName, "a failed save must preserve the name")
 }
 
 // TestServiceHidesUnusedSettings checks the two settings nothing acts on are not
@@ -234,14 +190,8 @@ func TestServiceHidesUnusedSettings(t *testing.T) {
 	v := newServiceView(nil)
 	for _, it := range v.items {
 		for _, method := range []string{it.getMethod, it.setMethod} {
-			switch method {
-			case "settings/get-force-ports", "settings/set-force-ports",
-				"settings/get-cluster-auto-sync", "settings/set-cluster-auto-sync":
-				t.Errorf("%q is shown but nothing acts on it", it.label)
-			}
+			assert.NotContains(t, []string{"settings/get-force-ports", "settings/set-force-ports", "settings/get-cluster-auto-sync", "settings/set-cluster-auto-sync"}, method, "%q must not offer a setting nothing acts on", it.label)
 		}
 	}
-	if len(v.items) == 0 {
-		t.Fatal("no configuration rows at all")
-	}
+	require.NotEmpty(t, v.items, "no configuration rows at all")
 }

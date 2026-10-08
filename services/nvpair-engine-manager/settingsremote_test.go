@@ -60,17 +60,11 @@ func settingsPin(t *testing.T, dir, id string, cert []byte) {
 func TestNotifyPeerSettingsForwardsEverySupportedEngine(t *testing.T) {
 	emitted := []settings.Snapshot{}
 	exec := &Executor{emit: func(method string, value any) {
-		if method != "engine:settings-changed" {
-			t.Fatalf("notification method = %q, want engine:settings-changed", method)
-		}
+		require.Equal(t, "engine:settings-changed", method)
 		data, err := json.Marshal(value)
-		if err != nil {
-			t.Fatalf("marshal notification: %v", err)
-		}
+		require.NoError(t, err, "marshal notification")
 		var snapshot settings.Snapshot
-		if err := json.Unmarshal(data, &snapshot); err != nil {
-			t.Fatalf("decode notification: %v", err)
-		}
+		require.NoError(t, json.Unmarshal(data, &snapshot), "decode notification")
 		emitted = append(emitted, snapshot)
 	}}
 	manager := &Manager{exec: exec}
@@ -82,16 +76,10 @@ func TestNotifyPeerSettingsForwardsEverySupportedEngine(t *testing.T) {
 	})
 
 	wantEngines := []string{"ollama", "lmstudio", "llamacpp"}
-	if len(emitted) != len(wantEngines) {
-		t.Fatalf("emitted %d snapshots, want %d: %+v", len(emitted), len(wantEngines), emitted)
-	}
+	require.Len(t, emitted, len(wantEngines))
 	for i, wantEngine := range wantEngines {
-		if emitted[i].Engine != wantEngine {
-			t.Errorf("snapshot %d engine = %q, want %q", i, emitted[i].Engine, wantEngine)
-		}
-		if emitted[i].NodeID != "peer-node" {
-			t.Errorf("snapshot %d nodeId = %q, want peer-node", i, emitted[i].NodeID)
-		}
+		assert.Equal(t, wantEngine, emitted[i].Engine, "snapshot %d engine", i)
+		assert.Equal(t, "peer-node", emitted[i].NodeID, "snapshot %d nodeId", i)
 	}
 }
 

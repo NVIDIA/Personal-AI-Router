@@ -254,54 +254,39 @@ func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
 				}()
 				frames := make([]*Message, 0, frameCount)
 				for range frameCount {
-					if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-						t.Fatalf("set read deadline: %v", err)
-					}
+					require.NoError(t, client.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 					frame, err := reader.Read()
-					if err != nil {
-						t.Fatalf("read %s frame: %v", method, err)
-					}
+					require.NoError(t, err, "read %s frame", method)
 					frames = append(frames, frame)
 				}
 				select {
 				case <-done:
 				case <-time.After(2 * time.Second):
-					t.Fatalf("%s handler did not finish after %d frame(s)", method, frameCount)
+					require.FailNowf(t, "handler did not finish", "%s after %d frame(s)", method, frameCount)
 				}
 				return frames
 			}
 
 			statusFrames := call("get-status", 1)
 			var status ProxyStatusResult
-			if err := json.Unmarshal(statusFrames[0].Result, &status); err != nil {
-				t.Fatalf("decode status: %v", err)
-			}
-			if !status.Ready || status.Port != profile.FacadePort {
-				t.Fatalf("status = %+v, want ready on %d", status, profile.FacadePort)
-			}
+			require.NoError(t, json.Unmarshal(statusFrames[0].Result, &status), "decode status")
+			assert.True(t, status.Ready)
+			assert.Equal(t, profile.FacadePort, status.Port)
 
 			subscribeFrames := call("subscribe", 2)
 			var subscribed SubscriptionResult
-			if err := json.Unmarshal(subscribeFrames[0].Result, &subscribed); err != nil || !subscribed.Subscribed {
-				t.Fatalf("subscribe response = %s, error %v", subscribeFrames[0].Result, err)
-			}
-			if subscribeFrames[1].Method != profile.ComponentName()+":ready" {
-				t.Fatalf("second subscribe frame = %q, want ready baseline after response", subscribeFrames[1].Method)
-			}
-			if string(subscribeFrames[1].Params) != string(payload) {
-				t.Fatalf("ready baseline = %s, want %s", subscribeFrames[1].Params, payload)
-			}
+			require.NoError(t, json.Unmarshal(subscribeFrames[0].Result, &subscribed), "subscribe response")
+			assert.True(t, subscribed.Subscribed)
+			assert.Equal(t, profile.ComponentName()+":ready", subscribeFrames[1].Method, "ready baseline after response")
+			assert.Equal(t, string(payload), string(subscribeFrames[1].Params), "ready baseline")
 
 			unsubscribeFrames := call("unsubscribe", 1)
-			if err := json.Unmarshal(unsubscribeFrames[0].Result, &subscribed); err != nil || subscribed.Subscribed {
-				t.Fatalf("unsubscribe response = %s, error %v", unsubscribeFrames[0].Result, err)
-			}
+			require.NoError(t, json.Unmarshal(unsubscribeFrames[0].Result, &subscribed), "unsubscribe response")
+			assert.False(t, subscribed.Subscribed)
 			b.proxyMu.Lock()
 			stillSubscribed := b.engineProxySubscribed(profile)
 			b.proxyMu.Unlock()
-			if stillSubscribed {
-				t.Fatal("facade remained subscribed after unsubscribe")
-			}
+			assert.False(t, stillSubscribed, "facade remained subscribed after unsubscribe")
 		})
 	}
 }
