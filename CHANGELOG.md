@@ -11,6 +11,14 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 0.1.11 — llama.cpp is a PAIR-managed engine (#148)
+
+- llama.cpp can be installed, started, stopped, and updated from PAIR, alongside Ollama and LM Studio.
+- Browse and pull llama.cpp models from the model hub, sourced live from approved Hugging Face publishers, with a bounded search across public publishers.
+- Delete a downloaded llama.cpp model from the engine's model list.
+- Inference routed to llama.cpp goes through the local proxy, so the engine participates in cluster routing like the others.
+- On Windows, PAIR installs the Visual C++ runtime llama.cpp requires.
+
 ## 0.1.10 — The desktop app is called NVIDIA PAIR (#147)
 
 - The application now appears as **NVIDIA PAIR** in Finder, the Dock, and the macOS menu bar, instead of the abbreviated `PAIR`.
