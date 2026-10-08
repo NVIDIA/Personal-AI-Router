@@ -48,23 +48,14 @@ func TestNodeCandidates(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			{
-				got := nodeCandidates(tc.node)
-				assert.Equal(t, tc.want, got, "nodeCandidates")
-			}
+			assert.Equal(t, tc.want, nodeCandidates(tc.node), "nodeCandidates")
 		})
 	}
 }
 
 func TestUUIDFromTXT(t *testing.T) {
-	{
-		got := uuidFromTXT([]string{"models=a;b", "uuid=abc-123"})
-		assert.Equal(t, "abc-123", got, "got")
-	}
-	{
-		got := uuidFromTXT([]string{"models=a;b"})
-		assert.Equal(t, "", got, "got")
-	}
+	assert.Equal(t, "abc-123", uuidFromTXT([]string{"models=a;b", "uuid=abc-123"}))
+	assert.Equal(t, "", uuidFromTXT([]string{"models=a;b"}))
 }
 
 // TestNodeURL covers the URL-construction part of nodeURL — specifically
@@ -113,10 +104,7 @@ func TestNodeURL(t *testing.T) {
 			u := nodeURL(tc.node)
 			require.NotNil(t, u, "nodeURL returned nil")
 			assert.Equal(t, tc.wantHost, u.Host, "Host")
-			{
-				got := u.String()
-				assert.Equal(t, tc.wantURL, got, "String() (%v)", got)
-			}
+			assert.Equal(t, tc.wantURL, u.String())
 		})
 	}
 }

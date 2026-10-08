@@ -139,7 +139,7 @@ func waitTCP(t *testing.T, addr string, timeout time.Duration) {
 			_ = conn.Close()
 			return
 		}
-		require.False(t, time.Now().After(deadline), "timed out waiting for (%v, %v)", addr, err)
+		require.LessOrEqual(t, time.Now(), deadline, "timed out waiting for (%v, %v)", addr, err)
 		time.Sleep(200 * time.Millisecond)
 	}
 }
@@ -329,7 +329,7 @@ func postUntil(t *testing.T, client *http.Client, url, body string, want int, ti
 		} else {
 			last = err.Error()
 		}
-		require.False(t, time.Now().After(deadline), "timed out waiting for (%v, %v, %v)", url, want, last)
+		require.LessOrEqual(t, time.Now(), deadline, "timed out waiting for (%v, %v, %v)", url, want, last)
 		time.Sleep(300 * time.Millisecond)
 	}
 }

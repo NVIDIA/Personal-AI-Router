@@ -27,16 +27,12 @@ func TestFullBaselineCoalescingAndLimits(t *testing.T) {
 		require.True(t, ok, "early subscriber cap")
 		closeAll = append(closeAll, close)
 	}
-	{
-		_, _, ok := h.Subscribe()
-		require.False(t, ok, "unbounded subscribers")
-	}
+	_, _, ok = h.Subscribe()
+	require.False(t, ok, "unbounded subscribers")
 	for _, close := range closeAll {
 		close()
 	}
-	if _, close, ok := h.Subscribe(); !ok {
-		require.FailNow(t, "test expectation failed", "cleanup leaked capacity")
-	} else {
-		close()
-	}
+	_, close, ok := h.Subscribe()
+	require.True(t, ok, "cleanup leaked capacity")
+	close()
 }

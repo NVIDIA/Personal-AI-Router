@@ -52,8 +52,6 @@ func TestHandleLeave_NotBlockedByUnreachableMember(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.LessOrEqual(t, elapsed, leaveNotifyTimeout+3*time.Second, "handleLeave took (%v, %v)", elapsed, pairingHTTPTimeout)
-	{
-		id, _ := m.clusterIdentity()
-		require.Equal(t, "", id, "after leave the node must be unclustered, got cluster id")
-	}
+	id, _ := m.clusterIdentity()
+	require.Equal(t, "", id, "after leave the node must be unclustered, got cluster id")
 }

@@ -111,15 +111,12 @@ func TestSubscribedToNode(t *testing.T) {
 		require.Equal(t, "uuid-a", got.ID, "unexpected projection (%v)", got)
 		require.Equal(t, tc.profile.FacadePort, got.Port, "unexpected projection (%v)", got)
 		require.Equal(t, "10.0.0.5", got.IP, "unexpected projection (%v)", got)
-		require.Len(t, got.Models, 1, "unexpected projection (%v)", got)
-		require.Equal(t, "llama", got.Models[0], "unexpected projection (%v)", got)
+		require.Equal(t, []string{"llama"}, got.Models, "unexpected projection (%v)", got)
 
 		noIP := withService
 		noIP.IP = ""
-		{
-			_, ok := subscribedToNode(tc.profile, noIP)
-			require.False(t, ok, "node without IP should not project")
-		}
+		_, ok = subscribedToNode(tc.profile, noIP)
+		require.False(t, ok, "node without IP should not project")
 
 		// A node advertising only a non-engine service (node-info) is not a
 		// routing target.
@@ -128,10 +125,8 @@ func TestSubscribedToNode(t *testing.T) {
 			IP:       "10.0.0.6",
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceNodeInfo: {Port: 14318}},
 		}
-		{
-			_, ok := subscribedToNode(tc.profile, niOnly)
-			require.False(t, ok, "node without this engine's service should not project")
-		}
+		_, ok = subscribedToNode(tc.profile, niOnly)
+		require.False(t, ok, "node without this engine's service should not project")
 
 		// Nor is a node running only the *other* engine.
 		otherOnly := noderec.DirectoryNode{
@@ -141,10 +136,8 @@ func TestSubscribedToNode(t *testing.T) {
 				other.DiscoveryService: {Port: other.FacadePort},
 			},
 		}
-		{
-			_, ok := subscribedToNode(tc.profile, otherOnly)
-			require.False(t, ok, "a node running only")
-		}
+		_, ok = subscribedToNode(tc.profile, otherOnly)
+		require.False(t, ok, "a node running only")
 
 		// Per-engine attribution: a dual-engine node projects ONLY this
 		// engine's models, never the cross-engine union, so a model served
@@ -164,8 +157,7 @@ func TestSubscribedToNode(t *testing.T) {
 		}
 		got, ok = subscribedToNode(tc.profile, dual)
 		require.True(t, ok, "dual-engine node advertising this engine should project")
-		require.Len(t, got.Models, 1, "dual-engine projection Models")
-		require.Equal(t, "mine", got.Models[0], "dual-engine projection Models")
+		require.Equal(t, []string{"mine"}, got.Models, "dual-engine projection Models")
 	})
 }
 

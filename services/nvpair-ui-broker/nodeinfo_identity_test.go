@@ -37,7 +37,7 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 
 			line := buf.String()
 			assert.True(t, strings.HasSuffix(line, "\n"), "frame is not newline-terminated; node-info reads line-delimited frames")
-			assert.Equal(t, 1, strings.Count(line, "\n"), "frame contains")
+			assert.Equal(t, 1, strings.Count(line, "\n"), "frame must contain exactly one newline")
 
 			var frame struct {
 				JSONRPC string                        `json:"jsonrpc"`
@@ -45,15 +45,12 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 				ID      json.RawMessage               `json:"id"`
 				Params  noderec.ClusterIdentityParams `json:"params"`
 			}
-			{
-				err := json.Unmarshal([]byte(line), &frame)
-				require.NoError(t, err, "decode frame (%v, %v)", line, err)
-			}
+			require.NoError(t, json.Unmarshal([]byte(line), &frame), "decode frame %q", line)
 			assert.Equal(t, "2.0", frame.JSONRPC)
 			assert.Equal(t, noderec.MethodSetClusterIdentity, frame.Method, "method")
 			// A notification, not a request: node-info's stdout is drained to
 			// io.Discard, so an id-bearing frame would strand a reply.
-			assert.Empty(t, frame.ID, "frame carries an id")
+			assert.Empty(t, frame.ID, "the push must be a notification")
 			assert.Equal(t, tc.clusterUUID, frame.Params.ClusterUUID, "clusterUuid")
 			// The field must be on the wire even when empty, since that is how a
 			// departure is expressed.

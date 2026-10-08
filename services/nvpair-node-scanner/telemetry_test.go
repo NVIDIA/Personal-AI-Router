@@ -118,10 +118,7 @@ func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	d.refreshTelemetryOnce(context.Background())
 
 	var message Message
-	{
-		err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message)
-		require.NoError(t, err, "decode notification")
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message), "decode notification")
 	var got noderec.NodeTelemetry
 	require.NoError(t, json.Unmarshal(message.Params, &got), "decode telemetry")
 	require.Equal(t, "node-a", got.HostUUID, "telemetry (%v)", got)
@@ -132,30 +129,18 @@ func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	// sweeps share — so the sweeps behind this one ask it alone rather than paying
 	// the unreachable address on every due telemetry attempt.
 	key := hostKey{hostUUID: "node-a", service: noderec.ServiceNodeInfo}
-	{
-		remembered := d.enrichHosts.get(key)
-		require.Equal(t, serverURL.Hostname(), remembered, "remembered address (%v)", remembered)
-	}
+	require.Equal(t, serverURL.Hostname(), d.enrichHosts.get(key), "remembered address")
 }
 
 func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
-	{
-		got := telemetryIntervalForNode("")
-		require.Equal(t, telemetryRefreshInterval, got, "empty identity interval (%v, %v)", got, telemetryRefreshInterval)
-	}
+	require.Equal(t, telemetryRefreshInterval, telemetryIntervalForNode(""), "empty identity interval")
 	first := telemetryIntervalForNode("node-a")
-	{
-		again := telemetryIntervalForNode("node-a")
-		require.Equal(t, first, again, "node jitter changed from (%v, %v)", first, again)
-	}
+	require.Equal(t, first, telemetryIntervalForNode("node-a"), "node jitter must be stable")
 	minimum := telemetryRefreshInterval - telemetryRefreshJitter
 	maximum := telemetryRefreshInterval + telemetryRefreshJitter
 	require.GreaterOrEqual(t, first, minimum, "node-a interval (%v, %v, %v)", first, minimum, maximum)
 	require.LessOrEqual(t, first, maximum, "node-a interval (%v, %v, %v)", first, minimum, maximum)
-	{
-		second := telemetryIntervalForNode("node-b")
-		require.NotEqual(t, first, second, "distinct identities received identical test intervals (%v)", first)
-	}
+	require.NotEqual(t, first, telemetryIntervalForNode("node-b"), "distinct identities received identical test intervals (%v)", first)
 }
 
 func TestTelemetryRetryDelay(t *testing.T) {
@@ -171,10 +156,7 @@ func TestTelemetryRetryDelay(t *testing.T) {
 		{100, 30 * time.Second},
 	}
 	for _, test := range cases {
-		{
-			got := telemetryRetryDelay(test.failures)
-			assert.Equal(t, test.want, got, "telemetryRetryDelay (%v)", got)
-		}
+		assert.Equal(t, test.want, telemetryRetryDelay(test.failures), "telemetryRetryDelay(%d)", test.failures)
 	}
 }
 
@@ -186,25 +168,19 @@ func TestTelemetryRetryGateBacksOffAndResets(t *testing.T) {
 	first, ok := gate.claim("node-a", targetKey, startedAt)
 	require.True(t, ok, "first telemetry attempt was not due")
 	require.NotEqual(t, uint64(0), first, "first telemetry attempt was not due")
-	{
-		_, ok := gate.claim("node-a", targetKey, startedAt)
-		require.False(t, ok, "a second attempt started while the first was in flight")
-	}
+	_, ok = gate.claim("node-a", targetKey, startedAt)
+	require.False(t, ok, "a second attempt started while the first was in flight")
 	gate.finish("node-a", first, false, startedAt)
 
-	{
-		_, ok := gate.claim("node-a", targetKey, startedAt.Add(4*time.Second-time.Nanosecond))
-		require.False(t, ok, "failed telemetry retried before its first backoff elapsed")
-	}
+	_, ok = gate.claim("node-a", targetKey, startedAt.Add(4*time.Second-time.Nanosecond))
+	require.False(t, ok, "failed telemetry retried before its first backoff elapsed")
 	second, ok := gate.claim("node-a", targetKey, startedAt.Add(4*time.Second))
 	require.True(t, ok, "failed telemetry was not due at its retry deadline")
 	require.NotEqual(t, first, second, "failed telemetry was not due at its retry deadline")
 	gate.finish("node-a", second, true, startedAt.Add(4*time.Second))
 
-	{
-		_, ok := gate.claim("node-a", targetKey, startedAt.Add(4*time.Second))
-		require.True(t, ok, "successful telemetry did not reset the retry gate")
-	}
+	_, ok = gate.claim("node-a", targetKey, startedAt.Add(4*time.Second))
+	require.True(t, ok, "successful telemetry did not reset the retry gate")
 }
 
 func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
@@ -219,16 +195,12 @@ func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
 			now := time.Unix(1_500, 0)
 			oldToken, ok := gate.claim("node-a", oldTarget, now)
 			require.True(t, ok, "old endpoint telemetry attempt was not due")
-			{
-				_, ok := gate.claim("node-a", changedTarget, now)
-				require.False(t, ok, "changed endpoint started while the old attempt was in flight")
-			}
+			_, ok = gate.claim("node-a", changedTarget, now)
+			require.False(t, ok, "changed endpoint started while the old attempt was in flight")
 
 			gate.finish("node-a", oldToken, false, now)
-			{
-				_, ok := gate.claim("node-a", changedTarget, now)
-				require.True(t, ok, "old endpoint failure backed off the changed endpoint")
-			}
+			_, ok = gate.claim("node-a", changedTarget, now)
+			require.True(t, ok, "old endpoint failure backed off the changed endpoint")
 		})
 	}
 }
@@ -241,15 +213,11 @@ func TestTelemetryRetryGateRemoveRediscoverPreservesActiveClaim(t *testing.T) {
 	require.True(t, ok, "first telemetry attempt was not due")
 
 	gate.forget("node-a")
-	{
-		_, ok := gate.claim("node-a", targetKey, now)
-		require.False(t, ok, "re-discovered node started telemetry before its removed attempt finished")
-	}
+	_, ok = gate.claim("node-a", targetKey, now)
+	require.False(t, ok, "re-discovered node started telemetry before its removed attempt finished")
 	gate.finish("node-a", token, false, now)
-	{
-		_, ok := gate.claim("node-a", targetKey, now)
-		require.True(t, ok, "removed attempt's late failure backed off the re-discovered node")
-	}
+	_, ok = gate.claim("node-a", targetKey, now)
+	require.True(t, ok, "removed attempt's late failure backed off the re-discovered node")
 }
 
 func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing.T) {
@@ -303,14 +271,8 @@ func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing
 
 	d.refreshTelemetryOnce(context.Background())
 
-	{
-		got := backedOffCalls.Load()
-		require.Equal(t, int32(0), got, "backed-off peer received")
-	}
-	{
-		got := healthyCalls.Load()
-		require.Equal(t, int32(1), got, "healthy peer received")
-	}
+	require.Equal(t, int32(0), backedOffCalls.Load(), "backed-off peer received")
+	require.Equal(t, int32(1), healthyCalls.Load(), "healthy peer received")
 }
 
 func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
@@ -354,14 +316,9 @@ func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
 		},
 	})
 
-	{
-		got := calls.Load()
-		require.Equal(t, int32(1), got, "browse enrichment made")
-	}
-	{
-		_, ok := d.telemetryRetries.claim("peer-uuid", targetKey, now)
-		require.False(t, ok, "TXT-only update cleared telemetry backoff for an unchanged endpoint")
-	}
+	require.Equal(t, int32(1), calls.Load(), "browse enrichment made")
+	_, ok = d.telemetryRetries.claim("peer-uuid", targetKey, now)
+	require.False(t, ok, "TXT-only update cleared telemetry backoff for an unchanged endpoint")
 }
 
 func TestBrowseRemovalClearsTelemetryRetry(t *testing.T) {
@@ -388,10 +345,8 @@ func TestBrowseRemovalClearsTelemetryRetry(t *testing.T) {
 		},
 	})
 
-	{
-		_, ok := d.telemetryRetries.claim("peer-uuid", targetKey, now)
-		require.True(t, ok, "removed peer endpoint remained backed off")
-	}
+	_, ok = d.telemetryRetries.claim("peer-uuid", targetKey, now)
+	require.True(t, ok, "removed peer endpoint remained backed off")
 }
 
 func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *testing.T) {
@@ -425,7 +380,7 @@ func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *te
 		select {
 		case <-ch:
 		case <-time.After(time.Second):
-			require.FailNow(t, "test expectation failed", "timed out waiting for (%v)", what)
+			require.FailNowf(t, "timed out waiting for telemetry", "%s", what)
 		}
 	}
 
@@ -476,17 +431,13 @@ func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *te
 	release(releaseNew)
 	waitFor(browseDone, "directory update")
 	replacementTarget := telemetryTargetKey([]string{newURL.Hostname()}, newPort)
-	{
-		_, ok := d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now())
-		require.False(t, ok, "replacement endpoint started while old endpoint telemetry was in flight")
-	}
+	_, ok := d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now())
+	require.False(t, ok, "replacement endpoint started while old endpoint telemetry was in flight")
 	release(releaseOld)
 	waitFor(telemetryDone, "old endpoint result")
 
-	{
-		_, ok := d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now())
-		require.True(t, ok, "old endpoint failure backed off the replacement endpoint")
-	}
+	_, ok = d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now())
+	require.True(t, ok, "old endpoint failure backed off the replacement endpoint")
 }
 
 func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) {
@@ -551,18 +502,18 @@ func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) 
 	select {
 	case <-slowStarted:
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "blocked peer telemetry did not start")
+		require.FailNow(t, "blocked peer telemetry did not start")
 	}
 	select {
 	case <-healthyThird:
 	case <-time.After(500 * time.Millisecond):
-		require.FailNow(t, "test expectation failed", "blocked peer delayed repeated healthy telemetry polls")
+		require.FailNow(t, "blocked peer delayed repeated healthy telemetry polls")
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "telemetry loop did not drain blocked work after cancellation")
+		require.FailNow(t, "telemetry loop did not drain blocked work after cancellation")
 	}
 }
 
@@ -669,7 +620,7 @@ func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
 			releaseOnce.Do(func() { close(releaseWork) })
 			cancel()
 			<-done
-			require.FailNow(t, "test expectation failed", "telemetry loop did not fill its concurrency allowance")
+			require.FailNow(t, "telemetry loop did not fill its concurrency allowance")
 		}
 	}
 	overflowed := false
@@ -686,19 +637,16 @@ func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
 		case <-time.After(time.Second):
 			cancel()
 			<-done
-			require.FailNow(t, "test expectation failed", "queued telemetry did not start when capacity became available")
+			require.FailNow(t, "queued telemetry did not start when capacity became available")
 		}
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "telemetry loop did not drain bounded workers after cancellation")
+		require.FailNow(t, "telemetry loop did not drain bounded workers after cancellation")
 	}
 
 	require.False(t, overflowed, "more than (%v)", telemetryRefreshConcurrency)
-	{
-		got := maxActive.Load()
-		require.Equal(t, int32(telemetryRefreshConcurrency), got, "maximum concurrent telemetry work (%v, %v)", got, telemetryRefreshConcurrency)
-	}
+	require.Equal(t, int32(telemetryRefreshConcurrency), maxActive.Load(), "maximum concurrent telemetry work")
 }

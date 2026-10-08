@@ -59,10 +59,8 @@ func TestReconcile_ReusesPeerConnections(t *testing.T) {
 	addr := ts.Listener.Addr().String()
 	const rounds = 5
 	for i := 0; i < rounds; i++ {
-		{
-			outcome, _ := m.reconcileWith([]string{addr}, peerUUID)
-			require.Equal(t, reconcileAccepted, outcome, "round (%v)", i)
-		}
+		outcome, _ := m.reconcileWith([]string{addr}, peerUUID)
+		require.Equal(t, reconcileAccepted, outcome, "round (%v)", i)
 	}
 
 	mu.Lock()
@@ -87,22 +85,16 @@ func TestPeerClient_ForgetRevokesWithPinStillOnDisk(t *testing.T) {
 	require.NoError(t, err)
 	pinTrusted(t, m, peerUUID, string(certPEM), fp)
 
-	{
-		_, err := m.peerClient(peerUUID)
-		require.NoError(t, err, "pinned peer must yield a client")
-	}
+	_, err = m.peerClient(peerUUID)
+	require.NoError(t, err, "pinned peer must yield a client")
 	pinPath := m.trust.pinPath(peerUUID)
 	require.FileExists(t, pinPath, "stat pin before Forget")
 
 	m.trust.Forget(peerUUID)
 
 	require.FileExists(t, pinPath, "Forget must leave the durable pin in place")
-	{
-		_, ok := m.trust.DER(peerUUID)
-		require.False(t, ok, "Forget must remove the TrustStore authorization")
-	}
-	{
-		_, err := m.peerClient(peerUUID)
-		require.Error(t, err, "forgotten peer yielded a client because Mesh re-read the leftover pin")
-	}
+	_, ok := m.trust.DER(peerUUID)
+	require.False(t, ok, "Forget must remove the TrustStore authorization")
+	_, err = m.peerClient(peerUUID)
+	require.Error(t, err, "forgotten peer yielded a client because Mesh re-read the leftover pin")
 }

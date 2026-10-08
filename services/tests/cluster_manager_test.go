@@ -102,10 +102,9 @@ func (p *cmProc) call(method string, params any) jsonrpc.Message {
 	if params != nil {
 		req["params"] = params
 	}
-	b, err := json.Marshal(req)
-	require.NoError(p.t, err, "encode %s", method)
+	b, _ := json.Marshal(req)
 	b = append(b, '\n')
-	_, err = p.stdin.Write(b)
+	_, err := p.stdin.Write(b)
 	require.NoError(p.t, err, "write %s", method)
 	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
 	require.Nil(p.t, resp.Error, "%s returned a JSON-RPC error", method)
@@ -122,10 +121,9 @@ func (p *cmProc) callExpectError(method string, params any) jsonrpc.Message {
 	if params != nil {
 		req["params"] = params
 	}
-	b, err := json.Marshal(req)
-	require.NoError(p.t, err, "encode %s", method)
+	b, _ := json.Marshal(req)
 	b = append(b, '\n')
-	_, err = p.stdin.Write(b)
+	_, err := p.stdin.Write(b)
 	require.NoError(p.t, err, "write %s", method)
 	return p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
 }
@@ -202,14 +200,8 @@ func TestClusterManagerPairing(t *testing.T) {
 	waitInviteState(t, a, inv.InviteID, "paired")
 
 	// Both sides now list two members.
-	{
-		got := memberCount(t, a)
-		require.Equal(t, 2, got, "node A members")
-	}
-	{
-		got := memberCount(t, b)
-		require.Equal(t, 2, got, "node B members")
-	}
+	require.Equal(t, 2, memberCount(t, a), "node A members")
+	require.Equal(t, 2, memberCount(t, b), "node B members")
 
 	// A removes B.
 	type removeResult struct {
@@ -217,10 +209,7 @@ func TestClusterManagerPairing(t *testing.T) {
 	}
 	rm := decodeResult[removeResult](t, a.call("nodes:remove", map[string]any{"nodeUuid": bInfo.NodeUUID}))
 	require.True(t, rm.Removed, "nodes:remove removed = false, want true")
-	{
-		got := memberCount(t, a)
-		require.Equal(t, 1, got, "after removal node A members")
-	}
+	require.Equal(t, 1, memberCount(t, a), "after removal node A members")
 	// B must become unclustered, not a zombie that still shows "Joined".
 	waitMembers(t, b, 0)
 	bAfter := decodeResult[nodeID](t, b.call("cluster:get-node-id", nil))
@@ -268,10 +257,7 @@ func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
 	// A is now clustered (reporting the founded id) and is its own sole member.
 	aAfter := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
 	require.Equal(t, id.ClusterID, aAfter.ClusterID, "get-node-id clusterId")
-	{
-		got := memberCount(t, a)
-		require.Equal(t, 1, got, "after auto-found node A members")
-	}
+	require.Equal(t, 1, memberCount(t, a), "after auto-found node A members")
 
 	// Idempotency: a second invite reuses the existing cluster, never re-founds.
 	inv2 := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
@@ -394,7 +380,7 @@ func waitMembers(t *testing.T, p *cmProc, want int) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "node did not reach %d members (have %d)", want, memberCount(t, p))
+	require.FailNow(t, fmt.Sprintf("node did not reach %d members (have %d)", want, memberCount(t, p)))
 }
 
 // TestClusterFanout verifies transitive trust: A founds a cluster and invites B
@@ -538,10 +524,7 @@ func TestClusterCancelInvite(t *testing.T) {
 	require.NotContains(t, memberUUIDs(t, a), bInfo.NodeUUID, "A paired with B despite canceling the invite")
 	bAfter := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
 	require.Equal(t, "", bAfter.ClusterID, "B joined a cluster despite the cancel")
-	{
-		got := memberCount(t, a)
-		require.Equal(t, 1, got, "A members")
-	}
+	require.Equal(t, 1, memberCount(t, a), "A members")
 
 	// A's invite reads canceled.
 	waitInviteState(t, a, inv.InviteID, "canceled")
@@ -596,7 +579,7 @@ func TestClusterCancelInviteRace(t *testing.T) {
 		}))
 		if inv.State != "pending" || len(inv.Pin) != 6 {
 			b.stop()
-			require.FailNow(t, "test expectation failed", "iter %d: invite-node = %+v, want pending + six-digit pin", i, inv)
+			require.FailNow(t, fmt.Sprintf("iter %d: invite-node = %+v, want pending + six-digit pin", i, inv))
 		}
 		b.waitNotify("cluster:invite-received")
 
@@ -626,7 +609,7 @@ func TestClusterCancelInviteRace(t *testing.T) {
 		acceptPaired := respMsg.Error == nil && decodeResult[inviteState](t, respMsg).State == "paired"
 		if cancelSucceeded && acceptPaired {
 			b.stop()
-			require.FailNow(t, "test expectation failed", "iter %d: both cancel and accept reported success (torn)", i)
+			require.FailNow(t, fmt.Sprintf("iter %d: both cancel and accept reported success (torn)", i))
 		}
 
 		finalState := decodeResult[inviteState](t, a.call("cluster:invite-status",
@@ -638,28 +621,28 @@ func TestClusterCancelInviteRace(t *testing.T) {
 		case "paired":
 			if cancelSucceeded {
 				b.stop()
-				require.FailNow(t, "test expectation failed", "iter %d: invite is paired but cancel returned canceled (torn)", i)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is paired but cancel returned canceled (torn)", i))
 			}
 			if !aHasB {
 				b.stop()
-				require.FailNow(t, "test expectation failed", "iter %d: invite is paired but inviter does not list the joiner (torn)", i)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is paired but inviter does not list the joiner (torn)", i))
 			}
 			if bCluster == "" {
 				b.stop()
-				require.FailNow(t, "test expectation failed", "iter %d: invite is paired but joiner did not join a cluster (torn)", i)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is paired but joiner did not join a cluster (torn)", i))
 			}
 		case "canceled", "failed":
 			if aHasB {
 				b.stop()
-				require.FailNow(t, "test expectation failed", "iter %d: invite is %s but inviter still lists the joiner as a member (torn)", i, finalState)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is %s but inviter still lists the joiner as a member (torn)", i, finalState))
 			}
 			if cancelSucceeded && bCluster != "" {
 				b.stop()
-				require.FailNow(t, "test expectation failed", "iter %d: cancel returned canceled but joiner joined cluster %q (torn)", i, bCluster)
+				require.FailNow(t, fmt.Sprintf("iter %d: cancel returned canceled but joiner joined cluster %q (torn)", i, bCluster))
 			}
 		default:
 			b.stop()
-			require.FailNow(t, "test expectation failed", "iter %d: unexpected final invite state %q", i, finalState)
+			require.FailNow(t, fmt.Sprintf("iter %d: unexpected final invite state %q", i, finalState))
 		}
 		b.stop()
 	}
@@ -820,10 +803,7 @@ func TestClusterDeclinePreservesIntentionalSolo(t *testing.T) {
 
 	after := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
 	require.Equal(t, before.ClusterID, after.ClusterID, "intentional solo cluster changed: before")
-	{
-		got := memberCount(t, a)
-		require.Equal(t, 1, got, "A members")
-	}
+	require.Equal(t, 1, memberCount(t, a), "A members")
 }
 
 // TestClusterDeclineKeepsSiblingPendingInvite verifies that with two pending
@@ -981,10 +961,7 @@ func TestClusterWrongPinPreservesIntentionalSolo(t *testing.T) {
 
 	after := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
 	require.Equal(t, before.ClusterID, after.ClusterID, "intentional solo cluster changed: before")
-	{
-		got := memberCount(t, a)
-		require.Equal(t, 1, got, "A members")
-	}
+	require.Equal(t, 1, memberCount(t, a), "A members")
 }
 
 // mutatePin returns a six-digit PIN guaranteed to differ from the input by
@@ -1015,7 +992,7 @@ func waitInviteState(t *testing.T, p *cmProc, inviteID, want string) {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "invite %s did not reach state %q", inviteID, want)
+	require.FailNow(t, fmt.Sprintf("invite %s did not reach state %q", inviteID, want))
 }
 
 // waitUnclustered blocks until cluster:get-node-id reports an empty clusterId.
@@ -1030,7 +1007,7 @@ func waitUnclustered(t *testing.T, p *cmProc) {
 		time.Sleep(150 * time.Millisecond)
 	}
 	got := decodeResult[cmNodeID](t, p.call("cluster:get-node-id", nil))
-	require.FailNow(t, "test expectation failed", "node did not leave cluster, still has clusterId %q", got.ClusterID)
+	require.FailNow(t, fmt.Sprintf("node did not leave cluster, still has clusterId %q", got.ClusterID))
 }
 
 func memberCount(t *testing.T, p *cmProc) int {
@@ -1054,7 +1031,7 @@ func waitUnclusteredWithin(t *testing.T, p *cmProc, timeout time.Duration) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "node did not become unclustered within %s", timeout)
+	require.FailNow(t, fmt.Sprintf("node did not become unclustered within %s", timeout))
 }
 
 // TestClusterSelfRemoveWhenRemovedOffline covers the removal path the
@@ -1098,19 +1075,13 @@ func TestClusterSelfRemoveWhenRemovedOffline(t *testing.T) {
 		"clusterId":           bClustered.ClusterID,
 		"clusterFriendlyName": "Offline Lab",
 	})
-	{
-		got := decodeResult[cmNodeID](t, b2.call("cluster:get-node-id", nil))
-		require.NotEqual(t, "", got.ClusterID, "precondition: B should have a restored clusterId (the zombie state)")
-	}
+	require.NotEqual(t, "", decodeResult[cmNodeID](t, b2.call("cluster:get-node-id", nil)).ClusterID, "precondition: B should have a restored clusterId (the zombie state)")
 
 	// The periodic reconcile reaches A, gets a 403 with A's signed removal
 	// tombstone (A removed B, so it holds one). A is B's only peer, so the
 	// rejection is unanimous and proven, and B self-removes.
 	waitUnclusteredWithin(t, b2, 20*time.Second)
-	{
-		got := memberCount(t, b2)
-		require.Equal(t, 0, got, "after self-remove B members")
-	}
+	require.Equal(t, 0, memberCount(t, b2), "after self-remove B members")
 }
 
 // TestClusterNoSelfRemoveWhenPeerLeft is the survivor counterpart to
@@ -1156,19 +1127,13 @@ func TestClusterNoSelfRemoveWhenPeerLeft(t *testing.T) {
 		"clusterId":           aClustered.ClusterID,
 		"clusterFriendlyName": "Survivor Lab",
 	})
-	{
-		got := decodeResult[cmNodeID](t, a2.call("cluster:get-node-id", nil))
-		require.NotEqual(t, "", got.ClusterID, "precondition: A should have a restored clusterId")
-	}
+	require.NotEqual(t, "", decodeResult[cmNodeID](t, a2.call("cluster:get-node-id", nil)).ClusterID, "precondition: A should have a restored clusterId")
 
 	// A's reconcile reaches B and gets a bare 403 (B dropped A's pin on leave but
 	// holds no tombstone naming A). With no authenticated removal proof, A must
 	// keep its own cluster identity but de-pin B as the departed peer.
 	assertStillClustered(t, a2, 10*time.Second)
-	{
-		got := memberCount(t, a2)
-		require.Equal(t, 1, got, "A members")
-	}
+	require.Equal(t, 1, memberCount(t, a2), "A members")
 }
 
 // assertStillClustered waits past the first reconcile pass and fails if the node
@@ -1179,10 +1144,7 @@ func TestClusterNoSelfRemoveWhenPeerLeft(t *testing.T) {
 func assertStillClustered(t *testing.T, p *cmProc, wait time.Duration) {
 	t.Helper()
 	time.Sleep(wait)
-	{
-		got := decodeResult[cmNodeID](t, p.call("cluster:get-node-id", nil))
-		require.NotEqual(t, "", got.ClusterID, "node self-removed but should have stayed clustered")
-	}
+	require.NotEqual(t, "", decodeResult[cmNodeID](t, p.call("cluster:get-node-id", nil)).ClusterID, "node self-removed but should have stayed clustered")
 }
 
 // TestClusterNoSelfRemoveWhenPeerAccepts is the soundness counterpart to
@@ -1220,10 +1182,7 @@ func TestClusterNoSelfRemoveWhenPeerAccepts(t *testing.T) {
 	})
 
 	assertStillClustered(t, b2, 10*time.Second)
-	{
-		got := memberCount(t, b2)
-		require.Equal(t, 2, got, "B members")
-	}
+	require.Equal(t, 2, memberCount(t, b2), "B members")
 }
 
 // TestClusterNoSelfRemoveWhenPeerUnreachable covers the other blocking branch:
@@ -1261,10 +1220,7 @@ func TestClusterNoSelfRemoveWhenPeerUnreachable(t *testing.T) {
 	})
 
 	assertStillClustered(t, b2, 10*time.Second)
-	{
-		got := memberCount(t, b2)
-		require.Equal(t, 2, got, "B members")
-	}
+	require.Equal(t, 2, memberCount(t, b2), "B members")
 }
 
 // TestClusterInviteAlreadyClusteredRejected verifies the already-paired guard:

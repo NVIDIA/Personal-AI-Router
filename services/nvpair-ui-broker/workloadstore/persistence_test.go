@@ -56,14 +56,10 @@ func TestPersistenceRoundTripTerminalOnly(t *testing.T) {
 	s2 := newStoreAt(path, testNow)
 	require.NoError(t, s2.Load(), "load")
 	require.Equal(t, 2, s2.Len(), "loaded")
-	{
-		_, ok := s2.Get("a", "1")
-		require.True(t, ok, "terminal a/1 should have been persisted")
-	}
-	{
-		_, ok := s2.Get("c", "3")
-		require.False(t, ok, "active c/3 must not be persisted")
-	}
+	_, ok := s2.Get("a", "1")
+	require.True(t, ok, "terminal a/1 should have been persisted")
+	_, ok = s2.Get("c", "3")
+	require.False(t, ok, "active c/3 must not be persisted")
 }
 
 func TestFlushCoalescesOnDirty(t *testing.T) {
@@ -74,10 +70,8 @@ func TestFlushCoalescesOnDirty(t *testing.T) {
 	s.Apply(mkIn("1", "a", "running", "a", testNow-1000))
 	require.False(t, s.dirty, "non-terminal apply must not mark dirty")
 	require.NoError(t, s.Flush(), "flush")
-	{
-		_, err := os.Stat(path)
-		require.ErrorIs(t, err, os.ErrNotExist, "no file should be written before any terminal record")
-	}
+	_, err := os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist, "no file should be written before any terminal record")
 
 	// A terminal transition marks dirty and flush writes it.
 	s.Apply(mkTerm("1", "a", testNow-1000, testNow-150))
@@ -98,14 +92,10 @@ func TestCountCapEviction(t *testing.T) {
 	// prune runs during flush
 	require.NoError(t, s.Flush(), "flush")
 	require.Equal(t, 2, s.Len())
-	{
-		_, ok := s.Get("a", "1")
-		require.False(t, ok, "oldest (completedAt=testNow-300) should be evicted")
-	}
-	{
-		_, ok := s.Get("a", "3")
-		require.True(t, ok, "newest (completedAt=testNow-100) should be kept")
-	}
+	_, ok := s.Get("a", "1")
+	require.False(t, ok, "oldest (completedAt=testNow-300) should be evicted")
+	_, ok = s.Get("a", "3")
+	require.True(t, ok, "newest (completedAt=testNow-100) should be kept")
 }
 
 func TestAgeCapEviction(t *testing.T) {
@@ -117,14 +107,10 @@ func TestAgeCapEviction(t *testing.T) {
 	s.Apply(mkTerm("old", "a", 0, 8000)) // age 2000 > 1000 → evicted
 	s.Apply(mkTerm("new", "a", 0, 9500)) // age 500 → kept
 	require.NoError(t, s.Flush(), "flush")
-	{
-		_, ok := s.Get("a", "old")
-		require.False(t, ok, "record older than maxAge should be pruned")
-	}
-	{
-		_, ok := s.Get("a", "new")
-		require.True(t, ok, "record within maxAge should remain")
-	}
+	_, ok := s.Get("a", "old")
+	require.False(t, ok, "record older than maxAge should be pruned")
+	_, ok = s.Get("a", "new")
+	require.True(t, ok, "record within maxAge should remain")
 }
 
 func TestCheckpointRotates(t *testing.T) {
@@ -151,10 +137,8 @@ func TestLoadFallsBackOnCorruptPrimary(t *testing.T) {
 
 	s2 := newStoreAt(path, testNow)
 	_ = s2.Load() // parse error on primary is non-fatal; falls back to .1
-	{
-		_, ok := s2.Get("a", "1")
-		require.True(t, ok, "should have recovered a/1 from rotation .1")
-	}
+	_, ok := s2.Get("a", "1")
+	require.True(t, ok, "should have recovered a/1 from rotation .1")
 }
 
 func TestLoadMissingFileIsClean(t *testing.T) {
@@ -172,14 +156,10 @@ func TestInferredTerminalNotPersisted(t *testing.T) {
 
 	s2 := newStoreAt(path, testNow)
 	require.NoError(t, s2.Load(), "load")
-	{
-		_, ok := s2.Get("a", "2")
-		require.True(t, ok, "authoritative terminal should persist")
-	}
-	{
-		_, ok := s2.Get("a", "1")
-		require.False(t, ok, "inferred terminal must not be persisted")
-	}
+	_, ok := s2.Get("a", "2")
+	require.True(t, ok, "authoritative terminal should persist")
+	_, ok = s2.Get("a", "1")
+	require.False(t, ok, "inferred terminal must not be persisted")
 }
 
 func TestDisabledPersistenceNoops(t *testing.T) {

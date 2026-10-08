@@ -37,10 +37,8 @@ func TestSetPortPreservesOtherOverrides(t *testing.T) {
 	require.NoError(t, writeJSONAtomic(path, original))
 	ex := newBundledExecutor(t, dir)
 	for _, port := range []int{21003, 11434} {
-		{
-			_, err := ex.SetPort(context.Background(), "ollama", port)
-			require.NoError(t, err)
-		}
+		_, err := ex.SetPort(context.Background(), "ollama", port)
+		require.NoError(t, err)
 		reg := loadWithOverrides(t, dir)
 		manifest, _ := reg.Get("ollama")
 		platform, _ := manifest.HostPlatform()
@@ -55,21 +53,12 @@ func TestSetPortPreservesOtherOverrides(t *testing.T) {
 	require.NoError(t, err)
 	var saved map[string]any
 	require.NoError(t, json.Unmarshal(data, &saved))
-	{
-		_, pinned := saved["runtime"].(map[string]any)["port"]
-		require.False(t, pinned, "reset retained a shared port override")
-	}
+	require.NotContains(t, saved["runtime"].(map[string]any), "port", "reset retained a shared port override")
 	hostRuntime := saved["platforms"].(map[string]any)[host].(map[string]any)["runtime"].(map[string]any)
-	{
-		_, pinned := hostRuntime["port"]
-		require.False(t, pinned, "reset retained a host port override")
-	}
+	require.NotContains(t, hostRuntime, "port", "reset retained a host port override")
 	var exact map[string]json.RawMessage
-	{
-		err := json.Unmarshal(data, &exact)
-		require.NoError(t, err, "unrelated numeric setting lost precision")
-		require.Equal(t, "9007199254740993", string(exact["custom_counter"]), "unrelated numeric setting lost precision (%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(data, &exact), "unrelated numeric setting lost precision")
+	require.Equal(t, "9007199254740993", string(exact["custom_counter"]), "unrelated numeric setting lost precision")
 }
 
 func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
@@ -81,26 +70,19 @@ func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
 	})
 	require.NoError(t, err)
 	reg := NewRegistry()
-	{
-		_, err := reg.addManifest("test", raw)
-		require.NoError(t, err)
-	}
+	_, err = reg.addManifest("test", raw)
+	require.NoError(t, err)
 	reg.bundledRaw["platform-engine"] = raw
 	ex := NewExecutor(reg, NewReporter(nil), nil, t.TempDir())
 	ex.overrideDir = t.TempDir()
 	for _, port := range []int{22002, 22001} {
 		require.NoError(t, ex.persistPort("platform-engine", port))
 		reloaded := NewRegistry()
-		{
-			_, err := reloaded.addManifest("test", raw)
-			require.NoError(t, err)
-		}
+		_, err := reloaded.addManifest("test", raw)
+		require.NoError(t, err)
 		reloaded.bundledRaw["platform-engine"] = raw
 		require.NoError(t, reloaded.LoadOverrideDir(ex.overrideDir))
-		{
-			got := hostPort(t, reloaded, "platform-engine")
-			require.Equal(t, port, got, "host default shadowed saved port")
-		}
+		require.Equal(t, port, hostPort(t, reloaded, "platform-engine"), "host default shadowed saved port")
 	}
 }
 
@@ -115,17 +97,13 @@ func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
 			path := filepath.Join(dir, "ollama.json")
 			ex := newBundledExecutor(t, dir)
 			require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
-			{
-				_, err := ex.SetPort(context.Background(), "ollama", 23001)
-				require.Error(t, err, "malformed override was overwritten")
-			}
+			_, err := ex.SetPort(context.Background(), "ollama", 23001)
+			require.Error(t, err, "malformed override was overwritten")
 			got, err := os.ReadFile(path)
 			require.NoError(t, err, "invalid override changed (%v, %v)", got, err)
 			require.Equal(t, data, string(got), "invalid override changed")
-			{
-				got, _ := ex.Status("ollama")
-				require.Equal(t, 11434, got.Port, "failed persistence changed runtime port (%v)", got)
-			}
+			status, _ := ex.Status("ollama")
+			require.Equal(t, 11434, status.Port, "failed persistence changed runtime port (%v)", status)
 		})
 	}
 }
@@ -138,11 +116,8 @@ func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
 		var got map[string]int
-		{
-			err := json.Unmarshal(data, &got)
-			require.NoError(t, err, "replacement not readable (%v, %v)", data, err)
-			require.Equal(t, port, got["port"], "replacement not readable (%v, %v)", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &got), "replacement not readable (%v)", data)
+		require.Equal(t, port, got["port"], "replacement not readable (%v)", data)
 	}
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err, "atomic writer left temporary files (%v, %v)", entries, err)

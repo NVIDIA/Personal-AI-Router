@@ -68,16 +68,12 @@ func TestAdmissionEpochPersistsAndAdvancesOnReadmission(t *testing.T) {
 	epoch1 := activateTestCluster(t, first, "cluster-1")
 
 	restarted := testManagerAt(t, dir, 15101)
-	{
-		cid, epoch := restarted.currentAdmission()
-		require.Equal(t, "cluster-1", cid, "restart admission (%v, %v, %v)", cid, epoch, epoch1)
-		require.Equal(t, epoch1, epoch, "restart admission (%v)", cid)
-	}
-	{
-		got, err := restarted.ensureAdmission("cluster-1")
-		require.NoError(t, err, "startup restore minted a new admission: (%v, %v)", got, err)
-		require.Equal(t, epoch1, got, "startup restore minted a new admission")
-	}
+	cid, epoch := restarted.currentAdmission()
+	require.Equal(t, "cluster-1", cid, "restart admission (%v, %v, %v)", cid, epoch, epoch1)
+	require.Equal(t, epoch1, epoch, "restart admission (%v)", cid)
+	got, err := restarted.ensureAdmission("cluster-1")
+	require.NoError(t, err, "startup restore minted a new admission: (%v, %v)", got, err)
+	require.Equal(t, epoch1, got, "startup restore minted a new admission")
 
 	restarted.teardownClusterLocal()
 	epoch2 := activateTestCluster(t, restarted, "cluster-1")
@@ -110,19 +106,15 @@ func TestRemovalProofRelaysUnknownRemover(t *testing.T) {
 	pinTrusted(t, victim, relay.identity.NodeUUID, string(relay.identity.CertPEM), relay.identity.CertFingerprint)
 	pinTrusted(t, relay, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
 	pinTrusted(t, relay, victim.identity.NodeUUID, string(victim.identity.CertPEM), victim.identity.CertFingerprint)
-	{
-		_, ok := victim.trust.Get(remover.identity.NodeUUID)
-		require.False(t, ok, "precondition: victim must never have pinned remover")
-	}
+	_, ok := victim.trust.Get(remover.identity.NodeUUID)
+	require.False(t, ok, "precondition: victim must never have pinned remover")
 
 	_, victimEpoch := victim.currentAdmission()
 	proof, err := remover.newRemovalProof(victim.identity.NodeUUID, victimEpoch)
 	require.NoError(t, err)
 	require.True(t, relay.verifyRemovalProof(proof, "cluster-1"), "relay did not verify directly-trusted remover")
-	{
-		_, err := relay.putRemovalProof(proof)
-		require.NoError(t, err, "relay persist")
-	}
+	_, err = relay.putRemovalProof(proof)
+	require.NoError(t, err, "relay persist")
 	relayed, ok := relay.removalProofFor(victim.identity.NodeUUID)
 	require.True(t, ok, "relay lost proof")
 	require.True(t, victim.rejectionProvesRemoval(proofRejectionBody(t, relayed), relay.identity.NodeUUID), "victim could not verify unknown remover through trusted relay")
@@ -149,10 +141,8 @@ func TestRemovalProofSurvivesRestartBeyondTwentyFourHours(t *testing.T) {
 		SignerFingerprint: remover.identity.CertFingerprint,
 	}
 	require.True(t, relay.verifyRemovalProof(proof, "cluster-1"), "relay rejected old but valid proof")
-	{
-		_, err := relay.putRemovalProof(proof)
-		require.NoError(t, err)
-	}
+	_, err := relay.putRemovalProof(proof)
+	require.NoError(t, err)
 	// Prove restart does not depend on the original remover remaining pinned.
 	require.NoError(t, relay.trust.Remove(remover.identity.NodeUUID))
 
@@ -177,25 +167,17 @@ func TestRemovalProofReplayFinishesInterruptedRemoval(t *testing.T) {
 
 	proof, err := remover.newRemovalProof(target.identity.NodeUUID, 1)
 	require.NoError(t, err)
-	{
-		_, err := remover.putRemovalProof(proof)
-		require.NoError(t, err)
-	}
+	_, err = remover.putRemovalProof(proof)
+	require.NoError(t, err)
 	// Simulate a crash after proof persistence but before the normal de-pin and
 	// member deletion.
 	restarted := testManagerAt(t, dir, 15117)
-	{
-		_, ok := restarted.trust.Get(target.identity.NodeUUID)
-		require.False(t, ok, "restart did not replay proof against stale pin")
-	}
-	{
-		_, ok := restarted.memberByNodeID(target.identity.NodeUUID)
-		require.False(t, ok, "restart did not replay proof against stale member")
-	}
-	{
-		_, ok := restarted.removalProofFor(target.identity.NodeUUID)
-		require.True(t, ok, "replay discarded proof before a newer admission superseded it")
-	}
+	_, ok := restarted.trust.Get(target.identity.NodeUUID)
+	require.False(t, ok, "restart did not replay proof against stale pin")
+	_, ok = restarted.memberByNodeID(target.identity.NodeUUID)
+	require.False(t, ok, "restart did not replay proof against stale member")
+	_, ok = restarted.removalProofFor(target.identity.NodeUUID)
+	require.True(t, ok, "replay discarded proof before a newer admission superseded it")
 }
 
 func TestLegacyTombstoneCannotProveSelfRemoval(t *testing.T) {
@@ -219,10 +201,8 @@ func TestRemovalProofTamperingFailsClosed(t *testing.T) {
 	_, victimEpoch := victim.currentAdmission()
 	proof, err := remover.newRemovalProof(victim.identity.NodeUUID, victimEpoch)
 	require.NoError(t, err)
-	{
-		_, err := relay.putRemovalProof(proof)
-		require.NoError(t, err)
-	}
+	_, err = relay.putRemovalProof(proof)
+	require.NoError(t, err)
 	base, _ := relay.removalProofFor(victim.identity.NodeUUID)
 
 	cases := map[string]func(*RemovalProof){
@@ -269,10 +249,8 @@ func TestNewerAdmissionSupersedesProofAndStaleGossip(t *testing.T) {
 		CertPem: targetCert, CertFingerprint: targetFP, Endorsements: []Endorsement{end2},
 	}
 	require.True(t, m.applyMembers([]RosterEntry{entry2}, "cluster-1", endorser.identity.NodeUUID), "newer admission was not accepted")
-	{
-		_, ok := m.removalProofFor(targetUUID)
-		require.False(t, ok, "older proof survived a durably accepted newer admission")
-	}
+	_, ok := m.removalProofFor(targetUUID)
+	require.False(t, ok, "older proof survived a durably accepted newer admission")
 	pin, ok := m.trust.Get(targetUUID)
 	require.True(t, ok, "target pin after readmission (%v)", pin)
 	require.Equal(t, uint64(2), pin.AdmissionEpoch, "target pin after readmission (%v)", pin)
@@ -296,10 +274,8 @@ func TestUnboundHighEpochProofCannotPoisonReadmission(t *testing.T) {
 	proof, err := remover.newRemovalProof(targetUUID, ^uint64(0))
 	require.NoError(t, err)
 	m.applyRemovalProofs([]RemovalProof{proof}, "cluster-1")
-	{
-		_, ok := m.removalProofFor(targetUUID)
-		require.False(t, ok, "proof for an unauthenticated target admission was persisted")
-	}
+	_, ok := m.removalProofFor(targetUUID)
+	require.False(t, ok, "proof for an unauthenticated target admission was persisted")
 
 	_, removerEpoch := remover.currentAdmission()
 	end := signEndorsement(remover.identity.Signer, remover.identity.NodeUUID,
@@ -324,14 +300,10 @@ func TestRemovalPersistenceFailureLeavesMemberIntact(t *testing.T) {
 	m.clusterDir = blocker
 	nodeUUID := peer.identity.NodeUUID
 	m.handleNodesRemove(&Message{Params: mustJSON(t, removeParams{NodeUUID: &nodeUUID})})
-	{
-		_, ok := m.trust.Get(peer.identity.NodeUUID)
-		require.True(t, ok, "pin was removed despite proof persistence failure")
-	}
-	{
-		_, ok := m.memberByNodeID(peer.identity.NodeUUID)
-		require.True(t, ok, "member was removed despite proof persistence failure")
-	}
+	_, ok := m.trust.Get(peer.identity.NodeUUID)
+	require.True(t, ok, "pin was removed despite proof persistence failure")
+	_, ok = m.memberByNodeID(peer.identity.NodeUUID)
+	require.True(t, ok, "member was removed despite proof persistence failure")
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {

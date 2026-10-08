@@ -134,16 +134,12 @@ func TestHandleHTTP_NoContentOnFinalAttemptTerminates(t *testing.T) {
 		// guard catches the regression this test exists for, since a committed
 		// silent upstream blocks forever.
 		case <-time.After(5 * time.Second):
-			require.FailNow(t, "test expectation failed", "handleHTTP never returned: a silent upstream committed and hung the request")
+			require.FailNow(t, "handleHTTP never returned: a silent upstream committed and hung the request")
 		}
 
-		{
-			got := stalled.hits()
-			assert.Equal(t, maxDispatchAttempts, got, "upstream saw (%v, %v)", got, maxDispatchAttempts)
-		}
+		assert.Equal(t, maxDispatchAttempts, stalled.hits(), "upstream should consume the full dispatch budget")
 		require.Equal(t, http.StatusGatewayTimeout, rec.Code, "status")
-		want := "upstream error: " + errFirstBodyTimeout.Error()
-		require.Equal(t, want, decodeJSONBody(t, rec.Body.String())["error"], "body error")
+		require.Equal(t, "upstream error: "+errFirstBodyTimeout.Error(), decodeJSONBody(t, rec.Body.String())["error"], "body error")
 	})
 }
 
@@ -169,10 +165,7 @@ func TestHandleHTTP_FirstBytePreservedOnCommit(t *testing.T) {
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
 		require.Equal(t, http.StatusOK, rec.Code, "status")
-		{
-			got := rec.Body.String()
-			require.Equal(t, payload, got, "body (%v, %v)", got, payload)
-		}
+		require.Equal(t, payload, rec.Body.String(), "the peeked first byte must be preserved")
 	})
 }
 
@@ -204,7 +197,7 @@ func TestHandleHTTP_EmptyBodyCommits(t *testing.T) {
 		case code := <-done:
 			require.Equal(t, http.StatusOK, code, "status (%v)", code)
 		case <-time.After(5 * time.Second):
-			require.FailNow(t, "test expectation failed", "an empty 200 body blocked on the first-byte wait instead of committing")
+			require.FailNow(t, "an empty 200 body blocked on the first-byte wait instead of committing")
 		}
 	})
 }
@@ -239,7 +232,7 @@ func TestHandleHTTP_NonInferenceCommitsOnHeaders(t *testing.T) {
 		time.Sleep(blocked)
 		select {
 		case <-done:
-			require.FailNow(t, "test expectation failed", "handler returned after %v with status %d: the first-content gate was applied to a non-inference route",
+			require.FailNowf(t, "the first-content gate was applied to a non-inference route", "handler returned after %v with status %d",
 				blocked, rec.Code)
 		default:
 		}
@@ -248,7 +241,7 @@ func TestHandleHTTP_NonInferenceCommitsOnHeaders(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			require.FailNow(t, "test expectation failed", "a non-inference request did not complete after the upstream released")
+			require.FailNow(t, "a non-inference request did not complete after the upstream released")
 		}
 		require.Equal(t, http.StatusOK, rec.Code, "status")
 	})

@@ -55,28 +55,16 @@ func TestE2EOverStdio(t *testing.T) {
 	waitNotify(t, frames, "engine:ready", 5*time.Second)
 
 	send(t, stdin, 1, "engine:get-installed", nil)
-	{
-		r := waitResult(t, frames, "1", 5*time.Second)
-		require.Contains(t, string(r), `"engine":"fake"`, "get-installed did not list the injected engine (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 5*time.Second)), `"engine":"fake"`, "get-installed did not list the injected engine")
 
 	send(t, stdin, 2, "engine:start", map[string]any{"engine": "fake"})
-	{
-		r := waitResult(t, frames, "2", 20*time.Second)
-		require.Contains(t, string(r), `"running":true`, "start did not report running (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "2", 20*time.Second)), `"running":true`, "start did not report running")
 
 	send(t, stdin, 3, "engine:action", map[string]any{"engine": "fake", "action": "list_models"})
-	{
-		r := waitResult(t, frames, "3", 10*time.Second)
-		require.Contains(t, string(r), "llama3.2", "action result unexpected (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "3", 10*time.Second)), "llama3.2", "action result unexpected")
 
 	send(t, stdin, 4, "engine:stop", map[string]any{"engine": "fake"})
-	{
-		r := waitResult(t, frames, "4", 10*time.Second)
-		require.Contains(t, string(r), `"running":false`, "stop did not report stopped (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "4", 10*time.Second)), `"running":false`, "stop did not report stopped")
 
 	send(t, stdin, 5, "shutdown", nil)
 	waitResult(t, frames, "5", 5*time.Second)
@@ -103,12 +91,9 @@ func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
 	first := startE2EManager(t, cfg, home)
 	send(t, first.stdin, 1, "engine:set-port", map[string]any{"engine": "ollama", "port": 26001})
 	var saved EngineStatus
-	{
-		err := json.Unmarshal(waitResult(t, first.frames, "1", 10*time.Second), &saved)
-		require.NoError(t, err, "saved status (%v, %v)", saved, err)
-		require.Equal(t, 26001, saved.Port, "saved status (%v, %v)", saved, err)
-		require.False(t, saved.Running, "saved status (%v, %v)", saved, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, first.frames, "1", 10*time.Second), &saved), "saved status")
+	require.Equal(t, 26001, saved.Port, "saved status (%v)", saved)
+	require.False(t, saved.Running, "saved status (%v)", saved)
 	first.stop(t)
 	second := startE2EManager(t, cfg, home)
 	send(t, second.stdin, 1, "engine:describe", map[string]any{"engine": "ollama"})
@@ -136,11 +121,8 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	first := startE2EManager(t, cfg, home)
 	send(t, first.stdin, 1, "engine:start", map[string]any{"engine": "fake"})
 	var started EngineStatus
-	{
-		err := json.Unmarshal(waitResult(t, first.frames, "1", 20*time.Second), &started)
-		require.NoError(t, err, "start status (%v, %v)", started, err)
-		require.True(t, started.Running, "start status (%v, %v)", started, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, first.frames, "1", 20*time.Second), &started), "start status")
+	require.True(t, started.Running, "start status (%v)", started)
 	send(t, first.stdin, 2, prepareShutdownMethod, nil)
 	waitResult(t, first.frames, "2", 15*time.Second)
 	require.False(t, portServing(started.Port), "engine port")
@@ -150,10 +132,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	notify(t, second.stdin, restoreEnabledMethod, nil)
 	waitNotify(t, second.frames, "engine:state-changed", 20*time.Second)
 	send(t, second.stdin, 1, "engine:status", map[string]any{"engine": "fake"})
-	{
-		r := waitResult(t, second.frames, "1", 5*time.Second)
-		require.Contains(t, string(r), `"running":true`, "saved ON state was not restored (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, second.frames, "1", 5*time.Second)), `"running":true`, "saved ON state was not restored")
 	send(t, second.stdin, 2, "engine:stop", map[string]any{"engine": "fake"})
 	waitResult(t, second.frames, "2", 10*time.Second)
 	second.stop(t)
@@ -161,10 +140,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	third := startE2EManager(t, cfg, home)
 	notify(t, third.stdin, restoreEnabledMethod, nil)
 	send(t, third.stdin, 1, "engine:status", map[string]any{"engine": "fake"})
-	{
-		r := waitResult(t, third.frames, "1", 5*time.Second)
-		require.Contains(t, string(r), `"running":false`, "explicit OFF state was not preserved (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, third.frames, "1", 5*time.Second)), `"running":false`, "explicit OFF state was not preserved")
 	third.stop(t)
 }
 
@@ -215,11 +191,8 @@ func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
 
 	send(t, manager.stdin, 3, "engine:status", map[string]any{"engine": "fake"})
 	var stopped EngineStatus
-	{
-		err := json.Unmarshal(waitResult(t, manager.frames, "3", 5*time.Second), &stopped)
-		require.NoError(t, err, "status after shutdown preparation (%v, %v)", stopped, err)
-		require.False(t, stopped.Running, "status after shutdown preparation (%v, %v)", stopped, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, manager.frames, "3", 5*time.Second), &stopped), "status after shutdown preparation")
+	require.False(t, stopped.Running, "status after shutdown preparation (%v)", stopped)
 
 	send(t, manager.stdin, 4, "engine:errors", nil)
 	var reported struct {
@@ -274,7 +247,7 @@ func (m *e2eManager) stop(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		_ = m.cmd.Process.Kill()
 		<-done
-		require.FailNow(t, "test expectation failed", "manager did not exit after stdin closed")
+		require.FailNow(t, "manager did not exit after stdin closed")
 	}
 }
 
@@ -338,10 +311,8 @@ func send(t *testing.T, w io.Writer, id int, method string, params any) {
 		msg["params"] = params
 	}
 	data, _ := json.Marshal(msg)
-	{
-		_, err := w.Write(append(data, '\n'))
-		require.NoError(t, err, "send (%v, %v)", method, err)
-	}
+	_, err := w.Write(append(data, '\n'))
+	require.NoError(t, err, "send (%v, %v)", method, err)
 }
 
 func notify(t *testing.T, w io.Writer, method string, params any) {
@@ -351,10 +322,8 @@ func notify(t *testing.T, w io.Writer, method string, params any) {
 		msg["params"] = params
 	}
 	data, _ := json.Marshal(msg)
-	{
-		_, err := w.Write(append(data, '\n'))
-		require.NoError(t, err, "notify (%v, %v)", method, err)
-	}
+	_, err := w.Write(append(data, '\n'))
+	require.NoError(t, err, "notify (%v, %v)", method, err)
 }
 
 func waitResult(t *testing.T, frames <-chan frame, id string, timeout time.Duration) json.RawMessage {
@@ -366,10 +335,10 @@ func waitResult(t *testing.T, frames <-chan frame, id string, timeout time.Durat
 			if string(f.ID) != id {
 				continue
 			}
-			require.False(t, len(f.Error) > 0 && string(f.Error) != "null", "rpc id (%v)", id)
+			require.Contains(t, []string{"", "null"}, string(f.Error), "rpc id (%v)", id)
 			return f.Result
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out waiting for response id %s", id)
+			require.FailNowf(t, "timed out waiting for response", "id %s", id)
 			return nil
 		}
 	}
@@ -385,7 +354,7 @@ func waitNotify(t *testing.T, frames <-chan frame, method string, timeout time.D
 				return
 			}
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out waiting for notification %q", method)
+			require.FailNowf(t, "timed out waiting for notification", "%q", method)
 		}
 	}
 }
@@ -419,7 +388,7 @@ func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
 				waiting = false
 			}
 		case <-timer.C:
-			require.FailNow(t, "test expectation failed", "worker never requested parent rebind")
+			require.FailNow(t, "worker never requested parent rebind")
 		}
 	}
 	require.Equal(t, "rebind", relay.Method, "bad relay (%v)", relay)
@@ -428,21 +397,15 @@ func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
 	send(t, manager.stdin, 4, "engine:describe", map[string]string{"engine": "fake"})
 	waitResult(t, manager.frames, "4", 5*time.Second)
 	notify(t, manager.stdin, "engine:settings-reply", settingsReply{ID: relay.ID, Result: json.RawMessage(`{}`)})
-	{
-		err := json.Unmarshal(waitResult(t, manager.frames, "3", 5*time.Second), &launch)
-		require.NoError(t, err, "configure result (%v, %v)", launch, err)
-		require.False(t, launch.Running, "configure result (%v, %v)", launch, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, manager.frames, "3", 5*time.Second), &launch), "configure result")
+	require.False(t, launch.Running, "configure result (%v)", launch)
 	saved := launch.LaunchText
 	manager.stop(t)
 	restored := startE2EManager(t, cfg, home)
 	send(t, restored.stdin, 1, "engine:get-installed", nil)
 	waitResult(t, restored.frames, "1", 5*time.Second)
 	send(t, restored.stdin, 2, "engine:get-launch", map[string]string{"engine": "fake"})
-	{
-		err := json.Unmarshal(waitResult(t, restored.frames, "2", 5*time.Second), &launch)
-		require.NoError(t, err, "worker reload lost literal settings (%v, %v)", launch, err)
-		require.Equal(t, saved, launch.LaunchText, "worker reload lost literal settings (%v, %v)", launch, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, restored.frames, "2", 5*time.Second), &launch), "worker reload lost literal settings")
+	require.Equal(t, saved, launch.LaunchText, "worker reload lost literal settings (%v)", launch)
 	restored.stop(t)
 }

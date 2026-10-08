@@ -53,10 +53,7 @@ func TestModelFromParams(t *testing.T) {
 		{``, ""},                                 // empty params
 	}
 	for _, c := range cases {
-		{
-			got := modelFromParams([]byte(c.params))
-			require.Equal(t, c.want, got, "modelFromParams")
-		}
+		require.Equal(t, c.want, modelFromParams([]byte(c.params)), "modelFromParams")
 	}
 }
 
@@ -506,10 +503,8 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 	require.Len(t, pulls, 1, "expected exactly one terminal error frame")
 	require.Equal(t, "pull", pulls[0]["op"], "expected a terminal error frame")
 	require.Equal(t, "error", pulls[0]["stage"], "expected a terminal error frame")
-	{
-		pct, _ := pulls[0]["percent"].(int)
-		require.Equal(t, -1, pct, "expected percent -1 on the error frame")
-	}
+	pct, _ := pulls[0]["percent"].(int)
+	require.Equal(t, -1, pct, "expected percent -1 on the error frame")
 	msg, _ := pulls[0]["message"].(string)
 	require.Contains(t, msg, "Fake Engine experienced an error while downloading a model", "expected formatted error on the progress frame")
 	require.Contains(t, msg, `engine "fake" is not running`, "expected engine detail in progress message")

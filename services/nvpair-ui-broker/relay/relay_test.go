@@ -79,10 +79,7 @@ func TestDirectorySubscribeInitialSnapshot(t *testing.T) {
 	}
 	d.Subscribe(sub)
 	d.Deliver(sub)
-	{
-		got := ids(rec.last())
-		require.Equal(t, []string{"a"}, got, "initial delivery")
-	}
+	require.Equal(t, []string{"a"}, ids(rec.last()), "initial delivery")
 }
 
 // TestDeliverCapturesAtSendTime guards the subscribe race fix: a change that
@@ -96,10 +93,7 @@ func TestDeliverCapturesAtSendTime(t *testing.T) {
 	d.Subscribe(sub)
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
 	d.Deliver(sub)
-	{
-		got := ids(rec.last())
-		require.Equal(t, []string{"a"}, got, "delivery after a post-subscribe change")
-	}
+	require.Equal(t, []string{"a"}, ids(rec.last()), "delivery after a post-subscribe change")
 }
 
 func TestDirectoryFanoutRespectsFilter(t *testing.T) {
@@ -114,14 +108,8 @@ func TestDirectoryFanoutRespectsFilter(t *testing.T) {
 
 	// Every change re-pushes each subscriber its full filtered snapshot, so the
 	// latest snapshot is the authoritative filtered set.
-	{
-		got := ids(olSub.last())
-		assert.Equal(t, []string{"a"}, got, "ol subscriber last snapshot")
-	}
-	{
-		got := ids(allSub.last())
-		assert.Equal(t, []string{"a", "b"}, got, "all subscriber last snapshot")
-	}
+	assert.Equal(t, []string{"a"}, ids(olSub.last()), "ol subscriber last snapshot")
+	assert.Equal(t, []string{"a", "b"}, ids(allSub.last()), "all subscriber last snapshot")
 }
 
 func TestDirectoryRemoveAndUnsubscribe(t *testing.T) {
@@ -152,6 +140,5 @@ func TestDirectorySnapshotFilterAndSort(t *testing.T) {
 	require.Len(t, all, 3, "snapshot(all) not sorted")
 	require.Equal(t, "a", all[0].HostUUID, "snapshot(all) not sorted (%v)", all)
 	require.Equal(t, "z", all[2].HostUUID, "snapshot(all) not sorted (%v)", all)
-	ol := d.Snapshot(noderec.ServiceOllama)
-	require.Len(t, ol, 2, "snapshot(ol)")
+	require.Len(t, d.Snapshot(noderec.ServiceOllama), 2, "snapshot(ol)")
 }

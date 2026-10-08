@@ -21,16 +21,9 @@ func TestReservedAliasPortBlocksLocalAndRemoteStarts(t *testing.T) {
 	exec.overrideDir = t.TempDir()
 	require.NoError(t, exec.SetReservedPort(15555))
 
-	{
-		err := exec.StartWith(context.Background(), manifest.Engine, startOpts{Port: 15555})
-		require.Error(t, err, "local start error")
-		require.ErrorContains(t, err, "reserved", "local start error")
-	}
-	{
-		_, err := exec.SetPort(context.Background(), manifest.Engine, 15555)
-		require.Error(t, err, "set-port error")
-		require.ErrorContains(t, err, "reserved", "set-port error")
-	}
+	require.ErrorContains(t, exec.StartWith(context.Background(), manifest.Engine, startOpts{Port: 15555}), "reserved", "local start error")
+	_, err := exec.SetPort(context.Background(), manifest.Engine, 15555)
+	require.ErrorContains(t, err, "reserved", "set-port error")
 
 	req := httptest.NewRequest(http.MethodPost, controlStartPath, strings.NewReader(`{"engine":"fake","port":15555}`))
 	rec := httptest.NewRecorder()

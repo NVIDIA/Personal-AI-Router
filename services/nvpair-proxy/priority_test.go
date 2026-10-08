@@ -110,16 +110,10 @@ func TestResolveCandidates_EmptyReverts(t *testing.T) {
 // PriorityList hands back an independent copy.
 func TestSetPriority_CountAndCopy(t *testing.T) {
 	p := prProxy(t, "a")
-	{
-		n := p.SetPriority([]string{"a", "b", "c"})
-		require.Equal(t, 3, n, "SetPriority count")
-	}
+	require.Equal(t, 3, p.SetPriority([]string{"a", "b", "c"}), "SetPriority count")
 	got := p.PriorityList()
 	got[0] = "mutated"
-	{
-		again := p.PriorityList()
-		require.Equal(t, "a", again[0], "PriorityList returned an aliased slice (%v)", again)
-	}
+	require.Equal(t, "a", p.PriorityList()[0], "PriorityList returned an aliased slice")
 }
 
 // TestHandleSetPriority_Response: the node/set-priority request returns {count}.
@@ -135,7 +129,7 @@ func TestHandleSetPriority_Response(t *testing.T) {
 		Params:  json.RawMessage(`{"generation":1,"nodes":["x","y"]}`),
 	})
 
-	require.True(t, rec.has(`"count":2`), "expected response with count=2")
+	require.Contains(t, rec.String(), `"count":2`, "expected response with count=2")
 	require.Equal(t, []string{"x", "y"}, p.PriorityList(), "stored priority")
 }
 
@@ -161,15 +155,10 @@ func TestHandleSetPriority_RejectsUnversionedSnapshot(t *testing.T) {
 		Params:  json.RawMessage(`{"nodes":["y","x"]}`),
 	})
 
-	require.True(t, rec.has(`"code":-32602`), "unversioned snapshot was not rejected")
+	require.Contains(t, rec.String(), `"code":-32602`, "unversioned snapshot was not rejected")
 	// The baseline and the reservation both survive the rejection.
-	{
-		got := p.PriorityList()
-		require.Len(t, got, 2, "a rejected snapshot changed the baseline")
-		assert.Equal(t, "x", got[0], "a rejected snapshot changed the baseline (%v)", got)
-	}
-	{
-		got := reservationCount(p, held.nodeID)
-		assert.Equal(t, 1, got, "a rejected snapshot cleared the reservation on")
-	}
+	got := p.PriorityList()
+	require.Len(t, got, 2, "a rejected snapshot changed the baseline")
+	assert.Equal(t, "x", got[0], "a rejected snapshot changed the baseline (%v)", got)
+	assert.Equal(t, 1, reservationCount(p, held.nodeID), "a rejected snapshot cleared the reservation on")
 }

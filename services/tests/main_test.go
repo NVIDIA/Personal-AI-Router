@@ -201,7 +201,7 @@ func waitForMethod(t *testing.T, ch <-chan jsonrpc.Message, method string, timeo
 				return msg
 			}
 		case <-timer.C:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for method %q", timeout, method)
+			require.FailNowf(t, "timed out waiting for method", "%q after %s", method, timeout)
 		}
 	}
 	return jsonrpc.Message{}
@@ -219,7 +219,7 @@ func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Durat
 				return msg
 			}
 		case <-timer.C:
-			require.FailNow(t, "test expectation failed", "timed out waiting for JSON-RPC response")
+			require.FailNow(t, "timed out waiting for JSON-RPC response")
 		}
 	}
 	return jsonrpc.Message{}
@@ -245,7 +245,7 @@ func requestOnFreePort(t *testing.T, w io.Writer, msgs <-chan jsonrpc.Message, t
 		}
 		require.True(t, isBindRace(resp.Error))
 	}
-	require.FailNow(t, "test expectation failed", "every probed port was taken before the proxy could bind it")
+	require.FailNow(t, "every probed port was taken before the proxy could bind it")
 	return 0
 }
 
@@ -307,5 +307,5 @@ func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
 		Port int `json:"port"`
 	}
 	require.NoError(t, json.Unmarshal(data, &saved), "parse persisted lmstudio port")
-	require.Equal(t, persistedPort, saved.Port, "persisted lmstudio port (%v)", persistedPort)
+	require.Equal(t, persistedPort, saved.Port, "persisted lmstudio port")
 }

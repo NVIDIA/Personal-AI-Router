@@ -69,6 +69,6 @@ func TestWatchReportsTransitionAConcurrentCallerAlreadyObserved(t *testing.T) {
 	case clustered := <-changed:
 		require.True(t, clustered, "the watch reported a transition to unclustered, want clustered")
 	case <-time.After(4 * RefreshInterval):
-		require.FailNow(t, "test expectation failed", "the watch never reported the join: a concurrent Refresh consumed the transition")
+		require.FailNow(t, "the watch never reported the join: a concurrent Refresh consumed the transition")
 	}
 }

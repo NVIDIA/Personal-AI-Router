@@ -36,8 +36,8 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 			before[profile.Name] = port
 			for engine, want := range before {
 				ready, got := p.Status(engine)
-				require.True(t, ready, " (%v, %v, %v, %v)", engine, ready, got, want)
-				require.Equal(t, want, got, " (%v, %v, %v, %v)", engine, ready, got, want)
+				require.True(t, ready, "engine %s must be ready", engine)
+				require.Equal(t, want, got, "engine %s port", engine)
 			}
 		})
 	}
@@ -62,10 +62,7 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 			default:
 				b.forwardDefaultEngineProxyNotification(profile, profile.addressed("error"), failure)
 			}
-			{
-				got := b.engineProxy(profile).startupPort.Load()
-				require.Equal(t, int32(requested), got, "bind notification changed chosen port to (%v)", got)
-			}
+			require.Equal(t, int32(requested), b.engineProxy(profile).startupPort.Load(), "bind notification changed chosen port")
 			client, server := net.Pipe()
 			t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 			p := &proxyProcess{peer: NewPeer(NewCodec(client))}
@@ -73,7 +70,7 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 			attempts := make(chan enableFacadeRequest, 2)
 			serveFacadeEnable(t, server, map[int]bool{requested: true}, attempts)
 			err := b.enableProxyFacadeWithFallback(context.Background(), p, enableFacadeRequest{Engine: profile.Name, Port: requested}, func(int) int {
-				assert.Fail(t, "test expectation failed", "explicit port must not fall back")
+				assert.Fail(t, "explicit port must not fall back")
 				return requested + 1
 			})
 			require.Error(t, err, "bind failure was hidden")
@@ -120,10 +117,8 @@ func TestSettingsMigrationRejectsReservedPorts(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), data, 0600))
 			h.b.migrateLegacyEngineSettings()
-			{
-				_, explicit := h.b.explicitEngineSettings("ollama")
-				require.False(t, explicit, "reserved legacy port became an explicit setting")
-			}
+			_, explicit := h.b.explicitEngineSettings("ollama")
+			require.False(t, explicit, "reserved legacy port became an explicit setting")
 		})
 	}
 	test("PAIR control port", func(h *settingsHarness, request settings.Request) int {
@@ -164,9 +159,9 @@ func TestEnabledEngineRestorationSurvivesInvalidSettingsJournal(t *testing.T) {
 	b.restoreEnabledEngines(worker)
 	select {
 	case method := <-restored:
-		require.Equal(t, restoreEnabledEnginesMethod, method, "method (%v)", method)
+		require.Equal(t, restoreEnabledEnginesMethod, method, "restored method")
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "invalid journal suppressed enabled-engine restoration")
+		require.FailNow(t, "invalid journal suppressed enabled-engine restoration")
 	}
 	require.NotNil(t, b.engineSettingsError, "invalid journal was not reported")
 }

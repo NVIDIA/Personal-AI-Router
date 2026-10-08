@@ -89,20 +89,20 @@ func TestPeerClientPool_ReusesOneConnection(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		client, ok := pool.Client("uuid-peer")
-		require.True(t, ok, "request")
+		require.True(t, ok, "request %d", i)
 		resp, err := client.Get(srv.URL)
-		require.NoError(t, err, "request")
+		require.NoError(t, err, "request %d", i)
 		// Drain before closing, exactly as a caller must: an undrained body
 		// leaves the connection unusable and it never returns to the idle pool.
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "request %d", i)
 	}
 
 	mu.Lock()
 	got := newConns
 	mu.Unlock()
-	assert.Equal(t, 1, got, "server accepted")
+	assert.Equal(t, 1, got, "connections must be reused across requests")
 	assert.Equal(t, 1, pool.len(), "pool holds")
 }
 
@@ -116,10 +116,8 @@ func TestPeerClientPool_TransportBoundsIdleConnections(t *testing.T) {
 	selfMesh, _ := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
 
 	pool := NewPeerClientPool(selfMesh, 3*time.Second)
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.True(t, ok, "pinned peer must yield a client")
-	}
+	_, ok := pool.Client("uuid-peer")
+	require.True(t, ok, "pinned peer must yield a client")
 	entry := pool.entries["uuid-peer"]
 	assert.Equal(t, PeerIdleTimeout, entry.transport.IdleConnTimeout)
 	assert.Equal(t, peerMaxIdleConnsPerHost, entry.transport.MaxIdleConnsPerHost)
@@ -150,11 +148,9 @@ func TestPeerClientPool_RebuildsOnRepin(t *testing.T) {
 	first, ok := pool.Client("uuid-peer")
 	require.True(t, ok, "pinned peer must yield a client")
 	checkPeerClientCertificates(t, first, selfDER, peerDER, rePeerDER)
-	{
-		again, ok := pool.Client("uuid-peer")
-		require.True(t, ok, "unchanged pin must still yield a client")
-		assert.Same(t, first, again, "an unchanged pin must reuse the pooled client")
-	}
+	again, ok := pool.Client("uuid-peer")
+	require.True(t, ok, "unchanged pin must still yield a client")
+	assert.Same(t, first, again, "an unchanged pin must reuse the pooled client")
 
 	writePin(t, dir, "uuid-peer", string(rePeerPEM))
 	selfMesh.Refresh()
@@ -219,32 +215,24 @@ func TestPeerClientPool_UnpinnedIsRefusedAndEvicted(t *testing.T) {
 	selfMesh, dir := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
 
 	pool := NewPeerClientPool(selfMesh, time.Second)
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.True(t, ok, "pinned peer must yield a client")
-	}
-	{
-		_, ok := pool.Client("uuid-stranger")
-		require.False(t, ok, "an unpinned peer must not yield a client")
-	}
+	_, ok := pool.Client("uuid-peer")
+	require.True(t, ok, "pinned peer must yield a client")
+	_, ok = pool.Client("uuid-stranger")
+	require.False(t, ok, "an unpinned peer must not yield a client")
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "trusted", "uuid-peer.json")))
 	selfMesh.Refresh()
 
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.False(t, ok, "a de-pinned peer must no longer yield a client")
-	}
+	_, ok = pool.Client("uuid-peer")
+	require.False(t, ok, "a de-pinned peer must no longer yield a client")
 	assert.Equal(t, 0, pool.len(), "pool holds")
 
 	// DropUnpinned is the sweep the fan-out runs per round; it must reach the
 	// same conclusion for an entry nobody has asked for since the change.
 	writePin(t, dir, "uuid-peer", string(peerPEM))
 	selfMesh.Refresh()
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.True(t, ok, "re-pinned peer must yield a client again")
-	}
+	_, ok = pool.Client("uuid-peer")
+	require.True(t, ok, "re-pinned peer must yield a client again")
 	require.NoError(t, os.Remove(filepath.Join(dir, "trusted", "uuid-peer.json")))
 	selfMesh.Refresh()
 	pool.DropUnpinned()
@@ -274,24 +262,18 @@ func TestPeerClientPool_ResolverRevocationOverridesDiskPin(t *testing.T) {
 	})
 	defer pool.CloseIdle()
 
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.True(t, ok, "resolver-authorized peer must yield a client")
-	}
+	_, ok = pool.Client("uuid-peer")
+	require.True(t, ok, "resolver-authorized peer must yield a client")
 	authorized = false
 	selfMesh.Refresh()
 	assert.True(t, selfMesh.HasPin("uuid-peer"), "test requires the stale disk pin to remain visible to the mesh")
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.False(t, ok, "resolver-revoked peer must not yield a client despite its disk pin")
-	}
+	_, ok = pool.Client("uuid-peer")
+	require.False(t, ok, "resolver-revoked peer must not yield a client despite its disk pin")
 	assert.Equal(t, 0, pool.len(), "pool holds")
 
 	authorized = true
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.True(t, ok, "re-authorized peer must yield a client")
-	}
+	_, ok = pool.Client("uuid-peer")
+	require.True(t, ok, "re-authorized peer must yield a client")
 	authorized = false
 	pool.DropUnpinned()
 	assert.Equal(t, 0, pool.len(), "DropUnpinned left")
@@ -309,10 +291,8 @@ func TestPeerClientPool_CloseIdleEmptiesPool(t *testing.T) {
 
 	pool := NewPeerClientPool(selfMesh, time.Second)
 	for _, uuid := range []string{"uuid-peer", "uuid-other"} {
-		{
-			_, ok := pool.Client(uuid)
-			require.True(t, ok)
-		}
+		_, ok := pool.Client(uuid)
+		require.True(t, ok)
 	}
 	assert.Equal(t, 2, pool.len(), "pool holds")
 	pool.CloseIdle()
@@ -324,14 +304,10 @@ func TestPeerClientPool_CloseIdleEmptiesPool(t *testing.T) {
 // plaintext or unpinned path.
 func TestPeerClientPool_UnclusteredYieldsNothing(t *testing.T) {
 	pool := NewPeerClientPool(Open(t.TempDir()), time.Second)
-	{
-		_, ok := pool.Client("uuid-peer")
-		require.False(t, ok, "an unclustered node must yield no peer client")
-	}
-	{
-		_, ok := NewPeerClientPool(nil, time.Second).Client("uuid-peer")
-		require.False(t, ok, "a nil mesh must yield no peer client")
-	}
+	_, ok := pool.Client("uuid-peer")
+	require.False(t, ok, "an unclustered node must yield no peer client")
+	_, ok = NewPeerClientPool(nil, time.Second).Client("uuid-peer")
+	require.False(t, ok, "a nil mesh must yield no peer client")
 }
 
 // TestPeerClientPoolOpts_TimeoutZeroKeepsStreamingAlive: engine-manager install
@@ -393,10 +369,7 @@ func TestPeerClientPoolOpts_ResponseHeaderTimeoutFires(t *testing.T) {
 	defer pool.CloseIdle()
 	client, ok := pool.Client("uuid-peer")
 	require.True(t, ok, "pinned peer must yield a client")
-	{
-		entry := pool.entries["uuid-peer"]
-		assert.Equal(t, 40*time.Millisecond, entry.transport.ResponseHeaderTimeout)
-	}
+	assert.Equal(t, 40*time.Millisecond, pool.entries["uuid-peer"].transport.ResponseHeaderTimeout)
 	_, err := client.Get(srv.URL)
 	require.Error(t, err, "want a response-header timeout")
 }

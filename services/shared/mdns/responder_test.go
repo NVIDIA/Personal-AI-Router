@@ -47,10 +47,8 @@ func TestNewResponderValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			{
-				_, err := NewResponder(tc.instance, tc.service, tc.domain, tc.port, nil)
-				require.Error(t, err, "NewResponder")
-			}
+			_, err := NewResponder(tc.instance, tc.service, tc.domain, tc.port, nil)
+			require.Error(t, err, "NewResponder")
 		})
 	}
 }
@@ -71,10 +69,7 @@ func TestNewResponderCopiesTXT(t *testing.T) {
 	in := []string{"v=1"}
 	r := testResponder(in)
 	in[0] = "mutated"
-	{
-		got := r.currentTXT()
-		assert.Equal(t, "v=1", got[0], "currentTXT tracked caller's slice mutation:")
-	}
+	assert.Equal(t, "v=1", r.currentTXT()[0], "currentTXT tracked caller's slice mutation")
 }
 
 func TestSrvRR(t *testing.T) {
@@ -97,8 +92,7 @@ func TestTxtRR(t *testing.T) {
 func TestTxtRREmptyFallback(t *testing.T) {
 	r := testResponder(nil)
 	txt := r.txtRR(false)
-	require.Len(t, txt.Txt, 1, "empty TXT set should emit one empty string,")
-	assert.Equal(t, "", txt.Txt[0], "empty TXT set should emit one empty string,")
+	assert.Equal(t, []string{""}, txt.Txt, "empty TXT set should emit one empty string")
 }
 
 func TestUpdateTXTSwapsRecords(t *testing.T) {
@@ -114,20 +108,15 @@ func TestUpdateTXTSwapsRecords(t *testing.T) {
 
 	// currentTXT must return a copy, not the internal slice.
 	got[0] = "mutated"
-	{
-		again := r.currentTXT()
-		assert.Equal(t, "v=1", again[0], "currentTXT returned a mutable reference to internal state")
-	}
+	assert.Equal(t, "v=1", r.currentTXT()[0], "currentTXT returned a mutable reference to internal state")
 }
 
 func TestAddrsForResponse(t *testing.T) {
 	r := testResponder(nil)
 
-	{
-		got := r.addrsForResponse(1)
-		require.Len(t, got, 1)
-		assert.True(t, got[0].Equal(net.IPv4(192, 168, 1, 10)), "addrsForResponse(1)")
-	}
+	got := r.addrsForResponse(1)
+	require.Len(t, got, 1)
+	assert.Equal(t, "192.168.1.10", got[0].String(), "addrsForResponse(1)")
 	// Unknown interface index falls back to all addresses.
 	assert.Len(t, r.addrsForResponse(99), 2)
 	// ifIndex 0 (unknown receiving iface) also returns all.
@@ -156,7 +145,7 @@ func TestAppendBrowseRRs(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, haveSRV, "browse Extra SRV")
-	assert.Equal(t, 1, haveTXT, "browse Extra SRV")
+	assert.Equal(t, 1, haveTXT, "browse Extra TXT")
 	// ifIndex 1 scopes to that interface's single address.
 	assert.Equal(t, 1, aCount, "browse Extra A count")
 }

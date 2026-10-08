@@ -90,10 +90,8 @@ func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Messag
 func sendReq(t *testing.T, w io.Writer, id int, method string) {
 	t.Helper()
 	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q}`, id, method) + "\n"
-	{
-		_, err := w.Write([]byte(req))
-		require.NoError(t, err, "write (%v, %v)", method, err)
-	}
+	_, err := w.Write([]byte(req))
+	require.NoError(t, err, "write %s request", method)
 }
 
 func registerNodeInfo(t *testing.T, instance string, port int) *zeroconf.Server {
@@ -104,7 +102,7 @@ func registerNodeInfo(t *testing.T, instance string, port int) *zeroconf.Server 
 	// directory, and pushes it to the broker store.
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", fmt.Sprintf("ni=%d", port)}
 	srv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
-	require.NoError(t, err, "register (%v, %v)", instance, err)
+	require.NoError(t, err, "register %s", instance)
 	t.Cleanup(srv.Shutdown)
 	t.Logf("advertising %s @ %s (ni=%d)", instance, nodeRecordService, port)
 	return srv
@@ -138,10 +136,7 @@ func pollNodeListed(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, 
 			switch {
 			case msg.Method == "discovery:nodes-changed":
 				var nodes []availableNode
-				{
-					err := json.Unmarshal(msg.Params, &nodes)
-					require.NoError(t, err, "unmarshal discovery:nodes-changed")
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &nodes), "unmarshal discovery:nodes-changed")
 				require.False(t, allowPush != nil && !allowPush(nodes), "unexpected discovery:nodes-changed")
 			case msg.Method == "" && msg.ID != nil:
 				var res availableNodesResult
@@ -153,7 +148,7 @@ func pollNodeListed(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, 
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for %q in discovery:get-nodes", timeout, instance)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for %q in discovery:get-nodes", timeout, instance))
 		}
 	}
 }
@@ -169,16 +164,13 @@ func waitForPushContaining(t *testing.T, msgs <-chan jsonrpc.Message, instance s
 			require.True(t, ok, "broker stream closed before push containing (%v)", instance)
 			if msg.Method == "discovery:nodes-changed" {
 				var nodes []availableNode
-				{
-					err := json.Unmarshal(msg.Params, &nodes)
-					require.NoError(t, err, "unmarshal discovery:nodes-changed")
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &nodes), "unmarshal discovery:nodes-changed")
 				if containsNode(nodes, instance) {
 					return
 				}
 			}
 		case <-to:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for discovery:nodes-changed containing %q", timeout, instance)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for discovery:nodes-changed containing %q", timeout, instance))
 		}
 	}
 }
@@ -226,15 +218,12 @@ func TestCrossProcessBrokerSubscription(t *testing.T) {
 				}
 			case msg.Method == "discovery:nodes-changed":
 				var nodes []availableNode
-				{
-					err := json.Unmarshal(msg.Params, &nodes)
-					require.NoError(t, err, "unmarshal baseline")
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &nodes), "unmarshal baseline")
 				assert.True(t, containsNode(nodes, inst1), "baseline snapshot missing (%v)", inst1)
 				gotBaseline = true
 			}
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out waiting for subscribe ack=%v baseline=%v", gotAck, gotBaseline)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for subscribe ack=%v baseline=%v", gotAck, gotBaseline))
 		}
 	}
 	t.Log("phase 2 OK: subscribe acked and baseline snapshot received")
@@ -263,7 +252,7 @@ func TestCrossProcessBrokerSubscription(t *testing.T) {
 				}
 			}
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out waiting for unsubscribe ack")
+			require.FailNow(t, "timed out waiting for unsubscribe ack")
 		}
 	}
 	t.Log("phase 4 OK: unsubscribe acked")

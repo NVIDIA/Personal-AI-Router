@@ -18,10 +18,7 @@ import (
 // to route around.
 func TestEngineProxyTableMatchesSharedEngines(t *testing.T) {
 	require.NotEmpty(t, engineProxyProfiles, "no engine proxy profiles")
-	{
-		got := engineProxyProfiles[0].Name
-		require.Equal(t, "ollama", got, "first profile")
-	}
+	require.Equal(t, "ollama", engineProxyProfiles[0].Name, "first profile")
 	for _, p := range engineProxyProfiles {
 		assert.NotEqual(t, p.EnginePortBase, p.FacadePort)
 		assert.NotEmpty(t, p.ComponentName())
@@ -69,16 +66,10 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 			require.True(t, ok, "no profile for")
 			assert.Equal(t, tc.facade, p.FacadePort, "facade constant")
 			assert.Equal(t, tc.backendStart, p.EnginePortBase, "backend-start constant")
-			{
-				want := p.ComponentName() + ":port-ownership-blocked"
-				assert.Equal(t, want, tc.blockedID, "blocked error id (%v)", want)
-			}
+			assert.Equal(t, p.ComponentName()+":port-ownership-blocked", tc.blockedID, "blocked error id")
 		})
 	}
-	{
-		want := ollamaProxyProfile.ComponentName() + ":port-bumped"
-		assert.Equal(t, want, proxyPortBumpedID, "bumped error id (%v, %v)", proxyPortBumpedID, want)
-	}
+	assert.Equal(t, ollamaProxyProfile.ComponentName()+":port-bumped", proxyPortBumpedID, "bumped error id")
 }
 
 // Every engine's relocation authority is pinned explicitly. Getting these
@@ -130,8 +121,7 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 			got := planManagedEnginePorts(p, true, status, available)
 
 			if tc.wantMove {
-				want := managedPortPlan{Enabled: true, BackendPort: p.EnginePortBase}
-				require.Equal(t, want, got, "plan (%v, %v)", got, want)
+				require.Equal(t, managedPortPlan{Enabled: true, BackendPort: p.EnginePortBase}, got, "a managed engine must be moved, not refused")
 				return
 			}
 			require.Equal(t, tc.wantBlock, got.Blocked, "plan (%v)", got)
@@ -163,10 +153,7 @@ func TestParseProxyEngines(t *testing.T) {
 				return
 			}
 			require.NoError(t, err, "parseProxyEngines")
-			require.Len(t, got, len(tc.want), "parseProxyEngines")
-			for i := range tc.want {
-				require.Equal(t, tc.want[i], got[i], "parseProxyEngines (%v)", got)
-			}
+			require.Equal(t, append([]string{}, tc.want...), append([]string{}, got...), "parseProxyEngines")
 		})
 	}
 }
@@ -237,11 +224,11 @@ func TestDeselectedEngineIsNotPrepared(t *testing.T) {
 	select {
 	case <-policyReads:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "the selected engine was never prepared; the fixture is not exercising preparation")
+		require.FailNow(t, "the selected engine was never prepared; the fixture is not exercising preparation")
 	}
 	select {
 	case <-policyReads:
-		require.FailNow(t, "test expectation failed", "a deselected engine was prepared; its backend would be relocated with no proxy to claim the port")
+		require.FailNow(t, "a deselected engine was prepared; its backend would be relocated with no proxy to claim the port")
 	case <-time.After(300 * time.Millisecond):
 	}
 }

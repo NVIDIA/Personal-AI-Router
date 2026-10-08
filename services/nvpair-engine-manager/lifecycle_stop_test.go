@@ -81,26 +81,20 @@ func TestStopReclaimsOurOrphanOnManagedPort(t *testing.T) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
-	{
-		st, err := ex.Status("fake")
-		require.NoError(t, err, "adopt orphan: status (%v, %v)", st, err)
-		require.True(t, st.Running, "adopt orphan: status (%v, %v)", st, err)
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err, "adopt orphan: status (%v, %v)", st, err)
+	require.True(t, st.Running, "adopt orphan: status (%v, %v)", st, err)
 
 	require.NoError(t, ex.Stop("fake"), "stop must reclaim our own orphan, got err")
 	require.False(t, portServing(port), "orphan on our managed port must be terminated by stop")
 	time.Sleep(1500 * time.Millisecond) // outlast a health interval
-	{
-		st, _ := ex.Status("fake")
-		require.False(t, st.Running, "engine must stay stopped after reclaim (%v)", st)
-		require.False(t, st.Healthy, "engine must stay stopped after reclaim (%v)", st)
-	}
-	{
-		enabled, known, err := ex.desired.get("fake")
-		require.NoError(t, err, "desired state (%v, %v, %v)", enabled, known, err)
-		require.True(t, known, "desired state (%v, %v, %v)", enabled, known, err)
-		require.False(t, enabled, "desired state (%v, %v, %v)", enabled, known, err)
-	}
+	st, _ = ex.Status("fake")
+	require.False(t, st.Running, "engine must stay stopped after reclaim (%v)", st)
+	require.False(t, st.Healthy, "engine must stay stopped after reclaim (%v)", st)
+	enabled, known, err := ex.desired.get("fake")
+	require.NoError(t, err, "desired state (%v, %v, %v)", enabled, known, err)
+	require.True(t, known, "desired state (%v, %v, %v)", enabled, known, err)
+	require.False(t, enabled, "desired state (%v, %v, %v)", enabled, known, err)
 }
 
 func TestStopDoesNotReclaimSameExternalImage(t *testing.T) {
@@ -116,15 +110,10 @@ func TestStopDoesNotReclaimSameExternalImage(t *testing.T) {
 	p.Runtime.Port = port
 	m.Platforms[key] = p
 	ex := newTestExecutor(t, m) // managed install directory is not bin's directory
-	{
-		st, err := ex.Status("fake")
-		require.NoError(t, err, "adopt external image: status (%v, %v)", st, err)
-		require.True(t, st.Running, "adopt external image: status (%v, %v)", st, err)
-	}
-	{
-		err := ex.Stop("fake")
-		require.ErrorContains(t, err, "external management", "external same-image stop error")
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err, "adopt external image: status (%v, %v)", st, err)
+	require.True(t, st.Running, "adopt external image: status (%v, %v)", st, err)
+	require.ErrorContains(t, ex.Stop("fake"), "external management", "external same-image stop error")
 	require.True(t, portServing(port), "external same-image listener was terminated")
 }
 
@@ -149,23 +138,19 @@ func TestStopDeclinesForeignListenerWithActionableError(t *testing.T) {
 	m.Platforms[key] = p
 
 	ex := newTestExecutor(t, m)
-	{
-		st, err := ex.Status("fake")
-		require.NoError(t, err, "adopt foreign listener: status (%v, %v)", st, err)
-		require.True(t, st.Running, "adopt foreign listener: status (%v, %v)", st, err)
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err, "adopt foreign listener: status (%v, %v)", st, err)
+	require.True(t, st.Running, "adopt foreign listener: status (%v, %v)", st, err)
 
 	err = ex.Stop("fake")
 	require.ErrorContains(t, err, "external management", "stop error")
 	require.ErrorContains(t, err, strconv.Itoa(foreign.Process.Pid), "decline error must name the offending pid")
 	require.ErrorContains(t, err, filepath.Base(foreignBin), "decline error must name the offending image (%v)", foreignBin)
 	require.True(t, portServing(port), "a genuinely foreign listener must be left running")
-	{
-		enabled, known, err := ex.desired.get("fake")
-		require.NoError(t, err, "desired state (%v, %v, %v)", enabled, known, err)
-		require.True(t, known, "desired state (%v, %v, %v)", enabled, known, err)
-		require.False(t, enabled, "desired state (%v, %v, %v)", enabled, known, err)
-	}
+	enabled, known, err := ex.desired.get("fake")
+	require.NoError(t, err, "desired state (%v, %v, %v)", enabled, known, err)
+	require.True(t, known, "desired state (%v, %v, %v)", enabled, known, err)
+	require.False(t, enabled, "desired state (%v, %v, %v)", enabled, known, err)
 }
 
 func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
@@ -182,11 +167,9 @@ func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
 	p.Runtime.Ready = &Probe{HTTP: srv.URL, Status: http.StatusOK}
 	m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = p
 	ex := newTestExecutor(t, m)
-	{
-		st, err := ex.Status("fake")
-		require.NoError(t, err, "adopt external engine: status (%v, %v)", st, err)
-		require.True(t, st.Running, "adopt external engine: status (%v, %v)", st, err)
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err, "adopt external engine: status (%v, %v)", st, err)
+	require.True(t, st.Running, "adopt external engine: status (%v, %v)", st, err)
 	stateChanged := make(chan EngineStatus, 1)
 	ex.emit = func(method string, params any) {
 		if method == "engine:state-changed" {
@@ -194,19 +177,16 @@ func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
 		}
 	}
 
-	err := ex.Stop("fake")
-	require.ErrorContains(t, err, "external management", "stop error")
-	{
-		st, _ := ex.Status("fake")
-		require.True(t, st.Running, "rejected stop must keep the live engine running (%v)", st)
-		require.True(t, st.Healthy, "rejected stop must keep the live engine running (%v)", st)
-	}
+	require.ErrorContains(t, ex.Stop("fake"), "external management", "stop error")
+	st, _ = ex.Status("fake")
+	require.True(t, st.Running, "rejected stop must keep the live engine running (%v)", st)
+	require.True(t, st.Healthy, "rejected stop must keep the live engine running (%v)", st)
 	select {
 	case st := <-stateChanged:
 		require.True(t, st.Running, "rejected stop emitted false terminal state (%v)", st)
 		require.True(t, st.Healthy, "rejected stop emitted false terminal state (%v)", st)
 	default:
-		require.FailNow(t, "test expectation failed", "rejected stop did not emit the unchanged running state")
+		require.FailNow(t, "rejected stop did not emit the unchanged running state")
 	}
 }
 
@@ -222,19 +202,15 @@ func TestStopReconcilesAdoptedProcessAfterExternalStop(t *testing.T) {
 	p.Runtime.Ready = &Probe{HTTP: srv.URL, Status: http.StatusOK}
 	m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = p
 	ex := newTestExecutor(t, m)
-	{
-		st, err := ex.Status("fake")
-		require.NoError(t, err, "adopt external engine: status (%v, %v)", st, err)
-		require.True(t, st.Running, "adopt external engine: status (%v, %v)", st, err)
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err, "adopt external engine: status (%v, %v)", st, err)
+	require.True(t, st.Running, "adopt external engine: status (%v, %v)", st, err)
 
 	srv.Close()
 	require.NoError(t, ex.Stop("fake"), "retry after external stop")
-	{
-		st, _ := ex.Status("fake")
-		require.False(t, st.Running, "closed external endpoint must reconcile to stopped (%v)", st)
-		require.False(t, st.Healthy, "closed external endpoint must reconcile to stopped (%v)", st)
-	}
+	st, _ = ex.Status("fake")
+	require.False(t, st.Running, "closed external endpoint must reconcile to stopped (%v)", st)
+	require.False(t, st.Healthy, "closed external endpoint must reconcile to stopped (%v)", st)
 }
 
 func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
@@ -255,21 +231,14 @@ func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
 	p.Runtime.Ready = &Probe{HTTP: srv.URL, Status: http.StatusOK}
 	m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = p
 	ex := newTestExecutor(t, m)
-	{
-		st, err := ex.Status("fake")
-		require.NoError(t, err, "adopt external engine: status (%v, %v)", st, err)
-		require.True(t, st.Running, "adopt external engine: status (%v, %v)", st, err)
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err, "adopt external engine: status (%v, %v)", st, err)
+	require.True(t, st.Running, "adopt external engine: status (%v, %v)", st, err)
 
 	unhealthy.Store(true)
-	{
-		err := ex.Stop("fake")
-		require.ErrorContains(t, err, "external management", "stop error")
-	}
-	{
-		st, _ := ex.Status("fake")
-		require.True(t, st.Running, "an unhealthy but reachable endpoint must not report stopped (%v)", st)
-	}
+	require.ErrorContains(t, ex.Stop("fake"), "external management", "stop error")
+	st, _ = ex.Status("fake")
+	require.True(t, st.Running, "an unhealthy but reachable endpoint must not report stopped (%v)", st)
 }
 
 func TestCommandStopFailureKeepsLiveEngineRunning(t *testing.T) {
@@ -280,14 +249,11 @@ func TestCommandStopFailureKeepsLiveEngineRunning(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "failmark", marker}, 1, false)
 
-	err := ex.Stop("command")
-	require.ErrorContains(t, err, "stop command", "stop error")
+	require.ErrorContains(t, ex.Stop("command"), "stop command", "stop error")
 	require.FileExists(t, marker, "stop command did not run")
-	{
-		st, _ := ex.Status("command")
-		require.True(t, st.Running, "failed stop must keep the live engine running (%v)", st)
-		require.True(t, st.Healthy, "failed stop must keep the live engine running (%v)", st)
-	}
+	st, _ := ex.Status("command")
+	require.True(t, st.Running, "failed stop must keep the live engine running (%v)", st)
+	require.True(t, st.Healthy, "failed stop must keep the live engine running (%v)", st)
 }
 
 func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
@@ -310,13 +276,11 @@ func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
 	select {
 	case <-closed:
 	case <-time.After(3 * time.Second):
-		require.FailNow(t, "test expectation failed", "test endpoint did not close")
+		require.FailNow(t, "test endpoint did not close")
 	}
-	{
-		st, _ := ex.Status("command")
-		require.False(t, st.Running, "closed endpoint must report stopped (%v)", st)
-		require.False(t, st.Healthy, "closed endpoint must report stopped (%v)", st)
-	}
+	st, _ := ex.Status("command")
+	require.False(t, st.Running, "closed endpoint must report stopped (%v)", st)
+	require.False(t, st.Healthy, "closed endpoint must report stopped (%v)", st)
 }
 
 func TestCommandStopWithoutReadinessProbeUsesConfiguredCommand(t *testing.T) {
@@ -327,11 +291,9 @@ func TestCommandStopWithoutReadinessProbeUsesConfiguredCommand(t *testing.T) {
 
 	require.NoError(t, ex.Stop("command"), "stop without readiness probe")
 	require.FileExists(t, marker, "configured stop command did not run")
-	{
-		status, _ := ex.Status("command")
-		require.False(t, status.Running, "legacy no-probe command stop must report stopped (%v)", status)
-		require.False(t, status.Healthy, "legacy no-probe command stop must report stopped (%v)", status)
-	}
+	status, _ := ex.Status("command")
+	require.False(t, status.Running, "legacy no-probe command stop must report stopped (%v)", status)
+	require.False(t, status.Healthy, "legacy no-probe command stop must report stopped (%v)", status)
 }
 
 func TestCommandStopRejectsSuccessWhileEndpointIsLive(t *testing.T) {
@@ -342,13 +304,10 @@ func TestCommandStopRejectsSuccessWhileEndpointIsLive(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
 
-	err := ex.Stop("command")
-	require.ErrorContains(t, err, "still serving", "stop error")
-	{
-		st, _ := ex.Status("command")
-		require.True(t, st.Running, "live endpoint must remain reported running (%v)", st)
-		require.True(t, st.Healthy, "live endpoint must remain reported running (%v)", st)
-	}
+	require.ErrorContains(t, ex.Stop("command"), "still serving", "stop error")
+	st, _ := ex.Status("command")
+	require.True(t, st.Running, "live endpoint must remain reported running (%v)", st)
+	require.True(t, st.Healthy, "live endpoint must remain reported running (%v)", st)
 }
 
 func TestCommandStopRejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
@@ -359,12 +318,9 @@ func TestCommandStopRejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
 
-	err := ex.Stop("command")
-	require.ErrorContains(t, err, "still serving", "stop error")
-	{
-		st, _ := ex.Status("command")
-		require.True(t, st.Running, "an unhealthy but reachable endpoint must remain running (%v)", st)
-	}
+	require.ErrorContains(t, ex.Stop("command"), "still serving", "stop error")
+	st, _ := ex.Status("command")
+	require.True(t, st.Running, "an unhealthy but reachable endpoint must remain running (%v)", st)
 }
 
 func TestCommandStopFailureRestartsHealthMonitoring(t *testing.T) {
@@ -393,7 +349,7 @@ func TestCommandStopFailureRestartsHealthMonitoring(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	require.FailNow(t, "test expectation failed", "health monitoring did not resume after failed stop: %+v", ex.snapshot("command", st))
+	require.FailNowf(t, "health monitoring did not resume after failed stop", "%+v", ex.snapshot("command", st))
 }
 
 func TestCommandStopReportsStoppedOnlyAfterEndpointCloses(t *testing.T) {
@@ -416,13 +372,11 @@ func TestCommandStopReportsStoppedOnlyAfterEndpointCloses(t *testing.T) {
 	select {
 	case <-closed:
 	case <-time.After(3 * time.Second):
-		require.FailNow(t, "test expectation failed", "test endpoint did not close")
+		require.FailNow(t, "test endpoint did not close")
 	}
-	{
-		st, _ := ex.Status("command")
-		require.False(t, st.Running, "closed endpoint must report stopped (%v)", st)
-		require.False(t, st.Healthy, "closed endpoint must report stopped (%v)", st)
-	}
+	st, _ := ex.Status("command")
+	require.False(t, st.Running, "closed endpoint must report stopped (%v)", st)
+	require.False(t, st.Healthy, "closed endpoint must report stopped (%v)", st)
 }
 
 func commandStopTestExecutor(t *testing.T, readyURL string, stopCmd []string, graceS int, adopted bool) *Executor {

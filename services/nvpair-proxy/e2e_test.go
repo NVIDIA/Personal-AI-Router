@@ -89,10 +89,8 @@ func e2eSend(t *testing.T, w io.Writer, id int, method string, params any) {
 		msg["params"] = params
 	}
 	data, _ := json.Marshal(msg)
-	{
-		_, err := w.Write(append(data, '\n'))
-		require.NoError(t, err, "send (%v, %v)", method, err)
-	}
+	_, err := w.Write(append(data, '\n'))
+	require.NoError(t, err, "send (%v, %v)", method, err)
 }
 
 // e2eInbox retains interleaved replies and notifications for later waits.
@@ -121,7 +119,7 @@ func (in *e2eInbox) wait(t *testing.T, match func(e2eFrame) bool, description st
 			}
 			in.pending = append(in.pending, f)
 		case <-timer.C:
-			require.FailNow(t, "test expectation failed", "timed out waiting for %s", description)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for %s", description))
 		}
 	}
 }
@@ -151,7 +149,7 @@ func e2eEnableWithRetry(t *testing.T, stdin io.Writer, frames *e2eInbox, engine 
 		require.Equal(t, port, bound, "enabled port (%v, %v)", bound, port)
 		return port
 	}
-	require.FailNow(t, "test expectation failed", "enable %s: every probed port was taken before the child could bind", engine)
+	require.FailNow(t, fmt.Sprintf("enable %s: every probed port was taken before the child could bind", engine))
 	return 0
 }
 
@@ -168,7 +166,7 @@ func e2eEnabledPort(t *testing.T, frames *e2eInbox, id string, timeout time.Dura
 		if json.Unmarshal(f.Error, &rpcErr) == nil && rpcErr.Code == codeFacadeBindFailed {
 			return 0, true
 		}
-		require.FailNow(t, "test expectation failed", "facade/enable returned error: %s", f.Error)
+		require.FailNow(t, fmt.Sprintf("facade/enable returned error: %s", f.Error))
 	}
 	var res struct {
 		Port int `json:"port"`
@@ -208,15 +206,9 @@ func TestE2EInboxPreservesInterleavedFrames(t *testing.T) {
 				port, retry := e2eEnabledPort(t, frames, "100", time.Second)
 				require.False(t, retry, "enabled port (%v, %v)", port, retry)
 				require.Equal(t, 12345, port, "enabled port (%v, %v)", port, retry)
-				{
-					port := e2eWaitReadyPort(t, frames, time.Second)
-					require.Equal(t, 12345, port, "ready port")
-				}
+				require.Equal(t, 12345, e2eWaitReadyPort(t, frames, time.Second), "ready port")
 			} else {
-				{
-					port := e2eWaitReadyPort(t, frames, time.Second)
-					require.Equal(t, 12345, port, "ready port")
-				}
+				require.Equal(t, 12345, e2eWaitReadyPort(t, frames, time.Second), "ready port")
 				port, retry := e2eEnabledPort(t, frames, "100", time.Second)
 				require.False(t, retry, "enabled port (%v, %v)", port, retry)
 				require.Equal(t, 12345, port, "enabled port (%v, %v)", port, retry)
@@ -337,10 +329,7 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 		require.NoError(t, err, "inference POST")
 		defer resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode, "status")
-		{
-			got := resp.Header.Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-		}
+		assert.Equal(t, "", resp.Header.Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 		assert.Equal(t, body, gotBody, "healthy upstream got body (%v, %v)", gotBody, body)
 
 		e2eSend(t, stdin, 9, "shutdown", nil)

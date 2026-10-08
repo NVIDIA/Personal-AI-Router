@@ -41,21 +41,15 @@ func TestPeerDirectorySetAndLookup(t *testing.T) {
 	assert.Equal(t, []string{"192.168.1.42", "10.0.0.42"}, p.addresses, "unexpected nodeB addresses")
 	require.Equal(t, 14323, p.port, "unexpected nodeB entry (%v, %v)", p, ok)
 	require.Equal(t, "cuuid-b", p.clusterUUID, "unexpected nodeB entry (%v, %v)", p, ok)
-	{
-		_, ok := d.lookup("uuid-c")
-		require.False(t, ok, "nodeC advertises no ec; should not be in directory")
-	}
-	{
-		_, ok := d.lookup("uuid-d")
-		require.False(t, ok, "nodeD has no dialable IP; should not be in directory")
-	}
+	_, ok = d.lookup("uuid-c")
+	require.False(t, ok, "nodeC advertises no ec; should not be in directory")
+	_, ok = d.lookup("uuid-d")
+	require.False(t, ok, "nodeD has no dialable IP; should not be in directory")
 
 	// A later snapshot replaces the set wholesale.
 	d.set(nil)
-	{
-		_, ok := d.lookup("uuid-b")
-		require.False(t, ok, "empty snapshot should clear the directory")
-	}
+	_, ok = d.lookup("uuid-b")
+	require.False(t, ok, "empty snapshot should clear the directory")
 }
 
 // TestPeerDirectoryKeysByHostUUID: an ec peer with a stable hostUuid is keyed
@@ -74,8 +68,6 @@ func TestPeerDirectoryKeysByHostUUID(t *testing.T) {
 	require.True(t, ok, "expected lookup by hostUuid (%v, %v)", p, ok)
 	require.Equal(t, "uuid-b", p.nodeID, "expected lookup by hostUuid (%v, %v)", p, ok)
 	assert.Equal(t, []string{"192.168.1.42"}, p.addresses, "expected lookup by hostUuid")
-	{
-		_, ok := d.lookup("nodeB")
-		require.False(t, ok, "must not be addressable by hostname when a hostUuid is present")
-	}
+	_, ok = d.lookup("nodeB")
+	require.False(t, ok, "must not be addressable by hostname when a hostUuid is present")
 }

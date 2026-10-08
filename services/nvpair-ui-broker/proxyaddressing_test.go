@@ -69,10 +69,9 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 
 			select {
 			case got := <-seen:
-				want := profile.addressed("nodes/list")
-				require.Equal(t, want, got, "relayed method (%v, %v)", got, want)
+				require.Equal(t, profile.addressed("nodes/list"), got, "relayed method")
 			case <-time.After(2 * time.Second):
-				require.FailNow(t, "test expectation failed", "relay sent nothing downward")
+				require.FailNow(t, "relay sent nothing downward")
 			}
 		})
 	}
@@ -111,10 +110,8 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 
 	b.blockManagedOllamaFacade("the Ollama proxy facade could not be brought up")
 
-	{
-		got := b.currentOllamaHostAlias()
-		assert.Equal(t, alias.Port, got.Port, "blocking released the alias a retry still needs (%v)", got)
-	}
+	got := b.currentOllamaHostAlias()
+	assert.Equal(t, alias.Port, got.Port, "blocking released the alias a retry still needs (%v)", got)
 }
 
 // An engine that failed inside a process that is staying gets terminal
@@ -129,16 +126,12 @@ func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
 	}
 	alias := ollamaHostAlias{Address: "127.0.0.1:11433", Port: 11433}
 	b.setOllamaHostAlias(alias)
-	{
-		got := b.currentOllamaHostAlias()
-		require.Equal(t, alias.Port, got.Port, "alias not established for the test (%v)", got)
-	}
+	got := b.currentOllamaHostAlias()
+	require.Equal(t, alias.Port, got.Port, "alias not established for the test (%v)", got)
 
 	b.blockAndFinishEngineProxy(ollamaProxyProfile)
-	{
-		got := b.currentOllamaHostAlias()
-		assert.Equal(t, 0, got.Port, "terminal treatment did not release the alias (%v)", got)
-	}
+	got = b.currentOllamaHostAlias()
+	assert.Equal(t, 0, got.Port, "terminal treatment did not release the alias (%v)", got)
 }
 
 // A facade that reported ready is kept when its enable call went unanswered,
@@ -182,10 +175,7 @@ func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			{
-				got := facadeCameUpAnyway(tc.pp, engine, tc.err)
-				require.Equal(t, tc.want, got, "facadeCameUpAnyway (%v)", got)
-			}
+			require.Equal(t, tc.want, facadeCameUpAnyway(tc.pp, engine, tc.err), "facadeCameUpAnyway")
 		})
 	}
 }
@@ -221,18 +211,16 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 
 	for engine, wantPort := range map[string]int{first.Name: 11434, second.Name: 1234} {
 		ready, port := p.Status(engine)
-		assert.True(t, ready, " (%v)", engine)
-		assert.Equal(t, wantPort, port, " (%v, %v, %v)", engine, port, wantPort)
-		assert.NotNil(t, p.ReadyParams(engine), " (%v)", engine)
+		assert.True(t, ready, "engine %s must be ready", engine)
+		assert.Equal(t, wantPort, port, "engine %s facade port", engine)
+		assert.NotNil(t, p.ReadyParams(engine), "engine %s ready params", engine)
 	}
 
 	// An engine that never announced itself is not ready, rather than
 	// inheriting a sibling's port.
-	{
-		ready, port := p.Status("vllm")
-		assert.False(t, ready, "an unannounced engine reported ready (%v, %v)", ready, port)
-		assert.Equal(t, 0, port, "an unannounced engine reported ready (%v, %v)", ready, port)
-	}
+	ready, port := p.Status("vllm")
+	assert.False(t, ready, "an unannounced engine reported ready")
+	assert.Equal(t, 0, port, "an unannounced engine reported a port")
 }
 
 func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
@@ -345,7 +333,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 		params, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{service},
 		})
-		require.NoError(t, err, "marshal subscribe for (%v, %v)", engine, err)
+		require.NoError(t, err, "marshal subscribe for %s", engine)
 		p.handleSubscribe(engine, params)
 	}
 
@@ -410,8 +398,8 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	assert.NotEqual(t, firstID, p.subIDs[first.Name], "re-subscribe kept (%v)", firstID)
-	assert.Equal(t, secondID, p.subIDs[second.Name], "re-subscribing (%v)", secondID)
+	assert.NotEqual(t, firstID, p.subIDs[first.Name], "re-subscribe kept %s's original ID, so it is now double-fed", first.Name)
+	assert.Equal(t, secondID, p.subIDs[second.Name], "re-subscribing %s changed %s's ID", first.Name, second.Name)
 }
 
 // The read pump reports ready and wires subscriptions by matching bare method
@@ -468,9 +456,9 @@ func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := facadeMethodFor(tc.profile, tc.method)
-			require.Equal(t, tc.ok, ok, "facadeMethodFor (%v)", ok)
+			require.Equal(t, tc.ok, ok, "facadeMethodFor")
 			if ok {
-				require.Equal(t, tc.want, got, "facadeMethodFor (%v)", got)
+				require.Equal(t, tc.want, got, "facadeMethodFor")
 			}
 		})
 	}

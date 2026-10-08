@@ -27,10 +27,7 @@ func TestUnwrapPullCause(t *testing.T) {
 		if c.in != "" {
 			err = errors.New(c.in)
 		}
-		{
-			got := unwrapPullCause(err)
-			require.Equal(t, c.want, got, "unwrapPullCause")
-		}
+		require.Equal(t, c.want, unwrapPullCause(err), "unwrapPullCause")
 	}
 }
 

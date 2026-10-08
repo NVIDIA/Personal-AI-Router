@@ -25,9 +25,6 @@ func TestSettingsOverrideRestrictsExistingPermissions(t *testing.T) {
 	for path, want := range map[string]os.FileMode{e.overrideDir: 0700, path: 0600} {
 		info, err := os.Stat(path)
 		require.NoError(t, err)
-		{
-			got := info.Mode().Perm()
-			require.Equal(t, want, got, "permissions for %s", path)
-		}
+		require.Equal(t, want, info.Mode().Perm(), "permissions for %s", path)
 	}
 }

@@ -110,10 +110,8 @@ func TestNegativeReportedAgeIsClamped(t *testing.T) {
 
 func TestUnreportedNodeHasNoActivity(t *testing.T) {
 	d := activityDaemon()
-	{
-		_, ok := d.activitySince("never-seen")
-		require.False(t, ok, "a node nothing has reported must have no activity evidence")
-	}
+	_, ok := d.activitySince("never-seen")
+	require.False(t, ok, "a node nothing has reported must have no activity evidence")
 }
 
 // A proxy resolves targets by URL and port and cannot tell which uuid is this
@@ -124,10 +122,8 @@ func TestSelfActivityIsDropped(t *testing.T) {
 	d.reg = newRegistry("self-uuid", "", []string{"127.0.0.1"})
 
 	d.noteActivity("self-uuid", 0)
-	{
-		_, ok := d.activitySince("self-uuid")
-		require.False(t, ok, "this node's own uuid must not be recorded as peer activity")
-	}
+	_, ok := d.activitySince("self-uuid")
+	require.False(t, ok, "this node's own uuid must not be recorded as peer activity")
 }
 
 // Eviction clears a node's caches; leaving activity behind would let a stale
@@ -143,10 +139,8 @@ func TestForgetClearsActivity(t *testing.T) {
 
 	d.noteActivity("node", 0)
 	d.forget("node")
-	{
-		_, ok := d.activitySince("node")
-		require.False(t, ok, "forget must clear a node's activity evidence")
-	}
+	_, ok := d.activitySince("node")
+	require.False(t, ok, "forget must clear a node's activity evidence")
 }
 
 // The relay arrives as a JSON-RPC frame from the broker, so the handler has to

@@ -20,21 +20,13 @@ func TestSetObservedAddressesReplacesTheSet(t *testing.T) {
 	d := newSelfTestDaemon("host-a", "10.172.54.70")
 
 	d.setObservedAddresses([]string{"10.172.54.70", "", "10.0.0.5"})
-	got := d.observedAddresses()
-	require.Len(t, got, 2, "observed")
-	require.True(t, got["10.172.54.70"], "observed (%v)", got)
-	require.True(t, got["10.0.0.5"], "observed (%v)", got)
+	require.Equal(t, map[string]bool{"10.172.54.70": true, "10.0.0.5": true}, d.observedAddresses(), "observed")
 
 	d.setObservedAddresses([]string{"10.0.0.5"})
-	got = d.observedAddresses()
-	require.Len(t, got, 1, "observed")
-	require.True(t, got["10.0.0.5"], "observed (%v)", got)
+	require.Equal(t, map[string]bool{"10.0.0.5": true}, d.observedAddresses(), "observed")
 
 	d.setObservedAddresses(nil)
-	{
-		got = d.observedAddresses()
-		require.Empty(t, got, "observed")
-	}
+	require.Empty(t, d.observedAddresses(), "observed")
 }
 
 // The relay arrives as a JSON-RPC request, so the daemon's dispatch must accept
@@ -45,8 +37,6 @@ func TestHandleSetObservedAddresses(t *testing.T) {
 	require.NoError(t, err, "marshal")
 
 	require.True(t, d.handle(&Message{Method: noderec.MethodSetObservedAddresses, Params: params}), "daemon did not claim the observed-addresses method")
-	{
-		got := d.observedAddresses()
-		require.True(t, got["10.172.54.70"], "observed (%v)", got)
-	}
+	got := d.observedAddresses()
+	require.True(t, got["10.172.54.70"], "observed (%v)", got)
 }

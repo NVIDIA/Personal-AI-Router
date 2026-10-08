@@ -58,13 +58,13 @@ func TestLastSeenTracksOriginReassertion(t *testing.T) {
 
 	require.True(t, s.Apply(mkIn("1", "peer", "running", "peer", 100)), "first running must be a forward change")
 	r, _ := s.Get("peer", "1")
-	require.True(t, r.LastSeen.Equal(*now), "LastSeen")
+	require.WithinDuration(t, *now, r.LastSeen, 0, "LastSeen")
 	firstUpdated := r.LastUpdated
 
 	*now = now.Add(30 * time.Second)
 	require.False(t, s.Apply(mkIn("1", "peer", "running", "peer", 100)), "an unchanged re-assertion must not report a forward change")
 	r, _ = s.Get("peer", "1")
-	require.True(t, r.LastSeen.Equal(*now), "LastSeen after re-assertion")
+	require.WithinDuration(t, *now, r.LastSeen, 0, "LastSeen after re-assertion")
 	require.True(t, r.LastUpdated == firstUpdated, "LastUpdated must NOT move on a no-op merge; that is why LastSeen exists")
 }
 
@@ -80,7 +80,7 @@ func TestLastSeenIgnoresInferredAndStale(t *testing.T) {
 	*now = now.Add(time.Minute)
 	s.ApplyInferred(mkIn("1", "peer", "failed", "peer", 200))
 	r, _ := s.Get("peer", "1")
-	require.True(t, r.LastSeen.Equal(first), "LastSeen (%v)", first)
+	require.WithinDuration(t, first, r.LastSeen, 0, "an inferred guess must not refresh LastSeen")
 
 	// A stale generation for a live record is rejected outright and must not
 	// refresh the sighting either.
@@ -90,7 +90,7 @@ func TestLastSeenIgnoresInferredAndStale(t *testing.T) {
 	*now2 = now2.Add(time.Minute)
 	require.False(t, s2.Apply(mkIn("2", "peer", "running", "peer", 100)), "a stale generation must be rejected")
 	r2, _ := s2.Get("peer", "2")
-	require.True(t, r2.LastSeen.Equal(seen), "LastSeen (%v)", seen)
+	require.WithinDuration(t, seen, r2.LastSeen, 0, "a stale-generation event must not refresh LastSeen")
 }
 
 // TestStaleForeignSelectsOnlySilentRemoteWork pins the selection rules: silent
@@ -116,7 +116,7 @@ func TestStaleForeignSelectsOnlySilentRemoteWork(t *testing.T) {
 
 	// Once the origin speaks up again the record stops being stale.
 	s.Apply(mkIn("silent", "peer", "running", "peer", 100))
-	require.Empty(t, s.StaleForeign("self", ttl), "StaleForeign returned")
+	require.Empty(t, s.StaleForeign("self", ttl), "origin re-assertion must clear staleness")
 }
 
 // TestApplyInferredUnchangedSinceGuardsTheSweepRace: the sweep selects candidates
@@ -138,11 +138,9 @@ func TestApplyInferredUnchangedSinceGuardsTheSweepRace(t *testing.T) {
 	s.Apply(mkIn("1", "peer", "running", "peer", 100))
 
 	require.False(t, s.ApplyInferredUnchangedSince(mkIn("1", "peer", "failed", "peer", 100), seenAt), "a guess based on an obsolete sighting must not be applied")
-	{
-		r, _ := s.Get("peer", "1")
-		require.Equal(t, "running", r.State, "record (%v)", r)
-		require.False(t, r.Inferred, "record (%v)", r)
-	}
+	r, _ := s.Get("peer", "1")
+	require.Equal(t, "running", r.State, "record (%v)", r)
+	require.False(t, r.Inferred, "record (%v)", r)
 
 	// With no intervening heartbeat the same guarded apply does land. The origin
 	// has to fall silent again first: its re-assertion above refreshed the
@@ -151,11 +149,9 @@ func TestApplyInferredUnchangedSinceGuardsTheSweepRace(t *testing.T) {
 	stale = s.StaleForeign("self", ttl)
 	require.Len(t, stale, 1, "expected the record to be stale again")
 	require.True(t, s.ApplyInferredUnchangedSince(mkIn("1", "peer", "failed", "peer", 100), stale[0].LastSeen), "a guess based on the current sighting must apply")
-	{
-		r, _ := s.Get("peer", "1")
-		require.Equal(t, "failed", r.State, "record (%v)", r)
-		require.True(t, r.Inferred, "record (%v)", r)
-	}
+	r, _ = s.Get("peer", "1")
+	require.Equal(t, "failed", r.State, "record (%v)", r)
+	require.True(t, r.Inferred, "record (%v)", r)
 }
 
 // TestApplyInferredUnchangedSinceWillNotResurrect: a record removed between
@@ -174,10 +170,8 @@ func TestApplyInferredUnchangedSinceWillNotResurrect(t *testing.T) {
 	// The workload is retired (a peer removal) before the guess lands.
 	require.True(t, s.Remove("peer", "1"), "remove should report a deletion")
 	require.False(t, s.ApplyInferredUnchangedSince(mkIn("1", "peer", "failed", "peer", 100), stale[0].LastSeen), "a guess about a removed workload must not be applied")
-	{
-		_, ok := s.Get("peer", "1")
-		require.False(t, ok, "the removed workload was resurrected as a synthesized terminal")
-	}
+	_, ok := s.Get("peer", "1")
+	require.False(t, ok, "the removed workload was resurrected as a synthesized terminal")
 }
 
 // TestStaleForeignSweepsWorkThisNodeIsExecuting: a remote-origin workload routed
@@ -233,13 +227,7 @@ func TestStaleForeignSkipsCollidingClientKeys(t *testing.T) {
 	// survivor becomes eligible again.
 	s.Apply(mkInFull("7", "peer", "lmstudio", "runB", "completed", "peer", 100))
 	*now = now.Add(ttl + time.Millisecond)
-	found := false
-	for _, r := range s.StaleForeign("self", ttl) {
-		if r.ID == "7" {
-			found = true
-		}
-	}
-	assert.True(t, found, "with only one live generation left, the silent record must be swept")
+	assert.Contains(t, replayIDSet(s.StaleForeign("self", ttl)), "7", "with only one live generation left, the silent record must be swept")
 }
 
 // TestStaleForeignInferredFailIsReconcilable closes the loop: retiring a stale
@@ -255,18 +243,14 @@ func TestStaleForeignInferredFailIsReconcilable(t *testing.T) {
 	require.Len(t, stale, 1, "expected 1 stale record")
 
 	require.True(t, s.ApplyInferred(mkIn("1", "peer", "failed", "peer", 100)), "the sweep's inferred failed must apply to a live record")
-	{
-		r, _ := s.Get("peer", "1")
-		require.True(t, r.Terminal, "record (%v)", r)
-		require.True(t, r.Inferred, "record (%v)", r)
-	}
+	r, _ := s.Get("peer", "1")
+	require.True(t, r.Terminal, "record (%v)", r)
+	require.True(t, r.Inferred, "record (%v)", r)
 	require.Empty(t, s.StaleForeign("self", ttl), "a retired record must not be swept again")
 
 	// The origin comes back and insists it is still running.
 	require.True(t, s.Apply(mkIn("1", "peer", "running", "peer", 100)), "an authoritative running must override the inferred failed")
-	{
-		r, _ := s.Get("peer", "1")
-		require.False(t, r.Terminal, "record (%v)", r)
-		require.False(t, r.Inferred, "record (%v)", r)
-	}
+	r, _ = s.Get("peer", "1")
+	require.False(t, r.Terminal, "record (%v)", r)
+	require.False(t, r.Inferred, "record (%v)", r)
 }

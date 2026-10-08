@@ -55,10 +55,7 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 			assert.Equal(t, []string{"--unrelated", "literal"}, launch.Args[len(launch.Args)-2:], "unrelated arguments changed")
 			for _, invalid := range tc.Invalid {
 				request.Settings.LaunchText = invalid
-				{
-					result := previewSettings(t, e, request)
-					require.NotEmpty(t, result.Errors, "accepted (%v)", invalid)
-				}
+				require.NotEmpty(t, previewSettings(t, e, request).Errors, "accepted (%v)", invalid)
 			}
 			assertNoSettingsOverride(t, e)
 		})
@@ -84,10 +81,8 @@ func TestManifestLoadRejectsInvalidLaunchBindings(t *testing.T) {
 			// Include otherwise complete bindings so rejection cannot be caused
 			// merely by missing managed fields. Exercise the real manifest loader.
 			manifest := `{"engine":"fixture","display_name":"Fixture","manifest_version":1,"platforms":{"linux/amd64":{"runtime":{"bin":"fixture","args":[],"editable_launch":{"controls":[{"env":["ADDRESS"],"value":"{server.host}:{server.port}"},` + control + `]}}}}}`
-			{
-				_, err := NewRegistry().addManifest("fixture.json", []byte(manifest))
-				require.Error(t, err, "invalid binding survived manifest loading")
-			}
+			_, err := NewRegistry().addManifest("fixture.json", []byte(manifest))
+			require.Error(t, err, "invalid binding survived manifest loading")
 		})
 	}
 }
@@ -127,9 +122,7 @@ func FuzzLaunchBindings(f *testing.F) {
 		again, err := values.accept(&control, normalized)
 		require.NoError(t, err, "unstable binding normalization (%v, %v, %v)", normalized, again, err)
 		require.Equal(t, normalized, again, "unstable binding normalization")
-		{
-			managed, ok := control.managedValue(values.host, strconv.Itoa(values.serverPort()))
-			require.False(t, ok && managed != normalized, "preview and launch disagree (%v, %v)", normalized, managed)
-		}
+		managed, ok := control.managedValue(values.host, strconv.Itoa(values.serverPort()))
+		require.False(t, ok && managed != normalized, "preview and launch disagree (%v, %v)", normalized, managed)
 	})
 }

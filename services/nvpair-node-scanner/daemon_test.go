@@ -83,20 +83,13 @@ func TestReloadIdentityAdoptsClusterPrincipal(t *testing.T) {
 
 	d.reloadIdentity()
 
-	{
-		got := d.reg.record().HostUUID
-		require.Equal(t, "cluster-principal-Y", got, "reloadIdentity hostUuid")
-	}
+	require.Equal(t, "cluster-principal-Y", d.reg.record().HostUUID, "reloadIdentity hostUuid")
 	// Inbound reconciliation: the directory entry moved to the new uuid and the
 	// old one is gone (no ghost).
-	{
-		_, ok := d.dir.get("cluster-principal-Y")
-		assert.True(t, ok, "directory missing the re-stamped hostUuid after reloadIdentity")
-	}
-	{
-		_, ok := d.dir.get("scanner-minted-X")
-		assert.False(t, ok, "stale scanner-minted hostUuid left in the directory (ghost)")
-	}
+	_, ok := d.dir.get("cluster-principal-Y")
+	assert.True(t, ok, "directory missing the re-stamped hostUuid after reloadIdentity")
+	_, ok = d.dir.get("scanner-minted-X")
+	assert.False(t, ok, "stale scanner-minted hostUuid left in the directory (ghost)")
 }
 
 // TestSelfNotEvictedByBrowse is the regression: the local node must
@@ -109,25 +102,21 @@ func TestSelfNotEvictedByBrowse(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	d.reg.register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318})
 	d.publishSelf()
-	{
-		_, ok := d.dir.get("self-uuid")
-		require.True(t, ok, "publishSelf should put the local node in the directory")
-	}
+	_, ok := d.dir.get("self-uuid")
+	require.True(t, ok, "publishSelf should put the local node in the directory")
 
 	// Its own record aged out of the browse (Windows self-multicast loss): the
 	// browser emits removed for our uuid. It must NOT drop the self entry.
 	selfTXT := []string{"v=1", "uuid=self-uuid", "ip=192.168.1.17", "ni=14318"}
 	d.onBrowse(DiscoveryEvent{Type: "removed", Node: RawNode{ID: "myhost", TXT: selfTXT}})
-	{
-		_, ok := d.dir.get("self-uuid")
-		assert.True(t, ok, "a browse 'removed' for our own uuid must not evict the local node")
-	}
+	_, ok = d.dir.get("self-uuid")
+	assert.True(t, ok, "a browse 'removed' for our own uuid must not evict the local node")
 
 	// A later self re-appearance in the browse is also a no-op (self stays
 	// registry-driven; the browse never clobbers it).
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "myhost", TXT: selfTXT}})
 	if n, ok := d.dir.get("self-uuid"); !ok {
-		assert.Fail(t, "test expectation failed", "self entry disappeared after a self 'discovered' browse event")
+		assert.Fail(t, "self entry disappeared after a self 'discovered' browse event")
 	} else {
 		assert.Equal(t, "myhost", n.Name, "self entry Name")
 	}
@@ -190,15 +179,11 @@ func TestPeerStillAgesOut(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	peerTXT := []string{"v=1", "uuid=peer-uuid", "ip=192.168.1.99"}
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	{
-		_, ok := d.dir.get("peer-uuid")
-		require.True(t, ok, "a discovered peer should be added to the directory")
-	}
+	_, ok := d.dir.get("peer-uuid")
+	require.True(t, ok, "a discovered peer should be added to the directory")
 	d.onBrowse(DiscoveryEvent{Type: "removed", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	{
-		_, ok := d.dir.get("peer-uuid")
-		assert.False(t, ok, "a genuine remote peer must still age out when it leaves")
-	}
+	_, ok = d.dir.get("peer-uuid")
+	assert.False(t, ok, "a genuine remote peer must still age out when it leaves")
 }
 
 // TestReachableAntiFlap covers the daemon's liveness probe: prefer fresh

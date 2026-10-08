@@ -129,17 +129,11 @@ func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
 		select {
 		case <-preflightSeen:
 		default:
-			require.FailNow(t, "test expectation failed", "engine did not receive the credentialed preflight")
+			require.FailNow(t, "engine did not receive the credentialed preflight")
 		}
 		assert.Equal(t, http.StatusNoContent, rec.Code, "status")
-		{
-			got := rec.Header().Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "https://app.example", got, "Access-Control-Allow-Origin")
-		}
-		{
-			got := rec.Header().Get("Access-Control-Allow-Credentials")
-			assert.Equal(t, "true", got, "Access-Control-Allow-Credentials")
-		}
+		assert.Equal(t, "https://app.example", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+		assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "Access-Control-Allow-Credentials")
 	})
 }
 
@@ -163,14 +157,8 @@ func TestHandleHTTP_EngineCORSPolicyPreserved(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		{
-			got := rec.Header().Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "https://app.example", got, "Access-Control-Allow-Origin")
-		}
-		{
-			got := rec.Header().Get("Access-Control-Allow-Credentials")
-			assert.Equal(t, "true", got, "Access-Control-Allow-Credentials")
-		}
+		assert.Equal(t, "https://app.example", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+		assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "Access-Control-Allow-Credentials")
 	})
 }
 
@@ -191,14 +179,8 @@ func TestHandleHTTP_EngineCredentialsWithoutOriginPreserved(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		{
-			got := rec.Header().Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-		}
-		{
-			got := rec.Header().Get("Access-Control-Allow-Credentials")
-			assert.Equal(t, "true", got, "Access-Control-Allow-Credentials")
-		}
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+		assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "Access-Control-Allow-Credentials")
 	})
 }
 
@@ -224,10 +206,7 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rec.Code, "status")
 		assert.Equal(t, tc.inferenceBody(), gotBody, "node got body (%v)", gotBody)
-		{
-			got := rec.Header().Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-		}
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 	})
 }
 
@@ -269,10 +248,7 @@ func TestHandleHTTP_RejectionHasNoCORS(t *testing.T) {
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
 		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
-		{
-			got := rec.Header().Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-		}
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 	})
 }
 
@@ -306,10 +282,7 @@ func TestHandleHTTP_FailoverOn503(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rec.Code, "status")
 		assert.Equal(t, tc.inferenceBody(), gotBody, "failover node got body (%v)", gotBody)
-		{
-			got := rec.Header().Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-		}
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 	})
 }
 
@@ -334,10 +307,7 @@ func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
 		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
-		{
-			got := rec.Header().Get("Access-Control-Allow-Origin")
-			assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-		}
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 	})
 }
 
@@ -386,8 +356,10 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 	release := make(chan struct{})
 	server := func(body string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.False(t, r.Method != http.MethodGet || r.URL.Path != "/api/tags", "upstream request")
-			assert.False(t, r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "", "client credentials leaked to fan-out target")
+			assert.Equal(t, http.MethodGet, r.Method, "upstream request")
+			assert.Equal(t, "/api/tags", r.URL.Path, "upstream request")
+			assert.Empty(t, r.Header.Get("Authorization"), "client credentials leaked to fan-out target")
+			assert.Empty(t, r.Header.Get("Cookie"), "client credentials leaked to fan-out target")
 			entered <- struct{}{}
 			<-release
 			_, _ = io.WriteString(w, body)
@@ -428,14 +400,14 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 		case <-entered:
 		case <-time.After(5 * time.Second):
 			close(release)
-			require.FailNow(t, "test expectation failed", "model-list requests were not issued concurrently")
+			require.FailNow(t, "model-list requests were not issued concurrently")
 		}
 	}
 	close(release)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "aggregate request did not finish")
+		require.FailNow(t, "aggregate request did not finish")
 	}
 
 	require.Equal(t, http.StatusOK, rec.Code, "status")
@@ -453,16 +425,13 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 	require.Equal(t, "", got.Models[1].Model)
 	require.Equal(t, "c", got.Models[2].Model)
 	assert.Equal(t, "first", got.Models[1].Digest, "duplicate metadata")
-	{
-		got := rec.Header().Get("Access-Control-Allow-Origin")
-		assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-	}
+	assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 	// Addressed to the engine, like every facade-scoped notification: the
 	// broker's process-scoped router claims only workload and node-activity
 	// methods, so an unaddressed request event is dropped rather than relayed.
-	assert.True(t, events.has(`"method":"ollama:proxy/request-started"`), "aggregate telemetry missing paired addressed cluster events")
-	assert.True(t, events.has(`"method":"ollama:proxy/request"`), "aggregate telemetry missing paired addressed cluster events")
-	assert.True(t, events.has(`"target":"cluster"`), "aggregate telemetry missing paired addressed cluster events")
+	assert.Contains(t, events.String(), `"method":"ollama:proxy/request-started"`, "aggregate telemetry missing paired addressed cluster events")
+	assert.Contains(t, events.String(), `"method":"ollama:proxy/request"`, "aggregate telemetry missing paired addressed cluster events")
+	assert.Contains(t, events.String(), `"target":"cluster"`, "aggregate telemetry missing paired addressed cluster events")
 }
 
 // TestHandleHTTP_AggregatesOpenAIModelList runs for both engines: /v1/models
@@ -472,7 +441,8 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		serve := func(body string) *httptest.Server {
 			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.False(t, r.Method != http.MethodGet || r.URL.Path != "/v1/models", "upstream request")
+				assert.Equal(t, http.MethodGet, r.Method, "upstream request")
+				assert.Equal(t, "/v1/models", r.URL.Path, "upstream request")
 				_, _ = io.WriteString(w, body)
 			}))
 		}
@@ -699,17 +669,15 @@ func TestHandleHTTP_InferenceRouting(t *testing.T) {
 					advertisedModel := profile.normalizeModel(requestedModel)
 
 					wrongModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-						assert.Fail(t, "test expectation failed", "wrong-model node should not receive request")
+						assert.Fail(t, "wrong-model node should not receive request")
 						w.WriteHeader(http.StatusOK)
 					}))
 					defer wrongModel.Close()
 
 					missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(http.StatusNotFound)
-						{
-							_, err := io.WriteString(w, `{"error":"model not found"}`)
-							assert.NoError(t, err, "write missing-model response")
-						}
+						_, err := io.WriteString(w, `{"error":"model not found"}`)
+						assert.NoError(t, err, "write missing-model response")
 					}))
 					defer missing.Close()
 
@@ -718,7 +686,7 @@ func TestHandleHTTP_InferenceRouting(t *testing.T) {
 					good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						body, err := io.ReadAll(r.Body)
 						if err != nil {
-							assert.Fail(t, "test expectation failed", "read forwarded request body: %v", err)
+							assert.Fail(t, fmt.Sprintf("read forwarded request body: %v", err))
 							w.WriteHeader(http.StatusInternalServerError)
 							return
 						}
@@ -790,7 +758,7 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 		require.Equal(t, http.StatusBadGateway, rec.Code, "response")
 		require.Contains(t, rec.Body.String(), "no available node advertises the requested model")
 		require.Equal(t, 0, hits, "ineligible upstreams received")
-		require.True(t, events.has("no node advertises requested model"), "missing rejected request event")
+		require.Contains(t, events.String(), "no node advertises requested model", "missing rejected request event")
 	})
 }
 
@@ -805,13 +773,8 @@ func TestResolveCandidates_SelfGuard(t *testing.T) {
 		p := testProxy(tc.profile, disc, port)
 
 		cands := p.soleFacade().resolveCandidates("")
-		var haveReal bool
-		for _, c := range cands {
-			assert.NotEqual(t, "self", c.id, "self-target node must be excluded, got candidate (%v)", c)
-			if c.id == "real" {
-				haveReal = true
-			}
-		}
-		assert.True(t, haveReal, "expected the real node to survive the self-guard, candidates (%v)", cands)
+		ids := candidateIDsFrom(cands)
+		assert.NotContains(t, ids, "self", "self-target node must be excluded")
+		assert.Contains(t, ids, "real", "expected the real node to survive the self-guard, candidates (%v)", cands)
 	})
 }

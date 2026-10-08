@@ -47,10 +47,7 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "app:ready", 15*time.Second)
-	{
-		got := waitProxyReady(t, stdin, msgs, 15*time.Second)
-		require.Equal(t, 11434, got, "primary proxy port")
-	}
+	require.Equal(t, 11434, waitProxyReady(t, stdin, msgs, 15*time.Second), "primary proxy port")
 
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	waitForResponse(t, msgs, 5*time.Second)
@@ -92,7 +89,7 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 				wantStates[p.WorkloadInfo.State] = true
 			}
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "alias request workload states = %+v, want running and completed", wantStates)
+			require.FailNow(t, fmt.Sprintf("alias request workload states = %+v, want running and completed", wantStates))
 		}
 	}
 
@@ -113,6 +110,6 @@ func freeDualLoopbackPort(t *testing.T) int {
 			return port
 		}
 	}
-	require.FailNow(t, "test expectation failed", "could not find a free port on both loopback families")
+	require.FailNow(t, "could not find a free port on both loopback families")
 	return 0
 }

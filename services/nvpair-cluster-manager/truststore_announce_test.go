@@ -58,11 +58,9 @@ func TestTrustStoreAnnouncesEveryMutation(t *testing.T) {
 	require.NoError(t, ts.Pin(testPin(t, uuid)), "pin")
 	require.Equal(t, 1, count(), "announcements after pin")
 
-	{
-		ok, err := ts.UpdateIdentity(uuid, "renamed-host", "Renamed")
-		require.NoError(t, err, "update identity: ok (%v, %v)", ok, err)
-		require.True(t, ok, "update identity: ok (%v, %v)", ok, err)
-	}
+	ok, err := ts.UpdateIdentity(uuid, "renamed-host", "Renamed")
+	require.NoError(t, err, "update identity: ok (%v, %v)", ok, err)
+	require.True(t, ok, "update identity: ok (%v, %v)", ok, err)
 	require.Equal(t, 2, count(), "announcements after rename")
 
 	require.NoError(t, ts.Remove(uuid), "remove")
@@ -170,10 +168,7 @@ func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 			writeErr := errors.New("injected endorsement replace failure")
 			renameFile = func(_, _ string) error { return writeErr }
 			t.Cleanup(func() { renameFile = originalRename })
-			{
-				err := merge(ts, pin, []Endorsement{second})
-				require.ErrorIs(t, err, writeErr, "merge error")
-			}
+			require.ErrorIs(t, merge(ts, pin, []Endorsement{second}), writeErr, "merge error")
 			require.Equal(t, beforeCount, count(), "announcements after failed write")
 			after, err := os.ReadFile(ts.pinPath(pin.NodeUUID))
 			require.NoError(t, err, "read pin after failed write")
@@ -237,10 +232,7 @@ func TestTrustStoreConcurrentDuplicateEndorsementsAnnounceOnce(t *testing.T) {
 	for _, snapshot := range snapshots {
 		assertStoredEndorsements(t, snapshot, want)
 	}
-	{
-		got := calls.Load()
-		assert.Equal(t, int32(1), got, "announcements for concurrent identical submissions")
-	}
+	assert.Equal(t, int32(1), calls.Load(), "announcements for concurrent identical submissions")
 	assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), want)
 }
 
@@ -274,11 +266,9 @@ func TestTrustStoreStaysSilentWhenNothingChanged(t *testing.T) {
 	// An empty endorsement merge is also a no-op and must stay silent.
 	require.NoError(t, ts.AddEndorsements(uuid, nil), "empty endorsement merge")
 	// A rename to the values already stored changes nothing.
-	{
-		ok, err := ts.UpdateIdentity(uuid, uuid, uuid)
-		require.NoError(t, err, "no-op rename: ok (%v, %v)", ok, err)
-		require.False(t, ok, "no-op rename: ok (%v, %v)", ok, err)
-	}
+	ok, err := ts.UpdateIdentity(uuid, uuid, uuid)
+	require.NoError(t, err, "no-op rename: ok (%v, %v)", ok, err)
+	require.False(t, ok, "no-op rename: ok (%v, %v)", ok, err)
 	// Removing a peer we do not hold is not a change.
 	require.NoError(t, ts.Remove("principal-stranger"), "remove unknown")
 	ts.Forget("principal-stranger")

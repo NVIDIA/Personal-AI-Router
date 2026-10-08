@@ -80,12 +80,10 @@ func TestResolveBrokerPathOverride(t *testing.T) {
 	require.NoError(t, os.WriteFile(bin, []byte("x"), 0o755))
 	got, err := resolveBrokerPath(bin)
 	require.NoError(t, err, "override")
-	assert.Equal(t, bin, got, "got")
+	assert.Equal(t, bin, got)
 
-	{
-		_, err := resolveBrokerPath(filepath.Join(dir, "missing"))
-		require.Error(t, err, "expected error for missing override")
-	}
+	_, err = resolveBrokerPath(filepath.Join(dir, "missing"))
+	require.Error(t, err, "expected error for missing override")
 }
 
 // TestShutdownIsBoundedWhenTheBrokerIsSilent pins the quit budget.
@@ -144,7 +142,7 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 		require.True(t, ok, "notifications closed before app:ready")
 		assert.Equal(t, "app:ready", msg.Method, "first notification")
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for app:ready")
+		require.FailNow(t, "timed out waiting for app:ready")
 	}
 
 	done := make(chan struct{})
@@ -155,7 +153,7 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "shutdown did not complete")
+		require.FailNow(t, "shutdown did not complete")
 	}
 	if code := sup.cmd.ProcessState.ExitCode(); code == fakeBrokerPreemptedExit {
 		t.Error("the supervisor stopped the engines itself, ahead of the broker's " +

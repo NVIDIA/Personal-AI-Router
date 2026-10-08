@@ -149,7 +149,7 @@ func otherEngine(t *testing.T, tc engineCase) engineProfile {
 			return candidate.profile
 		}
 	}
-	require.FailNow(t, "test expectation failed", "no sibling engine to contrast against")
+	require.FailNow(t, "no sibling engine to contrast against")
 	return engineProfile{}
 }
 

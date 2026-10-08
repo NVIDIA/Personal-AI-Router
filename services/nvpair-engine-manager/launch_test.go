@@ -63,10 +63,7 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 			})
 		}
 	}
-	{
-		_, changed := vars["bin"]
-		require.False(t, changed, "process builder mutated caller's resolution context")
-	}
+	require.NotContains(t, vars, "bin", "process builder mutated caller's resolution context")
 }
 
 func TestLaunchEnvironmentFormattingIsDeterministic(t *testing.T) {
@@ -78,10 +75,8 @@ func TestLaunchEnvironmentFormattingIsDeterministic(t *testing.T) {
 
 func TestCommandLaunchRejectsEmptyExecutable(t *testing.T) {
 	for _, template := range [][]string{{"", "start"}, {"{cli}", "start"}} {
-		{
-			_, err := resolveCommandLaunch(template, map[string]string{"cli": ""})
-			require.Error(t, err, "empty executable must fail rather than skip the start command")
-		}
+		_, err := resolveCommandLaunch(template, map[string]string{"cli": ""})
+		require.Error(t, err, "empty executable must fail rather than skip the start command")
 	}
 }
 
@@ -101,7 +96,7 @@ func TestLaunchTextReachesChildLiterally(t *testing.T) {
 	select {
 	case <-proc.done:
 	case <-time.After(10 * time.Second):
-		require.FailNow(t, "test expectation failed", "argument-capture child did not exit")
+		require.FailNow(t, "argument-capture child did not exit")
 	}
 	assertCapturedArgs(t, path, want)
 }
@@ -132,7 +127,7 @@ func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
 				select {
 				case <-proc.done:
 				case <-time.After(10 * time.Second):
-					require.FailNow(t, "test expectation failed", "capture process did not exit")
+					require.FailNow(t, "capture process did not exit")
 				}
 			}
 			assertCapturedArgs(t, path, []string{"127.0.0.1", "25001", "two words", ""})

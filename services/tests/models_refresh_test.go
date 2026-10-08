@@ -72,7 +72,7 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 	// so the only thing that changes during the test is the /v1/models body.
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
 	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	require.NoError(t, err, "register (%v, %v)", instance, err)
+	require.NoError(t, err, "register (%v)", instance)
 	t.Cleanup(zsrv.Shutdown)
 	t.Logf("advertising %s @ %s (em=%d), models initially empty", instance, nodeRecordService, emPort)
 
@@ -154,7 +154,7 @@ func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, ins
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
 		case <-deadline:
-			require.FailNow(t, "test expectation failed", "timed out waiting for node %q to match predicate", instance)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for node %q to match predicate", instance))
 		}
 	}
 }

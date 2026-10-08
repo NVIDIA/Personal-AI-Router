@@ -54,10 +54,7 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 			if rt.EditableLaunch.Controls[0].Value == "{server.host}:{server.port}" {
 				request.Settings.LaunchText = "LISTEN=127.0.0.1:23456 LISTEN_ALIAS=0.0.0.0:23456"
 			}
-			{
-				result := previewSettings(t, e, request)
-				require.NotEmpty(t, result.Errors, "contradictory source aliases accepted")
-			}
+			require.NotEmpty(t, previewSettings(t, e, request).Errors, "contradictory source aliases accepted")
 		})
 	}
 }
@@ -83,11 +80,9 @@ func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
 			rt.LaunchEnv = &env
 		}
 		settingsState(t, e).plat.Runtime = rt
-		{
-			state, err := e.LaunchSettings("fake")
-			require.NoError(t, err, "saved settings must remain available for repair (%v, %v)", state, err)
-			require.True(t, state.Editable, "saved settings must remain available for repair (%v, %v)", state, err)
-		}
+		state, err := e.LaunchSettings("fake")
+		require.NoError(t, err, "saved settings must remain available for repair (%v, %v)", state, err)
+		require.True(t, state.Editable, "saved settings must remain available for repair (%v, %v)", state, err)
 		err = e.Start(context.Background(), "fake")
 		require.Error(t, err, "Start did not reject the unsafe saved networking control")
 		require.True(t, strings.Contains(err.Error(), "server port") || strings.Contains(err.Error(), "CORS origins"), "Start did not reject the unsafe saved networking control (%v)", err)
@@ -160,16 +155,14 @@ func TestBundledNetworkingControls(t *testing.T) {
 					p.Settings = preview.Settings
 					again := previewSettings(t, e, p)
 					require.Equal(t, again, preview, "normalization not stable for (%v)", text)
-					require.False(t, slices.Contains(preview.Args, "-p"), "managed alias escaped into user args")
-					require.False(t, slices.Contains(preview.Args, "-p23456"), "managed alias escaped into user args")
+					require.NotContains(t, preview.Args, "-p", "managed alias escaped into user args")
+					require.NotContains(t, preview.Args, "-p23456", "managed alias escaped into user args")
 				}
 				for _, text := range invalid {
 					p := settingsRequest(t, e)
 					p.Settings.LaunchText = text
-					{
-						result := previewSettings(t, e, p)
-						require.NotEmpty(t, result.Errors, "accepted (%v, %v)", text, result)
-					}
+					result := previewSettings(t, e, p)
+					require.NotEmpty(t, result.Errors, "accepted (%v, %v)", text, result)
 				}
 				assertNoSettingsOverride(t, e)
 			})
@@ -199,19 +192,14 @@ func TestNetworkingControlAliasesAreEngineIndependent(t *testing.T) {
 	for _, text := range []string{"--address=0.0.0.0", "-b0.0.0.0", "--browser-origins=*", "-o*", "-vc", "-vohttps://example.test", "-ohttps://one.test --origins=https://two.test"} {
 		request := settingsRequest(t, e)
 		request.Settings.LaunchText = text
-		{
-			result := previewSettings(t, e, request)
-			require.NotEmpty(t, result.Errors, "accepted (%v)", text)
-		}
+		require.NotEmpty(t, previewSettings(t, e, request).Errors, "accepted (%v)", text)
 	}
 }
 
 func TestCORSCanonicalization(t *testing.T) {
 	for _, text := range []string{`"*"`, `'*'`, `" * "`, `"http://*"`, "http://*:80", "*://*", "https://example.test,*", "https://foo*", "https://*.*", "https://example.test/path", "https://user@example.test", "https://example.test?query", "https://example.test#fragment", "https://example.test:65536", `https://example.test\anything`} {
-		{
-			_, err := normalizeCORSOrigins(text)
-			assert.Error(t, err, "accepted (%v)", text)
-		}
+		_, err := normalizeCORSOrigins(text)
+		assert.Error(t, err, "accepted (%v)", text)
 	}
 	for _, value := range []struct{ input, want string }{
 		{`"https://Example.Test"`, "https://example.test"},
@@ -237,15 +225,11 @@ func TestRemoteCORSUsesCanonicalPolicyAndAuthoritativePreview(t *testing.T) {
 			}
 			request.Settings.LaunchText = changed
 			request.PreserveCORS = true
-			{
-				_, err := e.PreviewLaunch(request)
-				require.Error(t, err, "authoritative preview allowed a remote CORS change")
-			}
+			_, err := e.PreviewLaunch(request)
+			require.Error(t, err, "authoritative preview allowed a remote CORS change")
 			request.PreserveCORS = false
-			{
-				_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
-				require.NoError(t, err)
-			}
+			_, err = e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
+			require.NoError(t, err)
 			request = settingsRequest(t, e)
 			if command {
 				request.Settings.LaunchText = "--cors --cors"
@@ -253,15 +237,11 @@ func TestRemoteCORSUsesCanonicalPolicyAndAuthoritativePreview(t *testing.T) {
 				request.Settings.LaunchText = `OLLAMA_ORIGINS='"https://EXAMPLE.test/"'`
 			}
 			request.PreserveCORS = true
-			{
-				_, err := e.PreviewLaunch(request)
-				require.NoError(t, err, "equivalent policy rejected")
-			}
+			_, err = e.PreviewLaunch(request)
+			require.NoError(t, err, "equivalent policy rejected")
 			request.Settings.LaunchText = ""
-			{
-				_, err := e.PreviewLaunch(request)
-				require.Error(t, err, "remote removal changed policy")
-			}
+			_, err = e.PreviewLaunch(request)
+			require.Error(t, err, "remote removal changed policy")
 		})
 	}
 }
@@ -278,21 +258,15 @@ func TestRemoteCORSCannotRemoveExplicitDisablingValues(t *testing.T) {
 			if kind == "cors.origins" {
 				request.Settings.LaunchText = "BROWSER_POLICY="
 			}
-			{
-				_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
-				require.NoError(t, err)
-			}
+			_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
+			require.NoError(t, err)
 			request = settingsRequest(t, e)
 			request.PreserveCORS = true
-			{
-				_, err := e.PreviewLaunch(request)
-				require.NoError(t, err, "unchanged policy rejected")
-			}
+			_, err = e.PreviewLaunch(request)
+			require.NoError(t, err, "unchanged policy rejected")
 			request.Settings.LaunchText = ""
-			{
-				_, err := e.PreviewLaunch(request)
-				require.Error(t, err, "remote removal of disabling override accepted")
-			}
+			_, err = e.PreviewLaunch(request)
+			require.Error(t, err, "remote removal of disabling override accepted")
 		})
 	}
 }
@@ -327,7 +301,8 @@ func FuzzCORSNormalization(f *testing.F) {
 		again, err := normalizeCORSOrigins(got)
 		require.NoError(t, err, "unstable normalization (%v, %v, %v)", value, got, again)
 		require.Equal(t, got, again, "unstable normalization of %q", value)
-		require.False(t, strings.ContainsAny(got, "\"'"), "literal quote survives CORS validation")
+		require.NotContains(t, got, "\"", "literal quote survives CORS validation")
+		require.NotContains(t, got, "'", "literal quote survives CORS validation")
 	})
 }
 

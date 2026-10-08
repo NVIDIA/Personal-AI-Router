@@ -35,10 +35,7 @@ func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
 	p.mesh = clustertrust.Open(clusterDir)
 
 	// Pre-join: no identity, no pins, so the peer is not a routable target.
-	{
-		got := p.soleFacade().resolveCandidates("")
-		require.Empty(t, got, "pre-join candidates")
-	}
+	require.Empty(t, p.soleFacade().resolveCandidates(""), "pre-join candidates")
 
 	// The cluster-manager lands the join on disk while the proxy is running. No
 	// new discovery snapshot arrives — the peer's mDNS record has not changed.
@@ -53,10 +50,7 @@ func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
 	// Removing the peer from the cluster retires it as a target just as promptly,
 	// again with no discovery event involved.
 	clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
-	{
-		got := p.soleFacade().resolveCandidates("")
-		require.Empty(t, got, "post-removal candidates")
-	}
+	require.Empty(t, p.soleFacade().resolveCandidates(""), "post-removal candidates")
 }
 
 // TestResolveCandidatesRejectsUnpinnedClusteredPeer keeps the isolation property
@@ -77,8 +71,5 @@ func TestResolveCandidatesRejectsUnpinnedClusteredPeer(t *testing.T) {
 	p := testProxy(anyProfile(t), disc, 11435)
 	p.mesh = clustertrust.Open(clusterDir)
 
-	{
-		got := p.soleFacade().resolveCandidates("")
-		require.Empty(t, got, "candidates")
-	}
+	require.Empty(t, p.soleFacade().resolveCandidates(""), "candidates")
 }

@@ -18,10 +18,8 @@ func TestSafeRemoveUnderRootDeletesNestedFile(t *testing.T) {
 	require.NoError(t, os.MkdirAll(target, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(target, "weights.gguf"), []byte("x"), 0o644))
 	require.NoError(t, safeRemoveUnderRoot(root, target), "safeRemoveUnderRoot")
-	{
-		_, err := os.Stat(target)
-		require.ErrorIs(t, err, os.ErrNotExist, "target still exists after delete")
-	}
+	_, err := os.Stat(target)
+	require.ErrorIs(t, err, os.ErrNotExist, "target still exists after delete")
 }
 
 func TestSafeRemoveUnderRootRejectsTraversal(t *testing.T) {

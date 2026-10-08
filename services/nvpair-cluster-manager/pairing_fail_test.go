@@ -59,15 +59,11 @@ func TestHandlePairingFailedReasonGuard(t *testing.T) {
 			require.Equal(t, tc.wantReason, inv.Reason, "invite reason")
 			// The EAP session is always torn down (PIN invalidated), whatever
 			// the reason.
-			{
-				_, ok := m.getSession("inv-fail")
-				require.False(t, ok, "fail signal must drop the inviter's EAP session")
-			}
+			_, ok = m.getSession("inv-fail")
+			require.False(t, ok, "fail signal must drop the inviter's EAP session")
 			// An intentional (non-invite-created) cluster is preserved.
-			{
-				id, _ := m.clusterIdentity()
-				require.NotEqual(t, "", id, "intentional cluster erased by a fail signal")
-			}
+			id, _ := m.clusterIdentity()
+			require.NotEqual(t, "", id, "intentional cluster erased by a fail signal")
 		})
 	}
 }
@@ -111,10 +107,8 @@ func TestHandlePairingFailedNonInviterIgnored(t *testing.T) {
 	m.handlePairingFailed(httptest.NewRecorder(), &pairingEnvelope{
 		InviteID: "inv-unknown", Phase: "fail", Reason: reasonIncorrectPIN,
 	})
-	{
-		_, ok := m.getInvite("inv-unknown")
-		require.False(t, ok, "fail signal for an unknown invite must not create a record")
-	}
+	_, ok := m.getInvite("inv-unknown")
+	require.False(t, ok, "fail signal for an unknown invite must not create a record")
 
 	// A joiner-role session must not be torn down by an inviter fail signal.
 	m.putInvite(&Invite{
@@ -132,8 +126,6 @@ func TestHandlePairingFailedNonInviterIgnored(t *testing.T) {
 	inv, ok := m.getInvite("inv-inbound")
 	require.True(t, ok, "inbound invite state (%v)", inv)
 	require.Equal(t, inviteStatePending, inv.State, "inbound invite state (%v)", inv)
-	{
-		_, ok := m.getSession("inv-inbound")
-		require.True(t, ok, "joiner session wrongly evicted by an inviter fail signal")
-	}
+	_, ok = m.getSession("inv-inbound")
+	require.True(t, ok, "joiner session wrongly evicted by an inviter fail signal")
 }

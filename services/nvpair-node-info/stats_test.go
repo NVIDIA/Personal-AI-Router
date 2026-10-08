@@ -146,8 +146,7 @@ func TestAggregateUtilization(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := aggregateUtilization(c.in)
-			require.Equal(t, c.want, got, "aggregateUtilization")
+			require.Equal(t, c.want, aggregateUtilization(c.in), "aggregateUtilization")
 		})
 	}
 }
@@ -167,7 +166,7 @@ func TestApplyGPUStatsRetainsLastUsableSample(t *testing.T) {
 	}, time.Time{})
 
 	require.Equal(t, previous.GPU, next.GPU, "failed collection replaced last usable GPU sample:")
-	require.True(t, next.GPUSampledAt.Equal(sampledAt), "failed collection moved sample time to (%v)", sampledAt)
+	require.WithinDuration(t, sampledAt, next.GPUSampledAt, 0, "failed collection moved sample time")
 }
 
 func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
@@ -182,7 +181,7 @@ func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
 	usable := &statsSnapshot{}
 	applyGPUStats(statsSnapshot{}, usable, idle, sampledAt)
 	require.Equal(t, idle, usable.GPU, "idle sample (%v, %v)", usable, sampledAt)
-	require.True(t, usable.GPUSampledAt.Equal(sampledAt), "idle sample (%v, %v)", usable, sampledAt)
+	require.WithinDuration(t, sampledAt, usable.GPUSampledAt, 0, "idle sample (%v)", usable)
 }
 
 func TestBuildResponseTelemetryFreshness(t *testing.T) {
@@ -255,22 +254,10 @@ func TestBuildResponseMerge(t *testing.T) {
 	typed, _ := buildResponseDecode(t, static, nil, 0, snap)
 
 	require.Len(t, typed.GPUs, 2)
-	{
-		got := typed.GPUs[0].VramUsedBytes
-		assert.Equal(t, uint64(4<<30), got, "gpu 0 VramUsedBytes")
-	}
-	{
-		got := typed.GPUs[0].UtilizationPercent
-		assert.Equal(t, uint32(27), got, "gpu 0 UtilizationPercent")
-	}
-	{
-		got := typed.GPUs[1].VramUsedBytes
-		assert.Equal(t, uint64(0), got, "gpu 1 VramUsedBytes")
-	}
-	{
-		got := typed.GPUs[1].UtilizationPercent
-		assert.Equal(t, uint32(0), got, "gpu 1 UtilizationPercent")
-	}
+	assert.Equal(t, uint64(4<<30), typed.GPUs[0].VramUsedBytes, "gpu 0 VramUsedBytes")
+	assert.Equal(t, uint32(27), typed.GPUs[0].UtilizationPercent, "gpu 0 UtilizationPercent")
+	assert.Equal(t, uint64(0), typed.GPUs[1].VramUsedBytes, "gpu 1 VramUsedBytes")
+	assert.Equal(t, uint32(0), typed.GPUs[1].UtilizationPercent, "gpu 1 UtilizationPercent")
 }
 
 // TestBuildResponseUnifiedMemoryUsesSystemSnapshot verifies that UMA memory
@@ -308,14 +295,8 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			snap := statsSnapshot{GPU: c.gpuStats, MemUsedBytes: sysMemUsed}
 			typed, raw := buildResponseDecode(t, static, nil, 0, snap)
-			{
-				got := typed.GPUs[0].VramUsedBytes
-				assert.Equal(t, sysMemUsed, got, "VramUsedBytes (%v, %v)", got, sysMemUsed)
-			}
-			{
-				got := typed.GPUs[0].UtilizationPercent
-				assert.Equal(t, c.wantUtil, got, "UtilizationPercent (%v)", got)
-			}
+			assert.Equal(t, sysMemUsed, typed.GPUs[0].VramUsedBytes, "VramUsedBytes")
+			assert.Equal(t, c.wantUtil, typed.GPUs[0].UtilizationPercent, "UtilizationPercent")
 
 			gpus, ok := raw["GPUs"].([]any)
 			require.True(t, ok, "unexpected GPUs payload")
@@ -368,11 +349,9 @@ func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
 	require.Equal(t, uint32(73), gpu.UtilizationPercent, "unexpected recovered GPU (%v)", gpu)
 
 	static := []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}}
-	{
-		merged := mergeGPUInventory(static, snap.GPUInventory)
-		require.Len(t, merged, 1, "matching recovered GPU did not enrich in place")
-		require.Equal(t, uint64(36<<30), merged[0].VramBytes, "matching recovered GPU did not enrich in place (%v)", merged)
-	}
+	merged := mergeGPUInventory(static, snap.GPUInventory)
+	require.Len(t, merged, 1, "matching recovered GPU did not enrich in place")
+	require.Equal(t, uint64(36<<30), merged[0].VramBytes, "matching recovered GPU did not enrich in place (%v)", merged)
 }
 
 // TestBuildResponseOmitsZero confirms that a GPU with no stats match

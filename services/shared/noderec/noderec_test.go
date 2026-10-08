@@ -5,7 +5,6 @@ package noderec
 
 import (
 	"encoding/json"
-
 	"strings"
 	"testing"
 
@@ -22,14 +21,8 @@ func TestEngineModels(t *testing.T) {
 			"lmstudio": {"c"},
 		},
 	}
-	{
-		got := attributed.EngineModels("ollama")
-		assert.Equal(t, []string{"a", "b"}, got)
-	}
-	{
-		got := attributed.EngineModels("lmstudio")
-		assert.Equal(t, []string{"c"}, got)
-	}
+	assert.Equal(t, []string{"a", "b"}, attributed.EngineModels("ollama"))
+	assert.Equal(t, []string{"c"}, attributed.EngineModels("lmstudio"))
 
 	// Attribution present but this engine has no entry: authoritatively empty —
 	// NOT the cross-engine union (the whole point of per-engine attribution).
@@ -38,10 +31,7 @@ func TestEngineModels(t *testing.T) {
 	// No attribution at all (pre-attribution / mixed-version peer): fall back to
 	// the flat union so a single-engine consumer doesn't regress to no inventory.
 	legacy := DirectoryNode{Models: []string{"a", "b", "c"}}
-	{
-		got := legacy.EngineModels("ollama")
-		assert.Equal(t, []string{"a", "b", "c"}, got, "EngineModels with nil ModelsByEngine")
-	}
+	assert.Equal(t, []string{"a", "b", "c"}, legacy.EngineModels("ollama"), "EngineModels with nil ModelsByEngine")
 }
 
 func TestParseTXT(t *testing.T) {
@@ -56,25 +46,17 @@ func TestParseTXT(t *testing.T) {
 	assert.Equal(t, "clu-xyz", r.ClusterUUID, "scalar fields wrong")
 	assert.Equal(t, "192.168.1.10", r.IP, "scalar fields wrong")
 	assert.True(t, r.Clustered(), "Clustered() = false, want true (cluster-uuid present)")
-	{
-		p, ok := r.Port(ServiceNodeInfo)
-		assert.True(t, ok, "ni port")
-		assert.Equal(t, 14318, p, "ni port")
-	}
-	{
-		p, ok := r.Port(ServiceCluster)
-		assert.True(t, ok, "cl port")
-		assert.Equal(t, 14321, p, "cl port")
-	}
-	{
-		p, ok := r.Port(ServiceEngineManager)
-		assert.True(t, ok, "em port")
-		assert.Equal(t, 14322, p, "em port")
-	}
-	{
-		_, ok := r.Port(ServiceLMStudio)
-		assert.False(t, ok, "lm should be absent")
-	}
+	p, ok := r.Port(ServiceNodeInfo)
+	assert.True(t, ok, "ni port")
+	assert.Equal(t, 14318, p, "ni port")
+	p, ok = r.Port(ServiceCluster)
+	assert.True(t, ok, "cl port")
+	assert.Equal(t, 14321, p, "cl port")
+	p, ok = r.Port(ServiceEngineManager)
+	assert.True(t, ok, "em port")
+	assert.Equal(t, 14322, p, "em port")
+	_, ok = r.Port(ServiceLMStudio)
+	assert.False(t, ok, "lm should be absent")
 	// "unknown=" is not a service port; "bad=notaport" is skipped.
 	assert.NotContains(t, r.Services, ServiceKey("unknown"), "unknown key leaked into Services")
 	assert.NotContains(t, r.Services, ServiceKey("bad"), "malformed port leaked into Services")
@@ -93,11 +75,9 @@ func TestTXTEmitsUnknownServiceKey(t *testing.T) {
 	joined := strings.Join(txt, ";")
 	assert.Contains(t, joined, "zz=15000", "unknown service key dropped from TXT")
 	// And it survives a round-trip.
-	{
-		p, ok := ParseTXT(txt).Port(ServiceKey("zz"))
-		assert.True(t, ok, "unknown key round-trip")
-		assert.Equal(t, 15000, p, "unknown key round-trip")
-	}
+	p, ok := ParseTXT(txt).Port(ServiceKey("zz"))
+	assert.True(t, ok, "unknown key round-trip")
+	assert.Equal(t, 15000, p, "unknown key round-trip")
 }
 
 func TestTXTRoundTrip(t *testing.T) {
@@ -111,8 +91,7 @@ func TestTXTRoundTrip(t *testing.T) {
 	txt := orig.TXT()
 	// Schema must be first.
 	assert.True(t, strings.HasPrefix(txt[0], "v="), "first TXT entry")
-	got := ParseTXT(txt)
-	assert.Equal(t, got, orig, "round-trip mismatch:\n orig")
+	assert.Equal(t, orig, ParseTXT(txt), "round-trip mismatch")
 }
 
 func TestTXTDeterministicOrder(t *testing.T) {
@@ -123,17 +102,12 @@ func TestTXTDeterministicOrder(t *testing.T) {
 	// Built twice, identical order (map iteration is randomized, so this guards
 	// the deterministic emit).
 	assert.Equal(t, r.TXT(), r.TXT(), "TXT() is not deterministic")
-	got := r.TXT()
-	want := []string{"v=1", "uuid=h", "ni=14318", "ol=11434", "cl=14321"}
-	assert.Equal(t, want, got, "TXT order")
+	assert.Equal(t, []string{"v=1", "uuid=h", "ni=14318", "ol=11434", "cl=14321"}, r.TXT(), "TXT order")
 }
 
 func TestTXTDefaultsSchema(t *testing.T) {
 	r := NodeRecord{HostUUID: "h", Services: map[ServiceKey]int{}}
-	{
-		got := r.TXT()[0]
-		assert.Equal(t, "v="+SchemaVersion, got, "missing schema not defaulted")
-	}
+	assert.Equal(t, "v="+SchemaVersion, r.TXT()[0], "missing schema not defaulted")
 }
 
 func TestTransportPolicy(t *testing.T) {
@@ -153,18 +127,9 @@ func TestTransportPolicy(t *testing.T) {
 		{ServiceCluster, TransportSplit, true, false},
 	}
 	for _, c := range cases {
-		{
-			got := c.svc.Transport()
-			assert.Equal(t, c.want, got)
-		}
-		{
-			got := c.svc.UsesMTLS(true)
-			assert.Equal(t, c.mtlsClu, got)
-		}
-		{
-			got := c.svc.UsesMTLS(false)
-			assert.Equal(t, c.mtlsUnclu, got)
-		}
+		assert.Equal(t, c.want, c.svc.Transport(), "%s", c.svc)
+		assert.Equal(t, c.mtlsClu, c.svc.UsesMTLS(true), "%s clustered", c.svc)
+		assert.Equal(t, c.mtlsUnclu, c.svc.UsesMTLS(false), "%s unclustered", c.svc)
 	}
 }
 
@@ -215,7 +180,7 @@ func TestDirectoryNodeJSONRoundTrip(t *testing.T) {
 	require.NoError(t, err, "marshal")
 	var got DirectoryNode
 	require.NoError(t, json.Unmarshal(b, &got), "unmarshal")
-	assert.Equal(t, got, orig, "round-trip mismatch:\n orig")
+	assert.Equal(t, orig, got, "round-trip mismatch")
 }
 
 func TestValidateTXTSize(t *testing.T) {

@@ -95,14 +95,13 @@ func TestNotifierSerializesConcurrentNotifyAndWrite(t *testing.T) {
 			for range framesPerWriter {
 				if w%2 == 0 {
 					params := map[string][]string{"addresses": {"10.172.54.70", "10.0.0.5", "192.168.240.1"}}
-					if err := n.Notify("nodeinfo:observed-addresses", params); err != nil {
-						assert.Fail(t, "test expectation failed", "notify from writer")
+					if !assert.NoError(t, n.Notify("nodeinfo:observed-addresses", params), "notify from writer %d", w) {
 						return
 					}
 					continue
 				}
-				if _, err := n.Write(response); err != nil {
-					assert.Fail(t, "test expectation failed", "write from writer")
+				_, err := n.Write(response)
+				if !assert.NoError(t, err, "write from writer %d", w) {
 					return
 				}
 			}
@@ -111,7 +110,7 @@ func TestNotifierSerializesConcurrentNotifyAndWrite(t *testing.T) {
 	wg.Wait()
 
 	out := buf.String()
-	assert.True(t, strings.HasSuffix(out, "\n"), "stream does not end on a frame boundary: last 80 bytes")
+	assert.True(t, strings.HasSuffix(out, "\n"), "stream does not end on a frame boundary: last 80 bytes = %q", tail(out, 80))
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 	require.Len(t, lines, writers*framesPerWriter, "read back")
 	for i, line := range lines {

@@ -27,16 +27,12 @@ func TestRegistryRegisterAndRecord(t *testing.T) {
 	require.Equal(t, "host-1", rec.HostUUID, "identity wrong (%v)", rec)
 	require.Equal(t, "clu-1", rec.ClusterUUID, "identity wrong (%v)", rec)
 	require.Equal(t, "192.168.1.10", rec.IP, "identity wrong (%v)", rec)
-	{
-		p, ok := rec.Port(noderec.ServiceNodeInfo)
-		assert.True(t, ok, "ni port (%v, %v)", p, ok)
-		assert.Equal(t, 14318, p, "ni port (%v, %v)", p, ok)
-	}
-	{
-		p, ok := rec.Port(noderec.ServiceOllama)
-		assert.True(t, ok, "ol port (%v, %v)", p, ok)
-		assert.Equal(t, 11434, p, "ol port (%v, %v)", p, ok)
-	}
+	p, ok := rec.Port(noderec.ServiceNodeInfo)
+	assert.True(t, ok, "ni port")
+	assert.Equal(t, 14318, p, "ni port")
+	p, ok = rec.Port(noderec.ServiceOllama)
+	assert.True(t, ok, "ol port")
+	assert.Equal(t, 11434, p, "ol port")
 }
 
 func TestRegistryUnregister(t *testing.T) {
@@ -44,10 +40,8 @@ func TestRegistryUnregister(t *testing.T) {
 	r.register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 11434})
 	require.True(t, r.unregister(noderec.ServiceOllama), "unregister should report a change")
 	assert.False(t, r.unregister(noderec.ServiceOllama), "unregister of absent service should not report a change")
-	{
-		_, ok := r.record().Port(noderec.ServiceOllama)
-		assert.False(t, ok, "ol should be gone")
-	}
+	_, ok := r.record().Port(noderec.ServiceOllama)
+	assert.False(t, ok, "ol should be gone")
 }
 
 func TestRegistrySetIdentity(t *testing.T) {
@@ -65,10 +59,7 @@ func TestRegistrySetIdentity(t *testing.T) {
 // canonical address, which is exactly what must be republished.
 func TestRegistrySetAddresses(t *testing.T) {
 	r := newRegistry("h", "", []string{"192.168.240.2", "10.0.0.5"})
-	{
-		got := r.record().IP
-		require.Equal(t, "192.168.240.2", got, "canonical")
-	}
+	require.Equal(t, "192.168.240.2", r.record().IP, "canonical")
 	require.True(t, r.setAddresses([]string{"10.0.0.5", "192.168.240.2"}), "reordering should report a change")
 	assert.False(t, r.setAddresses([]string{"10.0.0.5", "192.168.240.2"}), "no-op address set should not report a change")
 	rec := r.record()
@@ -77,11 +68,9 @@ func TestRegistrySetAddresses(t *testing.T) {
 	assert.Equal(t, "192.168.240.2", rec.IPs[1])
 	// A host that loses every address must report that, not keep a stale one.
 	assert.True(t, r.setAddresses(nil), "dropping every address should report a change")
-	{
-		rec := r.record()
-		assert.Equal(t, "", rec.IP, "record with no addresses (%v)", rec)
-		assert.Empty(t, rec.IPs, "record with no addresses (%v)", rec)
-	}
+	rec = r.record()
+	assert.Equal(t, "", rec.IP, "record with no addresses (%v)", rec)
+	assert.Empty(t, rec.IPs, "record with no addresses (%v)", rec)
 }
 
 // TestRegistryCapsAdvertisedAddresses: the registry never holds addresses the wire
@@ -90,10 +79,7 @@ func TestRegistryCapsAdvertisedAddresses(t *testing.T) {
 	many := []string{"10.0.0.1", "10.0.1.1", "10.0.2.1", "10.0.3.1", "10.0.4.1", "10.0.5.1"}
 	r := newRegistry("h", "", many)
 	require.Len(t, r.record().IPs, noderec.MaxAdvertisedIPs, "advertised addresses")
-	{
-		got := r.record().IP
-		assert.Equal(t, "10.0.0.1", got, "canonical")
-	}
+	assert.Equal(t, "10.0.0.1", r.record().IP, "canonical")
 }
 
 func TestRegistryTXTIsValidRecord(t *testing.T) {
@@ -105,9 +91,7 @@ func TestRegistryTXTIsValidRecord(t *testing.T) {
 	require.Equal(t, "clu", got.ClusterUUID, "round-trip identity wrong (%v)", got)
 	require.Equal(t, "10.0.0.1", got.IP, "round-trip identity wrong (%v)", got)
 	assert.Equal(t, []string{"10.0.0.1", "192.168.240.2"}, got.IPs, "candidate list lost in round-trip")
-	{
-		p, ok := got.Port(noderec.ServiceErrors)
-		assert.True(t, ok, "er port lost in round-trip (%v, %v)", p, ok)
-		assert.Equal(t, 14319, p, "er port lost in round-trip (%v, %v)", p, ok)
-	}
+	p, ok := got.Port(noderec.ServiceErrors)
+	assert.True(t, ok, "er port lost in round-trip")
+	assert.Equal(t, 14319, p, "er port lost in round-trip")
 }

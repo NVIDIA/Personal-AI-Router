@@ -48,20 +48,14 @@ func TestNodeInfoOutageIsStatedOnceAtEachEnd(t *testing.T) {
 	for range 3 {
 		d.noteNodeInfo("peer-uuid", "10.0.0.5:14300", false)
 	}
-	{
-		got := strings.Count(logs.String(), "node-info is not answering")
-		require.Equal(t, 1, got, "outage reported")
-	}
+	require.Equal(t, 1, strings.Count(logs.String(), "node-info is not answering"), "outage reported")
 	require.Contains(t, logs.String(), "level=WARN", "an unreachable peer must be visible above debug")
 	require.Contains(t, logs.String(), "10.0.0.5:14300", "the report must name where the node was asked")
 
 	for range 2 {
 		d.noteNodeInfo("peer-uuid", "10.0.0.5:14300", true)
 	}
-	{
-		got := strings.Count(logs.String(), "node-info is answering again")
-		require.Equal(t, 1, got, "recovery reported")
-	}
+	require.Equal(t, 1, strings.Count(logs.String(), "node-info is answering again"), "recovery reported")
 }
 
 // TestNodeInfoSilenceWhenNothingChanges keeps the steady state quiet: a peer that
@@ -88,12 +82,9 @@ func TestNodeInfoConnectGivesUpBeforeTheRequestBudget(t *testing.T) {
 	conn, err := nodeInfoTransport(nil).DialContext(context.Background(), "tcp", "192.0.2.1:14300")
 	if err == nil {
 		_ = conn.Close()
-		require.FailNow(t, "test expectation failed", "nothing may answer at a documentation address")
+		require.FailNow(t, "nothing may answer at a documentation address")
 	}
-	{
-		elapsed := time.Since(start)
-		require.Less(t, elapsed, nodeInfoFetchTimeout, "connect took (%v, %v, %v)", elapsed, nodeInfoDialTimeout, nodeInfoFetchTimeout)
-	}
+	require.Less(t, time.Since(start), nodeInfoFetchTimeout, "connect must give up at the dial budget %v", nodeInfoDialTimeout)
 }
 
 func TestNodeInfoTransportBoundsConnectionsPerHost(t *testing.T) {
@@ -146,14 +137,8 @@ func TestNodeInfoConcurrentFetchesGetIndependentRequestBudgets(t *testing.T) {
 	for ok := range results {
 		require.True(t, ok, "a queued healthy request consumed its timeout before reaching the peer")
 	}
-	{
-		got := requests.Load()
-		require.Equal(t, int32(2), got, "server received")
-	}
-	{
-		got := connections.Load()
-		require.Equal(t, int32(1), got, "requests used")
-	}
+	require.Equal(t, int32(2), requests.Load(), "server received")
+	require.Equal(t, int32(1), connections.Load(), "requests used")
 }
 
 func TestNodeInfoOriginGateHonorsCanceledWaiter(t *testing.T) {
@@ -167,7 +152,7 @@ func TestNodeInfoOriginGateHonorsCanceledWaiter(t *testing.T) {
 	waitingRelease, waitingAcquired := gate.acquire(ctx, "http://127.0.0.1:14318")
 	if waitingAcquired {
 		waitingRelease()
-		require.FailNow(t, "test expectation failed", "canceled origin request acquired the occupied gate")
+		require.FailNow(t, "canceled origin request acquired the occupied gate")
 	}
 }
 
@@ -198,15 +183,10 @@ func TestNodeInfoErrorBodyIsDrainedForConnectionReuse(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	d := &daemon{http: &http.Client{Timeout: time.Second, Transport: transport}}
 
-	{
-		_, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
-		require.False(t, ok, "HTTP 503 unexpectedly succeeded")
-	}
+	_, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
+	require.False(t, ok, "HTTP 503 unexpectedly succeeded")
 	info, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
 	require.True(t, ok, "second fetch (%v, %v)", info, ok)
 	require.Equal(t, "peer-uuid", info.HostUUID, "second fetch (%v, %v)", info, ok)
-	{
-		got := connections.Load()
-		require.Equal(t, int32(1), got, "requests used")
-	}
+	require.Equal(t, int32(1), connections.Load(), "requests used")
 }

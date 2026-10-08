@@ -95,13 +95,13 @@ func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
 		select {
 		case <-received:
 		case <-time.After(5 * time.Second):
-			require.FailNow(t, "test expectation failed", "upstream never received the forwarded request")
+			require.FailNow(t, "upstream never received the forwarded request")
 		}
 
 		// Give the proxy the same window the positive test uses, so a report
 		// would have landed by now if one were going to.
 		time.Sleep(200 * time.Millisecond)
-		require.False(t, rec.has(`"method":"node/activity"`), "activity was reported for a node that had not sent a single response byte")
+		require.NotContains(t, rec.String(), `"method":"node/activity"`, "activity was reported for a node that had not sent a single response byte")
 
 		doRelease()
 		<-done
@@ -136,9 +136,6 @@ func TestRepeatedChunksAreCoalescedIntoOneReport(t *testing.T) {
 			strings.NewReader(fmt.Sprintf(`{"model":%q,"stream":true}`, tc.requestedModel))))
 
 		require.True(t, waitFor(t, rec, `"method":"node/activity"`), "a streamed response reported no activity at all")
-		{
-			got := rec.count(`"method":"node/activity"`)
-			require.Equal(t, 1, got, " (%v, %v)", got, chunks)
-		}
+		require.Equal(t, 1, rec.count(`"method":"node/activity"`), "want one activity report for %d chunks within the throttle interval", chunks)
 	})
 }

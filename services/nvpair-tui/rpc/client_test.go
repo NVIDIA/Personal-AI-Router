@@ -85,11 +85,9 @@ func TestClientCallSurfacesRPCError(t *testing.T) {
 	defer cancel()
 	_, err := client.Call(ctx, "explode", nil)
 	require.Error(t, err, "expected error")
-	{
-		rpcErr, ok := err.(*RPCError)
-		require.True(t, ok, "expected *RPCError -32000 (%v)", err)
-		assert.Equal(t, -32000, rpcErr.Code, "expected *RPCError -32000 (%v)", err)
-	}
+	rpcErr, ok := err.(*RPCError)
+	require.True(t, ok, "expected *RPCError -32000 (%v)", err)
+	assert.Equal(t, -32000, rpcErr.Code, "expected *RPCError -32000 (%v)", err)
 }
 
 // recordingWriter counts writes, to show a refused request never reached the
@@ -139,7 +137,7 @@ func TestClientDeliversNotifications(t *testing.T) {
 		require.True(t, ok, "notifications channel closed")
 		assert.Equal(t, "errors:update", msg.Method)
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for notification")
+		require.FailNow(t, "timed out waiting for notification")
 	}
 }
 
@@ -159,6 +157,6 @@ func TestClientDisconnectClosesNotifications(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "notifications channel was not closed after disconnect")
+		require.FailNow(t, "notifications channel was not closed after disconnect")
 	}
 }

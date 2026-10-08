@@ -83,8 +83,7 @@ func TestLMSGetCandidates(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := lmsGetCandidates(c.in)
-			require.Equal(t, c.want, got, "lmsGetCandidates")
+			require.Equal(t, c.want, lmsGetCandidates(c.in), "lmsGetCandidates")
 		})
 	}
 }
@@ -164,15 +163,10 @@ func TestCmdActionLMSGetResumesTransientDownload(t *testing.T) {
 	}
 	ex := newTestExecutor(t, m)
 
-	{
-		_, err := ex.Action(context.Background(), "fake", "pull_model",
-			json.RawMessage(`{"model":"owner/name"}`))
-		require.NoError(t, err, "expected resume to succeed after transient failures")
-	}
-	{
-		got := readCount(t, counter)
-		require.Equal(t, 3, got, "expected 3 in-place attempts (2 fail + 1 success)")
-	}
+	_, err := ex.Action(context.Background(), "fake", "pull_model",
+		json.RawMessage(`{"model":"owner/name"}`))
+	require.NoError(t, err, "expected resume to succeed after transient failures")
+	require.Equal(t, 3, readCount(t, counter), "expected 3 in-place attempts (2 fail + 1 success)")
 }
 
 // TestCmdActionLMSGetResumeExhausted confirms that when the transient failure
@@ -193,10 +187,7 @@ func TestCmdActionLMSGetResumeExhausted(t *testing.T) {
 	_, err := ex.Action(context.Background(), "fake", "pull_model",
 		json.RawMessage(`{"model":"owner/name"}`))
 	require.ErrorContains(t, err, "Timed-out", "expected the LM Studio timeout to surface when the download never recovers")
-	{
-		got := readCount(t, counter)
-		require.Equal(t, 3, got, "expected exactly 3 attempts (resume budget, no source fallthrough)")
-	}
+	require.Equal(t, 3, readCount(t, counter), "expected exactly 3 attempts (resume budget, no source fallthrough)")
 }
 
 func setResumeBudget(t *testing.T, attempts int, backoff time.Duration) func() {

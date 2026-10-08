@@ -86,7 +86,7 @@ func waitForPriorityPair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.D
 				return got
 			}
 		case <-to:
-			require.FailNow(t, "test expectation failed", "timed out (%s) waiting for both schedule:priority outputs; got %v", timeout, got)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for both schedule:priority outputs; got %v", timeout, got))
 		}
 	}
 }
@@ -205,10 +205,10 @@ func assertPriorityPair(
 	for _, engine := range []string{"ollama", "lmstudio"} {
 		priority := got[engine]
 		assertScheduleOrder(t, engine, priority.Nodes, wantOrder)
-		require.Len(t, priority.Ranks, len(wantPressure), " (%v, %v)", engine, wantPressure)
+		require.Len(t, priority.Ranks, len(wantPressure), "engine %s expected pressure %v", engine, wantPressure)
 		for _, rank := range priority.Ranks {
-			require.Contains(t, wantPressure, rank.ID, " (%v, %v)", engine, rank)
-			require.Equal(t, wantPressure[rank.ID], rank.GPUPressure, " (%v)", engine)
+			require.Contains(t, wantPressure, rank.ID, "engine %s rank %v", engine, rank)
+			require.Equal(t, wantPressure[rank.ID], rank.GPUPressure, "engine %s", engine)
 		}
 	}
 }
@@ -433,7 +433,7 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 		case id := <-hits:
 			counts[id]++
 		case <-hitTimer.C:
-			require.FailNow(t, "test expectation failed", "timed out waiting for %d blocked upstream hits; got %v", requests, counts)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for %d blocked upstream hits; got %v", requests, counts))
 		}
 	}
 
@@ -445,7 +445,7 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 		case err := <-results:
 			require.NoError(t, err, "burst request failed")
 		case <-resultTimer.C:
-			require.FailNow(t, "test expectation failed", "timed out waiting for %d burst responses", requests)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for %d burst responses", requests))
 		}
 	}
 	return counts, ids
@@ -459,10 +459,10 @@ func callBrokerRPC(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, i
 		"method":  method,
 		"params":  params,
 	})
-	require.NoError(t, err, "marshal (%v, %v)", method, err)
+	require.NoError(t, err, "marshal %s", method)
 	writeRawFrame(t, stdin, string(frame))
 	response := waitForResponseID(t, msgs, id, 5*time.Second)
-	require.Nil(t, response.Error, " (%v)", method)
+	require.Nil(t, response.Error, "RPC %s", method)
 }
 
 func assertBurstTotalsSkew(
@@ -485,7 +485,7 @@ func assertBurstTotalsSkew(
 			maxTotal = total
 		}
 	}
-	require.LessOrEqual(t, maxTotal-minTotal, wantMaxSkew, "burst assignments did not balance: assigned (%v, %v, %v)", counts, totals, wantMaxSkew)
+	require.LessOrEqual(t, maxTotal-minTotal, wantMaxSkew, "burst assignments did not balance: assigned (%v, %v)", counts, totals)
 }
 
 // TestProxySetPriorityViaBroker: the proxy's node/set-priority is reachable
@@ -507,10 +507,7 @@ func TestProxySetPriorityViaBroker(t *testing.T) {
 	var r struct {
 		Count int `json:"count"`
 	}
-	{
-		err := json.Unmarshal(resp.Result, &r)
-		require.NoError(t, err, "node/set-priority result")
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &r), "node/set-priority result")
 	require.Equal(t, 3, r.Count, "node/set-priority count")
 	t.Logf("proxy accepted priority list of %d nodes via broker relay", r.Count)
 }
@@ -553,18 +550,12 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 		`{"jsonrpc":"2.0","id":90,"method":"lmstudio-proxy:node/add-manual","params":{"id":"real-lm","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["chat-model"]}}`,
 		realPort,
 	))
-	{
-		resp := waitForResponse(t, msgs, 5*time.Second)
-		require.Nil(t, resp.Error, "lmstudio-proxy:node/add-manual rejected")
-	}
+	require.Nil(t, waitForResponse(t, msgs, 5*time.Second).Error, "lmstudio-proxy:node/add-manual rejected")
 
 	// Priority puts a peer that never advertised LM Studio first. The proxy must
 	// skip it and route to the discovered real-lm node.
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":91,"method":"lmstudio-proxy:node/set-priority","params":{"generation":1,"nodes":["no-lm-peer","real-lm"]}}`)
-	{
-		resp := waitForResponse(t, msgs, 5*time.Second)
-		require.Nil(t, resp.Error, "lmstudio-proxy:node/set-priority rejected")
-	}
+	require.Nil(t, waitForResponse(t, msgs, 5*time.Second).Error, "lmstudio-proxy:node/set-priority rejected")
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Post(
@@ -599,9 +590,6 @@ func TestBrokerSpawnsScheduler(t *testing.T) {
 	var r struct {
 		Level string `json:"level"`
 	}
-	{
-		err := json.Unmarshal(resp.Result, &r)
-		require.NoError(t, err, "log/set-level result")
-		require.Equal(t, "debug", r.Level, "log/set-level result (%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &r), "log/set-level result")
+	require.Equal(t, "debug", r.Level, "log/set-level result")
 }

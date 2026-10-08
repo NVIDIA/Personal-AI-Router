@@ -43,7 +43,7 @@ func drainFrames(t *testing.T, stdout io.Reader) []drainedFrame {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "drain neither consumed the stream nor returned")
+		require.FailNow(t, "drain neither consumed the stream nor returned")
 	}
 	return got
 }
@@ -51,10 +51,7 @@ func drainFrames(t *testing.T, stdout io.Reader) []drainedFrame {
 func addressesOf(t *testing.T, params json.RawMessage) []string {
 	t.Helper()
 	var p noderec.ObservedAddressesParams
-	{
-		err := json.Unmarshal(params, &p)
-		require.NoError(t, err, "decode params (%v, %v)", params, err)
-	}
+	require.NoError(t, json.Unmarshal(params, &p), "decode params %s", params)
 	return p.Addresses
 }
 
@@ -70,11 +67,7 @@ func TestNodeInfoDrainSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 	got := drainFrames(t, strings.NewReader(stream))
 	require.Len(t, got, 1)
 	require.Equal(t, noderec.NotifyObservedAddresses, got[0].method, "method")
-	{
-		addrs := addressesOf(t, got[0].params)
-		require.Len(t, addrs, 1, "addresses")
-		require.Equal(t, "10.172.54.70", addrs[0], "addresses (%v)", addrs)
-	}
+	require.Equal(t, []string{"10.172.54.70"}, addressesOf(t, got[0].params), "addresses")
 }
 
 // An oversized frame that is also the last thing on the stream must end the drain
@@ -90,11 +83,7 @@ func TestNodeInfoDrainStopsOnAnUnterminatedOversizedFrame(t *testing.T) {
 func TestNodeInfoDrainDeliversAFinalFrameWithoutANewline(t *testing.T) {
 	got := drainFrames(t, strings.NewReader(observedFrame("10.172.54.71")))
 	require.Len(t, got, 1)
-	{
-		addrs := addressesOf(t, got[0].params)
-		require.Len(t, addrs, 1, "addresses")
-		require.Equal(t, "10.172.54.71", addrs[0], "addresses (%v)", addrs)
-	}
+	require.Equal(t, []string{"10.172.54.71"}, addressesOf(t, got[0].params), "addresses")
 }
 
 // Responses to the broker's own control requests, blank lines, and anything that

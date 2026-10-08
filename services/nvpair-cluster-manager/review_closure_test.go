@@ -47,10 +47,8 @@ func TestInboundInitialCannotPublishAfterTeardown(t *testing.T) {
 	require.NoError(t, m.teardownClusterLocal())
 	m.onJoinerInitialComplete(inv, sess)
 
-	{
-		_, ok := m.getInvite(inviteID)
-		require.False(t, ok, "stale inbound Initial completion republished an invite after teardown")
-	}
+	_, ok := m.getInvite(inviteID)
+	require.False(t, ok, "stale inbound Initial completion republished an invite after teardown")
 }
 
 func TestFailedTeardownBlocksTrustAndReadmission(t *testing.T) {
@@ -74,14 +72,10 @@ func TestFailedTeardownBlocksTrustAndReadmission(t *testing.T) {
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, rosterPath, nil)
 	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
-	{
-		_, ok := m.verifyClientPin(req)
-		assert.False(t, ok, "failed teardown left the old peer authorized for mTLS")
-	}
-	{
-		_, _, err := m.foundCluster("new cluster")
-		assert.Error(t, err, "new admission committed while teardown.pending still existed")
-	}
+	_, ok := m.verifyClientPin(req)
+	assert.False(t, ok, "failed teardown left the old peer authorized for mTLS")
+	_, _, err = m.foundCluster("new cluster")
+	assert.Error(t, err, "new admission committed while teardown.pending still existed")
 }
 
 func TestRosterPinWithoutPersistedMemberIsPruned(t *testing.T) {
@@ -92,10 +86,8 @@ func TestRosterPinWithoutPersistedMemberIsPruned(t *testing.T) {
 	pinTrusted(t, m, peer.uuid, peer.cert, peer.fp)
 
 	restarted := testManagerAt(t, dir, 15205)
-	{
-		_, ok := restarted.trust.Get(peer.uuid)
-		require.False(t, ok, "restart retained a roster pin whose matching member was never persisted")
-	}
+	_, ok := restarted.trust.Get(peer.uuid)
+	require.False(t, ok, "restart retained a roster pin whose matching member was never persisted")
 }
 
 func TestMalformedInitialDoesNotLeakSession(t *testing.T) {
@@ -106,10 +98,8 @@ func TestMalformedInitialDoesNotLeakSession(t *testing.T) {
 	m.admissionMu.Unlock()
 	rr := httptest.NewRecorder()
 	m.handlePairingInitial(rr, &pairingEnvelope{InviteID: inviteID, Phase: "initial"}, []byte("not-eap-noob"), "127.0.0.1")
-	{
-		_, ok := m.getSession(inviteID)
-		require.False(t, ok, "malformed unauthenticated Initial request retained a live pairing session")
-	}
+	_, ok := m.getSession(inviteID)
+	require.False(t, ok, "malformed unauthenticated Initial request retained a live pairing session")
 	m.admissionMu.Lock()
 	after := m.admissionCounter
 	m.admissionMu.Unlock()
@@ -126,10 +116,8 @@ func TestPreInviteSessionsExpireAndAreBounded(t *testing.T) {
 	inviteTTLOverride = time.Minute
 	t.Cleanup(func() { inviteTTLOverride = 0 })
 	m.expirePendingInvites(time.Now())
-	{
-		_, ok := m.getSession(expired.inviteID)
-		require.False(t, ok, "pre-invite session survived its TTL")
-	}
+	_, ok := m.getSession(expired.inviteID)
+	require.False(t, ok, "pre-invite session survived its TTL")
 
 	for i := 0; i < maxPreInviteSessions; i++ {
 		m.putSession(&pairingSession{
@@ -152,10 +140,8 @@ func TestDirectPairingRejectsRemovedAdmission(t *testing.T) {
 	})
 	proof, err := m.newRemovalProof(peer.uuid, 1)
 	require.NoError(t, err)
-	{
-		_, err := m.putRemovalProof(proof)
-		require.NoError(t, err)
-	}
+	_, err = m.putRemovalProof(proof)
+	require.NoError(t, err)
 	require.False(t, m.removalProofBlocksAdmission(peer.uuid, "other-cluster", 1), "cluster-scoped removal proof blocked admission to another cluster")
 	require.NoError(t, m.trust.Remove(peer.uuid))
 	m.removeMemberByUUID(peer.uuid)
@@ -182,10 +168,8 @@ func TestRestartRollsBackProvisionalAdmission(t *testing.T) {
 	require.NoError(t, m.persistMembersErr())
 
 	restarted := testManagerAt(t, dir, 15212)
-	{
-		cid, _ := restarted.currentAdmission()
-		require.Equal(t, "", cid, "provisional admission became active after restart")
-	}
+	cid, _ := restarted.currentAdmission()
+	require.Equal(t, "", cid, "provisional admission became active after restart")
 	require.Empty(t, restarted.trust.List(), "restart retained provisional members or pins")
 	require.Empty(t, restarted.snapshotNodes(), "restart retained provisional members or pins")
 }
@@ -196,14 +180,9 @@ func TestBareRejectionRemovesDepartedPeerButKeepsCluster(t *testing.T) {
 
 	m.reconcilePeersAndMaybeSelfRemove()
 
-	{
-		cid, _ := m.clusterIdentity()
-		require.Equal(t, "cluster-1", cid, "surviving cluster id")
-	}
-	{
-		nodes := m.snapshotNodes()
-		require.Empty(t, nodes, "departed peer remained in roster")
-	}
+	cid, _ := m.clusterIdentity()
+	require.Equal(t, "cluster-1", cid, "surviving cluster id")
+	require.Empty(t, m.snapshotNodes(), "departed peer remained in roster")
 }
 
 func TestRemovalIgnoresUnrelatedCompositionChange(t *testing.T) {
@@ -230,14 +209,10 @@ func TestRemovalIgnoresUnrelatedCompositionChange(t *testing.T) {
 	})
 	close(m.testRemovalContinue)
 	<-done
-	{
-		_, ok := m.trust.Get(target.uuid)
-		require.False(t, ok, "target pin survived because an unrelated member changed")
-	}
-	{
-		_, ok := m.memberByNodeID(target.uuid)
-		require.False(t, ok, "target member survived because an unrelated member changed")
-	}
+	_, ok := m.trust.Get(target.uuid)
+	require.False(t, ok, "target pin survived because an unrelated member changed")
+	_, ok = m.memberByNodeID(target.uuid)
+	require.False(t, ok, "target member survived because an unrelated member changed")
 }
 
 func TestRosterFixpointContinuesAfterAdmissionUpgrade(t *testing.T) {
@@ -266,10 +241,8 @@ func TestRosterFixpointContinuesAfterAdmissionUpgrade(t *testing.T) {
 		},
 	}
 	require.True(t, m.applyMembers(entries, "cluster-1", aUUID), "roster upgrade reported no change")
-	{
-		_, ok := m.trust.Get(cUUID)
-		require.True(t, ok, "fixpoint stopped after upgrading the endorser admission")
-	}
+	_, ok := m.trust.Get(cUUID)
+	require.True(t, ok, "fixpoint stopped after upgrading the endorser admission")
 }
 
 func TestJoinerFailureAfterInviterCommitRollsBackPairing(t *testing.T) {
@@ -287,22 +260,16 @@ func TestJoinerFailureAfterInviterCommitRollsBackPairing(t *testing.T) {
 	m.handlePairingFailed(httptest.NewRecorder(), &pairingEnvelope{
 		InviteID: inviteID, Phase: "fail",
 	})
-	{
-		_, ok := m.trust.Get(peer.uuid)
-		require.True(t, ok, "unauthenticated post-success failure rolled the inviter back")
-	}
+	_, ok := m.trust.Get(peer.uuid)
+	require.True(t, ok, "unauthenticated post-success failure rolled the inviter back")
 	m.handlePairingFailedFrom(httptest.NewRecorder(), &pairingEnvelope{
 		InviteID: inviteID, Phase: "fail",
 	}, peer.uuid)
 
-	{
-		_, ok := m.trust.Get(peer.uuid)
-		require.False(t, ok, "inviter retained peer after joiner reported post-success commit failure")
-	}
-	{
-		_, ok := m.memberByNodeID(peer.uuid)
-		require.False(t, ok, "inviter retained member after joiner reported post-success commit failure")
-	}
+	_, ok = m.trust.Get(peer.uuid)
+	require.False(t, ok, "inviter retained peer after joiner reported post-success commit failure")
+	_, ok = m.memberByNodeID(peer.uuid)
+	require.False(t, ok, "inviter retained member after joiner reported post-success commit failure")
 	invite, ok := m.getInvite(inviteID)
 	require.True(t, ok, "invite state (%v)", invite)
 	require.Equal(t, inviteStateFailed, invite.State, "invite state (%v)", invite)
@@ -323,22 +290,16 @@ func TestJoinerAckFinalizesInviterSession(t *testing.T) {
 	m.handlePairingAck(httptest.NewRecorder(), &pairingEnvelope{
 		InviteID: inviteID, Phase: "ack",
 	}, "wrong-peer")
-	{
-		_, ok := m.getSession(inviteID)
-		require.True(t, ok, "unauthenticated acknowledgment finalized the inviter session")
-	}
+	_, ok := m.getSession(inviteID)
+	require.True(t, ok, "unauthenticated acknowledgment finalized the inviter session")
 	m.handlePairingAck(httptest.NewRecorder(), &pairingEnvelope{
 		InviteID: inviteID, Phase: "ack",
 	}, peer.uuid)
 
-	{
-		_, ok := m.getSession(inviteID)
-		require.False(t, ok, "acknowledged inviter session was not deleted")
-	}
-	{
-		_, ok := m.trust.Get(peer.uuid)
-		require.True(t, ok, "acknowledgment removed the committed peer")
-	}
+	_, ok = m.getSession(inviteID)
+	require.False(t, ok, "acknowledged inviter session was not deleted")
+	_, ok = m.trust.Get(peer.uuid)
+	require.True(t, ok, "acknowledgment removed the committed peer")
 	invite, ok := m.getInvite(inviteID)
 	require.True(t, ok, "invite state (%v)", invite)
 	require.Equal(t, inviteStatePaired, invite.State, "invite state (%v)", invite)
@@ -349,8 +310,7 @@ func TestFinalCompletionRetriesLostResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if attempts.Add(1) == 1 {
 			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				assert.Fail(t, "test expectation failed")
+			if !assert.NoError(t, err, "hijack the connection to simulate a lost completion response") {
 				return
 			}
 			_ = conn.Close()
@@ -398,13 +358,9 @@ func TestAckTimeoutKeepsCommittedPairAndClearsInviteProvenance(t *testing.T) {
 	t.Cleanup(func() { inviteTTLOverride = 0 })
 	m.expirePendingInvites(time.Now())
 
-	{
-		_, ok := m.getSession(inviteID)
-		require.False(t, ok, "unacknowledged retry session survived its TTL")
-	}
-	{
-		_, ok := m.trust.Get(peer.uuid)
-		require.True(t, ok, "ack timeout removed a fully committed peer")
-	}
+	_, ok := m.getSession(inviteID)
+	require.False(t, ok, "unacknowledged retry session survived its TTL")
+	_, ok = m.trust.Get(peer.uuid)
+	require.True(t, ok, "ack timeout removed a fully committed peer")
 	require.False(t, m.isInviteCreatedCluster(), "ack timeout left a real paired cluster marked invite-created")
 }

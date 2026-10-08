@@ -106,10 +106,7 @@ func TestOllamaProxyActivityReachesTheScanner(t *testing.T) {
 	msg := awaitRelay(t, relayed)
 	require.Equal(t, noderec.MethodNodeActivity, msg.Method, "relayed method")
 	var got noderec.NodeActivityParams
-	{
-		err := json.Unmarshal(msg.Params, &got)
-		require.NoError(t, err, "decode relayed params")
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &got), "decode relayed params")
 	require.Equal(t, "busy-peer", got.HostUUID, "relayed hostUuid")
 }
 
@@ -157,7 +154,7 @@ func TestReportedAgeIsClampedAtBothEnds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := clampActivityAge(tc.msSince)
-			require.Equal(t, tc.want, got, "clampActivityAge (%v)", got)
+			require.Equal(t, tc.want, got, "clampActivityAge")
 			require.GreaterOrEqual(t, got, time.Duration(0), "clampActivityAge")
 		})
 	}
@@ -173,7 +170,7 @@ func TestActivityWithoutAHostUUIDIsNotRelayed(t *testing.T) {
 
 	select {
 	case msg := <-relayed:
-		require.FailNow(t, "test expectation failed", "relayed an activity report with no hostUuid: %s", msg.Params)
+		require.FailNowf(t, "relayed an activity report with no hostUuid", "%s", msg.Params)
 	case <-time.After(200 * time.Millisecond):
 	}
 }
@@ -224,7 +221,7 @@ func TestActivityIsNotForwardedToClients(t *testing.T) {
 
 	select {
 	case msg := <-toClient:
-		require.FailNow(t, "test expectation failed", "activity leaked onto the client stream as %q", msg.Method)
+		require.FailNowf(t, "activity leaked onto the client stream", "method %q", msg.Method)
 	case <-time.After(200 * time.Millisecond):
 	}
 }
@@ -235,7 +232,7 @@ func awaitRelay(t *testing.T, relayed <-chan *Message) *Message {
 	case msg := <-relayed:
 		return msg
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "the activity report never reached the scanner")
+		require.FailNow(t, "the activity report never reached the scanner")
 		return nil
 	}
 }

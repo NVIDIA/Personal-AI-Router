@@ -44,10 +44,8 @@ func TestLegacyTombstoneCannotEvictAdmissionAwareMember(t *testing.T) {
 	legacy := signTombstone(remover.identity.Signer, remover.identity.NodeUUID,
 		target.identity.NodeUUID, "cluster-1", time.Now().UnixMilli())
 	m.applyTombstones([]Tombstone{legacy}, "cluster-1")
-	{
-		_, ok := m.trust.Get(target.identity.NodeUUID)
-		require.True(t, ok, "legacy downgrade de-pinned an admission-aware member")
-	}
+	_, ok := m.trust.Get(target.identity.NodeUUID)
+	require.True(t, ok, "legacy downgrade de-pinned an admission-aware member")
 }
 
 func TestRemovalRevalidatesTargetAdmissionBeforeDepin(t *testing.T) {
@@ -122,10 +120,8 @@ func TestTrustAndMembershipSnapshotsAreDeepCopies(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
 	m.trust.dir = blocker
-	{
-		_, err := m.trust.UpdateIdentity(peer.identity.NodeUUID, "new-id", "new-name")
-		require.Error(t, err, "trust identity update unexpectedly persisted")
-	}
+	_, err := m.trust.UpdateIdentity(peer.identity.NodeUUID, "new-id", "new-name")
+	require.Error(t, err, "trust identity update unexpectedly persisted")
 	unchanged, _ := m.trust.Get(peer.identity.NodeUUID)
 	require.NotEqual(t, "new-id", unchanged.NodeID, "failed trust write mutated live identity")
 	require.NotEqual(t, "new-name", unchanged.Name, "failed trust write mutated live identity")
@@ -151,17 +147,13 @@ func TestRestartFinishesInterruptedTeardownAndRejectsStaleRestore(t *testing.T) 
 	require.NoError(t, m.clearAdmission())
 
 	restarted := testManagerAt(t, dir, 15135)
-	{
-		_, ok := restarted.trust.Get(peer.identity.NodeUUID)
-		require.False(t, ok, "restart left a pin from interrupted teardown")
-	}
+	_, ok := restarted.trust.Get(peer.identity.NodeUUID)
+	require.False(t, ok, "restart left a pin from interrupted teardown")
 	require.Empty(t, restarted.snapshotNodes(), "restart left membership from interrupted teardown")
 	staleID := "cluster-1"
 	restarted.handleSetIdentity(&Message{Params: mustJSON(t, setIdentityParams{ClusterID: &staleID})})
-	{
-		cid, _ := restarted.clusterIdentity()
-		require.Equal(t, "", cid, "stale settings resurrected cluster")
-	}
+	cid, _ := restarted.clusterIdentity()
+	require.Equal(t, "", cid, "stale settings resurrected cluster")
 }
 
 func TestRemovalReplayFailsClosedOnPersistenceError(t *testing.T) {
@@ -174,10 +166,8 @@ func TestRemovalReplayFailsClosedOnPersistenceError(t *testing.T) {
 	})
 	proof, err := m.newRemovalProof(target.identity.NodeUUID, 1)
 	require.NoError(t, err)
-	{
-		_, err := m.putRemovalProof(proof)
-		require.NoError(t, err)
-	}
+	_, err = m.putRemovalProof(proof)
+	require.NoError(t, err)
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
 	m.clusterDir = blocker

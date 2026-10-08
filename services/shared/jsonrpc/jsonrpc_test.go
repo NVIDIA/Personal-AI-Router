@@ -49,11 +49,8 @@ func TestNotifyRoundTrip(t *testing.T) {
 	assert.True(t, msg.IsNotification(), "unexpected frame")
 	assert.Equal(t, "node/discovered", msg.Method, "unexpected frame")
 	var params map[string]string
-	{
-		err := json.Unmarshal(msg.Params, &params)
-		require.NoError(t, err, "params round-trip failed")
-		assert.Equal(t, "n1", params["id"], "params round-trip failed")
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &params), "params round-trip failed")
+	assert.Equal(t, "n1", params["id"], "params round-trip failed")
 }
 
 func TestRespondAndError(t *testing.T) {
@@ -93,22 +90,15 @@ func TestShortWriteWritesFullFrame(t *testing.T) {
 	msg, err := readCodec(bytes.NewReader(w.buf.Bytes())).Read()
 	require.NoError(t, err, "Read after short writes")
 	var params map[string]string
-	{
-		err := json.Unmarshal(msg.Params, &params)
-		require.NoError(t, err, "short-write corrupted frame")
-		assert.Equal(t, "value-that-spans-many-writes", params["k"], "short-write corrupted frame")
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &params), "short-write corrupted frame")
+	assert.Equal(t, "value-that-spans-many-writes", params["k"], "short-write corrupted frame")
 }
 
 func TestReadRejectsBadVersionAndEOF(t *testing.T) {
-	{
-		_, err := readCodec(strings.NewReader(`{"jsonrpc":"1.0","method":"m"}` + "\n")).Read()
-		require.Error(t, err, "expected error for unsupported jsonrpc version")
-	}
-	{
-		_, err := readCodec(strings.NewReader("")).Read()
-		assert.True(t, err == io.EOF, "expected io.EOF on empty stream,")
-	}
+	_, err := readCodec(strings.NewReader(`{"jsonrpc":"1.0","method":"m"}` + "\n")).Read()
+	require.Error(t, err, "expected error for unsupported jsonrpc version")
+	_, err = readCodec(strings.NewReader("")).Read()
+	assert.ErrorIs(t, err, io.EOF, "expected io.EOF on empty stream")
 }
 
 func TestReadMalformedFrameIsRecoverableDecodeError(t *testing.T) {
@@ -117,7 +107,7 @@ func TestReadMalformedFrameIsRecoverableDecodeError(t *testing.T) {
 	for _, frame := range []string{"{not json}\n", `{"jsonrpc":"1.0"}` + "\n"} {
 		_, err := readCodec(strings.NewReader(frame)).Read()
 		var de *DecodeError
-		assert.ErrorAs(t, err, &de, "frame")
+		assert.ErrorAs(t, err, &de, "frame %q", frame)
 	}
 }
 
@@ -130,16 +120,13 @@ func TestRespondErrorDataRoundTrip(t *testing.T) {
 	require.NotNil(t, msg.Error, "bad error")
 	assert.Equal(t, -32602, msg.Error.Code, "bad error")
 	var data map[string]string
-	{
-		err := json.Unmarshal(msg.Error.Data, &data)
-		require.NoError(t, err, "error data round-trip failed")
-		assert.Equal(t, "port", data["field"], "error data round-trip failed")
-	}
+	require.NoError(t, json.Unmarshal(msg.Error.Data, &data), "error data round-trip failed")
+	assert.Equal(t, "port", data["field"], "error data round-trip failed")
 	// nil data omits the field entirely.
 	var buf2 bytes.Buffer
 	_ = writeCodec(&buf2).RespondErrorData(&id, -32603, "boom", nil)
 	m2, _ := readCodec(&buf2).Read()
-	require.Empty(t, m2.Error.Data, "expected empty data for nil,")
+	require.Empty(t, m2.Error.Data, "expected empty data for nil")
 }
 
 func TestNewCodecMaxFrameAcceptsLargeFrame(t *testing.T) {
@@ -150,9 +137,6 @@ func TestNewCodecMaxFrameAcceptsLargeFrame(t *testing.T) {
 	msg, err := c.Read()
 	require.NoError(t, err, "Read large frame")
 	var params map[string]string
-	{
-		err := json.Unmarshal(msg.Params, &params)
-		require.NoError(t, err, "large frame round-trip failed")
-		require.Len(t, params["blob"], len(big), "large frame round-trip failed")
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &params), "large frame round-trip failed")
+	require.Len(t, params["blob"], len(big), "large frame round-trip failed")
 }

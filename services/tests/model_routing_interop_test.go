@@ -137,11 +137,9 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			body, _ = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			require.Equal(t, http.StatusBadGateway, resp.StatusCode, "ownerless response (%v)", body)
-			require.Contains(t, string(body), "no available node advertises the requested model", "ownerless response (%v)", body)
-			{
-				after = snapshot()
-				require.Equal(t, before, after, "ownerless request reached an upstream: hits (%v, %v)", before, after)
-			}
+			require.Contains(t, string(body), "no available node advertises the requested model", "ownerless response")
+			after = snapshot()
+			require.Equal(t, before, after, "ownerless request reached an upstream")
 		})
 	}
 }

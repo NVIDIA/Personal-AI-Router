@@ -154,24 +154,14 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 			}
 
 			// Restore: a fresh startup-style load comes up on the chosen port.
-			{
-				p := hostPort(t, loadWithOverrides(t, dir), tc.engine)
-				assert.Equal(t, tc.port, p, "restored port")
-			}
+			assert.Equal(t, tc.port, hostPort(t, loadWithOverrides(t, dir), tc.engine), "restored port")
 
 			// Reverting to the bundled default removes the override entirely.
-			{
-				_, err := ex.SetPort(context.Background(), tc.engine, tc.bundled)
-				require.NoError(t, err, "SetPort revert")
-			}
-			{
-				_, err := os.Stat(filepath.Join(dir, tc.engine+".json"))
-				assert.ErrorIs(t, err, os.ErrNotExist, "override file should be removed when reverting to default")
-			}
-			{
-				p := hostPort(t, loadWithOverrides(t, dir), tc.engine)
-				assert.Equal(t, tc.bundled, p, "port after revert")
-			}
+			_, err = ex.SetPort(context.Background(), tc.engine, tc.bundled)
+			require.NoError(t, err, "SetPort revert")
+			_, err = os.Stat(filepath.Join(dir, tc.engine+".json"))
+			assert.ErrorIs(t, err, os.ErrNotExist, "override file should be removed when reverting to default")
+			assert.Equal(t, tc.bundled, hostPort(t, loadWithOverrides(t, dir), tc.engine), "port after revert")
 		})
 	}
 }
@@ -180,10 +170,8 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 func TestSetPortRejectsOutOfRange(t *testing.T) {
 	ex := newBundledExecutor(t, t.TempDir())
 	for _, bad := range []int{0, -1, 70000} {
-		{
-			_, err := ex.SetPort(context.Background(), "ollama", bad)
-			assert.Error(t, err, "SetPort (%v)", bad)
-		}
+		_, err := ex.SetPort(context.Background(), "ollama", bad)
+		assert.Error(t, err, "SetPort (%v)", bad)
 	}
 }
 
@@ -199,38 +187,26 @@ func TestSetPortMovesAdoptedCommandEngine(t *testing.T) {
 
 func TestSetPortStillRejectsAdoptedProcessEngine(t *testing.T) {
 	ex := adoptedProcessEngineFixture(t, "ollama", 11434)
-	{
-		_, err := ex.SetPort(context.Background(), "ollama", 11435)
-		require.Error(t, err, "adopted process engine unexpectedly moved")
-	}
-	{
-		status, err := ex.Status("ollama")
-		require.NoError(t, err, "rejected process engine changed: status (%v, %v)", status, err)
-		require.Equal(t, 11434, status.Port, "rejected process engine changed: status (%v, %v)", status, err)
-		require.True(t, status.Running, "rejected process engine changed: status (%v, %v)", status, err)
-	}
-	{
-		_, err := os.Stat(filepath.Join(ex.overrideDir, "ollama.json"))
-		require.ErrorIs(t, err, os.ErrNotExist, "rejected process engine persisted an override")
-	}
+	_, err := ex.SetPort(context.Background(), "ollama", 11435)
+	require.Error(t, err, "adopted process engine unexpectedly moved")
+	status, err := ex.Status("ollama")
+	require.NoError(t, err, "rejected process engine changed: status (%v, %v)", status, err)
+	require.Equal(t, 11434, status.Port, "rejected process engine changed: status (%v, %v)", status, err)
+	require.True(t, status.Running, "rejected process engine changed: status (%v, %v)", status, err)
+	_, err = os.Stat(filepath.Join(ex.overrideDir, "ollama.json"))
+	require.ErrorIs(t, err, os.ErrNotExist, "rejected process engine persisted an override")
 }
 
 func TestSetPortRejectsCommandEngineWithoutStopCommand(t *testing.T) {
 	ex := adoptedCommandEngineWithoutStopFixture(t, "external", 1234)
-	{
-		_, err := ex.SetPort(context.Background(), "external", 1235)
-		require.Error(t, err, "command engine without official stop unexpectedly moved")
-	}
-	{
-		status, err := ex.Status("external")
-		require.NoError(t, err, "rejected command engine changed: status (%v, %v)", status, err)
-		require.Equal(t, 1234, status.Port, "rejected command engine changed: status (%v, %v)", status, err)
-		require.True(t, status.Running, "rejected command engine changed: status (%v, %v)", status, err)
-	}
-	{
-		_, err := os.Stat(filepath.Join(ex.overrideDir, "external.json"))
-		require.ErrorIs(t, err, os.ErrNotExist, "rejected command engine persisted an override")
-	}
+	_, err := ex.SetPort(context.Background(), "external", 1235)
+	require.Error(t, err, "command engine without official stop unexpectedly moved")
+	status, err := ex.Status("external")
+	require.NoError(t, err, "rejected command engine changed: status (%v, %v)", status, err)
+	require.Equal(t, 1234, status.Port, "rejected command engine changed: status (%v, %v)", status, err)
+	require.True(t, status.Running, "rejected command engine changed: status (%v, %v)", status, err)
+	_, err = os.Stat(filepath.Join(ex.overrideDir, "external.json"))
+	require.ErrorIs(t, err, os.ErrNotExist, "rejected command engine persisted an override")
 }
 
 func TestSetPortRestartsOldPortWhenPersistenceFails(t *testing.T) {
@@ -239,17 +215,13 @@ func TestSetPortRestartsOldPortWhenPersistenceFails(t *testing.T) {
 	require.NoError(t, os.WriteFile(blocked, []byte("blocked"), 0o644))
 	ex.overrideDir = blocked
 
-	{
-		_, err := ex.SetPort(context.Background(), "lmstudio", 1235)
-		require.Error(t, err, "expected persistence failure")
-	}
+	_, err := ex.SetPort(context.Background(), "lmstudio", 1235)
+	require.Error(t, err, "expected persistence failure")
 	require.True(t, stopped(), "persistence failure did not stop and restore the engine on 1234")
 	require.True(t, started(1234), "persistence failure did not stop and restore the engine on 1234")
 	require.False(t, started(1235), "persistence failure did not stop and restore the engine on 1234")
-	{
-		status, err := ex.Status("lmstudio")
-		require.NoError(t, err, "restored status (%v, %v)", status, err)
-		require.Equal(t, 1234, status.Port, "restored status (%v, %v)", status, err)
-		require.True(t, status.Running, "restored status (%v, %v)", status, err)
-	}
+	status, err := ex.Status("lmstudio")
+	require.NoError(t, err, "restored status (%v, %v)", status, err)
+	require.Equal(t, 1234, status.Port, "restored status (%v, %v)", status, err)
+	require.True(t, status.Running, "restored status (%v, %v)", status, err)
 }

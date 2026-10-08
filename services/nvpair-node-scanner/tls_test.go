@@ -33,8 +33,11 @@ func TestTLSClientOptionsValidate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.o.validate()
-			require.False(t, tc.ok && err != nil, "validate() (%v)", err)
-			require.False(t, !tc.ok && err == nil, "validate() = nil, want error")
+			if tc.ok {
+				require.NoError(t, err, "validate()")
+			} else {
+				require.Error(t, err, "validate()")
+			}
 		})
 	}
 }
@@ -61,10 +64,8 @@ func TestBuildTLSClientCABundle(t *testing.T) {
 
 	bad := filepath.Join(dir, "bad.pem")
 	require.NoError(t, os.WriteFile(bad, []byte("not a pem"), 0o600))
-	{
-		_, err := buildTLSClient(tlsClientOptions{CABundlePath: bad}, nodeInfoFetchTimeout)
-		require.Error(t, err, "buildTLSClient(garbage CA) should error")
-	}
+	_, err = buildTLSClient(tlsClientOptions{CABundlePath: bad}, nodeInfoFetchTimeout)
+	require.Error(t, err, "buildTLSClient(garbage CA) should error")
 }
 
 // TestFetchNodeInfoTLSClientSelection proves the flag-gated wiring: an HTTPS-only
@@ -87,15 +88,11 @@ func TestFetchNodeInfoTLSClientSelection(t *testing.T) {
 
 	// With the TLS client (which trusts the test server), the HTTPS fetch works.
 	dTLS := &daemon{http: &http.Client{Timeout: nodeInfoFetchTimeout}, tlsHTTP: srv.Client()}
-	{
-		_, ok := dTLS.fetchNodeInfo(host, port)
-		assert.True(t, ok, "fetchNodeInfo with a TLS client should reach the HTTPS node-info endpoint")
-	}
+	_, ok := dTLS.fetchNodeInfo(host, port)
+	assert.True(t, ok, "fetchNodeInfo with a TLS client should reach the HTTPS node-info endpoint")
 
 	// Without it (dormant default), plain HTTP can't reach an HTTPS-only endpoint.
 	dPlain := &daemon{http: &http.Client{Timeout: nodeInfoFetchTimeout}}
-	{
-		_, ok := dPlain.fetchNodeInfo(host, port)
-		assert.False(t, ok, "fetchNodeInfo without a TLS client should not reach an HTTPS-only endpoint over plain HTTP")
-	}
+	_, ok = dPlain.fetchNodeInfo(host, port)
+	assert.False(t, ok, "fetchNodeInfo without a TLS client should not reach an HTTPS-only endpoint over plain HTTP")
 }

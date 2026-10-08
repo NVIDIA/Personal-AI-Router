@@ -66,7 +66,7 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "remove handler did not begin body read")
+		require.FailNow(t, "remove handler did not begin body read")
 	}
 
 	// The old request is authenticated but stalled. Tear down, re-admit into the
@@ -77,27 +77,21 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	require.Greater(t, newEpoch, oldEpoch, "new admission")
 	pinTrusted(t, victim, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
 	victim.addSelfMember()
-	{
-		_, err := pw.Write(payload)
-		require.NoError(t, err)
-	}
+	_, err = pw.Write(payload)
+	require.NoError(t, err)
 	_ = pw.Close()
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "remove handler did not finish")
+		require.FailNow(t, "remove handler did not finish")
 	}
 	require.Equal(t, http.StatusConflict, rr.Code, "status")
-	{
-		cid, epoch := victim.currentAdmission()
-		require.Equal(t, "cluster-1", cid, "stale request cleared new admission (%v, %v)", cid, epoch)
-		require.Equal(t, newEpoch, epoch, "stale request cleared new admission (%v, %v)", cid, epoch)
-	}
-	{
-		_, ok := victim.trust.Get(remover.identity.NodeUUID)
-		require.True(t, ok, "stale request cleared the newly re-established remover pin")
-	}
+	cid, epoch := victim.currentAdmission()
+	require.Equal(t, "cluster-1", cid, "stale request cleared new admission (%v, %v)", cid, epoch)
+	require.Equal(t, newEpoch, epoch, "stale request cleared new admission (%v, %v)", cid, epoch)
+	_, ok := victim.trust.Get(remover.identity.NodeUUID)
+	require.True(t, ok, "stale request cleared the newly re-established remover pin")
 }
 
 func TestMembersRemoveCurrentAdmissionSucceeds(t *testing.T) {

@@ -37,10 +37,7 @@ import (
 // garbage to DXGI.
 func TestDXGIAdapterDesc1Size(t *testing.T) {
 	const expected = 312
-	{
-		got := unsafe.Sizeof(dxgiAdapterDesc1{})
-		require.Equal(t, uintptr(expected), got, "dxgiAdapterDesc1 size")
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(dxgiAdapterDesc1{}), "dxgiAdapterDesc1 size")
 }
 
 func TestIsVirtualDisplayAdapter(t *testing.T) {
@@ -61,10 +58,7 @@ func TestIsVirtualDisplayAdapter(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		{
-			got := isVirtualDisplayAdapter(tc.name)
-			assert.Equal(t, tc.want, got, "isVirtualDisplayAdapter")
-		}
+		assert.Equal(t, tc.want, isVirtualDisplayAdapter(tc.name), "isVirtualDisplayAdapter")
 	}
 }
 
@@ -80,10 +74,7 @@ func TestLuidUint64(t *testing.T) {
 		{0xffffffff, -1, 0xffffffffffffffff},
 	}
 	for _, tc := range cases {
-		{
-			got := luidUint64(tc.low, tc.high)
-			assert.Equal(t, tc.want, got, "luidUint64")
-		}
+		assert.Equal(t, tc.want, luidUint64(tc.low, tc.high), "luidUint64")
 	}
 }
 
@@ -106,10 +97,7 @@ func TestKeepPhysicalAdapter(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			{
-				got := keepPhysicalAdapter(tc.luid, tc.physical)
-				assert.Equal(t, tc.want, got, "keepPhysicalAdapter")
-			}
+			assert.Equal(t, tc.want, keepPhysicalAdapter(tc.luid, tc.physical), "keepPhysicalAdapter")
 		})
 	}
 }

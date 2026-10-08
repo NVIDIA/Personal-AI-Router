@@ -29,15 +29,11 @@ func TestIdentityMintAndReload(t *testing.T) {
 
 func TestIdentityLostKeyFailsLoud(t *testing.T) {
 	dir := t.TempDir()
-	{
-		_, err := loadOrMintIdentity(dir)
-		require.NoError(t, err, "mint")
-	}
+	_, err := loadOrMintIdentity(dir)
+	require.NoError(t, err, "mint")
 	require.NoError(t, os.Remove(filepath.Join(dir, "node.key")), "remove key")
-	{
-		_, err := loadOrMintIdentity(dir)
-		require.Error(t, err, "expected a loud failure when identity.json exists but the key is gone")
-	}
+	_, err = loadOrMintIdentity(dir)
+	require.Error(t, err, "expected a loud failure when identity.json exists but the key is gone")
 }
 
 // makePin builds a valid TrustedPin for a fresh node identity.
@@ -72,16 +68,12 @@ func TestTrustStorePinRemoveReload(t *testing.T) {
 	// Reopen: the pin must reload from disk.
 	reopened, err := newTrustStore(dir)
 	require.NoError(t, err, "reopen")
-	{
-		_, ok := reopened.Get(pin.NodeUUID)
-		require.True(t, ok, "pin did not survive reload")
-	}
+	_, ok = reopened.Get(pin.NodeUUID)
+	require.True(t, ok, "pin did not survive reload")
 
 	require.NoError(t, reopened.Remove(pin.NodeUUID), "remove")
-	{
-		_, ok := reopened.Get(pin.NodeUUID)
-		require.False(t, ok, "pin still present after removal")
-	}
+	_, ok = reopened.Get(pin.NodeUUID)
+	require.False(t, ok, "pin still present after removal")
 }
 
 func TestTrustStoreRePinGuard(t *testing.T) {
@@ -109,10 +101,8 @@ func TestTrustStoreAntiTamper(t *testing.T) {
 
 	ts, err := newTrustStore(dir)
 	require.NoError(t, err, "open")
-	{
-		_, ok := ts.Get(pin.NodeUUID)
-		require.False(t, ok, "tampered (renamed) pin should have been skipped on load")
-	}
+	_, ok := ts.Get(pin.NodeUUID)
+	require.False(t, ok, "tampered (renamed) pin should have been skipped on load")
 	require.Empty(t, ts.List(), "expected no valid pins")
 }
 

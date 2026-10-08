@@ -130,20 +130,11 @@ func TestLiveOllamaCleanRoom(t *testing.T) {
 	defer stop()
 
 	send(t, stdin, 1, "engine:get-installed", nil)
-	{
-		r := waitResult(t, frames, "1", 5*time.Second)
-		require.Contains(t, string(r), `"engine":"ollama"`, "ollama not listed (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 5*time.Second)), `"engine":"ollama"`, "ollama not listed")
 	send(t, stdin, 2, "engine:install", map[string]string{"engine": "ollama"})
-	{
-		r := waitResult(t, frames, "2", 600*time.Second)
-		assert.Contains(t, string(r), `"installed":true`, "expected installed:true after install (%v)", r)
-	}
+	assert.Contains(t, string(waitResult(t, frames, "2", 600*time.Second)), `"installed":true`, "expected installed:true after install")
 	send(t, stdin, 3, "engine:start", map[string]string{"engine": "ollama"})
-	{
-		r := waitResult(t, frames, "3", 90*time.Second)
-		assert.Contains(t, string(r), `"running":true`, "expected running:true after start (%v)", r)
-	}
+	assert.Contains(t, string(waitResult(t, frames, "3", 90*time.Second)), `"running":true`, "expected running:true after start")
 	send(t, stdin, 4, "engine:action", map[string]any{"engine": "ollama", "action": "list_models"})
 	pre := waitResult(t, frames, "4", 30*time.Second)
 
@@ -160,25 +151,16 @@ func TestLiveOllamaCleanRoom(t *testing.T) {
 		send(t, stdin, 41, "engine:action", map[string]any{"engine": "ollama", "action": "pull_model", "params": map[string]string{"name": model}})
 		waitResult(t, frames, "41", 1200*time.Second)
 		send(t, stdin, 42, "engine:action", map[string]any{"engine": "ollama", "action": "list_models"})
-		{
-			r := waitResult(t, frames, "42", 30*time.Second)
-			assert.Contains(t, string(r), model, "model (%v, %v)", model, r)
-		}
+		assert.Contains(t, string(waitResult(t, frames, "42", 30*time.Second)), model, "pulled model must appear in list_models")
 		send(t, stdin, 43, "engine:action", map[string]any{"engine": "ollama", "action": "run_model", "params": map[string]any{"model": model, "prompt": "Say OK.", "stream": false}})
-		{
-			r := waitResult(t, frames, "43", 180*time.Second)
-			assert.Contains(t, string(r), `"response"`, "no response from run_model (%v)", r)
-		}
+		assert.Contains(t, string(waitResult(t, frames, "43", 180*time.Second)), `"response"`, "no response from run_model")
 		if preexisting {
 			t.Logf("model %q pre-existed in the shared store; leaving it (only deleting models we pull)", model)
 		} else {
 			send(t, stdin, 44, "engine:action", map[string]any{"engine": "ollama", "action": "delete_model", "params": map[string]string{"name": model}})
 			waitResult(t, frames, "44", 60*time.Second)
 			send(t, stdin, 45, "engine:action", map[string]any{"engine": "ollama", "action": "list_models"})
-			{
-				r := waitResult(t, frames, "45", 30*time.Second)
-				assert.NotContains(t, string(r), model, "model (%v, %v)", model, r)
-			}
+			assert.NotContains(t, string(waitResult(t, frames, "45", 30*time.Second)), model, "deleted model must not appear in list_models")
 		}
 	}
 	send(t, stdin, 5, "engine:stop", map[string]string{"engine": "ollama"})
@@ -213,15 +195,9 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 	defer stop()
 
 	send(t, stdin, 1, "engine:get-installed", nil)
-	{
-		r := waitResult(t, frames, "1", 5*time.Second)
-		require.Contains(t, string(r), `"engine":"lmstudio"`, "lmstudio not listed (%v)", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 5*time.Second)), `"engine":"lmstudio"`, "lmstudio not listed")
 	send(t, stdin, 2, "engine:install", map[string]string{"engine": "lmstudio"})
-	{
-		r := waitResult(t, frames, "2", 600*time.Second)
-		assert.Contains(t, string(r), `"installed":true`, "expected installed:true after install (%v)", r)
-	}
+	assert.Contains(t, string(waitResult(t, frames, "2", 600*time.Second)), `"installed":true`, "expected installed:true after install")
 	send(t, stdin, 3, "engine:start", map[string]string{"engine": "lmstudio"})
 	waitResult(t, frames, "3", 120*time.Second)
 	send(t, stdin, 4, "engine:action", map[string]any{"engine": "lmstudio", "action": "list_models"})
@@ -301,10 +277,8 @@ func sha256File(t *testing.T, path string) string {
 	require.NoError(t, err)
 	defer f.Close()
 	h := sha256.New()
-	{
-		_, err := io.Copy(h, f)
-		require.NoError(t, err)
-	}
+	_, err = io.Copy(h, f)
+	require.NoError(t, err)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -317,9 +291,7 @@ func downloadTo(t *testing.T, url string) string {
 	f, err := os.CreateTemp(t.TempDir(), "engine-dl-*")
 	require.NoError(t, err)
 	defer f.Close()
-	{
-		_, err := io.Copy(f, resp.Body)
-		require.NoError(t, err)
-	}
+	_, err = io.Copy(f, resp.Body)
+	require.NoError(t, err)
 	return f.Name()
 }

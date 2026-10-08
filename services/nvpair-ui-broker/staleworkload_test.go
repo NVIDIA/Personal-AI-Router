@@ -33,26 +33,20 @@ func TestFailStaleForeignWorkloadsRetiresSilentRemoteWork(t *testing.T) {
 
 	// Nothing is stale while the origin is still within its silence budget.
 	b.failStaleForeignWorkloads(time.Hour)
-	{
-		r, _ := b.workloads.Get("peer-uuid", "7")
-		require.Equal(t, "running", r.State)
-	}
+	r, _ := b.workloads.Get("peer-uuid", "7")
+	require.Equal(t, "running", r.State)
 
 	// A negative budget puts every sighting past the cutoff, which is the same
 	// condition as an origin that has said nothing for the real timeout.
 	b.failStaleForeignWorkloads(-time.Second)
 
-	r, _ := b.workloads.Get("peer-uuid", "7")
+	r, _ = b.workloads.Get("peer-uuid", "7")
 	require.Equal(t, "failed", r.State, "remote state")
 	require.True(t, r.Inferred, "the retirement must be inferred so the origin can reconcile it away")
-	{
-		local, _ := b.workloads.Get("self", "8")
-		require.Equal(t, "running", local.State, "local state")
-	}
-	{
-		here, _ := b.workloads.Get("peer-uuid", "9")
-		require.Equal(t, "failed", here.State, "locally-executing state")
-	}
+	local, _ := b.workloads.Get("self", "8")
+	require.Equal(t, "running", local.State, "local state")
+	here, _ := b.workloads.Get("peer-uuid", "9")
+	require.Equal(t, "failed", here.State, "locally-executing state")
 }
 
 // TestFailStaleForeignWorkloadsYieldsToTheOrigin: the sweep is a guess, so an
@@ -64,21 +58,17 @@ func TestFailStaleForeignWorkloadsYieldsToTheOrigin(t *testing.T) {
 	b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "running", "peer-uuid"))
 
 	b.failStaleForeignWorkloads(-time.Second)
-	{
-		r, _ := b.workloads.Get("peer-uuid", "9")
-		require.Equal(t, "failed", r.State)
-	}
+	r, _ := b.workloads.Get("peer-uuid", "9")
+	require.Equal(t, "failed", r.State)
 
 	require.True(t, b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "the origin's authoritative running must override the inferred failure")
-	r, _ := b.workloads.Get("peer-uuid", "9")
+	r, _ = b.workloads.Get("peer-uuid", "9")
 	require.Equal(t, "running", r.State, "record (%v)", r)
 	require.False(t, r.Inferred, "record (%v)", r)
 
 	// And the origin's real terminal still lands afterwards.
 	require.True(t, b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "completed", "peer-uuid")), "the origin's terminal must apply")
-	{
-		r, _ := b.workloads.Get("peer-uuid", "9")
-		require.Equal(t, "completed", r.State, "record (%v)", r)
-		require.False(t, r.Inferred, "record (%v)", r)
-	}
+	r, _ = b.workloads.Get("peer-uuid", "9")
+	require.Equal(t, "completed", r.State, "record (%v)", r)
+	require.False(t, r.Inferred, "record (%v)", r)
 }

@@ -231,10 +231,7 @@ func TestReserveCandidate_ManualPinBypassesReservations(t *testing.T) {
 	})
 	p.soleFacade().SetSelected("b")
 	candidates := reservationCandidates("b", "a") // resolveCandidates puts the pin first
-	{
-		got := reservedID(p, candidates)
-		require.Equal(t, "b", got, "manual pin resolved to")
-	}
+	require.Equal(t, "b", reservedID(p, candidates), "manual pin resolved to")
 	p.priorityMu.RLock()
 	defer p.priorityMu.RUnlock()
 	require.Empty(t, p.priorityReservations, "manual pin created optimistic reservations")
@@ -247,10 +244,7 @@ func TestReserveCandidate_IneligibleManualPinDoesNotBypassReservations(t *testin
 		Ranks: []schedulerwire.NodeRank{{ID: "owner-b"}, {ID: "owner-a"}},
 	})
 	p.soleFacade().SetSelected("missing")
-	{
-		got := reservedID(p, reservationCandidates("owner-a", "owner-b"))
-		require.Equal(t, "owner-b", got, "reservation with ineligible pin")
-	}
+	require.Equal(t, "owner-b", reservedID(p, reservationCandidates("owner-a", "owner-b")), "reservation with ineligible pin")
 }
 
 func TestReserveCandidate_PreservesFailoverAndSnapshotReset(t *testing.T) {
@@ -270,10 +264,7 @@ func TestReserveCandidate_PreservesFailoverAndSnapshotReset(t *testing.T) {
 		Nodes: []string{"a", "b", "c"},
 		Ranks: []schedulerwire.NodeRank{{ID: "a"}, {ID: "b"}, {ID: "c"}},
 	})
-	{
-		next := reservedID(p, reservationCandidates("a", "b", "c"))
-		require.Equal(t, "a", next, "new snapshot did not reset reservations: next")
-	}
+	require.Equal(t, "a", reservedID(p, reservationCandidates("a", "b", "c")), "new snapshot did not reset reservations")
 }
 
 func candidateIDsFrom(candidates []candidate) []string {
@@ -314,16 +305,10 @@ func TestReleasedReservationStopsCountingAsLoad(t *testing.T) {
 
 	_, held := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
 	require.True(t, held.held, "no reservation was taken on a flat snapshot")
-	{
-		got := reservationCount(p, held.nodeID)
-		require.Equal(t, 1, got, "reservation count for")
-	}
+	require.Equal(t, 1, reservationCount(p, held.nodeID), "reservation count for")
 
 	p.releaseReservation(held)
-	{
-		got := reservationCount(p, held.nodeID)
-		require.Equal(t, 0, got, "reservation count for")
-	}
+	require.Equal(t, 0, reservationCount(p, held.nodeID), "reservation count for")
 	// The entry is deleted rather than left at zero, so the map cannot grow one
 	// key per node ever dispatched to.
 	p.priorityMu.RLock()
@@ -351,10 +336,7 @@ func TestReleaseFromBeforeASnapshotIsIgnored(t *testing.T) {
 	// The first request now finishes.
 	p.releaseReservation(stale)
 
-	{
-		got := reservationCount(p, fresh.nodeID)
-		require.Equal(t, freshCount, got, "a release from generation (%v, %v)", got, freshCount)
-	}
+	require.Equal(t, freshCount, reservationCount(p, fresh.nodeID), "release from generation %d must preserve the generation-%d count for %q", stale.generation, fresh.generation, fresh.nodeID)
 	require.GreaterOrEqual(t, reservationCount(p, "a"), 0, "reservation count must not be negative")
 	require.GreaterOrEqual(t, reservationCount(p, "b"), 0, "reservation count must not be negative")
 }
@@ -375,21 +357,12 @@ func TestFailoverMovesTheReservationToTheServingNode(t *testing.T) {
 
 	moved := p.moveReservation(held, to)
 	require.Equal(t, to, moved.nodeID, "moved reservation node (%v)", to)
-	{
-		got := reservationCount(p, from)
-		assert.Equal(t, 0, got, "refusing node (%v, %v)", from, got)
-	}
-	{
-		got := reservationCount(p, to)
-		assert.Equal(t, 1, got, "serving node (%v, %v)", to, got)
-	}
+	assert.Equal(t, 0, reservationCount(p, from), "refusing node %q must release its reservation", from)
+	assert.Equal(t, 1, reservationCount(p, to), "serving node %q must hold the reservation", to)
 
 	// Releasing the moved token clears the serving node, not the original.
 	p.releaseReservation(moved)
-	{
-		got := reservationCount(p, to)
-		assert.Equal(t, 0, got, "serving node (%v, %v)", to, got)
-	}
+	assert.Equal(t, 0, reservationCount(p, to), "serving node %q must release the reservation", to)
 }
 
 // Two facades in one process compete for the same GPU, so a dispatch through

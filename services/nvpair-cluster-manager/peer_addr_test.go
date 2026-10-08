@@ -69,10 +69,7 @@ func TestReconcileBudgetCoversTheWholeCandidateWalk(t *testing.T) {
 	require.Equal(t, reconcileUnreachable, outcome, "outcome")
 	// Generous headroom over the budget, but far below the four-times-the-budget
 	// cost of a per-address deadline.
-	{
-		limit := 2 * budget
-		require.LessOrEqual(t, elapsed, limit, "the walk took (%v, %v, %v)", elapsed, budget, limit)
-	}
+	require.LessOrEqual(t, elapsed, 2*budget, "the walk exceeded its budget (%v)", budget)
 }
 
 // TestResolvePeerAddrsPutsTheRecordedAddressFirst: the pairing-time address was
@@ -91,8 +88,7 @@ func TestResolvePeerAddrsPutsTheRecordedAddressFirst(t *testing.T) {
 	}})
 
 	got := m.resolvePeerAddrs(ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "10.172.55.129", Port: 14321})
-	want := []string{"10.172.55.129:14321", "192.168.240.1:14321"}
-	require.Equal(t, want, got, "resolvePeerAddrs")
+	require.Equal(t, []string{"10.172.55.129:14321", "192.168.240.1:14321"}, got, "resolvePeerAddrs")
 }
 
 // TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress: the stored address
@@ -113,10 +109,8 @@ func TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress(t *testing.T) {
 	}})
 
 	m.refreshMemberAddrsFromMDNS()
-	{
-		n, _ := m.memberByNodeID(peer)
-		require.Equal(t, "10.172.55.129", n.IPAddress, "stored address")
-	}
+	n, _ := m.memberByNodeID(peer)
+	require.Equal(t, "10.172.55.129", n.IPAddress, "stored address")
 
 	// A peer that has stopped advertising the stored address really moved.
 	m.browser.setRelay([]noderec.DirectoryNode{{
@@ -126,21 +120,15 @@ func TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress(t *testing.T) {
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
 	}})
 	m.refreshMemberAddrsFromMDNS()
-	{
-		n, _ := m.memberByNodeID(peer)
-		require.Equal(t, "10.172.55.200", n.IPAddress, "stored address")
-	}
+	n, _ = m.memberByNodeID(peer)
+	require.Equal(t, "10.172.55.200", n.IPAddress, "stored address")
 }
 
 func TestConfirmedFirst(t *testing.T) {
 	addrs := []string{"a:1", "b:1", "c:1"}
-	{
-		got := confirmedFirst(addrs, "")
-		require.Equal(t, "a:1", got[0], "no confirmation should keep the ranking (%v)", got)
-	}
-	got := confirmedFirst(addrs, "c:1")
-	want := []string{"c:1", "a:1", "b:1"}
-	require.Equal(t, want, got, "confirmedFirst")
+	got := confirmedFirst(addrs, "")
+	require.Equal(t, "a:1", got[0], "no confirmation should keep the ranking (%v)", got)
+	require.Equal(t, []string{"c:1", "a:1", "b:1"}, confirmedFirst(addrs, "c:1"), "confirmedFirst")
 }
 
 // TestReachableEndpointFirstLeadsWithTheAddressThatAnswers: pairing is
@@ -163,8 +151,7 @@ func TestReachableEndpointFirstLeadsWithTheAddressThatAnswers(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 	answering := net.JoinHostPort("127.0.0.1", portStr)
 
-	got := reachableEndpointFirst([]string{unreachableAddr, answering})
-	require.Equal(t, []string{answering, unreachableAddr}, got, "reachableEndpointFirst")
+	require.Equal(t, []string{answering, unreachableAddr}, reachableEndpointFirst([]string{unreachableAddr, answering}), "reachableEndpointFirst")
 }
 
 // TestReachableEndpointFirstSingleCandidateSkipsConfirmation: with one address
@@ -172,12 +159,8 @@ func TestReachableEndpointFirstLeadsWithTheAddressThatAnswers(t *testing.T) {
 // its own request.
 func TestReachableEndpointFirstSingleCandidateSkipsConfirmation(t *testing.T) {
 	start := time.Now()
-	got := reachableEndpointFirst([]string{unreachableAddr})
-	require.Equal(t, []string{unreachableAddr}, got, "reachableEndpointFirst")
-	{
-		elapsed := time.Since(start)
-		require.LessOrEqual(t, elapsed, 200*time.Millisecond, "single candidate took")
-	}
+	require.Equal(t, []string{unreachableAddr}, reachableEndpointFirst([]string{unreachableAddr}), "reachableEndpointFirst")
+	require.LessOrEqual(t, time.Since(start), 200*time.Millisecond, "single candidate took")
 }
 
 // pairingProbeServer serves the pairing path with a fixed status and body, and
@@ -254,10 +237,7 @@ func TestPairingStopsAtAnExplicitRefusal(t *testing.T) {
 	require.ErrorAs(t, err, &rejected)
 	assert.Equal(t, "already-clustered", rejected.reason)
 	assert.NotEqual(t, int64(0), refusedHits.Load(), "the refusing address was never asked")
-	{
-		got := secondHits.Load()
-		assert.Equal(t, int64(0), got, "a refusal must end the pairing, but")
-	}
+	assert.Equal(t, int64(0), secondHits.Load(), "a refusal must end the pairing")
 }
 
 // TestPairingDoesNotWalkAfterOurOwnClusterIsGone: no address of the peer's can fix
@@ -274,10 +254,7 @@ func TestPairingDoesNotWalkAfterOurOwnClusterIsGone(t *testing.T) {
 	// A stale session generation is what a teardown leaves behind.
 	_, _, err := m.pairAtFirstWorkingEndpoint("inv-gone", []string{first, second}, cid, m.sessGen.Load()+1)
 	require.ErrorIs(t, err, errPairingClusterGone, "err")
-	{
-		got := firstHits.Load() + secondHits.Load()
-		assert.Equal(t, int64(0), got, "an abandoned pairing made")
-	}
+	assert.Equal(t, int64(0), firstHits.Load()+secondHits.Load(), "an abandoned pairing must not contact endpoints")
 }
 
 // TestPairingStopsWhenTheInviteIsCanceledMidWalk: a cancel that lands while one
@@ -307,15 +284,10 @@ func TestPairingStopsWhenTheInviteIsCanceledMidWalk(t *testing.T) {
 	_, pin, err := m.pairAtFirstWorkingEndpoint("inv-cancel", []string{first, next}, cid, m.sessGen.Load())
 	require.ErrorIs(t, err, errPairingAbandoned, "err")
 	require.Equal(t, "", pin, "pin")
-	{
-		got := nextHits.Load()
-		assert.Equal(t, int64(0), got, "the walk made")
-	}
-	{
-		inv, ok := m.getInvite("inv-cancel")
-		require.True(t, ok, "invite (%v)", inv)
-		require.Equal(t, inviteStateCanceled, inv.State, "invite (%v)", inv)
-	}
+	assert.Equal(t, int64(0), nextHits.Load(), "canceled pairing must not contact the next endpoint")
+	inv, ok := m.getInvite("inv-cancel")
+	require.True(t, ok, "invite (%v)", inv)
+	require.Equal(t, inviteStateCanceled, inv.State, "invite (%v)", inv)
 }
 
 // TestCanceledInviteRefusesLaterSessionRegistration covers the window after the
@@ -342,10 +314,8 @@ func TestCanceledInviteRefusesLaterSessionRegistration(t *testing.T) {
 	m.inviteMu.Unlock()
 
 	require.False(t, <-registered, "a later address registered a session after the invite was canceled")
-	{
-		_, live := m.getSession("inv-register")
-		require.False(t, live, "a canceled invite retained a pairing session")
-	}
+	_, live := m.getSession("inv-register")
+	require.False(t, live, "a canceled invite retained a pairing session")
 }
 
 // TestCanceledInviteIsNotRepublishedByALaterAddress closes the same race one step
@@ -382,8 +352,6 @@ func TestCanceledInviteIsNotRepublishedByALaterAddress(t *testing.T) {
 	require.True(t, ok, "invite (%v)", inv)
 	require.Equal(t, inviteStateCanceled, inv.State, "invite (%v)", inv)
 	assert.Nil(t, inv.Pin, "a PIN was published for a canceled invite")
-	{
-		_, live := m.getSession("inv-republish")
-		assert.False(t, live, "the pairing session outlived the canceled invite; a Completion could still be served")
-	}
+	_, live := m.getSession("inv-republish")
+	assert.False(t, live, "the pairing session outlived the canceled invite; a Completion could still be served")
 }

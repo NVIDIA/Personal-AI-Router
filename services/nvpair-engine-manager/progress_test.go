@@ -31,21 +31,19 @@ func TestProgressHubFanOutAndFilter(t *testing.T) {
 		require.Equal(t, "ollama", ev.Engine, "expected ollama 25 (%v)", ev)
 		require.Equal(t, 25, ev.Percent, "expected ollama 25 (%v)", ev)
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for matching progress event")
+		require.FailNow(t, "timed out waiting for matching progress event")
 	}
 
 	// The non-matching (lmstudio) event must not have been delivered.
 	select {
 	case ev := <-ch:
-		require.FailNow(t, "test expectation failed", "unexpected extra event: %+v", ev)
+		require.FailNowf(t, "unexpected extra event", "%+v", ev)
 	default:
 	}
 
 	cancel()
-	{
-		_, ok := <-ch
-		require.False(t, ok, "expected channel closed after cancel")
-	}
+	_, ok := <-ch
+	require.False(t, ok, "expected channel closed after cancel")
 }
 
 // TestProgressHubDropsWhenFull ensures a full subscriber buffer drops frames
@@ -67,7 +65,7 @@ func TestProgressHubDropsWhenFull(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "test expectation failed", "publish blocked on a full subscriber buffer")
+		require.FailNow(t, "publish blocked on a full subscriber buffer")
 	}
 }
 
@@ -95,7 +93,7 @@ func TestEmitInstallProgressPublishesToHub(t *testing.T) {
 		require.Equal(t, "downloading", ev.Stage, "unexpected event (%v)", ev)
 		require.Equal(t, 42, ev.Percent, "unexpected event (%v)", ev)
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "emitInstallProgress did not publish to the hub")
+		require.FailNow(t, "emitInstallProgress did not publish to the hub")
 	}
 }
 
@@ -242,6 +240,6 @@ func TestEmitPullProgressNotifiesAndPublishes(t *testing.T) {
 		require.Equal(t, "pulling", ev.Stage, "unexpected hub event (%v)", ev)
 		require.Equal(t, 62, ev.Percent, "unexpected hub event (%v)", ev)
 	case <-time.After(time.Second):
-		require.FailNow(t, "test expectation failed", "emitPullProgress did not publish to the hub")
+		require.FailNow(t, "emitPullProgress did not publish to the hub")
 	}
 }

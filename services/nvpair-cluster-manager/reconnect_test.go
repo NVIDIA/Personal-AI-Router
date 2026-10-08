@@ -22,17 +22,13 @@ func TestSetMemberAddr(t *testing.T) {
 	m.upsertMember(&ClusterNode{NodeUUID: uuid, ID: "n", IPAddress: "10.0.0.1", Port: 14321, State: stateMember})
 
 	require.True(t, m.setMemberAddr(uuid, "192.168.1.50", 0), "expected a change for a new host")
-	{
-		n, _ := m.memberByNodeID(uuid)
-		require.Equal(t, "192.168.1.50", n.IPAddress, "host-only update wrong:")
-		require.Equal(t, 14321, n.Port, "host-only update wrong:")
-	}
+	n, _ := m.memberByNodeID(uuid)
+	require.Equal(t, "192.168.1.50", n.IPAddress, "host-only update wrong:")
+	require.Equal(t, 14321, n.Port, "host-only update wrong:")
 	require.False(t, m.setMemberAddr(uuid, "192.168.1.50", 0), "identical addr should not report a change")
 	require.True(t, m.setMemberAddr(uuid, "192.168.1.50", 14999), "expected a change for a new port")
-	{
-		n, _ := m.memberByNodeID(uuid)
-		require.Equal(t, 14999, n.Port, "explicit port not applied:")
-	}
+	n, _ = m.memberByNodeID(uuid)
+	require.Equal(t, 14999, n.Port, "explicit port not applied:")
 	require.False(t, m.setMemberAddr("does-not-exist", "1.2.3.4", 0), "unknown uuid should not report a change")
 	require.False(t, m.setMemberAddr(uuid, "", 0), "empty host should not report a change")
 }
@@ -77,25 +73,19 @@ func TestRefreshMemberAddrsFromMDNS(t *testing.T) {
 
 	// No browser configured yet: must not panic and must change nothing.
 	m.refreshMemberAddrsFromMDNS()
-	{
-		n, _ := m.memberByNodeID(peer)
-		require.Equal(t, "10.9.9.9", n.IPAddress, "addr changed without a browser:")
-	}
+	n, _ := m.memberByNodeID(peer)
+	require.Equal(t, "10.9.9.9", n.IPAddress, "addr changed without a browser:")
 
 	m.browser = newBrowser()
 	m.browser.seed(peer, "192.168.1.77", 14321)
 	m.refreshMemberAddrsFromMDNS()
-	{
-		n, _ := m.memberByNodeID(peer)
-		require.Equal(t, "192.168.1.77", n.IPAddress, "mDNS refresh did not update stored addr:")
-	}
+	n, _ = m.memberByNodeID(peer)
+	require.Equal(t, "192.168.1.77", n.IPAddress, "mDNS refresh did not update stored addr:")
 
 	// The self entry must never be redirected by (untrusted) mDNS.
 	m.addSelfMember()
 	m.browser.seed(m.identity.NodeUUID, "5.5.5.5", 14321)
 	m.refreshMemberAddrsFromMDNS()
-	{
-		self, _ := m.memberByNodeID(m.identity.NodeUUID)
-		require.Equal(t, "127.0.0.1", self.IPAddress, "self address must not be rewritten from mDNS:")
-	}
+	self, _ := m.memberByNodeID(m.identity.NodeUUID)
+	require.Equal(t, "127.0.0.1", self.IPAddress, "self address must not be rewritten from mDNS:")
 }

@@ -51,10 +51,7 @@ func TestHandlePlainRejectsNonLoopback(t *testing.T) {
 
 	p.soleFacade().handlePlain(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code, "non-loopback plaintext status")
-	{
-		got := rec.Header().Get("Access-Control-Allow-Origin")
-		assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-	}
+	assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 }
 
 // Preflight is subject to the same ingress gate as ordinary requests.
@@ -66,10 +63,7 @@ func TestHandlePlainRejectsPreflightAtLoopbackGate(t *testing.T) {
 
 	p.soleFacade().handlePlain(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code, "preflight status")
-	{
-		got := rec.Header().Get("Access-Control-Allow-Origin")
-		assert.Equal(t, "", got, "Access-Control-Allow-Origin")
-	}
+	assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 }
 
 // engine-manager marks its own identity probes so the compatibility facade can
@@ -86,10 +80,7 @@ func TestHandlePlainRejectsEngineIdentityProbe(t *testing.T) {
 
 		p.soleFacade().handlePlain(rec, req)
 		require.Equal(t, http.StatusConflict, rec.Code, "identity probe status")
-		{
-			body := rec.Body.String()
-			require.Contains(t, body, tc.profile.DisplayName, "rejection does not name")
-		}
+		require.Contains(t, rec.Body.String(), tc.profile.DisplayName, "rejection does not name")
 	})
 }
 
@@ -117,10 +108,7 @@ func TestIsLoopbackRemote(t *testing.T) {
 		{"", false},
 		{"garbage", false},
 	} {
-		{
-			got := isLoopbackRemote(c.addr)
-			assert.Equal(t, c.want, got, "isLoopbackRemote (%v)", got)
-		}
+		assert.Equal(t, c.want, isLoopbackRemote(c.addr), "isLoopbackRemote(%q)", c.addr)
 	}
 }
 

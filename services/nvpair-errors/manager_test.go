@@ -84,13 +84,10 @@ func readResponseFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.responses:
 		var msg Message
-		{
-			err := json.Unmarshal(data, &msg)
-			require.NoError(t, err, "decode response frame (%v, %v)", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode response frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for response frame")
+		require.FailNow(t, "timed out waiting for response frame")
 		return Message{}
 	}
 }
@@ -100,13 +97,10 @@ func readNotificationFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.notifications:
 		var msg Message
-		{
-			err := json.Unmarshal(data, &msg)
-			require.NoError(t, err, "decode notification frame (%v, %v)", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode notification frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "test expectation failed", "timed out waiting for notification frame")
+		require.FailNow(t, "timed out waiting for notification frame")
 		return Message{}
 	}
 }
@@ -125,7 +119,7 @@ func assertNoNotification(t *testing.T, rw *captureRW) {
 	t.Helper()
 	select {
 	case data := <-rw.notifications:
-		require.FailNow(t, "test expectation failed", "unexpected notification (%v)", data)
+		require.FailNow(t, fmt.Sprintf("unexpected notification (%v)", data))
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -134,7 +128,7 @@ func assertNoResponse(t *testing.T, rw *captureRW) {
 	t.Helper()
 	select {
 	case data := <-rw.responses:
-		require.FailNow(t, "test expectation failed", "unexpected response (%v)", data)
+		require.FailNow(t, fmt.Sprintf("unexpected response (%v)", data))
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -143,10 +137,7 @@ func decodeResult[T any](t *testing.T, msg Message) T {
 	t.Helper()
 	require.Nil(t, msg.Error, "unexpected RPC error")
 	var result T
-	{
-		err := json.Unmarshal(msg.Result, &result)
-		require.NoError(t, err, "decode result")
-	}
+	require.NoError(t, json.Unmarshal(msg.Result, &result), "decode result")
 	return result
 }
 
@@ -195,8 +186,7 @@ func sampleError(id string, ts int64, msg string) ServiceError {
 // frontend would have to special-case it; explicit `[]` is the contract.
 func TestGetInitialEmpty(t *testing.T) {
 	m, rw := newTestManager(t)
-	got := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	require.Empty(t, got, "get-initial on empty manager")
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil), "get-initial on empty manager")
 }
 
 // TestReportRequestUpsertsAndEmitsUpdate: an errors:report REQUEST gets
@@ -301,11 +291,9 @@ func TestClearRemovesEntryAndEmitsUpdate(t *testing.T) {
 	require.Nil(t, resp.Error, "errors:clear returned error")
 
 	update := expectNotification(t, rw, "errors:update")
-	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
-	require.Empty(t, got, "after clear, update payload")
+	require.Empty(t, decodeResult[[]ServiceError](t, Message{Result: update.Params}), "after clear, update payload")
 
-	list := callAndDecode[[]ServiceError](t, m, rw, 2, "errors:get-initial", nil)
-	require.Empty(t, list, "after clear, get-initial")
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 2, "errors:get-initial", nil), "after clear, get-initial")
 }
 
 // TestClearAbsentIdIsNoOp: clearing an id that was never reported (or
@@ -362,8 +350,7 @@ func TestReportMissingFieldsRejected(t *testing.T) {
 	assertNoResponse(t, rw)
 
 	// And the store is still empty.
-	list := callAndDecode[[]ServiceError](t, m, rw, 3, "errors:get-initial", nil)
-	require.Empty(t, list, "after invalid reports, list")
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 3, "errors:get-initial", nil), "after invalid reports, list")
 }
 
 // TestClearMissingIdRejected: clear without an id is -32602 in request
@@ -419,8 +406,7 @@ func TestClearedByPassedThroughIgnored(t *testing.T) {
 	m.handleMessage(notificationMessage("errors:clear", ClearParams{ID: id, ClearedBy: "node-other"}))
 	expectNotification(t, rw, "errors:update")
 
-	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	require.Empty(t, list, "after foreign-clearedBy clear, list")
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil), "after foreign-clearedBy clear, list")
 }
 
 // TestNodeIdPreserved: the producer-supplied nodeId is stored verbatim

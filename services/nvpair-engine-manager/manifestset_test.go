@@ -35,10 +35,8 @@ func TestBundledManifestSetMatchesEngineTable(t *testing.T) {
 	}
 
 	for _, engine := range engines.All() {
-		assert.Contains(t, have, engine.Name, "no manifests/")
+		assert.Contains(t, have, engine.Name, "engine table entry has no bundled manifest")
 		delete(have, engine.Name)
 	}
-	for name := range have {
-		assert.Fail(t, "test expectation failed", "manifests/%s.json has no entry in nvpair-shared/engines", name)
-	}
+	assert.Empty(t, have, "bundled manifests have no entry in nvpair-shared/engines")
 }

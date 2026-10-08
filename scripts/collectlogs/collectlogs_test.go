@@ -117,20 +117,20 @@ func findEntity(entities []*Entity, value string) *Entity {
 func TestDiscoveryLinksNodeIdentifiers(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
-	require.Len(t, res.nodes, 2, "want 2 nodes,")
+	require.Len(t, res.nodes, 2)
 
 	// The bundle's own machine is linked from the header sections and is
 	// labelled first.
 	hostA := findEntity(res.entities, "TESTHOST-A")
 	uuidA := findEntity(res.entities, "11111111-2222-4333-8444-555555555555")
 	ipA := findEntity(res.entities, "192.168.50.10")
-	for name, e := range map[string]*Entity{"hostname": hostA, "uuid": uuidA, "address": ipA} {
-		require.NotNil(t, e, "node A %s", name)
-	}
-	assert.Equal(t, uuidA.Node, hostA.Node, "node A identifiers not linked: hostname")
-	assert.Equal(t, ipA.Node, hostA.Node, "node A identifiers not linked: hostname")
-	assert.Equal(t, "node-a", hostA.Token, "want hostname token node-a,")
-	assert.Equal(t, "node-a-ip", ipA.Token, "want address token node-a-ip,")
+	require.NotNil(t, hostA, "node A hostname was not discovered")
+	require.NotNil(t, uuidA, "node A uuid was not discovered")
+	require.NotNil(t, ipA, "node A address was not discovered")
+	assert.Equal(t, uuidA.Node, hostA.Node, "node A identifiers not linked")
+	assert.Equal(t, ipA.Node, hostA.Node, "node A identifiers not linked")
+	assert.Equal(t, "node-a", hostA.Token)
+	assert.Equal(t, "node-a-ip", ipA.Token)
 
 	// The UUID is still linked to the node, but left readable: it is a random
 	// version 4 value that identifies nobody and is the primary key in most
@@ -140,8 +140,8 @@ func TestDiscoveryLinksNodeIdentifiers(t *testing.T) {
 	// The account in a machine's own file paths belongs to that machine.
 	userA := findEntity(res.entities, "testuser")
 	require.NotNil(t, userA, "account name was not discovered")
-	assert.Equal(t, "node-a-user", userA.Token, "want account token node-a-user,")
-	assert.Equal(t, "node-a", userA.Node, "account attributed to")
+	assert.Equal(t, "node-a-user", userA.Token)
+	assert.Equal(t, "node-a", userA.Node)
 }
 
 // Four-part version strings parse as valid addresses. Treating one as an address
@@ -174,7 +174,7 @@ func TestObjectKeysAreSanitized(t *testing.T) {
 	res := runPipeline(t, path, true)
 
 	assert.NotContains(t, res.output, "TESTHOST-A", "a host name used as an object key was not replaced")
-	assert.Contains(t, res.output, `"node-a"`, "expected the host name key to become a token,")
+	assert.Contains(t, res.output, `"node-a"`, "expected the host name key to become a token")
 }
 
 // Node and cluster UUIDs are left readable on purpose.
@@ -190,7 +190,7 @@ func TestUUIDsAreLeftReadable(t *testing.T) {
 			found++
 		}
 	}
-	assert.Equal(t, 2, found, "want 2 readable UUID keys,")
+	assert.Equal(t, 2, found, "readable UUID keys: %v", keysOf(nodes))
 
 	for _, e := range res.entities {
 		if e.Kind != KindUUID {
@@ -231,20 +231,20 @@ func TestFingerprintIsNotPartiallyMatchedAsMAC(t *testing.T) {
 
 	mac := findEntity(res.entities, "aa:bb:cc:dd:ee:ff")
 	require.NotNil(t, mac, "a genuine six-pair MAC address was not discovered")
-	assert.Equal(t, KindMAC, mac.Kind, "want KindMAC,")
+	assert.Equal(t, KindMAC, mac.Kind)
 	assert.NotContains(t, res.output, `"mac":"aa:bb:cc:dd:ee:ff"`, "MAC address was not replaced")
 }
 
 func TestDedupeCollapsesCopiesButKeepsRealRepeats(t *testing.T) {
 	deduped := runPipeline(t, fixture, true)
-	assert.Equal(t, 1, deduped.dropped, "want 1 duplicate copy collapsed,")
-	assert.Equal(t, 1, strings.Count(deduped.output, "settings loaded"), "want the duplicated line once,")
+	assert.Equal(t, 1, deduped.dropped, "duplicate copies collapsed")
+	assert.Equal(t, 1, strings.Count(deduped.output, "settings loaded"), "the duplicated line should appear once")
 	// Two identical messages two seconds apart are separate events.
-	assert.Equal(t, 2, strings.Count(deduped.output, "polling node"), "want both repeated polls kept,")
+	assert.Equal(t, 2, strings.Count(deduped.output, "polling node"), "both repeated polls should be kept")
 
 	raw := runPipeline(t, fixture, false)
-	assert.Equal(t, 0, raw.dropped, "dedupe disabled should drop nothing, dropped")
-	assert.Equal(t, 2, strings.Count(raw.output, "settings loaded"), "want both copies without dedupe,")
+	assert.Equal(t, 0, raw.dropped, "dedupe disabled should drop nothing")
+	assert.Equal(t, 2, strings.Count(raw.output, "settings loaded"), "both copies should be kept without dedupe")
 }
 
 func TestVerificationPassesOnSanitizedOutput(t *testing.T) {
@@ -276,7 +276,7 @@ func TestVerificationDetectsALeak(t *testing.T) {
 	v := newVerifier(entities)
 	require.NoError(t, v.checkFile(path))
 	assert.False(t, v.ok(), "verifier accepted output containing learned values")
-	assert.GreaterOrEqual(t, len(v.findings), 2, "want a finding per leaked value,")
+	assert.GreaterOrEqual(t, len(v.findings), 2, "want a finding per leaked value")
 }
 
 func TestIsHostnameRejectsNonHosts(t *testing.T) {
@@ -326,7 +326,7 @@ func TestTokenAssignmentIsDeterministic(t *testing.T) {
 	assert.Equal(t, second.output, first.output, "two runs over the same input produced different output")
 	for _, e := range first.entities {
 		other := findEntity(second.entities, e.Value)
-		require.NotNil(t, other)
+		require.NotNil(t, other, "entity %q was not discovered on the second run", e.Value)
 		assert.Equal(t, e.Token, other.Token)
 	}
 }
@@ -349,13 +349,7 @@ func TestFragmentInputWarnsAboutUndetectedHostnames(t *testing.T) {
 	// The address is still found by shape.
 	assert.NotNil(t, findEntity(d.sortedEntities(), "192.168.77.5"), "address in free text was not detected")
 
-	found := false
-	for _, w := range d.warnings {
-		if strings.Contains(w, "no hostname was learned") {
-			found = true
-		}
-	}
-	assert.True(t, found, "want a warning about undetected hostnames,")
+	assert.Contains(t, strings.Join(d.warnings, "\n"), "no hostname was learned", "want a warning about undetected hostnames")
 }
 
 // A full bundle has the structured fields, so it must not carry that warning.
@@ -388,12 +382,12 @@ func TestBundleFormatIsPreservedAsOneFile(t *testing.T) {
 	assert.True(t, strings.HasPrefix(res.output, "# NVIDIA PAIR Logs (sanitized)"), "bundle header missing from output")
 	assert.Contains(t, res.output, "## Metadata\n")
 	assert.Contains(t, res.output, "## Current Modular State\n")
-	assert.Equal(t, 1, strings.Count(res.output, "## "+recordSectionTitle), "want exactly one record section,")
+	assert.Equal(t, 1, strings.Count(res.output, "## "+recordSectionTitle), "want exactly one record section")
 
 	// Sections are written back as text, so they must still parse.
 	meta := sectionJSON(t, res, "Metadata")
 	assert.Equal(t, "0.0.60-dev", meta["appVersion"], "appVersion altered")
-	assert.Equal(t, "node-a", meta["hostname"], "hostname should be tokenized in the header,")
+	assert.Equal(t, "node-a", meta["hostname"], "hostname should be tokenized in the header")
 }
 
 // A raw nvpair.jsonl has no header, so it comes back as plain JSONL.
@@ -419,25 +413,22 @@ func TestSeveralBundlesKeepProducersDistinct(t *testing.T) {
 	producers := map[string]*Node{}
 	for _, path := range []string{fixture, fixtureB} {
 		d.beginSource()
-		{
-			err := scanFile(path, visitor{
-				onRecord: func(rec Record, _ string) error { d.scanRecord(rec); return nil },
-				onSection: func(name, _ string, blob any) error {
-					if blob != nil {
-						d.scanSection(name, blob)
-					}
-					return nil
-				},
-			})
-			require.NoError(t, err, "scan")
-		}
+		require.NoError(t, scanFile(path, visitor{
+			onRecord: func(rec Record, _ string) error { d.scanRecord(rec); return nil },
+			onSection: func(name, _ string, blob any) error {
+				if blob != nil {
+					d.scanSection(name, blob)
+				}
+				return nil
+			},
+		}), "scan")
 		producers[path] = d.sourceNode()
 	}
 	d.pruneEmptyNodes()
 	d.allocate()
 	entities := d.sortedEntities()
 
-	require.Len(t, d.nodes, 2, "want 2 nodes,")
+	require.Len(t, d.nodes, 2)
 	for _, n := range d.nodes {
 		assert.Len(t, n.Hostnames, 1)
 		assert.Len(t, n.UUIDs, 1)
@@ -460,7 +451,7 @@ func TestSeveralBundlesKeepProducersDistinct(t *testing.T) {
 	require.NotNil(t, u2, "expected both account names to be discovered")
 	assert.NotEqual(t, "", u1.Node, "accounts not attributed to a node")
 	assert.NotEqual(t, "", u2.Node, "accounts not attributed to a node")
-	assert.NotEqual(t, u2.Node, u1.Node, "both accounts attributed to")
+	assert.NotEqual(t, u2.Node, u1.Node, "both accounts attributed to the same node")
 	assert.Equal(t, u1.Node+"-user", u1.Token, "account tokens")
 	assert.Equal(t, u2.Node+"-user", u2.Token, "account tokens")
 
@@ -557,7 +548,7 @@ func TestInstallRootIsReplacedAtEveryEscapeDepth(t *testing.T) {
 				got = append(got, e.Value)
 			}
 		}
-		require.FailNow(t, "test expectation failed", "install root not learned; path entities")
+		require.FailNow(t, "install root not learned", "path entities: %v", got)
 	}
 	assert.Equal(t, "<install>", root.Token, "install token")
 
@@ -604,7 +595,9 @@ func TestModelNamesOnlyReplacedWhenRequested(t *testing.T) {
 	assert.Contains(t, on.output, "model-", "expected model tokens in the output")
 	// Engine names are keys in modelsByEngine, not model names.
 	for _, e := range on.entities {
-		assert.False(t, e.Kind == KindModel && (e.Value == "ollama" || e.Value == "lmstudio"), "engine %q must not be treated as a model name", e.Value)
+		if e.Kind == KindModel {
+			assert.NotContains(t, []string{"ollama", "lmstudio"}, e.Value, "engine must not be treated as a model name")
+		}
 	}
 }
 

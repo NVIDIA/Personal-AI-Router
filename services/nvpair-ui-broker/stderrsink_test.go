@@ -54,7 +54,7 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 		defer close(done)
 		for i := 0; i < writes; i++ {
 			if _, err := sink.Write(chunk); err != nil {
-				assert.Fail(t, "test expectation failed", "Write returned an error: %v", err)
+				assert.NoError(t, err, "Write returned an error")
 				return
 			}
 		}
@@ -63,7 +63,7 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		require.FailNow(t, "test expectation failed", "Write blocked while the reader was stalled; a worker in this state can never exit")
+		require.FailNow(t, "Write blocked while the reader was stalled; a worker in this state can never exit")
 	}
 
 	sink.Close()
@@ -72,10 +72,7 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 	require.NoError(t, err, "overflow was not preserved")
 	require.NotEmpty(t, data, "spill file is empty; overflow was discarded rather than kept")
 	require.NotEqual(t, int64(0), sink.spilledChunks.Load(), "no chunks recorded as spilled")
-	{
-		lost := sink.lostChunks.Load()
-		require.Equal(t, int64(0), lost, "lost")
-	}
+	require.Equal(t, int64(0), sink.lostChunks.Load(), "no chunks should be lost with a writable spill path")
 }
 
 // TestStderrSinkPassesThroughWhenDrained checks the ordinary path is unchanged:
@@ -90,10 +87,8 @@ func TestStderrSinkPassesThroughWhenDrained(t *testing.T) {
 
 	want := []byte("broker line\n")
 	for i := 0; i < 100; i++ {
-		{
-			_, err := sink.Write(want)
-			require.NoError(t, err, "Write returned an error")
-		}
+		_, err := sink.Write(want)
+		require.NoError(t, err, "Write returned an error")
 	}
 	sink.Close()
 
@@ -101,8 +96,6 @@ func TestStderrSinkPassesThroughWhenDrained(t *testing.T) {
 	assert.Len(t, open.sunk, len(want)*100, "forwarded")
 	open.mu.Unlock()
 
-	{
-		_, err := os.Stat(spill)
-		require.ErrorIs(t, err, os.ErrNotExist, "spill file was created for a reader that kept up")
-	}
+	_, err := os.Stat(spill)
+	require.ErrorIs(t, err, os.ErrNotExist, "spill file was created for a reader that kept up")
 }

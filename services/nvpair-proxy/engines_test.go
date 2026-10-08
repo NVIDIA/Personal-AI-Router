@@ -92,7 +92,9 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			role, ok := tc.profile.roleFor(tc.method, tc.path)
 			require.Equal(t, tc.wantOK, ok, "roleFor (%v)", ok)
-			require.False(t, ok && role != tc.wantRole, "roleFor (%v)", role)
+			if ok {
+				require.Equal(t, tc.wantRole, role, "roleFor")
+			}
 		})
 	}
 }
@@ -129,10 +131,7 @@ func TestModelNaming(t *testing.T) {
 		{lmstudio, "qwen3-8b:latest", "qwen3-8b:latest"},
 		{lmstudio, "", ""},
 	} {
-		{
-			got := tc.profile.normalizeModel(tc.in)
-			assert.Equal(t, tc.want, got, " (%v)", got)
-		}
+		assert.Equal(t, tc.want, tc.profile.normalizeModel(tc.in), "%s normalizeModel(%q)", tc.profile.Name, tc.in)
 	}
 }
 
@@ -156,20 +155,14 @@ func TestRoleForFindsAPathDeclaredUnderTwoMethods(t *testing.T) {
 		{Path: "/v1/models", Role: roleModelListOpenAIGET},
 	}}
 
-	{
-		role, ok := p.roleFor("GET", "/v1/models")
-		assert.True(t, ok, "GET /v1/models (%v, %v)", role, ok)
-		assert.Equal(t, roleModelListOpenAIGET, role, "GET /v1/models (%v, %v)", role, ok)
-	}
-	{
-		role, ok := p.roleFor("POST", "/v1/models")
-		assert.True(t, ok, "POST /v1/models (%v, %v)", role, ok)
-		assert.Equal(t, roleInferencePOST, role, "POST /v1/models (%v, %v)", role, ok)
-	}
-	{
-		_, ok := p.roleFor("DELETE", "/v1/models")
-		assert.False(t, ok, "DELETE /v1/models classified; an undeclared method must forward verbatim")
-	}
+	role, ok := p.roleFor("GET", "/v1/models")
+	assert.True(t, ok, "GET /v1/models (%v, %v)", role, ok)
+	assert.Equal(t, roleModelListOpenAIGET, role, "GET /v1/models (%v, %v)", role, ok)
+	role, ok = p.roleFor("POST", "/v1/models")
+	assert.True(t, ok, "POST /v1/models (%v, %v)", role, ok)
+	assert.Equal(t, roleInferencePOST, role, "POST /v1/models (%v, %v)", role, ok)
+	_, ok = p.roleFor("DELETE", "/v1/models")
+	assert.False(t, ok, "DELETE /v1/models classified; an undeclared method must forward verbatim")
 }
 
 // No shipped engine declares the same (path, method) twice; a duplicate would
@@ -193,22 +186,10 @@ func TestDerivedIdentifiers(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	{
-		got := ollama.PortFile
-		assert.Equal(t, "proxy-port.json", got, "ollama PortFile")
-	}
-	{
-		got := lmstudio.PortFile
-		assert.Equal(t, "lmstudio-proxy-port.json", got, "lmstudio PortFile")
-	}
-	{
-		got := upstreamUnreachableID(ollama, "peer-A")
-		assert.Equal(t, "ollama-proxy:upstream-unreachable:peer-A", got, "ollama upstreamUnreachableID")
-	}
-	{
-		got := upstreamUnreachableID(lmstudio, "peer-A")
-		assert.Equal(t, "lmstudio-proxy:upstream-unreachable:peer-A", got, "lmstudio upstreamUnreachableID")
-	}
+	assert.Equal(t, "proxy-port.json", ollama.PortFile, "ollama PortFile")
+	assert.Equal(t, "lmstudio-proxy-port.json", lmstudio.PortFile, "lmstudio PortFile")
+	assert.Equal(t, "ollama-proxy:upstream-unreachable:peer-A", upstreamUnreachableID(ollama, "peer-A"), "ollama upstreamUnreachableID")
+	assert.Equal(t, "lmstudio-proxy:upstream-unreachable:peer-A", upstreamUnreachableID(lmstudio, "peer-A"), "lmstudio upstreamUnreachableID")
 }
 
 // chooseStartupPort restores a previously chosen port, except when the broker
