@@ -5,14 +5,37 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-engine-manager
 
-A config-driven control plane for local inference engines (Ollama today;
-Intel/others via a dropped-in manifest). It manages everything about an
-engine **except serving inference**: detect, user-mode install,
+A config-driven control plane for local inference engines. The bundled
+manifests support Ollama, LM Studio, and llama.cpp. It manages everything about
+an engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
+
+### llama.cpp backend checkpoint
+
+The `llamacpp` manifest runs `llama-server` in router mode on loopback port
+`8081`. It can list, download, load, unload, and delete exact model ids such as
+`owner/repository:Q4_K_M`. Downloads use `/models/sse` for progress; deletion
+uses the router's native `DELETE /models` cache operation and does not restart
+the router. `LLAMA_CACHE` points to a managed sibling directory so models
+survive engine uninstall and reinstall.
+Readiness requires `/props` to report `role:"router"`, so model-selection
+arguments that switch `llama-server` to single-model mode and incompatible
+listeners already occupying the port are rejected rather than adopted.
+After five minutes without inference work, a loaded model enters llama.cpp sleep
+mode and releases its model and KV-cache memory; the next request wakes it. The
+router child remains alive and can retain a residual backend GPU context.
+
+Windows and Linux installs download checksum-pinned server and CUDA-runtime
+archive pairs (CUDA 12.x for x64 and CUDA 13.4 for arm64); macOS uses the
+standard Metal-capable archive. These on-demand downloads are roughly
+0.6–0.8 GiB and do not enlarge the PAIR installer. llama.cpp keeps its `auto`
+GPU-layer policy: supported NVIDIA/Metal devices can accelerate, while the
+dynamic CPU backend remains the fallback. Hardware acceptance, not `/health`
+alone, is required to claim GPU activation.
 
 ## Communication
 
@@ -71,6 +94,28 @@ UI converges even if its synchronous call already timed out),
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
 
+Streaming HTTP pulls have a 30-minute **inactivity** watchdog. Each increase in
+an Ollama layer's or llama.cpp file's completed byte count refreshes that
+watchdog, so an active download may run longer than 30 minutes; duplicate
+progress frames and heartbeats do not extend a stalled pull. CLI-driven pulls
+without structured byte progress retain the fixed 30-minute action timeout.
+
+For llama.cpp, an accepted pull that ends before a matching `download_finished`
+or `download_failed` event stops the active download. This includes caller
+cancellation, remote caller disconnect, inactivity timeout, and premature SSE
+termination. Cleanup checks `GET /models` and sends `POST /models/unload` only
+when the exact model is still `downloading`; cached files are retained, and
+models that have already completed are left alone.
+
+The initial `POST /models` handshake has a separate 30-second total timeout and
+continues through caller cancellation so its acceptance can still be read.
+The pull then waits for cleanup, which has a separate five-second budget for
+the inventory check and stop request together. A failed cleanup reports that
+the download could not be confirmed stopped alongside the original pull error.
+If the start acknowledgement is lost or unreadable, acceptance and cancellation
+are reported as unconfirmed without unloading an unowned download. The monitored
+model must match `params.model`; mismatches are rejected before subscribing.
+
 The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
@@ -117,7 +162,7 @@ full authoritative snapshots to pinned peers.
 ```
 NotInstalled --engine:install--> (HTTPS download + verify-if-pinned + user-mode run) --> Stopped
 Stopped      --engine:start----> (adopt if already serving the port, else spawn) --> Running --health--> Running
-Running      --engine:stop-----> (stop signal, wait for exit; no timeout) --> Stopped
+Running      --engine:stop-----> (stop signal, bounded grace, force if needed) --> Stopped
 ```
 
 Detect uses the manifest's `detect` paths. Install is one-shot and
@@ -128,16 +173,18 @@ unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
-reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+reports the failed start. On Unix, stopping an owned process sends SIGTERM to
+its process group, waits the manifest's `stop.grace_s` (five seconds by
+default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
+startup cleanup uses the same policy. On Windows, the windowless engines we
+spawn cannot receive a graceful (non-`/F`) close, so stopping uses immediate
+`taskkill /T /F`.
 
 ### Adoption — start may attach to an engine it didn't launch
 
 Before spawning, `engine:start` **probes the chosen port's readiness
-endpoint**. If something already answers there — the engine's own desktop
+endpoint**, including any manifest-declared JSON identity. If a compatible
+service answers there — the engine's own desktop
 app (e.g. the Ollama tray app on `11434`), or an instance left running from a
 previous session — the service **adopts** that instance: it marks the engine
 `running` without launching its own, rather than spawning a duplicate that

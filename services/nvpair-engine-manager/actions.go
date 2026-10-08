@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,7 +84,7 @@ func (e *Executor) restartAfterAction(ctx context.Context, st *engineState, engi
 
 // dispatchAction invokes the action itself: a guarded filesystem removal, a CLI
 // command, or an HTTP call against the engine's loopback control API with the
-// caller's params as the body.
+// caller's params in the manifest-declared location.
 func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, action string, act Action, params json.RawMessage) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
 	defer cancel()
@@ -111,13 +112,30 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
+	requestURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 
 	var body io.Reader
-	if len(params) > 0 && string(params) != "null" {
+	if act.HTTP.ParamsIn == actionHTTPParamsQuery {
+		parsedURL, err := url.Parse(requestURL)
+		if err != nil {
+			return nil, fmt.Errorf("action %q: invalid HTTP URL: %w", action, err)
+		}
+		queryParams, err := actionQueryParams(params)
+		if err != nil {
+			return nil, fmt.Errorf("action %q: %w", action, err)
+		}
+		query := parsedURL.Query()
+		for name, values := range queryParams {
+			for _, value := range values {
+				query.Add(name, value)
+			}
+		}
+		parsedURL.RawQuery = query.Encode()
+		requestURL = parsedURL.String()
+	} else if len(params) > 0 && string(params) != "null" {
 		body = bytes.NewReader(params)
 	}
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(act.HTTP.Method), url, body)
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(act.HTTP.Method), requestURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +164,21 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	}
 	wrapped, _ := json.Marshal(string(data))
 	return wrapped, nil
+}
+
+func actionQueryParams(params json.RawMessage) (url.Values, error) {
+	query := make(url.Values)
+	if len(params) == 0 {
+		return query, nil
+	}
+	var values map[string]string
+	if err := json.Unmarshal(params, &values); err != nil {
+		return nil, fmt.Errorf("http query params must be a JSON object with string values: %w", err)
+	}
+	for name, value := range values {
+		query.Add(name, value)
+	}
+	return query, nil
 }
 
 // runRemovePathAction resolves templated path/root placeholders and deletes

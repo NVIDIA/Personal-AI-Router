@@ -38,7 +38,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama and LM Studio |
+| **Inference engines** | Ollama, LM Studio, and llama.cpp |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -100,15 +100,19 @@ you want by its full filename instead.
   status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
-  select **Install** next to Ollama or LM Studio. PAIR downloads and sets the
-  engine up for you, so nothing needs to be in place beforehand. If PAIR already
-  found an engine you installed yourself, start that one instead.
+  select **Install** next to Ollama, LM Studio, or llama.cpp. PAIR downloads and
+  sets the engine up for you, so nothing needs to be in place beforehand. The
+  llama.cpp install is a separate, on-demand download and is not selected during
+  first-run setup by default.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
 - **Add a model.** Select **Add model** on the same card and download one.
   `qwen4:12b` is used for this example; it can be replaced with a model of your
-  choice.
+  choice. llama.cpp populates this list from popular GGUF repositories on
+  Hugging Face. Type to filter the list, or press Enter to search the wider
+  public catalog. Its exact IDs include the repository and quantization, such
+  as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`.
 
   ![A node card with its engine expanded, one model pulling and the Add model button beside the list.](docs/assets/onboarding/getting-started/07-add-model.png)
 
@@ -149,8 +153,9 @@ The reply is ordinary OpenAI-shaped JSON, abbreviated here:
 }
 ```
 
-If you changed a port, or you are using LM Studio rather than Ollama, copy the
-URL from **Endpoints → API endpoints** instead of assuming the one above.
+If you changed a port, or you are using LM Studio or llama.cpp rather than
+Ollama, copy the URL from **Endpoints → API endpoints** instead of assuming the
+one above.
 
 That is a single machine working. To route across machines, pair a second one
 from **Settings → Cluster** and repeat the engine and model steps there. The
@@ -270,7 +275,7 @@ feedback and contributions will help shape priorities.
 
 ### Engines and integrations
 
-- [ ] llama.cpp support.
+- [x] llama.cpp support.
 - [ ] vLLM support.
 - [ ] EXO support.
 - [ ] ComfyUI integration.

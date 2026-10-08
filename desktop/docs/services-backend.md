@@ -89,7 +89,7 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
+service connection, while per-engine proxy readiness remains an
 asynchronous capability signal. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
@@ -116,7 +116,7 @@ reserved for inference clients.
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `ollama-proxy:ready` / `lmstudio-proxy:ready`        | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `ollama-proxy:ready` / `lmstudio-proxy:ready` / `llamacpp-proxy:ready` | Record engine proxy port                                                                                          | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:settings-changed`                            | Validate and republish the owning node's settings snapshot                                                                      | `engines:settings-changed`                                |
@@ -128,7 +128,7 @@ reserved for inference clients.
 | `nodes:changed`                                      | Replace membership snapshot                                                                                                     | `nodes:changed`                                           |
 | `workloads:upsert` / `workloads:remove`              | Update workload catalog                                                                                                         | workload pushes                                           |
 
-`nvpair-job-scheduler` combines queued and running work across both engines with
+`nvpair-job-scheduler` combines queued and running work across all engines with
 a smoothed 0–3 pressure from the busiest GPU. Invalid, missing, or
 older-than-10-second telemetry receives neutral pressure. It emits
 `schedule:priority` with order, pending count, and pressure; the broker applies
@@ -185,12 +185,12 @@ port is declined with an actionable error, but the user's OFF intent is still
 persisted. Personal AI Router therefore treats the saved desired state as authoritative and
 surfaces a stop error as guidance, not as proof the OFF choice was lost.
 
-Stopping a managed engine sends one stop signal and then waits for the process
-to exit, with no timeout — there is no grace-then-force escalation. On Unix that
-signal is SIGTERM to the process group (graceful, never escalated to SIGKILL);
-on Windows it is `taskkill /T /F`, because the windowless engines NVPAIR spawns
-cannot receive a graceful (non-`/F`) close. A forced PID kill survives only in
-the orphan-reclaim path, for a process whose `exec.Cmd` handle was lost.
+Stopping a managed engine is bounded. On Unix, engine-manager sends SIGTERM to
+the owned process group, waits the manifest's `stop.grace_s` (five seconds by
+default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
+startup cleanup and orphan reclaim use the same stop policy. On Windows,
+windowless managed engines cannot receive a graceful (non-`/F`) close, so
+stopping uses immediate `taskkill /T /F`.
 
 Personal AI Router calls `engine:prepare-shutdown` before broker teardown so local processes
 stop without clearing their persisted desired state. The broker also
@@ -254,8 +254,10 @@ reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
 good metrics and never marks a node offline.
 
 The renderer model hub is not a backend search service. Electron main obtains
-curated Ollama and LM Studio catalogs, then sends pull-ready model IDs through
-the engine manager.
+curated Ollama, LM Studio, and llama.cpp catalogs, then sends pull-ready model
+IDs through the engine manager. Ollama uses a locked bundled list. LM Studio
+and llama.cpp use cached live Hugging Face catalogs; explicit llama.cpp searches
+remain Electron-main requests and never become backend JSON-RPC methods.
 
 ## Pairing and security
 

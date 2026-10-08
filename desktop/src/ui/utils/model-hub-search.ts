@@ -38,13 +38,22 @@ function hubModelToEntry(m: EngineHubModel): ModelEntry {
     }
 }
 
+export function mergeModelHubResults(
+    populated: readonly ModelEntry[],
+    searched: readonly ModelEntry[]
+): ModelEntry[] {
+    const byId = new Map<string, ModelEntry>()
+    for (const model of populated) byId.set(model.id, model)
+    for (const model of searched) byId.set(model.id, model)
+    return Array.from(byId.values())
+}
+
 /**
- * Fetch an engine's full model hub catalog from the service. The Electron-main
- * module owns the upstream source (Ollama library scrape, LM Studio community
- * catalog); the renderer filters/sorts the returned rows locally.
+ * Fetch an engine's populated catalog or submit an explicit upstream query.
+ * Electron main owns every upstream source; the renderer only maps display rows.
  */
-export async function searchEngineHub(engine: EngineType): Promise<ModelEntry[]> {
+export async function searchEngineHub(engine: EngineType, query?: string): Promise<ModelEntry[]> {
     if (!getEngineHub(engine)) return []
-    const { models } = await window.pairApi.engines.searchHub(engine)
+    const { models } = await window.pairApi.engines.searchHub(engine, query)
     return models.map(hubModelToEntry)
 }

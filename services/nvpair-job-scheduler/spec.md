@@ -289,9 +289,10 @@ Let `D` = current discovered-node `hostUuid`s:
 
 `scheduledOn` (not `originatedFrom`) is the key: we care where work runs, not where
 it came from. Engine remains part of workload identity and selects the downstream
-proxy output, but it does not partition the load metric: Ollama and LM Studio
-normally contend for the same node-level GPU, VRAM, CPU, and memory. Until resource
-affinity is observable, total node queue depth is the conservative signal.
+proxy output, but it does not partition the load metric: Ollama, LM Studio, and
+llama.cpp normally contend for the same node-level GPU, VRAM, CPU, and memory.
+Until resource affinity is observable, total node queue depth is the conservative
+signal.
 
 ### 7.3 Selection-state (proxy side, for reference)
 
@@ -417,7 +418,7 @@ The Broker spawns `nvpair-job-scheduler`, replays active workloads and telemetry
 then sends discovery and resumes all three live streams. Discovery seeds
 `GPU-RIG`, `MY-PC`, `LAB-DESK-B`. Pending counts are `3`, `0`, `1` and GPU
 pressures are `3`, `0`, `1`, so combined loads are `6`, `0`, `2`. The scheduler
-emits `["MY-PC","LAB-DESK-B","GPU-RIG"]` for both engines. The ranking is
+emits `["MY-PC","LAB-DESK-B","GPU-RIG"]` for every engine. The ranking is
 node-global, so the Broker coalesces the duplicate and delivers it once per
 distinct proxy process via `node/set-priority`; each facade applies the subset it
 can route to.

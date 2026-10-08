@@ -25,13 +25,11 @@ type proxyNode struct {
 	Port int    `json:"port"`
 }
 
-// buildProxyEngines makes one tab per engine, in the shared table's order, so
-// an engine added there appears here rather than being silently absent from
-// this view.
-func buildProxyEngines() []*proxyEngine {
-	all := engines.All()
-	out := make([]*proxyEngine, 0, len(all))
-	for _, e := range all {
+// buildProxyEngines makes one tab per facade selected at the TUI boundary, in
+// the same order passed to the broker.
+func buildProxyEngines(selected []engines.Engine) []*proxyEngine {
+	out := make([]*proxyEngine, 0, len(selected))
+	for _, e := range selected {
 		out = append(out, &proxyEngine{label: e.DisplayName, prefix: e.ComponentName(), table: newTable(nil)})
 	}
 	return out
@@ -40,8 +38,8 @@ func buildProxyEngines() []*proxyEngine {
 // proxyEngine is one reverse proxy the broker fronts. They all speak the same
 // routing/failover contract; only the JSON-RPC prefix and label differ.
 type proxyEngine struct {
-	label    string // "Ollama" / "LM Studio"
-	prefix   string // "ollama-proxy" / "lmstudio-proxy"
+	label    string
+	prefix   string
 	ready    bool
 	port     int
 	selected string
@@ -49,7 +47,7 @@ type proxyEngine struct {
 	table    table.Model
 }
 
-// proxiesView shows both reverse proxies: per-engine status (ready/port/
+// proxiesView shows the selected reverse proxies: per-engine status (ready/port/
 // selected node) and the focused engine's discovered upstreams, with
 // actions to select a node and set the listen port.
 type proxiesView struct {
@@ -94,14 +92,14 @@ var (
 	proxyAutoKey   = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "auto-select"))
 )
 
-func newProxiesView(client *rpc.Client) *proxiesView {
+func newProxiesView(client *rpc.Client, selected []engines.Engine) *proxiesView {
 	ti := textinput.New()
 	ti.Placeholder = "port"
 	ti.CharLimit = 5
 	v := &proxiesView{
 		client:    client,
 		portInput: ti,
-		engines:   buildProxyEngines(),
+		engines:   buildProxyEngines(selected),
 	}
 	return v
 }

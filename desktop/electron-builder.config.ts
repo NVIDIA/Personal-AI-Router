@@ -9,7 +9,8 @@
 // Its installer targets are reference material rather than a distribution path:
 // signing and notarization live outside this repository, so anything built here
 // is unsigned. Released builds come from NVIDIA's own signed pipeline.
-import { readFileSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import type { Configuration } from 'electron-builder'
 import electronPkg from 'electron/package.json'
 import pkg from './package.json'
@@ -56,6 +57,8 @@ const osSegment =
               : null
 
 const output = osSegment ? `release/${pkg.version}/${osSegment}` : `release/${pkg.version}`
+const vcRedistStagedPath = '../.build/vc-redist/VC_redist.x64.exe'
+const vcRedistProvenancePath = '../.build/vc-redist/manifest.json'
 // Windows and macOS use the display name as the packaging product name. On
 // Windows it drives the NSIS branding; the install dir and executable are pinned
 // to APP_EXECUTABLE_NAME via win.executableName. On macOS it sets CFBundleName,
@@ -204,6 +207,45 @@ function assertToolsPackagingInputs(): void {
     }
 }
 
+function assertVcRedistPackagingInput(): void {
+    if (!existsSync(vcRedistStagedPath) || !existsSync(vcRedistProvenancePath)) {
+        throw new Error(
+            'The staged Visual C++ Redistributable or its provenance is missing. ' +
+                'Run npm run stage:vc-redist.'
+        )
+    }
+
+    const provenance: JsonValue = JSON.parse(readFileSync(vcRedistProvenancePath, 'utf8'))
+    if (
+        typeof provenance !== 'object' ||
+        provenance === null ||
+        Array.isArray(provenance) ||
+        provenance['schemaVersion'] !== 1 ||
+        provenance['sourceUrl'] !== 'https://aka.ms/vc14/vc_redist.x64.exe' ||
+        typeof provenance['resolvedUrl'] !== 'string' ||
+        typeof provenance['minimumVersion'] !== 'string' ||
+        typeof provenance['version'] !== 'string' ||
+        typeof provenance['signerSubject'] !== 'string' ||
+        typeof provenance['signerThumbprint'] !== 'string' ||
+        !/^[0-9A-F]{40}$/.test(provenance['signerThumbprint']) ||
+        typeof provenance['sha256'] !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(provenance['sha256'])
+    ) {
+        throw new Error(
+            'The staged Visual C++ Redistributable provenance is invalid. ' +
+                'Run npm run stage:vc-redist.'
+        )
+    }
+
+    const digest = createHash('sha256').update(readFileSync(vcRedistStagedPath)).digest('hex')
+    if (digest !== provenance['sha256']) {
+        throw new Error(
+            'The staged Visual C++ Redistributable does not match its provenance. ' +
+                'Run npm run stage:vc-redist.'
+        )
+    }
+}
+
 // Narrow the packaged architectures based on CLI flags / env. Without this,
 // declaring `arch: ['x64', 'arm64']` on a target builds both installers even
 // when the user passes only `--arm64`.
@@ -239,6 +281,7 @@ assertToolsPackagingInputs()
 // internal-build/electron-builder.config.ts imports this module, so the signed
 // pipeline and every local build inherit it.
 if (osSegment === 'windows') {
+    assertVcRedistPackagingInput()
     process.env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ'
 }
 
@@ -337,13 +380,27 @@ const config: Configuration = {
         {
             from: '../THIRD_PARTY_NOTICES.md',
             to: 'THIRD_PARTY_NOTICES.md'
-        }
+        },
+        ...(osSegment === 'windows'
+            ? [
+                  {
+                      // Installed as a machine prerequisite, then deleted by
+                      // scripts/build/installer.nsh.
+                      from: vcRedistStagedPath,
+                      to: 'installer-tools/VC_redist.x64.exe'
+                  }
+              ]
+            : [])
     ],
     win: {
         executableName: APP_EXECUTABLE_NAME,
         // The public build is unsigned. NVIDIA Authenticode signing is layered
         // on by internal-build/electron-builder.config.ts.
         icon: './resources/icons/logo.ico',
+        // electron-builder signs every extra-resource .exe by default. Preserve
+        // Microsoft's verified signature on the prerequisite instead of
+        // replacing it with the application publisher's signature.
+        signExts: ['!VC_redist.x64.exe'],
         target: [
             {
                 target: 'nsis',

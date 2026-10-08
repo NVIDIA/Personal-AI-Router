@@ -25,6 +25,11 @@ import (
 // schema growth stays backward compatible.
 const ManifestSchemaVersion = 1
 
+const (
+	actionHTTPParamsBody  = "body"
+	actionHTTPParamsQuery = "query"
+)
+
 // allowedPlaceholders is the set of `{token}`s the runner can resolve
 // at execution time. Validation rejects any other token so a typo in
 // a manifest fails at load with a clear message rather than at run
@@ -40,6 +45,9 @@ var allowedPlaceholders = map[string]bool{
 }
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+var resultMatchFieldPathRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*(?:\.[a-zA-Z_][a-zA-Z0-9_-]*)*$`)
+var artifactNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+var sha256Re = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 // engineNameRe restricts engine names to a safe charset — the name is
 // used as a filesystem path component (the per-engine install dir), so
@@ -67,12 +75,13 @@ type Platform struct {
 	Runtime   Runtime    `json:"runtime"`
 }
 
-// Install describes how to obtain the engine in user mode. A pinned
-// download (fetch.sha256 set) is checksum-verified before its `run`
-// command executes; an unpinned fetch is HTTPS-only (see download).
+// Install describes how to obtain the engine in user mode. Fetch may be
+// unpinned, but every member of Artifacts is checksum-verified before `run`
+// executes. All downloads are HTTPS-only outside loopback.
 type Install struct {
-	Fetch *Fetch   `json:"fetch,omitempty"`
-	Run   []string `json:"run,omitempty"`
+	Fetch     *Fetch            `json:"fetch,omitempty"`
+	Artifacts []InstallArtifact `json:"artifacts,omitempty"`
+	Run       []string          `json:"run,omitempty"`
 	// Script is an escape hatch for vendors that only ship a script
 	// installer. It runs without checksum verification — strictly opt-in
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
@@ -94,6 +103,14 @@ type Uninstall struct {
 // Fetch is an engine download. SHA256, when set, pins it (verified
 // before run); when empty the download is HTTPS-only with a warning.
 type Fetch struct {
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256"`
+}
+
+// InstallArtifact is one checksum-pinned member of a multi-file install.
+// Its download is available to install.run as {download_<name>}.
+type InstallArtifact struct {
+	Name   string `json:"name"`
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
 }
@@ -164,14 +181,23 @@ func (r *Runtime) hasCustomLaunch() bool {
 		(r.LaunchEnv != nil && len(*r.LaunchEnv) > 0)
 }
 
-// Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
-// should be set; HTTP wins if both are.
+// ProbeJSONMatch optionally identifies an HTTP service by a string field in
+// its JSON response body. Field supports the same validated dotted object path
+// syntax as action result filters.
+type ProbeJSONMatch struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+// Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP should be
+// set; HTTP wins if both are. JSONMatch is valid only for HTTP probes.
 type Probe struct {
-	HTTP      string `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
-	TCP       string `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
-	Status    int    `json:"status,omitempty"` // expected HTTP status (default 200)
-	TimeoutS  int    `json:"timeout_s,omitempty"`
-	IntervalS int    `json:"interval_s,omitempty"`
+	HTTP      string          `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
+	TCP       string          `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
+	Status    int             `json:"status,omitempty"` // expected HTTP status (default 200)
+	TimeoutS  int             `json:"timeout_s,omitempty"`
+	IntervalS int             `json:"interval_s,omitempty"`
+	JSONMatch *ProbeJSONMatch `json:"json_match,omitempty"`
 }
 
 // StopSpec is how to terminate the engine. Default is a graceful
@@ -186,13 +212,18 @@ type StopSpec struct {
 // Exactly one of HTTP (call the engine's loopback control API), Cmd
 // (run a CLI command, e.g. `lms get`), or RemovePath (guarded filesystem
 // delete) is set. Only a Cmd action templates the action's params as
-// placeholders (e.g. {model}); an HTTP action sends params as the JSON
-// request body.
+// placeholders (e.g. {model}); an HTTP action sends params in its declared
+// body or query location.
 type Action struct {
 	Description string            `json:"description,omitempty"`
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
 	Cmd         []string          `json:"cmd,omitempty"`
 	RemovePath  *ActionRemovePath `json:"remove_path,omitempty"`
+	// ProgressProtocol selects a narrowly defined streaming adapter for an
+	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
+	// behavior; named protocols are validated so a typo cannot silently fall
+	// back to the wrong completion semantics.
+	ProgressProtocol string `json:"progress_protocol,omitempty"`
 	// ModelResolution, when set, expands or resolves the model param:
 	//   - "lms-get" on Cmd actions: try as-given → Hub id → Hugging Face URL.
 	//   - "lms-disk-path" on RemovePath actions: map logical ids to on-disk
@@ -228,9 +259,10 @@ type ActionResult struct {
 
 // ResultMatch is the optional row filter on an ActionResult. Exactly one of
 // In or Nonempty must be set:
-//   - In: keep the element when Field (decoded as a JSON string) equals one of In.
-//   - Nonempty: keep the element when Field is a JSON array with length > 0
-//     (LM Studio's /api/v1/models models[].loaded_instances).
+//   - In: keep the element when the dot-separated object path Field (decoded as
+//     a JSON string) equals one of In.
+//   - Nonempty: keep the element when Field resolves to a JSON array with length
+//     > 0 (LM Studio's /api/v1/models models[].loaded_instances).
 type ResultMatch struct {
 	Field    string   `json:"field"`              // element field to test, e.g. "state" / "loaded_instances"
 	In       []string `json:"in,omitempty"`       // accepted string values, e.g. ["loaded"]
@@ -244,12 +276,14 @@ type ActionRemovePath struct {
 	Root string `json:"root"`
 }
 
-// ActionHTTP is a templated call against the engine's loopback base
-// URL. The caller's params (engine:action params) are sent as the
-// JSON request body; BodySchema is informational only.
+// ActionHTTP is a templated call against the engine's loopback base URL.
+// ParamsIn selects whether the caller's params are sent as the JSON request
+// body (the default) or as URL-encoded query parameters. BodySchema is
+// informational only.
 type ActionHTTP struct {
 	Method     string          `json:"method"`
 	Path       string          `json:"path"`
+	ParamsIn   string          `json:"params_in,omitempty"`
 	BodySchema json.RawMessage `json:"body_schema,omitempty"`
 }
 
@@ -636,14 +670,37 @@ func (p *Platform) validate(key string) error {
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
-		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || len(p.Install.Run) > 0) {
-			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/run (a script install cannot also be checksum-pinned)", key)
+		hasArtifacts := len(p.Install.Artifacts) > 0
+		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || hasArtifacts || len(p.Install.Run) > 0) {
+			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/artifacts/run (a script install cannot also be checksum-pinned)", key)
 		}
-		if len(p.Install.Run) > 0 && p.Install.Fetch == nil {
-			return fmt.Errorf("platform %q: install.run requires a fetch (the artifact the run command unpacks)", key)
+		if p.Install.Fetch != nil && hasArtifacts {
+			return fmt.Errorf("platform %q: install.fetch and install.artifacts are mutually exclusive", key)
+		}
+		if (p.Install.Fetch != nil || hasArtifacts) && len(p.Install.Run) == 0 {
+			return fmt.Errorf("platform %q: install.run is required when install.fetch or install.artifacts is present", key)
+		}
+		if len(p.Install.Run) > 0 && p.Install.Fetch == nil && !hasArtifacts {
+			return fmt.Errorf("platform %q: install.run requires a fetch or artifacts (the downloads the run command uses)", key)
 		}
 		if p.Install.Fetch != nil && strings.TrimSpace(p.Install.Fetch.URL) == "" {
 			return fmt.Errorf("platform %q: install.fetch.url is required when fetch is present", key)
+		}
+		names := make(map[string]bool, len(p.Install.Artifacts))
+		for index, artifact := range p.Install.Artifacts {
+			if !artifactNameRe.MatchString(artifact.Name) {
+				return fmt.Errorf("platform %q: install.artifacts[%d].name %q must match [a-z][a-z0-9_]{0,31}", key, index, artifact.Name)
+			}
+			if names[artifact.Name] {
+				return fmt.Errorf("platform %q: duplicate install artifact name %q", key, artifact.Name)
+			}
+			names[artifact.Name] = true
+			if err := validateDownloadURL(artifact.URL); err != nil {
+				return fmt.Errorf("platform %q: install artifact %q: %w", key, artifact.Name, err)
+			}
+			if !sha256Re.MatchString(strings.TrimSpace(artifact.SHA256)) {
+				return fmt.Errorf("platform %q: install artifact %q requires a 64-character hexadecimal sha256", key, artifact.Name)
+			}
 		}
 		switch p.Install.Mode {
 		case "", "user", "admin":
@@ -674,6 +731,17 @@ func validateProbe(key, which string, p *Probe) error {
 	if strings.TrimSpace(p.HTTP) == "" && strings.TrimSpace(p.TCP) == "" {
 		return fmt.Errorf("platform %q: runtime.%s must set either http or tcp", key, which)
 	}
+	if p.JSONMatch != nil {
+		if strings.TrimSpace(p.HTTP) == "" {
+			return fmt.Errorf("platform %q: runtime.%s json_match requires http", key, which)
+		}
+		if !resultMatchFieldPathRe.MatchString(p.JSONMatch.Field) {
+			return fmt.Errorf("platform %q: runtime.%s json_match.field %q is not a valid object path", key, which, p.JSONMatch.Field)
+		}
+		if strings.TrimSpace(p.JSONMatch.Value) == "" {
+			return fmt.Errorf("platform %q: runtime.%s json_match.value is required", key, which)
+		}
+	}
 	return nil
 }
 
@@ -702,6 +770,21 @@ func (a *Action) validate(name string) error {
 	if hasHTTP && (strings.TrimSpace(a.HTTP.Method) == "" || strings.TrimSpace(a.HTTP.Path) == "") {
 		return fmt.Errorf("action %q: http.method and http.path are required", name)
 	}
+	if hasHTTP {
+		switch a.HTTP.ParamsIn {
+		case "", actionHTTPParamsBody, actionHTTPParamsQuery:
+		default:
+			return fmt.Errorf("action %q: http.params_in %q invalid (want %q or %q)", name, a.HTTP.ParamsIn, actionHTTPParamsBody, actionHTTPParamsQuery)
+		}
+	}
+	if a.ProgressProtocol != "" {
+		if name != pullModelAction || !hasHTTP {
+			return fmt.Errorf("action %q: progress_protocol requires the HTTP pull_model action", name)
+		}
+		if a.ProgressProtocol != pullProgressProtocolLlamaCPPModelsSSE {
+			return fmt.Errorf("action %q: unsupported progress_protocol %q", name, a.ProgressProtocol)
+		}
+	}
 	if a.Result != nil && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
 		return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)
 	}
@@ -709,6 +792,9 @@ func (a *Action) validate(name string) error {
 		m := a.Result.Match
 		if strings.TrimSpace(m.Field) == "" {
 			return fmt.Errorf("action %q: result.match.field is required when result.match is set", name)
+		}
+		if !resultMatchFieldPathRe.MatchString(m.Field) {
+			return fmt.Errorf("action %q: result.match.field %q is not a valid object path", name, m.Field)
 		}
 		hasIn := len(m.In) > 0
 		if hasIn == m.Nonempty {
@@ -735,57 +821,76 @@ func (a *Action) validate(name string) error {
 	return nil
 }
 
-// validatePlaceholders rejects any `{token}` outside allowedPlaceholders
-// across every templated string in the manifest.
+// validatePlaceholders rejects any `{token}` outside the placeholders
+// available to the platform or manifest-global action that contains it.
 func (m *Manifest) validatePlaceholders() error {
-	for _, s := range m.templatedStrings() {
-		for _, match := range placeholderRe.FindAllStringSubmatch(s, -1) {
-			if !allowedPlaceholders[match[1]] {
-				return fmt.Errorf("unknown placeholder {%s} (allowed: %s)", match[1], strings.Join(allowedPlaceholderList(), ", "))
+	for key, platform := range m.Platforms {
+		allowed := make(map[string]bool, len(allowedPlaceholders))
+		for name := range allowedPlaceholders {
+			allowed[name] = true
+		}
+		if platform.Install != nil {
+			for _, artifact := range platform.Install.Artifacts {
+				allowed["download_"+artifact.Name] = true
+			}
+		}
+		if err := validatePlaceholderStrings(platform.templatedStrings(), allowed); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
+		}
+	}
+	return validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders)
+}
+
+func validatePlaceholderStrings(templates []string, allowed map[string]bool) error {
+	for _, template := range templates {
+		for _, match := range placeholderRe.FindAllStringSubmatch(template, -1) {
+			if !allowed[match[1]] {
+				return fmt.Errorf("unknown placeholder {%s} (allowed: %s)", match[1], strings.Join(placeholderList(allowed), ", "))
 			}
 		}
 	}
 	return nil
 }
 
-// allowedPlaceholderList returns the allowed placeholder names, sorted,
-// so error messages can't drift from the actual allow-set.
-func allowedPlaceholderList() []string {
-	out := make([]string, 0, len(allowedPlaceholders))
-	for k := range allowedPlaceholders {
+func placeholderList(placeholders map[string]bool) []string {
+	out := make([]string, 0, len(placeholders))
+	for k := range placeholders {
 		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// templatedStrings collects every string the runner resolves
-// placeholders in, so validatePlaceholders can scan them all.
-func (m *Manifest) templatedStrings() []string {
+// templatedStrings collects every platform-local string the runner resolves
+// placeholders in, so artifact placeholders stay scoped to their platform.
+func (p Platform) templatedStrings() []string {
 	var out []string
-	for _, p := range m.Platforms {
-		out = append(out, p.Detect...)
-		if p.Install != nil {
-			out = append(out, p.Install.Run...)
-			out = append(out, p.Install.Script...)
-		}
-		if p.Uninstall != nil {
-			out = append(out, p.Uninstall.Run...)
-		}
-		out = append(out, p.Runtime.Bin)
-		out = append(out, p.Runtime.Args...)
-		for _, cmd := range p.Runtime.Start {
-			out = append(out, cmd...)
-		}
-		for _, v := range p.Runtime.Env {
-			out = append(out, v)
-		}
-		out = append(out, probeStrings(p.Runtime.Ready)...)
-		out = append(out, probeStrings(p.Runtime.Health)...)
-		if p.Runtime.Stop != nil {
-			out = append(out, p.Runtime.Stop.Cmd...)
-		}
+	out = append(out, p.Detect...)
+	if p.Install != nil {
+		out = append(out, p.Install.Run...)
+		out = append(out, p.Install.Script...)
 	}
+	if p.Uninstall != nil {
+		out = append(out, p.Uninstall.Run...)
+	}
+	out = append(out, p.Runtime.Bin)
+	out = append(out, p.Runtime.Args...)
+	for _, cmd := range p.Runtime.Start {
+		out = append(out, cmd...)
+	}
+	for _, v := range p.Runtime.Env {
+		out = append(out, v)
+	}
+	out = append(out, probeStrings(p.Runtime.Ready)...)
+	out = append(out, probeStrings(p.Runtime.Health)...)
+	if p.Runtime.Stop != nil {
+		out = append(out, p.Runtime.Stop.Cmd...)
+	}
+	return out
+}
+
+func (m *Manifest) actionTemplatedStrings() []string {
+	var out []string
 	for _, act := range m.Actions {
 		if act.RemovePath != nil {
 			out = append(out, act.RemovePath.Root)

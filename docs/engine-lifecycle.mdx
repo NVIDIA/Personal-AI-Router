@@ -6,10 +6,10 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
-install and run those engines for you, or work with a copy you already have.
-This page explains what you can expect when you install, start, stop, update, or
-remove an engine.
+run models. Today that means Ollama, LM Studio, or llama.cpp on a given machine.
+PAIR can install and run those engines for you, or work with a supported
+existing Ollama or LM Studio installation. This page explains what you can
+expect when you install, start, stop, update, or remove an engine.
 
 For first-time setup, refer to [Getting started](getting-started.mdx). To change
 an engine's ports or launch command, refer to
@@ -44,7 +44,7 @@ operations run.
 
 These actions need the UI:
 
-- Listing, loading, ejecting, and deleting models
+- Deleting models
 - Updating an engine
 - Managing another node's engines
 
@@ -59,6 +59,7 @@ handles these engine lifecycle actions:
 - Restart an engine.
 - Uninstall an engine.
 - Pull a model.
+- List, load, and unload models.
 
 It does not do everything that the application does.
 
@@ -79,6 +80,17 @@ When you install an engine, consider the following:
 - If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
   that install instead of downloading another copy. Adoption helps when the
   usual engine port is already in use.
+- llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
+  checksum-pinned CUDA server/runtime archives; macOS downloads the standard
+  Metal-capable archive. The roughly 0.6–0.8 GiB engine download happens on
+  demand and is not part of the PAIR installer. Package choice is not
+  driver-aware; llama.cpp retains CPU fallback when GPU acceleration is
+  unavailable.
+
+PAIR-managed llama.cpp models sleep after five minutes without inference work.
+This releases model and KV-cache memory, and the next request wakes the model
+automatically. The llama.cpp worker remains running and may retain some GPU
+memory.
 
 To download models:
 
@@ -117,7 +129,9 @@ Both actions apply only to an engine PAIR installed:
 Uninstalling an engine does **not** remove its models. Downloaded model files stay
 on disk, in the engine's own storage such as `~/.ollama`, so uninstalling and
 reinstalling does not cost you re-downloading them. To reclaim that space, delete
-the models through the engine, or remove its data directory yourself.
+the models through the engine, or remove its data directory yourself. llama.cpp
+uses a persistent cache beside PAIR's managed install; use **Delete** to remove
+individual entries without removing the engine.
 
 Port changes for an NVPAIR-installed engine also live in **Engine settings**.
 Prefer the controls in PAIR over editing the engine's own config when PAIR is
@@ -188,9 +202,9 @@ brings it back without fetching it again.
 ![An engine's model list showing the Load, Eject, and Delete actions against a downloaded model.](assets/onboarding/engine-lifecycle/04-model-actions.png)
 
 On a headless machine the terminal interface covers installing, starting,
-stopping, restarting, and uninstalling an engine, and pulling a model. Operations
-it does not have, such as deleting a model or updating an engine, need the
-desktop application on that machine.
+stopping, restarting, and uninstalling an engine; pulling a model; and listing,
+loading, or unloading models. Operations it does not have, such as deleting a
+model or updating an engine, need the desktop application on that machine.
 
 PAIR does **not** warm models. Starting an engine does not pre-load models into
 memory, and it holds nothing ready in advance. Depending on the engine, a model

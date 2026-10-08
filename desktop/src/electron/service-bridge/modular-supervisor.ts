@@ -17,19 +17,24 @@ import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
 import {
     getModularBridgeState,
-    isProxyEngine,
     isUpstreamUnreachableError,
     parseServiceErrors,
-    parseWorkloadsInitial,
+    parseWorkloadsInitial
+} from './modular-state'
+import {
+    isProxyEngine,
+    proxyEngineFromManagerId,
+    proxyEngineFromSource,
+    proxySourceForEngine,
     PROXY_ENGINES,
     PROXY_NODE_SOURCES,
     type ProxyEngine
-} from './modular-state'
+} from './proxy-engines'
 import { emitBridgePush } from './broadcaster'
 import { parseEngineSettings } from './engine-settings'
 import { resolvePullCatchError } from './pull-error-handling'
 import { serviceLogLevel } from './service-log-level'
-import { engineManagerName, engineTypeFromManagerName } from '@/shared/utils/engines'
+import { engineManagerName } from '@/shared/utils/engines'
 import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
@@ -92,7 +97,7 @@ function getModularBinaryPath(baseName: string): string {
  * Read the build provenance (`sourceFingerprint` + `services`) and per-component
  * versions that `scripts/build-modular-binaries.ts` stamps into
  * `cli-bin/manifest.json`.
- * `components` is keyed by binary base name (e.g. `ollama-proxy`). Returns empty
+ * `components` is keyed by binary base name (e.g. `nvpair-proxy`). Returns empty
  * values when the manifest is absent.
  */
 export function readCliBinManifest(): {
@@ -155,26 +160,43 @@ function booleanValue(value: JsonValue | undefined): boolean {
  * Extract model names from a `nvpair-engine-manager` `list_models` action result.
  * The action returns the engine's raw response, which differs per engine:
  * Ollama's `/api/tags` yields `{ models: [{ name }] }`, LM Studio's native
- * `/api/v1/models` yields `{ models: [{ key }] }`. A present empty array is
- * authoritative; a missing or malformed inventory throws so callers retain or
- * fall back to their last-good source instead of silently clearing it.
+ * `/api/v1/models` yields `{ models: [{ key }] }`, and llama.cpp's router
+ * `/models` yields `{ data: [{ id }] }`. A present empty array is authoritative;
+ * a missing or malformed inventory throws so callers retain or fall back to
+ * their last-good source instead of silently clearing it.
  */
 export function parseListModelNames(result: JsonValue | undefined): string[] {
     const obj = objectValue(result)
     if (!obj) throw new Error('list_models returned a non-object response')
-    const names: string[] = []
+
+    let rows: JsonValue[]
+    let fields: string[]
     if (Array.isArray(obj.models)) {
-        for (const entry of obj.models) {
-            const row = objectValue(entry)
-            const name = stringValue(row?.name) || stringValue(row?.key)
-            if (name) names.push(name)
-        }
-        if (obj.models.length > 0 && names.length === 0) {
-            throw new Error('list_models returned no usable model names')
-        }
-        return names
+        rows = obj.models
+        fields = ['name', 'key']
+    } else if (obj.models !== undefined) {
+        throw new Error('list_models response is missing its model array')
+    } else if (Array.isArray(obj.data)) {
+        rows = obj.data
+        fields = ['id']
+    } else {
+        throw new Error('list_models response is missing its model array')
     }
-    throw new Error('list_models response is missing its model array')
+
+    const names: string[] = []
+    for (const entry of rows) {
+        const row = objectValue(entry)
+        for (const field of fields) {
+            const name = stringValue(row?.[field])
+            if (!name) continue
+            names.push(name)
+            break
+        }
+    }
+    if (rows.length > 0 && names.length === 0) {
+        throw new Error('list_models returned no usable model names')
+    }
+    return names
 }
 
 /**
@@ -204,16 +226,16 @@ function normalizeLogLevel(value: string | undefined): ModularLogLevel {
 
 /**
  * Shape the `pull_model` action params per engine. Ollama's `pull_model` body is
- * sent verbatim to `/api/pull` (reads `name`); LM Studio's CLI action templates
- * `{model}` into `lms get {model} --yes`. Sending the wrong key leaves the
- * placeholder unresolved and the engine-manager rejects the call.
+ * sent verbatim to `/api/pull` (reads `name`); every other manifest consumes
+ * `model` either as an HTTP body field or a CLI template. Sending the wrong key
+ * leaves the placeholder unresolved or fails body-schema validation.
  */
-function pullModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+export function pullModelParams(engineManagerEngine: string, model: string): JsonObject {
+    return engineManagerEngine === 'ollama' ? { name: model } : { model }
 }
 
 function deleteModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+    return engineManagerEngine === 'ollama' ? { name: model } : { model }
 }
 
 /**
@@ -292,17 +314,6 @@ function emptyLocalEngineBridge(): LocalEngineBridge {
     return { running: false, port: 0, bridgedId: '', bridgedPort: 0, selfWarned: false }
 }
 
-/** Translate an engine-manager engine id into a proxy engine, or null. */
-function proxyEngineFromManagerId(id: string): ProxyEngine | null {
-    const engine = engineTypeFromManagerName(id)
-    return engine && isProxyEngine(engine) ? engine : null
-}
-
-/** The broker relay namespace fronting an engine's reverse proxy. */
-function proxyRelayPrefix(engine: ProxyEngine): string {
-    return engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'
-}
-
 /**
  * Spawns and supervises the modular backend.
  *
@@ -310,12 +321,12 @@ function proxyRelayPrefix(engine: ProxyEngine): string {
  * `docs/services-backend.md`):
  *
  * - The `nvpair-ui-broker` is the **only** Electron-spawned binary and is itself the
- *   parent of every broker-owned worker (`ollama-proxy`, `lmstudio-proxy`,
+ *   parent of every broker-owned worker (`nvpair-proxy`,
  *   `nvpair-node-scanner`, `nvpair-node-info`, `nvpair-workload-manager`,
  *   `nvpair-cluster-manager`, `nvpair-node-settings`, `nvpair-manual-nodes`,
  *   `nvpair-engine-manager`, `nvpair-errors`, `nvpair-job-scheduler`). Electron passes their resolved paths to
  *   the broker (see `brokerStartupArgs`) and reaches each through a broker relay:
- *   `ollama-proxy:` / `lmstudio-proxy:` for the two engine proxies, `engine:` for the
+ *   the mapped `<engine>-proxy:` facade relays, `engine:` for the
  *   engine-manager, `errors:` for the error pipeline, `node/*` for manual nodes,
  *   `settings/*` and `cluster:` for the rest. Local inference jobs arrive on the
  *   broker's `workloads:subscribe` stream.
@@ -677,7 +688,7 @@ class ModularSupervisor {
         method: string,
         params?: JsonValue
     ): Promise<JsonValue | undefined> {
-        return this.callProcess('broker', `${proxyRelayPrefix(engine)}:${method}`, params)
+        return this.callProcess('broker', `${proxySourceForEngine(engine)}:${method}`, params)
     }
 
     /**
@@ -873,8 +884,9 @@ class ModularSupervisor {
             }
         }
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
-        await subscribe('ollama-proxy:subscribe', 'subscribe to broker ollama-proxy relay')
-        await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
+        for (const source of PROXY_NODE_SOURCES) {
+            await subscribe(`${source}:subscribe`, `subscribe to broker ${source} relay`)
+        }
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1071,12 +1083,12 @@ class ModularSupervisor {
         try {
             const result = await this.callProcess(
                 'broker',
-                `${proxyRelayPrefix(engine)}:get-status`
+                `${proxySourceForEngine(engine)}:get-status`
             )
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
+                    source: proxySourceForEngine(engine),
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1097,14 +1109,14 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy',
+                    source: proxySourceForEngine(engine),
                     method: 'node/discovered',
                     params: node
                 })
             }
         } catch (err) {
             log.verbose({
-                sublevel: proxyRelayPrefix(engine),
+                sublevel: proxySourceForEngine(engine),
                 message: `Unable to hydrate ${engine} proxy nodes: ${getErrorString(err)}`
             })
         }
@@ -1263,12 +1275,7 @@ class ModularSupervisor {
             this.scheduleRemoteEngineStatusRefresh()
         }
 
-        const proxyEngine: ProxyEngine | null =
-            event.source === 'ollama-proxy'
-                ? 'ollama'
-                : event.source === 'lmstudio-proxy'
-                  ? 'lm-studio'
-                  : null
+        const proxyEngine = proxyEngineFromSource(event.source)
         if (proxyEngine && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
@@ -2136,8 +2143,8 @@ class ModularSupervisor {
      * engine:state-changed and reconcile. The engine:state-changed carries the
      * **real** local engine port, which is the one the proxy must route to (mDNS
      * self-discovery can advertise the wrong port even when it works). Applies to
-     * every proxy-fronted engine (Ollama → ollama-proxy, LM Studio →
-     * lmstudio-proxy); loopback-only engines are ignored.
+     * every proxy-fronted engine through the mapping in proxy-engines.ts;
+     * loopback-only engines are ignored.
      */
     private updateLocalNodeBridgeFromEngineState(params: JsonValue | undefined): void {
         const obj = objectValue(params)
@@ -2187,7 +2194,7 @@ class ModularSupervisor {
             if (!bridge.selfWarned) {
                 bridge.selfWarned = true
                 log.warn({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message:
                         `Skipping local-node ${engine} proxy bridge: engine port ` +
                         `${bridge.port} matches the proxy's own listen port ` +
@@ -2214,7 +2221,7 @@ class ModularSupervisor {
                 bridge.bridgedPort = bridge.port
             } catch (err) {
                 log.warn({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message: `Failed to bridge local node into ${engine} proxy: ${getErrorString(err)}`
                 })
             }
@@ -2229,7 +2236,7 @@ class ModularSupervisor {
                 await this.callProxy(engine, 'node/remove-manual', { id: previousId })
             } catch (err) {
                 log.verbose({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message: `Local node was not bridged into ${engine} proxy: ${getErrorString(err)}`
                 })
             }

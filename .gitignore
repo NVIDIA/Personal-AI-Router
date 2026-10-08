@@ -16,6 +16,9 @@ token-map.json
 /scripts/inference-dispatcher/inference-dispatcher
 /scripts/inference-dispatcher/inference-dispatcher.exe
 
+# Downloaded, verified installer prerequisites.
+/.build/
+
 # Python bytecode from local runs of ci/release-intent scripts.
 __pycache__/
 *.py[cod]

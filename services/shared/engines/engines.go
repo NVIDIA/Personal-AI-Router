@@ -92,8 +92,8 @@ type Engine struct {
 	// claims in managed mode.
 	FacadePort int
 
-	// EnginePortBase is where PAIR relocates the engine so the proxy can take
-	// FacadePort, and the base of the next-free-port search.
+	// EnginePortBase is where PAIR runs or relocates the engine so the proxy can
+	// take FacadePort, and the base of any next-free-port search.
 	EnginePortBase int
 
 	// PortFile is the per-user file this engine's proxy persists its chosen
@@ -142,6 +142,14 @@ var all = []Engine{
 		FacadePort:       1234,
 		EnginePortBase:   1235,
 		PortFile:         "lmstudio-proxy-port.json",
+	},
+	{
+		Name:             "llamacpp",
+		DisplayName:      "llama.cpp",
+		DiscoveryService: noderec.ServiceLlamaCPP,
+		FacadePort:       8080,
+		EnginePortBase:   8081,
+		PortFile:         "llamacpp-proxy-port.json",
 	},
 }
 

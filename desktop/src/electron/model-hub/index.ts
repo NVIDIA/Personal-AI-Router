@@ -8,6 +8,7 @@ import {
     lmStudioCatalogCache,
     type LmStudioCatalogModel
 } from '@/electron/model-hub/lmstudio-catalog'
+import { llamaCppCatalogCache } from './llamacpp-catalog'
 
 function ollamaToHubModel(m: OllamaTagsModel): EngineHubModel {
     const base = m.name.includes(':') ? m.name.slice(0, m.name.indexOf(':')) : m.name
@@ -40,18 +41,23 @@ function lmStudioToHubModel(m: LmStudioCatalogModel): EngineHubModel {
 }
 
 /**
- * Serve an engine's model hub. Ollama is served from the committed, locked list
- * (`ollama-models.json`), so it returns instantly with no network access. LM
- * Studio still fetches its live `lmstudio-community` catalog and awaits a cold
- * cache's initial load. Engines without a hub return empty.
+ * Serve an engine's model hub. Ollama uses a committed locked list. LM Studio
+ * and llama.cpp await their cached live Hugging Face catalogs on a cold load.
  */
-export async function getEngineHubModels(engineType: EngineType): Promise<EngineHubSearchResponse> {
+export async function getEngineHubModels(
+    engineType: EngineType,
+    query?: string
+): Promise<EngineHubSearchResponse> {
     switch (engineType) {
         case 'ollama':
             return { models: loadOllamaModels().map(ollamaToHubModel) }
         case 'lm-studio':
             await lmStudioCatalogCache.ensureLoaded()
             return { models: lmStudioCatalogCache.list().map(lmStudioToHubModel) }
+        case 'llama-cpp':
+            if (query?.trim()) return { models: await llamaCppCatalogCache.search(query) }
+            await llamaCppCatalogCache.ensureLoaded()
+            return { models: llamaCppCatalogCache.list() }
         default:
             return { models: [] }
     }
@@ -59,9 +65,8 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
 
 /**
  * Kick a background refresh of the live engine hub caches so the first modal
- * open is instant. Ollama needs no warming (it is a committed static list);
- * only LM Studio fetches from the network. Fire-and-forget; failures are logged
- * inside each cache.
+ * open is instant. The committed Ollama list needs no warming. Fire-and-forget;
+ * failures are logged inside each cache.
  *
  * Called once the Overview renderer reports ready, deliberately not on service
  * connect: a network fetch started before the window has painted competes with
@@ -69,4 +74,5 @@ export async function getEngineHubModels(engineType: EngineType): Promise<Engine
  */
 export function warmEngineHubs(): void {
     lmStudioCatalogCache.refresh()
+    llamaCppCatalogCache.refresh()
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -217,13 +218,13 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 }
 
 // matchRow reports whether an element passes an ActionResult row filter.
-// With Match.In set, Match.Field must decode as a JSON string equal to one of
-// In. With Match.Nonempty set, Match.Field must decode as a JSON array with
-// length > 0 (LM Studio /api/v1/models loaded_instances). A missing or
-// wrong-typed field fails the match, so a row we cannot classify is excluded
-// rather than counted as loaded.
+// Match.Field is a validated dot-separated object path. With Match.In set, the
+// resolved value must decode as a JSON string equal to one of In. With
+// Match.Nonempty set, it must decode as a JSON array with length > 0 (LM Studio
+// /api/v1/models loaded_instances). A missing or wrong-typed path fails the
+// match, so a row we cannot classify is excluded rather than counted as loaded.
 func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
-	fv, ok := el[m.Field]
+	fv, ok := resolveObjectPath(el, m.Field)
 	if !ok {
 		return false
 	}
@@ -244,4 +245,20 @@ func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
 		}
 	}
 	return false
+}
+
+func resolveObjectPath(obj map[string]json.RawMessage, path string) (json.RawMessage, bool) {
+	parts := strings.Split(path, ".")
+	value, ok := obj[parts[0]]
+	for _, part := range parts[1:] {
+		if !ok {
+			return nil, false
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(value, &nested); err != nil {
+			return nil, false
+		}
+		value, ok = nested[part]
+	}
+	return value, ok
 }

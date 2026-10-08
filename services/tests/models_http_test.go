@@ -33,14 +33,16 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 		// Flat union + per-engine attribution, exactly the shape engine-manager's
 		// ModelsResult serializes. The daemon must enrich both onto the node.
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"models": []string{"llama3:8b", "qwen:0.5b"},
+			"models": []string{"llama3:8b", "qwen:0.5b", "org/router-model-GGUF:Q4_K_M"},
 			"modelsByEngine": map[string][]string{
 				"ollama":   {"llama3:8b"},
 				"lmstudio": {"qwen:0.5b"},
+				"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 			},
 			"loadedByEngine": map[string][]string{
 				"ollama":   {"llama3:8b"},
 				"lmstudio": {},
+				"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 			},
 		})
 	}))
@@ -110,7 +112,7 @@ func findNode(nodes []availableNode, id string) (availableNode, bool) {
 }
 
 func modelsMatch(models []string) bool {
-	want := []string{"llama3:8b", "qwen:0.5b"}
+	want := []string{"llama3:8b", "qwen:0.5b", "org/router-model-GGUF:Q4_K_M"}
 	if len(models) != len(want) {
 		return false
 	}
@@ -126,17 +128,19 @@ func modelsByEngineMatch(byEngine map[string][]string) bool {
 	want := map[string][]string{
 		"ollama":   {"llama3:8b"},
 		"lmstudio": {"qwen:0.5b"},
+		"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 	}
 	return byEngineEqual(byEngine, want)
 }
 
-// loadedByEngineMatch asserts the loaded set the stub served (ollama has one
-// resident model; lmstudio is running but empty) survives the daemon->broker
-// projection onto the client-facing node.
+// loadedByEngineMatch asserts the loaded set the stub served (Ollama and
+// llama.cpp each have one resident model; LM Studio is running but empty)
+// survives the daemon->broker projection onto the client-facing node.
 func loadedByEngineMatch(loaded map[string][]string) bool {
 	want := map[string][]string{
 		"ollama":   {"llama3:8b"},
 		"lmstudio": {},
+		"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 	}
 	return byEngineEqual(loaded, want)
 }

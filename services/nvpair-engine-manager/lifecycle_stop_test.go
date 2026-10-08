@@ -18,6 +18,26 @@ import (
 	"time"
 )
 
+func TestStopGrace(t *testing.T) {
+	tests := []struct {
+		name string
+		stop *StopSpec
+		want time.Duration
+	}{
+		{name: "default without stop spec", want: 5 * time.Second},
+		{name: "default with zero grace", stop: &StopSpec{Signal: "term"}, want: 5 * time.Second},
+		{name: "configured grace", stop: &StopSpec{Signal: "term", GraceS: 10}, want: 10 * time.Second},
+		{name: "kill is immediate", stop: &StopSpec{Signal: "kill", GraceS: 10}, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stopGrace(Runtime{Stop: tt.stop}); got != tt.want {
+				t.Fatalf("stopGrace() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 // spawnFakeListener starts a fake-engine copied to binPath, bound to
 // 127.0.0.1:port, and skips the test when this host can't resolve the PID/
 // image behind a listening port (no lsof/ss, or a /proc-less OS) — the

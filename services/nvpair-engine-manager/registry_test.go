@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,6 +70,74 @@ func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
+	m := validManifest()
+	m.Actions[pullModelAction] = Action{
+		HTTP:             &ActionHTTP{Method: "POST", Path: "/models"},
+		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("llama.cpp model pull protocol rejected: %v", err)
+	}
+}
+
+func TestValidateAcceptsHTTPQueryParams(t *testing.T) {
+	m := validManifest()
+	m.Actions["delete_model"] = Action{
+		HTTP: &ActionHTTP{
+			Method:   http.MethodDelete,
+			Path:     "/models",
+			ParamsIn: actionHTTPParamsQuery,
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("HTTP query params rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidHTTPParamsLocation(t *testing.T) {
+	m := validManifest()
+	m.Actions["delete_model"] = Action{
+		HTTP: &ActionHTTP{
+			Method:   http.MethodDelete,
+			Path:     "/models",
+			ParamsIn: "headers",
+		},
+	}
+	err := m.Validate()
+	if err == nil {
+		t.Fatal("invalid HTTP params location accepted")
+	}
+	if !strings.Contains(err.Error(), "http.params_in") {
+		t.Fatalf("error = %q, want http.params_in", err)
+	}
+}
+
+func TestValidateAcceptsNestedResultMatch(t *testing.T) {
+	m := validManifest()
+	m.Actions["list_models"] = Action{
+		HTTP: &ActionHTTP{Method: "GET", Path: "/models"},
+		Result: &ActionResult{
+			Array: "data",
+			Field: "id",
+			Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}},
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("nested result match rejected: %v", err)
+	}
+}
+
+func TestValidateAcceptsProbeJSONMatch(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service.role", Value: "router"}
+	m.Platforms["linux/amd64"] = p
+	if err := m.Validate(); err != nil {
+		t.Fatalf("HTTP probe JSON match rejected: %v", err)
+	}
+}
+
 func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
@@ -77,6 +146,101 @@ func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	if err := m.Validate(); err != nil {
 		t.Fatalf("unpinned fetch should validate, got %v", err)
 	}
+}
+
+func TestValidateAcceptsNamedInstallArtifacts(t *testing.T) {
+	m := validManifest()
+	setInstallArtifacts(&m, validInstallArtifacts())
+	if err := m.Validate(); err != nil {
+		t.Fatalf("named install artifacts rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsDownloadInstallWithoutRun(t *testing.T) {
+	test := func(name string, install *Install) {
+		t.Run(name, func(t *testing.T) {
+			m := validManifest()
+			p := m.Platforms["linux/amd64"]
+			p.Install = install
+			m.Platforms["linux/amd64"] = p
+
+			err := m.Validate()
+			if err == nil {
+				t.Fatal("download install without run accepted")
+			}
+			const want = `platform "linux/amd64": install.run is required when install.fetch or install.artifacts is present`
+			if err.Error() != want {
+				t.Fatalf("validation error = %q, want %q", err, want)
+			}
+		})
+	}
+
+	test("fetch with omitted run", &Install{
+		Fetch: &Fetch{URL: "https://example/installer.zip"},
+	})
+	test("fetch with empty run", &Install{
+		Fetch: &Fetch{URL: "https://example/installer.zip"},
+		Run:   []string{},
+	})
+	test("artifacts with omitted run", &Install{
+		Artifacts: validInstallArtifacts(),
+	})
+	test("artifacts with empty run", &Install{
+		Artifacts: validInstallArtifacts(),
+		Run:       []string{},
+	})
+}
+
+func TestValidateAcceptsScriptOnlyInstall(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.Install = &Install{Script: []string{"sh", "installer.sh"}}
+	m.Platforms["linux/amd64"] = p
+	if err := m.Validate(); err != nil {
+		t.Fatalf("script-only install rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsArtifactPlaceholderFromAnotherPlatform(t *testing.T) {
+	m := validManifest()
+	setInstallArtifacts(&m, validInstallArtifacts())
+	mac := Platform{
+		Install: &Install{
+			Fetch: &Fetch{URL: "https://example/server.tar.gz"},
+			Run:   []string{"extract", "{download}"},
+		},
+		Runtime: Runtime{Bin: "{install_dir}/llama-server"},
+	}
+	m.Platforms["darwin/arm64"] = mac
+	if err := m.Validate(); err != nil {
+		t.Fatalf("valid multi-platform fixture rejected: %v", err)
+	}
+
+	mac.Install.Run = []string{"extract", "{download_cudart}"}
+	m.Platforms["darwin/arm64"] = mac
+	err := m.Validate()
+	if err == nil {
+		t.Fatal("macOS install references {download_cudart}, but only Linux declares cudart; want validation error")
+	}
+	const want = `platform "darwin/arm64": unknown placeholder {download_cudart}`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err, want)
+	}
+}
+
+func validInstallArtifacts() []InstallArtifact {
+	return []InstallArtifact{
+		{Name: "server", URL: "https://example/server.zip", SHA256: strings.Repeat("a", 64)},
+		{Name: "cudart", URL: "https://example/cudart.zip", SHA256: strings.Repeat("b", 64)},
+	}
+}
+
+func setInstallArtifacts(m *Manifest, artifacts []InstallArtifact) {
+	p := m.Platforms["linux/amd64"]
+	p.Install.Fetch = nil
+	p.Install.Artifacts = artifacts
+	p.Install.Run = []string{"extract", "{download_server}", "{download_cudart}"}
+	m.Platforms["linux/amd64"] = p
 }
 
 func TestValidateRejectsBadEngineName(t *testing.T) {
@@ -123,6 +287,37 @@ func TestValidateRejects(t *testing.T) {
 			p.Install.Fetch = nil
 			m.Platforms["linux/amd64"] = p
 		}, "requires a fetch"},
+		{"fetch with artifacts", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Install.Artifacts = validInstallArtifacts()
+			m.Platforms["linux/amd64"] = p
+		}, "mutually exclusive"},
+		{"invalid artifact name", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[0].Name = "../server"
+			setInstallArtifacts(m, artifacts)
+		}, "must match"},
+		{"duplicate artifact name", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[1].Name = artifacts[0].Name
+			setInstallArtifacts(m, artifacts)
+		}, "duplicate install artifact"},
+		{"insecure artifact URL", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[0].URL = "http://example.com/server.zip"
+			setInstallArtifacts(m, artifacts)
+		}, "must be https"},
+		{"invalid artifact checksum", func(m *Manifest) {
+			artifacts := validInstallArtifacts()
+			artifacts[0].SHA256 = "deadbeef"
+			setInstallArtifacts(m, artifacts)
+		}, "64-character hexadecimal"},
+		{"unknown artifact placeholder", func(m *Manifest) {
+			setInstallArtifacts(m, validInstallArtifacts())
+			p := m.Platforms["linux/amd64"]
+			p.Install.Run = append(p.Install.Run, "{download_gpu}")
+			m.Platforms["linux/amd64"] = p
+		}, "unknown placeholder {download_gpu}"},
 		{"bad install mode", func(m *Manifest) {
 			p := m.Platforms["linux/amd64"]
 			p.Install.Mode = "root"
@@ -133,12 +328,52 @@ func TestValidateRejects(t *testing.T) {
 			p.Runtime.Args = []string{"serve", "{bogus}"}
 			m.Platforms["linux/amd64"] = p
 		}, "unknown placeholder {bogus}"},
+		{"JSON match without HTTP", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Ready = &Probe{
+				TCP:       "127.0.0.1:{port}",
+				JSONMatch: &ProbeJSONMatch{Field: "role", Value: "router"},
+			}
+			m.Platforms["linux/amd64"] = p
+		}, "json_match requires http"},
+		{"invalid JSON match field path", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service..role", Value: "router"}
+			m.Platforms["linux/amd64"] = p
+		}, "is not a valid object path"},
+		{"missing JSON match value", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "role"}
+			m.Platforms["linux/amd64"] = p
+		}, "json_match.value is required"},
 		{"action without http or cmd", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {Description: "neither"}}
 		}, "exactly one of http, cmd, or remove_path"},
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
+		{"unknown progress protocol", func(m *Manifest) {
+			m.Actions[pullModelAction] = Action{
+				HTTP:             &ActionHTTP{Method: "POST", Path: "/models"},
+				ProgressProtocol: "unknown",
+			}
+		}, "unsupported progress_protocol"},
+		{"progress protocol on other action", func(m *Manifest) {
+			m.Actions["list_models"] = Action{
+				HTTP:             &ActionHTTP{Method: "GET", Path: "/models"},
+				ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+			}
+		}, "requires the HTTP pull_model action"},
+		{"invalid match field path", func(m *Manifest) {
+			m.Actions["list_models"] = Action{
+				HTTP: &ActionHTTP{Method: "GET", Path: "/models"},
+				Result: &ActionResult{
+					Array: "models",
+					Field: "id",
+					Match: &ResultMatch{Field: "status..value", In: []string{"loaded"}},
+				},
+			}
+		}, "is not a valid object path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,6 +459,40 @@ func TestLoadRegistryOverride(t *testing.T) {
 	m, ok := reg.Get("ollama")
 	if !ok || m.DisplayName != "Ollama (user)" {
 		t.Fatalf("user override did not win: %+v", m)
+	}
+}
+
+func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatalf("load bundled manifests: %v", err)
+	}
+	base, ok := reg.Get("ollama")
+	if !ok {
+		t.Fatal("bundled ollama manifest missing")
+	}
+	baseRun := base.Platforms["linux/amd64"].Install.Run
+	if len(baseRun) == 0 {
+		t.Fatal("bundled ollama install.run is empty")
+	}
+	dir := t.TempDir()
+	const override = `{
+  "engine": "ollama",
+  "display_name": "Invalid override",
+  "platforms": {"linux/amd64": {"install": {"run": []}}}
+}`
+	if err := os.WriteFile(filepath.Join(dir, "ollama.json"), []byte(override), 0o644); err != nil {
+		t.Fatalf("write override: %v", err)
+	}
+	if err := reg.LoadOverrideDir(dir); err != nil {
+		t.Fatalf("load override directory: %v", err)
+	}
+	got, ok := reg.Get("ollama")
+	if !ok || got != base {
+		t.Fatalf("invalid override replaced bundled manifest: got %+v, want original manifest", got)
+	}
+	if !slices.Equal(got.Platforms["linux/amd64"].Install.Run, baseRun) {
+		t.Fatal("invalid override changed the bundled install.run")
 	}
 }
 
@@ -465,6 +734,57 @@ func TestLMStudioManifestBindsLoopback(t *testing.T) {
 		if !hasBindFlag || !hasHostToken {
 			t.Errorf("%s: start %v should pass --bind {host}", key, p.Runtime.Start)
 		}
+	}
+}
+
+func TestLlamaCPPManifestRequiresRouterIdentity(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := reg.Get("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp manifest not loaded")
+	}
+	for key, p := range m.Platforms {
+		ready := p.Runtime.Ready
+		if ready == nil || ready.JSONMatch == nil {
+			t.Errorf("%s: readiness JSON identity is missing", key)
+			continue
+		}
+		if ready.HTTP != "http://127.0.0.1:{port}/props" {
+			t.Errorf("%s: readiness URL = %q, want router /props", key, ready.HTTP)
+		}
+		if ready.JSONMatch.Field != "role" || ready.JSONMatch.Value != "router" {
+			t.Errorf("%s: readiness JSON identity = %+v, want role=router", key, ready.JSONMatch)
+		}
+		if health := p.Runtime.Health; health == nil || health.HTTP != "http://127.0.0.1:{port}/health" || health.JSONMatch != nil {
+			t.Errorf("%s: ongoing health probe changed unexpectedly: %+v", key, health)
+		}
+	}
+}
+
+func TestLlamaCPPManifestDeclaresNativeCacheDelete(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := reg.Get("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp manifest not loaded")
+	}
+	action, ok := m.Actions["delete_model"]
+	if !ok || action.HTTP == nil {
+		t.Fatalf("llamacpp delete_model action is incomplete: %+v", action)
+	}
+	if action.HTTP.Method != http.MethodDelete || action.HTTP.Path != "/models" {
+		t.Errorf("llamacpp delete_model HTTP = %s %s, want DELETE /models", action.HTTP.Method, action.HTTP.Path)
+	}
+	if action.HTTP.ParamsIn != actionHTTPParamsQuery {
+		t.Errorf("llamacpp delete_model params_in = %q, want %q", action.HTTP.ParamsIn, actionHTTPParamsQuery)
+	}
+	if action.RestartAfter {
+		t.Error("llamacpp delete_model must not restart the router")
 	}
 }
 

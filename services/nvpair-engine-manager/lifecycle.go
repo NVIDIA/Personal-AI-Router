@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 const (
 	unavailableConfirmations  = 3
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
+	maxProbeJSONBytes         = 1 << 20
 )
 
 type listenerProbeResult uint8
@@ -279,7 +282,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop()
+		proc.stop(stopGrace(rt))
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
@@ -498,7 +501,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop()
+		proc.stop(stopGrace(rt))
 	}
 
 	e.markStopped(st, engine)
@@ -874,12 +877,30 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 			return false
 		}
 
-		httpcon.DrainAndClose(resp.Body)
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		statusMatches := resp.StatusCode == want
+		if p.JSONMatch == nil {
+			httpcon.DrainAndClose(resp.Body)
+			return statusMatches
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeJSONBytes+1))
+		httpcon.DrainAndClose(resp.Body)
+		if !statusMatches || err != nil || len(body) > maxProbeJSONBytes {
+			return false
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(body, &obj); err != nil {
+			return false
+		}
+		value, ok := resolveObjectPath(obj, p.JSONMatch.Field)
+		if !ok {
+			return false
+		}
+		var actual string
+		return json.Unmarshal(value, &actual) == nil && actual == p.JSONMatch.Value
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)

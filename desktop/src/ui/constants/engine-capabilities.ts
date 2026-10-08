@@ -43,5 +43,23 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // server. Deleting therefore interrupts inference and needs a warning.
         restartsOnModelDelete: true,
         engineHub: { label: 'LM Studio', url: 'https://lmstudio.ai/models' }
+    },
+    'llama-cpp': {
+        hasExpiry: false,
+        hasEject: true,
+        hasInstall: ['win32', 'darwin', 'linux'],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: true,
+        modelOpsWhenStopped: false,
+        // The router removes cached models in-process via DELETE /models.
+        hasDeleteModel: true,
+        engineHub: {
+            label: 'llama.cpp',
+            url: 'https://huggingface.co/models?library=gguf'
+        }
     }
 }

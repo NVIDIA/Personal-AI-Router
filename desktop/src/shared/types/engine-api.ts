@@ -11,11 +11,11 @@ import type { EngineStatusData, EngineType } from '@/shared/types/engines'
 import type { EngineModels, EngineProgress, EngineUpdateAvailable } from '@/shared/types/engines'
 
 /**
- * One normalized model row returned by an engine-owned hub source (Ollama
- * library scrape, LM Studio community catalog). The Electron-main model-hub
- * module normalizes each upstream registry into this shape so the renderer
- * maps it to a display row without per-engine JSON parsing. `id`/`name` carry
- * the pull-ready identifier the engine's `pull_model` action expects.
+ * One normalized model row returned by an engine-owned hub source. The
+ * Electron-main model-hub module normalizes locked catalogs and live registries
+ * into this shape so the renderer maps them without per-engine parsing.
+ * `id`/`name` carry the pull-ready identifier the engine's `pull_model` action
+ * expects.
  */
 export interface EngineHubModel {
     id: string

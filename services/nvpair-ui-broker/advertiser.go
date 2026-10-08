@@ -188,6 +188,43 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	}
 }
 
+// runAutoAdvertiseEngine reconciles an engine using the configured port
+// recorded in its runtime profile, without compatibility-port reconciliation.
+func (b *Broker) runAutoAdvertiseEngine(ctx context.Context, profile engineProxyProfile) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseEngine(profile, client)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseEngine(profile, client)
+		}
+	}
+}
+
+func (b *Broker) reconcileAdvertiseEngine(profile engineProxyProfile, client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+
+	enginePort := int(b.engineProxy(profile).backendPort.Load())
+	proxyPort := b.engineProxyListenPort(profile)
+	up := enginePort > 0 &&
+		proxyPort > 0 &&
+		enginePort != proxyPort &&
+		checkEngineHealth(profile, client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: profile.DiscoveryService, Port: proxyPort})
+		b.setProxyLocalBackend(b.engineProxyHandle(profile), profile.Name, enginePort, true)
+		return
+	}
+	b.unregisterService(profile.DiscoveryService)
+	b.setProxyLocalBackend(b.engineProxyHandle(profile), profile.Name, enginePort, false)
+}
+
 // proxyLocalBackend is the node/set-local-backend payload: the loopback engine
 // the proxy's cluster mTLS ingress forwards to, and the proxy's own self
 // candidate on the local routing path.

@@ -46,6 +46,7 @@ func TestEngineHealthProbePaths(t *testing.T) {
 	}{
 		{"ollama", "/"},
 		{"lmstudio", "/v1/models"},
+		{"llamacpp", "/health"},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -92,8 +93,8 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	}
 }
 
-// Ownership is the one judgment call in adding an engine, so the two values in
-// the table today are pinned explicitly. Getting these backwards does not fail
+// Every engine's relocation authority is pinned explicitly. Getting these
+// backwards does not fail
 // to compile — it silently changes which engine the broker believes it may stop.
 func TestEngineOwnershipAssignments(t *testing.T) {
 	for _, tc := range []struct {
@@ -102,6 +103,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 	}{
 		{"ollama", adoptedEngine},
 		{"lmstudio", managedEngine},
+		{"llamacpp", managedEngine},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
 		if !ok {
@@ -167,7 +169,7 @@ func TestParseProxyEngines(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{name: "default is every engine", csv: "ollama,lmstudio", want: []string{"ollama", "lmstudio"}},
+		{name: "default set", csv: "ollama,lmstudio,llamacpp", want: []string{"ollama", "lmstudio", "llamacpp"}},
 		{name: "single engine", csv: "lmstudio", want: []string{"lmstudio"}},
 		{name: "whitespace and blanks are tolerated", csv: " ollama , , lmstudio ", want: []string{"ollama", "lmstudio"}},
 		{name: "duplicates collapse", csv: "ollama,ollama", want: []string{"ollama"}},

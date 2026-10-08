@@ -17,6 +17,8 @@ import type { ModelEntry } from '@/ui/types/model-hub'
  *                    prefix so every quantization collapses to "downloaded".
  * - LM Studio:       the download is keyed by `pullKey = <owner>/<repo>` (or
  *                    `<owner>/<repo>/<file>`); the hub id is `<owner>/<repo>`.
+ * - llama.cpp:       router inventory and catalog use the same complete
+ *                    `<owner>/<repo>:<quant>` id, so only exact ids match.
  */
 type DownloadedMatcher = (hubEntry: ModelEntry, downloaded: ModelItem) => boolean
 
@@ -36,9 +38,12 @@ const matchHfPullKeyOrName: DownloadedMatcher = (hubEntry, d) => {
     return false
 }
 
+const matchExactName: DownloadedMatcher = (hubEntry, downloaded) => downloaded.name === hubEntry.id
+
 const MATCHERS: Partial<Record<EngineType, DownloadedMatcher>> = {
     ollama: matchOllama,
-    'lm-studio': matchHfPullKeyOrName
+    'lm-studio': matchHfPullKeyOrName,
+    'llama-cpp': matchExactName
 }
 
 export function isHubEntryDownloaded(

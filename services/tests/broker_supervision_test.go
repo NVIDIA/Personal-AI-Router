@@ -276,22 +276,22 @@ func mustPid(t *testing.T, line string) int {
 	return pid
 }
 
-// Both engines are fronted by ONE process. This is the property the whole
+// Every default engine is fronted by ONE process. This is the property the whole
 // unification exists for: the estimated-work reservations a proxy takes
-// between scheduler snapshots live in the process, so two processes each held
-// half the picture and could dispatch simultaneous bursts to the same node
-// each believing it idle.
+// between scheduler snapshots live in the process, so separate processes each
+// held an incomplete picture and could dispatch simultaneous bursts to the
+// same node while each believed it idle.
 //
 // Asserted on pids rather than on the code shape, because "one supervisor" is
-// an implementation detail and "one OS process serving both engines" is the
+// an implementation detail and "one OS process serving every engine" is the
 // thing that actually makes the reservation map whole.
-func TestBothEnginesAreServedByOneProxyProcess(t *testing.T) {
+func TestAllDefaultEnginesAreServedByOneProxyProcess(t *testing.T) {
 	if portBusy(11435) || portBusy(1234) {
 		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
 	}
 
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
-		// No --proxy-engines: both engines, which is the default.
+		// No --proxy-engines: exercise the complete default set.
 		"--proxy-path", proxyBin,
 	)
 	t.Cleanup(cleanup)
@@ -309,14 +309,17 @@ func TestBothEnginesAreServedByOneProxyProcess(t *testing.T) {
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
-	// Both facades must actually come up, or "one process" would be trivially
+	// Every facade must actually come up, or "one process" would be trivially
 	// true by one of them having failed.
 	ollamaPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	lmstudioPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
-	if ollamaPort == lmstudioPort {
-		t.Fatalf("both facades report port %d; they must bind separately", ollamaPort)
+	llamacppPort := waitEngineProxyReady(t, "llamacpp-proxy", stdin, msgs, 15*time.Second)
+	if len(map[int]bool{ollamaPort: true, lmstudioPort: true, llamacppPort: true}) != 3 {
+		t.Fatalf("facade ports must be distinct: ollama=%d lmstudio=%d llamacpp=%d",
+			ollamaPort, lmstudioPort, llamacppPort)
 	}
-	t.Logf("ollama facade on :%d, lmstudio facade on :%d", ollamaPort, lmstudioPort)
+	t.Logf("facades ready: ollama=%d lmstudio=%d llamacpp=%d",
+		ollamaPort, lmstudioPort, llamacppPort)
 
 	// Collect every spawn announced up to this point plus a settling window, so
 	// a second process starting late still shows up.
@@ -331,9 +334,9 @@ func TestBothEnginesAreServedByOneProxyProcess(t *testing.T) {
 		}
 	}
 	if len(seen) != 1 {
-		t.Fatalf("saw %d proxy processes %v, want exactly 1 hosting both engines", len(seen), seen)
+		t.Fatalf("saw %d proxy processes %v, want exactly 1 hosting all default engines", len(seen), seen)
 	}
-	t.Logf("both engines served by pid %v", seen)
+	t.Logf("all default engines served by pid %v", seen)
 }
 
 // TestBrokerShutsDownOnSignal verifies the broker exits promptly when it

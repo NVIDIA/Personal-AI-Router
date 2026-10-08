@@ -11,9 +11,10 @@ local network: each node advertises itself over mDNS as one consolidated
 node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
-discovery. A node may be running [Ollama](https://ollama.com/), LM Studio, both,
-or neither, and its model inventory is fetched over HTTP from its engine-manager
-rather than crammed into mDNS TXT records, which are too small to carry it.
+discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
+llama.cpp, any combination, or none, and its model inventory is fetched over
+HTTP from its engine-manager rather than crammed into mDNS TXT records, which
+are too small to carry it.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
 OpenAI-compatible — so an unmodified client on that machine can reach any capable
@@ -26,6 +27,13 @@ free. If an inherited `OLLAMA_HOST` names a different local HTTP port, the broke
 can serve that loopback-only address from the same router when it is free —
 `localhost` is claimed on IPv4 and IPv6 together, and remote or HTTPS targets are
 never intercepted.
+
+The llama.cpp facade is enabled by default alongside Ollama and LM Studio. It
+exposes OpenAI-compatible traffic on `http://localhost:8080` while the managed
+router runs on `8081`; a safe fallback is reported when the facade port is
+occupied. The desktop and TUI expose its managed lifecycle, downloads,
+inventory, and load/unload actions. `--proxy-engines` can still restrict the
+facades a standalone broker or TUI starts.
 
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the
@@ -62,10 +70,11 @@ configuration.
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama and LM Studio together. Fresh maximum-GPU utilization is
-smoothed into pressure 0–3; missing or stale telemetry is neutral. Rankings use
-`pending + gpuPressure`, and each proxy adds local reservations before choosing,
-so bursts spread without waiting for workload feedback.
+node across Ollama, LM Studio, and llama.cpp together. Fresh maximum-GPU
+utilization is smoothed into pressure 0–3; missing or stale telemetry is
+neutral. Rankings use `pending + gpuPressure`, and each facade adds local
+reservations before choosing, so bursts spread without waiting for workload
+feedback.
 
 ## Repository layout
 

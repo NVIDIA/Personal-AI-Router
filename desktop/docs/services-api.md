@@ -47,12 +47,6 @@
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
-- ⚠️ nvpair-ui-broker → lmstudio-proxy:get-status
-- ⚠️ nvpair-ui-broker → lmstudio-proxy:set-port
-- ⚠️ nvpair-ui-broker → lmstudio-proxy:unsubscribe
-- ⚠️ nvpair-ui-broker → ollama-proxy:get-status
-- ⚠️ nvpair-ui-broker → ollama-proxy:set-port
-- ⚠️ nvpair-ui-broker → ollama-proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
 
 ### Backend binaries not listed in `modular-binaries.ts`
@@ -253,8 +247,6 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
-| `lmstudio-proxy:ready` | notification (we consume) | ➖ ignored |
-| `ollama-proxy:ready` | notification (we consume) | ➖ ignored |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
 | `connection/cluster-identity` | request (we call) | ✅ yes |
@@ -273,20 +265,12 @@
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:get-status` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:set-port` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:subscribe` | request (we call) | ✅ yes |
-| `lmstudio-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `node/add` | request (we call) | ✅ yes |
 | `node/discovered` | request (we call) | ✅ yes |
 | `node/remove` | request (we call) | ✅ yes |
 | `node/removed` | request (we call) | ✅ yes |
 | `node/updated` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
-| `ollama-proxy:get-status` | request (we call) | ⚠️ not called |
-| `ollama-proxy:set-port` | request (we call) | ⚠️ not called |
-| `ollama-proxy:subscribe` | request (we call) | ✅ yes |
-| `ollama-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |

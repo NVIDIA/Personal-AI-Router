@@ -141,7 +141,7 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 |---|---|---|---|
 | `fetch.url` | string | when `fetch` present | Download URL — **HTTPS** (plain `http` only from loopback). |
 | `fetch.sha256` | string | no | Hex SHA-256. When set, the download is verified against it **before** `run` executes; when omitted, the fetch is HTTPS-only and runs with a loud "unpinned" warning (the same weaker guarantee as `script`). Pin it for any real release. |
-| `run` | string[] | no | Argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. Requires a `fetch` (the artifact it unpacks). |
+| `run` | string[] | when `fetch` or nonempty `artifacts` present | Nonempty argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. The child also receives exact paths in `NVPAIR_INSTALL_DIR`, `NVPAIR_INSTALL_DOWNLOAD`, and `NVPAIR_INSTALL_DOWNLOAD_<ARTIFACT_NAME>` so commands that reparse argv can avoid shell quoting. Requires a `fetch` or `artifacts`. |
 | `script` | string[] | no | **Escape hatch** for vendors that only ship a script installer. Runs **without** checksum verification (logged as unpinned) and replaces `fetch`+`run`. Prefer `fetch`+`run` whenever the vendor publishes a script or artifact: download it first, then execute the local file. **Make failures loud:** a piped bootstrap such as `curl … \| bash` can mask a failed fetch, while a separate fetch prevents the run and reports the error. |
 | `mode` | string | no | `"user"` (default) or `"admin"`. The runner **refuses** `"admin"` (engine-manager is user-mode only); it is a deliberate, flagged exception, not a default. |
 
@@ -163,7 +163,11 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 
 A **probe** is `{ "http": "<url>", "status": <int>, "timeout_s": <int>, "interval_s": <int> }`
 or `{ "tcp": "<host:port>", ... }`. `status` defaults to `200`. Prefer
-loopback URLs/addresses.
+loopback URLs/addresses. An HTTP probe may also set
+`"json_match":{"field":"service.role","value":"router"}` to require a JSON
+string at that dotted object path. Missing, malformed, oversized, or
+wrong-typed response data fails the probe. `json_match` is invalid on TCP
+probes.
 
 ### Actions
 
@@ -171,8 +175,10 @@ Each action is a config-declared operation exposed over `engine:action`.
 Exactly one of `http`, `cmd`, or `remove_path`:
 
 - **`http`** — call the engine's loopback control API. The caller's
-  `params` are sent as the JSON request body; `body_schema` is
-  informational. Requires the engine to be running.
+  `params` are sent as the JSON request body by default. Set
+  `params_in: "query"` to require a JSON object of string values and URL-encode
+  them into the query string instead. `body_schema` is informational. Requires
+  the engine to be running.
 - **`cmd`** — run a CLI command (e.g. `lms get`). The caller's `params`
   become placeholders (e.g. `{model}`); stdout is returned (parsed as
   JSON when it is valid JSON). Does **not** require the engine to be
@@ -302,23 +308,28 @@ validation at load:
 | `{bin}` | Resolved binary path (process mode) | runtime args/env |
 | `{cli}` | The platform's `runtime.cli` path | runtime start/stop, action `cmd` |
 | `{download}` | Path of the verified download | `install.run` |
+| `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
 | `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
 
 A `cmd` action additionally templates the action's own `params` as
 placeholders (e.g. `{model}`), resolved at call time. HTTP actions send
-`params` as the JSON request **body** — they are not substituted into
-`http.path`, which templates only `{port}`.
+`params` as the JSON request **body** by default; `params_in: "query"` sends
+their string fields as URL-encoded query parameters with no body. They are not
+substituted into `http.path`, which templates only `{port}`.
 
 ## Validation
 
 A manifest is rejected at load (with a specific message) when: a required
 field is missing, `manifest_version` is unsupported, a platform key isn't
 `"<goos>/<goarch>"`, `runtime.bin` is empty in process mode (or
-`runtime.start` is empty in command mode), `install.run` has no `fetch`,
-`install.script` is combined with `fetch`/`run`, `install.mode` or
+`runtime.start` is empty in command mode), `install.run` has neither `fetch`
+nor nonempty `artifacts`, `fetch` or nonempty `artifacts` is present without
+nonempty `install.run`, `install.script` is combined with
+`fetch`/`artifacts`/`run`, `install.mode` or
 `runtime.mode` is invalid, an action sets none or more than one of
 `http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
-`path`, a `result` is set without both `array` and `field` (or a
+`path`, `http.params_in` is not `body` or `query`, a `result` is set without
+both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or
 a non-action templated string uses an unknown placeholder.
 
@@ -430,7 +441,7 @@ GPU selection, and auth.
 | Engine | Fit | Headless launch | Config surface | Control |
 |---|---|---|---|---|
 | **Ollama** | strong (env-first) | `ollama serve` (foreground) | env: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MAX_QUEUE`, `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_FLASH_ATTENTION` | HTTP `/api/tags`, `/api/pull`; CLI `ollama pull/ls/ps/stop` |
-| **llama.cpp** | strong (env+flags) — **reference design** | `llama-server --host 127.0.0.1 --port {port}` (foreground) | flags + `LLAMA_ARG_*` (host/port, ctx-size, n-parallel, cont-batching, flash-attn, device, n-gpu-layers, tensor-split, main-gpu, api-key, models-dir/max) | HTTP `/v1/models`, `/models/load`, `/models/unload`, `/health`, `/slots` |
+| **llama.cpp** | strong (env+flags) — **reference design** | `llama-server --host 127.0.0.1 --port {port}` (foreground) | flags + `LLAMA_ARG_*` (host/port, ctx-size, n-parallel, cont-batching, flash-attn, device, n-gpu-layers, tensor-split, main-gpu, api-key, models-dir/max) | HTTP `/v1/models`, `/models` download/delete, `/models/load`, `/models/unload`, `/health`, `/slots` |
 | **LM Studio** | command / daemon | `lms daemon up` → `lms server start --port {port}` | small env (`LMS_SERVER_HOST`, `LM_API_TOKEN`); most config is flags/API/settings (`lms load --context-length/--gpu/--ttl`) | HTTP `/api/v1/models[/download\|load\|unload]`; CLI `lms ls/get/load/unload/ps` |
 | **vLLM** | flags-first — **Linux/WSL only** | `vllm serve <model> --host 127.0.0.1 --port {port}` | flags (host/port/api-key); `HF_HOME` for cache. `VLLM_PORT`/`VLLM_HOST_IP` are **not** the API bind | OpenAI `/v1/models`; one model per process (unload = restart) |
 | **Jan** | hybrid (on llama.cpp router) | `jan serve <model> --port {port}` (CLI) | forwards `LLAMA_ARG_*`; perf settings are router-preset-driven | `jan serve` auto-downloads HF repos |

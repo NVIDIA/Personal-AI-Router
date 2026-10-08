@@ -22,7 +22,7 @@ func (command launchCommand) text() (string, error) {
 func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	vars := map[string]string{"host": "127.0.0.1", "port": "12345", "cli": "/test path/lms", "install_dir": "/test path"}
-	for _, engine := range []string{"ollama", "lmstudio"} {
+	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
 		manifest, ok := reg.Get(engine)
 		if !ok {
 			t.Fatalf("missing bundled engine %q", engine)
@@ -40,9 +40,19 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 					if strings.HasPrefix(platformKey, "linux/") {
 						want = append([]string{"LD_LIBRARY_PATH=/test path/lib/ollama"}, want...)
 					}
-				} else {
+				} else if engine == "lmstudio" {
 					launch, err = resolveCommandLaunch(platform.Runtime.Start[0], vars)
 					want = []string{"/test path/lms", "server", "start", "--port", "12345", "--bind", "127.0.0.1"}
+				} else {
+					var bin string
+					bin, err = resolvePlaceholders(platform.Runtime.Bin, vars)
+					if err == nil {
+						launch, err = resolveProcessLaunch(platform.Runtime, bin, vars)
+					}
+					want = []string{"LLAMA_CACHE=/test path-models", bin, "--sleep-idle-seconds", "300", "--host", "127.0.0.1", "--port", "12345", "--cors-origins", ""}
+					if strings.HasPrefix(platformKey, "linux/") {
+						want = append([]string{"LD_LIBRARY_PATH=/test path"}, want...)
+					}
 				}
 				if err != nil {
 					t.Fatal(err)
@@ -97,7 +107,7 @@ func TestLaunchTextReachesChildLiterally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(proc.stop)
+	t.Cleanup(func() { proc.stop(0) })
 	select {
 	case <-proc.done:
 	case <-time.After(10 * time.Second):

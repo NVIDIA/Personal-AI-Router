@@ -3,7 +3,57 @@
 
 package main
 
-import "testing"
+import (
+	"net/http"
+	"slices"
+	"testing"
+
+	"nvpair-shared/engines"
+)
+
+func TestProfilesMatchSharedEngines(t *testing.T) {
+	names := make([]string, len(profiles))
+	for i, profile := range profiles {
+		names[i] = profile.Name
+	}
+	if !slices.Equal(names, engines.Names()) {
+		t.Fatalf("proxy profiles = %v, want canonical engines %v", names, engines.Names())
+	}
+}
+
+func TestLlamaCPPProfile(t *testing.T) {
+	profile, ok := profileFor("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp profile missing")
+	}
+	if role, ok := profile.roleFor("POST", "/v1/chat/completions"); !ok || role != roleInferencePOST {
+		t.Fatalf("chat route = %v, %v", role, ok)
+	}
+	if got := profile.normalizeModel("org/model:Q4_K_M"); got != "org/model:Q4_K_M" {
+		t.Fatalf("exact model id normalized to %q", got)
+	}
+	if profile.StandalonePort != 8080 || profile.ReservedPersistedPort != 8081 {
+		t.Fatalf("ports = facade %d, reserved %d", profile.StandalonePort, profile.ReservedPersistedPort)
+	}
+}
+
+func TestLlamaCPPModelListRoutes(t *testing.T) {
+	profile, ok := profileFor("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp profile missing")
+	}
+	for _, path := range []string{"/models", "/v1/models"} {
+		t.Run(path, func(t *testing.T) {
+			route, ok := profile.routeFor(http.MethodGet, path)
+			if !ok {
+				t.Fatalf("GET %s is not classified", path)
+			}
+			if route.Role != roleModelListOpenAIGET || route.upstreamPath() != "/models" {
+				t.Fatalf("GET %s route = %+v, want OpenAI model list at upstream /models", path, route)
+			}
+		})
+	}
+}
 
 // Routes is a classifier, not an allowlist. handlePlain forwards every
 // loopback path into handleHTTP with no filtering, so a path the table does
@@ -17,6 +67,10 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	lmstudio, ok := profileFor("lmstudio")
 	if !ok {
 		t.Fatal("lmstudio profile missing")
+	}
+	llamacpp, ok := profileFor("llamacpp")
+	if !ok {
+		t.Fatal("llamacpp profile missing")
 	}
 
 	for _, tc := range []struct {
@@ -34,10 +88,12 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		{"ollama openai list", ollama, "GET", "/v1/models", roleModelListOpenAIGET, true},
 		{"ollama passthrough", ollama, "POST", "/api/pull", 0, false},
 		{"ollama version passthrough", ollama, "GET", "/api/version", 0, false},
+		{"ollama models passthrough", ollama, http.MethodGet, "/models", 0, false},
 
 		{"lmstudio chat", lmstudio, "POST", "/v1/chat/completions", roleInferencePOST, true},
 		{"lmstudio anthropic messages", lmstudio, "POST", "/v1/messages", roleInferencePOST, true},
 		{"lmstudio list", lmstudio, "GET", "/v1/models", roleModelListOpenAIGET, true},
+		{"lmstudio models passthrough", lmstudio, http.MethodGet, "/models", 0, false},
 		// LM Studio serves no native Ollama routes, so /api/chat is not
 		// inference for it — it is forwarded verbatim like any other path.
 		{"lmstudio has no native routes", lmstudio, "POST", "/api/chat", 0, false},
@@ -47,6 +103,7 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		// inference path would emit a workload.
 		{"wrong method on list", ollama, "POST", "/v1/models", 0, false},
 		{"wrong method on inference", ollama, "GET", "/api/chat", 0, false},
+		{"llamacpp models post passthrough", llamacpp, http.MethodPost, "/models", 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			role, ok := tc.profile.roleFor(tc.method, tc.path)
