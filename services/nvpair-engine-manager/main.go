@@ -168,7 +168,7 @@ func userPaths() (manifestDir, installBase string) {
 func runUninstallManaged() {
 	manifestDir, installBase := userPaths()
 	reg := buildBundledRegistry()
-	reg.applyPortOverrides(manifestDir)
+	reg.applyLocationOverrides(manifestDir)
 	exec := NewExecutor(reg, NewReporter(nil), func(string, any) {}, installBase)
 	ctx, cancel := context.WithTimeout(context.Background(), uninstallManagedTimeout)
 	defer cancel()

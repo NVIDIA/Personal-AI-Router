@@ -468,12 +468,15 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 	return nil
 }
 
-// applyPortOverrides takes each engine's port from the user's override
-// manifest and nothing else from it. The uninstaller runs with privileges the
-// override's author may not have, so the commands it runs and the paths it
-// deletes stay bundled. A port decides only where it looks for the engine still
-// running, which is wherever the user moved it to.
-func (r *Registry) applyPortOverrides(dir string) {
+// applyLocationOverrides takes from each user override only where the engine's
+// things are: its port and its model store. The uninstaller runs with
+// privileges the override's author may not have, so the commands it runs and
+// the paths it deletes stay bundled. A port decides where it looks for the
+// engine still running, and a model store decides what removal keeps — the
+// same store the running engine manager, which reads the whole override,
+// already keeps. An override that would leave the platform invalid is ignored,
+// as it is at startup.
+func (r *Registry) applyLocationOverrides(dir string) {
 	if dir == "" {
 		return
 	}
@@ -488,23 +491,39 @@ func (r *Registry) applyPortOverrides(dir string) {
 		}
 		var override struct {
 			Engine    string   `json:"engine"`
+			ModelsDir string   `json:"models_dir"`
 			Runtime   portOnly `json:"runtime"`
 			Platforms map[string]struct {
-				Runtime portOnly `json:"runtime"`
+				ModelsDir string   `json:"models_dir"`
+				Runtime   portOnly `json:"runtime"`
 			} `json:"platforms"`
 		}
 		if err := json.Unmarshal(data, &override); err != nil || override.Engine != name {
 			continue
 		}
-		port := override.Runtime.Port
-		if hostPort := override.Platforms[host].Runtime.Port; hostPort != 0 {
-			port = hostPort
-		}
 		platform, ok := m.Platforms[host]
-		if !ok || port <= 0 || port > 65535 {
+		if !ok {
 			continue
 		}
-		platform.Runtime.Port = port
+		hostOverride := override.Platforms[host]
+		port := override.Runtime.Port
+		if hostOverride.Runtime.Port != 0 {
+			port = hostOverride.Runtime.Port
+		}
+		if port > 0 && port <= 65535 {
+			platform.Runtime.Port = port
+		}
+		store := override.ModelsDir
+		if hostOverride.ModelsDir != "" {
+			store = hostOverride.ModelsDir
+		}
+		if store != "" {
+			platform.ModelsDir = store
+		}
+		if err := platform.validate(host); err != nil {
+			slog.Warn("ignoring an override's port and model store", "engine", name, "err", err)
+			continue
+		}
 		m.Platforms[host] = platform
 	}
 }
