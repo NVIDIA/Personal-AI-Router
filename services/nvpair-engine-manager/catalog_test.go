@@ -639,8 +639,11 @@ func TestOverLongSearchIsRefused(t *testing.T) {
 
 	query := strings.TrimSpace(strings.Repeat("private ", maxCatalogQuery/len("private ")+1))
 	_, err := c.Catalog(context.Background(), "llamacpp", "", "", query)
-	if err == nil || err.Error() != "a model search is limited to 100 characters" {
-		t.Errorf("a %d-character query: error %v, want the limit stated without the query", len(query), err)
+	if err == nil {
+		t.Fatalf("a %d-character query was answered", len(query))
+	}
+	if got, want := err.Error(), "a model search is limited to 100 characters"; got != want {
+		t.Errorf("error %q, want %q", got, want)
 	}
 	if got := requests(); len(got) != 0 {
 		t.Errorf("an over-long query reached the upstream: %v", got)
