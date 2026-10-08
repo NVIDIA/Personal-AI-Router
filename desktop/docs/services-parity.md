@@ -34,7 +34,7 @@ history.
 | Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                           |
 | Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none |
 | Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                            |
-| Model catalog search       | Electron-owned                  | Locked Ollama/llama.cpp catalogs and the cached live LM Studio catalog are served from Electron main                                            |
+| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp         |
 
 ## Supervision
 
@@ -192,12 +192,12 @@ Personal AI Router supports local:
 - desired-state restoration across app restarts;
 - engine and model progress.
 
-Before shutdown, Personal AI Router calls `engine:prepare-shutdown`. This stops managed engine
+On shutdown the broker stops the proxy, then calls `engine:prepare-shutdown`,
+then waits for each worker to exit without force-killing it, so engines are not
+orphaned during teardown. `engine:prepare-shutdown` stops managed engine
 processes without changing the persisted desired state; the broker restores
-enabled engines on the next launch. The broker also self-initiates
-`engine:prepare-shutdown` before tearing down its workers and waits for each
-worker to exit without force-killing the worker, so engines are not orphaned
-during teardown. Stopping a managed engine itself sends one stop signal and
+enabled engines on the next launch. Personal AI Router leaves that ordering to the broker
+rather than stopping the engines itself first. Stopping a managed engine itself sends one stop signal and
 waits for it to exit with no timeout: SIGTERM to the process group on Unix
 (never escalated to SIGKILL) and `taskkill /T /F` on Windows (its windowless
 engines cannot receive a graceful close).
@@ -337,9 +337,11 @@ safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 `sizeVram`/`expiresAt` — the backend delivers the simpler `loadedByEngine`
 name-set, not structured details.
 
-The model hub is intentionally outside the backend: Electron main serves locked
-Ollama and llama.cpp catalogs plus the cached live LM Studio catalog, then sends
-selected pull-ready IDs to the engine manager.
+The model catalogue is owned by the backend: `engine:catalog` on
+`nvpair-engine-manager` serves the curated Ollama, LM Studio, and llama.cpp
+lists, and searches Hugging Face for llama.cpp, and both the desktop app and
+the terminal interface browse it. Electron only relays the call and maps rows
+for the renderer.
 
 ## Errors
 
@@ -483,7 +485,7 @@ provide an equivalent client-facing contract:
 | Persist and replay manual node entries                      | `manual-nodes-store.ts`, `modular-supervisor.ts` |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
-| Serve the model hub (Ollama locked, LM Studio/llama.cpp live) | `src/electron/model-hub/`                    |
+| Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |
 | Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
 | Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
 | Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |

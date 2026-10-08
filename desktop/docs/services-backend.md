@@ -192,12 +192,12 @@ startup cleanup and orphan reclaim use the same stop policy. On Windows,
 windowless managed engines cannot receive a graceful (non-`/F`) close, so
 stopping uses immediate `taskkill /T /F`.
 
-Personal AI Router calls `engine:prepare-shutdown` before broker teardown so local processes
-stop without clearing their persisted desired state. The broker also
-self-initiates `engine:prepare-shutdown` before tearing down its workers and
-waits for each worker to exit without force-killing the worker, so engines are
-not orphaned even if Personal AI Router does not call it first. The broker restores enabled
-engines on the next startup.
+Shutdown ordering belongs to the broker. Personal AI Router sends the broker `shutdown` and
+does not stop the engines itself. The broker stops the proxy first, so no new
+inference arrives, then calls `engine:prepare-shutdown`, which stops local
+engine processes without clearing their persisted desired state, then waits for
+each worker to exit without force-killing it, so engines are not orphaned. The
+broker restores enabled engines on the next startup.
 
 ## Discovery and models
 
@@ -253,11 +253,14 @@ result through the discovery snapshot and must not add a second, shorter
 reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
 good metrics and never marks a node offline.
 
-The renderer model hub is not a backend search service. Electron main obtains
-curated Ollama, LM Studio, and llama.cpp catalogs, then sends pull-ready model
-IDs through the engine manager. Ollama uses a locked bundled list. LM Studio
-and llama.cpp use cached live Hugging Face catalogs; explicit llama.cpp searches
-remain Electron-main requests and never become backend JSON-RPC methods.
+The model catalogue is backend-owned. `nvpair-engine-manager` serves the curated
+Ollama, LM Studio, and llama.cpp lists over `engine:catalog`, filtered for the
+operating system and CPU a model will install on; Electron relays the call and
+maps rows for the renderer, which then sends pull-ready model IDs back through
+the engine manager. llama.cpp's source is also searchable: the relay passes the
+model hub's query through, and the engine manager searches Hugging Face with it.
+The Ollama reply is a single multi-megabyte frame, so every hop on its path
+shares `jsonrpc.WorkerFrameBytes`.
 
 ## Pairing and security
 

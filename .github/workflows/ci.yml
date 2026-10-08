@@ -165,11 +165,22 @@ jobs:
                   # LC_ALL=C makes the sort byte-wise, which is also what comm
                   # below assumes.
                   norm() { tr -d '\r' | sed 's/\.exe$//' | LC_ALL=C sort; }
-                  expected=$(jq -r '.components | keys[]' versions.json | norm)
+                  # inference-dispatcher is staged but is not a component, and
+                  # both halves of that are deliberate. It is an ordinary HTTP
+                  # client the Inference Demo spawns per request -- no JSON-RPC,
+                  # nothing supervising it, no entry in versions.json -- but it
+                  # ships in this directory because nvpair-tui resolves it
+                  # beside its own executable, exactly as it resolves the
+                  # broker. Named here rather than filtered by a pattern, so a
+                  # second undeclared binary still fails.
+                  expected=$(
+                      { jq -r '.components | keys[]' versions.json;
+                        echo inference-dispatcher; } | norm
+                  )
                   staged=$(ls -1 build/bin | norm)
 
                   if [ "$expected" = "$staged" ]; then
-                      printf 'all %s declared components staged\n' \
+                      printf 'all %s expected binaries staged\n' \
                           "$(printf '%s\n' "$expected" | wc -l | tr -d ' ')"
                       exit 0
                   fi

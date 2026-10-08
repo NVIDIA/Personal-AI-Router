@@ -164,7 +164,7 @@ Commands return no state. Renderer stores update from
 | `engines:preview-settings`  | `EngineSettingsRequest`      | `EngineSettingsPreview`   |
 | `engines:apply-settings`    | `EngineSettingsRequest`      | `EngineSettingsReceipt`   |
 | `engine:command`            | `EngineCommandPayload`       | `null`                    |
-| `engine:search-hub`         | `{ engineType }`             | `EngineHubSearchResponse` |
+| `engine:search-hub`         | `{ engineType, query? }`     | `EngineHubSearchResponse` |
 | `errors:get-initial`        | `void`                       | `ServiceError[]`          |
 | `errors:clear`              | error ID                     | `null`                    |
 | `workloads:get-initial`     | `void`                       | workload map              |

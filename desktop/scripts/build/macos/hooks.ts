@@ -4,10 +4,6 @@
 import { chmodSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AfterPackContext, BuildResult } from 'electron-builder'
-// electron-builder loads this hook through jiti (via electron-builder.config.ts),
-// and jiti does not resolve the `@/*` alias, so shared modules are imported by
-// relative path here. See the same note at the top of electron-builder.config.ts.
-import { INFERENCE_DISPATCHER_RESOURCE_DIR } from '../../../src/shared/constants/inference-dispatcher'
 
 function findAppBundle(appOutDir: string): string {
     const entries = readdirSync(appOutDir, { withFileTypes: true })
@@ -19,11 +15,11 @@ function findAppBundle(appOutDir: string): string {
 }
 
 /**
- * extraResources directories holding loose Go binaries: the services workers in
- * `cli-bin` and the `inference-dispatcher` client in
- * INFERENCE_DISPATCHER_RESOURCE_DIR.
+ * extraResources directories holding loose Go binaries. One: `cli-bin` carries
+ * the services workers, `nvpair-tui`, and the Inference Demo's
+ * `inference-dispatcher`.
  */
-const GO_BINARY_RESOURCE_DIRS = ['cli-bin', INFERENCE_DISPATCHER_RESOURCE_DIR]
+const GO_BINARY_RESOURCE_DIRS = ['cli-bin']
 
 /**
  * The `.dmg` has no installer step (unlike the old `.pkg` postinstall that ran

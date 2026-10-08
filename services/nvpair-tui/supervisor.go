@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"time"
 
-	"nvpair-shared/engines"
 	"nvpair-tui/rpc"
 )
 
@@ -78,8 +77,8 @@ func resolveBrokerPath(override string) (string, error) {
 // runs with its working directory set to the broker's own directory so
 // the broker's sibling-binary worker resolution finds nvpair-node-scanner et
 // al. ctx governs the client read loop; use Shutdown for an orderly stop.
-func Spawn(ctx context.Context, brokerPath string, proxyEngines []engines.Engine) (*Supervisor, error) {
-	cmd := exec.Command(brokerPath, brokerArgs(proxyEngines)...)
+func Spawn(ctx context.Context, brokerPath string) (*Supervisor, error) {
+	cmd := exec.Command(brokerPath)
 	cmd.Dir = filepath.Dir(brokerPath)
 	configureSubprocess(cmd)
 
@@ -106,14 +105,18 @@ func Spawn(ctx context.Context, brokerPath string, proxyEngines []engines.Engine
 	return &Supervisor{cmd: cmd, stdin: stdin, Client: client, Stderr: stderr}, nil
 }
 
-func brokerArgs(proxyEngines []engines.Engine) []string {
-	return []string{"--proxy-engines", proxyEngineCSV(proxyEngines)}
-}
-
-// Shutdown asks the broker to stop cleanly: send the shutdown RPC, close
-// its stdin (a second, EOF-based stop signal), then wait up to
-// shutdownGrace before killing it. The broker tears its own workers down
-// in response, so this leaves no orphans.
+// Shutdown asks the broker to stop cleanly: send the shutdown RPC, close its
+// stdin (a second, EOF-based stop signal), then wait up to shutdownGrace before
+// killing it. The broker tears its own workers down in response, so this leaves
+// no orphans.
+//
+// The order of that teardown is the broker's, and this deliberately does not
+// get ahead of it. The broker stops the proxy first, so no new inference
+// arrives, then stops the engines through engine:prepare-shutdown — keeping
+// their saved on/off state — and only then joins the workers. Calling
+// engine:prepare-shutdown from here first ran the same engine stop early, in
+// the opposite order: engines went down while the proxy was still routing
+// requests to them.
 func (s *Supervisor) Shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	_, _ = s.Client.Call(ctx, "shutdown", nil)

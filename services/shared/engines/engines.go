@@ -125,10 +125,18 @@ const ProxyComponent = "nvpair-proxy"
 // it either; see PortFile.
 func (e Engine) ComponentName() string { return e.Name + "-proxy" }
 
+// The engine ids, for a caller that has to treat one engine differently from
+// another. Each is the Name of its entry below.
+const (
+	NameOllama   = "ollama"
+	NameLMStudio = "lmstudio"
+	NameLlamaCPP = "llamacpp"
+)
+
 // all is the ordered engine set. Ollama is first; see the package comment.
 var all = []Engine{
 	{
-		Name:             "ollama",
+		Name:             NameOllama,
 		DisplayName:      "Ollama",
 		DiscoveryService: noderec.ServiceOllama,
 		FacadePort:       11434,
@@ -136,7 +144,7 @@ var all = []Engine{
 		PortFile:         "proxy-port.json",
 	},
 	{
-		Name:             "lmstudio",
+		Name:             NameLMStudio,
 		DisplayName:      "LM Studio",
 		DiscoveryService: noderec.ServiceLMStudio,
 		FacadePort:       1234,
@@ -144,7 +152,7 @@ var all = []Engine{
 		PortFile:         "lmstudio-proxy-port.json",
 	},
 	{
-		Name:             "llamacpp",
+		Name:             NameLlamaCPP,
 		DisplayName:      "llama.cpp",
 		DiscoveryService: noderec.ServiceLlamaCPP,
 		FacadePort:       8080,

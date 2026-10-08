@@ -91,6 +91,7 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
+| `engine:catalog` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
@@ -100,7 +101,7 @@
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
 | `engine:models` | request (we call) | ✅ yes |
-| `engine:prepare-shutdown` | request (we call) | ✅ yes |
+| `engine:prepare-shutdown` | request (we call) | ➖ ignored |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
@@ -225,11 +226,21 @@
 | Method | Direction | In bridge? |
 |---|---|---|
 | `cluster:identity-changed` | request (we call) | ✅ yes |
+| `cluster:invite-canceled` | request (we call) | ✅ yes |
+| `cluster:invite-declined` | request (we call) | ✅ yes |
+| `cluster:invite-expired` | request (we call) | ✅ yes |
+| `cluster:invite-failed` | request (we call) | ✅ yes |
 | `cluster:invite-received` | request (we call) | ✅ yes |
+| `discovery:nodes-changed` | request (we call) | ✅ yes |
 | `engine:install-progress` | request (we call) | ✅ yes |
+| `engine:models-changed` | request (we call) | ✅ yes |
 | `engine:pull-progress` | request (we call) | ✅ yes |
+| `engine:remote-progress` | request (we call) | ✅ yes |
+| `engine:settings-changed` | request (we call) | ✅ yes |
+| `engine:settings-disconnected` | request (we call) | ✅ yes |
 | `engine:state-changed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
+| `errors:update` | request (we call) | ✅ yes |
 | `nodes:changed` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:upsert` | request (we call) | ✅ yes |
