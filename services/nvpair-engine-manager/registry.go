@@ -468,6 +468,66 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 	return nil
 }
 
+// applyLocationOverrides takes from each user override only where the engine's
+// things are: its port and its model store. The uninstaller runs with
+// privileges the override's author may not have, so the commands it runs and
+// the paths it deletes stay bundled. A port decides where it looks for the
+// engine still running, and a model store decides what removal keeps — the
+// same store the running engine manager, which reads the whole override,
+// already keeps. An override that would leave the platform invalid is ignored,
+// as it is at startup.
+func (r *Registry) applyLocationOverrides(dir string) {
+	if dir == "" {
+		return
+	}
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	for name, m := range r.engines {
+		data, err := os.ReadFile(filepath.Join(dir, name+".json"))
+		if err != nil {
+			continue
+		}
+		type portOnly struct {
+			Port int `json:"port"`
+		}
+		var override struct {
+			Engine    string   `json:"engine"`
+			ModelsDir string   `json:"models_dir"`
+			Runtime   portOnly `json:"runtime"`
+			Platforms map[string]struct {
+				ModelsDir string   `json:"models_dir"`
+				Runtime   portOnly `json:"runtime"`
+			} `json:"platforms"`
+		}
+		if err := json.Unmarshal(data, &override); err != nil || override.Engine != name {
+			continue
+		}
+		platform, ok := m.Platforms[host]
+		if !ok {
+			continue
+		}
+		hostOverride := override.Platforms[host]
+		port := override.Runtime.Port
+		if hostOverride.Runtime.Port != 0 {
+			port = hostOverride.Runtime.Port
+		}
+		if port > 0 && port <= 65535 {
+			platform.Runtime.Port = port
+		}
+		store := override.ModelsDir
+		if hostOverride.ModelsDir != "" {
+			store = hostOverride.ModelsDir
+		}
+		if store != "" {
+			platform.ModelsDir = store
+		}
+		if err := platform.validate(host); err != nil {
+			slog.Warn("ignoring an override's port and model store", "engine", name, "err", err)
+			continue
+		}
+		m.Platforms[host] = platform
+	}
+}
+
 // bundledDefaultPort returns the host-platform runtime.port from the bundled
 // (un-overridden) manifest for an engine, used to decide whether a chosen
 // port is back at the default (so its override file can be dropped).
@@ -751,8 +811,10 @@ func (p *Platform) validate(key string) error {
 			resolved := filepath.Clean(expandPath(target))
 			store := filepath.Clean(expandPath(p.ModelsDir))
 			// At the store, or inside it. Removing part of a model library is
-			// as destructive as removing all of it.
-			if pathWithinRoot(store, resolved) {
+			// as destructive as removing all of it. Compared without case: one
+			// manifest runs on filesystems of both kinds, and wherever case is
+			// ignored a second spelling is the store.
+			if pathWithinRoot(strings.ToLower(store), strings.ToLower(resolved)) {
 				return fmt.Errorf("platform %q: uninstall.remove %q is at or inside the model store %q — uninstall removes the engine, not the user's models", key, target, p.ModelsDir)
 			}
 		}

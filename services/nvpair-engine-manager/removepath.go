@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -18,15 +17,21 @@ import (
 // ~/.lmstudio/models, so removing the engine means removing every other child
 // of that directory and stopping there.
 //
-// The relationship between the two paths decides what happens:
+// The relationship between target and the store decides what happens:
 //
 //   - preserve empty: nothing to keep, so a plain removal.
 //   - disjoint: a plain removal, as for Ollama, whose models sit in ~/.ollama
 //     while the uninstall removes the install directory.
-//   - preserve strictly inside target: descend, keeping the store.
-//   - equal, or target inside preserve: refused. Both ask to delete the store
+//   - the store below target: descend, keeping the store.
+//   - target is the store, or inside it: refused. Both ask to delete the store
 //     or part of it, which is a manifest bug, and widening to a full removal
 //     would destroy exactly what this function exists to protect.
+//
+// The store is recognised by file identity, not by how its path is spelled. A
+// models_dir that is a symlink keeps both the link and the directory it leads
+// to, even when that directory is another child of target; and a spelling that
+// differs only in case is the store exactly when the filesystem says so, which
+// no rule based on the operating system can tell.
 //
 // Removal is best-effort within the tree: an engine holding one file open must
 // not stop the rest of it from going, or the binary survives, detection keeps
@@ -34,9 +39,11 @@ import (
 // are collected and returned together, and the caller judges the outcome by
 // whether the engine is still detected.
 //
-// A symlink is removed as a link and never descended into. Deleting what it
-// points at is not what the manifest asked for, and on Windows a junction here
-// would let the elevated uninstaller be steered into an arbitrary tree.
+// Only a real directory is descended into. A symlink, or on Windows a junction,
+// is removed as a link: deleting what it points at is not what the manifest
+// asked for, and a junction followed here would let the elevated uninstaller be
+// steered into an arbitrary tree. Go reports a junction as an irregular file
+// rather than a symlink, so the test is "not a directory", not "a symlink".
 func removeTreePreserving(target, preserve string) error {
 	if strings.TrimSpace(target) == "" {
 		return fmt.Errorf("remove: target is required")
@@ -56,21 +63,22 @@ func removeTreePreserving(target, preserve string) error {
 		return os.RemoveAll(absTarget)
 	}
 	// Unlink rather than descend. On the descend path below, ReadDir would
-	// follow this to the real directory and delete its contents.
-	if info.Mode()&os.ModeSymlink != 0 {
+	// follow a link to the real directory and delete its contents.
+	if !info.IsDir() {
 		return os.Remove(absTarget)
 	}
 	absPreserve, err := filepath.Abs(filepath.Clean(expandPath(preserve)))
 	if err != nil {
 		return fmt.Errorf("remove: preserve: %w", err)
 	}
-	if samePath(absTarget, absPreserve) {
+	store := locateStore(absPreserve)
+	if store.is(info) {
 		return fmt.Errorf("remove: %q is the preserved model store", absTarget)
 	}
-	if pathWithinRoot(absPreserve, absTarget) {
+	if store.contains(absTarget) {
 		return fmt.Errorf("remove: %q is inside the preserved model store %q", absTarget, absPreserve)
 	}
-	if !pathWithinRoot(absTarget, absPreserve) {
+	if !store.under(info) {
 		return os.RemoveAll(absTarget)
 	}
 	entries, err := os.ReadDir(absTarget)
@@ -80,39 +88,103 @@ func removeTreePreserving(target, preserve string) error {
 	var failures []error
 	for _, entry := range entries {
 		child := filepath.Join(absTarget, entry.Name())
-		if pathWithinRoot(child, absPreserve) {
-			// On the path to the model store. Recurse so siblings deeper down
-			// still go, and stop once the store itself is the next step.
-			if samePath(child, absPreserve) {
-				continue
-			}
+		childInfo, err := os.Lstat(child)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("remove: stat %q: %w", child, err))
+			continue
+		}
+		switch {
+		case store.is(childInfo):
+			// The store, by the name it was given or the directory it leads to.
+		case store.under(childInfo):
+			// On the way to the store. Recurse so siblings deeper down still go.
 			if err := removeTreePreserving(child, absPreserve); err != nil {
 				failures = append(failures, err)
 			}
-			continue
-		}
-		if err := os.RemoveAll(child); err != nil {
-			failures = append(failures, fmt.Errorf("remove: %q: %w", child, err))
+		default:
+			if err := os.RemoveAll(child); err != nil {
+				failures = append(failures, fmt.Errorf("remove: %q: %w", child, err))
+			}
 		}
 	}
 	return errors.Join(failures...)
 }
 
-// samePath reports whether two cleaned absolute paths name the same file.
-//
-// Case-folded on Windows and macOS, whose default filesystems are
-// case-insensitive: there, a casing difference between a manifest's remove
-// target and its models_dir would make the model store look like an unrelated
-// sibling and widen the removal to include it.
-func samePath(a, b string) bool {
-	if caseInsensitiveFS() {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
+// modelStore is a model store as the filesystem identifies it.
+type modelStore struct {
+	// self is the store as named and as resolved: the link itself when its
+	// path is a symlink, and the directory that link leads to.
+	self []os.FileInfo
+	// above is every directory over the store, along the path as written and
+	// along the path its links resolve to.
+	above []os.FileInfo
 }
 
-func caseInsensitiveFS() bool {
-	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+func locateStore(path string) modelStore {
+	var s modelStore
+	if fi, err := os.Lstat(path); err == nil {
+		s.self = append(s.self, fi)
+	}
+	if fi, err := os.Stat(path); err == nil {
+		s.self = append(s.self, fi)
+	}
+	s.above = directoriesAbove(path)
+	return s
+}
+
+// is reports whether fi is the store.
+func (s modelStore) is(fi os.FileInfo) bool {
+	for _, own := range s.self {
+		if os.SameFile(fi, own) {
+			return true
+		}
+	}
+	return false
+}
+
+// under reports whether fi is a directory the store sits below. Anything else,
+// a link to one included, is not: removal descends only into real directories.
+func (s modelStore) under(fi os.FileInfo) bool {
+	if !fi.IsDir() {
+		return false
+	}
+	for _, dir := range s.above {
+		if os.SameFile(fi, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// contains reports whether path sits below the store.
+func (s modelStore) contains(path string) bool {
+	for _, dir := range directoriesAbove(path) {
+		if s.is(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// directoriesAbove stats each existing directory over path, along the path as
+// written and, when a link on it leads elsewhere, along the resolved path.
+func directoriesAbove(path string) []os.FileInfo {
+	var out []os.FileInfo
+	walk := func(p string) {
+		for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
+			if fi, err := os.Stat(dir); err == nil {
+				out = append(out, fi)
+			}
+			if filepath.Dir(dir) == dir {
+				return
+			}
+		}
+	}
+	walk(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
+		walk(resolved)
+	}
+	return out
 }
 
 // safeRemoveUnderRoot deletes target after verifying it resolves under root.
@@ -162,12 +234,9 @@ func safeRemoveUnderRoot(root, target string) error {
 func pathWithinRoot(root, target string) bool {
 	root = filepath.Clean(root)
 	target = filepath.Clean(target)
-	if samePath(root, target) {
+	if target == root {
 		return true
 	}
 	prefix := root + string(os.PathSeparator)
-	if caseInsensitiveFS() {
-		return strings.HasPrefix(strings.ToLower(target), strings.ToLower(prefix))
-	}
 	return strings.HasPrefix(target, prefix)
 }

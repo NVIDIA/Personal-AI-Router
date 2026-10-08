@@ -175,7 +175,7 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	// marker this could be the copy the user installed themselves, holding the
 	// model library they built up in it — decline rather than guess.
 	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir) {
-		err := fmt.Errorf("cannot uninstall engine %q: Personal AI Router has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
+		err := fmt.Errorf("cannot uninstall engine %q: NVIDIA PAIR has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
 	}

@@ -158,3 +158,92 @@ func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
 		t.Fatalf("atomic writer left temporary files: %v, %v", entries, err)
 	}
 }
+
+// bundledHostPlatform returns an engine's bundled platform for this host, or
+// skips the test where the engine has none.
+func bundledHostPlatform(t *testing.T, engine string) Platform {
+	t.Helper()
+	bundled, ok := buildBundledRegistry().Get(engine)
+	if !ok {
+		t.Fatalf("no bundled %s manifest", engine)
+	}
+	platform, ok := bundled.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
+	if !ok {
+		t.Skipf("%s has no manifest for this host", engine)
+	}
+	return platform
+}
+
+// TestUninstallerTakesOnlyLocationsFromAnOverride checks the uninstaller looks
+// for an engine on the port the user moved it to and keeps the model store they
+// moved it to, and takes nothing else from the override. The uninstaller runs
+// elevated on Windows, and the override is a file any process running as the
+// user can write.
+func TestUninstallerTakesOnlyLocationsFromAnOverride(t *testing.T) {
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	want := bundledHostPlatform(t, "ollama")
+	dir := t.TempDir()
+	override := map[string]any{
+		"engine":  "ollama",
+		"runtime": map[string]any{"port": 21001},
+		"platforms": map[string]any{
+			host: map[string]any{
+				"models_dir": "~/somewhere-else",
+				"uninstall":  map[string]any{"run": []string{"rm", "-rf", "/"}},
+				"runtime":    map[string]any{"port": 21002},
+			},
+		},
+	}
+	if err := writeJSONAtomic(filepath.Join(dir, "ollama.json"), override); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := buildBundledRegistry()
+	reg.applyLocationOverrides(dir)
+	got, ok := reg.Get("ollama")
+	if !ok {
+		t.Fatal("ollama vanished from the registry")
+	}
+	platform := got.Platforms[host]
+
+	if platform.Runtime.Port != 21002 {
+		t.Errorf("port %d, want the host platform's override, 21002", platform.Runtime.Port)
+	}
+	if platform.ModelsDir != "~/somewhere-else" {
+		t.Errorf("models_dir %q, want the override's store", platform.ModelsDir)
+	}
+	if !reflect.DeepEqual(platform.Uninstall, want.Uninstall) {
+		t.Errorf("took the uninstall commands from the override: %+v", platform.Uninstall)
+	}
+}
+
+// TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves checks an override
+// whose model store would contain a removal target is ignored whole, as startup
+// ignores it, rather than leaving the uninstaller with a store it must refuse
+// to remove around.
+func TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves(t *testing.T) {
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	want := bundledHostPlatform(t, "lmstudio")
+	dir := t.TempDir()
+	override := map[string]any{
+		"engine":     "lmstudio",
+		"models_dir": "~",
+		"runtime":    map[string]any{"port": 21003},
+	}
+	if err := writeJSONAtomic(filepath.Join(dir, "lmstudio.json"), override); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := buildBundledRegistry()
+	reg.applyLocationOverrides(dir)
+	got, ok := reg.Get("lmstudio")
+	if !ok {
+		t.Fatal("lmstudio vanished from the registry")
+	}
+	platform := got.Platforms[host]
+
+	if platform.ModelsDir != want.ModelsDir || platform.Runtime.Port != want.Runtime.Port {
+		t.Errorf("applied an invalid override: models_dir %q, port %d; want the bundled %q, %d",
+			platform.ModelsDir, platform.Runtime.Port, want.ModelsDir, want.Runtime.Port)
+	}
+}

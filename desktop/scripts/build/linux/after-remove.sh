@@ -44,7 +44,7 @@ fi
 
 # 4. Remove per-user data only on `purge`, never on a plain `remove`. Per-user
 # data here means settings, logs, cluster identity and certificates, and the
-# engines Personal AI Router installed under those roots (Ollama and llama.cpp);
+# engines NVIDIA PAIR installed under those roots (Ollama and llama.cpp);
 # downloaded model weights live outside them (~/.ollama, ~/.llamacpp,
 # ~/.lmstudio/models) and are never touched.
 #

@@ -197,7 +197,9 @@ as well. Dragging PAIR to the Trash instead
 leaves the privileged helper registered, so use the uninstaller.
 
 Your data means settings, logs, cluster identity and certificates, and any engine
-PAIR installed for you. **Model weights are not touched** — they live in the
+PAIR installed for you. An engine the uninstaller cannot remove — one still
+holding a file open, say — is left in place rather than stopping the uninstall;
+remove it with its own uninstaller. **Model weights are not touched** — they live in the
 engine's own storage (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`), so
 removing PAIR does not delete the models you downloaded. Delete those through the
 engine, or by removing its directory. An engine you installed yourself is also

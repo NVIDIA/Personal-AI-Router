@@ -202,6 +202,13 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
   purge removes downloaded models; clearing one is the user's own choice, made
   per model through `delete_model`.
 
+  Removing an engine deletes only the paths its manifest's `uninstall.remove`
+  names, and never its `models_dir`. The store is recognised by file identity,
+  not by path: a store reached through a symlink keeps both the link and the
+  directory it leads to, and a spelling that differs only in case is the store
+  wherever the filesystem says so. Removal unlinks a symlink or junction rather
+  than following it, and refuses a target that is the store or inside it.
+
   One persisted file: `engine-bin/<engine>/installed-by-pair.json`, written after
   an install this service performed. It is the only record distinguishing an
   install PAIR made from one the user made themselves, which an engine whose

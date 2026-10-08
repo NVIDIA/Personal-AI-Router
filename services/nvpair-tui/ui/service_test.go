@@ -388,7 +388,6 @@ func armedResetView(t *testing.T, client *rpc.Client) *serviceView {
 func TestResetRemovesManagedEnginesBeforeWiping(t *testing.T) {
 	client, called := resetBroker(t, `{"engines":[
 		{"engine":"ollama","removed":true},
-		{"engine":"lmstudio","removed":false,"error":"locked"},
 		{"engine":"llamacpp","removed":false}
 	]}`)
 	v := armedResetView(t, client)
@@ -397,8 +396,8 @@ func TestResetRemovesManagedEnginesBeforeWiping(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("confirmation produced no command")
 	}
-	// A reported failure and a skip must both still reach the wipe: the reset
-	// has to clear the data it was asked to clear.
+	// An engine PAIR did not install is skipped, not failed, so it does not
+	// stand in the way of the wipe.
 	if _, ok := cmd().(wipeDataMsg); !ok {
 		t.Fatal("reset did not end in a data wipe request")
 	}
@@ -418,9 +417,41 @@ func TestResetRemovesManagedEnginesBeforeWiping(t *testing.T) {
 	}
 }
 
-// TestResetWipesWhenEngineRemovalFails covers the backend being unreachable or
-// rejecting the call. The reset still has to clear the data directory.
-func TestResetWipesWhenEngineRemovalFails(t *testing.T) {
+// TestResetStopsWhenAnEngineCannotBeRemoved is the guard for orphaning an
+// engine. The wipe deletes the record that an engine is PAIR's, so wiping after
+// a failed removal left its files on disk with nothing allowed to remove them.
+func TestResetStopsWhenAnEngineCannotBeRemoved(t *testing.T) {
+	client, _ := resetBroker(t, `{"engines":[
+		{"engine":"ollama","removed":true},
+		{"engine":"lmstudio","removed":false,"error":"locked"}
+	]}`)
+	v := armedResetView(t, client)
+
+	cmd := v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("confirmation produced no command")
+	}
+	halted, ok := cmd().(resetHaltedMsg)
+	if !ok {
+		t.Fatal("a failed engine removal still went on to wipe the data")
+	}
+	if halted.reason != "could not remove lmstudio" {
+		t.Errorf("reason %q, want it to name the engine that could not be removed", halted.reason)
+	}
+
+	v.Update(halted)
+	if v.resetting || v.CapturingInput() {
+		t.Error("a stopped reset still holds the keyboard")
+	}
+	if v.status.kind != toastError || !strings.Contains(v.status.text, "could not remove lmstudio") {
+		t.Errorf("status %q does not report why the reset stopped", v.status.text)
+	}
+}
+
+// TestResetStopsWhenTheEngineManagerCannotBeReached covers the backend being
+// unreachable or rejecting the call, when nothing is known about which engines
+// are still on disk.
+func TestResetStopsWhenTheEngineManagerCannotBeReached(t *testing.T) {
 	client, _ := resetBroker(t, "")
 	v := armedResetView(t, client)
 
@@ -428,8 +459,8 @@ func TestResetWipesWhenEngineRemovalFails(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("confirmation produced no command")
 	}
-	if _, ok := cmd().(wipeDataMsg); !ok {
-		t.Error("a failed engine removal stopped the data wipe")
+	if _, ok := cmd().(resetHaltedMsg); !ok {
+		t.Error("the reset wiped the data without knowing whether the engines were removed")
 	}
 }
 
