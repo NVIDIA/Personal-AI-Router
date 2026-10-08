@@ -166,9 +166,9 @@ type serviceView struct {
 	// confirming is the index of a destructive row awaiting its confirmation
 	// keystroke, or -1.
 	confirming int
-	// resetting is set once a reset is confirmed and never cleared: the reset
-	// ends by quitting, so there is no state to return to. It keeps the
-	// keyboard while engines are being removed.
+	// resetting is set once a reset is confirmed. It keeps the keyboard while
+	// engines are being removed, and is cleared only when the reset stops
+	// short of the wipe; otherwise the reset ends by quitting.
 	resetting bool
 	status    toast
 
@@ -221,6 +221,12 @@ type logLevelSetMsg struct {
 // just removed.
 type wipeDataMsg struct{}
 
+// resetHaltedMsg stops a reset before the wipe, saying why. Nothing has been
+// deleted by then except any engine the backend did manage to remove.
+type resetHaltedMsg struct {
+	reason string
+}
+
 // engineResetBudget bounds the whole engine-removal request. It has to exceed
 // the backend's own worst case, which for a single engine is several uninstall
 // attempts with a pause between them — a vendor daemon can hold its files open
@@ -247,36 +253,42 @@ type managedUninstall struct {
 // own LM Studio would plant an error on its neighbours.
 //
 // Downloaded models survive, and an engine PAIR did not install is skipped
-// rather than failed. A real failure is surfaced, because it means engine files
-// are still on disk and the record of who owns them is about to be deleted.
+// rather than failed.
 //
-// Always ends in wipeDataMsg. A reset that cannot remove an engine must still
-// clear the data it was asked to clear.
+// Ends in wipeDataMsg only once every engine PAIR installed is gone. If one
+// could not be removed, or the backend could not be asked, the reset stops
+// instead: the wipe deletes the only record that the engine is PAIR's, which
+// would leave its files on disk with nothing left that may remove them.
 func resetEngines(client *rpc.Client) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), engineResetBudget)
 		defer cancel()
 		msg, err := client.Call(ctx, "engine:uninstall-managed", map[string]any{})
 		if err != nil {
-			slog.Error("could not remove PAIR-installed engines; the data reset continues", "err", err)
-			return wipeDataMsg{}
+			slog.Error("could not remove PAIR-installed engines; the data reset stops", "err", err)
+			return resetHaltedMsg{reason: fmt.Sprintf("could not ask the engine manager to remove engines: %s", err)}
 		}
 		var reply struct {
 			Engines []managedUninstall `json:"engines"`
 		}
 		if !decodeOrLog("engine:uninstall-managed", msg.Result, &reply) {
-			slog.Error("could not read the engine removal result; the data reset continues")
-			return wipeDataMsg{}
+			slog.Error("could not read the engine removal result; the data reset stops")
+			return resetHaltedMsg{reason: "could not read which engines were removed"}
 		}
+		var stuck []string
 		for _, result := range reply.Engines {
 			switch {
 			case result.Removed:
 				slog.Info("reset removed PAIR-installed engine", "engine", result.Engine)
 			case result.Error != "":
 				slog.Error("engine not removed; its files are still on disk", "engine", result.Engine, "err", result.Error)
+				stuck = append(stuck, result.Engine)
 			default:
 				slog.Info("engine left in place; PAIR did not install it", "engine", result.Engine)
 			}
+		}
+		if len(stuck) > 0 {
+			return resetHaltedMsg{reason: "could not remove " + strings.Join(stuck, ", ")}
 		}
 		return wipeDataMsg{}
 	}
@@ -505,6 +517,11 @@ func (v *serviceView) Update(msg tea.Msg) tea.Cmd {
 		v.status.ok("%s saved", v.items[msg.idx].label)
 		return v.loadCmd(msg.idx)
 
+	case resetHaltedMsg:
+		v.resetting = false
+		v.status.error("reset stopped before deleting your data: %s. Try again, or uninstall it yourself first", msg.reason)
+		return nil
+
 	case logLevelSetMsg:
 		if msg.err != nil {
 			v.status.error("log level change failed: %s", msg.err)
@@ -636,7 +653,7 @@ func (v *serviceView) runAction(idx int) tea.Cmd {
 		if v.resetting {
 			return nil // already running; a second confirm must not start another
 		}
-		// Engines go first, while the broker is still up to remove them; the
+		// Engines go first, while the broker is still up to remove them; a
 		// resulting wipeDataMsg quits and deletes the data directory.
 		v.resetting = true
 		v.status.busy("removing engines PAIR installed...")

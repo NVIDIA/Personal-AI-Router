@@ -477,8 +477,10 @@ and pairing, and uninstalls the engines PAIR installed, then exits. It asks for
 confirmation first, and cannot be undone. Your downloaded models are kept, and
 so is any engine you installed yourself. The engines are removed while the
 services are still running, and the services are then stopped before the files
-are deleted, so nothing rewrites them on the way out. You will need to pair
-again afterwards.
+are deleted, so nothing rewrites them on the way out. If an engine PAIR
+installed cannot be removed, the reset stops before deleting anything, names the
+engine on the status line, and leaves you in the interface to try again. You
+will need to pair again afterwards.
 
 ## What the Terminal Interface Cannot Do
 
