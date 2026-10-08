@@ -114,13 +114,9 @@ func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
 	}))
 	defer backend.Close()
 	_, portText, err := net.SplitHostPort(backend.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	backendPort, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	proxyPort := 44000
 	if backendPort == proxyPort {
 		proxyPort++
@@ -135,22 +131,20 @@ func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
 
 	b.reconcileAdvertiseEngine(profile, backend.Client())
 	registrations := b.regCache.Snapshot()
-	if len(registrations) != 1 || registrations[0].Service != profile.DiscoveryService ||
-		registrations[0].Port != proxyPort {
-		t.Fatalf("healthy registration = %+v, want %s on %d", registrations, profile.DiscoveryService, proxyPort)
-	}
-	if got := <-updates; !got.Healthy || got.Port != backendPort || got.Engine != profile.Name {
-		t.Fatalf("healthy local backend = %+v", got)
-	}
+	require.Len(t, registrations, 1, "healthy registration")
+	assert.Equal(t, profile.DiscoveryService, registrations[0].Service)
+	assert.Equal(t, proxyPort, registrations[0].Port)
+	update := <-updates
+	assert.True(t, update.Healthy, "healthy local backend")
+	assert.Equal(t, backendPort, update.Port)
+	assert.Equal(t, profile.Name, update.Engine)
 
 	backend.Close()
 	b.reconcileAdvertiseEngine(profile, backend.Client())
-	if got := b.regCache.Snapshot(); len(got) != 0 {
-		t.Fatalf("unhealthy engine remained advertised: %+v", got)
-	}
-	if got := <-updates; got.Healthy || got.Port != backendPort {
-		t.Fatalf("unhealthy local backend = %+v", got)
-	}
+	assert.Empty(t, b.regCache.Snapshot(), "unhealthy engine remained advertised")
+	update = <-updates
+	assert.False(t, update.Healthy, "unhealthy local backend")
+	assert.Equal(t, backendPort, update.Port)
 }
 
 func TestEngineAdvertiserRejectsSelfForwardLoop(t *testing.T) {
@@ -165,12 +159,8 @@ func TestEngineAdvertiserRejectsSelfForwardLoop(t *testing.T) {
 	// A nil client proves the collision check short-circuits before probing the
 	// facade as though it were the backend.
 	b.reconcileAdvertiseEngine(profile, nil)
-	if got := b.regCache.Snapshot(); len(got) != 0 {
-		t.Fatalf("self-forwarding facade remained advertised: %+v", got)
-	}
-	if got := <-updates; got.Healthy {
-		t.Fatalf("self-forwarding backend remained healthy: %+v", got)
-	}
+	assert.Empty(t, b.regCache.Snapshot(), "self-forwarding facade remained advertised")
+	assert.False(t, (<-updates).Healthy, "self-forwarding backend remained healthy")
 }
 
 func attachAdvertiserProxy(

@@ -6,7 +6,6 @@ package rpc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -109,21 +108,15 @@ func TestClientCallRefusesBeforeWriting(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := client.Call(ctx, "engine:apply-settings", nil); !errors.Is(err, context.Canceled) {
-		t.Errorf("cancelled call returned %v, want context.Canceled", err)
-	}
-	if w.writes != 0 {
-		t.Errorf("a cancelled call wrote %d frame(s)", w.writes)
-	}
+	_, err := client.Call(ctx, "engine:apply-settings", nil)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, w.writes, "a cancelled call wrote frames")
 
 	// Run returns at once on the empty stream, which closes the connection.
 	_ = client.Run(context.Background())
-	if _, err := client.Call(context.Background(), "engine:apply-settings", nil); err == nil {
-		t.Error("a call on a closed connection returned no error")
-	}
-	if w.writes != 0 {
-		t.Errorf("a call on a closed connection wrote %d frame(s)", w.writes)
-	}
+	_, err = client.Call(context.Background(), "engine:apply-settings", nil)
+	assert.Error(t, err, "a call on a closed connection returned no error")
+	assert.Zero(t, w.writes, "a call on a closed connection wrote frames")
 }
 
 func TestClientDeliversNotifications(t *testing.T) {

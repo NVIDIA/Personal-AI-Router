@@ -88,8 +88,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 			var p struct {
 				Port int `json:"port"`
 			}
-			if err := json.Unmarshal(msg.Params, &p); err != nil {
-				t.Errorf("decode proxy port request: %v", err)
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &p), "decode proxy port request") {
 				return
 			}
 			h.proxyRebinds.Add(1)

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,9 +85,8 @@ func TestEmitInstallProgressPublishesToHub(t *testing.T) {
 
 	e.emitInstallProgress("ollama", "downloading", 42)
 
-	if gotParams["stage"] != "downloading" || gotParams["percent"] != 42 {
-		t.Fatalf("unexpected notification params: %+v", gotParams)
-	}
+	require.Equal(t, "downloading", gotParams["stage"])
+	require.Equal(t, 42, gotParams["percent"])
 	select {
 	case ev := <-ch:
 		require.Equal(t, "install", ev.Op, "unexpected event (%v)", ev)
@@ -113,19 +113,15 @@ func TestEmitInstallProgressOmitsIndeterminatePercent(t *testing.T) {
 
 	e.emitInstallProgress("ollama", "installing", 0)
 
-	if gotParams["engine"] != "ollama" || gotParams["stage"] != "installing" {
-		t.Fatalf("unexpected notification params: %+v", gotParams)
-	}
-	if _, ok := gotParams["percent"]; ok {
-		t.Fatalf("indeterminate install progress carried a percent: %+v", gotParams)
-	}
+	require.Equal(t, "ollama", gotParams["engine"])
+	require.Equal(t, "installing", gotParams["stage"])
+	require.NotContains(t, gotParams, "percent", "indeterminate install progress carried a percent")
 	select {
 	case ev := <-ch:
-		if ev.Stage != "installing" || ev.Percent != 0 {
-			t.Fatalf("unexpected hub event: %+v", ev)
-		}
+		require.Equal(t, "installing", ev.Stage)
+		require.Zero(t, ev.Percent)
 	case <-time.After(time.Second):
-		t.Fatal("emitInstallProgress did not publish to the hub")
+		require.FailNow(t, "emitInstallProgress did not publish to the hub")
 	}
 }
 
@@ -168,9 +164,7 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 	}, t.TempDir())
 	ex.detectTimeout = 2 * time.Second
 
-	if err := ex.Install(context.Background(), m.Engine); err != nil {
-		t.Fatalf("install: %v", err)
-	}
+	require.NoError(t, ex.Install(context.Background(), m.Engine), "install")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -183,30 +177,21 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 		switch stage {
 		case "downloading":
 			if hasPct {
-				if p, _ := pct.(int); p <= 0 {
-					t.Errorf("downloading frame carried a non-positive percent: %+v", f)
-				}
+				p, _ := pct.(int)
+				assert.Greater(t, p, 0, "downloading frame must carry a positive percent")
 				measuredDownload = true
 			}
 		case "verified", "installing":
-			if hasPct {
-				t.Errorf("%s frame carried a percent: %+v", stage, f)
-			}
+			assert.NotContains(t, f, "percent", "%s frame carried a percent", stage)
 		case "done":
-			if pct != 100 {
-				t.Errorf("done frame percent = %v, want 100", pct)
-			}
+			assert.Equal(t, 100, pct, "done frame percent")
 		default:
-			t.Errorf("unexpected install stage %q: %+v", stage, f)
+			assert.Failf(t, "unexpected install stage", "%q: %+v", stage, f)
 		}
 	}
-	if !measuredDownload {
-		t.Errorf("no downloading frame carried a measured percent; got %+v", frames)
-	}
+	assert.True(t, measuredDownload, "no downloading frame carried a measured percent; frames: %+v", frames)
 	for _, want := range []string{"downloading", "verified", "installing", "done"} {
-		if !stages[want] {
-			t.Errorf("missing %q frame; got %+v", want, frames)
-		}
+		assert.Contains(t, stages, want, "missing install progress stage; frames: %+v", frames)
 	}
 }
 

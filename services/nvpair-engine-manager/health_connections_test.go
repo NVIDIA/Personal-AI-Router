@@ -61,9 +61,7 @@ func TestProbeHTTPMatchesJSONIdentity(t *testing.T) {
 				HTTP:      "http://127.0.0.1:{port}/props",
 				JSONMatch: &ProbeJSONMatch{Field: "service.role", Value: "router"},
 			}
-			if got := ex.probe(context.Background(), probe, 1); got != want {
-				t.Fatalf("probe = %v, want %v", got, want)
-			}
+			require.Equal(t, want, ex.probe(context.Background(), probe, 1))
 		})
 	}
 
@@ -95,12 +93,10 @@ func TestProbeHTTPRejectsOversizedJSONIdentityBody(t *testing.T) {
 		HTTP:      "http://127.0.0.1:{port}/",
 		JSONMatch: &ProbeJSONMatch{Field: "role", Value: "router"},
 	}
-	if ex.probe(context.Background(), probe, 1) {
-		t.Fatal("oversized JSON identity body passed the probe")
-	}
-	if body.read == 0 || body.read > 2*maxProbeJSONBytes+1 || !body.closed {
-		t.Fatalf("body read = %d, closed = %v; want bounded read and close", body.read, body.closed)
-	}
+	require.False(t, ex.probe(context.Background(), probe, 1), "oversized JSON identity body passed the probe")
+	require.NotZero(t, body.read, "body must be read")
+	require.LessOrEqual(t, body.read, 2*maxProbeJSONBytes+1, "body read must be bounded")
+	require.True(t, body.closed, "body must be closed")
 }
 
 func TestProbeHTTPBodyDrainHonorsDeadline(t *testing.T) {

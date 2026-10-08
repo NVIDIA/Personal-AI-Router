@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -129,9 +130,7 @@ func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
 func bundledHostPlatform(t *testing.T, engine string) Platform {
 	t.Helper()
 	bundled, ok := buildBundledRegistry().Get(engine)
-	if !ok {
-		t.Fatalf("no bundled %s manifest", engine)
-	}
+	require.True(t, ok, "no bundled %s manifest", engine)
 	platform, ok := bundled.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	if !ok {
 		t.Skipf("%s has no manifest for this host", engine)
@@ -159,27 +158,17 @@ func TestUninstallerTakesOnlyLocationsFromAnOverride(t *testing.T) {
 			},
 		},
 	}
-	if err := writeJSONAtomic(filepath.Join(dir, "ollama.json"), override); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeJSONAtomic(filepath.Join(dir, "ollama.json"), override))
 
 	reg := buildBundledRegistry()
 	reg.applyLocationOverrides(dir)
 	got, ok := reg.Get("ollama")
-	if !ok {
-		t.Fatal("ollama vanished from the registry")
-	}
+	require.True(t, ok, "ollama vanished from the registry")
 	platform := got.Platforms[host]
 
-	if platform.Runtime.Port != 21002 {
-		t.Errorf("port %d, want the host platform's override, 21002", platform.Runtime.Port)
-	}
-	if platform.ModelsDir != "~/somewhere-else" {
-		t.Errorf("models_dir %q, want the override's store", platform.ModelsDir)
-	}
-	if !reflect.DeepEqual(platform.Uninstall, want.Uninstall) {
-		t.Errorf("took the uninstall commands from the override: %+v", platform.Uninstall)
-	}
+	assert.Equal(t, 21002, platform.Runtime.Port, "must use the host platform's port override")
+	assert.Equal(t, "~/somewhere-else", platform.ModelsDir, "must use the override's store")
+	assert.Equal(t, want.Uninstall, platform.Uninstall, "took the uninstall commands from the override")
 }
 
 // TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves checks an override
@@ -195,20 +184,14 @@ func TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves(t *testing.T) {
 		"models_dir": "~",
 		"runtime":    map[string]any{"port": 21003},
 	}
-	if err := writeJSONAtomic(filepath.Join(dir, "lmstudio.json"), override); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeJSONAtomic(filepath.Join(dir, "lmstudio.json"), override))
 
 	reg := buildBundledRegistry()
 	reg.applyLocationOverrides(dir)
 	got, ok := reg.Get("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio vanished from the registry")
-	}
+	require.True(t, ok, "lmstudio vanished from the registry")
 	platform := got.Platforms[host]
 
-	if platform.ModelsDir != want.ModelsDir || platform.Runtime.Port != want.Runtime.Port {
-		t.Errorf("applied an invalid override: models_dir %q, port %d; want the bundled %q, %d",
-			platform.ModelsDir, platform.Runtime.Port, want.ModelsDir, want.Runtime.Port)
-	}
+	assert.Equal(t, want.ModelsDir, platform.ModelsDir, "applied an invalid override")
+	assert.Equal(t, want.Runtime.Port, platform.Runtime.Port, "applied an invalid override")
 }

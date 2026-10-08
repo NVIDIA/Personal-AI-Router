@@ -74,9 +74,7 @@ func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
 		HTTP:             &ActionHTTP{Method: "POST", Path: "/models"},
 		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
 	}
-	if err := m.Validate(); err != nil {
-		t.Fatalf("llama.cpp model pull protocol rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "llama.cpp model pull protocol rejected")
 }
 
 func TestValidateAcceptsHTTPQueryParams(t *testing.T) {
@@ -88,9 +86,7 @@ func TestValidateAcceptsHTTPQueryParams(t *testing.T) {
 			ParamsIn: actionHTTPParamsQuery,
 		},
 	}
-	if err := m.Validate(); err != nil {
-		t.Fatalf("HTTP query params rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "HTTP query params rejected")
 }
 
 func TestValidateRejectsInvalidHTTPParamsLocation(t *testing.T) {
@@ -102,13 +98,7 @@ func TestValidateRejectsInvalidHTTPParamsLocation(t *testing.T) {
 			ParamsIn: "headers",
 		},
 	}
-	err := m.Validate()
-	if err == nil {
-		t.Fatal("invalid HTTP params location accepted")
-	}
-	if !strings.Contains(err.Error(), "http.params_in") {
-		t.Fatalf("error = %q, want http.params_in", err)
-	}
+	require.ErrorContains(t, m.Validate(), "http.params_in", "invalid HTTP params location accepted")
 }
 
 func TestValidateAcceptsNestedResultMatch(t *testing.T) {
@@ -121,9 +111,7 @@ func TestValidateAcceptsNestedResultMatch(t *testing.T) {
 			Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}},
 		},
 	}
-	if err := m.Validate(); err != nil {
-		t.Fatalf("nested result match rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "nested result match rejected")
 }
 
 func TestValidateAcceptsProbeJSONMatch(t *testing.T) {
@@ -131,9 +119,7 @@ func TestValidateAcceptsProbeJSONMatch(t *testing.T) {
 	p := m.Platforms["linux/amd64"]
 	p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service.role", Value: "router"}
 	m.Platforms["linux/amd64"] = p
-	if err := m.Validate(); err != nil {
-		t.Fatalf("HTTP probe JSON match rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "HTTP probe JSON match rejected")
 }
 
 func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
@@ -147,9 +133,7 @@ func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 func TestValidateAcceptsNamedInstallArtifacts(t *testing.T) {
 	m := validManifest()
 	setInstallArtifacts(&m, validInstallArtifacts())
-	if err := m.Validate(); err != nil {
-		t.Fatalf("named install artifacts rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "named install artifacts rejected")
 }
 
 func TestValidateRejectsDownloadInstallWithoutRun(t *testing.T) {
@@ -160,14 +144,8 @@ func TestValidateRejectsDownloadInstallWithoutRun(t *testing.T) {
 			p.Install = install
 			m.Platforms["linux/amd64"] = p
 
-			err := m.Validate()
-			if err == nil {
-				t.Fatal("download install without run accepted")
-			}
 			const want = `platform "linux/amd64": install.run is required when install.fetch or install.artifacts is present`
-			if err.Error() != want {
-				t.Fatalf("validation error = %q, want %q", err, want)
-			}
+			require.EqualError(t, m.Validate(), want, "download install without run accepted")
 		})
 	}
 
@@ -192,9 +170,7 @@ func TestValidateAcceptsScriptOnlyInstall(t *testing.T) {
 	p := m.Platforms["linux/amd64"]
 	p.Install = &Install{Script: []string{"sh", "installer.sh"}}
 	m.Platforms["linux/amd64"] = p
-	if err := m.Validate(); err != nil {
-		t.Fatalf("script-only install rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "script-only install rejected")
 }
 
 func TestValidateRejectsArtifactPlaceholderFromAnotherPlatform(t *testing.T) {
@@ -208,20 +184,12 @@ func TestValidateRejectsArtifactPlaceholderFromAnotherPlatform(t *testing.T) {
 		Runtime: Runtime{Bin: "{install_dir}/llama-server"},
 	}
 	m.Platforms["darwin/arm64"] = mac
-	if err := m.Validate(); err != nil {
-		t.Fatalf("valid multi-platform fixture rejected: %v", err)
-	}
+	require.NoError(t, m.Validate(), "valid multi-platform fixture rejected")
 
 	mac.Install.Run = []string{"extract", "{download_cudart}"}
 	m.Platforms["darwin/arm64"] = mac
-	err := m.Validate()
-	if err == nil {
-		t.Fatal("macOS install references {download_cudart}, but only Linux declares cudart; want validation error")
-	}
 	const want = `platform "darwin/arm64": unknown placeholder {download_cudart}`
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("error = %q, want it to contain %q", err, want)
-	}
+	require.ErrorContains(t, m.Validate(), want, "macOS install references {download_cudart}, but only Linux declares cudart")
 }
 
 func validInstallArtifacts() []InstallArtifact {
@@ -430,36 +398,23 @@ func TestLoadRegistryOverride(t *testing.T) {
 
 func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatalf("load bundled manifests: %v", err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "load bundled manifests")
 	base, ok := reg.Get("ollama")
-	if !ok {
-		t.Fatal("bundled ollama manifest missing")
-	}
+	require.True(t, ok, "bundled ollama manifest missing")
 	baseRun := base.Platforms["linux/amd64"].Install.Run
-	if len(baseRun) == 0 {
-		t.Fatal("bundled ollama install.run is empty")
-	}
+	require.NotEmpty(t, baseRun, "bundled ollama install.run is empty")
 	dir := t.TempDir()
 	const override = `{
   "engine": "ollama",
   "display_name": "Invalid override",
   "platforms": {"linux/amd64": {"install": {"run": []}}}
 }`
-	if err := os.WriteFile(filepath.Join(dir, "ollama.json"), []byte(override), 0o644); err != nil {
-		t.Fatalf("write override: %v", err)
-	}
-	if err := reg.LoadOverrideDir(dir); err != nil {
-		t.Fatalf("load override directory: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ollama.json"), []byte(override), 0o644), "write override")
+	require.NoError(t, reg.LoadOverrideDir(dir), "load override directory")
 	got, ok := reg.Get("ollama")
-	if !ok || got != base {
-		t.Fatalf("invalid override replaced bundled manifest: got %+v, want original manifest", got)
-	}
-	if !slices.Equal(got.Platforms["linux/amd64"].Install.Run, baseRun) {
-		t.Fatal("invalid override changed the bundled install.run")
-	}
+	require.True(t, ok, "invalid override removed bundled manifest")
+	require.Same(t, base, got, "invalid override replaced bundled manifest")
+	require.Equal(t, baseRun, got.Platforms["linux/amd64"].Install.Run, "invalid override changed the bundled install.run")
 }
 
 func TestLoadRegistryRejectsInvalidFile(t *testing.T) {
@@ -639,53 +594,36 @@ func TestLMStudioManifestBindsLoopback(t *testing.T) {
 
 func TestLlamaCPPManifestRequiresRouterIdentity(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("llamacpp")
-	if !ok {
-		t.Fatal("llamacpp manifest not loaded")
-	}
+	require.True(t, ok, "llamacpp manifest not loaded")
 	for key, p := range m.Platforms {
 		ready := p.Runtime.Ready
-		if ready == nil || ready.JSONMatch == nil {
-			t.Errorf("%s: readiness JSON identity is missing", key)
+		if !assert.NotNil(t, ready, "%s: readiness JSON identity is missing", key) || !assert.NotNil(t, ready.JSONMatch, "%s: readiness JSON identity is missing", key) {
 			continue
 		}
-		if ready.HTTP != "http://127.0.0.1:{port}/props" {
-			t.Errorf("%s: readiness URL = %q, want router /props", key, ready.HTTP)
-		}
-		if ready.JSONMatch.Field != "role" || ready.JSONMatch.Value != "router" {
-			t.Errorf("%s: readiness JSON identity = %+v, want role=router", key, ready.JSONMatch)
-		}
-		if health := p.Runtime.Health; health == nil || health.HTTP != "http://127.0.0.1:{port}/health" || health.JSONMatch != nil {
-			t.Errorf("%s: ongoing health probe changed unexpectedly: %+v", key, health)
+		assert.Equal(t, "http://127.0.0.1:{port}/props", ready.HTTP, "%s: readiness URL", key)
+		assert.Equal(t, "role", ready.JSONMatch.Field, "%s: readiness JSON identity field", key)
+		assert.Equal(t, "router", ready.JSONMatch.Value, "%s: readiness JSON identity value", key)
+		if health := p.Runtime.Health; assert.NotNil(t, health, "%s: ongoing health probe is missing", key) {
+			assert.Equal(t, "http://127.0.0.1:{port}/health", health.HTTP, "%s: ongoing health probe URL", key)
+			assert.Nil(t, health.JSONMatch, "%s: ongoing health probe changed unexpectedly", key)
 		}
 	}
 }
 
 func TestLlamaCPPManifestDeclaresNativeCacheDelete(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("llamacpp")
-	if !ok {
-		t.Fatal("llamacpp manifest not loaded")
-	}
-	action, ok := m.Actions["delete_model"]
-	if !ok || action.HTTP == nil {
-		t.Fatalf("llamacpp delete_model action is incomplete: %+v", action)
-	}
-	if action.HTTP.Method != http.MethodDelete || action.HTTP.Path != "/models" {
-		t.Errorf("llamacpp delete_model HTTP = %s %s, want DELETE /models", action.HTTP.Method, action.HTTP.Path)
-	}
-	if action.HTTP.ParamsIn != actionHTTPParamsQuery {
-		t.Errorf("llamacpp delete_model params_in = %q, want %q", action.HTTP.ParamsIn, actionHTTPParamsQuery)
-	}
-	if action.RestartAfter {
-		t.Error("llamacpp delete_model must not restart the router")
-	}
+	require.True(t, ok, "llamacpp manifest not loaded")
+	require.Contains(t, m.Actions, "delete_model", "llamacpp delete_model action is incomplete")
+	action := m.Actions["delete_model"]
+	require.NotNil(t, action.HTTP, "llamacpp delete_model action is incomplete")
+	assert.Equal(t, http.MethodDelete, action.HTTP.Method)
+	assert.Equal(t, "/models", action.HTTP.Path)
+	assert.Equal(t, actionHTTPParamsQuery, action.HTTP.ParamsIn)
+	assert.False(t, action.RestartAfter, "llamacpp delete_model must not restart the router")
 }
 
 func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {

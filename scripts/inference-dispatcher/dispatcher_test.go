@@ -161,9 +161,7 @@ func TestLlamaCPPUsesOpenAIInventoryAndChat(t *testing.T) {
 					Content string `json:"content"`
 				} `json:"messages"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Errorf("decode chat request: %v", err)
-			}
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request), "decode chat request")
 			observed <- observedRequest{
 				method:       r.Method,
 				path:         r.URL.Path,
@@ -186,16 +184,11 @@ func TestLlamaCPPUsesOpenAIInventoryAndChat(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	if exit != 0 {
-		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
-	}
-	if got := <-observed; got.method != http.MethodGet || got.path != "/v1/models" {
-		t.Fatalf("inventory request = %+v, want GET /v1/models", got)
-	}
-	if got := <-observed; got.method != http.MethodPost || got.path != "/v1/chat/completions" ||
-		got.model != "llama-demo" || got.messageCount != 1 {
-		t.Fatalf("inference request = %+v, want OpenAI chat for llama-demo", got)
-	}
+	require.Equal(t, 0, exit, "stderr: %s", stderr.String())
+	inventory := <-observed
+	require.Equal(t, http.MethodGet, inventory.method)
+	require.Equal(t, "/v1/models", inventory.path)
+	require.Equal(t, observedRequest{http.MethodPost, "/v1/chat/completions", "llama-demo", 1}, <-observed)
 }
 
 // A Personal AI Router proxy answers /v1/models with the whole cluster's
@@ -348,12 +341,8 @@ func TestLMStudioDefaultPort(t *testing.T) {
 func TestLlamaCPPDefaultPort(t *testing.T) {
 	var stderr bytes.Buffer
 	cfg, err := parseConfig([]string{"--backend", "llamacpp"}, &stderr)
-	if err != nil {
-		t.Fatalf("parse config: %v", err)
-	}
-	if port := effectivePort(cfg); port != 8080 {
-		t.Fatalf("llama.cpp default port=%d, want 8080", port)
-	}
+	require.NoError(t, err, "parse config")
+	require.Equal(t, 8080, effectivePort(cfg))
 }
 
 func TestResponseTextNeverReachesStdout(t *testing.T) {

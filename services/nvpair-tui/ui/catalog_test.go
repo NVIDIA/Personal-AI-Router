@@ -7,12 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"strings"
 	"testing"
 
 	"nvpair-tui/rpc"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // catalogBroker is a broker that answers engine:catalog, recording the params
@@ -66,33 +67,25 @@ func TestSearchableCatalogSearchesUpstream(t *testing.T) {
 	b := newCatalogBrowser(client, "llamacpp", "llama.cpp", "this-host", false)
 	b.SetSize(100, 24)
 	b.update(b.Init()())
-	if got := <-calls; got["query"] != "" || got["engine"] != "llamacpp" {
-		t.Fatalf("the browse list was asked for with %v", got)
-	}
+	params := <-calls
+	require.Empty(t, params["query"], "browse list query")
+	require.Equal(t, "llamacpp", params["engine"], "browse list engine")
 
 	cmd := typeSearch(b, "gemma")
-	if cmd == nil || !b.loading {
-		t.Fatal("a search on a searchable source did not go upstream")
-	}
-	if !strings.Contains(b.View(), `Searching for "gemma"`) {
-		t.Errorf("the search in flight is not shown: %q", b.View())
-	}
+	require.NotNil(t, cmd, "a search on a searchable source did not go upstream")
+	require.True(t, b.loading, "a search on a searchable source did not start loading")
+	assert.Contains(t, b.View(), `Searching for "gemma"`, "the search in flight is not shown")
 	b.update(cmd())
-	if got := <-calls; got["query"] != "gemma" {
-		t.Errorf("the search was sent as %v", got)
-	}
-	if len(b.shown) != 1 || b.shown[0].Name != "found/gemma-GGUF:Q4_K_M" {
-		t.Fatalf("showing %v, want the search's result", b.shown)
-	}
-	if !strings.Contains(b.summary(), `1 results for "gemma"`) {
-		t.Errorf("summary %q does not say this is a search", b.summary())
-	}
+	assert.Equal(t, "gemma", (<-calls)["query"], "search query")
+	require.Len(t, b.shown, 1, "search result")
+	require.Equal(t, "found/gemma-GGUF:Q4_K_M", b.shown[0].Name, "search result")
+	assert.Contains(t, b.summary(), `1 results for "gemma"`, "summary must say this is a search")
 
-	if cmd, _, _ := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}); cmd != nil {
-		t.Error("clearing a search asked the backend again for a list it already had")
-	}
-	if b.query != "" || len(b.shown) != 1 || b.shown[0].Name != "ggml-org/browse-GGUF:Q4_K_M" {
-		t.Errorf("clearing the search showed %v, want the browse list back", b.shown)
+	cmd, _, _ = b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	assert.Nil(t, cmd, "clearing a search asked the backend again for a list it already had")
+	assert.Empty(t, b.query, "clearing the search must clear the query")
+	if assert.Len(t, b.shown, 1, "clearing the search must restore the browse list") {
+		assert.Equal(t, "ggml-org/browse-GGUF:Q4_K_M", b.shown[0].Name)
 	}
 }
 
@@ -109,15 +102,15 @@ func TestSupersededSearchIsDropped(t *testing.T) {
 	typeSearch(b, "second")
 	b.update(catalogLoadedMsg{engine: "llamacpp", gen: first, searchable: true,
 		models: []catalogModel{{Name: "stale"}}})
-	if !b.loading || len(b.shown) == 1 && b.shown[0].Name == "stale" {
-		t.Error("the reply to a replaced search was shown")
-	}
+	assert.True(t, b.loading, "the reply to a replaced search stopped loading")
+	assert.False(t, len(b.shown) == 1 && b.shown[0].Name == "stale", "the reply to a replaced search was shown")
 
 	b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	b.update(catalogLoadedMsg{engine: "llamacpp", gen: first + 1, searchable: true,
 		models: []catalogModel{{Name: "late"}}})
-	if b.loading || len(b.shown) != 1 || b.shown[0].Name != "browse" {
-		t.Errorf("a cleared search's late reply replaced the browse list: %v", b.shown)
+	assert.False(t, b.loading, "a cleared search's late reply restarted loading")
+	if assert.Len(t, b.shown, 1, "a cleared search's late reply replaced the browse list") {
+		assert.Equal(t, "browse", b.shown[0].Name)
 	}
 }
 
@@ -138,9 +131,9 @@ func searchingBrowser() *catalogBrowser {
 // before it.
 func TestEnterDuringASearchDownloadsNothing(t *testing.T) {
 	b := searchingBrowser()
-	if picked, open := browserKey(b, "enter"); picked != "" || !open {
-		t.Errorf("enter during a search picked %q, open %v; want nothing picked and the browser open", picked, open)
-	}
+	picked, open := browserKey(b, "enter")
+	assert.Empty(t, picked, "enter during a search must select nothing")
+	assert.True(t, open, "enter during a search must keep the browser open")
 }
 
 // TestEnterAfterAFailedSearchDownloadsNothing checks a failed search leaves no
@@ -148,21 +141,18 @@ func TestEnterDuringASearchDownloadsNothing(t *testing.T) {
 func TestEnterAfterAFailedSearchDownloadsNothing(t *testing.T) {
 	b := searchingBrowser()
 	b.update(catalogLoadedMsg{engine: "llamacpp", gen: b.gen, err: errFake{}})
-	if picked, open := browserKey(b, "enter"); picked != "" || !open {
-		t.Errorf("enter after a failed search picked %q, open %v; want nothing picked and the browser open", picked, open)
-	}
+	picked, open := browserKey(b, "enter")
+	assert.Empty(t, picked, "enter after a failed search must select nothing")
+	assert.True(t, open, "enter after a failed search must keep the browser open")
 }
 
 // TestUnsearchableCatalogStillFiltersLocally checks a source that cannot search
 // keeps the local filter, which issues no request.
 func TestUnsearchableCatalogStillFiltersLocally(t *testing.T) {
 	b := loadedBrowser()
-	if cmd := typeSearch(b, "qwen"); cmd != nil {
-		t.Error("filtering a source that cannot search sent a request")
-	}
-	if b.query != "" || len(b.shown) != 1 {
-		t.Errorf("query %q, %d shown; want a local filter to one model", b.query, len(b.shown))
-	}
+	assert.Nil(t, typeSearch(b, "qwen"), "filtering a source that cannot search sent a request")
+	assert.Empty(t, b.query, "local filtering must not send a query")
+	assert.Len(t, b.shown, 1, "local filter to one model")
 }
 
 func loadedBrowser() *catalogBrowser {
@@ -197,19 +187,11 @@ func browserKey(b *catalogBrowser, k string) (string, bool) {
 // TestCatalogListsModels checks a loaded catalogue reaches the table.
 func TestCatalogListsModels(t *testing.T) {
 	b := loadedBrowser()
-	if b.loading {
-		t.Error("still loading after the reply landed")
-	}
-	if got := len(b.table.Rows()); got != 3 {
-		t.Fatalf("table has %d rows, want 3", got)
-	}
-	if !strings.Contains(b.View(), "llama3.2:8b") {
-		t.Error("view omits a model name")
-	}
+	assert.False(t, b.loading, "still loading after the reply landed")
+	require.Len(t, b.table.Rows(), 3)
+	assert.Contains(t, b.View(), "llama3.2:8b", "view omits a model name")
 	// The catalogue's age matters for judging staleness.
-	if !strings.Contains(b.View(), "2026-07-21") {
-		t.Errorf("view omits the catalog date: %q", b.summary())
-	}
+	assert.Contains(t, b.View(), "2026-07-21", "view omits the catalog date")
 }
 
 // TestCatalogFilterNarrowsLocally is the point of the browser: search over the
@@ -219,61 +201,42 @@ func TestCatalogFilterNarrowsLocally(t *testing.T) {
 
 	b.filter = "qwen"
 	b.refresh()
-	if len(b.shown) != 1 || b.shown[0].Name != "qwen3:4b" {
-		t.Fatalf("filtering by name gave %d rows", len(b.shown))
-	}
+	require.Len(t, b.shown, 1, "filtering by name")
+	require.Equal(t, "qwen3:4b", b.shown[0].Name)
 
 	// Parameter size and family are searched too, so "8b" narrows usefully.
 	b.filter = "8b"
 	b.refresh()
-	if len(b.shown) != 1 || b.shown[0].Name != "llama3.2:8b" {
-		t.Errorf("filtering by parameter size gave %d rows", len(b.shown))
+	if assert.Len(t, b.shown, 1, "filtering by parameter size") {
+		assert.Equal(t, "llama3.2:8b", b.shown[0].Name)
 	}
 
 	b.filter = "nothing-matches-this"
 	b.refresh()
-	if len(b.shown) != 0 {
-		t.Errorf("bogus filter kept %d rows", len(b.shown))
-	}
-	if !strings.Contains(b.View(), "Nothing matches") {
-		t.Error("empty result set gives no explanation")
-	}
+	assert.Empty(t, b.shown, "bogus filter kept rows")
+	assert.Contains(t, b.View(), "Nothing matches", "empty result set gives no explanation")
 
 	b.filter = ""
 	b.refresh()
-	if len(b.shown) != 3 {
-		t.Errorf("clearing the filter left %d rows", len(b.shown))
-	}
+	assert.Len(t, b.shown, 3, "clearing the filter must restore every row")
 }
 
 // TestCatalogSortCyclesAndOrders checks the sort key cycles and that size sorts
 // largest-first.
 func TestCatalogSortCyclesAndOrders(t *testing.T) {
 	b := loadedBrowser()
-	if b.sortBy != catalogSortDefault {
-		t.Fatal("did not open on the backend's order")
-	}
+	require.Equal(t, catalogSortDefault, b.sortBy, "did not open on the backend's order")
 
 	browserKey(b, "o")
-	if b.sortBy != catalogSortName {
-		t.Fatalf("first sort = %v", b.sortBy)
-	}
-	if b.shown[0].Name != "llama3.2:8b" {
-		t.Errorf("name sort leads with %q", b.shown[0].Name)
-	}
+	require.Equal(t, catalogSortName, b.sortBy, "first sort")
+	assert.Equal(t, "llama3.2:8b", b.shown[0].Name, "name sort")
 
 	browserKey(b, "o")
-	if b.sortBy != catalogSortSize {
-		t.Fatalf("second sort = %v", b.sortBy)
-	}
-	if b.shown[0].Name != "phi4:latest" {
-		t.Errorf("size sort leads with %q, want the largest", b.shown[0].Name)
-	}
+	require.Equal(t, catalogSortSize, b.sortBy, "second sort")
+	assert.Equal(t, "phi4:latest", b.shown[0].Name, "size sort must put the largest first")
 
 	browserKey(b, "o")
-	if b.sortBy != catalogSortDefault {
-		t.Error("sort did not cycle back round")
-	}
+	assert.Equal(t, catalogSortDefault, b.sortBy, "sort did not cycle back round")
 }
 
 // TestCatalogEnterReturnsPullReadyName checks selecting a model closes the
@@ -283,24 +246,16 @@ func TestCatalogEnterReturnsPullReadyName(t *testing.T) {
 	b.table.SetCursor(1)
 
 	picked, open := browserKey(b, "enter")
-	if open {
-		t.Error("browser stayed open after a selection")
-	}
-	if picked != "qwen3:4b" {
-		t.Errorf("picked %q, want the highlighted model's pull name", picked)
-	}
+	assert.False(t, open, "browser stayed open after a selection")
+	assert.Equal(t, "qwen3:4b", picked, "highlighted model's pull name")
 }
 
 // TestCatalogEscapeSelectsNothing checks backing out downloads nothing.
 func TestCatalogEscapeSelectsNothing(t *testing.T) {
 	b := loadedBrowser()
 	picked, open := browserKey(b, "esc")
-	if open {
-		t.Error("esc left the browser open")
-	}
-	if picked != "" {
-		t.Errorf("esc picked %q", picked)
-	}
+	assert.False(t, open, "esc left the browser open")
+	assert.Empty(t, picked, "esc must select nothing")
 }
 
 // TestCatalogSearchCapturesKeys checks the filter field owns the keyboard, so
@@ -313,21 +268,15 @@ func TestCatalogEscapeSelectsNothing(t *testing.T) {
 func TestCatalogSearchCapturesKeys(t *testing.T) {
 	b := loadedBrowser()
 	browserKey(b, "/")
-	if !b.searching {
-		t.Fatal("search did not take the keyboard")
-	}
+	require.True(t, b.searching, "search did not take the keyboard")
 
 	// 'o' is the sort key outside the field; inside it is a character.
 	before := b.sortBy
 	browserKey(b, "o")
-	if b.sortBy != before {
-		t.Error("a keystroke typed into the filter triggered the sort")
-	}
+	assert.Equal(t, before, b.sortBy, "a keystroke typed into the filter triggered the sort")
 
 	browserKey(b, "esc")
-	if b.searching {
-		t.Error("esc did not leave the filter")
-	}
+	assert.False(t, b.searching, "esc did not leave the filter")
 }
 
 // TestCatalogLoadFailureExplainsItself checks a failed load says so instead of
@@ -337,12 +286,8 @@ func TestCatalogLoadFailureExplainsItself(t *testing.T) {
 	b.SetSize(100, 24)
 	b.update(catalogLoadedMsg{engine: "ollama", err: errFake{}})
 
-	if b.loading {
-		t.Error("still loading after a failure")
-	}
-	if b.status.render() == "" {
-		t.Error("failure produced no message")
-	}
+	assert.False(t, b.loading, "still loading after a failure")
+	assert.NotEmpty(t, b.status.render(), "failure produced no message")
 }
 
 // TestCatalogLoadFailureCanBeRetried is the regression guard for a failed load
@@ -350,26 +295,19 @@ func TestCatalogLoadFailureExplainsItself(t *testing.T) {
 func TestCatalogLoadFailureCanBeRetried(t *testing.T) {
 	b := newCatalogBrowser(nil, "ollama", "Ollama", "this-host", false)
 	b.SetSize(100, 24)
-	if cmd, _, _ := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}); cmd != nil {
-		t.Error("r reloaded a catalog that had not failed")
-	}
+	cmd, _, _ := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	assert.Nil(t, cmd, "r reloaded a catalog that had not failed")
 
 	b.update(catalogLoadedMsg{engine: "ollama", err: errFake{}})
-	if !strings.Contains(b.View(), "Press r to try again") {
-		t.Errorf("a failed load did not offer a retry: %q", b.View())
-	}
+	assert.Contains(t, b.View(), "Press r to try again", "a failed load did not offer a retry")
 	cmd, _, open := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-	if cmd == nil || !open {
-		t.Fatal("r did not ask for the catalog again")
-	}
-	if !b.loading || b.failed {
-		t.Error("the retry did not show the catalog as loading")
-	}
+	require.NotNil(t, cmd, "r did not ask for the catalog again")
+	require.True(t, open, "r must keep the browser open")
+	assert.True(t, b.loading, "the retry did not show the catalog as loading")
+	assert.False(t, b.failed, "the retry must clear the failure")
 
 	loaded := loadedBrowser()
-	if loaded.failed {
-		t.Error("a successful load was counted as a failure")
-	}
+	assert.False(t, loaded.failed, "a successful load was counted as a failure")
 }
 
 // TestCatalogIgnoresOtherEnginesReply checks a late reply for an engine the
@@ -381,9 +319,7 @@ func TestCatalogIgnoresOtherEnginesReply(t *testing.T) {
 		engine: "lmstudio",
 		models: []catalogModel{{ID: "x", Name: "x"}},
 	})
-	if len(b.all) != 0 {
-		t.Error("accepted a catalog for a different engine")
-	}
+	assert.Empty(t, b.all, "accepted a catalog for a different engine")
 }
 
 // TestCatalogEmptyCatalogIsDistinctFromNoMatch checks the two empty states read
@@ -393,9 +329,7 @@ func TestCatalogEmptyCatalogIsDistinctFromNoMatch(t *testing.T) {
 	b.SetSize(100, 24)
 	b.update(catalogLoadedMsg{engine: "vllm", models: nil})
 
-	if !strings.Contains(b.View(), "No catalog available") {
-		t.Errorf("view = %q", b.View())
-	}
+	assert.Contains(t, b.View(), "No catalog available")
 }
 
 // TestPeerCatalogNamesTheMachineItWasFilteredFor checks a peer's list states
@@ -410,25 +344,17 @@ func TestPeerCatalogNamesTheMachineItWasFilteredFor(t *testing.T) {
 		target: "darwin/amd64",
 		models: []catalogModel{{ID: "x", Name: "x"}},
 	})
-	if got := b.summary(); !strings.Contains(got, "filtered for darwin/amd64") {
-		t.Errorf("summary %q does not say which machine the list applies to", got)
-	}
+	assert.Contains(t, b.summary(), "filtered for darwin/amd64", "summary must say which machine the list applies to")
 
 	// This machine's own list needs no caveat: it is filtered for itself.
 	local := loadedBrowser()
 	local.target = "darwin/arm64"
-	if got := local.summary(); strings.Contains(got, "filtered for") {
-		t.Errorf("local summary %q carries a caveat meant for peers", got)
-	}
+	assert.NotContains(t, local.summary(), "filtered for", "local summary carries a caveat meant for peers")
 }
 
 func TestShortDate(t *testing.T) {
-	if got := shortDate("2026-07-21T02:07:47.321Z"); got != "2026-07-21" {
-		t.Errorf("shortDate = %q", got)
-	}
-	if got := shortDate("short"); got != "short" {
-		t.Errorf("shortDate passed through as %q", got)
-	}
+	assert.Equal(t, "2026-07-21", shortDate("2026-07-21T02:07:47.321Z"))
+	assert.Equal(t, "short", shortDate("short"))
 }
 
 // errFake is a minimal error for the failure path.

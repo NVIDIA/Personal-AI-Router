@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,41 +60,30 @@ func TestModelFromParams(t *testing.T) {
 
 func TestLlamaCPPModelsEventPercentAggregatesFiles(t *testing.T) {
 	var event llamaCPPModelsEvent
-	err := json.Unmarshal([]byte(`{
+	require.NoError(t, json.Unmarshal([]byte(`{
 		"model":"owner/repo:Q4_K_M",
 		"event":"download_progress",
 		"data":{"progress":{
 			"model.gguf":{"done":75,"total":100},
 			"mmproj.gguf":{"done":25,"total":100}
 		}}
-	}`), &event)
-	if err != nil {
-		t.Fatalf("decode event: %v", err)
-	}
-	if got := event.percent(); got != 50 {
-		t.Fatalf("aggregate percent = %d, want 50", got)
-	}
+	}`), &event), "decode event")
+	require.Equal(t, 50, event.percent(), "aggregate percent")
 }
 
 func newHTTPPullTestExecutor(t *testing.T, server *httptest.Server, action Action) *Executor {
 	t.Helper()
 	_, portText, err := net.SplitHostPort(server.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split test server address: %v", err)
-	}
+	require.NoError(t, err, "split test server address")
 	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
+	require.NoError(t, err, "parse test server port")
 	manifest := testEngineManifest(fakeEngineBin)
 	manifest.Actions[pullModelAction] = action
 	registry := NewRegistry()
 	registry.engines[manifest.Engine] = manifest
 	executor := NewExecutor(registry, NewReporter(nil), nil, t.TempDir())
 	state, err := executor.state(manifest.Engine)
-	if err != nil {
-		t.Fatalf("resolve engine state: %v", err)
-	}
+	require.NoError(t, err, "resolve engine state")
 	state.running = true
 	state.port = port
 	return executor
@@ -117,8 +107,7 @@ func TestPullModelLlamaCPPSSESubscribesBeforeStarting(t *testing.T) {
 		}
 		write := func(event map[string]any) {
 			data, err := json.Marshal(event)
-			if err != nil {
-				t.Errorf("encode SSE event: %v", err)
+			if !assert.NoError(t, err, "encode SSE event") {
 				return
 			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -163,31 +152,22 @@ func TestPullModelLlamaCPPSSESubscribesBeforeStarting(t *testing.T) {
 	defer cancel()
 
 	result, err := ex.PullModelStream(context.Background(), "fake", model, json.RawMessage(`{"model":"`+model+`"}`))
-	if err != nil {
-		t.Fatalf("pull model: %v", err)
-	}
+	require.NoError(t, err, "pull model")
 	var response struct {
 		Success bool `json:"success"`
 	}
-	if err := json.Unmarshal(result, &response); err != nil || !response.Success {
-		t.Fatalf("pull result = %s, error %v", result, err)
-	}
-	if postBeforeSubscribe.Load() {
-		t.Fatal("download POST arrived before the SSE subscription was open")
-	}
+	require.NoError(t, json.Unmarshal(result, &response), "decode pull result")
+	require.True(t, response.Success, "pull result must succeed")
+	require.False(t, postBeforeSubscribe.Load(), "download POST arrived before the SSE subscription was open")
 	var events []ProgressEvent
 	for len(progress) > 0 {
 		events = append(events, <-progress)
 	}
-	if len(events) != 2 {
-		t.Fatalf("progress events = %+v, want downloading and success", events)
-	}
-	if events[0].Stage != "downloading" || events[0].Percent != 50 {
-		t.Fatalf("download event = %+v, want 50%%", events[0])
-	}
-	if events[1].Stage != "success" || events[1].Percent != 100 {
-		t.Fatalf("terminal event = %+v, want success at 100%%", events[1])
-	}
+	require.Len(t, events, 2, "must report downloading and success")
+	require.Equal(t, "downloading", events[0].Stage)
+	require.Equal(t, 50, events[0].Percent)
+	require.Equal(t, "success", events[1].Stage)
+	require.Equal(t, 100, events[1].Percent)
 }
 
 func TestPullModelOllamaAdvancingProgressRefreshesTimeout(t *testing.T) {
@@ -199,8 +179,7 @@ func TestPullModelOllamaAdvancingProgressRefreshesTimeout(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, _ *http.Request) {
 		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Error("test response does not support flushing")
+		if !assert.True(t, ok, "test response does not support flushing") {
 			return
 		}
 		for completed := 1; completed <= progressUpdates; completed++ {
@@ -233,15 +212,9 @@ func TestPullModelOllamaAdvancingProgressRefreshesTimeout(t *testing.T) {
 		"demo:1b",
 		json.RawMessage(`{"name":"demo:1b"}`),
 	)
-	if err != nil {
-		t.Fatalf("pull model: %v", err)
-	}
-	if elapsed := time.Since(started); elapsed <= idleTimeout {
-		t.Fatalf("pull completed in %s, want longer than one %s idle interval", elapsed, idleTimeout)
-	}
-	if !strings.Contains(string(result), `"status":"success"`) {
-		t.Fatalf("pull result = %s, want terminal success", result)
-	}
+	require.NoError(t, err, "pull model")
+	require.Greater(t, time.Since(started), idleTimeout, "pull must last longer than one idle interval")
+	require.Contains(t, string(result), `"status":"success"`, "pull must report terminal success")
 }
 
 func TestPullModelLlamaCPPAdvancingProgressRefreshesTimeout(t *testing.T) {
@@ -255,8 +228,7 @@ func TestPullModelLlamaCPPAdvancingProgressRefreshesTimeout(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/models/sse", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Error("test response does not support flushing")
+		if !assert.True(t, ok, "test response does not support flushing") {
 			return
 		}
 		_, _ = fmt.Fprint(w, ": ready\n\n")
@@ -303,15 +275,9 @@ func TestPullModelLlamaCPPAdvancingProgressRefreshesTimeout(t *testing.T) {
 		model,
 		json.RawMessage(`{"model":"`+model+`"}`),
 	)
-	if err != nil {
-		t.Fatalf("pull model: %v", err)
-	}
-	if elapsed := time.Since(startedAt); elapsed <= idleTimeout {
-		t.Fatalf("pull completed in %s, want longer than one %s idle interval", elapsed, idleTimeout)
-	}
-	if !strings.Contains(string(result), `"success":true`) {
-		t.Fatalf("pull result = %s, want accepted download response", result)
-	}
+	require.NoError(t, err, "pull model")
+	require.Greater(t, time.Since(startedAt), idleTimeout, "pull must last longer than one idle interval")
+	require.Contains(t, string(result), `"success":true`, "pull must report an accepted download")
 }
 
 func TestPullModelDuplicateProgressDoesNotRefreshTimeout(t *testing.T) {
@@ -319,8 +285,7 @@ func TestPullModelDuplicateProgressDoesNotRefreshTimeout(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Error("test response does not support flushing")
+		if !assert.True(t, ok, "test response does not support flushing") {
 			return
 		}
 		ticker := time.NewTicker(25 * time.Millisecond)
@@ -352,12 +317,7 @@ func TestPullModelDuplicateProgressDoesNotRefreshTimeout(t *testing.T) {
 		"demo:1b",
 		json.RawMessage(`{"name":"demo:1b"}`),
 	)
-	if err == nil {
-		t.Fatal("pull model succeeded despite duplicate-only progress")
-	}
-	if want := "model download made no progress for 150ms"; !strings.Contains(err.Error(), want) {
-		t.Fatalf("pull error = %q, want %q", err, want)
-	}
+	require.ErrorContains(t, err, "model download made no progress for 150ms", "pull model succeeded despite duplicate-only progress")
 }
 
 func TestPullProgressWatchdogPreservesParentCancellation(t *testing.T) {
@@ -369,11 +329,9 @@ func TestPullProgressWatchdogPreservesParentCancellation(t *testing.T) {
 	select {
 	case <-ctx.Done():
 	case <-time.After(time.Second):
-		t.Fatal("watchdog context did not observe parent cancellation")
+		require.FailNow(t, "watchdog context did not observe parent cancellation")
 	}
-	if cause := context.Cause(ctx); cause != context.Canceled {
-		t.Fatalf("watchdog cause = %v, want context canceled", cause)
-	}
+	require.ErrorIs(t, context.Cause(ctx), context.Canceled)
 }
 
 // TestActionPullModelStreamsProgress verifies that engine:action with action

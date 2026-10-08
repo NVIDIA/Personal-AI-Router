@@ -13,6 +13,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // These tests measure what a view *renders*, before the shell clamps it.
@@ -97,10 +99,7 @@ func TestNodesViewNeverOverflowsItsBudget(t *testing.T) {
 	for name, setup := range cases {
 		v := build()
 		setup(v)
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%s: rendered %d rows into a %d-row budget; the shell will delete the last %d line(s)",
-				name, got, budget, got-budget)
-		}
+		assert.LessOrEqual(t, renderedRows(v.View()), budget, "%s: the shell must not delete the last lines", name)
 	}
 }
 
@@ -132,16 +131,11 @@ func TestErrorsViewNeverOverflowsItsBudget(t *testing.T) {
 
 	for _, n := range []int{0, 1, 30} {
 		v := build(n)
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%d errors: rendered %d rows into %d", n, got, budget)
-		}
+		assert.LessOrEqual(t, renderedRows(v.View()), budget, "%d errors", n)
 
 		v = build(n)
 		v.status.ok("cleared")
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%d errors + status: rendered %d rows into %d; the status line is what gets cut",
-				n, got, budget)
-		}
+		assert.LessOrEqual(t, renderedRows(v.View()), budget, "%d errors + status: the status line must not be cut", n)
 	}
 }
 
@@ -186,9 +180,7 @@ func TestNodeDetailNeverOverflowsItsBudget(t *testing.T) {
 	for name, setup := range cases {
 		d := build()
 		setup(d)
-		if got := renderedRows(d.View()); got > budget {
-			t.Errorf("%s: rendered %d rows into a %d-row budget", name, got, budget)
-		}
+		assert.LessOrEqual(t, renderedRows(d.View()), budget, "%s", name)
 	}
 }
 
@@ -228,18 +220,9 @@ func TestEveryViewRendersWithinBudget(t *testing.T) {
 
 				// A panic here is a crash of the whole program, so it is worth
 				// naming the view and size rather than letting the suite die.
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							t.Errorf("%s panicked at %dx%d (status=%v): %v",
-								v.Title(), w, h, withStatus, r)
-						}
-					}()
-					if got := renderedRows(v.View()); got > budget {
-						t.Errorf("%s rendered %d rows into a %d-row budget at %dx%d (status=%v)",
-							v.Title(), got, budget, w, h, withStatus)
-					}
-				}()
+				assert.NotPanics(t, func() {
+					assert.LessOrEqual(t, renderedRows(v.View()), budget, "%s at %dx%d (status=%v)", v.Title(), w, h, withStatus)
+				}, "%s at %dx%d (status=%v)", v.Title(), w, h, withStatus)
 			}
 		}
 	}
@@ -266,14 +249,8 @@ func TestNarrowTerminalClipsRatherThanOverruns(t *testing.T) {
 				m := newTestModel(v)
 				m.width, m.height = w, h
 				out := m.View()
-				if got := lipgloss.Width(out); got > w {
-					t.Errorf("%s at %d columns (status=%v): frame is %d columns wide",
-						v.Title(), w, withStatus, got)
-				}
-				if got := lipgloss.Height(out); got != h {
-					t.Errorf("%s at %d columns (status=%v): frame is %d rows, want %d",
-						v.Title(), w, withStatus, got, h)
-				}
+				assert.LessOrEqual(t, lipgloss.Width(out), w, "%s at %d columns (status=%v)", v.Title(), w, withStatus)
+				assert.Equal(t, h, lipgloss.Height(out), "%s at %d columns (status=%v)", v.Title(), w, withStatus)
 			}
 		}
 	}
@@ -300,14 +277,10 @@ func TestServiceConfirmationSurvivesEveryHeight(t *testing.T) {
 		v.status.arm("Reset all data and quit - press y to confirm, any other key to cancel")
 
 		out := v.View()
-		if got := renderedRows(out); got > budget {
-			t.Errorf("80x%d (budget %d): rendered %d rows", h, budget, got)
-		}
+		assert.LessOrEqual(t, renderedRows(out), budget, "80x%d", h)
 		// Within the budget is necessary but not sufficient: the prompt must be
 		// among the rows that survive the shell's clamp.
-		if !contains(fitLines(out, budget), "press y to confirm") {
-			t.Errorf("80x%d: the reset confirmation is not on the frame:\n%s", h, out)
-		}
+		assert.Contains(t, fitLines(out, budget), "press y to confirm", "80x%d: the reset confirmation must stay on the frame", h)
 	}
 }
 
@@ -343,16 +316,10 @@ func TestDetailSurvivesAManyGpuHost(t *testing.T) {
 			d.status.error("start lmstudio failed: port in use")
 
 			out := d.View()
-			if got := renderedRows(out); got > budget {
-				t.Errorf("%d GPUs at 80x%d (budget %d): rendered %d rows",
-					gpuCount, h, budget, got)
-			}
+			assert.LessOrEqual(t, renderedRows(out), budget, "%d GPUs at 80x%d", gpuCount, h)
 			// The status line is what the operator just caused; it must not be
 			// the thing a long device list displaces.
-			if !contains(fitLines(out, budget), "start lmstudio failed") {
-				t.Errorf("%d GPUs at 80x%d: the status line was displaced:\n%s",
-					gpuCount, h, out)
-			}
+			assert.Contains(t, fitLines(out, budget), "start lmstudio failed", "%d GPUs at 80x%d: the status line must stay on the frame", gpuCount, h)
 		}
 	}
 }
@@ -370,9 +337,7 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 	nodesLeave.SetSize(80, 20)
 	nodesLeave.identity.ClusterID = "cluster-1"
 	nodesLeave.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	if !nodesLeave.confirmLeave {
-		t.Fatal("leave did not arm")
-	}
+	require.True(t, nodesLeave.confirmLeave, "leave did not arm")
 
 	nodesRemove := newNodesView(nil)
 	nodesRemove.SetSize(80, 20)
@@ -382,17 +347,13 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 	nodesRemove.rebuild()
 	nodesRemove.selectedKey = "peer"
 	nodesRemove.removeSelected()
-	if nodesRemove.confirmRemove == "" {
-		t.Fatal("remove did not arm")
-	}
+	require.NotEmpty(t, nodesRemove.confirmRemove, "remove did not arm")
 
 	svc := newServiceView(nil)
 	svc.SetSize(80, 20)
 	svc.cursor = len(svc.items) - 1
 	svc.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if svc.confirming < 0 {
-		t.Fatal("reset did not arm")
-	}
+	require.GreaterOrEqual(t, svc.confirming, 0, "reset did not arm")
 
 	detail := localDetail()
 	detail.models = modelsResult{ModelsByEngine: map[string][]string{"ollama": {"victim"}}}
@@ -406,9 +367,7 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 		"service/reset": svc,
 		"detail/delete": detail,
 	} {
-		if !ic.CapturingInput() {
-			t.Errorf("%s: armed but not capturing input; tab or a digit escapes the confirmation", name)
-		}
+		assert.True(t, ic.CapturingInput(), "%s: armed actions must capture input so tab or a digit cannot escape confirmation", name)
 	}
 
 	// And every armed prompt must stay on screen for as long as it is armed.
@@ -418,12 +377,8 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 		"service/reset": &svc.status,
 		"detail/delete": &detail.status,
 	} {
-		if s.expired() {
-			t.Errorf("%s: the confirmation prompt expired while the action stayed armed", name)
-		}
-		if !contains(s.render(), "press y to confirm") {
-			t.Errorf("%s: the prompt does not say how to confirm: %q", name, s.render())
-		}
+		assert.False(t, s.expired(), "%s: the confirmation prompt must stay while the action is armed", name)
+		assert.Contains(t, s.render(), "press y to confirm", "%s: the prompt must say how to confirm", name)
 	}
 }
 
@@ -461,13 +416,8 @@ func TestDetailStaysInBudgetWithAStaleEngineList(t *testing.T) {
 			d.status.error("start failed: port in use")
 
 			out := d.View()
-			if got := renderedRows(out); got > budget {
-				t.Errorf("stale=%v at 80x%d (budget %d): rendered %d rows",
-					stale, h, budget, got)
-			}
-			if !contains(fitLines(out, budget), "start failed") {
-				t.Errorf("stale=%v at 80x%d: the status line was displaced", stale, h)
-			}
+			assert.LessOrEqual(t, renderedRows(out), budget, "stale=%v at 80x%d", stale, h)
+			assert.Contains(t, fitLines(out, budget), "start failed", "stale=%v at 80x%d: the status line must stay on the frame", stale, h)
 		}
 	}
 }
@@ -486,15 +436,11 @@ func TestFooterHidesGlobalsWhileCapturing(t *testing.T) {
 	m.resizeViews()
 
 	nodes, ok := m.views[0].(*nodesView)
-	if !ok {
-		t.Fatal("first view is not the nodes tab")
-	}
+	require.True(t, ok, "first view is not the nodes tab")
 
 	// Not capturing: the globals are there, and first, so a narrow terminal
 	// cannot truncate away the way out.
-	if got := m.footerView(); !contains(got, "quit") {
-		t.Errorf("idle footer does not offer quit: %s", got)
-	}
+	assert.Contains(t, m.footerView(), "quit", "idle footer must offer quit")
 
 	for name, arm := range map[string]func(){
 		"text field": func() { nodes.beginInput(nodesInputManualAddress, "host") },
@@ -506,10 +452,7 @@ func TestFooterHidesGlobalsWhileCapturing(t *testing.T) {
 		arm()
 		footer := m.footerView()
 		for _, dead := range []string{"quit", "go to tab", "next"} {
-			if contains(footer, dead) {
-				t.Errorf("%s: footer advertises %q, which does not reach the shell: %s",
-					name, dead, footer)
-			}
+			assert.NotContains(t, footer, dead, "%s: footer must omit keys that do not reach the shell", name)
 		}
 	}
 }
@@ -603,14 +546,10 @@ func TestCatalogBrowserStaysInBudget(t *testing.T) {
 		b.refresh()
 		b.SetSize(w, budget)
 
-		if got := renderedRows(b.View()); got > budget {
-			t.Errorf("catalog rendered %d rows into %d at %dx%d", got, budget, w, h)
-		}
+		assert.LessOrEqual(t, renderedRows(b.View()), budget, "catalog at %dx%d", w, h)
 
 		b.status.error("download failed")
-		if got := renderedRows(b.View()); got > budget {
-			t.Errorf("catalog + status rendered %d rows into %d at %dx%d", got, budget, w, h)
-		}
+		assert.LessOrEqual(t, renderedRows(b.View()), budget, "catalog + status at %dx%d", w, h)
 	}
 }
 
@@ -640,9 +579,7 @@ func TestNodeDetailStaysInBudgetWhenShort(t *testing.T) {
 		d.status.error("start failed: no such engine")
 		d.mode = detailInputEnginePort
 
-		if got := renderedRows(d.View()); got > budget {
-			t.Errorf("node detail rendered %d rows into %d at %dx%d", got, budget, w, h)
-		}
+		assert.LessOrEqual(t, renderedRows(d.View()), budget, "node detail at %dx%d", w, h)
 	}
 }
 
@@ -668,9 +605,7 @@ func TestNarrowAndShortTerminalsStayInBudget(t *testing.T) {
 		v.noteFeed(feedManual, errStub{})
 		v.status.error("failed")
 
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%dx%d: nodes rendered %d rows into %d", w, h, got, budget)
-		}
+		assert.LessOrEqual(t, renderedRows(v.View()), budget, "nodes at %dx%d", w, h)
 	}
 }
 

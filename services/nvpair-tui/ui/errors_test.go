@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	svcerrors "nvpair-shared/errors"
 	"nvpair-tui/rpc"
 )
@@ -33,37 +36,21 @@ func TestClearIsOfferedOnlyWhereItSticks(t *testing.T) {
 	v.namer.learn("peer-uuid", "peer-host")
 	v.setErrors([]svcerrors.ServiceError{mine, theirs, unattributed})
 
-	if !v.clearable(mine) {
-		t.Error("own error is not clearable")
-	}
-	if v.clearable(theirs) {
-		t.Error("a peer's error is offered as clearable; the clear would not stick")
-	}
-	if !v.clearable(unattributed) {
-		t.Error("an error with no node id should stay clearable")
-	}
+	assert.True(t, v.clearable(mine), "own error is not clearable")
+	assert.False(t, v.clearable(theirs), "a peer's error must not be offered as clearable; the clear would not stick")
+	assert.True(t, v.clearable(unattributed), "an error with no node id should stay clearable")
 
 	// Selecting the peer's row withdraws the key and explains why, naming the
 	// node to go to rather than just refusing.
 	v.table.SetCursor(1)
-	if got := v.Help(); len(got) != 0 {
-		t.Errorf("footer still advertises %d binding(s) on a peer's error", len(got))
-	}
-	if cmd := v.clearSelected(); cmd != nil {
-		t.Error("clearing a peer's error still issued a request")
-	}
-	if msg := v.status.render(); !strings.Contains(msg, "peer-host") {
-		t.Errorf("refusal does not name the node to clear it from: %q", msg)
-	}
+	assert.Empty(t, v.Help(), "footer must withdraw bindings on a peer's error")
+	assert.Nil(t, v.clearSelected(), "clearing a peer's error must not issue a request")
+	assert.Contains(t, v.status.render(), "peer-host", "refusal must name the node to clear it from")
 
 	// And the local row still works.
 	v.table.SetCursor(0)
-	if got := v.Help(); len(got) == 0 {
-		t.Error("footer withdrew the clear key on this machine's own error")
-	}
-	if cmd := v.clearSelected(); cmd == nil {
-		t.Error("clearing this machine's own error issued no request")
-	}
+	assert.NotEmpty(t, v.Help(), "footer withdrew the clear key on this machine's own error")
+	assert.NotNil(t, v.clearSelected(), "clearing this machine's own error issued no request")
 }
 
 // TestNothingIsClearedBeforeThisMachineIsKnown checks the clear waits for the
@@ -74,20 +61,12 @@ func TestNothingIsClearedBeforeThisMachineIsKnown(t *testing.T) {
 	v.SetSize(100, 30)
 	v.setErrors([]svcerrors.ServiceError{{ID: "e", Message: "boom", NodeID: "some-uuid"}})
 
-	if v.clearable(v.errs[0]) {
-		t.Error("an error was clearable before this machine's identity was known")
-	}
-	if cmd := v.clearSelected(); cmd != nil {
-		t.Error("a clear was sent before this machine's identity was known")
-	}
-	if got := v.status.render(); !strings.Contains(got, "identifying") {
-		t.Errorf("the refusal does not say why: %q", got)
-	}
+	assert.False(t, v.clearable(v.errs[0]), "an error was clearable before this machine's identity was known")
+	assert.Nil(t, v.clearSelected(), "a clear must wait for this machine's identity")
+	assert.Contains(t, v.status.render(), "identifying", "the refusal must say why")
 
 	v.namer.setSelf(clusterIdentity{NodeUUID: "some-uuid"})
-	if cmd := v.clearSelected(); cmd == nil {
-		t.Error("this machine's own error could not be cleared once it was known")
-	}
+	assert.NotNil(t, v.clearSelected(), "this machine's own error could not be cleared once it was known")
 }
 
 // TestInitialReadDoesNotOverwriteANewerPush is the regression guard for an
@@ -101,9 +80,8 @@ func TestInitialReadDoesNotOverwriteANewerPush(t *testing.T) {
 	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "errors:update", Params: params}})
 	v.Update(errorsLoadedMsg{errs: []svcerrors.ServiceError{{ID: "old", Message: "stale"}}})
 
-	if len(v.errs) != 1 || v.errs[0].ID != "new" {
-		t.Errorf("errors = %+v, want the pushed snapshot kept", v.errs)
-	}
+	require.Len(t, v.errs, 1, "the pushed snapshot must be kept")
+	assert.Equal(t, "new", v.errs[0].ID, "the pushed snapshot must be kept")
 }
 
 // TestErrorColumnsFitTheNarrowestTerminal checks the table's minimums fit the
@@ -120,12 +98,8 @@ func TestErrorColumnsFitTheNarrowestTerminal(t *testing.T) {
 			message = c.Width
 		}
 	}
-	if total > minTerminalWidth {
-		t.Errorf("columns take %d of %d columns", total, minTerminalWidth)
-	}
-	if message < 10 {
-		t.Errorf("MESSAGE is %d wide at the minimum width", message)
-	}
+	assert.LessOrEqual(t, total, minTerminalWidth, "columns must fit the terminal")
+	assert.GreaterOrEqual(t, message, 10, "MESSAGE must remain readable at the minimum width")
 }
 
 // TestErrorContextIsShownForTheSelectedRow is the guard for context the producer
@@ -151,11 +125,10 @@ func TestErrorContextIsShownForTheSelectedRow(t *testing.T) {
 	got := v.View()
 	// The display name, not the wire id: the operator sees "Ollama" everywhere
 	// else, and an error is a poor place to introduce a second name for it.
-	for _, want := range []string{"Ollama", "install", "llama3.2", "retry"} {
-		if !contains(got, want) {
-			t.Errorf("context %q is missing from the view:\n%s", want, got)
-		}
-	}
+	assert.Contains(t, got, "Ollama", "context must be shown in the view")
+	assert.Contains(t, got, "install", "context must be shown in the view")
+	assert.Contains(t, got, "llama3.2", "context must be shown in the view")
+	assert.Contains(t, got, "retry", "context must be shown in the view")
 }
 
 // TestErrorContextShowsTheFullMessage checks the detail block carries the whole
@@ -175,14 +148,10 @@ func TestErrorContextShowsTheFullMessage(t *testing.T) {
 	got := v.selectedContext()
 	// Compared word by word, since the block is wrapped across lines.
 	flat := strings.Join(strings.Fields(got), " ")
-	if !contains(flat, strings.Join(strings.Fields(long), " ")) {
-		t.Errorf("the full message is not in the detail block:\n%s", got)
-	}
+	assert.Contains(t, flat, strings.Join(strings.Fields(long), " "), "the full message must be in the detail block")
 	// And it must wrap rather than run off the side.
 	for _, line := range strings.Split(got, "\n") {
-		if len(line) > 80 {
-			t.Errorf("detail line is %d columns wide, past the terminal: %q", len(line), line)
-		}
+		assert.LessOrEqual(t, len(line), 80, "detail line must fit the terminal: %q", line)
 	}
 }
 
@@ -199,11 +168,10 @@ func TestErrorContextOmitsAbsentFields(t *testing.T) {
 	}})
 
 	got := v.selectedContext()
-	for _, unwanted := range []string{"engine ", "during ", "model ", "suggested"} {
-		if contains(got, unwanted) {
-			t.Errorf("context invented a %q field: %q", unwanted, got)
-		}
-	}
+	assert.NotContains(t, got, "engine ", "context must omit absent fields")
+	assert.NotContains(t, got, "during ", "context must omit absent fields")
+	assert.NotContains(t, got, "model ", "context must omit absent fields")
+	assert.NotContains(t, got, "suggested", "context must omit absent fields")
 }
 
 // TestErrorActionNoneIsNotAdvice checks the producer's way of saying "nothing to
@@ -220,12 +188,8 @@ func TestErrorActionNoneIsNotAdvice(t *testing.T) {
 	}})
 
 	got := v.selectedContext()
-	if contains(got, "suggested") {
-		t.Errorf("action=none was rendered as advice: %q", got)
-	}
-	if !contains(got, "LM Studio") {
-		t.Errorf("the engine was dropped along with it: %q", got)
-	}
+	assert.NotContains(t, got, "suggested", "action=none must not be rendered as advice")
+	assert.Contains(t, got, "LM Studio", "the engine must not be dropped along with it")
 }
 
 // TestErrorAgeRefreshesOnTick guards the column that used to freeze at whatever
@@ -240,9 +204,7 @@ func TestErrorAgeRefreshesOnTick(t *testing.T) {
 	}})
 
 	v.Update(TickMsg{})
-	if got := v.View(); !contains(got, "1m") {
-		t.Errorf("age did not refresh on the tick:\n%s", got)
-	}
+	assert.Contains(t, v.View(), "1m", "age must refresh on the tick")
 }
 
 var _ View = (*errorsView)(nil)

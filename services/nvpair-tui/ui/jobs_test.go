@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestJobsHistoryIsBounded is the guard for a leak in a program meant to be left
@@ -24,19 +26,12 @@ func TestJobsHistoryIsBounded(t *testing.T) {
 		})
 	}
 
-	if got := len(v.byKey); got > maxFinishedJobs {
-		t.Errorf("kept %d finished jobs, want at most %d", got, maxFinishedJobs)
-	}
-	if len(v.order) != len(v.byKey) {
-		t.Errorf("order (%d) and index (%d) disagree after eviction, so a key leaked",
-			len(v.order), len(v.byKey))
-	}
+	assert.LessOrEqual(t, len(v.byKey), maxFinishedJobs, "finished jobs are bounded")
+	assert.Len(t, v.order, len(v.byKey), "order and index disagree after eviction, so a key leaked")
 
 	// Eviction is oldest-first, so the most recent job must survive.
 	newest := workloadKey(workload{OriginatedFrom: "node", ID: fmt.Sprintf("job-%d", maxFinishedJobs+49)})
-	if _, ok := v.byKey[newest]; !ok {
-		t.Error("the newest finished job was evicted; eviction is not oldest-first")
-	}
+	assert.Contains(t, v.byKey, newest, "the newest finished job was evicted; eviction is not oldest-first")
 }
 
 // TestJobsNeverEvictsActiveWork checks the cap only reclaims finished jobs. An
@@ -53,9 +48,7 @@ func TestJobsNeverEvictsActiveWork(t *testing.T) {
 		})
 	}
 
-	if _, ok := v.byKey[workloadKey(workload{OriginatedFrom: "node", ID: "live"})]; !ok {
-		t.Error("a running job was evicted by history trimming")
-	}
+	assert.Contains(t, v.byKey, workloadKey(workload{OriginatedFrom: "node", ID: "live"}), "a running job was evicted by history trimming")
 }
 
 // TestJobsUpsertReplacesRatherThanDuplicating checks a job progressing through
@@ -66,12 +59,8 @@ func TestJobsUpsertReplacesRatherThanDuplicating(t *testing.T) {
 		v.upsert(workload{ID: "j1", OriginatedFrom: "node", State: state})
 	}
 
-	if len(v.order) != 1 {
-		t.Errorf("one job produced %d rows across its state changes", len(v.order))
-	}
-	if got := v.byKey[workloadKey(workload{OriginatedFrom: "node", ID: "j1"})].State; got != "completed" {
-		t.Errorf("state = %q, want the latest", got)
-	}
+	assert.Len(t, v.order, 1, "one row across a job's state changes")
+	assert.Equal(t, "completed", v.byKey[workloadKey(workload{OriginatedFrom: "node", ID: "j1"})].State, "latest state")
 }
 
 // TestJobsKeyIsScopedByOrigin checks two nodes can use the same job id without
@@ -81,9 +70,7 @@ func TestJobsKeyIsScopedByOrigin(t *testing.T) {
 	v.upsert(workload{ID: "1", OriginatedFrom: "node-a", State: "running"})
 	v.upsert(workload{ID: "1", OriginatedFrom: "node-b", State: "running"})
 
-	if len(v.order) != 2 {
-		t.Errorf("same id from two nodes collapsed into %d row(s)", len(v.order))
-	}
+	assert.Len(t, v.order, 2, "same id from two nodes must remain distinct")
 }
 
 // TestJobsKeyIsScopedByEngineAndRun is the same guard one level down. The ID
@@ -96,9 +83,7 @@ func TestJobsKeyIsScopedByEngineAndRun(t *testing.T) {
 	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "lmstudio", RunID: "r2", State: "running"})
 	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r3", State: "queued"})
 
-	if len(v.order) != 3 {
-		t.Errorf("three distinct jobs sharing an id collapsed into %d row(s)", len(v.order))
-	}
+	assert.Len(t, v.order, 3, "three distinct jobs sharing an id must remain distinct")
 }
 
 // TestJobsRemovalDropsEveryGeneration checks a removal takes out every job it
@@ -112,13 +97,9 @@ func TestJobsRemovalDropsEveryGeneration(t *testing.T) {
 
 	v.remove(workloadRef{origin: "node", id: "1"})
 
-	if len(v.order) != 1 || len(v.byKey) != 1 {
-		t.Fatalf("after removing id 1: %d ordered, %d indexed, want only id 2 left",
-			len(v.order), len(v.byKey))
-	}
-	if w := v.byKey[v.order[0]]; w.ID != "2" {
-		t.Errorf("the surviving job is %q, want 2", w.ID)
-	}
+	require.Len(t, v.order, 1, "only id 2 remains after removing id 1")
+	require.Len(t, v.byKey, 1, "only id 2 remains after removing id 1")
+	assert.Equal(t, "2", v.byKey[v.order[0]].ID, "surviving job")
 }
 
 // TestRemovedJobStaysRemovedWhenTheSnapshotLandsLater is the regression guard
@@ -136,23 +117,15 @@ func TestRemovedJobStaysRemovedWhenTheSnapshotLandsLater(t *testing.T) {
 	v.remove(workloadRef{origin: "node", id: "1"})
 	v.Update(workloadsLoadedMsg{workloads: []workload{gone, kept}})
 
-	if _, back := v.byKey[workloadKey(gone)]; back {
-		t.Error("a job removed before the snapshot landed was restored by it")
-	}
-	if _, ok := v.byKey[workloadKey(kept)]; !ok {
-		t.Error("the snapshot's other job was not merged")
-	}
+	assert.NotContains(t, v.byKey, workloadKey(gone), "a job removed before the snapshot landed was restored by it")
+	assert.Contains(t, v.byKey, workloadKey(kept), "the snapshot's other job was not merged")
 
 	// Once the baseline is in, the list is live and a new job with a reused
 	// id is simply new work.
 	again := workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r2", State: "running"}
 	v.upsert(again)
-	if _, ok := v.byKey[workloadKey(again)]; !ok {
-		t.Error("a later job reusing a removed id was refused")
-	}
-	if v.removedEarly != nil {
-		t.Error("removals were still being remembered after the baseline landed")
-	}
+	assert.Contains(t, v.byKey, workloadKey(again), "a later job reusing a removed id was refused")
+	assert.Empty(t, v.removedEarly, "removals were still being remembered after the baseline landed")
 }
 
 // TestNewestJobsLead checks new work is at the top of the table. In arrival
@@ -165,9 +138,7 @@ func TestNewestJobsLead(t *testing.T) {
 
 	rows := v.table.Rows()
 	got := []string{rows[0][0], rows[1][0], rows[2][0]}
-	if got[0] != "new" || got[1] != "mid" || got[2] != "old" {
-		t.Errorf("row order %v, want newest first", got)
-	}
+	assert.Equal(t, []string{"new", "mid", "old"}, got, "newest first")
 }
 
 // TestJobIDTellsSimultaneousJobsApart checks two jobs for the same model, from
@@ -175,18 +146,14 @@ func TestNewestJobsLead(t *testing.T) {
 func TestJobIDTellsSimultaneousJobsApart(t *testing.T) {
 	cases := map[string]string{"1": "1", "123456": "123456", "burst-1042": "…-1042"}
 	for id, want := range cases {
-		if got := shortJobID(id); got != want {
-			t.Errorf("shortJobID(%q) = %q, want %q", id, got, want)
-		}
+		assert.Equal(t, want, shortJobID(id), "shortJobID(%q)", id)
 	}
 
 	v := newJobsView(nil)
 	v.upsert(workload{ID: "7", Model: "m", OriginatedFrom: "n", State: "running", CreatedAt: 5})
 	v.upsert(workload{ID: "8", Model: "m", OriginatedFrom: "n", State: "running", CreatedAt: 5})
 	rows := v.table.Rows()
-	if rows[0][0] == rows[1][0] {
-		t.Errorf("two different jobs show the same ID %q", rows[0][0])
-	}
+	assert.NotEqual(t, rows[0][0], rows[1][0], "two different jobs must show different IDs")
 }
 
 // TestFailedStartupReadsAreRetried checks a subscription or identity read that
@@ -202,22 +169,17 @@ func TestFailedStartupReadsAreRetried(t *testing.T) {
 		cmd = v.Update(TickMsg{})
 	}
 	batch, ok := cmd().(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("the poll tick returned %T, want a batch", cmd())
-	}
+	require.True(t, ok, "the poll tick must return a batch")
 	// The proxy refresh, the feed retry, and the identity retry.
-	if len(batch) < 3 {
-		t.Errorf("the poll tick scheduled %d command(s), want the two retries alongside the proxy read", len(batch))
-	}
+	assert.GreaterOrEqual(t, len(batch), 3, "the two retries alongside the proxy read")
 
 	// Once both have succeeded, nothing is left to retry.
 	v.Update(workloadsSubscribedMsg{})
 	v.Update(workloadsLoadedMsg{})
 	v.Update(jobsIdentityMsg{id: clusterIdentity{NodeUUID: "self"}})
-	if !v.subscribed || !v.baselined || !v.identified {
-		t.Errorf("after both reads succeeded: subscribed=%v baselined=%v identified=%v",
-			v.subscribed, v.baselined, v.identified)
-	}
+	assert.True(t, v.subscribed, "after both reads succeeded")
+	assert.True(t, v.baselined, "after both reads succeeded")
+	assert.True(t, v.identified, "after both reads succeeded")
 }
 
 var _ View = (*jobsView)(nil)

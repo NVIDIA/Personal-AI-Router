@@ -92,24 +92,16 @@ func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
 func TestBundledLlamaCPPDisablesCORSByDefault(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	manifest, ok := reg.Get("llamacpp")
-	if !ok {
-		t.Fatal("llama.cpp manifest not loaded")
-	}
+	require.True(t, ok, "llama.cpp manifest not loaded")
 	for platform, config := range manifest.Platforms {
 		t.Run(platform, func(t *testing.T) {
 			e := settingsExecutor(t, false)
 			graftPlatform(t, e, config)
 			state, err := e.LaunchSettings("fake")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			got, err := launchCORSAssignments(state.LaunchText, config.Runtime.EditableLaunch)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if want := []string{"cors.origins="}; !slices.Equal(got, want) {
-				t.Fatalf("default CORS policy = %v, want %v", got, want)
-			}
+			require.NoError(t, err)
+			require.Equal(t, []string{"cors.origins="}, got, "default CORS policy")
 		})
 	}
 }

@@ -152,13 +152,9 @@ func TestHTTPActionSendsStringParamsInQuery(t *testing.T) {
 	defer srv.Close()
 
 	serverURL, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse test server URL: %v", err)
-	}
+	require.NoError(t, err, "parse test server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
+	require.NoError(t, err, "parse test server port")
 
 	m := testEngineManifest(fakeEngineBin)
 	m.Engine = "llamacpp"
@@ -177,9 +173,7 @@ func TestHTTPActionSendsStringParamsInQuery(t *testing.T) {
 
 	ex := newTestExecutor(t, m)
 	st, err := ex.state("llamacpp")
-	if err != nil {
-		t.Fatalf("state: %v", err)
-	}
+	require.NoError(t, err, "state")
 	st.running = true
 
 	const model = "owner/repository:Q4_K_M"
@@ -189,48 +183,25 @@ func TestHTTPActionSendsStringParamsInQuery(t *testing.T) {
 		"delete_model",
 		json.RawMessage(`{"model":"owner/repository:Q4_K_M"}`),
 	)
-	if err != nil {
-		t.Fatalf("delete_model: %v", err)
-	}
+	require.NoError(t, err, "delete_model")
 	var result struct {
 		Success bool `json:"success"`
 	}
-	if err := json.Unmarshal(res, &result); err != nil {
-		t.Fatalf("decode delete response: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("delete response = %s, want success", res)
-	}
+	require.NoError(t, json.Unmarshal(res, &result), "decode delete response")
+	require.True(t, result.Success, "delete response must succeed")
 
 	got := <-observed
-	if got.readErr != nil {
-		t.Fatalf("read request body: %v", got.readErr)
-	}
-	if got.method != http.MethodDelete {
-		t.Errorf("method = %q, want %q", got.method, http.MethodDelete)
-	}
-	if got.model != model {
-		t.Errorf("model query = %q, want %q", got.model, model)
-	}
-	if got.rawQuery != "model=owner%2Frepository%3AQ4_K_M" {
-		t.Errorf("raw query = %q, want URL-encoded model id", got.rawQuery)
-	}
-	if len(got.body) != 0 {
-		t.Errorf("body = %q, want empty", got.body)
-	}
-	if got.contentType != "" {
-		t.Errorf("Content-Type = %q, want empty without a body", got.contentType)
-	}
+	require.NoError(t, got.readErr, "read request body")
+	assert.Equal(t, http.MethodDelete, got.method)
+	assert.Equal(t, model, got.model)
+	assert.Equal(t, "model=owner%2Frepository%3AQ4_K_M", got.rawQuery, "model id must be URL encoded")
+	assert.Empty(t, got.body)
+	assert.Empty(t, got.contentType, "Content-Type must be empty without a body")
 }
 
 func TestHTTPActionRejectsNonStringQueryParams(t *testing.T) {
 	_, err := actionQueryParams(json.RawMessage(`{"model":42}`))
-	if err == nil {
-		t.Fatal("non-string query param accepted")
-	}
-	if !strings.Contains(err.Error(), "string values") {
-		t.Fatalf("error = %q, want string-values requirement", err)
-	}
+	require.ErrorContains(t, err, "string values", "non-string query param accepted")
 }
 
 func TestEngineLifecycle(t *testing.T) {

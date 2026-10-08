@@ -13,6 +13,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // stubView renders a fixed block of rows, optionally far more (and far wider)
@@ -65,12 +67,8 @@ func TestViewFrameIsExactlyTerminalSized(t *testing.T) {
 			m := New(nil, nil, []View{tc.view})
 			m.width, m.height = termWidth, termHeight
 			out := m.View()
-			if got := lipgloss.Height(out); got != termHeight {
-				t.Errorf("frame is %d rows, terminal is %d", got, termHeight)
-			}
-			if got := lipgloss.Width(out); got > termWidth {
-				t.Errorf("frame is %d columns wide, terminal is %d", got, termWidth)
-			}
+			assert.Equal(t, termHeight, lipgloss.Height(out), "frame height")
+			assert.LessOrEqual(t, lipgloss.Width(out), termWidth, "frame width")
 		})
 	}
 }
@@ -131,14 +129,8 @@ func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
 						}
 						m.resizeViews()
 						out := m.View()
-						if got := lipgloss.Height(out); got != h {
-							t.Fatalf("%s at %dx%d (full help %v, banner %v): frame is %d rows",
-								s.name, w, h, fullHelp, banner, got)
-						}
-						if got := lipgloss.Width(out); got > w {
-							t.Fatalf("%s at %dx%d (full help %v, banner %v): frame is %d columns",
-								s.name, w, h, fullHelp, banner, got)
-						}
+						require.Equal(t, h, lipgloss.Height(out), "%s at %dx%d (full help %v, banner %v)", s.name, w, h, fullHelp, banner)
+						require.LessOrEqual(t, lipgloss.Width(out), w, "%s at %dx%d (full help %v, banner %v)", s.name, w, h, fullHelp, banner)
 					}
 				}
 			}
@@ -158,14 +150,10 @@ func TestMinimumWidthKeepsNavigationVisible(t *testing.T) {
 	m = updated.(Model)
 
 	lines := strings.Split(m.View(), "\n")
-	if !strings.Contains(lines[1], "Logs") {
-		t.Errorf("last tab is hidden at minimum width: %q", lines[1])
-	}
+	assert.Contains(t, lines[1], "Logs", "last tab is hidden at minimum width")
 	footer := lines[len(lines)-1]
 	for _, want := range []string{"quit", "help"} {
-		if !strings.Contains(footer, want) {
-			t.Errorf("footer hides %q at minimum width: %q", want, footer)
-		}
+		assert.Contains(t, footer, want, "footer at minimum width")
 	}
 
 	// With an error count the names no longer fit, and every tab must still be
@@ -176,17 +164,11 @@ func TestMinimumWidthKeepsNavigationVisible(t *testing.T) {
 		}
 	}
 	bar := strings.Split(m.View(), "\n")[1]
-	if got := lipgloss.Width(bar); got > minTerminalWidth {
-		t.Fatalf("tab bar is %d wide at %d columns: %q", got, minTerminalWidth, bar)
-	}
+	require.LessOrEqual(t, lipgloss.Width(bar), minTerminalWidth, "tab bar: %q", bar)
 	for i := range m.views {
-		if !strings.Contains(bar, strconv.Itoa(i+1)) {
-			t.Errorf("tab %d has no number on the bar at minimum width: %q", i+1, bar)
-		}
+		assert.Contains(t, bar, strconv.Itoa(i+1), "tab number at minimum width")
 	}
-	if !strings.Contains(bar, m.activeView().Title()) {
-		t.Errorf("the active tab is not named at minimum width: %q", bar)
-	}
+	assert.Contains(t, bar, m.activeView().Title(), "the active tab is named at minimum width")
 }
 
 // TestFrameStaysExactWithTheUpdateBanner is the arithmetic check for the notice
@@ -211,14 +193,12 @@ func TestFrameStaysExactWithTheUpdateBanner(t *testing.T) {
 			plain := m.contentHeight()
 			m = send(m, updateCheckMsg{latest: "0.92.0"})
 
-			if got := lipgloss.Height(m.View()); got != h {
-				t.Fatalf("height %d, tab %d: frame is %d rows with the banner up", h, i+1, got)
-			}
+			require.Equal(t, h, lipgloss.Height(m.View()), "height %d, tab %d: frame with the banner up", h, i+1)
 			// One row taken, unless the budget had already bottomed out at its
 			// floor of one — below that there is nothing left to give.
-			if withBanner := m.contentHeight(); plain > 1 && withBanner != plain-1 {
-				t.Fatalf("height %d, tab %d: budget %d -> %d, want one row taken",
-					h, i+1, plain, withBanner)
+			withBanner := m.contentHeight()
+			if plain > 1 {
+				require.Equal(t, plain-1, withBanner, "height %d, tab %d: one row taken from budget", h, i+1)
 			}
 		}
 	}
@@ -240,23 +220,17 @@ func TestLeavingATabReturnsItToItsOwnFirstScreen(t *testing.T) {
 
 	m := newTestModel(nodes, &stubView{title: "Jobs", rows: 1})
 	nodes.openDetail()
-	if nodes.detail == nil {
-		t.Fatal("the detail screen did not open")
-	}
+	require.NotNil(t, nodes.detail, "the detail screen did not open")
 
 	m.selectTab(1)
-	if nodes.detail != nil {
-		t.Error("leaving the tab left the drill-down open")
-	}
+	assert.Nil(t, nodes.detail, "leaving the tab left the drill-down open")
 
 	// And the tab still works normally on return: opening one again, then
 	// coming back to it directly, also lands on the list.
 	m.selectTab(0)
 	nodes.openDetail()
 	m.selectTab(0)
-	if nodes.detail != nil {
-		t.Error("re-selecting the tab did not return to the list")
-	}
+	assert.Nil(t, nodes.detail, "re-selecting the tab did not return to the list")
 }
 
 // TestViewFrameHeightAcrossTerminalSizes checks the budget holds at the small
@@ -265,9 +239,7 @@ func TestViewFrameHeightAcrossTerminalSizes(t *testing.T) {
 	for _, h := range []int{4, 5, 10, 24, 60} {
 		m := New(nil, nil, []View{&stubView{title: "T", rows: 100, width: 10}})
 		m.width, m.height = 80, h
-		if got := lipgloss.Height(m.View()); got != h {
-			t.Errorf("height %d: frame is %d rows", h, got)
-		}
+		assert.Equal(t, h, lipgloss.Height(m.View()), "frame height")
 	}
 }
 
@@ -275,9 +247,7 @@ func TestViewFrameHeightAcrossTerminalSizes(t *testing.T) {
 // zero-sized frame before the terminal size arrives.
 func TestViewBeforeFirstResize(t *testing.T) {
 	m := New(nil, nil, []View{&stubView{title: "T", rows: 3, width: 10}})
-	if out := m.View(); out != "starting..." {
-		t.Errorf("pre-resize view = %q, want the placeholder", out)
-	}
+	assert.Equal(t, "starting...", m.View(), "pre-resize placeholder")
 }
 
 // TestJumpDigitsMatchTheTabsExactly checks the digit binding is neither short
@@ -292,12 +262,8 @@ func TestJumpDigitsMatchTheTabsExactly(t *testing.T) {
 	views := defaultViews(nil)
 	keys := newGlobalKeyMap(len(views)).JumpTab
 
-	if got, want := len(keys.Keys()), len(views); got != want {
-		t.Errorf("%d jump digits (%v) for %d tabs", got, keys.Keys(), want)
-	}
-	if got, want := keys.Help().Key, "1-"+strconv.Itoa(len(views)); got != want {
-		t.Errorf("footer advertises %q, want %q", got, want)
-	}
+	assert.Len(t, keys.Keys(), len(views), "jump digits match tabs")
+	assert.Equal(t, "1-"+strconv.Itoa(len(views)), keys.Help().Key, "footer digit range")
 }
 
 // TestJumpDigitsLabelDegenerateCounts covers the label at the edges, since it is
@@ -305,9 +271,7 @@ func TestJumpDigitsMatchTheTabsExactly(t *testing.T) {
 func TestJumpDigitsLabelDegenerateCounts(t *testing.T) {
 	cases := map[int]string{1: "1", 2: "1-2", 5: "1-5", 9: "1-9"}
 	for tabs, want := range cases {
-		if got := tabDigitsHelp(tabs); got != want {
-			t.Errorf("%d tabs labelled %q, want %q", tabs, got, want)
-		}
+		assert.Equal(t, want, tabDigitsHelp(tabs), "%d tabs", tabs)
 	}
 }
 
@@ -325,9 +289,7 @@ func (c *closingView) close() { c.closed = true }
 func TestViewsAreReleasedWithoutTheFinalModel(t *testing.T) {
 	holding := &closingView{stubView: stubView{title: "Jobs"}}
 	closeViews([]View{&stubView{title: "Nodes"}, holding})
-	if !holding.closed {
-		t.Error("a view holding children was not released")
-	}
+	assert.True(t, holding.closed, "a view holding children was not released")
 }
 
 // TestMoreTabsThanDigitsIsRefused checks a tenth tab fails loudly instead of
@@ -335,9 +297,7 @@ func TestViewsAreReleasedWithoutTheFinalModel(t *testing.T) {
 // mistake in how the shell was put together, found on the first run.
 func TestMoreTabsThanDigitsIsRefused(t *testing.T) {
 	defer func() {
-		if recover() == nil {
-			t.Error("a tenth tab was accepted without a key to select it")
-		}
+		assert.NotNil(t, recover(), "a tenth tab was accepted without a key to select it")
 	}()
 	newGlobalKeyMap(maxTabs + 1)
 }
@@ -345,9 +305,7 @@ func TestMoreTabsThanDigitsIsRefused(t *testing.T) {
 // TestTheShellFitsItsDigitKeys keeps the real tab set inside that limit, so the
 // panic above is never what finds it.
 func TestTheShellFitsItsDigitKeys(t *testing.T) {
-	if n := len(defaultViews(nil)); n > maxTabs {
-		t.Errorf("%d tabs, but only %d have a digit key", n, maxTabs)
-	}
+	assert.LessOrEqual(t, len(defaultViews(nil)), maxTabs, "tabs have digit keys")
 }
 
 // TestDigitKeysSelectTabs pins the shortcut the numbered tab bar advertises.
@@ -364,18 +322,12 @@ func TestDigitKeysSelectTabs(t *testing.T) {
 	}
 
 	press("3")
-	if m.active != 2 {
-		t.Errorf("after '3', active = %d, want 2", m.active)
-	}
+	assert.Equal(t, 2, m.active, "after '3'")
 	press("1")
-	if m.active != 0 {
-		t.Errorf("after '1', active = %d, want 0", m.active)
-	}
+	assert.Equal(t, 0, m.active, "after '1'")
 	// Out of range for three tabs: the selection must not move.
 	press("9")
-	if m.active != 0 {
-		t.Errorf("after out-of-range '9', active = %d, want 0", m.active)
-	}
+	assert.Equal(t, 0, m.active, "after out-of-range '9'")
 }
 
 // TestTabWrapsBothDirections checks prev from the first tab lands on the last
@@ -386,13 +338,9 @@ func TestTabWrapsBothDirections(t *testing.T) {
 		&stubView{title: "Two", rows: 1},
 	)
 	m.selectTab(-1)
-	if m.active != 1 {
-		t.Errorf("selectTab(-1) = %d, want 1", m.active)
-	}
+	assert.Equal(t, 1, m.active, "selectTab(-1)")
 	m.selectTab(2)
-	if m.active != 0 {
-		t.Errorf("selectTab(2) = %d, want 0", m.active)
-	}
+	assert.Equal(t, 0, m.active, "selectTab(2)")
 }
 
 // TestErrorTabLabelCarriesTheCount checks the tab bar is the error indicator, so
@@ -400,28 +348,20 @@ func TestTabWrapsBothDirections(t *testing.T) {
 func TestErrorTabLabelCarriesTheCount(t *testing.T) {
 	v := newErrorsView(nil)
 
-	if got := v.Title(); got != "Errors" {
-		t.Errorf("clean label = %q, want a bare title", got)
-	}
+	assert.Equal(t, "Errors", v.Title(), "clean label")
 
 	v.setErrors([]svcerrors.ServiceError{{ID: "a", Message: "boom", Severity: "error"}})
-	if got := v.Title(); got != "Errors (1)" {
-		t.Errorf("label = %q, want a count", got)
-	}
+	assert.Equal(t, "Errors (1)", v.Title(), "label carries count")
 
 	v.setErrors([]svcerrors.ServiceError{
 		{ID: "a", Message: "boom", Severity: "error"},
 		{ID: "b", Message: "meh", Severity: "warning"},
 	})
-	if got := v.Title(); got != "Errors (2)" {
-		t.Errorf("label = %q, want the updated count", got)
-	}
+	assert.Equal(t, "Errors (2)", v.Title(), "label carries updated count")
 
 	// Clearing the last error takes the count away again.
 	v.setErrors(nil)
-	if got := v.Title(); got != "Errors" {
-		t.Errorf("label = %q after clearing, want a bare title", got)
-	}
+	assert.Equal(t, "Errors", v.Title(), "bare title after clearing")
 }
 
 // TestErrorsTabIsReachableLikeAnyOther checks it behaves as a plain tab: the
@@ -436,19 +376,13 @@ func TestErrorsTabIsReachableLikeAnyOther(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
 	m = updated.(Model)
-	if m.active != 2 {
-		t.Fatalf("digit 3 selected tab %d, want the errors tab", m.active)
-	}
-	if m.activeView() != View(errors) {
-		t.Error("active view is not the errors tab")
-	}
+	require.Equal(t, 2, m.active, "digit 3 selects the errors tab")
+	assert.Same(t, errors, m.activeView(), "active view is not the errors tab")
 
 	// And tabbing away works, unlike an overlay that had to be dismissed.
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
 	m = updated.(Model)
-	if m.active != 0 {
-		t.Error("could not leave the errors tab with a digit")
-	}
+	assert.Equal(t, 0, m.active, "could not leave the errors tab with a digit")
 }
 
 // TestErrorsTabFrameStaysBounded checks a long error list obeys the same frame
@@ -465,22 +399,12 @@ func TestErrorsTabFrameStaysBounded(t *testing.T) {
 	errors.setErrors(errs)
 
 	out := m.View()
-	if got := lipgloss.Height(out); got != m.height {
-		t.Errorf("frame is %d rows, terminal is %d", got, m.height)
-	}
-	if got := lipgloss.Width(out); got > m.width {
-		t.Errorf("frame is %d columns, terminal is %d", got, m.width)
-	}
+	assert.Equal(t, m.height, lipgloss.Height(out), "frame height")
+	assert.LessOrEqual(t, lipgloss.Width(out), m.width, "frame width")
 }
 
 func TestFitLines(t *testing.T) {
-	if got := fitLines("a\nb\nc", 2); got != "a\nb" {
-		t.Errorf("truncate: got %q", got)
-	}
-	if got := fitLines("a", 3); got != "a\n\n" {
-		t.Errorf("pad: got %q", got)
-	}
-	if got := fitLines("a\nb", 2); got != "a\nb" {
-		t.Errorf("exact: got %q", got)
-	}
+	assert.Equal(t, "a\nb", fitLines("a\nb\nc", 2), "truncate")
+	assert.Equal(t, "a\n\n", fitLines("a", 3), "pad")
+	assert.Equal(t, "a\nb", fitLines("a\nb", 2), "exact")
 }

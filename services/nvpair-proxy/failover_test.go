@@ -481,20 +481,17 @@ func TestHandleHTTP_LlamaCPPModelListsAggregateFleet(t *testing.T) {
 	for _, path := range []string{"/models", "/v1/models"} {
 		t.Run(path, func(t *testing.T) {
 			profile, ok := profileFor("llamacpp")
-			if !ok {
-				t.Fatal("llamacpp profile missing")
-			}
+			require.True(t, ok, "llamacpp profile missing")
 			serve := func(body string, hits *atomic.Int32) *httptest.Server {
 				t.Helper()
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					hits.Add(1)
-					if r.Method != http.MethodGet || r.URL.Path != "/models" || r.URL.RawQuery != "scope=all" {
-						t.Errorf("upstream request = %s %s?%s, want GET /models?scope=all", r.Method, r.URL.Path, r.URL.RawQuery)
-					}
+					assert.Equal(t, http.MethodGet, r.Method, "upstream request method")
+					assert.Equal(t, "/models", r.URL.Path, "upstream request path")
+					assert.Equal(t, "scope=all", r.URL.RawQuery, "upstream request query")
 					w.Header().Set("Content-Type", "application/json")
-					if _, err := io.WriteString(w, body); err != nil {
-						t.Errorf("write model list: %v", err)
-					}
+					_, err := io.WriteString(w, body)
+					assert.NoError(t, err, "write model list")
 				}))
 				t.Cleanup(server.Close)
 				return server
@@ -510,9 +507,7 @@ func TestHandleHTTP_LlamaCPPModelListsAggregateFleet(t *testing.T) {
 			rec := httptest.NewRecorder()
 			f.handleHTTP(rec, httptest.NewRequest(http.MethodGet, path+"?scope=all", nil))
 
-			if rec.Code != http.StatusOK {
-				t.Fatalf("model list status = %d, want %d", rec.Code, http.StatusOK)
-			}
+			require.Equal(t, http.StatusOK, rec.Code, "model list status")
 			var got struct {
 				Object string `json:"object"`
 				Data   []struct {
@@ -520,27 +515,24 @@ func TestHandleHTTP_LlamaCPPModelListsAggregateFleet(t *testing.T) {
 					OwnedBy string `json:"owned_by"`
 				} `json:"data"`
 			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-				t.Fatalf("decode model list: %v", err)
-			}
-			if got.Object != "list" || len(got.Data) != 3 {
-				t.Fatalf("model list = %+v, want list envelope with three deduplicated models", got)
-			}
-			if got.Data[0].ID != "a" || got.Data[1].ID != "shared" || got.Data[1].OwnedBy != "first" || got.Data[2].ID != "c" {
-				t.Fatalf("models = %+v, want a, shared(first), c", got.Data)
-			}
-			if aHits.Load() != 1 || bHits.Load() != 1 {
-				t.Fatalf("upstream requests: a=%d, b=%d, want one per node despite selecting a", aHits.Load(), bHits.Load())
-			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got), "decode model list")
+			require.Equal(t, "list", got.Object)
+			require.Len(t, got.Data, 3, "three deduplicated models")
+			require.Equal(t, "a", got.Data[0].ID)
+			require.Equal(t, "shared", got.Data[1].ID)
+			require.Equal(t, "first", got.Data[1].OwnedBy)
+			require.Equal(t, "c", got.Data[2].ID)
+			require.Equal(t, int32(1), aHits.Load(), "one request per node despite selecting a")
+			require.Equal(t, int32(1), bHits.Load(), "one request per node despite selecting a")
 		})
 	}
 }
 
 func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/models" || r.URL.RawQuery != "scope=all" {
-			t.Errorf("upstream request = %s %s?%s, want GET /models?scope=all", r.Method, r.URL.Path, r.URL.RawQuery)
-		}
+		assert.Equal(t, http.MethodGet, r.Method, "upstream request method")
+		assert.Equal(t, "/models", r.URL.Path, "upstream request path")
+		assert.Equal(t, "scope=all", r.URL.RawQuery, "upstream request query")
 		_, _ = io.WriteString(w, `{"data":[{"id":"remapped"}]}`)
 	}))
 	defer upstream.Close()
@@ -557,9 +549,8 @@ func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {
 	testProxy(profile, disc, profile.FacadePort).soleFacade().
 		handleHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models?scope=all", nil))
 
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"remapped"`) {
-		t.Fatalf("response = %d %s, want remapped model list", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "remapped model list")
+	require.Contains(t, rec.Body.String(), `"id":"remapped"`, "remapped model list")
 }
 
 func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
