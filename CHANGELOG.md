@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 0.1.14 — Engine install no longer shows a fake percentage (#145)
+
+- Installing an engine no longer sits at a made-up 75%. Download progress still shows a real percentage; the install step itself now shows "Installing" with no number.
+
 ## 0.1.13 — Uninstalling keeps your downloaded models (#150)
 
 - Uninstalling an engine keeps the models it downloaded. Uninstalling LM Studio no longer deletes `~/.lmstudio/models`.
