@@ -175,11 +175,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
-	vars := map[string]string{
-		"host":        effectiveBind(rt.Bind, opts.Bind),
-		"port":        strconv.Itoa(port),
-		"install_dir": st.installDir,
-	}
+	vars := st.pathVars()
+	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -516,7 +514,8 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	if sp == nil || len(sp.Cmd) == 0 {
 		return fmt.Errorf("cannot stop engine %q: no stop command is configured", engine)
 	}
-	vars := map[string]string{"port": strconv.Itoa(port), "install_dir": st.installDir}
+	vars := st.pathVars()
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}

@@ -122,9 +122,9 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `manifest_version` | int | yes | Must be `1`. A higher value is rejected (asks for behavior this binary lacks). Unknown optional fields within a supported version are ignored, so the schema can grow additively. |
 | `platforms` | object | yes | Map of `"<goos>/<goarch>"` → platform block (e.g. `"windows/amd64"`, `"darwin/arm64"`, `"linux/amd64"`). At least one entry. The runner selects the block matching the host. |
 | `actions` | object | no | Map of action name → action (see below). |
-| `detect` / `install` / `uninstall` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
+| `detect` / `install` / `uninstall` / `models_dir` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
 
-**Shared defaults & per-platform overrides.** The platform-level fields `detect`, `install`, `uninstall`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
+**Shared defaults & per-platform overrides.** The platform-level fields `detect`, `install`, `uninstall`, `models_dir`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
 
 ## Platform block
 
@@ -132,8 +132,74 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 |---|---|---|---|
 | `detect` | string[] | no | Paths that, if any exists, mean the engine is already installed. Supports OS env refs (`%VAR%`, `$VAR`), a leading `~`, and the `{install_dir}` placeholder. |
 | `install` | object | no | How to obtain the engine (see Install). Omit for engines that are only ever detected/launched. |
-| `uninstall` | object | no | `{ "run": [...] }` — argv to remove a user-mode install (the engine's own uninstaller, or `rm -rf {install_dir}`). Backs `engine:uninstall`; placeholders resolved, OS env refs expanded. |
+| `uninstall` | object | no | How to remove a user-mode install (see Uninstall). Backs `engine:uninstall`. |
+| `models_dir` | string | required with `uninstall.remove` | The engine's on-disk model store, available as `{models_dir}`. **Must be a literal path** — a template is rejected, so the store can never be derived from `{install_dir}`. See Model stores. |
 | `runtime` | object | yes | How to launch + probe the engine (see Runtime). |
+
+### Uninstall
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `run` | string[] | at least one of the two | argv for work only a command can do: stopping the engine's own daemon, or invoking a vendor uninstaller. Placeholders resolved, OS env refs expanded. |
+| `remove` | string[] | at least one of the two | Trees engine-manager deletes itself, skipping `models_dir`. Prefer this over an `rm -rf` in `run`. |
+
+Both may be set, and `lmstudio.json` sets both: `run` executes first, then the
+`remove` targets in order, and the pair is retried as a unit.
+
+Use `remove` for deleting files. The runner knows what `remove` targets, so it
+can keep the model store out of it; it cannot inspect a shell string, so a
+deletion in `run` would bypass that guarantee. The tests scan each `run`
+argument for deleting constructs (`rm -r`, `rmdir`, `rd /s`, `Remove-Item`,
+`del /`) rather than just its executable name, because the uninstall this rule
+exists for was an entire shell script in one `sh -c` argument.
+
+A `remove` entry may **contain** the model store — LM Studio's engine and its
+downloads both live under `~/.lmstudio` — in which case everything except the
+store is removed. Rejected at load: a target that is the store, a target inside
+it, a target spelled `{models_dir}`, and `remove` without a `models_dir` to
+preserve.
+
+Removal is best-effort within a tree. An engine still holding one file open
+leaves that remnant behind rather than stopping the walk, and the uninstall's
+verdict comes from whether the engine is still detected — half-removing an
+engine and then reporting failure would leave the user retrying something that
+already worked. A symlinked target is unlinked, never descended into.
+
+### Model stores
+
+Model weights are the most expensive thing on a user's disk and the only thing
+PAIR cannot replace for them. Two separate removals have to leave them alone:
+
+1. **`engine:uninstall`**, which removes the engine. The runner skips
+   `models_dir` in every `uninstall.remove` target, so this is handled as long
+   as file deletion goes through `remove` rather than a command. The same
+   applies to the app uninstaller's `--uninstall-managed` pass, which removes
+   the engines PAIR installed and preserves every store.
+2. **The app-level "remove all data" uninstall**, which deletes the entire app
+   data directory. Nothing can exempt a subdirectory of it, so the only defense
+   is for `models_dir` to resolve somewhere else entirely.
+
+That second one is why `models_dir` must be a literal path: `{install_dir}` is
+inside the app data root, so any store derived from it is destroyed when a user
+uninstalls the app — even though the prompt promises their models are kept, and
+even though no engine uninstall ever touched them.
+
+Declare the engine's own default where it has one, so PAIR and a user's own copy
+of that engine share a library rather than downloading the same weights twice.
+Ollama (`~/.ollama`) and LM Studio (`~/.lmstudio/models`) both work that way:
+PAIR leaves their location alone and simply names it. `~/.llamacpp` is **PAIR's
+own choice** — llama.cpp defaults to a platform cache directory instead — which
+is why the manifest has to set `LLAMA_CACHE` explicitly. What matters for either
+kind is a stable path in the user's home, outside the app data root.
+
+Note that a store may be broader than the weights alone. `~/.ollama` also holds
+Ollama's keys and history; naming the parent protects those too, which is the
+safer side to err on.
+
+`TestBundledModelStoresOutliveTheAppDataRoot` checks every bundled manifest's
+platform blocks. Its app-data-root comparison is textual, so it holds for every
+target platform; the additional check against the resolved data directory
+applies to the host the test runs on.
 
 ### Install
 
@@ -310,6 +376,7 @@ validation at load:
 | `{download}` | Path of the verified download | `install.run` |
 | `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
 | `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
+| `{models_dir}` | The platform's `models_dir`, expanded | `detect`, runtime args/env, `uninstall.run`, actions. **Not** `install`, which resolves only `{install_dir}` and the download paths — and not `uninstall.remove`, where naming the store is rejected at load. Unset when the platform declares no store, so a template referencing it then fails to resolve rather than silently becoming a path under `/` |
 
 A `cmd` action additionally templates the action's own `params` as
 placeholders (e.g. `{model}`), resolved at call time. HTTP actions send
@@ -326,7 +393,11 @@ field is missing, `manifest_version` is unsupported, a platform key isn't
 nor nonempty `artifacts`, `fetch` or nonempty `artifacts` is present without
 nonempty `install.run`, `install.script` is combined with
 `fetch`/`artifacts`/`run`, `install.mode` or
-`runtime.mode` is invalid, an action sets none or more than one of
+`runtime.mode` is invalid, `models_dir` is a template rather than a literal
+path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
+is present without a `models_dir` to preserve, an `uninstall.remove` target is
+the model store or inside it (whether spelled literally or as `{models_dir}`),
+an action sets none or more than one of
 `http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
 both `array` and `field` (or a
@@ -401,7 +472,11 @@ script. It is still added with **no code** — using `mode: "command"`, a
         "run": ["bash", "{download}"],
         "mode": "user"
       },
-      "uninstall": { "run": ["rm", "-rf", "~/.lmstudio"] },
+      "models_dir": "~/.lmstudio/models",
+      "uninstall": {
+        "run": ["sh", "-c", "pkill -x lms 2>/dev/null; sleep 2; exit 0"],
+        "remove": ["~/.lmstudio"]
+      },
       "runtime": {
         "mode": "command",
         "cli": "~/.lmstudio/bin/lms",
@@ -448,7 +523,7 @@ GPU selection, and auth.
 | **GPT4All** | weak (GUI app) | none (Local API Server toggled in the GUI, `:4891`) | desktop settings / Python SDK — not env | OpenAI `/v1` once enabled in-app |
 
 Caveats worth encoding when authoring these:
-- **Ollama `OLLAMA_MODELS`**: leave it at the default (`~/.ollama`) so models survive an `uninstall` that removes `{install_dir}` — **never** point it inside `{install_dir}`.
+- **Model store location**: leave each engine's model cache at the engine's own default — `~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models` — and declare that path as `models_dir`. Never point one inside `{install_dir}` or anywhere else under the app data root: `uninstall` skips `models_dir`, but the app-level "remove all data" uninstall deletes the entire app data root and nothing can exempt a subdirectory of it. See Model stores.
 - **llama.cpp** ships prebuilt archives with **published SHA-256s**, so it's an ideal checksum-pinned `fetch`+`run` target (no placeholder SHA needed).
 - **LM Studio** model dir is settings-controlled (no documented relocation env); surface its config as flags/API, not env.
 - **vLLM**: native Windows is unsupported (WSL only); the bind is a flag, not env.

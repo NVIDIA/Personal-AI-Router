@@ -73,6 +73,14 @@ type Platform struct {
 	Install   *Install   `json:"install,omitempty"`
 	Uninstall *Uninstall `json:"uninstall,omitempty"`
 	Runtime   Runtime    `json:"runtime"`
+	// ModelsDir is the engine's on-disk model store, referenced elsewhere as
+	// {models_dir}. Nothing this service removes may delete it: Uninstall skips
+	// it, and the app-level data purge never reaches it because validation
+	// rejects a models_dir that is a placeholder (and therefore cannot be
+	// derived from the install directory, which lives under the app data root).
+	// Declare the engine's real default — the path it would use on its own —
+	// so PAIR and a user's own copy of the engine share one library.
+	ModelsDir string `json:"models_dir,omitempty"`
 }
 
 // Install describes how to obtain the engine in user mode. Fetch may be
@@ -93,11 +101,15 @@ type Install struct {
 	Mode string `json:"mode,omitempty"`
 }
 
-// Uninstall removes a user-mode install by running the engine's own
-// uninstaller (or removing its install dir). No download/checksum —
-// it only runs a local command.
+// Uninstall removes a user-mode install. Run is for work only a command can do
+// — stopping the engine's own daemon, or invoking a vendor uninstaller. Remove
+// lists the trees this service deletes itself, which is how model weights
+// survive: the runner always skips the platform's ModelsDir, so a Remove entry
+// that contains the model store takes everything except the models. Prefer
+// Remove over an `rm -rf` in Run; a shell string cannot be checked.
 type Uninstall struct {
-	Run []string `json:"run"`
+	Run    []string `json:"run,omitempty"`
+	Remove []string `json:"remove,omitempty"`
 }
 
 // Fetch is an engine download. SHA256, when set, pins it (verified
@@ -501,8 +513,8 @@ func (r *Registry) mergeOntoBundled(override []byte) ([]byte, error) {
 }
 
 // applyPlatformDefaults implements manifest-level shared defaults: a
-// top-level "detect" / "install" / "uninstall" / "runtime" block is
-// merged into every entry under "platforms", with the per-platform block
+// top-level "detect" / "install" / "uninstall" / "runtime" / "models_dir"
+// block is merged into every entry under "platforms", with the per-platform block
 // winning key-by-key. Nested objects (runtime, runtime.env, …) merge
 // recursively; arrays and scalars are replaced wholesale. The merge runs
 // at the JSON level before unmarshalling, so an omitted key truly
@@ -516,7 +528,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	base := map[string]any{}
-	for _, k := range []string{"detect", "install", "uninstall", "runtime"} {
+	for _, k := range []string{"detect", "install", "uninstall", "runtime", "models_dir"} {
 		raw, ok := top[k]
 		if !ok {
 			continue
@@ -708,8 +720,42 @@ func (p *Platform) validate(key string) error {
 			return fmt.Errorf("platform %q: install.mode %q invalid (want \"user\" or \"admin\")", key, p.Install.Mode)
 		}
 	}
-	if p.Uninstall != nil && len(p.Uninstall.Run) == 0 {
-		return fmt.Errorf("platform %q: uninstall.run is required when uninstall is present", key)
+	// A models_dir derived from {install_dir} is the mistake this field exists to
+	// prevent: the install directory lives under the app data root, so the
+	// app-level "remove all data" uninstall would take the weights with it even
+	// though no engine uninstall ever touched them. Keeping it literal means the
+	// only way to point the model store at the data root is to type that path
+	// out, which review will catch.
+	if strings.Contains(p.ModelsDir, "{") {
+		return fmt.Errorf("platform %q: models_dir %q must be a literal path, not a template — the model store must not be derived from the install directory", key, p.ModelsDir)
+	}
+	if p.Uninstall != nil {
+		if len(p.Uninstall.Run) == 0 && len(p.Uninstall.Remove) == 0 {
+			return fmt.Errorf("platform %q: uninstall needs run, remove, or both when present", key)
+		}
+		// Without a model store there is nothing for the runner to preserve, so
+		// a removal would be the unconditional delete this field exists to
+		// prevent. Requiring it here is what makes the guarantee hold for a
+		// hand-written manifest and not only for the bundled ones.
+		if len(p.Uninstall.Remove) > 0 && strings.TrimSpace(p.ModelsDir) == "" {
+			return fmt.Errorf("platform %q: uninstall.remove requires models_dir, so the removal knows what to keep", key)
+		}
+		for _, target := range p.Uninstall.Remove {
+			// {models_dir} resolves only at uninstall time, so a templated
+			// target would pass this check and fail every retry instead. Reject
+			// the token outright: every spelling of it names the store or a part
+			// of it, and neither may be removed.
+			if strings.Contains(target, "{models_dir}") {
+				return fmt.Errorf("platform %q: uninstall.remove %q names the model store — uninstall removes the engine, not the user's models", key, target)
+			}
+			resolved := filepath.Clean(expandPath(target))
+			store := filepath.Clean(expandPath(p.ModelsDir))
+			// At the store, or inside it. Removing part of a model library is
+			// as destructive as removing all of it.
+			if pathWithinRoot(store, resolved) {
+				return fmt.Errorf("platform %q: uninstall.remove %q is at or inside the model store %q — uninstall removes the engine, not the user's models", key, target, p.ModelsDir)
+			}
+		}
 	}
 	if err := validateProbe(key, "ready", p.Runtime.Ready); err != nil {
 		return err
@@ -872,6 +918,7 @@ func (p Platform) templatedStrings() []string {
 	}
 	if p.Uninstall != nil {
 		out = append(out, p.Uninstall.Run...)
+		out = append(out, p.Uninstall.Remove...)
 	}
 	out = append(out, p.Runtime.Bin)
 	out = append(out, p.Runtime.Args...)

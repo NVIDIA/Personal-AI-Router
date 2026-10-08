@@ -179,6 +179,9 @@ your data. Decline and it stays; accept and it is removed.
 **Linux.** `sudo apt remove nvpair` uninstalls the application and keeps your
 data. Use `sudo apt purge nvpair` to remove the data as well. Run
 `dpkg -l | grep -i pair` first if you need to confirm the installed package name.
+A purge removes the engines PAIR installed under its own data directory, but not
+one a vendor installer placed in your home, as LM Studio does — uninstall that
+engine from PAIR before removing the package, or use its own uninstaller.
 
 **macOS.** Run the uninstaller that ships inside the app bundle. It stops PAIR,
 removes its firewall rules, unregisters its privileged helper, and then removes
@@ -195,9 +198,10 @@ leaves the privileged helper registered, so use the uninstaller.
 
 Your data means settings, logs, cluster identity and certificates, and any engine
 PAIR installed for you. **Model weights are not touched** — they live in the
-engine's own storage, such as `~/.ollama`, so removing PAIR does not delete the
-models you downloaded. Delete those through the engine, or by removing its
-directory.
+engine's own storage (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`), so
+removing PAIR does not delete the models you downloaded. Delete those through the
+engine, or by removing its directory. An engine you installed yourself is also
+left alone.
 
 **To clear your data without uninstalling,** use **Settings → Service → Reset app
 data**. It removes the same set — settings, logs, cluster identity and

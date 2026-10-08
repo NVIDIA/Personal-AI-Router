@@ -4,15 +4,115 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// lmstudioModelsDir is the default on-disk model cache for LM Studio.
-func lmstudioModelsDir() string {
-	return expandPath("~/.lmstudio/models")
+// removeTreePreserving deletes target, except for preserve and whatever leads
+// to it. This is what keeps an engine uninstall from taking the user's model
+// library: LM Studio installs into ~/.lmstudio and keeps its downloads in
+// ~/.lmstudio/models, so removing the engine means removing every other child
+// of that directory and stopping there.
+//
+// The relationship between the two paths decides what happens:
+//
+//   - preserve empty: nothing to keep, so a plain removal.
+//   - disjoint: a plain removal, as for Ollama, whose models sit in ~/.ollama
+//     while the uninstall removes the install directory.
+//   - preserve strictly inside target: descend, keeping the store.
+//   - equal, or target inside preserve: refused. Both ask to delete the store
+//     or part of it, which is a manifest bug, and widening to a full removal
+//     would destroy exactly what this function exists to protect.
+//
+// Removal is best-effort within the tree: an engine holding one file open must
+// not stop the rest of it from going, or the binary survives, detection keeps
+// reporting the engine, and the uninstall fails having half-removed it. Errors
+// are collected and returned together, and the caller judges the outcome by
+// whether the engine is still detected.
+//
+// A symlink is removed as a link and never descended into. Deleting what it
+// points at is not what the manifest asked for, and on Windows a junction here
+// would let the elevated uninstaller be steered into an arbitrary tree.
+func removeTreePreserving(target, preserve string) error {
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("remove: target is required")
+	}
+	absTarget, err := filepath.Abs(filepath.Clean(expandPath(target)))
+	if err != nil {
+		return fmt.Errorf("remove: target: %w", err)
+	}
+	info, err := os.Lstat(absTarget)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // already gone; uninstall is idempotent
+		}
+		return fmt.Errorf("remove: stat %q: %w", absTarget, err)
+	}
+	if strings.TrimSpace(preserve) == "" {
+		return os.RemoveAll(absTarget)
+	}
+	// Unlink rather than descend. On the descend path below, ReadDir would
+	// follow this to the real directory and delete its contents.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(absTarget)
+	}
+	absPreserve, err := filepath.Abs(filepath.Clean(expandPath(preserve)))
+	if err != nil {
+		return fmt.Errorf("remove: preserve: %w", err)
+	}
+	if samePath(absTarget, absPreserve) {
+		return fmt.Errorf("remove: %q is the preserved model store", absTarget)
+	}
+	if pathWithinRoot(absPreserve, absTarget) {
+		return fmt.Errorf("remove: %q is inside the preserved model store %q", absTarget, absPreserve)
+	}
+	if !pathWithinRoot(absTarget, absPreserve) {
+		return os.RemoveAll(absTarget)
+	}
+	entries, err := os.ReadDir(absTarget)
+	if err != nil {
+		return fmt.Errorf("remove: read %q: %w", absTarget, err)
+	}
+	var failures []error
+	for _, entry := range entries {
+		child := filepath.Join(absTarget, entry.Name())
+		if pathWithinRoot(child, absPreserve) {
+			// On the path to the model store. Recurse so siblings deeper down
+			// still go, and stop once the store itself is the next step.
+			if samePath(child, absPreserve) {
+				continue
+			}
+			if err := removeTreePreserving(child, absPreserve); err != nil {
+				failures = append(failures, err)
+			}
+			continue
+		}
+		if err := os.RemoveAll(child); err != nil {
+			failures = append(failures, fmt.Errorf("remove: %q: %w", child, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// samePath reports whether two cleaned absolute paths name the same file.
+//
+// Case-folded on Windows and macOS, whose default filesystems are
+// case-insensitive: there, a casing difference between a manifest's remove
+// target and its models_dir would make the model store look like an unrelated
+// sibling and widen the removal to include it.
+func samePath(a, b string) bool {
+	if caseInsensitiveFS() {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func caseInsensitiveFS() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
 }
 
 // safeRemoveUnderRoot deletes target after verifying it resolves under root.
@@ -62,9 +162,12 @@ func safeRemoveUnderRoot(root, target string) error {
 func pathWithinRoot(root, target string) bool {
 	root = filepath.Clean(root)
 	target = filepath.Clean(target)
-	if target == root {
+	if samePath(root, target) {
 		return true
 	}
 	prefix := root + string(os.PathSeparator)
+	if caseInsensitiveFS() {
+		return strings.HasPrefix(strings.ToLower(target), strings.ToLower(prefix))
+	}
 	return strings.HasPrefix(target, prefix)
 }

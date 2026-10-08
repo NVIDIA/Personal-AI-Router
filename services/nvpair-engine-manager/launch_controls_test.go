@@ -115,7 +115,7 @@ func TestBundledLlamaCPPDisablesCORSByDefault(t *testing.T) {
 	for platform, config := range manifest.Platforms {
 		t.Run(platform, func(t *testing.T) {
 			e := settingsExecutor(t, false)
-			settingsState(t, e).plat.Runtime = config.Runtime
+			graftPlatform(t, e, config)
 			state, err := e.LaunchSettings("fake")
 			if err != nil {
 				t.Fatal(err)
@@ -145,7 +145,7 @@ func TestBundledNetworkingControls(t *testing.T) {
 		for platform, config := range manifest.Platforms {
 			t.Run(name+"/"+platform, func(t *testing.T) {
 				e := settingsExecutor(t, config.Runtime.modeOrDefault() == "command")
-				settingsState(t, e).plat.Runtime = config.Runtime
+				graftPlatform(t, e, config)
 				policy := config.Runtime.EditableLaunch
 				if policy == nil {
 					t.Fatal("missing reviewed networking controls")

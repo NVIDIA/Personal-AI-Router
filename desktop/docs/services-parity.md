@@ -152,8 +152,10 @@ Personal AI Router consequences (all reflection, no security implementation):
 
 The bundled backend manifest can install and start `llama-server`, list exact
 router model ids, stream model downloads over SSE, load or unload a model, and
-delete native cache entries by exact id. Its `LLAMA_CACHE` directory is a
-sibling of the install directory and survives uninstall and reinstall.
+delete native cache entries by exact id. `LLAMA_CACHE` points at the manifest's
+declared `models_dir`, `~/.llamacpp`, so downloaded models survive both an
+engine uninstall and the app-level "remove all data" uninstall — the latter
+deletes the whole app data root, so a model store inside it would not.
 Loaded models enter llama.cpp sleep mode after five idle minutes, release model
 and KV-cache memory, and wake on the next request. The router child remains alive
 and can retain a residual backend GPU context.
@@ -167,8 +169,8 @@ fallback; hardware acceptance is still required to confirm acceleration.
 The facade is in the default broker and TUI set: local OpenAI-compatible clients
 use the broker-reported listener (normally `8080`) while the managed router runs
 on `8081`. Desktop and TUI expose install, lifecycle, download progress,
-inventory, load/unload, endpoint, routed state, and inference-demo workflows;
-Desktop also exposes model deletion.
+inventory, load/unload, endpoint, routed state, and inference-demo workflows.
+Both also expose model deletion.
 Desktop browsing populates a six-hour cache from the 50 most-downloaded GGUF
 repositories for each approved publisher and can explicitly search up to 50
 public Hugging Face matches. Results are limited to pull-ready `Q4_K_M` IDs.

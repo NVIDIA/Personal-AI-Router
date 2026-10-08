@@ -116,6 +116,12 @@ func TestUninstallRetries(t *testing.T) {
 	m.Platforms[key] = p
 
 	ex := newTestExecutor(t, m)
+	// A command-mode engine's files live wherever its vendor script put them, so
+	// uninstall declines one PAIR has no record of installing. Claim it, to reach
+	// the retry behavior under test.
+	if err := writeInstallMarker(filepath.Join(ex.baseDir, "fake"), "fake"); err != nil {
+		t.Fatal(err)
+	}
 	err := ex.Uninstall(context.Background(), "fake")
 	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
 		t.Fatalf("expected uninstall failure after 3 attempts, got %v", err)

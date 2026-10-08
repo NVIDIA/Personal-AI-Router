@@ -187,10 +187,7 @@ func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act
 	if act.RemovePath == nil {
 		return nil, fmt.Errorf("remove_path action missing spec")
 	}
-	vars := map[string]string{
-		"install_dir": st.installDir,
-		"models_dir":  lmstudioModelsDir(),
-	}
+	vars := st.pathVars()
 	if len(params) > 0 {
 		var pm map[string]any
 		if err := json.Unmarshal(params, &pm); err == nil {
@@ -265,7 +262,9 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		}
 	}
 	vars["port"] = strconv.Itoa(port)
-	vars["install_dir"] = st.installDir
+	for name, value := range st.pathVars() {
+		vars[name] = value
+	}
 	if cli := st.plat.Runtime.CLI; cli != "" {
 		vars["cli"] = expandPath(cli)
 	}

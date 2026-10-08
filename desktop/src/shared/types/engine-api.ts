@@ -19,6 +19,20 @@ import type { EngineModels, EngineProgress, EngineUpdateAvailable } from '@/shar
  * without per-engine JSON parsing. `id`/`name` carry the pull-ready identifier
  * the engine's `pull_model` action expects.
  */
+/**
+ * One engine's outcome from `engine:uninstall-managed`, the backend sweep that
+ * removes the engines PAIR installed.
+ *
+ * Neither `removed` nor `error` means the engine was left alone because PAIR has
+ * no record of installing it — the expected result for a user's own install, and
+ * not a failure.
+ */
+export interface ManagedEngineUninstall {
+    engine: string
+    removed: boolean
+    error: string
+}
+
 export interface EngineHubModel {
     id: string
     name: string

@@ -20,8 +20,8 @@ The `llamacpp` manifest runs `llama-server` in router mode on loopback port
 `8081`. It can list, download, load, unload, and delete exact model ids such as
 `owner/repository:Q4_K_M`. Downloads use `/models/sse` for progress; deletion
 uses the router's native `DELETE /models` cache operation and does not restart
-the router. `LLAMA_CACHE` points to a managed sibling directory so models
-survive engine uninstall and reinstall.
+the router. `LLAMA_CACHE` points at the manifest's `models_dir`, `~/.llamacpp`,
+which no removal this service performs will delete.
 Readiness requires `/props` to report `role:"router"`, so model-selection
 arguments that switch `llama-server` to single-model mode and incompatible
 listeners already occupying the port are rejected rather than adopted.
@@ -287,6 +287,7 @@ its own.
 | `--cluster-dir <dir>` | _(none)_ | Cluster identity/pin directory; gates the `ec` surface on and supplies the leaf/pins used to serve it and to dial peers |
 | `--loaded-poll-interval <sec>` | `5` | Seconds between loaded-model polls that drive `engine:models-changed`; `0` disables the watcher |
 | `--log-level <level>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
+| `--uninstall-managed` | | Remove every engine PAIR installed, then exit; for the platform uninstallers, which have no broker to call `engine:uninstall-managed` through. Same selection and safety path as that method, loading only the manifests compiled into this binary. Always exits 0 so an uninstaller cannot stall |
 | `--version` | | Print version and exit |
 
 Logs go to **stderr** via the shared `nvpair-shared/applog` format; stdout is

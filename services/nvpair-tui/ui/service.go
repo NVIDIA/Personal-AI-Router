@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -165,7 +166,11 @@ type serviceView struct {
 	// confirming is the index of a destructive row awaiting its confirmation
 	// keystroke, or -1.
 	confirming int
-	status     toast
+	// resetting is set once a reset is confirmed and never cleared: the reset
+	// ends by quitting, so there is no state to return to. It keeps the
+	// keyboard while engines are being removed.
+	resetting bool
+	status    toast
 
 	width, height int
 }
@@ -216,6 +221,67 @@ type logLevelSetMsg struct {
 // just removed.
 type wipeDataMsg struct{}
 
+// engineResetBudget bounds the whole engine-removal request. It has to exceed
+// the backend's own worst case, which for a single engine is several uninstall
+// attempts with a pause between them — a vendor daemon can hold its files open
+// after being told to stop — followed by a detection wait, repeated per engine.
+// Short of that, the TUI would stop waiting while the work continued and then
+// shut the broker down mid-deletion.
+const engineResetBudget = 15 * time.Minute
+
+// managedUninstall is one engine's outcome from engine:uninstall-managed.
+type managedUninstall struct {
+	Engine  string `json:"engine"`
+	Removed bool   `json:"removed"`
+	Error   string `json:"error,omitempty"`
+}
+
+// resetEngines removes the engines PAIR installed, before the reset quits and
+// the data directory goes.
+//
+// One backend call, not a loop over engines: engine-manager owns which installs
+// are PAIR's and what removing one safely involves. Selecting them here instead
+// would mean this client deciding ownership, and offering every detected engine
+// so the backend could decline the rest would raise a service error per decline
+// — and those sync to cluster peers, so resetting a machine with the operator's
+// own LM Studio would plant an error on its neighbours.
+//
+// Downloaded models survive, and an engine PAIR did not install is skipped
+// rather than failed. A real failure is surfaced, because it means engine files
+// are still on disk and the record of who owns them is about to be deleted.
+//
+// Always ends in wipeDataMsg. A reset that cannot remove an engine must still
+// clear the data it was asked to clear.
+func resetEngines(client *rpc.Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), engineResetBudget)
+		defer cancel()
+		msg, err := client.Call(ctx, "engine:uninstall-managed", map[string]any{})
+		if err != nil {
+			slog.Error("could not remove PAIR-installed engines; the data reset continues", "err", err)
+			return wipeDataMsg{}
+		}
+		var reply struct {
+			Engines []managedUninstall `json:"engines"`
+		}
+		if !decodeOrLog("engine:uninstall-managed", msg.Result, &reply) {
+			slog.Error("could not read the engine removal result; the data reset continues")
+			return wipeDataMsg{}
+		}
+		for _, result := range reply.Engines {
+			switch {
+			case result.Removed:
+				slog.Info("reset removed PAIR-installed engine", "engine", result.Engine)
+			case result.Error != "":
+				slog.Error("engine not removed; its files are still on disk", "engine", result.Engine, "err", result.Error)
+			default:
+				slog.Info("engine left in place; PAIR did not install it", "engine", result.Engine)
+			}
+		}
+		return wipeDataMsg{}
+	}
+}
+
 var (
 	serviceUpKey       = key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("up/k", "up"))
 	serviceDownKey     = key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("down/j", "down"))
@@ -254,7 +320,7 @@ func newServiceView(client *rpc.Client) *serviceView {
 				getMethod: getClusterNameMethod, setMethod: setClusterNameMethod,
 				help: "this machine's own label for the cluster - not shared with peers"},
 			{kind: itemAction, label: "Reset all data and quit", destructive: true,
-				help: "deletes settings, cluster identity, and pairing"},
+				help: "deletes settings, cluster identity, pairing, and engines PAIR installed - downloaded models are kept"},
 		},
 	}
 	// Static: there is no per-worker operation, so a movable highlight would
@@ -381,8 +447,13 @@ func (v *serviceView) SetSize(w, h int) {
 // editor. The picker navigates with keys the shell also uses (the digits jump
 // tabs), and an armed reset must answer the next key rather than let a tab
 // switch leave it armed behind a prompt that is no longer on screen.
+//
+// A reset in flight holds the keyboard too. The confirmation is disarmed before
+// the work starts, so without this the shell's own `q` would quit partway and
+// exit with the data directory intact — engines removed, data kept, the exact
+// opposite of what the row promises.
 func (v *serviceView) CapturingInput() bool {
-	return v.editing || v.choosing || v.confirming >= 0
+	return v.editing || v.choosing || v.confirming >= 0 || v.resetting
 }
 
 func (v *serviceView) Update(msg tea.Msg) tea.Cmd {
@@ -562,7 +633,14 @@ func (v *serviceView) submitEdit() tea.Cmd {
 // runAction performs a confirmed action row.
 func (v *serviceView) runAction(idx int) tea.Cmd {
 	if v.items[idx].destructive {
-		return func() tea.Msg { return wipeDataMsg{} }
+		if v.resetting {
+			return nil // already running; a second confirm must not start another
+		}
+		// Engines go first, while the broker is still up to remove them; the
+		// resulting wipeDataMsg quits and deletes the data directory.
+		v.resetting = true
+		v.status.busy("removing engines PAIR installed...")
+		return resetEngines(v.client)
 	}
 	return nil
 }

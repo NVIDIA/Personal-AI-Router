@@ -4,7 +4,10 @@
 package ui
 
 import (
+	"context"
+	"encoding/json"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 
@@ -322,12 +325,152 @@ func TestLogLevelPickerAppliesSelection(t *testing.T) {
 	}
 }
 
+// resetBroker answers the one call a reset makes, engine:uninstall-managed,
+// with the supplied result. An empty result stands in for a backend that
+// rejected the request. Every method it is asked for is reported on the
+// returned channel, so a test can assert what the reset actually sent.
+func resetBroker(t *testing.T, result string) (*rpc.Client, <-chan string) {
+	t.Helper()
+	c1, c2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		c1.Close()
+		c2.Close()
+	})
+	client := rpc.NewClient(c1, c1)
+	go client.Run(ctx)
+
+	called := make(chan string, 8)
+	broker := rpc.NewCodec(c2, c2)
+	go func() {
+		for {
+			req, err := broker.Read()
+			if err != nil {
+				return
+			}
+			called <- req.Method
+			reply := &rpc.Message{JSONRPC: "2.0", ID: req.ID}
+			if req.Method == "engine:uninstall-managed" && result == "" {
+				reply.Error = &rpc.RPCError{Code: -32000, Message: "engine manager unavailable"}
+			} else if req.Method == "engine:uninstall-managed" {
+				reply.Result = json.RawMessage(result)
+			} else {
+				reply.Result = json.RawMessage(`{}`)
+			}
+			_ = broker.Write(reply)
+		}
+	}()
+	return client, called
+}
+
+func armedResetView(t *testing.T, client *rpc.Client) *serviceView {
+	t.Helper()
+	v := newServiceView(client)
+	for i, it := range v.items {
+		if it.destructive {
+			v.cursor = i
+			v.activate()
+			return v
+		}
+	}
+	t.Fatal("no destructive row found")
+	return nil
+}
+
+// TestResetRemovesManagedEnginesBeforeWiping pins the order a reset works in:
+// the engines go first, through the backend, while the broker is still up, and
+// only then does the shell get the request to quit and delete the data
+// directory. Deleting the directory alone would miss an engine a vendor
+// installer put in the user's home, which is where LM Studio lands.
+//
+// One call, not a loop: engine-manager owns which installs are PAIR's.
+func TestResetRemovesManagedEnginesBeforeWiping(t *testing.T) {
+	client, called := resetBroker(t, `{"engines":[
+		{"engine":"ollama","removed":true},
+		{"engine":"lmstudio","removed":false,"error":"locked"},
+		{"engine":"llamacpp","removed":false}
+	]}`)
+	v := armedResetView(t, client)
+
+	cmd := v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("confirmation produced no command")
+	}
+	// A reported failure and a skip must both still reach the wipe: the reset
+	// has to clear the data it was asked to clear.
+	if _, ok := cmd().(wipeDataMsg); !ok {
+		t.Fatal("reset did not end in a data wipe request")
+	}
+
+	select {
+	case method := <-called:
+		if method != "engine:uninstall-managed" {
+			t.Errorf("reset sent %q, want engine:uninstall-managed", method)
+		}
+	default:
+		t.Fatal("reset sent no request")
+	}
+	select {
+	case method := <-called:
+		t.Errorf("reset sent a second request %q; the backend selects the engines", method)
+	default:
+	}
+}
+
+// TestResetWipesWhenEngineRemovalFails covers the backend being unreachable or
+// rejecting the call. The reset still has to clear the data directory.
+func TestResetWipesWhenEngineRemovalFails(t *testing.T) {
+	client, _ := resetBroker(t, "")
+	v := armedResetView(t, client)
+
+	cmd := v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("confirmation produced no command")
+	}
+	if _, ok := cmd().(wipeDataMsg); !ok {
+		t.Error("a failed engine removal stopped the data wipe")
+	}
+}
+
+// TestResetHoldsTheKeyboard is the guard on quitting halfway. The confirmation
+// is disarmed before the work starts, so without the reset holding input the
+// shell's own `q` exits with the data directory intact — engines gone, data
+// kept, the opposite of what the row promises.
+func TestResetHoldsTheKeyboard(t *testing.T) {
+	client, _ := resetBroker(t, `{"engines":[]}`)
+	v := armedResetView(t, client)
+	if v.resetting {
+		t.Fatal("arming alone should not start the reset")
+	}
+
+	v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+
+	if !v.resetting {
+		t.Fatal("confirming did not mark the reset as running")
+	}
+	if !v.CapturingInput() {
+		t.Error("a reset in flight does not hold the keyboard, so q would quit halfway")
+	}
+	// A second confirmation must not start a parallel removal.
+	v.cursor = 0
+	for i, it := range v.items {
+		if it.destructive {
+			v.cursor = i
+		}
+	}
+	if cmd := v.runAction(v.cursor); cmd != nil {
+		t.Error("a second confirmation started another reset")
+	}
+}
+
 // TestResetRequiresConfirmation is the guard on the one irreversible action in
 // the TUI: activating the row must only arm it, and only the confirmation key
 // may fire it.
 func TestResetRequiresConfirmation(t *testing.T) {
 	resetIdx := -1
-	v := newServiceView(nil)
+	client, _ := resetBroker(t, `{"engines":[]}`)
+	v := newServiceView(client)
 	for i, it := range v.items {
 		if it.destructive {
 			resetIdx = i

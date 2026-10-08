@@ -9,8 +9,10 @@
     "run": ["bash", "{download}"],
     "mode": "user"
   },
+  "models_dir": "~/.lmstudio/models",
   "uninstall": {
-    "run": ["sh", "-c", "pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf \"$HOME/.lmstudio\"; sleep 1; [ -d \"$HOME/.lmstudio\" ] && exit 1; exit 0"]
+    "run": ["sh", "-c", "pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; exit 0"],
+    "remove": ["~/.lmstudio"]
   },
   "runtime": {
     "editable_launch": {
@@ -39,7 +41,8 @@
         "mode": "user"
       },
       "uninstall": {
-        "run": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$root = Join-Path $env:USERPROFILE '.lmstudio'; Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root)) -or ($_.CommandLine -and $_.CommandLine.Contains($root)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 3; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; if (Test-Path -LiteralPath $root) { exit 1 }"]
+        "run": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$root = Join-Path $env:USERPROFILE '.lmstudio'; Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root)) -or ($_.CommandLine -and $_.CommandLine.Contains($root)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 3"],
+        "remove": ["%USERPROFILE%\\.lmstudio"]
       },
       "runtime": { "cli": "%USERPROFILE%\\.lmstudio\\bin\\lms.exe" }
     },
@@ -52,7 +55,8 @@
         "mode": "user"
       },
       "uninstall": {
-        "run": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$root = Join-Path $env:USERPROFILE '.lmstudio'; Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root)) -or ($_.CommandLine -and $_.CommandLine.Contains($root)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 3; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; if (Test-Path -LiteralPath $root) { exit 1 }"]
+        "run": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$root = Join-Path $env:USERPROFILE '.lmstudio'; Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root)) -or ($_.CommandLine -and $_.CommandLine.Contains($root)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 3"],
+        "remove": ["%USERPROFILE%\\.lmstudio"]
       },
       "runtime": { "cli": "%USERPROFILE%\\.lmstudio\\bin\\lms.exe" }
     },

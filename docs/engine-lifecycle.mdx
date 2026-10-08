@@ -127,11 +127,15 @@ Both actions apply only to an engine PAIR installed:
   no longer want PAIR to own that engine on the machine.
 
 Uninstalling an engine does **not** remove its models. Downloaded model files stay
-on disk, in the engine's own storage such as `~/.ollama`, so uninstalling and
-reinstalling does not cost you re-downloading them. To reclaim that space, delete
-the models through the engine, or remove its data directory yourself. llama.cpp
-uses a persistent cache beside PAIR's managed install; use **Delete** to remove
-individual entries without removing the engine.
+on disk in the engine's own storage — `~/.ollama`, `~/.llamacpp`, or
+`~/.lmstudio/models` — so uninstalling and reinstalling does not cost you
+re-downloading them. The same is true of removing PAIR itself, or of resetting
+its data: those remove the engines PAIR installed, never your models. To reclaim
+that space, use **Delete** on individual models, or remove the engine's storage
+directory yourself.
+
+PAIR also leaves alone any engine you installed yourself. **Uninstall** acts only
+on a copy PAIR installed; remove the others with the engine's own uninstaller.
 
 Port changes for an NVPAIR-installed engine also live in **Engine settings**.
 Prefer the controls in PAIR over editing the engine's own config when PAIR is

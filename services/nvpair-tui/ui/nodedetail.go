@@ -80,9 +80,9 @@ type nodeDetail struct {
 	// poll succeeded, so an unreachable node reads as unavailable rather than as
 	// a machine with no hardware.
 	// pending is a destructive action waiting for confirmation. Deleting a model
-	// and uninstalling an engine both throw away gigabytes that have to be
-	// downloaded again, and both keys sit among the harmless ones — d beside
-	// enter, u beside s and x — so a slip is easy and expensive.
+	// throws away gigabytes that have to be downloaded again; uninstalling an
+	// engine keeps its models but still costs a reinstall. Both keys sit among
+	// the harmless ones — d beside enter, u beside s and x — so a slip is easy.
 	//
 	// The target is captured here at arm time rather than re-read on confirm,
 	// because this list re-sorts underneath the cursor whenever a download
@@ -1042,8 +1042,8 @@ func (d *nodeDetail) handleEngineKey(msg tea.KeyMsg) tea.Cmd {
 		if d.remote() {
 			// Refused before arming, not after. The footer hides this key on a
 			// peer, but the handler still matched it — so pressing it staged a
-			// gigabyte-destroying confirmation that could only ever answer that
-			// the operation is unavailable. Its siblings all check first.
+			// destructive confirmation that could only ever answer that the
+			// operation is unavailable. Its siblings all check first.
 			d.status.error("uninstalling an engine is only available on the machine running it")
 			return nil
 		}
@@ -1599,7 +1599,7 @@ func (d *nodeDetail) uninstallEngine(engine *engineStatus) tea.Cmd {
 		return nil
 	}
 	name, label := engine.Engine, engine.label()
-	return d.arm(fmt.Sprintf("uninstall %s and its downloaded models?", label), func() tea.Cmd {
+	return d.arm(fmt.Sprintf("uninstall %s? Downloaded models are kept.", label), func() tea.Cmd {
 		return d.lifecycle(&engineStatus{Engine: name, DisplayName: label}, "uninstall")
 	})
 }

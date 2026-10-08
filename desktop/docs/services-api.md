@@ -120,6 +120,7 @@
 | `engine:status` | request (we call) | ✅ yes |
 | `engine:stop` | request (we call) | ✅ yes |
 | `engine:uninstall` | request (we call) | ✅ yes |
+| `engine:uninstall-managed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
 

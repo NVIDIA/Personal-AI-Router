@@ -21,7 +21,7 @@ func (command launchCommand) text() (string, error) {
 
 func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
-	vars := map[string]string{"host": "127.0.0.1", "port": "12345", "cli": "/test path/lms", "install_dir": "/test path"}
+	vars := map[string]string{"host": "127.0.0.1", "port": "12345", "cli": "/test path/lms", "install_dir": "/test path", "models_dir": "/test models"}
 	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
 		manifest, ok := reg.Get(engine)
 		if !ok {
@@ -49,7 +49,7 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 					if err == nil {
 						launch, err = resolveProcessLaunch(platform.Runtime, bin, vars)
 					}
-					want = []string{"LLAMA_CACHE=/test path-models", bin, "--sleep-idle-seconds", "300", "--host", "127.0.0.1", "--port", "12345", "--cors-origins", ""}
+					want = []string{"LLAMA_CACHE=/test models", bin, "--sleep-idle-seconds", "300", "--host", "127.0.0.1", "--port", "12345", "--cors-origins", ""}
 					if strings.HasPrefix(platformKey, "linux/") {
 						want = append([]string{"LD_LIBRARY_PATH=/test path"}, want...)
 					}

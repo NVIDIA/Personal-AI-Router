@@ -473,9 +473,12 @@ the **Nodes** tab. Refer to
 for how PAIR arranges ports.
 
 **Reset all data and quit** deletes this machine's settings, cluster identity,
-and pairing, then exits. It asks for confirmation first, and cannot be undone.
-The services are stopped before anything is deleted, so nothing rewrites the
-files on the way out. You will need to pair again afterwards.
+and pairing, and uninstalls the engines PAIR installed, then exits. It asks for
+confirmation first, and cannot be undone. Your downloaded models are kept, and
+so is any engine you installed yourself. The engines are removed while the
+services are still running, and the services are then stopped before the files
+are deleted, so nothing rewrites them on the way out. You will need to pair
+again afterwards.
 
 ## What the Terminal Interface Cannot Do
 

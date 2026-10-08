@@ -131,6 +131,11 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		e.reportInstallFailed(engine, err)
 		return err
 	}
+	// Claim the install now that it is real and detected. A failure to record it
+	// only costs the ability to uninstall later, so it must not fail the install.
+	if err := writeInstallMarker(st.installDir, engine); err != nil {
+		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
+	}
 	e.reporter.clear(installFailedID(engine))
 	e.emitInstallProgress(engine, "done", 100)
 	e.emitState(engine)
@@ -147,10 +152,14 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	if ok, _ := e.Detect(engine); !ok {
-		return e.setDesiredEnabled(engine, false) // already gone
+		// Already gone — by its own uninstaller, or by hand. Drop our ownership
+		// claim with it: left behind, it would authorise removing a copy the
+		// user installs later, which PAIR has no right to touch.
+		clearInstallMarker(st.installDir)
+		return e.setDesiredEnabled(engine, false)
 	}
 	un := st.plat.Uninstall
-	if un == nil || len(un.Run) == 0 {
+	if un == nil || (len(un.Run) == 0 && len(un.Remove) == 0) {
 		return fmt.Errorf("engine %q has no uninstall defined for this platform", engine)
 	}
 	st.mu.Lock()
@@ -158,6 +167,15 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.mu.Unlock()
 	if st.plat.Runtime.modeOrDefault() == "process" && !isManagedInstallPath(binPath, st.installDir) {
 		err := fmt.Errorf("cannot uninstall engine %q: its executable is outside NVPAIR's managed install directory (%s)", engine, binPath)
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		return err
+	}
+	// A command-mode engine's vendor script picks its own destination, so the
+	// managed-path test above can never vouch for one. Without the install
+	// marker this could be the copy the user installed themselves, holding the
+	// model library they built up in it — decline rather than guess.
+	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir) {
+		err := fmt.Errorf("cannot uninstall engine %q: Personal AI Router has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
 	}
@@ -182,16 +200,37 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		return werr
 	}
 
-	args, err := resolveArgs(un.Run, map[string]string{"install_dir": st.installDir})
+	vars := st.pathVars()
+	args, err := resolveArgs(un.Run, vars)
 	if err != nil {
 		return err
 	}
 	for i := range args {
 		args[i] = expandPath(args[i])
 	}
+	targets, err := resolveArgs(un.Remove, vars)
+	if err != nil {
+		return err
+	}
+	// One attempt is the command followed by the declared removals, so a retry
+	// re-runs the process-stopping command before trying the tree again — which
+	// is what clears the case this retry loop exists for.
+	attemptUninstall := func() error {
+		if len(args) > 0 {
+			if err := e.runCommand(ctx, args); err != nil {
+				return err
+			}
+		}
+		for _, target := range targets {
+			if err := removeTreePreserving(target, st.modelsDir); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	var runErr error
 	for attempt := 1; attempt <= uninstallRetries; attempt++ {
-		if runErr = e.runCommand(ctx, args); runErr == nil {
+		if runErr = attemptUninstall(); runErr == nil {
 			break
 		}
 		if attempt < uninstallRetries {
@@ -203,19 +242,25 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 			}
 		}
 	}
-	if runErr != nil {
-		werr := fmt.Errorf("uninstall command failed after %d attempts: %w", uninstallRetries, runErr)
-		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: werr.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
-		return werr
-	}
+	// Detection is the verdict, not the delete errors. Removal is best-effort
+	// inside the tree, so a file the engine still holds open leaves a harmless
+	// remnant while the executable itself is gone — reporting that as a failure
+	// would tell the user to retry an uninstall that already worked.
 	if !e.waitDetect(engine, false, e.detectTimeout) {
 		uerr := fmt.Errorf("engine %q still detected after uninstall", engine)
-		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		if runErr != nil {
+			uerr = fmt.Errorf("uninstall failed after %d attempts: %w", uninstallRetries, runErr)
+		}
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
 		return uerr
+	}
+	if runErr != nil {
+		slog.Warn("engine removed, but some of its files could not be deleted", "engine", engine, "err", runErr)
 	}
 	st.mu.Lock()
 	st.binPath = ""
 	st.mu.Unlock()
+	clearInstallMarker(st.installDir)
 	e.reporter.clear(uninstallFailedID(engine))
 	e.emitState(engine)
 	return e.setDesiredEnabled(engine, false)
@@ -381,10 +426,17 @@ func (e *Executor) downloadWithProgress(
 // step), hiding the console window on Windows; on failure it returns the
 // combined output for diagnostics.
 func (e *Executor) runCommand(ctx context.Context, argv []string) error {
-	return e.runCommandWithEnv(ctx, argv, nil)
+	return runManifestCommand(ctx, argv, nil)
 }
 
 func (e *Executor) runCommandWithEnv(ctx context.Context, argv []string, environment map[string]string) error {
+	return runManifestCommand(ctx, argv, environment)
+}
+
+// runManifestCommand is independent of any Executor so the standalone
+// --uninstall-managed pass can run a manifest's uninstall command without
+// building the service's full runtime.
+func runManifestCommand(ctx context.Context, argv []string, environment map[string]string) error {
 	if len(argv) == 0 {
 		return nil
 	}
