@@ -90,44 +90,28 @@ func TestLMSGetCandidates(t *testing.T) {
 }
 
 func TestIsLMSResolveFailure(t *testing.T) {
-	yes := []string{
-		`exit status 1: Error: Failed to resolve artifact "x/y": The artifact does not exist or you do not have permission to read it`,
-		"this model is not supported in LM Studio",
-		"no models found matching that term",
-	}
-	for _, s := range yes {
-		assert.True(t, isLMSResolveFailure(errors.New(s)), "expected resolve failure for (%v)", s)
-	}
-	no := []error{
-		nil,
-		errors.New("exit status 1: write error: disk full"),
-		errors.New("network connection failed"),
-	}
-	for _, e := range no {
-		assert.False(t, isLMSResolveFailure(e), "did not expect resolve failure for (%v)", e)
-	}
+	const missingArtifact = `exit status 1: Error: Failed to resolve artifact "x/y": The artifact does not exist or you do not have permission to read it`
+	assert.True(t, isLMSResolveFailure(errors.New(missingArtifact)), "expected resolve failure")
+	assert.True(t, isLMSResolveFailure(errors.New("this model is not supported in LM Studio")), "expected resolve failure")
+	assert.True(t, isLMSResolveFailure(errors.New("no models found matching that term")), "expected resolve failure")
+
+	assert.False(t, isLMSResolveFailure(nil), "did not expect resolve failure")
+	assert.False(t, isLMSResolveFailure(errors.New("exit status 1: write error: disk full")), "did not expect resolve failure")
+	assert.False(t, isLMSResolveFailure(errors.New("network connection failed")), "did not expect resolve failure")
 }
 
 func TestIsLMSTransientDownloadError(t *testing.T) {
-	yes := []string{
-		"exit status 1: Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.",
-		"exit status 1: read ECONNRESET",
-		"exit status 1: socket hang up",
-		"exit status 1: fetch failed",
-	}
-	for _, s := range yes {
-		assert.True(t, isLMSTransientDownloadError(errors.New(s)), "expected transient download error for (%v)", s)
-	}
-	no := []error{
-		nil,
-		errors.New("exit status 1: write error: disk full"),
-		// A resolution failure is permanent for this source (handled by the
-		// candidate loop), so it must NOT be treated as a transient download.
-		errors.New(`exit status 1: Failed to resolve artifact "x/y": the artifact does not exist`),
-	}
-	for _, e := range no {
-		assert.False(t, isLMSTransientDownloadError(e), "did not expect transient download error for (%v)", e)
-	}
+	const downloadTimeout = "exit status 1: Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio."
+	assert.True(t, isLMSTransientDownloadError(errors.New(downloadTimeout)), "expected transient download error")
+	assert.True(t, isLMSTransientDownloadError(errors.New("exit status 1: read ECONNRESET")), "expected transient download error")
+	assert.True(t, isLMSTransientDownloadError(errors.New("exit status 1: socket hang up")), "expected transient download error")
+	assert.True(t, isLMSTransientDownloadError(errors.New("exit status 1: fetch failed")), "expected transient download error")
+
+	assert.False(t, isLMSTransientDownloadError(nil), "did not expect transient download error")
+	assert.False(t, isLMSTransientDownloadError(errors.New("exit status 1: write error: disk full")), "did not expect transient download error")
+	// A resolution failure is permanent for this source (handled by the
+	// candidate loop), so it must NOT be treated as a transient download.
+	assert.False(t, isLMSTransientDownloadError(errors.New(`exit status 1: Failed to resolve artifact "x/y": the artifact does not exist`)), "did not expect transient download error")
 }
 
 // TestCmdActionLMSGetFallback drives a cmd action that opts into lms-get

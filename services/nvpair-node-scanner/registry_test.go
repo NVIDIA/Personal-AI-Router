@@ -107,9 +107,7 @@ func TestRegistryTXTIsValidRecord(t *testing.T) {
 	require.Equal(t, "h", got.HostUUID, "round-trip identity wrong (%v)", got)
 	require.Equal(t, "clu", got.ClusterUUID, "round-trip identity wrong (%v)", got)
 	require.Equal(t, "10.0.0.1", got.IP, "round-trip identity wrong (%v)", got)
-	require.Len(t, got.IPs, 2, "candidate list lost in round-trip")
-	assert.Equal(t, "10.0.0.1", got.IPs[0], "candidate list lost in round-trip")
-	assert.Equal(t, "192.168.240.2", got.IPs[1], "candidate list lost in round-trip")
+	assert.Equal(t, []string{"10.0.0.1", "192.168.240.2"}, got.IPs, "candidate list lost in round-trip")
 	{
 		p, ok := got.Port(noderec.ServiceErrors)
 		assert.True(t, ok, "er port lost in round-trip (%v, %v)", p, ok)

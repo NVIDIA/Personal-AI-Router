@@ -440,9 +440,13 @@ func TestCORSExternalEngineParity(t *testing.T) {
 			forwarded, body := fetch(proxy.URL)
 			require.True(t, direct.StatusCode == forwarded.StatusCode, " (%v, %v)", method, origin)
 			require.True(t, directBody == body, " (%v, %v)", method, origin)
-			for _, name := range []string{"Access-Control-Allow-Origin", "Access-Control-Allow-Headers", "Access-Control-Allow-Methods", "Access-Control-Allow-Credentials", "Access-Control-Max-Age", "Access-Control-Expose-Headers", "Vary"} {
-				require.True(t, strings.Join(direct.Header.Values(name), ",") == strings.Join(forwarded.Header.Values(name), ","), "header (%v)", name)
-			}
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Origin"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Origin"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Headers"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Headers"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Methods"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Methods"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Credentials"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Credentials"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Max-Age"), ","), strings.Join(forwarded.Header.Values("Access-Control-Max-Age"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Expose-Headers"), ","), strings.Join(forwarded.Header.Values("Access-Control-Expose-Headers"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Vary"), ","), strings.Join(forwarded.Header.Values("Vary"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
 			t.Logf("%s origin=%s direct=%d proxy=%d allow-origin=%q", method, origin, direct.StatusCode, forwarded.StatusCode, forwarded.Header.Get("Access-Control-Allow-Origin"))
 		}
 	}

@@ -103,9 +103,7 @@ func TestReserveCandidate_ConvergesUnequalPendingDepths(t *testing.T) {
 		"b": 2 + assigned["b"],
 		"c": 4 + assigned["c"],
 	}
-	require.Equal(t, 4, total["a"], "unequal depths did not converge: assigned (%v, %v)", assigned, total)
-	require.Equal(t, 4, total["b"], "unequal depths did not converge: assigned (%v, %v)", assigned, total)
-	require.Equal(t, 4, total["c"], "unequal depths did not converge: assigned (%v, %v)", assigned, total)
+	require.Equal(t, map[string]int{"a": 4, "b": 4, "c": 4}, total, "unequal depths did not converge: assigned %v", assigned)
 }
 
 func TestReserveCandidate_CombinesPendingPressureAndReservations(t *testing.T) {
@@ -124,10 +122,7 @@ func TestReserveCandidate_CombinesPendingPressureAndReservations(t *testing.T) {
 		reservedID(p, candidates),
 		reservedID(p, candidates),
 	}
-	want := []string{"b", "b", "c"}
-	for i := range want {
-		require.True(t, got[i] == want[i], "GPU-aware reservations (%v, %v)", got, want)
-	}
+	require.Equal(t, []string{"b", "b", "c"}, got, "GPU-aware reservations")
 }
 
 func TestSetPrioritySnapshotClampsGPUPressure(t *testing.T) {
@@ -270,10 +265,7 @@ func TestReserveCandidate_PreservesFailoverAndSnapshotReset(t *testing.T) {
 		},
 	})
 	got, _ := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b", "c"))
-	want := []string{"b", "a", "c"}
-	for i, id := range want {
-		require.True(t, got[i].id == id, "reserved failover order (%v)", want)
-	}
+	require.Equal(t, []string{"b", "a", "c"}, candidateIDsFrom(got), "reserved failover order")
 
 	applySnapshot(p, schedulerwire.Priority{
 		Nodes: []string{"a", "b", "c"},
@@ -365,12 +357,8 @@ func TestReleaseFromBeforeASnapshotIsIgnored(t *testing.T) {
 		got := reservationCount(p, fresh.nodeID)
 		require.True(t, got == freshCount, "a release from generation (%v, %v)", got, freshCount)
 	}
-	for _, id := range []string{"a", "b"} {
-		{
-			got := reservationCount(p, id)
-			require.True(t, got >= 0, "reservation count for (%v, %v)", id, got)
-		}
-	}
+	require.GreaterOrEqual(t, reservationCount(p, "a"), 0, "reservation count must not be negative")
+	require.GreaterOrEqual(t, reservationCount(p, "b"), 0, "reservation count must not be negative")
 }
 
 // Failover moves the claim to the node that actually served. The node that
@@ -418,10 +406,6 @@ func TestReservationsAreSharedAcrossFacades(t *testing.T) {
 	_, second := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
 
 	require.True(t, first.nodeID != second.nodeID, "both dispatches chose")
-	for _, r := range []reservation{first, second} {
-		{
-			got := reservationCount(p, r.nodeID)
-			assert.Equal(t, 1, got, "node")
-		}
-	}
+	assert.Equal(t, 1, reservationCount(p, first.nodeID), "node")
+	assert.Equal(t, 1, reservationCount(p, second.nodeID), "node")
 }

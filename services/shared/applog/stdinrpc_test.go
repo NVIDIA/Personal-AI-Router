@@ -39,12 +39,7 @@ func TestNotifyEmitsOneNewlineTerminatedNotification(t *testing.T) {
 	// A notification carries no id: an id would make the parent's reader wait for
 	// a reply to a report nobody asked for.
 	assert.Len(t, frame.ID, 0, "frame carries an id")
-	{
-		got := frame.Params["addresses"]
-		require.Len(t, got, 2, "params addresses")
-		assert.Equal(t, "10.172.54.70", got[0], "params addresses")
-		assert.Equal(t, "10.0.0.5", got[1], "params addresses")
-	}
+	assert.Equal(t, []string{"10.172.54.70", "10.0.0.5"}, frame.Params["addresses"], "params addresses")
 }
 
 // A subprocess with no stdout channel gets a nil Notifier, and reporting must stay

@@ -546,12 +546,10 @@ func TestSchemaEvolutionIgnoresUnknownKeysIncludingRemovedSettings(t *testing.T)
 	require.NoError(t, err, "re-read file")
 	var asMap map[string]any
 	require.NoError(t, json.Unmarshal(saved, &asMap), "re-decode")
-	for _, removed := range []string{"auto_join_invites", "cluster_secret", "cluster_identity", "future_setting"} {
-		{
-			_, ok := asMap[removed]
-			assert.False(t, ok, "removed/unknown key (%v, %v)", removed, saved)
-		}
-	}
+	assert.NotContains(t, asMap, "auto_join_invites", "removed/unknown key must not be saved")
+	assert.NotContains(t, asMap, "cluster_secret", "removed/unknown key must not be saved")
+	assert.NotContains(t, asMap, "cluster_identity", "removed/unknown key must not be saved")
+	assert.NotContains(t, asMap, "future_setting", "removed/unknown key must not be saved")
 }
 
 // TestLoadMalformedFileRenamesAsideAndStartsWithDefaults locks down

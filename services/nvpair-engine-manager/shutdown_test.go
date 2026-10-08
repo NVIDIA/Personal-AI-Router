@@ -47,9 +47,8 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 
 	ex.StopAll()
 
-	for i, name := range names {
-		require.True(t, waitPortClosed(ports[i], 5*time.Second), "engine (%v)", name)
-	}
+	require.True(t, waitPortClosed(ports[0], 5*time.Second), "engine (%v)", names[0])
+	require.True(t, waitPortClosed(ports[1], 5*time.Second), "engine (%v)", names[1])
 	{
 		err := ex.Start(ctx, names[0])
 		require.ErrorIs(t, err, context.Canceled, "start after StopAll error")

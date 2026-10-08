@@ -122,8 +122,5 @@ func TestObserverReportsASortedSet(t *testing.T) {
 			remote: tcpAddr(t, "10.172.55.129:51000"),
 		}, http.StateActive)
 	}
-	got := o.addresses()
-	require.Len(t, got, 2, "addresses")
-	require.Equal(t, "10.0.0.5", got[0], "addresses (%v)", got)
-	require.Equal(t, "10.172.54.70", got[1], "addresses (%v)", got)
+	require.Equal(t, []string{"10.0.0.5", "10.172.54.70"}, o.addresses(), "addresses")
 }

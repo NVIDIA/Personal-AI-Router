@@ -162,9 +162,9 @@ func TestEmptyScanDoesNotEvictTheWholeFleet(t *testing.T) {
 		require.Len(t, b.reconcile(seenSet()), 0, "empty scan")
 	}
 	assert.Equal(t, 3, len(b.Nodes()))
-	for _, k := range []string{"a", "b", "c"} {
-		assert.Equal(t, 0, b.misses[k])
-	}
+	assert.Equal(t, 0, b.misses["a"])
+	assert.Equal(t, 0, b.misses["b"])
+	assert.Equal(t, 0, b.misses["c"])
 }
 
 // The guard is a grace, not a veto: a whole fleet can genuinely go — a switch

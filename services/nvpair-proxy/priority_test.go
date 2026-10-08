@@ -139,12 +139,7 @@ func TestHandleSetPriority_Response(t *testing.T) {
 	})
 
 	require.True(t, rec.has(`"count":2`), "expected response with count=2")
-	{
-		got := p.PriorityList()
-		require.Len(t, got, 2, "stored priority")
-		require.Equal(t, "x", got[0], "stored priority (%v)", got)
-		require.Equal(t, "y", got[1], "stored priority (%v)", got)
-	}
+	require.Equal(t, []string{"x", "y"}, p.PriorityList(), "stored priority")
 }
 
 // A generation is required, because this method is relayed verbatim from any

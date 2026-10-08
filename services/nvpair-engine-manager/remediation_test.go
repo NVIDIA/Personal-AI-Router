@@ -80,20 +80,15 @@ func TestDownloadUnpinned(t *testing.T) {
 // TestValidateDownloadURL pins the HTTPS-only policy (loopback http is the
 // only plaintext exception — used by the live tests and a LAN mirror).
 func TestValidateDownloadURL(t *testing.T) {
-	for _, u := range []string{
-		"https://ollama.com/x.zip", "https://example.com/y",
-		"http://127.0.0.1:8080/x", "http://localhost/x", "http://[::1]:9/x",
-	} {
-		{
-			err := validateDownloadURL(u)
-			assert.NoError(t, err, " (%v, %v)", u, err)
-		}
-	}
-	for _, u := range []string{
-		"http://example.com/x", "http://10.0.0.5/x", "ftp://h/y", "file:///etc/passwd",
-	} {
-		assert.Error(t, validateDownloadURL(u), " (%v)", u)
-	}
+	assert.NoError(t, validateDownloadURL("https://ollama.com/x.zip"))
+	assert.NoError(t, validateDownloadURL("https://example.com/y"))
+	assert.NoError(t, validateDownloadURL("http://127.0.0.1:8080/x"))
+	assert.NoError(t, validateDownloadURL("http://localhost/x"))
+	assert.NoError(t, validateDownloadURL("http://[::1]:9/x"))
+	assert.Error(t, validateDownloadURL("http://example.com/x"))
+	assert.Error(t, validateDownloadURL("http://10.0.0.5/x"))
+	assert.Error(t, validateDownloadURL("ftp://h/y"))
+	assert.Error(t, validateDownloadURL("file:///etc/passwd"))
 }
 
 // TestUninstallRetries proves a failing uninstall command is retried
@@ -422,9 +417,9 @@ func TestBundledWindowsLMStudioUninstallExpansion(t *testing.T) {
 			got := expandPathForOS(command, "windows")
 			assert.True(t, got == command, "windows/ (%v, %v, %v)", arch, got, command)
 		}
-		for _, variable := range []string{"$root", "$_", "$env:USERPROFILE"} {
-			assert.Contains(t, command, variable, "windows/ (%v, %v)", arch, variable)
-		}
+		assert.Contains(t, command, "$root", "Windows uninstall variable must be preserved for %s", arch)
+		assert.Contains(t, command, "$_", "Windows uninstall variable must be preserved for %s", arch)
+		assert.Contains(t, command, "$env:USERPROFILE", "Windows uninstall variable must be preserved for %s", arch)
 	}
 }
 

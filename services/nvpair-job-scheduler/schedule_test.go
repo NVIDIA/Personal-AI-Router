@@ -554,10 +554,7 @@ func TestEmit_IncludesPendingRanks(t *testing.T) {
 		{ID: "a", Pending: 0, GPUPressure: unknownGPUPressure, Rank: 0},
 		{ID: "b", Pending: 1, GPUPressure: unknownGPUPressure, Rank: 1},
 	}
-	require.Len(t, got[0].Ranks, len(want), "ranks (%v)", want)
-	for i := range want {
-		assert.Equal(t, want[i], got[0].Ranks[i], "rank[ (%v)", i)
-	}
+	assert.Equal(t, want, got[0].Ranks, "pending ranks")
 }
 
 func TestEmit_PendingOnlyChangeRefreshesSnapshot(t *testing.T) {
