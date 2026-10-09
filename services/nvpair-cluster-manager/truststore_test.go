@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -333,5 +334,81 @@ func TestTrustStoreStaysSilentWhenNothingChanged(t *testing.T) {
 
 	if count() != before {
 		t.Fatalf("announcements = %d, want %d — a no-op must stay silent", count(), before)
+	}
+}
+
+func TestTrustStorePinRemoveReload(t *testing.T) {
+	dir := t.TempDir()
+	ts, err := newTrustStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	pin := testPin(t, "11111111-1111-4111-8111-111111111111")
+	if err := ts.Pin(pin); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	der, ok := ts.DER(pin.NodeUUID)
+	if !ok || !ts.MatchDER(pin.NodeUUID, der) {
+		t.Fatal("expected the pinned DER to match itself")
+	}
+
+	// Reopen: the pin must reload from disk.
+	reopened, err := newTrustStore(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, ok := reopened.Get(pin.NodeUUID); !ok {
+		t.Fatal("pin did not survive reload")
+	}
+
+	if err := reopened.Remove(pin.NodeUUID); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, ok := reopened.Get(pin.NodeUUID); ok {
+		t.Fatal("pin still present after removal")
+	}
+}
+
+func TestTrustStoreRePinGuard(t *testing.T) {
+	dir := t.TempDir()
+	ts, _ := newTrustStore(dir)
+	pin := testPin(t, "11111111-1111-4111-8111-111111111111")
+	if err := ts.Pin(pin); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	// Identical re-pin is an idempotent no-op.
+	if err := ts.Pin(pin); err != nil {
+		t.Fatalf("identical re-pin should be a no-op: %v", err)
+	}
+	// A different cert for the same UUID is rejected.
+	other := testPin(t, pin.NodeUUID)
+	if err := ts.Pin(other); err == nil {
+		t.Fatal("expected re-pinning a different cert for the same UUID to fail")
+	}
+}
+
+func TestTrustStoreAntiTamper(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-create a tampered file: filename UUID != the inner nodeUuid / cert.
+	trustedDir := filepath.Join(dir, "trusted")
+	if err := os.MkdirAll(trustedDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	pin := testPin(t, "11111111-1111-4111-8111-111111111111")
+	data, _ := json.MarshalIndent(pin, "", "  ")
+	wrongName := filepath.Join(trustedDir, "00000000-0000-4000-8000-000000000000.json")
+	if err := os.WriteFile(wrongName, data, 0o600); err != nil {
+		t.Fatalf("write tampered: %v", err)
+	}
+
+	ts, err := newTrustStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, ok := ts.Get(pin.NodeUUID); ok {
+		t.Fatal("tampered (renamed) pin should have been skipped on load")
+	}
+	if len(ts.List()) != 0 {
+		t.Fatalf("expected no valid pins, got %d", len(ts.List()))
 	}
 }
