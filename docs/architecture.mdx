@@ -98,7 +98,7 @@ the layers that are checked:
 | --- | --- |
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
-| The broker | A `ping` request clients can call, which the terminal interface's health view uses. |
+| The broker | A `ping` request clients can call, which the terminal interface's **Service** tab uses. |
 | Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
 
 Worker supervision is restart-based. An unexpected exit is retried with

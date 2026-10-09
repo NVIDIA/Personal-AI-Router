@@ -71,11 +71,10 @@ been seen on macOS.
 `nvpair-tui` is an operations tool for headless machines rather than a full
 replacement. It cannot do any of the following:
 
-- List or delete models
-- Change an engine's port
-- Update an engine
-- Control engines on other nodes
-- Show which node served a workload
+- Update an engine to a newer version
+- Send an inference request of your own
+- Install PAIR updates
+- Survive losing your terminal connection
 
 This matters most for a genuinely headless deployment, where those operations have
 no other route on that machine. Refer to
