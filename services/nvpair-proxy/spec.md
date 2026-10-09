@@ -81,6 +81,7 @@ is a genuine limitation, not a safety margin (§5.6).
 - One listener per enabled engine, serving loopback plaintext for local clients
   and pin-gated cluster mTLS for peers on the same port.
 - Model-owner filtering, target precedence, and retryable failover.
+- Aggregating the engine's model list across every routable candidate.
 - Per-request workload lifecycle events.
 - The process-wide reservation map that makes concurrent dispatch spread.
 - The persisted per-engine port a user chose through `set-port`.
@@ -505,6 +506,79 @@ a denial yields 403, an invalid inventory yields 502 without a partial list. An
 invalid-inventory error retains CORS headers only when all responding engines
 approve. See README.md for the complete forwarding and intersection rules.
 
+### 5.9 Candidate resolution
+
+Resolution turns the eligible owners into dial targets. It re-reads membership
+and pins from the cluster directory first, so a peer paired or removed since the
+last request is reflected on this one. Each owner is then classified by where
+its address points:
+
+| Owner | Dialed as | Why |
+| --- | --- | --- |
+| This facade — its own listen port, or an alias address it bound | the local engine from `node/set-local-backend`, over loopback; dropped when none is set or it is unhealthy | this node advertises the facade under `ol` / `lm`, so dialing it would enter this node's own cluster ingress and recurse |
+| A peer this node holds a pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | the relayed `trusted` flag is the scanner's answer from the peer's last record change, so it is stale for a peer discovered before this node's pins existed |
+| A manual node from `node/add-manual` | plain HTTP to the address the user supplied | a deliberate, separately labelled bypass |
+| Anything else — an unpinned peer, or any peer while this node is unclustered | dropped | a peer's facade refuses plaintext from the LAN, so it is not reachable |
+
+A defensive check then drops any target that still resolves to this facade, and
+targets are de-duplicated by resolved host, so one engine known under two ids —
+a manual entry and its discovered record — is tried once. Order is §5 step 2's:
+an eligible `node/select` pin, then the scheduler's list, then every remaining
+owner by stable id, so an owner the scheduler has not ranked stays routable as a
+last resort.
+
+### 5.10 Model-list aggregation
+
+The model-list routes are the one exception to forwarding a request to a single
+node. They resolve with no model, so no owner filter applies, and fan out
+concurrently to every resolved candidate, dialed as §5.9 describes, with
+redirects not followed.
+
+A candidate's answer counts only if it is `200`, at most 16 MiB
+(`maxModelListBytes`), carries its dialect's array (`models` native, `data`
+OpenAI), and gives every record an identity. A `5xx` or transport failure marks
+it unavailable, and a transport failure also forgets its confirmed address.
+
+Results merge in **candidate order, not completion order**, so which duplicate
+is kept is deterministic and a slow peer cannot hide a healthy one. The identity
+is `id` in the OpenAI dialect, and `model` falling back to `name` in Ollama's
+native list, normalized by the engine's naming rule so `llama3` and
+`llama3:latest` are one model. The first record for an identity wins; a later
+one whose `digest` differs is logged as a conflict and dropped.
+
+With no usable list the answer is `503` `{"error":"model inventory
+unavailable"}`; a candidate answering with an empty list is a success. The
+browser-origin rules in §5.8 apply on top. The aggregate is reported as one
+request with `target: "cluster"` and no node id.
+
+### 5.11 Discovery input
+
+Each facade subscribes to the broker's discovery relay for its engine's service
+key (`ol` or `lm`) and receives `discovery:nodes`, the full filtered set, on
+every change. Each snapshot **replaces** the facade's relay-fed overlay, so a
+departed node is simply absent from the next one and there is no state to drift.
+
+A directory node becomes a routable node only if it advertises that key and has
+an address:
+
+- its id is its `hostUuid`, so routing, `scheduledOn`, and the scheduler's list
+  agree on one identity that survives a rename;
+- its port is the one it advertises under the key, which is that peer's facade;
+- its addresses are its whole ranked list, so routing can fail over past a
+  direct-connect address this host cannot reach;
+- its models are its inventory for this engine alone, so a model a dual-engine
+  peer serves only through the other engine does not make it an owner here. A
+  peer sending no per-engine attribution falls back to its flat list.
+
+The diff against the previous snapshot is emitted as `node/discovered`,
+`node/updated` — a model change counts, because inventory is routing data — and
+`node/removed`. A node dropping out also reports
+`<engine>-proxy:upstream-unreachable:<nodeId>` into the errors pipeline, cleared
+when it returns. Manual nodes are a separate overlay the snapshots never touch,
+and a manual node is shadowed by a relay node with the same id. A `node/select`
+pin on a node that has left both overlays is cleared with
+`node/selection-changed`.
+
 ## 6. Reservations
 
 A reservation is one in-flight dispatch this process has made since the last
@@ -534,7 +608,16 @@ load below zero, which reads as permanently idle and attracts every subsequent
 dispatch.
 
 `node/set-priority` therefore carries a generation and is applied at most once;
-a redelivered snapshot must not clear live reservations.
+a redelivered snapshot must not clear live reservations. A generation of zero is
+rejected with `-32602`.
+
+A snapshot's contents are applied as follows. `nodes` is stored verbatim: an id
+discovery does not know is kept, since the node may appear later, and counts for
+nothing until it does. `ranks` supplies each node's `pending` and `gpuPressure`;
+an entry with no id is skipped, a negative value is floored at zero, and
+pressure is capped at `schedulerwire.MaxGPUPressure`. A nodes-only payload is
+valid and gives every node a zero baseline. An empty list clears the
+scheduler's influence and leaves stable-id ordering.
 
 ## 7. Listener personalities
 
@@ -547,6 +630,24 @@ One port per facade, demultiplexed on the connection's first byte:
 
 Membership and pins are re-derived per request and on a watch, so joining or
 leaving a cluster needs no restart.
+
+Each personality answers its own refusals with a small JSON body
+(`{"error", "code"}`) that never echoes the request or any generated output:
+
+| Personality | Condition | Status and code |
+| --- | --- | --- |
+| Plaintext | caller is not loopback; an unparseable address fails closed | `403 loopback-only` |
+| Plaintext | request carries `X-NVPAIR-Engine-Identity-Probe: 1` | `409 proxy-facade` |
+| Cluster mTLS | client certificate is not a pinned member | `403 cluster-auth` |
+| Cluster mTLS | no healthy local engine from `node/set-local-backend` | `503 no-local-backend` |
+| Cluster mTLS | the local engine fails the forward | `502 backend-error` |
+
+The `409` is a contract with `nvpair-engine-manager`, which marks its identity
+and action probes with that header so a facade on the engine's usual port can
+never be mistaken for the engine itself. The cluster ingress applies no route
+filtering — a pinned peer is treated like a local client toward the engine —
+and never consults candidate resolution (§5.9), so it is terminal: a peer's
+request cannot be routed onward or amplified.
 
 An engine with an inherited host variable (today Ollama alone) may also be given
 loopback-only **alias** addresses, so clients already using that variable enter
