@@ -208,8 +208,32 @@ would only collide on the port. Consequences worth knowing:
   genuine third-party listener on a *different* port (Ollama's own desktop app
   on `11434` while NVPAIR manages `11435`) is never touched. A listener whose
   image is **not** our managed binary is declined with an actionable error
-  naming the offending PID and image path — the user / desktop app owns that
-  process, and NVPAIR won't terminate it out from under them.
+  naming the offending PID and executable — the user / desktop app owns that
+  process, and NVPAIR won't terminate it out from under them. The error can
+  reach paired peers, so it carries the executable's file name only; the full
+  path is logged locally.
+- **Reclaim needs the PID and the executable behind the port.** macOS gets
+  both from `lsof`: the PID from the listener and the executable from its `txt`
+  descriptor. Linux gets the PID from `lsof` or, failing that, `ss`, and the
+  executable from `/proc/<pid>/exe`. Windows uses `GetExtendedTcpTable` and
+  `QueryFullProcessImageName`. The Unix tools are tried at known absolute
+  locations before any PATH lookup, because this process inherits whatever PATH
+  the desktop app was launched with and the result decides which process may be
+  terminated.
+  If the owner cannot be resolved, the ownership check **fails closed**: an
+  adopted engine is declined with "running under external management" rather
+  than terminated on a guess. So a Linux host with neither `lsof` nor `ss`, or a
+  macOS host where `lsof` cannot run, cannot reclaim its own orphans. CI
+  installs `lsof` and `iproute2` on Linux for this reason, and a macOS job runs
+  this module's tests natively, since the Linux `services` job excludes the
+  macOS lookup by build tag.
+- **A symlinked install directory counts as managed; a symlink inside it does
+  not.** If `<baseDir>/<engine>` is a symlink, the containment guard resolves
+  it when it checks, so a binary under the target counts as managed. A symlink
+  *inside* the install directory pointing outward is judged outside it, so a
+  planted link cannot nominate an unrelated file. An uninstall receives
+  `{install_dir}` as configured, unresolved, so `uninstall.remove` deletes a
+  linked install directory's link, not the directory it points to.
 - **`engine:stop` may return an error while still saving OFF.** When stop
   declines a foreign listener it returns an actionable error, but the user's
   OFF choice is persisted anyway — UI layers should treat the saved desired
@@ -342,9 +366,11 @@ with a loud warning.
 ## Cross-platform
 
 One binary compiles and runs on Windows, Linux, and macOS × amd64/arm64.
-Per-OS variance lives in the manifest first; OS primitives (process
-termination, console hiding) are the only build-tagged Go
-(`proc_windows.go` / `proc_unix.go`).
+Per-OS variance lives in the manifest first; OS primitives are the only
+build-tagged Go: process termination and console hiding (`proc_windows.go` /
+`proc_unix.go`), the executable behind a PID (`procimage_linux.go`,
+`procimage_darwin.go`, `procimage_other.go`), and the Linux `ss` port-owner
+lookup (`portowner_linux.go`, `portowner_other.go`).
 
 ## Shutdown
 
