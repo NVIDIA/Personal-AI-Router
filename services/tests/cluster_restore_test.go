@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
@@ -41,7 +42,7 @@ func startBrokerInDir(t *testing.T, configDir string, extraArgs ...string) (io.W
 	require.NoError(t, err, "broker stdout pipe")
 	cmd.Stderr = os.Stderr
 	require.NoError(t, cmd.Start(), "start broker")
-	msgs := startMsgReader(stdout)
+	msgs := startMsgReader(t, stdout)
 	cleanup := func() {
 		stdin.Close()
 		done := make(chan error, 1)
@@ -65,7 +66,7 @@ func waitForResponseID(t *testing.T, msgs <-chan jsonrpc.Message, id int, timeou
 		select {
 		case msg, ok := <-msgs:
 			require.True(t, ok, "broker stream closed before response id (%v)", id)
-			if msg.Method == "" && idEquals(msg.ID, id) {
+			if msg.Method == "" && idEquals(t, msg.ID, id) {
 				return msg
 			}
 		case <-timer.C:
@@ -148,7 +149,7 @@ func waitSettingClusterID(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Mes
 		var r struct {
 			Value string `json:"value"`
 		}
-		if resp.Error == nil && json.Unmarshal(resp.Result, &r) == nil {
+		if resp.Error == nil && assert.NoError(t, json.Unmarshal(resp.Result, &r)) {
 			last = r.Value
 			if r.Value == want {
 				return

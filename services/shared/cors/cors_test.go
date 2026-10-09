@@ -113,8 +113,10 @@ func TestEndToEndHeaders(t *testing.T) {
 	assert.Equal(t, h.Get("Cookie"), got.Get("Cookie"), "lost end-to-end headers")
 	assert.NotEqual(t, "", h.Get("X-Hop"), "mutated caller")
 }
-func target(s *httptest.Server) Target {
-	u, _ := url.Parse(s.URL)
+func target(t *testing.T, s *httptest.Server) Target {
+	t.Helper()
+	u, err := url.Parse(s.URL)
+	assert.NoError(t, err, "parse test server URL")
 	return Target{URL: u, Transport: s.Client().Transport}
 }
 func TestFanoutStripsCredentials(t *testing.T) {
@@ -133,7 +135,7 @@ func TestFanoutStripsCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 	rec := httptest.NewRecorder()
-	ServePreflight(rec, request, []Target{target(server), target(server)})
+	ServePreflight(rec, request, []Target{target(t, server), target(t, server)})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, "Bearer private", request.Header.Get("Authorization"), "mutated original request")
 	assert.Equal(t, "session=private", request.Header.Get("Cookie"), "mutated original request")
@@ -161,7 +163,7 @@ func TestPreflightResponses(t *testing.T) {
 			}))
 			defer server.Close()
 			rec := httptest.NewRecorder()
-			ServePreflight(rec, preflight(), []Target{target(server)})
+			ServePreflight(rec, preflight(), []Target{target(t, server)})
 			assert.Equal(t, status, rec.Code, "single status")
 			assert.Equal(t, withPolicy, rec.Header().Get("Access-Control-Allow-Origin") != "", "single policy changed")
 			if status != http.StatusNoContent {
@@ -169,7 +171,7 @@ func TestPreflightResponses(t *testing.T) {
 			}
 			assert.Equal(t, int32(1), calls.Load(), "followed redirect")
 			rec = httptest.NewRecorder()
-			ServePreflight(rec, preflight(), []Target{target(server), target(server)})
+			ServePreflight(rec, preflight(), []Target{target(t, server), target(t, server)})
 			assert.Equal(t, combinedStatus, rec.Code, "combined status")
 			if combinedStatus != http.StatusNoContent {
 				assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"), "permission on failure")
@@ -208,7 +210,8 @@ func TestBoundedFanoutAndCancellation(t *testing.T) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})
-	u, _ := url.Parse("http://engine.test")
+	u, err := url.Parse("http://engine.test")
+	assert.NoError(t, err, "parse engine URL")
 	targets := make([]Target, 20)
 	for i := range targets {
 		targets[i] = Target{URL: u, Transport: transport}

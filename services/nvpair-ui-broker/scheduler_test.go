@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
@@ -31,8 +32,8 @@ func TestSchedulerFeedBaselinePrecedesConcurrentLiveWorkload(t *testing.T) {
 	})
 	worker := &rpcWorker{peer: NewPeer(NewCodec(brokerSide))}
 	b := &Broker{workloads: workloadstore.New(), telemetry: newTelemetryCache()}
-	b.workloads.Apply(storeIncoming("active", "host", "ollama", "run", "running", "a"))
-	b.workloads.Apply(storeIncoming("historic", "host", "ollama", "run", "completed", "a"))
+	b.workloads.Apply(storeIncoming(t, "active", "host", "ollama", "run", "running", "a"))
+	b.workloads.Apply(storeIncoming(t, "historic", "host", "ollama", "run", "completed", "a"))
 	b.telemetry.Upsert(sourceScanner, noderec.NodeTelemetry{
 		HostUUID:          "a",
 		GPUUtilizationPct: 50,
@@ -50,14 +51,14 @@ func TestSchedulerFeedBaselinePrecedesConcurrentLiveWorkload(t *testing.T) {
 		close(feedLocked)
 		replayed := b.replayActiveWorkloadsToScheduler(worker)
 		b.replayTelemetryToScheduler(worker)
-		_ = worker.Notify("discovery:nodes-changed", []AvailableNode{{HostUUID: "a"}})
+		assert.NoError(t, worker.Notify("discovery:nodes-changed", []AvailableNode{{HostUUID: "a"}}))
 		b.schedulerFeedMu.Unlock()
 		b.workloadEmitMu.Unlock()
 		initDone <- replayed
 	}()
 	<-feedLocked
 
-	liveInfo := storeIncoming("live", "host", "lmstudio", "run", "queued", "a").Info
+	liveInfo := storeIncoming(t, "live", "host", "lmstudio", "run", "queued", "a").Info
 	liveParams, err := json.Marshal(map[string]json.RawMessage{"workloadInfo": liveInfo})
 	require.NoError(t, err, "marshal live workload")
 	liveDone := make(chan struct{})

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,33 +21,21 @@ import (
 // an in-memory codec and asserts the JSON-RPC error responses for the
 // failure paths the e2e harness can't easily reach.
 func TestManagerErrorResponses(t *testing.T) {
-	newM := func() (*Manager, *bytes.Buffer) {
-		var out bytes.Buffer
-		ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
-		return NewManager(NewCodec(&out), ex, nil), &out
+	test := func(name, method, params, want string, dispatch func(*Manager, context.Context, *Message)) {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+			m := NewManager(NewCodec(&out), ex, nil)
+			id := json.RawMessage("1")
+			dispatch(m, context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: method, Params: json.RawMessage(params)})
+			require.Contains(t, out.String(), want)
+		})
 	}
-	id := json.RawMessage("1")
-	ctx := context.Background()
-
-	m, out := newM()
-	m.handleMessage(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "bogus"})
-	mustContain(t, out.String(), "-32601")
-
-	m, out = newM()
-	m.handleMessage(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:describe", Params: json.RawMessage(`{"engine":"nope"}`)})
-	mustContain(t, out.String(), "unknown engine")
-
-	m, out = newM()
-	m.runOp(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start", Params: json.RawMessage(`{}`)})
-	mustContain(t, out.String(), "engine is required")
-
-	m, out = newM()
-	m.runOp(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start", Params: json.RawMessage(`{bad}`)})
-	mustContain(t, out.String(), "invalid params")
-
-	m, out = newM()
-	m.runAction(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action", Params: json.RawMessage(`{"engine":"x"}`)})
-	mustContain(t, out.String(), "engine and action are required")
+	test("unknown method", "bogus", "", "-32601", (*Manager).handleMessage)
+	test("unknown engine", "engine:describe", `{"engine":"nope"}`, "unknown engine", (*Manager).handleMessage)
+	test("missing engine", "engine:start", `{}`, "engine is required", (*Manager).runOp)
+	test("invalid params", "engine:start", `{bad}`, "invalid params", (*Manager).runOp)
+	test("missing action", "engine:action", `{"engine":"x"}`, "engine and action are required", (*Manager).runAction)
 }
 
 func TestRunOpRejectsBadPort(t *testing.T) {
@@ -77,22 +66,14 @@ func TestRunOpInstallAutostart(t *testing.T) {
 	id := json.RawMessage("1")
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:install",
 		Params: json.RawMessage(`{"engine":"fake","start":true}`)})
-	st, _ := ex.Status("fake")
+	st, err := ex.Status("fake")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "expected running after install+autostart (%v)", st)
 }
 
 func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
-	tests := []struct {
-		name   string
-		method string
-		params json.RawMessage
-	}{
-		{name: "status", method: "engine:status", params: json.RawMessage(`{"engine":"fake"}`)},
-		{name: "get installed", method: "engine:get-installed"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, method string, params json.RawMessage) {
+		t.Run(name, func(t *testing.T) {
 			ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 			st, err := ex.state("fake")
 			require.NoError(t, err)
@@ -102,8 +83,10 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 			m := NewManager(NewCodec(managerConn), ex, nil)
 			id := json.RawMessage("1")
 			response := make(chan string, 1)
+			readErr := make(chan error, 1)
 			go func() {
-				line, _ := bufio.NewReader(clientConn).ReadString('\n')
+				line, err := bufio.NewReader(clientConn).ReadString('\n')
+				readErr <- err
 				response <- line
 			}()
 
@@ -116,8 +99,8 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 				m.handleMessage(context.Background(), &Message{
 					JSONRPC: "2.0",
 					ID:      &id,
-					Method:  tc.method,
-					Params:  tc.params,
+					Method:  method,
+					Params:  params,
 				})
 				close(returned)
 			}()
@@ -127,18 +110,21 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 				// Expected: the potentially blocking status work was dispatched.
 			case <-time.After(time.Second):
 				st.opMu.Unlock()
-				require.FailNowf(t, "message dispatch blocked while an engine operation held opMu", "method %s", tc.method)
+				require.FailNow(t, "message dispatch blocked while an engine operation held opMu")
 			}
 
 			st.opMu.Unlock()
 			select {
 			case line := <-response:
+				assert.NoError(t, <-readErr)
 				require.Contains(t, line, `"id":1`)
 			case <-time.After(2 * time.Second):
-				require.FailNowf(t, "no response after the engine operation completed", "method %s", tc.method)
+				require.FailNow(t, "no response after the engine operation completed")
 			}
 		})
 	}
+	test("status", "engine:status", json.RawMessage(`{"engine":"fake"}`))
+	test("get installed", "engine:get-installed", nil)
 }
 
 func mustContain(t *testing.T, s, sub string) {

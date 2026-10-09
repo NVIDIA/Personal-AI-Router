@@ -17,19 +17,16 @@ func TestLMSEntryMatchesModel(t *testing.T) {
 		Path:                   "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
 		IndexedModelIdentifier: "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
 	}
-	cases := []struct {
-		model string
-		want  bool
-	}{
-		{"text-embedding-nomic-embed-text-v1.5", true},
-		{"nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", true},
-		{"nomic-ai/nomic-embed-text-v1.5-GGUF", true},
-		{"publisher/demo-model", false},
-		{"", false},
+	test := func(name, model string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, lmsEntryMatchesModel(entry, model))
+		})
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, lmsEntryMatchesModel(entry, c.model), "lmsEntryMatchesModel")
-	}
+	test("model key", "text-embedding-nomic-embed-text-v1.5", true)
+	test("full path", "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", true)
+	test("repository", "nomic-ai/nomic-embed-text-v1.5-GGUF", true)
+	test("other model", "publisher/demo-model", false)
+	test("empty model", "", false)
 }
 
 func TestSafeRemoveUnderRootRejectsMissingPath(t *testing.T) {

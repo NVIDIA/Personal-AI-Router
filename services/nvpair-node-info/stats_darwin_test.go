@@ -19,23 +19,16 @@ func TestDarwinCPUUtilization(t *testing.T) {
 	valid := func(idle, total float64) darwinCPUTimes {
 		return darwinCPUTimes{idle: idle, total: total, valid: true}
 	}
-	cases := []struct {
-		name string
-		prev darwinCPUTimes
-		cur  darwinCPUTimes
-		want uint32
-	}{
-		{"busy delta", valid(40, 100), valid(60, 200), 80},
-		{"idle delta", valid(40, 100), valid(140, 200), 0},
-		{"invalid baseline", darwinCPUTimes{}, valid(60, 200), 0},
-		{"counter reset", valid(40, 100), valid(20, 50), 0},
-		{"no elapsed ticks", valid(40, 100), valid(40, 100), 0},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, darwinCPUUtilization(c.prev, c.cur), "darwinCPUUtilization()")
+	test := func(name string, prev, cur darwinCPUTimes, want uint32) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, darwinCPUUtilization(prev, cur))
 		})
 	}
+	test("busy delta", valid(40, 100), valid(60, 200), 80)
+	test("idle delta", valid(40, 100), valid(140, 200), 0)
+	test("invalid baseline", darwinCPUTimes{}, valid(60, 200), 0)
+	test("counter reset", valid(40, 100), valid(20, 50), 0)
+	test("no elapsed ticks", valid(40, 100), valid(40, 100), 0)
 }
 
 func TestInitialDarwinMemorySnapshot(t *testing.T) {

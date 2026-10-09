@@ -22,48 +22,22 @@ import (
 // a few malformed variants we must reject, and the edge case of a
 // trailing underscore with no engine type.
 func TestParseEngineInstance(t *testing.T) {
-	cases := []struct {
-		name     string
-		in       string
-		wantLuid string
-		wantType string
-		wantOK   bool
-	}{
-		{
-			name:     "typical 3D engine",
-			in:       "pid_1234_luid_0x00000000_0x000054f0_phys_0_eng_0_engtype_3D",
-			wantLuid: "luid_0x00000000_0x000054f0_phys_0",
-			wantType: "3d",
-			wantOK:   true,
-		},
-		{
-			name:     "compute variant",
-			in:       "pid_99_luid_0x00000000_0x0000abcd_phys_0_eng_2_engtype_Compute_0",
-			wantLuid: "luid_0x00000000_0x0000abcd_phys_0",
-			wantType: "compute_0",
-			wantOK:   true,
-		},
-		{
-			name:     "mixed-case hex normalizes to lower",
-			in:       "pid_1_luid_0x00000000_0x000054F0_phys_0_eng_0_engtype_3D",
-			wantLuid: "luid_0x00000000_0x000054f0_phys_0",
-			wantType: "3d",
-			wantOK:   true,
-		},
-		{"missing luid prefix", "pid_1_eng_0_engtype_3D", "", "", false},
-		{"missing eng segment", "pid_1_luid_0x0_0x0_phys_0_engtype_3D", "", "", false},
-		{"missing engtype marker", "pid_1_luid_0x0_0x0_phys_0_eng_0", "", "", false},
-		{"empty engtype value", "pid_1_luid_0x0_0x0_phys_0_eng_0_engtype_", "", "", false},
-		{"unrelated garbage", "completely unrelated string", "", "", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			luid, et, ok := parseEngineInstance(c.in)
-			require.Equal(t, c.wantOK, ok, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
-			require.Equal(t, c.wantLuid, luid, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
-			require.Equal(t, c.wantType, et, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
+	test := func(name, in, wantLuid, wantType string, wantOK bool) {
+		t.Run(name, func(t *testing.T) {
+			luid, et, ok := parseEngineInstance(in)
+			require.Equal(t, wantOK, ok)
+			require.Equal(t, wantLuid, luid)
+			require.Equal(t, wantType, et)
 		})
 	}
+	test("typical 3D engine", "pid_1234_luid_0x00000000_0x000054f0_phys_0_eng_0_engtype_3D", "luid_0x00000000_0x000054f0_phys_0", "3d", true)
+	test("compute variant", "pid_99_luid_0x00000000_0x0000abcd_phys_0_eng_2_engtype_Compute_0", "luid_0x00000000_0x0000abcd_phys_0", "compute_0", true)
+	test("mixed-case hex normalizes to lower", "pid_1_luid_0x00000000_0x000054F0_phys_0_eng_0_engtype_3D", "luid_0x00000000_0x000054f0_phys_0", "3d", true)
+	test("missing luid prefix", "pid_1_eng_0_engtype_3D", "", "", false)
+	test("missing eng segment", "pid_1_luid_0x0_0x0_phys_0_engtype_3D", "", "", false)
+	test("missing engtype marker", "pid_1_luid_0x0_0x0_phys_0_eng_0", "", "", false)
+	test("empty engtype value", "pid_1_luid_0x0_0x0_phys_0_eng_0_engtype_", "", "", false)
+	test("unrelated garbage", "completely unrelated string", "", "", false)
 }
 
 // TestAggregateUtilization exercises Task Manager's three-step algorithm:
@@ -186,25 +160,15 @@ func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
 
 func TestBuildResponseTelemetryFreshness(t *testing.T) {
 	now := time.Unix(1_700_000_000, 500_000_000)
-	cases := []struct {
-		name      string
-		sampledAt time.Time
-		wantValid bool
-		wantAge   int64
-	}{
-		{name: "no sample", wantValid: false, wantAge: 0},
-		{name: "valid idle sample", sampledAt: now.Add(-137 * time.Millisecond), wantValid: true, wantAge: 137},
-		{name: "future sample clamps age", sampledAt: now.Add(time.Millisecond), wantValid: true, wantAge: 0},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+	test := func(name string, sampledAt time.Time, wantValid bool, wantAge int64) {
+		t.Run(name, func(t *testing.T) {
 			body := buildResponseAt(
 				[]GPUInfo{{Name: "GPU 0", statsKey: "gpu-a"}},
 				nil,
 				0,
 				statsSnapshot{
 					GPU:          map[string]gpuStat{"gpu-a": {UtilizationPct: 0}},
-					GPUSampledAt: c.sampledAt,
+					GPUSampledAt: sampledAt,
 				},
 				"",
 				nil,
@@ -212,8 +176,8 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 			)
 			var typed NodeInfoResponse
 			require.NoError(t, json.Unmarshal(body, &typed), "decode response")
-			require.Equal(t, c.wantValid, typed.TelemetryValid, "telemetry = valid")
-			require.Equal(t, c.wantAge, typed.MSSince, "telemetry = valid")
+			require.Equal(t, wantValid, typed.TelemetryValid)
+			require.Equal(t, wantAge, typed.MSSince)
 
 			var raw map[string]any
 			require.NoError(t, json.Unmarshal(body, &raw), "decode raw response")
@@ -221,6 +185,9 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 			require.Contains(t, raw, "msSince", "msSince missing from response")
 		})
 	}
+	test("no sample", time.Time{}, false, 0)
+	test("valid idle sample", now.Add(-137*time.Millisecond), true, 137)
+	test("future sample clamps age", now.Add(time.Millisecond), true, 0)
 }
 
 // buildResponseDecode is a test helper that marshals through the real
@@ -273,30 +240,12 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 		statsKey:              "GPU-spark",
 		usesSystemMemoryUsage: true,
 	}}
-	cases := []struct {
-		name     string
-		gpuStats map[string]gpuStat
-		wantUtil uint32
-	}{
-		{
-			name:     "without dynamic nvidia-smi row",
-			gpuStats: nil,
-		},
-		{
-			name: "with dynamic utilization row",
-			gpuStats: map[string]gpuStat{
-				"GPU-spark": {VRAMUsed: 1 << 30, UtilizationPct: 42},
-			},
-			wantUtil: 42,
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			snap := statsSnapshot{GPU: c.gpuStats, MemUsedBytes: sysMemUsed}
+	test := func(name string, gpuStats map[string]gpuStat, wantUtil uint32) {
+		t.Run(name, func(t *testing.T) {
+			snap := statsSnapshot{GPU: gpuStats, MemUsedBytes: sysMemUsed}
 			typed, raw := buildResponseDecode(t, static, nil, 0, snap)
-			assert.Equal(t, sysMemUsed, typed.GPUs[0].VramUsedBytes, "VramUsedBytes")
-			assert.Equal(t, c.wantUtil, typed.GPUs[0].UtilizationPercent, "UtilizationPercent")
+			assert.Equal(t, sysMemUsed, typed.GPUs[0].VramUsedBytes)
+			assert.Equal(t, wantUtil, typed.GPUs[0].UtilizationPercent)
 
 			gpus, ok := raw["GPUs"].([]any)
 			require.True(t, ok, "unexpected GPUs payload")
@@ -306,6 +255,8 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 			assert.Contains(t, obj, "vram_used_bytes", "vram_used_bytes should be present for unified memory")
 		})
 	}
+	test("without dynamic nvidia-smi row", nil, 0)
+	test("with dynamic utilization row", map[string]gpuStat{"GPU-spark": {VRAMUsed: 1 << 30, UtilizationPct: 42}}, 42)
 }
 
 // Apple Silicon shares physical memory but ioreg reports the GPU-specific

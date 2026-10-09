@@ -346,31 +346,26 @@ func TestEnableFacadeRejectsUnsafeAliasAddresses(t *testing.T) {
 		t.Skip("needs one alias-capable and one alias-incapable engine")
 	}
 
-	for _, tc := range []struct {
-		name   string
-		engine string
-		alias  string
-	}{
-		{"a LAN address", aliasEngine.Name, "192.168.1.20:11433"},
-		{"the wildcard address", aliasEngine.Name, "0.0.0.0:11433"},
-		{"an engine with no inherited host variable", plainEngine.Name, "127.0.0.1:11433"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, engine, alias string) {
+		t.Run(name, func(t *testing.T) {
 			p := NewProxy(NewCodec(rwNop{}))
 			p.serveCtx = t.Context()
 			t.Cleanup(func() { p.shutdown(t.Context()) })
 
 			_, err := p.enableFacade(enableFacadeParams{
-				Engine:              tc.engine,
+				Engine:              engine,
 				Port:                freeTCPPort(t),
-				AliasAddresses:      []string{tc.alias},
+				AliasAddresses:      []string{alias},
 				IgnorePersistedPort: true,
 			})
 			require.Error(t, err, "enable accepted alias")
 			// Rejected outright, not enabled-then-partially-configured.
-			assert.Nil(t, p.facadeFor(tc.engine), "a rejected alias still left a")
+			assert.Nil(t, p.facadeFor(engine), "a rejected alias must leave no facade enabled")
 		})
 	}
+	test("a LAN address", aliasEngine.Name, "192.168.1.20:11433")
+	test("the wildcard address", aliasEngine.Name, "0.0.0.0:11433")
+	test("an engine with no inherited host variable", plainEngine.Name, "127.0.0.1:11433")
 }
 
 // Facade notifications are addressed, so the broker can attribute a bare
@@ -393,7 +388,7 @@ func TestBothFacadesAddressTheirNotifications(t *testing.T) {
 		var msg struct {
 			Method string `json:"method"`
 		}
-		if json.Unmarshal(line, &msg) != nil {
+		if !assert.NoError(t, json.Unmarshal(line, &msg)) {
 			continue
 		}
 		engine, bare := engines.SplitAddressedMethod(msg.Method)

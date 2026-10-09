@@ -183,7 +183,9 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 	// The bundled manifest installs into (and uninstalls) the real
 	// ~/.lmstudio. Refuse to run if one already exists, so we never delete
 	// a user's pre-existing LM Studio.
-	if home, _ := os.UserHomeDir(); home != "" {
+	home, err := os.UserHomeDir()
+	assert.NoError(t, err)
+	if home != "" {
 		if _, err := os.Stat(filepath.Join(home, ".lmstudio")); err == nil {
 			t.Skip("~/.lmstudio already exists; skipping so we don't uninstall a real LM Studio install")
 		}
@@ -230,7 +232,7 @@ func startManager(t *testing.T, env map[string]string) (chan frame, io.WriteClos
 		for sc.Scan() {
 			line := sc.Text()
 			var f frame
-			_ = json.Unmarshal([]byte(line), &f)
+			assert.NoError(t, json.Unmarshal([]byte(line), &f))
 			t.Logf("[%6dms] %s", time.Since(start).Milliseconds(), line)
 			frames <- f
 		}

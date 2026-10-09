@@ -19,11 +19,8 @@ import (
 )
 
 func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
-	for _, definition := range []string{
-		`[{"value":"{server.port}","env":["SERVER_PORT","PORT_ALIAS"]},{"value":"{server.host}","env":["SERVER_HOST","HOST_ALIAS"]},{"value":"{cors.enabled}","flags":["--browser-access","-c"],"env":["BROWSER_ACCESS","CORS_ALIAS"]}]`,
-		`[{"value":"{server.host}:{server.port}","flags":["--listen","-l"],"env":["LISTEN","LISTEN_ALIAS"]},{"value":"{cors.origins}","flags":["--origins","-o"],"env":["ORIGINS","ORIGIN_ALIAS"]}]`,
-	} {
-		t.Run(definition, func(t *testing.T) {
+	test := func(name, definition string) {
+		t.Run(name, func(t *testing.T) {
 			e := settingsExecutor(t, true)
 			rt := &settingsState(t, e).plat.Runtime
 			require.NoError(t, json.Unmarshal([]byte(definition), &rt.EditableLaunch.Controls))
@@ -57,36 +54,42 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 			require.NotEmpty(t, previewSettings(t, e, request).Errors, "contradictory source aliases accepted")
 		})
 	}
+	test("separate host and port", `[{"value":"{server.port}","env":["SERVER_PORT","PORT_ALIAS"]},{"value":"{server.host}","env":["SERVER_HOST","HOST_ALIAS"]},{"value":"{cors.enabled}","flags":["--browser-access","-c"],"env":["BROWSER_ACCESS","CORS_ALIAS"]}]`)
+	test("combined listen address", `[{"value":"{server.host}:{server.port}","flags":["--listen","-l"],"env":["LISTEN","LISTEN_ALIAS"]},{"value":"{cors.origins}","flags":["--origins","-o"],"env":["ORIGINS","ORIGIN_ALIAS"]}]`)
 }
 
 func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
-	for _, command := range []bool{false, true} {
-		e := settingsExecutor(t, command)
-		rt := settingsState(t, e).plat.Runtime
-		request := settingsRequest(t, e)
-		launch, err := launchForState(settingsState(t, e), request.Settings.ServerPort)
-		require.NoError(t, err)
-		if command {
-			launch.Args = append(launch.Args, "-p0")
-		} else {
-			launch.Env["OLLAMA_ORIGINS"] = `"*"`
-		}
-		require.Error(t, validateEffectiveLaunch(rt, launch, "127.0.0.1", fmt.Sprint(request.Settings.ServerPort)), "unsafe saved launch accepted")
-		if command {
-			args := []string{"-p0"}
-			rt.LaunchArgs = &args
-		} else {
-			env := []string{`OLLAMA_ORIGINS="*"`}
-			rt.LaunchEnv = &env
-		}
-		settingsState(t, e).plat.Runtime = rt
-		state, err := e.LaunchSettings("fake")
-		require.NoError(t, err, "saved settings must remain available for repair (%v, %v)", state, err)
-		require.True(t, state.Editable, "saved settings must remain available for repair (%v, %v)", state, err)
-		err = e.Start(context.Background(), "fake")
-		require.Error(t, err, "Start did not reject the unsafe saved networking control")
-		require.True(t, strings.Contains(err.Error(), "server port") || strings.Contains(err.Error(), "CORS origins"), "Start did not reject the unsafe saved networking control (%v)", err)
+	test := func(name string, command bool) {
+		t.Run(name, func(t *testing.T) {
+			e := settingsExecutor(t, command)
+			rt := settingsState(t, e).plat.Runtime
+			request := settingsRequest(t, e)
+			launch, err := launchForState(settingsState(t, e), request.Settings.ServerPort)
+			require.NoError(t, err)
+			if command {
+				launch.Args = append(launch.Args, "-p0")
+			} else {
+				launch.Env["OLLAMA_ORIGINS"] = `"*"`
+			}
+			require.Error(t, validateEffectiveLaunch(rt, launch, "127.0.0.1", fmt.Sprint(request.Settings.ServerPort)), "unsafe saved launch accepted")
+			if command {
+				args := []string{"-p0"}
+				rt.LaunchArgs = &args
+			} else {
+				env := []string{`OLLAMA_ORIGINS="*"`}
+				rt.LaunchEnv = &env
+			}
+			settingsState(t, e).plat.Runtime = rt
+			state, err := e.LaunchSettings("fake")
+			require.NoError(t, err, "saved settings must remain available for repair")
+			require.True(t, state.Editable, "saved settings must remain available for repair")
+			err = e.Start(context.Background(), "fake")
+			require.Error(t, err, "Start did not reject the unsafe saved networking control")
+			require.True(t, strings.Contains(err.Error(), "server port") || strings.Contains(err.Error(), "CORS origins"), "Start did not reject the unsafe saved networking control (%v)", err)
+		})
 	}
+	test("process", false)
+	test("command", true)
 }
 
 func TestBundledLlamaCPPDisablesCORSByDefault(t *testing.T) {
@@ -172,20 +175,30 @@ func TestNetworkingControlAliasesAreEngineIndependent(t *testing.T) {
 		{Value: "{cors.enabled}", Implicit: implicitLaunchValue("true"), Flags: []string{"--browser-access", "--allow-browser", "-c"}},
 	}
 
-	for _, text := range []string{"--http-port=23456 -b127.0.0.1 -ohttps://example.test", "-x23456 --address=127.0.0.1 --browser-origins=https://example.test"} {
-		request := settingsRequest(t, e)
-		request.Settings.LaunchText = text
-		request.Resolution = "launch"
-		result := previewSettings(t, e, request)
-		require.Empty(t, result.Errors, " (%v, %v)", text, result)
-		require.Equal(t, 23456, result.Settings.ServerPort, " (%v, %v)", text, result)
-		assert.Equal(t, []string{"--origins", "https://example.test"}, result.Args, " (%v)", text)
+	test := func(name, text string, valid bool) {
+		t.Run(name, func(t *testing.T) {
+			request := settingsRequest(t, e)
+			request.Settings.LaunchText = text
+			if !valid {
+				require.NotEmpty(t, previewSettings(t, e, request).Errors, "unsafe networking aliases accepted")
+				return
+			}
+			request.Resolution = "launch"
+			result := previewSettings(t, e, request)
+			require.Empty(t, result.Errors)
+			require.Equal(t, 23456, result.Settings.ServerPort)
+			assert.Equal(t, []string{"--origins", "https://example.test"}, result.Args)
+		})
 	}
-	for _, text := range []string{"--address=0.0.0.0", "-b0.0.0.0", "--browser-origins=*", "-o*", "-vc", "-vohttps://example.test", "-ohttps://one.test --origins=https://two.test"} {
-		request := settingsRequest(t, e)
-		request.Settings.LaunchText = text
-		require.NotEmpty(t, previewSettings(t, e, request).Errors, "accepted (%v)", text)
-	}
+	test("long port and short host and origins", "--http-port=23456 -b127.0.0.1 -ohttps://example.test", true)
+	test("short port and long host and origins", "-x23456 --address=127.0.0.1 --browser-origins=https://example.test", true)
+	test("long host binds externally", "--address=0.0.0.0", false)
+	test("short host binds externally", "-b0.0.0.0", false)
+	test("long origins accepts all", "--browser-origins=*", false)
+	test("short origins accepts all", "-o*", false)
+	test("grouped CORS flag", "-vc", false)
+	test("grouped origins flag", "-vohttps://example.test", false)
+	test("conflicting origins aliases", "-ohttps://one.test --origins=https://two.test", false)
 }
 
 func TestCORSCanonicalization(t *testing.T) {
@@ -193,22 +206,23 @@ func TestCORSCanonicalization(t *testing.T) {
 		_, err := normalizeCORSOrigins(text)
 		assert.Error(t, err, "accepted (%v)", text)
 	}
-	for _, value := range []struct{ input, want string }{
-		{`"https://Example.Test"`, "https://example.test"},
-		{" https://example.test/ , http://localhost:* ", "https://example.test,http://localhost:*"},
-		{"https://*.example.test", "https://*.example.test"},
-		{"http://[::1]:1234", "http://[::1]:1234"},
-		{"", ""},
-	} {
-		got, err := normalizeCORSOrigins(value.input)
-		assert.NoError(t, err, " (%v, %v)", got, err)
-		assert.Equal(t, value.want, got)
+	test := func(name, input, want string) {
+		t.Run(name, func(t *testing.T) {
+			got, err := normalizeCORSOrigins(input)
+			assert.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
 	}
+	test("case and quotes", `"https://Example.Test"`, "https://example.test")
+	test("whitespace and trailing slash", " https://example.test/ , http://localhost:* ", "https://example.test,http://localhost:*")
+	test("wildcard subdomain", "https://*.example.test", "https://*.example.test")
+	test("IPv6 origin", "http://[::1]:1234", "http://[::1]:1234")
+	test("empty origins", "", "")
 }
 
 func TestRemoteCORSUsesCanonicalPolicyAndAuthoritativePreview(t *testing.T) {
-	for _, command := range []bool{false, true} {
-		t.Run(fmt.Sprint(command), func(t *testing.T) {
+	test := func(name string, command bool) {
+		t.Run(name, func(t *testing.T) {
 			e := settingsExecutor(t, command)
 			request := settingsRequest(t, e)
 			changed := "OLLAMA_ORIGINS=https://example.test"
@@ -236,11 +250,13 @@ func TestRemoteCORSUsesCanonicalPolicyAndAuthoritativePreview(t *testing.T) {
 			require.Error(t, err, "remote removal changed policy")
 		})
 	}
+	test("process", false)
+	test("command", true)
 }
 
 // Removing a disabling override may restore permissive inherited/default values.
 func TestRemoteCORSCannotRemoveExplicitDisablingValues(t *testing.T) {
-	for _, kind := range []string{"cors.enabled", "cors.origins"} {
+	test := func(kind string) {
 		t.Run(kind, func(t *testing.T) {
 			e := settingsExecutor(t, true)
 			policy := settingsState(t, e).plat.Runtime.EditableLaunch
@@ -261,6 +277,8 @@ func TestRemoteCORSCannotRemoveExplicitDisablingValues(t *testing.T) {
 			require.Error(t, err, "remote removal of disabling override accepted")
 		})
 	}
+	test("cors.enabled")
+	test("cors.origins")
 }
 
 func TestNetworkingManifestRejectsAmbiguousDeclarations(t *testing.T) {

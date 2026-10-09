@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,7 +37,8 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 	ports := make([]int, len(names))
 	for i, name := range names {
 		require.NoError(t, ex.Start(ctx, name), "start (%v)", name)
-		st, _ := ex.Status(name)
+		st, err := ex.Status(name)
+		assert.NoError(t, err)
 		require.True(t, st.Running, " (%v, %v)", name, st)
 		require.NotEqual(t, 0, st.Port, " (%v, %v)", name, st)
 		ports[i] = st.Port

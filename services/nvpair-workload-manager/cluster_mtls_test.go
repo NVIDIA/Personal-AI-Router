@@ -36,8 +36,10 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err, "generate key")
-	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	uri, _ := url.Parse("urn:nvpair:node:" + uuid)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	assert.NoError(t, err)
+	uri, err := url.Parse("urn:nvpair:node:" + uuid)
+	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: uuid},
@@ -50,7 +52,8 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
 	require.NoError(t, err, "create certificate")
-	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	assert.NoError(t, err)
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM
@@ -66,7 +69,8 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 	td := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(td, 0o700))
 	for uuid, pcert := range pins {
-		body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
+		body, err := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
+		assert.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600))
 	}
 	return dir
@@ -114,7 +118,7 @@ func serveEventsOverMTLS(t *testing.T, srv *Server, self, peer *clustertrust.Mes
 	return func(body []byte) int {
 		resp, err := client.Post(ts.URL+eventsPath, "application/json", bytes.NewReader(body))
 		require.NoError(t, err, "post events")
-		defer resp.Body.Close()
+		defer func() { assert.NoError(t, resp.Body.Close()) }()
 		return resp.StatusCode
 	}
 }
@@ -154,8 +158,10 @@ func TestWorkloadBroadcast_MTLSGate(t *testing.T) {
 	// A valid lifecycle frame (workload:started) so a member's POST reaches 200,
 	// not just "past the gate".
 	wl := &Workload{ID: "wl-1", Model: "llama", Engine: "ollama", State: StateRunning, OriginatedFrom: "uuid-b", CreatedAt: 1}
-	params, _ := json.Marshal(lifecycleParams{WorkloadInfo: wl})
-	frame, _ := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: json.RawMessage(params)})
+	params, err := json.Marshal(lifecycleParams{WorkloadInfo: wl})
+	assert.NoError(t, err)
+	frame, err := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: json.RawMessage(params)})
+	assert.NoError(t, err)
 
 	post := func(m *clustertrust.Mesh, peerUUID string) (int, error) {
 		cfg, ok := m.ClientTLSConfig(peerUUID)
@@ -170,7 +176,7 @@ func TestWorkloadBroadcast_MTLSGate(t *testing.T) {
 		if err != nil {
 			return 0, err
 		}
-		defer resp.Body.Close()
+		defer func() { assert.NoError(t, resp.Body.Close()) }()
 		return resp.StatusCode, nil
 	}
 
@@ -215,13 +221,15 @@ func TestWorkloadEvents_UnauthenticatedIsAlwaysRefused(t *testing.T) {
 	defer ts.Close()
 
 	wl := &Workload{ID: "wl-1", Model: "llama", Engine: "ollama", State: StateRunning, OriginatedFrom: "uuid-peer", CreatedAt: 1}
-	params, _ := json.Marshal(lifecycleParams{WorkloadInfo: wl})
-	frame, _ := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: json.RawMessage(params)})
+	params, err := json.Marshal(lifecycleParams{WorkloadInfo: wl})
+	assert.NoError(t, err)
+	frame, err := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: json.RawMessage(params)})
+	assert.NoError(t, err)
 
 	postPlain := func() int {
 		resp, err := http.Post(ts.URL+eventsPath, "application/json", bytes.NewReader(frame))
 		require.NoError(t, err, "post events")
-		defer resp.Body.Close()
+		defer func() { assert.NoError(t, resp.Body.Close()) }()
 		return resp.StatusCode
 	}
 
@@ -230,7 +238,8 @@ func TestWorkloadEvents_UnauthenticatedIsAlwaysRefused(t *testing.T) {
 	// Joining a cluster must not widen the gate either.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
-	admission, _ := json.Marshal(map[string]any{"clusterId": "cluster-abc", "epoch": 1, "counter": 1, "activated": 1})
+	admission, err := json.Marshal(map[string]any{"clusterId": "cluster-abc", "epoch": 1, "counter": 1, "activated": 1})
+	assert.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "admission.json"), admission, 0o600))
 
 	assert.Equal(t, http.StatusForbidden, postPlain(), "clustered unauthenticated POST")

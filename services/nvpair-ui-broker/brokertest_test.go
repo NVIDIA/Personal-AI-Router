@@ -13,10 +13,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,7 +117,7 @@ func brokerWithEngineInventory(t *testing.T, ports map[string]int) *Broker {
 	go func() {
 		codec := NewCodec(server)
 		request, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		switch request.Method {
@@ -122,19 +125,19 @@ func brokerWithEngineInventory(t *testing.T, ports map[string]int) *Broker {
 			var params struct {
 				Engine string `json:"engine"`
 			}
-			if json.Unmarshal(request.Params, &params) != nil {
-				_ = codec.RespondError(request.ID, -32602, "invalid engine status request")
+			if !assert.NoError(t, json.Unmarshal(request.Params, &params)) {
+				assert.NoError(t, codec.RespondError(request.ID, -32602, "invalid engine status request"))
 				return
 			}
-			_ = codec.Respond(request.ID, map[string]any{"port": ports[params.Engine]})
+			assert.NoError(t, codec.Respond(request.ID, map[string]any{"port": ports[params.Engine]}))
 		case "engine:get-installed":
 			engines := make([]map[string]any, 0, len(ports))
 			for engine, port := range ports {
 				engines = append(engines, map[string]any{"engine": engine, "port": port})
 			}
-			_ = codec.Respond(request.ID, map[string]any{"engines": engines})
+			assert.NoError(t, codec.Respond(request.ID, map[string]any{"engines": engines}))
 		default:
-			_ = codec.RespondError(request.ID, -32602, "unexpected engine status request")
+			assert.NoError(t, codec.RespondError(request.ID, -32602, "unexpected engine status request"))
 		}
 	}()
 	t.Cleanup(func() {
@@ -142,6 +145,15 @@ func brokerWithEngineInventory(t *testing.T, ports map[string]int) *Broker {
 		_ = server.Close()
 	})
 	return b
+}
+
+// assertRPCRead records malformed frames and accepts normal fixture shutdown.
+func assertRPCRead(t *testing.T, err error) bool {
+	t.Helper()
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	return assert.NoError(t, err)
 }
 
 // isolateOllamaHostTestConfig points the per-user config dir at a temp dir so a

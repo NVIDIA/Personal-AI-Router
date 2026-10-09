@@ -80,8 +80,7 @@ func (w *oneByteWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	_ = w.buf.WriteByte(p[0])
-	return 1, nil
+	return w.buf.Write(p[:1])
 }
 
 func TestShortWriteWritesFullFrame(t *testing.T) {
@@ -104,11 +103,15 @@ func TestReadRejectsBadVersionAndEOF(t *testing.T) {
 func TestReadMalformedFrameIsRecoverableDecodeError(t *testing.T) {
 	// Both bad JSON and a bad version are recoverable *DecodeError so a read
 	// loop can continue rather than treating them as terminal.
-	for _, frame := range []string{"{not json}\n", `{"jsonrpc":"1.0"}` + "\n"} {
-		_, err := readCodec(strings.NewReader(frame)).Read()
-		var de *DecodeError
-		assert.ErrorAs(t, err, &de, "frame %q", frame)
+	test := func(name, frame string) {
+		t.Run(name, func(t *testing.T) {
+			_, err := readCodec(strings.NewReader(frame)).Read()
+			var de *DecodeError
+			assert.ErrorAs(t, err, &de)
+		})
 	}
+	test("bad JSON", "{not json}\n")
+	test("unsupported version", `{"jsonrpc":"1.0"}`+"\n")
 }
 
 func TestRespondErrorDataRoundTrip(t *testing.T) {
@@ -124,8 +127,11 @@ func TestRespondErrorDataRoundTrip(t *testing.T) {
 	assert.Equal(t, "port", data["field"], "error data round-trip failed")
 	// nil data omits the field entirely.
 	var buf2 bytes.Buffer
-	_ = writeCodec(&buf2).RespondErrorData(&id, -32603, "boom", nil)
-	m2, _ := readCodec(&buf2).Read()
+	assert.NoError(t, writeCodec(&buf2).RespondErrorData(&id, -32603, "boom", nil), "respond without data")
+	m2, err := readCodec(&buf2).Read()
+	assert.NoError(t, err, "read response without data")
+	require.NotNil(t, m2, "response without data")
+	require.NotNil(t, m2.Error, "error response without data")
 	require.Empty(t, m2.Error.Data, "expected empty data for nil")
 }
 

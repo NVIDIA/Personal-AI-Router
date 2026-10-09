@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,11 +24,17 @@ import (
 // the actual broker built.
 func TestMain(m *testing.M) {
 	if os.Getenv("NVPAIR_TUI_FAKE_BROKER") == "1" {
-		runFakeBroker()
+		if err := runFakeBroker(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 	if os.Getenv("NVPAIR_TUI_SILENT_BROKER") == "1" {
-		runSilentBroker()
+		if err := runSilentBroker(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 	os.Exit(m.Run())
@@ -44,8 +51,11 @@ const fakeBrokerPreemptedExit = 3
 // An engine:prepare-shutdown from the supervisor is a failure, reported through
 // the exit code: the broker stops the proxy before the engines, and a client
 // stopping the engines first reverses that.
-func runFakeBroker() {
-	fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`)
+func runFakeBroker() error {
+	if _, err := fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`); err != nil {
+		return err
+	}
+	var decodeErr error
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 		var m struct {
@@ -53,25 +63,30 @@ func runFakeBroker() {
 			Method string          `json:"method"`
 		}
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			decodeErr = errors.Join(decodeErr, err)
 			continue
 		}
 		switch m.Method {
 		case "engine:prepare-shutdown":
 			os.Exit(fakeBrokerPreemptedExit)
 		case "shutdown":
-			fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":null}`+"\n", m.ID)
-			os.Exit(0)
+			_, err := fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":null}`+"\n", m.ID)
+			return errors.Join(decodeErr, err)
 		}
 	}
+	return errors.Join(decodeErr, sc.Err())
 }
 
 // runSilentBroker handshakes and then answers nothing, standing in for a broker
 // that has stopped responding.
-func runSilentBroker() {
-	fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`)
+func runSilentBroker() error {
+	if _, err := fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`); err != nil {
+		return err
+	}
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 	}
+	return sc.Err()
 }
 
 func TestResolveBrokerPathOverride(t *testing.T) {
@@ -129,10 +144,16 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 
 	sup, err := Spawn(ctx, os.Args[0])
 	require.NoError(t, err, "spawn")
+	stderrDone := make(chan struct{})
+	var stderrText string
+	var stderrErr error
 	go func() {
+		defer close(stderrDone)
 		sc := bufio.NewScanner(sup.Stderr)
 		for sc.Scan() {
+			stderrText += sc.Text()
 		}
+		stderrErr = sc.Err()
 	}()
 
 	select {
@@ -155,4 +176,13 @@ func TestSupervisorReadyAndShutdown(t *testing.T) {
 	}
 	assert.NotEqual(t, fakeBrokerPreemptedExit, sup.cmd.ProcessState.ExitCode(),
 		"the supervisor stopped the engines itself, ahead of the broker's proxy-first teardown")
+	select {
+	case <-stderrDone:
+		assert.Empty(t, stderrText, "fake broker stderr")
+		if !errors.Is(stderrErr, os.ErrClosed) {
+			assert.NoError(t, stderrErr)
+		}
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "fake broker stderr did not close")
+	}
 }

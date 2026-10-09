@@ -36,14 +36,14 @@ func brokerWithRunningEngines(t *testing.T, ports ...int) *Broker {
 	go func() {
 		codec := NewCodec(server)
 		request, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		engines := make([]map[string]any, 0, len(ports))
 		for _, port := range ports {
 			engines = append(engines, map[string]any{"running": true, "port": port})
 		}
-		_ = codec.Respond(request.ID, map[string]any{"engines": engines})
+		assert.NoError(t, codec.Respond(request.ID, map[string]any{"engines": engines}))
 	}()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -68,7 +68,7 @@ func observeErrors(t *testing.T, b *Broker) <-chan *Message {
 		codec := NewCodec(server)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			select {
@@ -115,18 +115,18 @@ func TestReconcileUnmanagedProxyPortBumpsOffRunningEngine(t *testing.T) {
 	go func() {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var params struct {
 			Port int `json:"port"`
 		}
-		_ = json.Unmarshal(msg.Params, &params)
+		assert.NoError(t, json.Unmarshal(msg.Params, &params))
 		select {
 		case setPort <- params.Port:
 		default:
 		}
-		_ = codec.Respond(msg.ID, map[string]any{"port": params.Port})
+		assert.NoError(t, codec.Respond(msg.ID, map[string]any{"port": params.Port}))
 	}()
 
 	b.reconcileProxyPortOnReady(11435)
@@ -179,47 +179,26 @@ func TestReconcileUnmanagedProxyPortLeavesFreePortAlone(t *testing.T) {
 // argv carries only process-scoped flags, because a single-valued flag cannot
 // express a different port plan per engine.
 func TestOllamaFacadeSpec(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		startupPort int
-		alias       ollamaHostAlias
-		want        enableFacadeRequest
-	}{
-		{
-			name:        "managed facade",
-			startupPort: managedOllamaFacadePort,
-			want: enableFacadeRequest{
-				Engine:              "ollama",
-				Port:                managedOllamaFacadePort,
-				IgnorePersistedPort: true,
-			},
-		},
-		{
-			// No port named, so the child keeps its persisted one. Naming a port
-			// here would override whatever the user last chose via set-port.
-			name:        "no startup port leaves the proxy on its persisted or default port",
-			startupPort: 0,
-			want:        enableFacadeRequest{Engine: "ollama"},
-		},
-		{
-			name:        "inherited OLLAMA_HOST alias is threaded through",
-			startupPort: managedOllamaFacadePort,
-			alias:       ollamaHostAlias{Address: "127.0.0.1:11433", AlternateAddress: "[::1]:11433"},
-			want: enableFacadeRequest{
-				Engine:              "ollama",
-				Port:                managedOllamaFacadePort,
-				IgnorePersistedPort: true,
-				AliasAddresses:      []string{"127.0.0.1:11433", "[::1]:11433"},
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, startupPort int, alias ollamaHostAlias, want enableFacadeRequest) {
+		t.Run(name, func(t *testing.T) {
 			b := &Broker{}
-			b.ollamaState().startupPort.Store(int32(tc.startupPort))
+			b.ollamaState().startupPort.Store(int32(startupPort))
 
-			require.Equal(t, tc.want, b.ollamaFacadeSpec(tc.alias), "facade spec")
+			require.Equal(t, want, b.ollamaFacadeSpec(alias), "facade spec")
 		})
 	}
+	test("managed facade", managedOllamaFacadePort, ollamaHostAlias{}, enableFacadeRequest{
+		Engine: "ollama", Port: managedOllamaFacadePort, IgnorePersistedPort: true,
+	})
+	// No port named, so the child keeps its persisted one. Naming a port here
+	// would override whatever the user last chose via set-port.
+	test("no startup port preserves persisted or default port", 0, ollamaHostAlias{}, enableFacadeRequest{Engine: "ollama"})
+	test("inherited OLLAMA_HOST alias is threaded through", managedOllamaFacadePort,
+		ollamaHostAlias{Address: "127.0.0.1:11433", AlternateAddress: "[::1]:11433"},
+		enableFacadeRequest{
+			Engine: "ollama", Port: managedOllamaFacadePort, IgnorePersistedPort: true,
+			AliasAddresses: []string{"127.0.0.1:11433", "[::1]:11433"},
+		})
 }
 
 // serveFacadeEnable answers facade/enable frames on a pipe, recording the port
@@ -233,23 +212,23 @@ func serveFacadeEnable(t *testing.T, conn net.Conn, reject map[int]bool, attempt
 		codec := NewCodec(conn)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			if msg.Method != "facade/enable" {
 				continue
 			}
 			var spec enableFacadeRequest
-			if err := json.Unmarshal(msg.Params, &spec); err != nil {
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &spec)) {
 				return
 			}
 			attempts <- spec
 			if reject[spec.Port] {
-				_ = codec.RespondError(msg.ID, codeFacadeBindFailed,
-					fmt.Sprintf("facade bind failed: port %d: address already in use", spec.Port))
+				assert.NoError(t, codec.RespondError(msg.ID, codeFacadeBindFailed,
+					fmt.Sprintf("facade bind failed: port %d: address already in use", spec.Port)))
 				continue
 			}
-			_ = codec.Respond(msg.ID, enableFacadeReply{Engine: spec.Engine, Port: spec.Port})
+			assert.NoError(t, codec.Respond(msg.ID, enableFacadeReply{Engine: spec.Engine, Port: spec.Port}))
 		}
 	}()
 }
@@ -315,16 +294,16 @@ func TestFacadeEnableRejectionIsNotRetried(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			var spec enableFacadeRequest
-			if json.Unmarshal(msg.Params, &spec) != nil {
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &spec)) {
 				return
 			}
 			attempts <- spec
 			// -32602 is what an unknown engine or an unsupported alias returns.
-			_ = codec.RespondError(msg.ID, -32602, "unknown engine \"nope\"")
+			assert.NoError(t, codec.RespondError(msg.ID, -32602, "unknown engine \"nope\""))
 		}
 	}()
 

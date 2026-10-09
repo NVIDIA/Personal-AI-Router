@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -90,8 +91,9 @@ func TestExpireInboundInviteSignalsInviter(t *testing.T) {
 			return
 		}
 		var env pairingEnvelope
-		body, _ := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
-		_ = json.Unmarshal(body, &env)
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
+		assert.NoError(t, err)
+		assert.NoError(t, json.Unmarshal(body, &env))
 		respondPairing(w, nil)
 		select {
 		case got <- env:

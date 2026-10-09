@@ -16,11 +16,13 @@ import (
 )
 
 // identityChanged builds the cluster:identity-changed push the manager emits.
-func identityChanged(id, friendly string) *rpc.Message {
-	params, _ := json.Marshal(map[string]string{
+func identityChanged(t *testing.T, id, friendly string) *rpc.Message {
+	t.Helper()
+	params, err := json.Marshal(map[string]string{
 		"clusterId":           id,
 		"clusterFriendlyName": friendly,
 	})
+	assert.NoError(t, err)
 	return &rpc.Message{Method: "cluster:identity-changed", Params: params}
 }
 
@@ -151,7 +153,7 @@ func TestClusterLabelIsShown(t *testing.T) {
 // renaming on one machine is reflected without a restart.
 func TestClusterLabelFromIdentityPush(t *testing.T) {
 	v := newNodesView(nil)
-	v.Update(NotificationMsg{Msg: identityChanged("cid-1", "Lab 3 desks")})
+	v.Update(NotificationMsg{Msg: identityChanged(t, "cid-1", "Lab 3 desks")})
 
 	assert.Equal(t, "Lab 3 desks", v.clusterName)
 	assert.Equal(t, "cid-1", v.identity.ClusterID)

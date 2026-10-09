@@ -33,7 +33,7 @@ func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 		HostUUID:       "node-a",
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(response)
+		assert.NoError(t, json.NewEncoder(w).Encode(response))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -59,10 +59,10 @@ func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 
 func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID:       "node-b",
 			TelemetryValid: true,
-		})
+		}))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -84,11 +84,11 @@ func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
 // published list.
 func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID:       "node-a",
 			TelemetryValid: true,
 			GPUs:           []GPUInfo{{Name: "GPU 0", UtilizationPercent: 61}},
-		})
+		}))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -144,20 +144,17 @@ func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
 }
 
 func TestTelemetryRetryDelay(t *testing.T) {
-	cases := []struct {
-		failures int
-		want     time.Duration
-	}{
-		{0, 2 * time.Second},
-		{1, 4 * time.Second},
-		{2, 8 * time.Second},
-		{3, 16 * time.Second},
-		{4, 30 * time.Second},
-		{100, 30 * time.Second},
+	test := func(name string, failures int, want time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, telemetryRetryDelay(failures))
+		})
 	}
-	for _, test := range cases {
-		assert.Equal(t, test.want, telemetryRetryDelay(test.failures), "telemetryRetryDelay(%d)", test.failures)
-	}
+	test("initial delay", 0, 2*time.Second)
+	test("one failure", 1, 4*time.Second)
+	test("two failures", 2, 8*time.Second)
+	test("three failures", 3, 16*time.Second)
+	test("maximum delay", 4, 30*time.Second)
+	test("delay stays capped", 100, 30*time.Second)
 }
 
 func TestTelemetryRetryGateBacksOffAndResets(t *testing.T) {
@@ -185,11 +182,7 @@ func TestTelemetryRetryGateBacksOffAndResets(t *testing.T) {
 
 func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
 	oldTarget := telemetryTargetKey([]string{"192.0.2.1"}, 14318)
-	changedTargets := map[string]string{
-		"hosts": telemetryTargetKey([]string{"10.0.0.1"}, 14318),
-		"port":  telemetryTargetKey([]string{"192.0.2.1"}, 14319),
-	}
-	for name, changedTarget := range changedTargets {
+	test := func(name, changedTarget string) {
 		t.Run(name, func(t *testing.T) {
 			var gate telemetryRetryGate
 			now := time.Unix(1_500, 0)
@@ -203,6 +196,8 @@ func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
 			require.True(t, ok, "old endpoint failure backed off the changed endpoint")
 		})
 	}
+	test("hosts", telemetryTargetKey([]string{"10.0.0.1"}, 14318))
+	test("port", telemetryTargetKey([]string{"192.0.2.1"}, 14319))
 }
 
 func TestTelemetryRetryGateRemoveRediscoverPreservesActiveClaim(t *testing.T) {
@@ -224,7 +219,7 @@ func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing
 	var backedOffCalls atomic.Int32
 	backedOff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		backedOffCalls.Add(1)
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-backed-off"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-backed-off"}))
 	}))
 	defer backedOff.Close()
 	backedOffURL, err := url.Parse(backedOff.URL)
@@ -235,7 +230,7 @@ func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing
 	var healthyCalls atomic.Int32
 	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		healthyCalls.Add(1)
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"}))
 	}))
 	defer healthy.Close()
 	healthyURL, err := url.Parse(healthy.URL)
@@ -279,7 +274,7 @@ func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -355,7 +350,7 @@ func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *te
 	newServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		newEntered <- struct{}{}
 		<-releaseNew
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
 	}))
 	oldEntered := make(chan struct{}, 1)
 	releaseOld := make(chan struct{}, 1)
@@ -464,7 +459,7 @@ func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) 
 			default:
 			}
 		}
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"}))
 	}))
 	defer healthy.Close()
 	healthyURL, err := url.Parse(healthy.URL)
@@ -533,7 +528,7 @@ func TestTelemetryLoopDoesNotOverlapNodePolls(t *testing.T) {
 		}
 		select {
 		case <-time.After(20 * time.Millisecond):
-			_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-a"})
+			assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-a"}))
 		case <-r.Context().Done():
 		}
 	}))

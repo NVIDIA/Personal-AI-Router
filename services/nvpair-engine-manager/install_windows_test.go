@@ -33,7 +33,7 @@ func TestLlamaCPPInstallPreservesDestinationPathWithSpaces(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write(payload)
+		writeTestResponse(t, w, payload)
 	}))
 	defer server.Close()
 

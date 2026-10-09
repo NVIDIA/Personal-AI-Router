@@ -34,8 +34,8 @@ func TestReconcileWithFailsOverToAnAnsweringAddress(t *testing.T) {
 
 	mA := newTestManagerPort(t, 15031)
 	mB := newTestManagerPort(t, 15032)
-	go func() { _ = mA.runHTTP(ctx) }()
-	go func() { _ = mB.runHTTP(ctx) }()
+	startTestHTTP(t, mA, ctx)
+	startTestHTTP(t, mB, ctx)
 	time.Sleep(400 * time.Millisecond)
 
 	pinTrusted(t, mA, mB.identity.NodeUUID, string(mB.identity.CertPEM), mB.identity.CertFingerprint)
@@ -148,7 +148,8 @@ func TestReachableEndpointFirstLeadsWithTheAddressThatAnswers(t *testing.T) {
 			_ = c.Close()
 		}
 	}()
-	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	assert.NoError(t, err)
 	answering := net.JoinHostPort("127.0.0.1", portStr)
 
 	require.Equal(t, []string{answering, unreachableAddr}, reachableEndpointFirst([]string{unreachableAddr, answering}), "reachableEndpointFirst")
@@ -174,7 +175,7 @@ func pairingProbeServer(t *testing.T, status int, body string) (addr string, req
 		requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
+		writeTestResponse(t, w, []byte(body))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

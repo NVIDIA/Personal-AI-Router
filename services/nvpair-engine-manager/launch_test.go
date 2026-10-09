@@ -74,10 +74,14 @@ func TestLaunchEnvironmentFormattingIsDeterministic(t *testing.T) {
 }
 
 func TestCommandLaunchRejectsEmptyExecutable(t *testing.T) {
-	for _, template := range [][]string{{"", "start"}, {"{cli}", "start"}} {
-		_, err := resolveCommandLaunch(template, map[string]string{"cli": ""})
-		require.Error(t, err, "empty executable must fail rather than skip the start command")
+	test := func(name string, template []string) {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveCommandLaunch(template, map[string]string{"cli": ""})
+			require.Error(t, err, "empty executable must fail rather than skip the start command")
+		})
 	}
+	test("literal empty executable", []string{"", "start"})
+	test("expanded empty executable", []string{"{cli}", "start"})
 }
 
 // The child receives the parser's output directly. This catches escaping
@@ -102,7 +106,7 @@ func TestLaunchTextReachesChildLiterally(t *testing.T) {
 }
 
 func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
-	for _, mode := range []string{"process", "command"} {
+	test := func(mode string) {
 		t.Run(mode, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "captured args.json")
 			manifest := testEngineManifest(fakeEngineBin)
@@ -133,6 +137,8 @@ func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
 			assertCapturedArgs(t, path, []string{"127.0.0.1", "25001", "two words", ""})
 		})
 	}
+	test("process")
+	test("command")
 }
 
 func assertCapturedArgs(t *testing.T, path string, want []string) {

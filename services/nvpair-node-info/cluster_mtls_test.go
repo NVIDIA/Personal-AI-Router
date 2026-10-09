@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/clustertrust"
@@ -31,8 +32,10 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err, "genkey")
-	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	uri, _ := url.Parse("urn:nvpair:node:" + uuid)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	assert.NoError(t, err)
+	uri, err := url.Parse("urn:nvpair:node:" + uuid)
+	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: uuid},
@@ -45,7 +48,8 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
 	require.NoError(t, err, "create cert")
-	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	assert.NoError(t, err)
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM
@@ -61,7 +65,8 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 	td := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(td, 0o700))
 	for uuid, pcert := range pins {
-		body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
+		body, err := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
+		assert.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600))
 	}
 	return dir
@@ -103,8 +108,9 @@ func TestNodeInfoHandler_MTLSGate(t *testing.T) {
 		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
 		resp, err := client.Get(srv.URL + "/v1/node-info")
 		require.NoError(t, err, "get")
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
+		defer func() { assert.NoError(t, resp.Body.Close()) }()
+		b, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err)
 		return resp.StatusCode, string(b)
 	}
 

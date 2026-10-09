@@ -44,8 +44,8 @@ func TestHandleRosterLearnsSourceAddr(t *testing.T) {
 
 	mA := newTestManagerPort(t, 15021)
 	mB := newTestManagerPort(t, 15022)
-	go func() { _ = mA.runHTTP(ctx) }()
-	go func() { _ = mB.runHTTP(ctx) }()
+	startTestHTTP(t, mA, ctx)
+	startTestHTTP(t, mB, ctx)
 	time.Sleep(400 * time.Millisecond)
 
 	pinTrusted(t, mA, mB.identity.NodeUUID, string(mB.identity.CertPEM), mB.identity.CertFingerprint)

@@ -39,13 +39,13 @@ func catalogBroker(t *testing.T) (*rpc.Client, <-chan map[string]string) {
 				return
 			}
 			var params map[string]string
-			_ = json.Unmarshal(req.Params, &params)
+			assert.NoError(t, json.Unmarshal(req.Params, &params))
 			calls <- params
 			result := `{"models":[{"name":"ggml-org/browse-GGUF:Q4_K_M"}],"searchable":true}`
 			if q := params["query"]; q != "" {
 				result = `{"models":[{"name":"found/` + q + `-GGUF:Q4_K_M"}],"searchable":true,"query":"` + q + `"}`
 			}
-			_ = broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(result)})
+			assert.NoError(t, broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(result)}))
 		}
 	}()
 	return client, calls

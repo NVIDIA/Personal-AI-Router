@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -69,16 +70,20 @@ type e2eFrame struct {
 	Error  json.RawMessage `json:"error"`
 }
 
-func e2eReadFrames(r io.Reader, out chan<- e2eFrame) {
+func e2eReadFrames(t *testing.T, r io.Reader, out chan<- e2eFrame) {
+	t.Helper()
 	defer close(out)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		var f e2eFrame
-		if err := json.Unmarshal(sc.Bytes(), &f); err != nil {
+		if !assert.NoError(t, json.Unmarshal(sc.Bytes(), &f)) {
 			continue
 		}
 		out <- f
+	}
+	if err := sc.Err(); !errors.Is(err, os.ErrClosed) {
+		assert.NoError(t, err)
 	}
 }
 
@@ -88,8 +93,9 @@ func e2eSend(t *testing.T, w io.Writer, id int, method string, params any) {
 	if params != nil {
 		msg["params"] = params
 	}
-	data, _ := json.Marshal(msg)
-	_, err := w.Write(append(data, '\n'))
+	data, err := json.Marshal(msg)
+	assert.NoError(t, err)
+	_, err = w.Write(append(data, '\n'))
 	require.NoError(t, err, "send (%v, %v)", method, err)
 }
 
@@ -163,7 +169,7 @@ func e2eEnabledPort(t *testing.T, frames *e2eInbox, id string, timeout time.Dura
 		var rpcErr struct {
 			Code int `json:"code"`
 		}
-		if json.Unmarshal(f.Error, &rpcErr) == nil && rpcErr.Code == codeFacadeBindFailed {
+		if assert.NoError(t, json.Unmarshal(f.Error, &rpcErr)) && rpcErr.Code == codeFacadeBindFailed {
 			return 0, true
 		}
 		require.FailNow(t, fmt.Sprintf("facade/enable returned error: %s", f.Error))
@@ -267,10 +273,12 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 		}))
 		defer busy.Close()
 		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			b, _ := io.ReadAll(r.Body)
+			b, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
 			gotBody = string(b)
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"ok":true}`)
+			_, err = io.WriteString(w, `{"ok":true}`)
+			assert.NoError(t, err)
 		}))
 		defer good.Close()
 
@@ -291,7 +299,7 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 		}()
 
 		source := make(chan e2eFrame, 256)
-		go e2eReadFrames(stdout, source)
+		go e2eReadFrames(t, stdout, source)
 		frames := &e2eInbox{frames: source}
 
 		// Retried on a bind race: e2eFreePort can only probe-then-close, and a
@@ -327,7 +335,7 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 			fmt.Sprintf("http://127.0.0.1:%d%s", port, tc.inferencePath),
 			"application/json", strings.NewReader(body))
 		require.NoError(t, err, "inference POST")
-		defer resp.Body.Close()
+		defer func() { assert.NoError(t, resp.Body.Close()) }()
 		require.Equal(t, http.StatusOK, resp.StatusCode, "status")
 		assert.Equal(t, "", resp.Header.Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 		assert.Equal(t, body, gotBody, "healthy upstream got body (%v, %v)", gotBody, body)

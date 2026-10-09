@@ -34,7 +34,7 @@ func TestIPCTransport(t *testing.T) {
 	defer conn.Close()
 
 	frames := make(chan frame, 64)
-	go readFrames(conn, frames)
+	go readFrames(t, conn, frames)
 
 	waitNotify(t, frames, "engine:ready", 5*time.Second)
 	send(t, conn, 1, "engine:get-installed", nil)

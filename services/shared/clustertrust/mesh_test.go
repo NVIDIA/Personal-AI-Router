@@ -39,14 +39,18 @@ func loadMeshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) *
 // but unclustered mesh, so the caller serves plain HTTP from the same object it
 // will later serve cluster mTLS from.
 func TestMesh_Open_UnclusteredCases(t *testing.T) {
-	for name, dir := range map[string]string{"no cluster dir": "", "empty cluster dir": t.TempDir()} {
-		m := Open(dir)
-		require.NotNil(t, m, "%s", name)
-		assert.False(t, m.Clustered(), "%s", name)
-		assert.False(t, m.hasIdentity(), "%s", name)
-		m.Refresh()
-		assert.False(t, m.Clustered(), "%s after refresh", name)
+	test := func(name, dir string) {
+		t.Run(name, func(t *testing.T) {
+			m := Open(dir)
+			require.NotNil(t, m)
+			assert.False(t, m.Clustered())
+			assert.False(t, m.hasIdentity())
+			m.Refresh()
+			assert.False(t, m.Clustered(), "after refresh")
+		})
 	}
+	test("no cluster dir", "")
+	test("empty cluster dir", t.TempDir())
 }
 
 // TestMesh_GateSelfTrustAndAnyPin drives the full server/client handshake the
@@ -77,7 +81,8 @@ func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		_, _ = w.Write([]byte("ok"))
+		_, err := w.Write([]byte("ok"))
+		assert.NoError(t, err, "write peer response")
 	}))
 	srv.TLS = selfMesh.ServerTLSConfig()
 	srv.StartTLS()
@@ -112,7 +117,8 @@ func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
 	require.NoError(t, err, "self->self")
 	assert.Equal(t, http.StatusOK, code, "self->self")
 	// Stranger completes the handshake (it pins self) but self doesn't pin it: 403.
-	code, _ = do(mustConfig(strangerMesh.ClientTLSConfig("uuid-self")))
+	code, err = do(mustConfig(strangerMesh.ClientTLSConfig("uuid-self")))
+	assert.NoError(t, err, "request as unpinned client")
 	assert.Equal(t, http.StatusForbidden, code, "stranger->self")
 	// self cannot even build a client to an unpinned stranger (client-side gate).
 	_, ok := selfMesh.ClientTLSConfig("uuid-stranger")
@@ -137,7 +143,8 @@ func TestMesh_ServerTLSConfig_FollowsMembershipOnOneListener(t *testing.T) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		_, _ = w.Write([]byte("ok"))
+		_, err := w.Write([]byte("ok"))
+		assert.NoError(t, err, "write peer response")
 	}))
 	srv.TLS = selfMesh.ServerTLSConfig()
 	srv.StartTLS()

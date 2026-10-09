@@ -34,10 +34,12 @@ func newSplitter(t *testing.T) (addr string, cleanup func()) {
 	s := New(ln)
 
 	plainSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "plain")
+		_, err := io.WriteString(w, "plain")
+		assert.NoError(t, err, "write plain response")
 	})}
 	tlsSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "tls")
+		_, err := io.WriteString(w, "tls")
+		assert.NoError(t, err, "write TLS response")
 	})}
 
 	tlsConfig := testServerTLSConfig(t)
@@ -83,12 +85,12 @@ func TestMalformedConnectionDoesNotWedgeDispatch(t *testing.T) {
 	// Immediate-close client: connect and close before sending a byte.
 	closer, err := net.Dial("tcp", addr)
 	require.NoError(t, err, "dial closer")
-	_ = closer.Close()
+	assert.NoError(t, closer.Close(), "close immediate-close client")
 
 	// A good request must still be served while the silent conn is pending and
 	// after the closed one was dropped.
 	assert.Equal(t, "plain", httpGet(t, "http://"+addr+"/", nil), "plain request after malformed conns served")
-	_ = silent.Close()
+	assert.NoError(t, silent.Close(), "close silent client")
 }
 
 func TestCloseStopsAccepting(t *testing.T) {
@@ -174,7 +176,8 @@ func httpGet(t *testing.T, url string, tlsCfg *tls.Config) string {
 			continue
 		}
 		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
+		b, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err, "read HTTP response")
 		return string(b)
 	}
 	require.NoError(t, lastErr, "GET %s", url)
@@ -328,12 +331,15 @@ func TestTemporaryAcceptRetries(t *testing.T) {
 	}()
 
 	// First byte 'G' (GET) routes to plain.
+	writeErr := make(chan error, 1)
 	go func() {
-		_, _ = client.Write([]byte("G"))
+		_, err := client.Write([]byte("G"))
+		writeErr <- err
 	}()
 
 	select {
 	case c := <-accepted:
+		assert.NoError(t, <-writeErr, "write initial request byte")
 		_ = c.Close()
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "plain Accept did not receive connection after temporary Accept error")
@@ -363,9 +369,10 @@ func TestPushTimeoutClosesConnWhenAcceptStops(t *testing.T) {
 		if !assert.NoError(t, derr, "dial") {
 			return
 		}
-		_, _ = c.Write([]byte("G"))
+		_, err := c.Write([]byte("G"))
+		assert.NoError(t, err, "write initial request byte")
 		buf := make([]byte, 1)
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		assert.NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 		_, rerr := c.Read(buf)
 		_ = c.Close()
 		assert.Error(t, rerr, "expected peer close after push timeout, got successful read")
@@ -382,8 +389,9 @@ func TestPushTimeoutClosesConnWhenAcceptStops(t *testing.T) {
 	// handshake (not refuse), then be closed by the same timeout path.
 	c2, err := net.DialTimeout("tcp", addr, time.Second)
 	require.NoError(t, err, "dial after push timeout")
-	_, _ = c2.Write([]byte("G"))
-	_ = c2.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err = c2.Write([]byte("G"))
+	assert.NoError(t, err, "write request after push timeout")
+	assert.NoError(t, c2.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 	buf := make([]byte, 1)
 	_, rerr := c2.Read(buf)
 	_ = c2.Close()

@@ -122,33 +122,27 @@ func manualStatus(id, addr, uuid string) manualNodeStatus {
 // alias's address doesn't linger — and only the last removal releases the key.
 func TestManualAliasesShareKeyUntilLastRemoved(t *testing.T) {
 	const uuid = "shared-uuid"
-	for _, tc := range []struct {
-		name         string
-		removeFirst  string
-		survivorID   string
-		survivorAddr string
-	}{
-		{"remove-A-first", "alias-a", "alias-b", "10.0.0.2"},
-		{"remove-B-first", "alias-b", "alias-a", "10.0.0.1"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, removeFirst, survivorID, survivorAddr string) {
+		t.Run(name, func(t *testing.T) {
 			b := newManualTestBroker()
 			b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", uuid))
 			b.upsertManualNode(manualStatus("alias-b", "10.0.0.2", uuid))
 			require.Len(t, b.store.Snapshot(), 1, "two aliases for one machine should be one record")
 
-			b.removeManualNode(tc.removeFirst)
+			b.removeManualNode(removeFirst)
 			snap := b.store.Snapshot()
 			require.Len(t, snap, 1, "removing one of two aliases evicted the shared node")
 			// The surviving alias must be reprojected: its id and address, not
 			// the removed alias's stale payload.
-			require.Equal(t, tc.survivorID, snap[0].ID, "survivor not reprojected")
-			require.Equal(t, tc.survivorAddr, snap[0].IPAddress, "survivor not reprojected")
+			require.Equal(t, survivorID, snap[0].ID, "survivor not reprojected")
+			require.Equal(t, survivorAddr, snap[0].IPAddress, "survivor not reprojected")
 
-			b.removeManualNode(tc.survivorID)
+			b.removeManualNode(survivorID)
 			require.Empty(t, b.store.Snapshot(), "record should be gone once the last alias left")
 		})
 	}
+	test("remove A first", "alias-a", "alias-b", "10.0.0.2")
+	test("remove B first", "alias-b", "alias-a", "10.0.0.1")
 }
 
 // TestManualRekeyReprojectsSharedOldKey: when one of two aliases sharing a key

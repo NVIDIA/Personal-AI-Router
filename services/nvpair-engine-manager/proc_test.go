@@ -13,19 +13,16 @@ import (
 
 func TestIsOurEngineImage(t *testing.T) {
 	bin := filepath.Join("/opt", "nvpair", "ollama.exe")
-	cases := []struct {
-		image string
-		want  bool
-	}{
-		{bin, true},
-		{`/opt/nvpair/OLLAMA.EXE`, true},
-		{bin + ` (deleted)`, true},
-		{`/opt/nvpair/other.exe`, false},
-		{``, false},
+	test := func(name, image string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, isOurEngineImage(image, bin))
+		})
 	}
-	for _, tc := range cases {
-		assert.Equal(t, tc.want, isOurEngineImage(tc.image, bin), "isOurEngineImage (%v)", bin)
-	}
+	test("matching binary", bin, true)
+	test("case insensitive", `/opt/nvpair/OLLAMA.EXE`, true)
+	test("deleted binary", bin+` (deleted)`, true)
+	test("other binary", `/opt/nvpair/other.exe`, false)
+	test("empty image", ``, false)
 	require.False(t, isOurEngineImage(bin, ``), "empty binPath must not match")
 }
 

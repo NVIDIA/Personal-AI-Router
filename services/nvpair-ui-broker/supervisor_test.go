@@ -102,21 +102,18 @@ func waitSupervisorSignal(t *testing.T, ch <-chan struct{}, failure string) {
 
 func TestRestartPolicyBackoff(t *testing.T) {
 	p := restartPolicy{baseDelay: time.Second, maxDelay: 16 * time.Second}
-	cases := []struct {
-		attempt int
-		want    time.Duration
-	}{
-		{1, 1 * time.Second},
-		{2, 2 * time.Second},
-		{3, 4 * time.Second},
-		{4, 8 * time.Second},
-		{5, 16 * time.Second},
-		{6, 16 * time.Second}, // capped
-		{100, 16 * time.Second},
+	test := func(name string, attempt int, want time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, p.backoff(attempt))
+		})
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, p.backoff(c.attempt), "backoff(%d)", c.attempt)
-	}
+	test("first attempt", 1, time.Second)
+	test("second attempt", 2, 2*time.Second)
+	test("third attempt", 3, 4*time.Second)
+	test("fourth attempt", 4, 8*time.Second)
+	test("fifth attempt reaches cap", 5, 16*time.Second)
+	test("sixth attempt stays capped", 6, 16*time.Second)
+	test("hundredth attempt stays capped", 100, 16*time.Second)
 }
 
 // fastPolicy is a unit-test policy: near-instant backoff so restarts don't

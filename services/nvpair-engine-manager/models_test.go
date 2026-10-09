@@ -108,18 +108,19 @@ func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
 	got, ok := extractStringsResult(json.RawMessage(`{"models":[]}`), spec)
 	require.True(t, ok, "explicit empty inventory (%v, %v)", got, ok)
 	assert.Empty(t, got, "explicit empty inventory")
-	for _, raw := range []string{
-		`{}`,
-		`{"models":null}`,
-		`{"models":{}}`,
-		`{"models":[{}]}`,
-		`{"models":[null]}`,
-		`not-json`,
-	} {
-		got, ok := extractStringsResult(json.RawMessage(raw), spec)
-		assert.False(t, ok, "invalid inventory (%v, %v, %v)", raw, got, ok)
-		assert.Empty(t, got, "invalid inventory (%v)", raw)
+	test := func(name, raw string) {
+		t.Run(name, func(t *testing.T) {
+			got, ok := extractStringsResult(json.RawMessage(raw), spec)
+			assert.False(t, ok, "invalid inventory must remain unknown")
+			assert.Empty(t, got, "invalid inventory must not return models")
+		})
 	}
+	test("missing models", `{}`)
+	test("null models", `{"models":null}`)
+	test("object models", `{"models":{}}`)
+	test("missing model key", `{"models":[{}]}`)
+	test("null model entry", `{"models":[null]}`)
+	test("invalid JSON", `not-json`)
 }
 
 // TestModels drives Models() against the running fake engine: a running engine
@@ -202,11 +203,12 @@ func setLoaded(t *testing.T, ex *Executor, names []string) {
 	t.Helper()
 	st, err := ex.Status("fake")
 	require.NoError(t, err, "status")
-	body, _ := json.Marshal(map[string][]string{"names": names})
+	body, err := json.Marshal(map[string][]string{"names": names})
+	assert.NoError(t, err)
 	url := fmt.Sprintf("http://127.0.0.1:%d/testctl/loaded", st.Port)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 	require.NoError(t, err, "set loaded")
-	_ = resp.Body.Close()
+	assert.NoError(t, resp.Body.Close())
 }
 
 // TestModelsResultLoaded covers the loaded surface: a running engine that
@@ -287,43 +289,31 @@ func TestSweepLoadedRetainsLastGoodOnTransientMiss(t *testing.T) {
 }
 
 func TestChangedEngines(t *testing.T) {
-	tests := []struct {
-		name      string
-		prev, cur map[string][]string
-		want      []string
-	}{
-		{name: "no change", prev: map[string][]string{"a": {"x"}}, cur: map[string][]string{"a": {"x"}}, want: nil},
-		{name: "reorder is not a change", prev: map[string][]string{"a": {"x", "y"}}, cur: map[string][]string{"a": {"y", "x"}}, want: nil},
-		{name: "value changed", prev: map[string][]string{"a": {"x"}}, cur: map[string][]string{"a": {"x", "y"}}, want: []string{"a"}},
-		{name: "new key reported", prev: map[string][]string{}, cur: map[string][]string{"a": {"x"}}, want: []string{"a"}},
-		{name: "disappeared key not reported", prev: map[string][]string{"a": {"x"}, "b": {"y"}}, cur: map[string][]string{"a": {"x"}}, want: nil},
-		{name: "present-empty vs nil is not a change", prev: map[string][]string{"a": {}}, cur: map[string][]string{"a": nil}, want: nil},
-		{name: "multiple changed sorted", prev: nil, cur: map[string][]string{"b": {"1"}, "a": {"2"}}, want: []string{"a", "b"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, changedEngines(tc.prev, tc.cur), "changedEngines")
+	test := func(name string, prev, cur map[string][]string, want []string) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, changedEngines(prev, cur))
 		})
 	}
+	test("no change", map[string][]string{"a": {"x"}}, map[string][]string{"a": {"x"}}, nil)
+	test("reorder is not a change", map[string][]string{"a": {"x", "y"}}, map[string][]string{"a": {"y", "x"}}, nil)
+	test("value changed", map[string][]string{"a": {"x"}}, map[string][]string{"a": {"x", "y"}}, []string{"a"})
+	test("new key reported", map[string][]string{}, map[string][]string{"a": {"x"}}, []string{"a"})
+	test("disappeared key not reported", map[string][]string{"a": {"x"}, "b": {"y"}}, map[string][]string{"a": {"x"}}, nil)
+	test("present-empty vs nil is not a change", map[string][]string{"a": {}}, map[string][]string{"a": nil}, nil)
+	test("multiple changed sorted", nil, map[string][]string{"b": {"1"}, "a": {"2"}}, []string{"a", "b"})
 }
 
 func TestSameStringSet(t *testing.T) {
-	tests := []struct {
-		name string
-		a, b []string
-		want bool
-	}{
-		{name: "nil equals empty", a: nil, b: []string{}, want: true},
-		{name: "same order", a: []string{"x", "y"}, b: []string{"x", "y"}, want: true},
-		{name: "different order", a: []string{"x", "y"}, b: []string{"y", "x"}, want: true},
-		{name: "different length", a: []string{"x"}, b: []string{"x", "y"}, want: false},
-		{name: "different elements", a: []string{"x"}, b: []string{"y"}, want: false},
-		{name: "duplicates matter", a: []string{"x", "x"}, b: []string{"x", "y"}, want: false},
-		{name: "same multiset with dups", a: []string{"x", "x", "y"}, b: []string{"y", "x", "x"}, want: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, sameStringSet(tc.a, tc.b), "sameStringSet")
+	test := func(name string, a, b []string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, sameStringSet(a, b))
 		})
 	}
+	test("nil equals empty", nil, []string{}, true)
+	test("same order", []string{"x", "y"}, []string{"x", "y"}, true)
+	test("different order", []string{"x", "y"}, []string{"y", "x"}, true)
+	test("different length", []string{"x"}, []string{"x", "y"}, false)
+	test("different elements", []string{"x"}, []string{"y"}, false)
+	test("duplicates matter", []string{"x", "x"}, []string{"x", "y"}, false)
+	test("same multiset with dups", []string{"x", "x", "y"}, []string{"y", "x", "x"}, true)
 }

@@ -17,25 +17,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestStopGrace(t *testing.T) {
-	tests := []struct {
-		name string
-		stop *StopSpec
-		want time.Duration
-	}{
-		{name: "default without stop spec", want: 5 * time.Second},
-		{name: "default with zero grace", stop: &StopSpec{Signal: "term"}, want: 5 * time.Second},
-		{name: "configured grace", stop: &StopSpec{Signal: "term", GraceS: 10}, want: 10 * time.Second},
-		{name: "kill is immediate", stop: &StopSpec{Signal: "kill", GraceS: 10}, want: 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, stopGrace(Runtime{Stop: tt.stop}))
+	test := func(name string, stop *StopSpec, want time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, stopGrace(Runtime{Stop: stop}))
 		})
 	}
+	test("default without stop spec", nil, 5*time.Second)
+	test("default with zero grace", &StopSpec{Signal: "term"}, 5*time.Second)
+	test("configured grace", &StopSpec{Signal: "term", GraceS: 10}, 10*time.Second)
+	test("kill is immediate", &StopSpec{Signal: "kill", GraceS: 10}, 0)
 }
 
 // spawnFakeListener starts a fake-engine copied to binPath, bound to
@@ -86,7 +81,8 @@ func TestStopReclaimsOurOrphanOnManagedPort(t *testing.T) {
 	require.NoError(t, ex.Stop("fake"), "stop must reclaim our own orphan, got err")
 	require.False(t, portServing(port), "orphan on our managed port must be terminated by stop")
 	time.Sleep(1500 * time.Millisecond) // outlast a health interval
-	st, _ = ex.Status("fake")
+	st, err = ex.Status("fake")
+	assert.NoError(t, err)
 	require.False(t, st.Running, "engine must stay stopped after reclaim (%v)", st)
 	require.False(t, st.Healthy, "engine must stay stopped after reclaim (%v)", st)
 	enabled, known, err := ex.desired.get("fake")
@@ -156,8 +152,7 @@ func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 
 	m := testEngineManifest(fakeEngineBin)
 	p := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
@@ -176,7 +171,8 @@ func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
 	}
 
 	require.ErrorContains(t, ex.Stop("fake"), "external management", "stop error")
-	st, _ = ex.Status("fake")
+	st, err = ex.Status("fake")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "rejected stop must keep the live engine running (%v)", st)
 	require.True(t, st.Healthy, "rejected stop must keep the live engine running (%v)", st)
 	select {
@@ -192,8 +188,7 @@ func TestStopReconcilesAdoptedProcessAfterExternalStop(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 	m := testEngineManifest(fakeEngineBin)
 	p := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	p.Runtime.Port = port
@@ -206,7 +201,8 @@ func TestStopReconcilesAdoptedProcessAfterExternalStop(t *testing.T) {
 
 	srv.Close()
 	require.NoError(t, ex.Stop("fake"), "retry after external stop")
-	st, _ = ex.Status("fake")
+	st, err = ex.Status("fake")
+	assert.NoError(t, err)
 	require.False(t, st.Running, "closed external endpoint must reconcile to stopped (%v)", st)
 	require.False(t, st.Healthy, "closed external endpoint must reconcile to stopped (%v)", st)
 }
@@ -221,8 +217,7 @@ func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+	port := portOf(t, srv.URL)
 	m := testEngineManifest(fakeEngineBin)
 	p := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	p.Runtime.Port = port
@@ -235,7 +230,8 @@ func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
 
 	unhealthy.Store(true)
 	require.ErrorContains(t, ex.Stop("fake"), "external management", "stop error")
-	st, _ = ex.Status("fake")
+	st, err = ex.Status("fake")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "an unhealthy but reachable endpoint must not report stopped (%v)", st)
 }
 
@@ -249,7 +245,8 @@ func TestCommandStopFailureKeepsLiveEngineRunning(t *testing.T) {
 
 	require.ErrorContains(t, ex.Stop("command"), "stop command", "stop error")
 	require.FileExists(t, marker, "stop command did not run")
-	st, _ := ex.Status("command")
+	st, err := ex.Status("command")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "failed stop must keep the live engine running (%v)", st)
 	require.True(t, st.Healthy, "failed stop must keep the live engine running (%v)", st)
 }
@@ -276,7 +273,8 @@ func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		require.FailNow(t, "test endpoint did not close")
 	}
-	st, _ := ex.Status("command")
+	st, err := ex.Status("command")
+	assert.NoError(t, err)
 	require.False(t, st.Running, "closed endpoint must report stopped (%v)", st)
 	require.False(t, st.Healthy, "closed endpoint must report stopped (%v)", st)
 }
@@ -284,12 +282,15 @@ func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
 func TestCommandStopWithoutReadinessProbeUsesConfiguredCommand(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	ex := commandStopTestExecutor(t, "http://127.0.0.1:1", []string{fakeEngineBin, "touch", marker}, 1, false)
-	st, _ := ex.state("command")
+	st, err := ex.state("command")
+	assert.NoError(t, err)
+	require.NotNil(t, st)
 	st.plat.Runtime.Ready = nil
 
 	require.NoError(t, ex.Stop("command"), "stop without readiness probe")
 	require.FileExists(t, marker, "configured stop command did not run")
-	status, _ := ex.Status("command")
+	status, err := ex.Status("command")
+	assert.NoError(t, err)
 	require.False(t, status.Running, "legacy no-probe command stop must report stopped (%v)", status)
 	require.False(t, status.Healthy, "legacy no-probe command stop must report stopped (%v)", status)
 }
@@ -303,7 +304,8 @@ func TestCommandStopRejectsSuccessWhileEndpointIsLive(t *testing.T) {
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
 
 	require.ErrorContains(t, ex.Stop("command"), "still serving", "stop error")
-	st, _ := ex.Status("command")
+	st, err := ex.Status("command")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "live endpoint must remain reported running (%v)", st)
 	require.True(t, st.Healthy, "live endpoint must remain reported running (%v)", st)
 }
@@ -317,7 +319,8 @@ func TestCommandStopRejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
 
 	require.ErrorContains(t, ex.Stop("command"), "still serving", "stop error")
-	st, _ := ex.Status("command")
+	st, err := ex.Status("command")
+	assert.NoError(t, err)
 	require.True(t, st.Running, "an unhealthy but reachable endpoint must remain running (%v)", st)
 }
 
@@ -327,7 +330,9 @@ func TestCommandStopFailureRestartsHealthMonitoring(t *testing.T) {
 	}))
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
-	st, _ := ex.state("command")
+	st, err := ex.state("command")
+	assert.NoError(t, err)
+	require.NotNil(t, st)
 	st.plat.Runtime.Health = &Probe{HTTP: srv.URL, Status: http.StatusOK, IntervalS: 1}
 	t.Cleanup(func() {
 		st.mu.Lock()
@@ -372,7 +377,8 @@ func TestCommandStopReportsStoppedOnlyAfterEndpointCloses(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		require.FailNow(t, "test endpoint did not close")
 	}
-	st, _ := ex.Status("command")
+	st, err := ex.Status("command")
+	assert.NoError(t, err)
 	require.False(t, st.Running, "closed endpoint must report stopped (%v)", st)
 	require.False(t, st.Healthy, "closed endpoint must report stopped (%v)", st)
 }

@@ -237,13 +237,18 @@ func TestRankLocal_KeepsDirectConnectAsLastResort(t *testing.T) {
 // independently of each other, and confirms an unknown prefix does not disqualify
 // (a platform that reports an address without a mask must not lose its LAN).
 func TestRankLocal_NarrowPrefixesAndPointToPoint(t *testing.T) {
-	for _, prefixLen := range []int{30, 31, 32} {
-		ifaces := []localIface{
-			{name: "eth1", addrs: []localAddr{{ip: "10.9.9.1", prefixLen: prefixLen}}},
-			{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
-		}
-		assert.Equal(t, "10.0.0.5", rankLocal(ifaces, Evidence{}, "")[0], "with a /%d prefix", prefixLen)
+	test := func(name string, prefixLen int) {
+		t.Run(name, func(t *testing.T) {
+			ifaces := []localIface{
+				{name: "eth1", addrs: []localAddr{{ip: "10.9.9.1", prefixLen: prefixLen}}},
+				{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
+			}
+			assert.Equal(t, "10.0.0.5", rankLocal(ifaces, Evidence{}, "")[0])
+		})
 	}
+	test("/30 prefix", 30)
+	test("/31 prefix", 31)
+	test("/32 prefix", 32)
 
 	ptp := []localIface{
 		{name: "eth1", pointToPoint: true, addrs: []localAddr{{ip: "10.9.9.1", prefixLen: 24}}},

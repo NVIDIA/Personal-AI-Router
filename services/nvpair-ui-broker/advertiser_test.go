@@ -33,23 +33,17 @@ func TestLocalEnginePortFallback(t *testing.T) {
 }
 
 func TestRunningEnginePort(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		raw  string
-		port int
-		ok   bool
-	}{
-		{name: "running", raw: `{"running":true,"port":1235}`, port: 1235, ok: true},
-		{name: "stopped is authoritative", raw: `{"running":false,"port":1235}`},
-		{name: "running without a port", raw: `{"running":true,"port":0}`},
-		{name: "malformed response", raw: `{`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			port, ok := runningEnginePort([]byte(tc.raw))
-			require.Equal(t, tc.port, port, "runningEnginePort")
-			require.Equal(t, tc.ok, ok, "runningEnginePort")
+	test := func(name, raw string, wantPort int, wantOK bool) {
+		t.Run(name, func(t *testing.T) {
+			port, ok := runningEnginePort([]byte(raw))
+			require.Equal(t, wantPort, port)
+			require.Equal(t, wantOK, ok)
 		})
 	}
+	test("running", `{"running":true,"port":1235}`, 1235, true)
+	test("stopped is authoritative", `{"running":false,"port":1235}`, 0, false)
+	test("running without a port", `{"running":true,"port":0}`, 0, false)
+	test("malformed response", `{`, 0, false)
 }
 
 func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
@@ -66,14 +60,14 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 	go func() {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var got proxyLocalBackend
-		if json.Unmarshal(msg.Params, &got) == nil {
+		if assert.NoError(t, json.Unmarshal(msg.Params, &got)) {
 			localBackend <- got
 		}
-		_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 	}()
 
 	b := &Broker{regCache: relay.NewRegistrationCache()}
@@ -172,8 +166,8 @@ func attachAdvertiserProxy(
 	t.Helper()
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
-		_ = proxyClient.Close()
-		_ = proxyServer.Close()
+		assert.NoError(t, proxyClient.Close())
+		assert.NoError(t, proxyServer.Close())
 	})
 	proxy := &proxyProcess{
 		peer:        NewPeer(NewCodec(proxyClient)),
@@ -187,14 +181,14 @@ func attachAdvertiserProxy(
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			var update proxyLocalBackend
-			if json.Unmarshal(msg.Params, &update) == nil {
+			if assert.NoError(t, json.Unmarshal(msg.Params, &update)) {
 				updates <- update
 			}
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+			assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 		}
 	}()
 	return updates

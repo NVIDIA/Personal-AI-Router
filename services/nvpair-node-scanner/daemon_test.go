@@ -78,7 +78,8 @@ func TestReloadIdentityAdoptsClusterPrincipal(t *testing.T) {
 	// cluster-manager writes its principal under <base>/cluster/identity.json.
 	idPath := filepath.Join(base, "cluster", "identity.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(idPath), 0o700), "mkdir")
-	body, _ := json.Marshal(map[string]any{"node_uuid": "cluster-principal-Y", "created_at": 1})
+	body, err := json.Marshal(map[string]any{"node_uuid": "cluster-principal-Y", "created_at": 1})
+	assert.NoError(t, err)
 	require.NoError(t, os.WriteFile(idPath, body, 0o600), "write identity.json")
 
 	d.reloadIdentity()
@@ -137,12 +138,13 @@ func TestPublishSelfEnrichesOverLoopback(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(want)
+		assert.NoError(t, json.NewEncoder(w).Encode(want))
 	}))
 	defer srv.Close()
 	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
 	require.NoError(t, err, "split stub addr")
-	port, _ := strconv.Atoi(portStr)
+	port, err := strconv.Atoi(portStr)
+	assert.NoError(t, err)
 
 	// The node advertises the LAN address (which no server answers on in the
 	// test); enrichment must still succeed via loopback, where the stub listens.
@@ -195,7 +197,8 @@ func TestReachableAntiFlap(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{}`))
+		_, err := w.Write([]byte(`{}`))
+		assert.NoError(t, err)
 	}))
 	defer niSrv.Close()
 	niURL, err := url.Parse(niSrv.URL)
@@ -216,7 +219,7 @@ func TestReachableAntiFlap(t *testing.T) {
 	dl, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err, "dead listen")
 	deadPort := dl.Addr().(*net.TCPAddr).Port
-	dl.Close()
+	assert.NoError(t, dl.Close())
 
 	d := &daemon{
 		lastInfo:   make(map[string]NodeInfoResponse),
@@ -266,10 +269,10 @@ func TestReachableAntiFlap(t *testing.T) {
 func TestEnrichFallsBackToASecondPublishedAddress(t *testing.T) {
 	const hostUUID = "host-enrich-failover"
 	niSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID: hostUUID,
 			GPUs:     []GPUInfo{{Name: "GPU from reachable address"}},
-		})
+		}))
 	}))
 	defer niSrv.Close()
 	niURL, err := url.Parse(niSrv.URL)
@@ -307,7 +310,7 @@ func TestReachableSelfDialsLoopback(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: selfUUID})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: selfUUID}))
 	}))
 	defer srv.Close()
 	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())

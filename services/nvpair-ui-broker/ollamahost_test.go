@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/appdir"
@@ -161,61 +162,40 @@ func TestConfiguredEngineProxyPort(t *testing.T) {
 // Both directions are checked because the two engines have separate fallback
 // functions and fixing one is not evidence about the other.
 func TestProxyFallbackSkipsASiblingEnginesConfiguredPort(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		self     engineProxyProfile
-		sibling  engineProxyProfile
-		fallback func(*Broker, ...int) int
-	}{
-		{
-			name:     "ollama fallback avoids LM Studio",
-			self:     ollamaProxyProfile,
-			sibling:  lmstudioProxyProfile,
-			fallback: (*Broker).setOllamaProxyFallback,
-		},
-		{
-			name:     "lmstudio fallback avoids Ollama",
-			self:     lmstudioProxyProfile,
-			sibling:  ollamaProxyProfile,
-			fallback: (*Broker).setLMStudioProxyFallback,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, self, sibling engineProxyProfile, fallback func(*Broker, ...int) int) {
+		t.Run(name, func(t *testing.T) {
 			isolateOllamaHostTestConfig(t)
 
 			// Put the sibling's persisted port inside the search range so a
 			// fallback that ignores siblings would hand it out.
-			stored := tc.self.EnginePortBase + 1
-			path, err := appdir.Path(tc.sibling.PortFile)
+			stored := self.EnginePortBase + 1
+			path, err := appdir.Path(sibling.PortFile)
 			require.NoError(t, err)
 			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 			require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `{"port":%d}`, stored), 0o600))
 
 			b := &Broker{}
-			got := tc.fallback(b, tc.self.EnginePortBase)
-			require.NotEqual(t, stored, got, "fallback must skip %s's configured port", tc.sibling.DisplayName)
-			require.NotEqual(t, tc.sibling.FacadePort, got, "fallback must skip %s's default ports", tc.sibling.DisplayName)
-			require.NotEqual(t, tc.sibling.EnginePortBase, got, "fallback must skip %s's default ports", tc.sibling.DisplayName)
+			got := fallback(b, self.EnginePortBase)
+			require.NotEqual(t, stored, got, "fallback must skip the sibling's configured port")
+			require.NotEqual(t, sibling.FacadePort, got, "fallback must skip the sibling's default facade port")
+			require.NotEqual(t, sibling.EnginePortBase, got, "fallback must skip the sibling's default engine port")
 		})
 	}
+	test("ollama fallback avoids LM Studio", ollamaProxyProfile, lmstudioProxyProfile, (*Broker).setOllamaProxyFallback)
+	test("lmstudio fallback avoids Ollama", lmstudioProxyProfile, ollamaProxyProfile, (*Broker).setLMStudioProxyFallback)
 }
 
 func TestPrepareOllamaHostAliasHonorsOptOutAndBackendOwnership(t *testing.T) {
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:11433")
-	for _, tc := range []struct {
-		name        string
-		enabled     bool
-		backendPort int
-	}{
-		{name: "force ports opt out", enabled: false, backendPort: 11434},
-		{name: "custom backend owns alias port", enabled: true, backendPort: 11433},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, enabled bool, backendPort int) {
+		t.Run(name, func(t *testing.T) {
 			b := &Broker{}
-			b.prepareOllamaHostAlias(tc.enabled, tc.backendPort)
+			b.prepareOllamaHostAlias(enabled, backendPort)
 			require.Equal(t, ollamaHostAlias{}, b.currentOllamaHostAlias(), "unsafe alias prepared")
 		})
 	}
+	test("force ports opt out", false, 11434)
+	test("custom backend owns alias port", true, 11433)
 }
 
 func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
@@ -234,7 +214,8 @@ func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
 
 	received := make(chan *Message, 1)
 	go func() {
-		msg, _ := NewCodec(server).Read()
+		msg, err := NewCodec(server).Read()
+		assert.NoError(t, err)
 		received <- msg
 	}()
 	b.replayOllamaHostAliasError()
@@ -253,31 +234,9 @@ func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
 // prepared, so a plain TCP probe still reports it free — it must be treated as
 // taken or the advancing backend would land on it and orphan the alias.
 func TestManagedBackendMovesSkipTheOllamaHostAlias(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		facadePort   int
-		backendStart int
-		plan         func(status ollamaPortStatus, available func(int) bool) managedPortPlan
-	}{
-		{
-			name:         "ollama",
-			facadePort:   managedOllamaFacadePort,
-			backendStart: managedOllamaBackendStart,
-			plan: func(status ollamaPortStatus, available func(int) bool) managedPortPlan {
-				return planManagedOllamaPorts(true, status, available)
-			},
-		},
-		{
-			name:         "lmstudio",
-			facadePort:   managedLMStudioFacadePort,
-			backendStart: managedLMStudioBackendStart,
-			plan: func(status ollamaPortStatus, available func(int) bool) managedPortPlan {
-				return planManagedLMStudioPorts(true, status, available)
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			aliasPort := tc.backendStart + 1
+	test := func(name string, facadePort, backendStart int, plan func(bool, ollamaPortStatus, func(int) bool) managedPortPlan) {
+		t.Run(name, func(t *testing.T) {
+			aliasPort := backendStart + 1
 			want := aliasPort + 1
 			b := &Broker{}
 			b.setOllamaHostAlias(ollamaHostAlias{Port: aliasPort})
@@ -285,12 +244,14 @@ func TestManagedBackendMovesSkipTheOllamaHostAlias(t *testing.T) {
 			// the alias and the port after it are free above it, and the proxy has
 			// not bound the alias yet, so a plain probe still reports it free.
 			available := b.availableOffOllamaHostAlias(func(port int) bool {
-				return port == tc.facadePort || port == aliasPort || port == want
+				return port == facadePort || port == aliasPort || port == want
 			})
-			got := tc.plan(ollamaPortStatus{Port: tc.backendStart}, available)
+			got := plan(true, ollamaPortStatus{Port: backendStart}, available)
 			require.Equal(t, want, got.BackendPort, "the alias must be skipped")
 		})
 	}
+	test("ollama", managedOllamaFacadePort, managedOllamaBackendStart, planManagedOllamaPorts)
+	test("lmstudio", managedLMStudioFacadePort, managedLMStudioBackendStart, planManagedLMStudioPorts)
 
 	// Without an alias the wrapper must be transparent.
 	plain := (&Broker{}).availableOffOllamaHostAlias(func(port int) bool { return port == managedOllamaBackendStart })
@@ -324,16 +285,16 @@ func TestDisableAliasClearsEngineReservation(t *testing.T) {
 	go func() {
 		codec := NewCodec(server)
 		request, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var params struct {
 			Port int `json:"port"`
 		}
-		if request.Method == "internal:set-reserved-port" && json.Unmarshal(request.Params, &params) == nil {
+		if request.Method == "internal:set-reserved-port" && assert.NoError(t, json.Unmarshal(request.Params, &params)) {
 			reserved <- params.Port
 		}
-		_ = codec.Respond(request.ID, map[string]int{"port": params.Port})
+		assert.NoError(t, codec.Respond(request.ID, map[string]int{"port": params.Port}))
 	}()
 
 	b.disableOllamaHostAliasReservation()
@@ -360,40 +321,40 @@ func TestManagedAliasReservationSyncUsesReplacementEngineManager(t *testing.T) {
 	oldReservation := make(chan int, 1)
 	go func() {
 		msg, err := oldEngineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var request struct {
 			Port int `json:"port"`
 		}
-		_ = json.Unmarshal(msg.Params, &request)
+		assert.NoError(t, json.Unmarshal(msg.Params, &request))
 		oldReservation <- request.Port
-		_ = oldEngineCodec.Respond(msg.ID, map[string]int{"port": request.Port})
+		assert.NoError(t, oldEngineCodec.Respond(msg.ID, map[string]int{"port": request.Port}))
 	}()
 
 	replacementReservation := make(chan int, 1)
 	go func() {
 		for range 3 {
 			msg, err := replacementCodec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			switch msg.Method {
 			case "engine:status":
-				_ = replacementCodec.Respond(msg.ID, ollamaPortStatus{Port: 16000})
+				assert.NoError(t, replacementCodec.Respond(msg.ID, ollamaPortStatus{Port: 16000}))
 			case "engine:get-installed":
-				_ = replacementCodec.Respond(msg.ID, map[string]any{
+				assert.NoError(t, replacementCodec.Respond(msg.ID, map[string]any{
 					"engines": []map[string]any{{"engine": "ollama", "port": 16000}},
-				})
+				}))
 			case "internal:set-reserved-port":
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
 				replacementReservation <- request.Port
-				_ = replacementCodec.Respond(msg.ID, map[string]int{"port": request.Port})
+				assert.NoError(t, replacementCodec.Respond(msg.ID, map[string]int{"port": request.Port}))
 			default:
-				_ = replacementCodec.RespondError(msg.ID, -32601, "unexpected method")
+				assert.NoError(t, replacementCodec.RespondError(msg.ID, -32601, "unexpected method"))
 			}
 		}
 	}()
@@ -512,15 +473,15 @@ func TestAliasBindFailureReleasesReservationButKeepsWarning(t *testing.T) {
 	reservation := make(chan int, 1)
 	go func() {
 		msg, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var request struct {
 			Port int `json:"port"`
 		}
-		_ = json.Unmarshal(msg.Params, &request)
+		assert.NoError(t, json.Unmarshal(msg.Params, &request))
 		reservation <- request.Port
-		_ = engineCodec.Respond(msg.ID, map[string]int{"port": request.Port})
+		assert.NoError(t, engineCodec.Respond(msg.ID, map[string]int{"port": request.Port}))
 	}()
 
 	params, err := json.Marshal(errors.ServiceError{

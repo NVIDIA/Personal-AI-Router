@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +44,8 @@ func makePin(t *testing.T) *TrustedPin {
 	require.NoError(t, err, "uuid")
 	certPEM, _, err := generateLeaf(uuid, "peer-host")
 	require.NoError(t, err, "leaf")
-	fp, _ := certFingerprintFromPEM(certPEM)
+	fp, err := certFingerprintFromPEM(certPEM)
+	assert.NoError(t, err)
 	return &TrustedPin{
 		NodeUUID:        uuid,
 		NodeID:          "peer-host",
@@ -78,7 +80,9 @@ func TestTrustStorePinRemoveReload(t *testing.T) {
 
 func TestTrustStoreRePinGuard(t *testing.T) {
 	dir := t.TempDir()
-	ts, _ := newTrustStore(dir)
+	ts, err := newTrustStore(dir)
+	assert.NoError(t, err)
+	require.NotNil(t, ts)
 	pin := makePin(t)
 	require.NoError(t, ts.Pin(pin), "pin")
 	// Identical re-pin is an idempotent no-op.
@@ -95,7 +99,8 @@ func TestTrustStoreAntiTamper(t *testing.T) {
 	trustedDir := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(trustedDir, 0o700), "mkdir")
 	pin := makePin(t)
-	data, _ := json.MarshalIndent(pin, "", "  ")
+	data, err := json.MarshalIndent(pin, "", "  ")
+	assert.NoError(t, err)
 	wrongName := filepath.Join(trustedDir, "00000000-0000-4000-8000-000000000000.json")
 	require.NoError(t, os.WriteFile(wrongName, data, 0o600), "write tampered")
 
@@ -107,15 +112,19 @@ func TestTrustStoreAntiTamper(t *testing.T) {
 }
 
 func TestPINNoobRoundTrip(t *testing.T) {
-	cases := []string{"000000", "000123", "402199", "999999"}
-	for _, pin := range cases {
-		noob := noobFromPIN(pin)
-		require.Len(t, noob, 16, "noob length")
-		got := new(big.Int).SetBytes(noob).String()
-		want := new(big.Int)
-		want.SetString(pin, 10)
-		require.Equal(t, want.String(), got, "noob decodes incorrectly")
+	test := func(name, pin string) {
+		t.Run(name, func(t *testing.T) {
+			noob := noobFromPIN(pin)
+			require.Len(t, noob, 16, "noob length")
+			want := new(big.Int)
+			want.SetString(pin, 10)
+			require.Equal(t, want.String(), new(big.Int).SetBytes(noob).String(), "noob decodes incorrectly")
+		})
 	}
+	test("all zeroes", "000000")
+	test("leading zeroes", "000123")
+	test("ordinary PIN", "402199")
+	test("maximum PIN", "999999")
 
 	gp, noob, err := generatePIN()
 	require.NoError(t, err, "generatePIN")

@@ -33,8 +33,10 @@ func remoteDetail() *nodeDetail {
 }
 
 // discoveryPush builds a discovery:nodes-changed notification.
-func discoveryPush(nodes ...availableNode) NotificationMsg {
-	params, _ := json.Marshal(nodes)
+func discoveryPush(t *testing.T, nodes ...availableNode) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(nodes)
+	assert.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{Method: "discovery:nodes-changed", Params: params}}
 }
 
@@ -51,7 +53,7 @@ func TestRemoteDetailFollowsDiscoveryModels(t *testing.T) {
 	d.models = modelsResult{Models: []string{"old-model"}}
 	d.refreshModels()
 
-	d.update(discoveryPush(availableNode{
+	d.update(discoveryPush(t, availableNode{
 		HostUUID:       "peer",
 		Name:           "peer-host",
 		Models:         []string{"old-model", "new-model"},
@@ -69,7 +71,7 @@ func TestRemoteDetailIgnoresOtherNodesDiscovery(t *testing.T) {
 	d.models = modelsResult{Models: []string{"mine"}}
 	d.refreshModels()
 
-	d.update(discoveryPush(availableNode{
+	d.update(discoveryPush(t, availableNode{
 		HostUUID: "somebody-else",
 		Name:     "other-host",
 		Models:   []string{"theirs"},
@@ -110,7 +112,7 @@ func TestLocalDetailIgnoresDiscoveryModels(t *testing.T) {
 	d.models = modelsResult{Models: []string{"authoritative"}}
 	d.refreshModels()
 
-	d.update(discoveryPush(availableNode{
+	d.update(discoveryPush(t, availableNode{
 		HostUUID: "self",
 		Name:     "this-host",
 		Models:   []string{"stale-summary"},
@@ -268,23 +270,18 @@ func TestSettingsEditorsAreDistinct(t *testing.T) {
 	d.refreshEngines()
 	seedSettings(d, ollamaSettings())
 
-	cases := []struct {
-		key   string
-		mode  detailInputMode
-		value string
-		label string
-	}{
-		{"e", detailInputEnginePort, "11434", "engine"},
-		{"p", detailInputProxyPort, "11435", "proxy"},
-		{"a", detailInputLaunchArgs, "OLLAMA_KEEP_ALIVE=5m", "arguments"},
+	test := func(name, key string, mode detailInputMode, value, label string) {
+		t.Run(name, func(t *testing.T) {
+			d.mode = detailInputNone
+			d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			require.Equal(t, mode, d.mode)
+			assert.Equal(t, value, d.input.Value())
+			assert.Contains(t, d.inputLabel(), label, "label identifies field")
+		})
 	}
-	for _, tc := range cases {
-		d.mode = detailInputNone
-		d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
-		require.Equal(t, tc.mode, d.mode, "%q editor mode", tc.key)
-		assert.Equal(t, tc.value, d.input.Value(), "%q initial value", tc.key)
-		assert.Contains(t, d.inputLabel(), tc.label, "label identifies field")
-	}
+	test("engine port", "e", detailInputEnginePort, "11434", "engine")
+	test("proxy port", "p", detailInputProxyPort, "11435", "proxy")
+	test("launch arguments", "a", detailInputLaunchArgs, "OLLAMA_KEEP_ALIVE=5m", "arguments")
 }
 
 // TestSettingsRefusalComesFromTheBackend checks an engine the backend will not
@@ -325,34 +322,16 @@ func TestSettingsWriteCarriesTheRevisionAndResolution(t *testing.T) {
 	snap := ollamaSettings()
 	seedSettings(d, snap)
 
-	cases := []struct {
-		name       string
-		mode       detailInputMode
-		value      string
-		resolution string
-		check      func(enginesettings.Config) error
-	}{
-		{
-			name:       "the port field wins over the command",
-			mode:       detailInputEnginePort,
-			value:      "11500",
-			resolution: resolutionServer,
-		},
-		{
-			name:       "the command wins over the port field",
-			mode:       detailInputLaunchArgs,
-			value:      "OLLAMA_HOST=127.0.0.1:11500",
-			resolution: resolutionLaunch,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req, ok := d.settingsRequest(snap, tc.mode, tc.value)
+	test := func(name string, mode detailInputMode, value, resolution string) {
+		t.Run(name, func(t *testing.T) {
+			req, ok := d.settingsRequest(snap, mode, value)
 			require.True(t, ok, "the request was rejected")
 			assert.Equal(t, snap.Revision, req.ExpectedRevision, "snapshot revision")
-			assert.Equal(t, tc.resolution, req.Resolution)
+			assert.Equal(t, resolution, req.Resolution)
 		})
 	}
+	test("the port field wins over the command", detailInputEnginePort, "11500", resolutionServer)
+	test("the command wins over the port field", detailInputLaunchArgs, "OLLAMA_HOST=127.0.0.1:11500", resolutionLaunch)
 }
 
 // TestLaunchTextIsSentAsTyped checks the arguments field is not tidied here.
@@ -402,8 +381,10 @@ func TestSettingsApplyUsesTheNormalizedDraft(t *testing.T) {
 }
 
 // settingsPush builds an engine:settings-changed notification.
-func settingsPush(snap enginesettings.Snapshot) NotificationMsg {
-	params, _ := json.Marshal(snap)
+func settingsPush(t *testing.T, snap enginesettings.Snapshot) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(snap)
+	assert.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{Method: "engine:settings-changed", Params: params}}
 }
 
@@ -425,7 +406,7 @@ func TestLocalSettingsPushIsNotDiscarded(t *testing.T) {
 	moved := ollamaSettings()
 	moved.NodeID = uuid
 	moved.Revision = 8
-	d.handleNotification(settingsPush(moved).Msg)
+	d.handleNotification(settingsPush(t, moved).Msg)
 
 	require.Equal(t, uint64(8), d.settings["ollama"].Revision, "cached revision after a push for this machine")
 
@@ -433,7 +414,7 @@ func TestLocalSettingsPushIsNotDiscarded(t *testing.T) {
 	other := ollamaSettings()
 	other.NodeID = "some-other-node"
 	other.Revision = 99
-	d.handleNotification(settingsPush(other).Msg)
+	d.handleNotification(settingsPush(t, other).Msg)
 	assert.Equal(t, uint64(8), d.settings["ollama"].Revision, "a peer's snapshot overwrote this machine's")
 }
 
@@ -533,39 +514,23 @@ func TestSettingsRestartIsConfirmed(t *testing.T) {
 // TestSettingsPreviewFailuresAreExplained checks a rejected draft says why and
 // saves nothing.
 func TestSettingsPreviewFailuresAreExplained(t *testing.T) {
-	cases := []struct {
-		name    string
-		preview enginesettings.Preview
-		err     error
-		want    string
-	}{
-		{
-			name:    "a field the backend rejected",
-			preview: enginesettings.Preview{Errors: map[string]string{"launchText": "unbalanced quote"}},
-			want:    "unbalanced quote",
-		},
-		{
-			name:    "the two ports disagree",
-			preview: enginesettings.Preview{Conflict: &enginesettings.Conflict{ServerPort: 11434, LaunchPort: 11500}},
-			want:    "11500",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, preview enginesettings.Preview, want string) {
+		t.Run(name, func(t *testing.T) {
 			d := localDetail()
 			d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 			d.refreshEngines()
 
 			cmd := d.applySettingsPreview(enginePreviewMsg{
 				request: enginesettings.Request{Engine: "ollama"},
-				preview: tc.preview,
-				err:     tc.err,
+				preview: preview,
 			})
 			assert.Nil(t, cmd, "a rejected draft was sent anyway")
 			assert.Nil(t, d.settingsConfirm, "a rejected draft was armed for confirmation")
-			assert.Contains(t, d.status.render(), tc.want)
+			assert.Contains(t, d.status.render(), want)
 		})
 	}
+	test("a field the backend rejected", enginesettings.Preview{Errors: map[string]string{"launchText": "unbalanced quote"}}, "unbalanced quote")
+	test("the two ports disagree", enginesettings.Preview{Conflict: &enginesettings.Conflict{ServerPort: 11434, LaunchPort: 11500}}, "11500")
 }
 
 // TestSettingsErrorsReadTheSameEveryTime checks the per-field errors are
@@ -998,8 +963,10 @@ func TestSecondSettingsChangeWaitsForTheFirst(t *testing.T) {
 }
 
 // progressPush builds a progress notification from its fields as sent.
-func progressPush(method string, fields map[string]any) NotificationMsg {
-	params, _ := json.Marshal(fields)
+func progressPush(t *testing.T, method string, fields map[string]any) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(fields)
+	assert.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{Method: method, Params: params}}
 }
 
@@ -1007,7 +974,7 @@ func progressPush(method string, fields map[string]any) NotificationMsg {
 // is not reported on a peer's screen. The payload carries no node, so shown
 // there it read as the peer installing something.
 func TestInstallProgressStaysOnThisMachine(t *testing.T) {
-	frame := progressPush("engine:install-progress",
+	frame := progressPush(t, "engine:install-progress",
 		map[string]any{"engine": "ollama", "stage": "downloading", "percent": 40})
 
 	peer := remoteDetail()
@@ -1025,21 +992,21 @@ func TestInstallProgressStaysOnThisMachine(t *testing.T) {
 // "(0%)" and "(-1%)".
 func TestProgressWithoutAPercentShowsNone(t *testing.T) {
 	peer := remoteDetail()
-	peer.update(progressPush("engine:remote-progress",
+	peer.update(progressPush(t, "engine:remote-progress",
 		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "pulling manifest"}))
 	got := peer.status.render()
 	assert.Contains(t, got, "pulling manifest", "indeterminate remote progress")
 	assert.NotContains(t, got, "%", "indeterminate remote progress")
-	peer.update(progressPush("engine:remote-progress",
+	peer.update(progressPush(t, "engine:remote-progress",
 		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "downloading", "percent": 25}))
 	assert.Contains(t, peer.status.render(), "downloading (25%)", "reported percent is kept")
 
 	local := localDetail()
-	local.update(progressPush("engine:pull-progress",
+	local.update(progressPush(t, "engine:pull-progress",
 		map[string]any{"engine": "ollama", "stage": "pulling manifest"}))
 	assert.NotContains(t, local.status.render(), "%", "indeterminate pull progress")
 
-	local.update(progressPush("engine:install-progress",
+	local.update(progressPush(t, "engine:install-progress",
 		map[string]any{"engine": "ollama", "stage": "failed", "percent": -1, "error": "disk full"}))
 	got = local.status.render()
 	assert.NotContains(t, got, "%", "failed install")
@@ -1115,13 +1082,13 @@ func TestOpenDetailFollowsPresenceAndMembership(t *testing.T) {
 
 	// The peer leaves the cluster but is still on the network.
 	peer.Trusted = false
-	v.Update(discoveryPush(peer))
+	v.Update(discoveryPush(t, peer))
 	assert.NotEqual(t, membershipMember, d.node.membership, "the detail still reads Member after the peer left the cluster")
 	assert.Empty(t, d.engines, "engine controls are still offered for a node no longer in the cluster")
 	assert.Contains(t, d.View(), "not in this cluster", "engines pane says why the list went")
 
 	// And then drops off the network entirely.
-	v.Update(discoveryPush())
+	v.Update(discoveryPush(t))
 	assert.NotEqual(t, presenceOnline, d.node.presence, "the detail still reads Online after the node dropped out of every feed")
 }
 
@@ -1174,25 +1141,23 @@ func TestEmptyEngineListExplainsItself(t *testing.T) {
 // rendered as "not answering" — beside a hardware readout, polled over an
 // endpoint that needs no pairing, visibly updating for the same machine.
 func TestUnpairedNodeIsNotCalledSilent(t *testing.T) {
-	cases := map[nodeMembership]string{
-		membershipNone:    "not in this cluster",
-		membershipForeign: "another cluster",
-		membershipPending: "still pairing",
+	test := func(name string, membership nodeMembership, want string) {
+		t.Run(name, func(t *testing.T) {
+			d := remoteDetail()
+			d.node.membership = membership
+			assert.Nil(t, d.enginesCmd(), "asked for engines over a link that cannot carry the question")
+			got := d.emptyEnginesHint()
+			assert.Contains(t, got, want)
+			assert.NotContains(t, got, "not answering", "hint calls a reachable node silent")
+			// Discovery needs no pairing, so the models pane must not blame a
+			// stopped engine for what it cannot see either way.
+			d.node.presence = presenceOnline
+			assert.NotContains(t, d.emptyModelsHint(), "start an engine", "models hint claims an engine needs starting")
+		})
 	}
-	for membership, want := range cases {
-		d := remoteDetail()
-		d.node.membership = membership
-
-		assert.Nil(t, d.enginesCmd(), "%v: asked for engines over a link that cannot carry the question", membership)
-		got := d.emptyEnginesHint()
-		assert.Contains(t, got, want, "%v: unpaired hint", membership)
-		assert.NotContains(t, got, "not answering", "%v: hint calls a reachable node silent", membership)
-		// Models come from what the node advertises over discovery, which
-		// needs no pairing, so the models pane must not blame a stopped engine
-		// for what it cannot see either way.
-		d.node.presence = presenceOnline
-		assert.NotContains(t, d.emptyModelsHint(), "start an engine", "%v: models hint claims an engine needs starting", membership)
-	}
+	test("standalone node", membershipNone, "not in this cluster")
+	test("foreign cluster member", membershipForeign, "another cluster")
+	test("pairing in progress", membershipPending, "still pairing")
 
 	// A member is still asked, and is still allowed to be silent.
 	member := remoteDetail()
@@ -1444,17 +1409,29 @@ func (d *nodeDetail) handleKeyForTest(t *testing.T, k string) tea.Cmd {
 }
 
 func TestParsePort(t *testing.T) {
-	valid := map[string]int{"1": 1, "11434": 11434, "65535": 65535}
-	for in, want := range valid {
-		got, ok := parsePort(in)
-		if assert.True(t, ok, "parsePort(%q)", in) {
-			assert.Equal(t, want, got, "parsePort(%q)", in)
-		}
+	accept := func(name, in string, want int) {
+		t.Run(name, func(t *testing.T) {
+			got, ok := parsePort(in)
+			if assert.True(t, ok) {
+				assert.Equal(t, want, got)
+			}
+		})
 	}
-	for _, in := range []string{"", "0", "-1", "65536", "abc", "80x"} {
-		_, ok := parsePort(in)
-		assert.False(t, ok, "parsePort(%q) accepted an invalid port", in)
+	reject := func(name, in string) {
+		t.Run(name, func(t *testing.T) {
+			_, ok := parsePort(in)
+			assert.False(t, ok, "accepted an invalid port")
+		})
 	}
+	accept("minimum port", "1", 1)
+	accept("usual engine port", "11434", 11434)
+	accept("maximum port", "65535", 65535)
+	reject("empty", "")
+	reject("zero", "0")
+	reject("negative", "-1")
+	reject("above maximum", "65536")
+	reject("not a number", "abc")
+	reject("trailing text", "80x")
 }
 
 // TestServiceTabNoLongerOffersPorts checks the ports are configured in exactly

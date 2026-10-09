@@ -18,29 +18,22 @@ import (
 // and CPU model names reach it, a byte slice can land inside a multi-byte
 // sequence, and its callers pad with %-Ns, which counts runes too.
 func TestTruncate(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		max  int
-		want string
-	}{
-		{"fits", "abc", 5, "abc"},
-		{"exactly fits", "abcde", 5, "abcde"},
-		{"cut with an ellipsis", "abcdef", 5, "abcd…"},
-		{"multi-byte cut stays on a rune boundary", "ααααααααα™", 5, "αααα…"},
-		{"multi-byte that fits is untouched", "ααα", 5, "ααα"},
-		{"one column is only the ellipsis", "abc", 1, "…"},
-		{"zero columns is empty", "abc", 0, ""},
-		{"negative columns is empty", "abc", -1, ""},
-		{"empty stays empty", "", 5, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := truncate(tc.in, tc.max)
-			assert.Equal(t, tc.want, got)
+	test := func(name, in string, max int, want string) {
+		t.Run(name, func(t *testing.T) {
+			got := truncate(in, max)
+			assert.Equal(t, want, got)
 			assert.True(t, utf8.ValidString(got), "truncate must produce valid UTF-8")
 		})
 	}
+	test("fits", "abc", 5, "abc")
+	test("exactly fits", "abcde", 5, "abcde")
+	test("cut with an ellipsis", "abcdef", 5, "abcd…")
+	test("multi-byte cut stays on a rune boundary", "ααααααααα™", 5, "αααα…")
+	test("multi-byte that fits is untouched", "ααα", 5, "ααα")
+	test("one column is only the ellipsis", "abc", 1, "…")
+	test("zero columns is empty", "abc", 0, "")
+	test("negative columns is empty", "abc", -1, "")
+	test("empty stays empty", "", 5, "")
 }
 
 // rendered is the terminal width a laid-out row actually consumes: every column
@@ -59,55 +52,15 @@ func rendered(cols []column, total int) int {
 // width it was given, never more. Sizing that ignores cellPadding overflows and
 // the terminal drops the rightmost columns.
 func TestLayoutColumnsFillsWidthExactly(t *testing.T) {
-	cases := []struct {
-		name  string
-		total int
-		cols  []column
-	}{
-		{
-			name:  "proxies upstream table",
-			total: 80,
-			cols: []column{
-				flexCol("ID", 10, 1),
-				flexCol("HOST", 10, 1),
-				fixedCol("PORT", 7),
-			},
-		},
-		{
-			name:  "nodes table",
-			total: 100,
-			cols: []column{
-				flexCol("NAME", 10, 1),
-				flexCol("ADDRESS", 10, 1),
-				fixedCol("PORT", 7),
-				fixedCol("LAST SEEN", 10),
-				fixedCol("STATUS", 11),
-			},
-		},
-		{
-			name:  "single flex column takes the remainder",
-			total: 60,
-			cols: []column{
-				fixedCol("SEV", 9),
-				flexCol("MESSAGE", 10, 1),
-			},
-		},
-		{
-			name:  "uneven division leaves no gap",
-			total: 77,
-			cols: []column{
-				flexCol("A", 5, 1),
-				flexCol("B", 5, 1),
-				flexCol("C", 5, 1),
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.total, rendered(tc.cols, tc.total), "row must consume the terminal width")
+	test := func(name string, total int, cols ...column) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, total, rendered(cols, total), "row must consume the terminal width")
 		})
 	}
+	test("proxies upstream table", 80, flexCol("ID", 10, 1), flexCol("HOST", 10, 1), fixedCol("PORT", 7))
+	test("nodes table", 100, flexCol("NAME", 10, 1), flexCol("ADDRESS", 10, 1), fixedCol("PORT", 7), fixedCol("LAST SEEN", 10), fixedCol("STATUS", 11))
+	test("single flex column takes the remainder", 60, fixedCol("SEV", 9), flexCol("MESSAGE", 10, 1))
+	test("uneven division leaves no gap", 77, flexCol("A", 5, 1), flexCol("B", 5, 1), flexCol("C", 5, 1))
 }
 
 // TestLayoutColumnsWeightedFlex checks a heavier column takes proportionally
@@ -126,11 +79,17 @@ func TestLayoutColumnsWeightedFlex(t *testing.T) {
 // would render as zero-width or negative.
 func TestLayoutColumnsNarrowTerminal(t *testing.T) {
 	cols := []column{fixedCol("SEV", 9), flexCol("MESSAGE", 10, 1)}
-	for _, total := range []int{0, 1, 10, 20} {
-		got := layoutColumns(total, cols)
-		assert.Equal(t, 9, got[0].Width, "total=%d: SEV must retain its declared width", total)
-		assert.Equal(t, 10, got[1].Width, "total=%d: MESSAGE must retain its minimum width", total)
+	test := func(name string, total int) {
+		t.Run(name, func(t *testing.T) {
+			got := layoutColumns(total, cols)
+			assert.Equal(t, 9, got[0].Width, "SEV must retain its declared width")
+			assert.Equal(t, 10, got[1].Width, "MESSAGE must retain its minimum width")
+		})
 	}
+	test("zero width", 0)
+	test("one column", 1)
+	test("fixed column barely fits", 10)
+	test("both minimums barely fit", 20)
 }
 
 // TestLayoutColumnsHonoursMinimum checks a flex column never shrinks below its
@@ -188,20 +147,20 @@ func TestViewsAcceptRowsBeforeResize(t *testing.T) {
 // TestEveryTableViewHasColumnsAtConstruction is the direct invariant behind the
 // panic above, stated per view so a new view cannot regress it silently.
 func TestEveryTableViewHasColumnsAtConstruction(t *testing.T) {
-	widths := map[string][]table.Column{
-		"nodes":                 nodesColumns(defaultTableWidth),
-		"jobs":                  workloadColumns(defaultTableWidth),
-		"detail engines local":  detailEngineColumns(defaultTableWidth, false),
-		"detail engines remote": detailEngineColumns(defaultTableWidth, true),
-		"detail models":         detailModelColumns(defaultTableWidth),
-		"service workers":       serviceWorkerColumns(defaultTableWidth),
+	test := func(name string, cols []table.Column) {
+		t.Run(name, func(t *testing.T) {
+			assert.NotEmpty(t, cols, "no columns")
+			for _, c := range cols {
+				assert.GreaterOrEqual(t, c.Width, minCellWidth, "column %q", c.Title)
+			}
+		})
 	}
-	for name, cols := range widths {
-		assert.NotEmpty(t, cols, "%s: no columns", name)
-		for _, c := range cols {
-			assert.GreaterOrEqual(t, c.Width, minCellWidth, "%s: column %q", name, c.Title)
-		}
-	}
+	test("nodes", nodesColumns(defaultTableWidth))
+	test("jobs", workloadColumns(defaultTableWidth))
+	test("detail engines local", detailEngineColumns(defaultTableWidth, false))
+	test("detail engines remote", detailEngineColumns(defaultTableWidth, true))
+	test("detail models", detailModelColumns(defaultTableWidth))
+	test("service workers", serviceWorkerColumns(defaultTableWidth))
 }
 
 // TestRowsMatchTheirColumns pins the two halves of a table together.
@@ -237,20 +196,24 @@ func TestRowsMatchTheirColumns(t *testing.T) {
 		assertRowWidths(t, v.workers)
 	})
 	t.Run("node detail engines and models", func(t *testing.T) {
-		for _, remote := range []bool{false, true} {
-			d := newNodeDetail(nil, nodeRow{
-				key:            "u",
-				name:           "n",
-				self:           !remote,
-				modelsByEngine: map[string][]string{"ollama": {"llama3.2"}},
-				loadedByEngine: map[string][]string{"ollama": {"llama3.2"}},
+		test := func(name string, remote bool) {
+			t.Run(name, func(t *testing.T) {
+				d := newNodeDetail(nil, nodeRow{
+					key:            "u",
+					name:           "n",
+					self:           !remote,
+					modelsByEngine: map[string][]string{"ollama": {"llama3.2"}},
+					loadedByEngine: map[string][]string{"ollama": {"llama3.2"}},
+				})
+				d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
+				d.refreshEngines()
+				d.refreshModels()
+				assertRowWidths(t, d.engineTable)
+				assertRowWidths(t, d.modelTable)
 			})
-			d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
-			d.refreshEngines()
-			d.refreshModels()
-			assertRowWidths(t, d.engineTable)
-			assertRowWidths(t, d.modelTable)
 		}
+		test("local", false)
+		test("remote", true)
 	})
 }
 

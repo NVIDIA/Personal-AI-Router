@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
@@ -75,7 +76,7 @@ func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc 
 	require.NoError(t, err, "proxy stdout pipe")
 	cmd.Stderr = os.Stderr
 	require.NoError(t, cmd.Start(), "start proxy")
-	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1}
+	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(t, stdout), nextID: 1}
 
 	// The mTLS ingress under test is engine-agnostic; Ollama is an arbitrary
 	// pick. The bound port comes from the enable response rather than the ready
@@ -138,11 +139,12 @@ func (p *proxyProc) call(method string, params any) jsonrpc.Message {
 	if params != nil {
 		req["params"] = params
 	}
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	require.NoError(p.t, err, "encode %s", method)
 	b = append(b, '\n')
-	_, err := p.stdin.Write(b)
+	_, err = p.stdin.Write(b)
 	require.NoError(p.t, err, "write %s", method)
-	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
+	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(p.t, m.ID, id) }, 15*time.Second)
 	require.Nil(p.t, resp.Error, "%s returned a JSON-RPC error", method)
 	return resp
 }
@@ -153,9 +155,10 @@ func (p *proxyProc) notify(method string, params any) {
 	if params != nil {
 		req["params"] = params
 	}
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	require.NoError(p.t, err, "encode %s", method)
 	b = append(b, '\n')
-	_, err := p.stdin.Write(b)
+	_, err = p.stdin.Write(b)
 	require.NoError(p.t, err, "notify %s", method)
 }
 
@@ -196,7 +199,7 @@ func (p *proxyProc) waitForRoutableNode(t *testing.T) {
 		var r struct {
 			Nodes []json.RawMessage `json:"nodes"`
 		}
-		if json.Unmarshal(resp.Result, &r) == nil && len(r.Nodes) > 0 {
+		if assert.NoError(t, json.Unmarshal(resp.Result, &r)) && len(r.Nodes) > 0 {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -214,11 +217,13 @@ func startFakeOllama(t *testing.T) (host string, port int, generates *int32) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/tags":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"models":[{"name":"m:latest","model":"m:latest"}]}`)
+			_, writeErr := io.WriteString(w, `{"models":[{"name":"m:latest","model":"m:latest"}]}`)
+			assert.NoError(t, writeErr)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/generate":
 			atomic.AddInt32(&n, 1)
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"model":"m:latest","response":"hello from the backend","done":true}`)
+			_, writeErr := io.WriteString(w, `{"model":"m:latest","response":"hello from the backend","done":true}`)
+			assert.NoError(t, writeErr)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -226,7 +231,8 @@ func startFakeOllama(t *testing.T) (host string, port int, generates *int32) {
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
 	require.NoError(t, err, "parse fake engine url")
-	p, _ := strconv.Atoi(u.Port())
+	p, err := strconv.Atoi(u.Port())
+	assert.NoError(t, err)
 	return u.Hostname(), p, &n
 }
 
@@ -277,7 +283,8 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		before := atomic.LoadInt32(bGenerates)
 		resp := postInference(t, fmt.Sprintf("http://127.0.0.1:%d/api/generate", proxyA.port), genBody)
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		assert.NoError(t, readErr)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "A->B inference status (%v)", body)
 		require.Contains(t, string(body), "hello from the backend", "A->B response did not come from B's engine")
 		require.Equal(t, before+1, atomic.LoadInt32(bGenerates), "request must reach B's engine")
@@ -292,7 +299,8 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		require.NoError(t, err, "foreign C dial B ingress")
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusForbidden {
-			b, _ := io.ReadAll(resp.Body)
+			b, readErr := io.ReadAll(resp.Body)
+			assert.NoError(t, readErr)
 			require.FailNow(t, fmt.Sprintf("foreign C status = %d, want 403; body=%s", resp.StatusCode, b))
 		}
 	})

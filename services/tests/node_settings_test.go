@@ -48,7 +48,7 @@ func startNodeSettings(t *testing.T, settingsPath string) (io.WriteCloser, <-cha
 	require.NoError(t, cmd.Start(), "start node-settings")
 	t.Logf("node-settings started: pid=%d settings=%s", cmd.Process.Pid, settingsPath)
 
-	ch := startMsgReader(stdoutPipe)
+	ch := startMsgReader(t, stdoutPipe)
 
 	cleanup := func() {
 		stdinPipe.Close()
@@ -99,7 +99,7 @@ func callRPC(t *testing.T, in io.Writer, msgs <-chan jsonrpc.Message, method str
 				continue
 			}
 			var gotID int64
-			if msg.ID != nil && json.Unmarshal(*msg.ID, &gotID) == nil && gotID == id {
+			if msg.ID != nil && assert.NoError(t, json.Unmarshal(*msg.ID, &gotID)) && gotID == id {
 				return msg
 			}
 		case <-timer.C:
@@ -239,21 +239,21 @@ func TestNodeSettingsPersistsAcrossProcessRestart(t *testing.T) {
 	var sync struct {
 		Value bool `json:"value"`
 	}
-	_ = json.Unmarshal(resp.Result, &sync)
+	assert.NoError(t, json.Unmarshal(resp.Result, &sync))
 	assert.True(t, sync.Value, "cluster-auto-sync did not survive restart")
 
 	resp = callRPC(t, in2, msgs2, "settings/get-cluster-id", nil, 3*time.Second)
 	var id struct {
 		Value string `json:"value"`
 	}
-	_ = json.Unmarshal(resp.Result, &id)
+	assert.NoError(t, json.Unmarshal(resp.Result, &id))
 	assert.Equal(t, "cluster-abc-123", id.Value, "cluster-id did not survive restart")
 
 	resp = callRPC(t, in2, msgs2, "settings/get-cluster-friendly-name", nil, 3*time.Second)
 	var name struct {
 		Value string `json:"value"`
 	}
-	_ = json.Unmarshal(resp.Result, &name)
+	assert.NoError(t, json.Unmarshal(resp.Result, &name))
 	assert.Equal(t, "Lab 3 desks", name.Value, "cluster-friendly-name did not survive restart")
 }
 

@@ -43,7 +43,7 @@ func nodeInfoServer(t *testing.T, hostUUID string) (host string, port int) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: hostUUID})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: hostUUID}))
 	}))
 	t.Cleanup(srv.Close)
 	return splitHostPort(t, strings.TrimPrefix(srv.URL, "http://"))
@@ -55,7 +55,7 @@ func openPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err, "listen")
-	t.Cleanup(func() { _ = ln.Close() })
+	t.Cleanup(func() { assert.NoError(t, ln.Close()) })
 	_, port := splitHostPort(t, ln.Addr().String())
 	return port
 }
@@ -121,34 +121,16 @@ func TestReachableFallsBackWithoutIdentity(t *testing.T) {
 	tcpPort := openPort(t)
 	niHost, niPort := nodeInfoServer(t, "") // answers, but reports no identity
 
-	cases := []struct {
-		name string
-		txt  []string
-	}{
-		{
-			name: "no ni advertised",
-			txt:  []string{"v=1", "uuid=some-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", tcpPort)},
-		},
-		{
-			name: "node-info not answering",
-			txt: []string{"v=1", "uuid=some-uuid", "ip=127.0.0.1",
-				fmt.Sprintf("ni=%d", closedPort(t)), fmt.Sprintf("em=%d", tcpPort)},
-		},
-		{
-			name: "node-info reports no hostUuid",
-			txt: []string{"v=1", "uuid=some-uuid", "ip=" + niHost,
-				fmt.Sprintf("ni=%d", niPort), fmt.Sprintf("em=%d", tcpPort)},
-		},
-		{
-			name: "record carries no uuid to compare",
-			txt:  []string{"v=1", "ip=127.0.0.1", fmt.Sprintf("ni=%d", niPort), fmt.Sprintf("em=%d", tcpPort)},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.True(t, probeDaemon().reachable(rawNode(tc.txt...)), "with identity unavailable the probe must fall back to the TCP sweep")
+	test := func(name string, txt ...string) {
+		t.Run(name, func(t *testing.T) {
+			require.True(t, probeDaemon().reachable(rawNode(txt...)), "with identity unavailable the probe must fall back to the TCP sweep")
 		})
 	}
+	deadPort := closedPort(t)
+	test("no ni advertised", "v=1", "uuid=some-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", tcpPort))
+	test("node-info not answering", "v=1", "uuid=some-uuid", "ip=127.0.0.1", fmt.Sprintf("ni=%d", deadPort), fmt.Sprintf("em=%d", tcpPort))
+	test("node-info reports no hostUuid", "v=1", "uuid=some-uuid", "ip="+niHost, fmt.Sprintf("ni=%d", niPort), fmt.Sprintf("em=%d", tcpPort))
+	test("record carries no uuid to compare", "v=1", "ip=127.0.0.1", fmt.Sprintf("ni=%d", niPort), fmt.Sprintf("em=%d", tcpPort))
 }
 
 // TestReachableEvictsWhenNothingAnswers keeps the base case honest: a node that

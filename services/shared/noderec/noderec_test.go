@@ -111,26 +111,21 @@ func TestTXTDefaultsSchema(t *testing.T) {
 }
 
 func TestTransportPolicy(t *testing.T) {
-	cases := []struct {
-		svc       ServiceKey
-		want      Transport
-		mtlsClu   bool // UsesMTLS when target clustered
-		mtlsUnclu bool // UsesMTLS when target not clustered
-	}{
-		{ServiceNodeInfo, TransportPlain, false, false},
-		{ServiceOllama, TransportPlain, false, false},
-		{ServiceLMStudio, TransportPlain, false, false},
-		{ServiceLlamaCPP, TransportPlain, false, false},
-		{ServiceEngineManager, TransportPlain, false, false},
-		{ServiceErrors, TransportMTLSWhenClustered, true, false},
-		{ServiceWorkload, TransportMTLSWhenClustered, true, false},
-		{ServiceCluster, TransportSplit, true, false},
+	test := func(name string, svc ServiceKey, want Transport, mtlsClustered, mtlsUnclustered bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, svc.Transport())
+			assert.Equal(t, mtlsClustered, svc.UsesMTLS(true), "clustered")
+			assert.Equal(t, mtlsUnclustered, svc.UsesMTLS(false), "unclustered")
+		})
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, c.svc.Transport(), "%s", c.svc)
-		assert.Equal(t, c.mtlsClu, c.svc.UsesMTLS(true), "%s clustered", c.svc)
-		assert.Equal(t, c.mtlsUnclu, c.svc.UsesMTLS(false), "%s unclustered", c.svc)
-	}
+	test("node info", ServiceNodeInfo, TransportPlain, false, false)
+	test("Ollama", ServiceOllama, TransportPlain, false, false)
+	test("LM Studio", ServiceLMStudio, TransportPlain, false, false)
+	test("llama.cpp", ServiceLlamaCPP, TransportPlain, false, false)
+	test("engine manager", ServiceEngineManager, TransportPlain, false, false)
+	test("errors", ServiceErrors, TransportMTLSWhenClustered, true, false)
+	test("workloads", ServiceWorkload, TransportMTLSWhenClustered, true, false)
+	test("cluster", ServiceCluster, TransportSplit, true, false)
 }
 
 func TestNodeInfoAlwaysPlainEvenClustered(t *testing.T) {

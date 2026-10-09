@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
@@ -45,7 +46,7 @@ func startSchedulerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan js
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err, "scheduler stdout pipe")
 	require.NoError(t, cmd.Start(), "start scheduler")
-	ch := startMsgReader(stdout)
+	ch := startMsgReader(t, stdout)
 	var cleanupOnce sync.Once
 	return stdin, ch, func() {
 		cleanupOnce.Do(func() {
@@ -76,7 +77,7 @@ func waitForPriorityPair(t *testing.T, ch <-chan jsonrpc.Message, timeout time.D
 				continue
 			}
 			var p schedulerwire.EnginePriority
-			if json.Unmarshal(msg.Params, &p) != nil {
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &p)) {
 				continue
 			}
 			if p.Engine == "ollama" || p.Engine == "lmstudio" {
@@ -323,7 +324,8 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"done":true}`)
+			_, writeErr := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, writeErr)
 		}))
 	}
 
@@ -414,7 +416,8 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 				results <- err
 				return
 			}
-			_, _ = io.Copy(io.Discard, resp.Body)
+			_, copyErr := io.Copy(io.Discard, resp.Body)
+			assert.NoError(t, copyErr)
 			_ = resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				results <- fmt.Errorf("proxy status %d", resp.StatusCode)
@@ -527,9 +530,11 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 		hitsMu.Lock()
 		hits["real-lm"]++
 		hitsMu.Unlock()
-		io.Copy(io.Discard, r.Body)
+		_, copyErr := io.Copy(io.Discard, r.Body)
+		assert.NoError(t, copyErr)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"choices":[]}`)
+		_, writeErr := io.WriteString(w, `{"choices":[]}`)
+		assert.NoError(t, writeErr)
 	}))
 	t.Cleanup(realEngine.Close)
 	realPort := portOfURL(t, realEngine.URL)
@@ -564,7 +569,8 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 		bytes.NewReader([]byte(`{"model":"chat-model","messages":[]}`)),
 	)
 	require.NoError(t, err, "chat request failed")
-	_, _ = io.Copy(io.Discard, resp.Body)
+	_, copyErr := io.Copy(io.Discard, resp.Body)
+	assert.NoError(t, copyErr)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "proxy status")
 

@@ -146,7 +146,8 @@ func TestHandleHTTP_EngineCORSPolicyPreserved(t *testing.T) {
 			w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		defer engine.Close()
 
@@ -168,7 +169,8 @@ func TestHandleHTTP_EngineCredentialsWithoutOriginPreserved(t *testing.T) {
 		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		defer engine.Close()
 
@@ -190,10 +192,12 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		var gotBody string
 		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			b, _ := io.ReadAll(r.Body)
+			b, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
 			gotBody = string(b)
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err = io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		defer good.Close()
 
@@ -218,7 +222,8 @@ func TestHandleHTTP_NoRetryOn400(t *testing.T) {
 		bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			hits++
 			w.WriteHeader(http.StatusBadRequest)
-			io.WriteString(w, `{"error":"bad request"}`)
+			_, err := io.WriteString(w, `{"error":"bad request"}`)
+			assert.NoError(t, err)
 		}))
 		defer bad.Close()
 		other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -258,16 +263,19 @@ func TestHandleHTTP_FailoverOn503(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			io.WriteString(w, `{"error":"loading model"}`)
+			_, err := io.WriteString(w, `{"error":"loading model"}`)
+			assert.NoError(t, err)
 		}))
 		defer busy.Close()
 
 		var gotBody string
 		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			b, _ := io.ReadAll(r.Body)
+			b, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
 			gotBody = string(b)
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err = io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		defer good.Close()
 
@@ -318,12 +326,14 @@ func TestHandleHTTP_404FailoverInferenceOnly(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
-			io.WriteString(w, `{"error":"model not found"}`)
+			_, err := io.WriteString(w, `{"error":"model not found"}`)
+			assert.NoError(t, err)
 		}))
 		defer missing.Close()
 		has := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		defer has.Close()
 
@@ -362,7 +372,8 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 			assert.Empty(t, r.Header.Get("Cookie"), "client credentials leaked to fan-out target")
 			entered <- struct{}{}
 			<-release
-			_, _ = io.WriteString(w, body)
+			_, err := io.WriteString(w, body)
+			assert.NoError(t, err)
 		}))
 	}
 	a := server(`{"models":[{"name":"a","model":"a","digest":"a-only"},{"name":"shared","digest":"first"}]}`)
@@ -370,7 +381,8 @@ func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
 	b := server(`{"models":[{"name":"shared:latest","model":"shared:latest","digest":"second"},{"name":"c","model":"c","digest":"c-only"}]}`)
 	defer b.Close()
 	malformed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"models":null}`)
+		_, err := io.WriteString(w, `{"models":null}`)
+		assert.NoError(t, err)
 	}))
 	defer malformed.Close()
 	down := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -443,7 +455,8 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodGet, r.Method, "upstream request")
 				assert.Equal(t, "/v1/models", r.URL.Path, "upstream request")
-				_, _ = io.WriteString(w, body)
+				_, err := io.WriteString(w, body)
+				assert.NoError(t, err)
 			}))
 		}
 		a := serve(`{"object":"list","data":[{"id":"a","owned_by":"a"},{"id":"shared","owned_by":"first"}]}`)
@@ -533,7 +546,8 @@ func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method, "upstream request method")
 		assert.Equal(t, "/models", r.URL.Path, "upstream request path")
 		assert.Equal(t, "scope=all", r.URL.RawQuery, "upstream request query")
-		_, _ = io.WriteString(w, `{"data":[{"id":"remapped"}]}`)
+		_, err := io.WriteString(w, `{"data":[{"id":"remapped"}]}`)
+		assert.NoError(t, err)
 	}))
 	defer upstream.Close()
 
@@ -557,7 +571,8 @@ func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		serveEmpty := func() *httptest.Server {
 			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = io.WriteString(w, tc.emptyModelList)
+				_, err := io.WriteString(w, tc.emptyModelList)
+				assert.NoError(t, err)
 			}))
 		}
 
@@ -608,7 +623,8 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 		defer unknown.Close()
 		match := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			matchHits++
-			body, _ := io.ReadAll(r.Body)
+			body, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
 			assert.Equal(t, tc.inferenceBody(), string(body), "matching node got body (%v)", body)
 			w.WriteHeader(http.StatusOK)
 		}))

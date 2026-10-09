@@ -30,9 +30,10 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 				}
 				w.WriteHeader(status)
 				if chunked {
-					_ = http.NewResponseController(w).Flush()
+					assert.NoError(t, http.NewResponseController(w).Flush())
 				}
-				_, _ = io.WriteString(w, `{"models":[],"status":"responding"}`)
+				_, err := io.WriteString(w, `{"models":[],"status":"responding"}`)
+				assert.NoError(t, err)
 			}))
 			ex := &Executor{client: client}
 			probe := &Probe{HTTP: "http://127.0.0.1:{port}/api/version"}
@@ -54,7 +55,8 @@ func TestProbeHTTPMatchesJSONIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client, _ := testclient.New(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, body)
+				_, err := io.WriteString(w, body)
+				assert.NoError(t, err, "write probe response")
 			}))
 			ex := &Executor{client: client}
 			probe := &Probe{

@@ -46,50 +46,46 @@ while :; do sleep 1; done`
 }
 
 func TestStopHonorsProcessSignalPolicy(t *testing.T) {
-	test := func(t *testing.T, stop StopSpec, minElapsed, maxElapsed time.Duration) {
-		t.Helper()
-		proc := startTermIgnoringProcess(t)
-		manifest := testEngineManifest(fakeEngineBin)
-		key := runtime.GOOS + "/" + runtime.GOARCH
-		platform := manifest.Platforms[key]
-		platform.Runtime.Stop = &stop
-		manifest.Platforms[key] = platform
-		ex := newTestExecutor(t, manifest)
-		state, err := ex.state(manifest.Engine)
-		require.NoError(t, err, "resolve engine state")
-		state.mu.Lock()
-		state.running = true
-		state.healthy = true
-		state.proc = proc
-		state.mu.Unlock()
+	test := func(name string, stop StopSpec, minElapsed, maxElapsed time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			proc := startTermIgnoringProcess(t)
+			manifest := testEngineManifest(fakeEngineBin)
+			key := runtime.GOOS + "/" + runtime.GOARCH
+			platform := manifest.Platforms[key]
+			platform.Runtime.Stop = &stop
+			manifest.Platforms[key] = platform
+			ex := newTestExecutor(t, manifest)
+			state, err := ex.state(manifest.Engine)
+			require.NoError(t, err, "resolve engine state")
+			state.mu.Lock()
+			state.running = true
+			state.healthy = true
+			state.proc = proc
+			state.mu.Unlock()
 
-		started := time.Now()
-		result := make(chan error, 1)
-		go func() {
-			result <- ex.Stop(manifest.Engine)
-		}()
-		select {
-		case err := <-result:
-			require.NoError(t, err, "stop engine")
-		case <-time.After(maxElapsed + time.Second):
-			_ = signalPID(proc.cmd.Process.Pid, true)
-			require.FailNowf(t, "stop did not finish", "within %s", maxElapsed+time.Second)
-		}
+			started := time.Now()
+			result := make(chan error, 1)
+			go func() {
+				result <- ex.Stop(manifest.Engine)
+			}()
+			select {
+			case err := <-result:
+				require.NoError(t, err, "stop engine")
+			case <-time.After(maxElapsed + time.Second):
+				_ = signalPID(proc.cmd.Process.Pid, true)
+				require.FailNowf(t, "stop did not finish", "within %s", maxElapsed+time.Second)
+			}
 
-		elapsed := time.Since(started)
-		require.GreaterOrEqual(t, elapsed, minElapsed)
-		require.LessOrEqual(t, elapsed, maxElapsed)
-		select {
-		case <-proc.done:
-		default:
-			require.FailNow(t, "stop returned before the owned process exited")
-		}
+			elapsed := time.Since(started)
+			require.GreaterOrEqual(t, elapsed, minElapsed)
+			require.LessOrEqual(t, elapsed, maxElapsed)
+			select {
+			case <-proc.done:
+			default:
+				require.FailNow(t, "stop returned before the owned process exited")
+			}
+		})
 	}
-
-	t.Run("term escalates after configured grace", func(t *testing.T) {
-		test(t, StopSpec{Signal: "term", GraceS: 1}, 800*time.Millisecond, 3*time.Second)
-	})
-	t.Run("kill bypasses configured grace", func(t *testing.T) {
-		test(t, StopSpec{Signal: "kill", GraceS: 10}, 0, 2*time.Second)
-	})
+	test("term escalates after configured grace", StopSpec{Signal: "term", GraceS: 1}, 800*time.Millisecond, 3*time.Second)
+	test("kill bypasses configured grace", StopSpec{Signal: "kill", GraceS: 10}, 0, 2*time.Second)
 }

@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/appdir"
@@ -45,7 +46,8 @@ func fakeOllama(t *testing.T) func() {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"models":[{"name":"llama3.2:latest"}]}`)
+		_, writeErr := io.WriteString(w, `{"models":[{"name":"llama3.2:latest"}]}`)
+		assert.NoError(t, writeErr)
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
@@ -65,7 +67,8 @@ func fakeLMStudio(t *testing.T) func() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"qwen2.5-7b-instruct","object":"model"}]}`)
+		_, writeErr := io.WriteString(w, `{"object":"list","data":[{"id":"qwen2.5-7b-instruct","object":"model"}]}`)
+		assert.NoError(t, writeErr)
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
@@ -99,7 +102,8 @@ func fakeNodeInfo(t *testing.T, hostUUID string) func() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, fmt.Sprintf(`{"GPUs":[],"hostUuid":%q}`, hostUUID))
+		_, writeErr := io.WriteString(w, fmt.Sprintf(`{"GPUs":[],"hostUuid":%q}`, hostUUID))
+		assert.NoError(t, writeErr)
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
@@ -122,7 +126,7 @@ type proxyNodesResult struct {
 func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 	t.Helper()
 	var res proxyNodesResult
-	if err := json.Unmarshal(raw, &res); err != nil {
+	if !assert.NoError(t, json.Unmarshal(raw, &res)) {
 		return false
 	}
 	for _, n := range res.Nodes {

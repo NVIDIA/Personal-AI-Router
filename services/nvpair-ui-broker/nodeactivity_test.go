@@ -56,7 +56,7 @@ func relayHarness(t *testing.T) (*Broker, <-chan *Message) {
 	go func() {
 		codec := NewCodec(scannerSide)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		// Deliberately does NOT respond: a liveness report is a notification, so
@@ -142,22 +142,15 @@ func TestRelayedActivityAgeAccumulatesTransitDelay(t *testing.T) {
 // places the observation in the future — and a future observation never expires,
 // so the node could never be probed again.
 func TestReportedAgeIsClampedAtBothEnds(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		msSince int64
-		want    time.Duration
-	}{
-		{"a normal age passes through", 4_000, 4 * time.Second},
-		{"negative floors at zero", -60_000, 0},
-		{"absurd caps at the ceiling", 1 << 62, activityAgeCeiling},
-		{"the overflow boundary caps too", int64(1) << 53, activityAgeCeiling},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := clampActivityAge(tc.msSince)
-			require.Equal(t, tc.want, got, "clampActivityAge")
-			require.GreaterOrEqual(t, got, time.Duration(0), "clampActivityAge")
+	test := func(name string, msSince int64, want time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, clampActivityAge(msSince))
 		})
 	}
+	test("a normal age passes through", 4_000, 4*time.Second)
+	test("negative floors at zero", -60_000, 0)
+	test("absurd caps at the ceiling", 1<<62, activityAgeCeiling)
+	test("the overflow boundary caps too", int64(1)<<53, activityAgeCeiling)
 }
 
 // An unidentified peer cannot be vouched for: relaying it would credit whichever
@@ -210,7 +203,7 @@ func TestActivityIsNotForwardedToClients(t *testing.T) {
 	go func() {
 		codec := NewCodec(uiSide)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		toClient <- msg

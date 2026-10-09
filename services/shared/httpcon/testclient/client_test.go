@@ -16,7 +16,8 @@ import (
 
 func TestConnectionCounterCountsDistinctConnections(t *testing.T) {
 	client, connections := New(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "ok")
+		_, err := io.WriteString(w, "ok")
+		assert.NoError(t, err, "write response")
 	}))
 
 	const requests = 2

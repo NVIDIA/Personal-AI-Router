@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,18 +22,36 @@ import (
 // cluster, signed by the peer (whose cert the victim still pins). This mirrors
 // what handleRoster (rejectRosterReconcile) attaches on the not-pinned path, so
 // the victim's rejectionProvesRemoval accepts it as authenticated proof.
-func selfRemovalProof(peer, victim *Manager, cluster string) []byte {
+func selfRemovalProof(t *testing.T, peer, victim *Manager, cluster string) []byte {
+	t.Helper()
 	_, victimEpoch := victim.currentAdmission()
 	proof, err := peer.newRemovalProof(victim.identity.NodeUUID, victimEpoch)
 	if err != nil {
 		panic(err)
 	}
 	proof = peer.withLocalRelayEndorsement(proof)
-	b, _ := json.Marshal(rosterRejection{
+	b, err := json.Marshal(rosterRejection{
 		Tombstones:    []Tombstone{proof.Tombstone},
 		RemovalProofs: []RemovalProof{proof},
 	})
+	assert.NoError(t, err)
 	return b
+}
+
+func writeTestResponse(t *testing.T, w http.ResponseWriter, body []byte) {
+	t.Helper()
+	_, err := w.Write(body)
+	assert.NoError(t, err)
+}
+
+func serveTestHTTP(t *testing.T, srv *http.Server, ln net.Listener) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ln) }()
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Close())
+		assert.ErrorIs(t, <-done, http.ErrServerClosed)
+	})
 }
 
 // TestSelfRemoveGuardStaleVerdict is the regression for the TOCTOU flagged in
@@ -49,39 +68,10 @@ func selfRemovalProof(peer, victim *Manager, cluster string) []byte {
 // returning 403, so the state change lands deterministically inside the wait
 // window rather than relying on timing.
 func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
-	cases := []struct {
-		name string
-		// mutate runs while the peer reconcile is blocked, i.e. after the verdict's
-		// inputs are snapshotted but before it decides. nil means no change.
-		mutate func(m *Manager)
-		// wantCluster is the clusterId expected after the pass ("" = torn down).
-		wantCluster string
-	}{
-		{
-			name:        "no change self-removes",
-			mutate:      nil,
-			wantCluster: "",
-		},
-		{
-			name:        "rejoin into a different cluster is preserved",
-			mutate:      func(m *Manager) { m.setClusterIdentity("cluster-2", "New Cluster") },
-			wantCluster: "cluster-2",
-		},
-		{
-			name: "re-pin back into the same cluster is preserved",
-			mutate: func(m *Manager) {
-				// A re-pair back into the same cluster keeps clusterId but bumps
-				// the generation (fresh pin + member record) — precisely the case
-				// a clusterId-only revalidation would miss.
-				m.upsertMember(&ClusterNode{NodeUUID: "rejoined-peer", ID: "rejoined-peer", State: stateMember})
-			},
-			wantCluster: "cluster-1",
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	// mutate runs after the verdict's inputs are snapshotted, while reconcile
+	// is blocked. A nil mutation leaves the original cluster unchanged.
+	test := func(name string, mutate func(*Manager), wantCluster string) {
+		t.Run(name, func(t *testing.T) {
 			mA := newTestManagerPort(t, 15021)
 			// peer contributes only its (pinned) identity/cert; its own server is
 			// never started — the blocking stub below stands in for it.
@@ -97,21 +87,19 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			// guard rather than the "no proof, stay put" path. In the rejoin case
 			// mA's current cluster no longer matches the tombstone, so the proof no
 			// longer applies — which the guard also (correctly) treats as staying.
-			proofBody := selfRemovalProof(peer, mA, "cluster-1")
+			proofBody := selfRemovalProof(t, peer, mA, "cluster-1")
 			mux := http.NewServeMux()
 			mux.HandleFunc(rosterPath, func(w http.ResponseWriter, r *http.Request) {
 				once.Do(func() { close(entered) })
 				<-release
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				_, _ = w.Write(proofBody)
+				writeTestResponse(t, w, proofBody)
 			})
 			ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
 			require.NoError(t, err, "listen")
-			defer ln.Close()
 			srv := &http.Server{Handler: mux}
-			go func() { _ = srv.Serve(ln) }()
-			defer srv.Close()
+			serveTestHTTP(t, srv, ln)
 
 			mA.upsertMember(&ClusterNode{
 				NodeUUID:  peer.identity.NodeUUID,
@@ -134,8 +122,8 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				require.FailNow(t, "peer reconcile never reached the handler")
 			}
-			if tc.mutate != nil {
-				tc.mutate(mA)
+			if mutate != nil {
+				mutate(mA)
 			}
 			close(release)
 
@@ -146,9 +134,18 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			}
 
 			got, _ := mA.clusterIdentity()
-			require.Equal(t, tc.wantCluster, got, "after reconcile pass clusterId")
+			require.Equal(t, wantCluster, got, "after reconcile pass clusterId")
 		})
 	}
+	test("no change self-removes", nil, "")
+	test("rejoin into a different cluster is preserved", func(m *Manager) {
+		m.setClusterIdentity("cluster-2", "New Cluster")
+	}, "cluster-2")
+	test("re-pin back into the same cluster is preserved", func(m *Manager) {
+		// A re-pair keeps clusterId but bumps the generation (fresh pin +
+		// member record), which a clusterId-only revalidation would miss.
+		m.upsertMember(&ClusterNode{NodeUUID: "rejoined-peer", ID: "rejoined-peer", State: stateMember})
+	}, "cluster-1")
 }
 
 // startPeerStub mints a peer identity, pins it into m as a cluster-1 member, and
@@ -168,25 +165,23 @@ func startPeerStub(t *testing.T, m *Manager, id string, status int, proof bool) 
 	var proofBody []byte
 	if proof && status == http.StatusForbidden {
 		cid, _ := m.clusterIdentity()
-		proofBody = selfRemovalProof(peer, m, cid)
+		proofBody = selfRemovalProof(t, peer, m, cid)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(rosterPath, func(w http.ResponseWriter, r *http.Request) {
 		if status == http.StatusOK {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{}`))
+			writeTestResponse(t, w, []byte(`{}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write(proofBody) // nil body ⇒ a bare 403 with no removal proof
+		writeTestResponse(t, w, proofBody) // nil body ⇒ a bare 403 with no removal proof
 	})
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
 	require.NoError(t, err, "listen")
-	t.Cleanup(func() { _ = ln.Close() })
 	srv := &http.Server{Handler: mux}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
+	serveTestHTTP(t, srv, ln)
 
 	m.upsertMember(&ClusterNode{
 		NodeUUID:       peer.identity.NodeUUID,
@@ -213,37 +208,21 @@ func startPeerStub(t *testing.T, m *Manager, id string, status int, proof bool) 
 // teardown. (A unanimous 403 with *no* proof is covered separately — it must
 // NOT self-remove.)
 func TestSelfRemoveRequiresUnanimousRejection(t *testing.T) {
-	cases := []struct {
-		name        string
-		peerStatus  []int
-		wantCluster string // "" = torn down
-	}{
-		{
-			name:        "mixed 200 and 403 stays clustered",
-			peerStatus:  []int{http.StatusOK, http.StatusForbidden},
-			wantCluster: "cluster-1",
-		},
-		{
-			name:        "unanimous 403 across multiple peers self-removes",
-			peerStatus:  []int{http.StatusForbidden, http.StatusForbidden},
-			wantCluster: "",
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, peerStatus []int, wantCluster string) {
+		t.Run(name, func(t *testing.T) {
 			mA := newTestManagerPort(t, 15061) // clustered as cluster-1
-			for i, st := range tc.peerStatus {
+			for i, st := range peerStatus {
 				startPeerStub(t, mA, fmt.Sprintf("peer-%d", i), st, st == http.StatusForbidden)
 			}
 
 			mA.reconcilePeersAndMaybeSelfRemove()
 
 			got, _ := mA.clusterIdentity()
-			require.Equal(t, tc.wantCluster, got, "after reconcile clusterId")
+			require.Equal(t, wantCluster, got, "after reconcile clusterId")
 		})
 	}
+	test("mixed 200 and 403 stays clustered", []int{http.StatusOK, http.StatusForbidden}, "cluster-1")
+	test("unanimous 403 across multiple peers self-removes", []int{http.StatusForbidden, http.StatusForbidden}, "")
 }
 
 // TestSelfRemoveRequiresRemovalProof is the regression for the blocker: a
@@ -262,45 +241,21 @@ func TestSelfRemoveRequiresRemovalProof(t *testing.T) {
 		proof  bool
 	}
 	forbidden := http.StatusForbidden
-	cases := []struct {
-		name        string
-		peers       []peerSpec
-		wantCluster string // "" = torn down
-	}{
-		{
-			name:        "only peer left (bare 403, no proof) — survivor stays",
-			peers:       []peerSpec{{forbidden, false}},
-			wantCluster: "cluster-1",
-		},
-		{
-			name:        "only peer removed us (403 + signed tombstone) — self-removes",
-			peers:       []peerSpec{{forbidden, true}},
-			wantCluster: "",
-		},
-		{
-			name:        "every peer left (unanimous bare 403) — survivor stays",
-			peers:       []peerSpec{{forbidden, false}, {forbidden, false}},
-			wantCluster: "cluster-1",
-		},
-		{
-			name:        "removed by one peer while another left — self-removes",
-			peers:       []peerSpec{{forbidden, true}, {forbidden, false}},
-			wantCluster: "",
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, peers []peerSpec, wantCluster string) {
+		t.Run(name, func(t *testing.T) {
 			mA := newTestManagerPort(t, 15071) // clustered as cluster-1
-			for i, ps := range tc.peers {
+			for i, ps := range peers {
 				startPeerStub(t, mA, fmt.Sprintf("peer-%d", i), ps.status, ps.proof)
 			}
 
 			mA.reconcilePeersAndMaybeSelfRemove()
 
 			got, _ := mA.clusterIdentity()
-			require.Equal(t, tc.wantCluster, got, "after reconcile clusterId")
+			require.Equal(t, wantCluster, got, "after reconcile clusterId")
 		})
 	}
+	test("only peer left (bare 403, no proof) — survivor stays", []peerSpec{{forbidden, false}}, "cluster-1")
+	test("only peer removed us (403 + signed tombstone) — self-removes", []peerSpec{{forbidden, true}}, "")
+	test("every peer left (unanimous bare 403) — survivor stays", []peerSpec{{forbidden, false}, {forbidden, false}}, "cluster-1")
+	test("removed by one peer while another left — self-removes", []peerSpec{{forbidden, true}, {forbidden, false}}, "")
 }

@@ -63,19 +63,15 @@ func TestIsVirtualDisplayAdapter(t *testing.T) {
 }
 
 func TestLuidUint64(t *testing.T) {
-	cases := []struct {
-		low  uint32
-		high int32
-		want uint64
-	}{
-		{0, 0, 0},
-		{0x54f0, 0, 0x54f0},
-		{0x000054f0, 0x00000001, 0x00000001000054f0},
-		{0xffffffff, -1, 0xffffffffffffffff},
+	test := func(name string, low uint32, high int32, want uint64) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, luidUint64(low, high))
+		})
 	}
-	for _, tc := range cases {
-		assert.Equal(t, tc.want, luidUint64(tc.low, tc.high), "luidUint64")
-	}
+	test("zero", 0, 0, 0)
+	test("low word", 0x54f0, 0, 0x54f0)
+	test("both words", 0x000054f0, 0x00000001, 0x00000001000054f0)
+	test("signed high word", 0xffffffff, -1, 0xffffffffffffffff)
 }
 
 func TestKeepPhysicalAdapter(t *testing.T) {
@@ -83,21 +79,14 @@ func TestKeepPhysicalAdapter(t *testing.T) {
 		0x1000: {},
 		0x2000: {},
 	}
-	cases := []struct {
-		name     string
-		luid     uint64
-		physical map[uint64]struct{}
-		want     bool
-	}{
-		{"nil map keeps all", 0x9999, nil, true},
-		{"empty map keeps all", 0x9999, map[uint64]struct{}{}, true},
-		{"listed LUID kept", 0x1000, physical, true},
-		{"unlisted LUID dropped", 0x9999, physical, false},
-		{"second listed LUID kept", 0x2000, physical, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, keepPhysicalAdapter(tc.luid, tc.physical), "keepPhysicalAdapter")
+	test := func(name string, luid uint64, physical map[uint64]struct{}, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, keepPhysicalAdapter(luid, physical))
 		})
 	}
+	test("nil map keeps all", 0x9999, nil, true)
+	test("empty map keeps all", 0x9999, map[uint64]struct{}{}, true)
+	test("listed LUID kept", 0x1000, physical, true)
+	test("unlisted LUID dropped", 0x9999, physical, false)
+	test("second listed LUID kept", 0x2000, physical, true)
 }

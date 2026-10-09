@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grandcat/zeroconf"
@@ -43,7 +44,8 @@ func (s *swapModels) set(body map[string]any) {
 	s.mu.Unlock()
 }
 
-func (s *swapModels) handler() http.HandlerFunc {
+func (s *swapModels) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -52,7 +54,7 @@ func (s *swapModels) handler() http.HandlerFunc {
 		s.mu.Lock()
 		body := s.body
 		s.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(body)
+		assert.NoError(t, json.NewEncoder(w).Encode(body))
 	}
 }
 
@@ -60,7 +62,7 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 	// Start with an empty inventory (engine present but serving no models yet).
 	stub := &swapModels{}
 	stub.set(map[string]any{"models": []string{}})
-	srv := httptest.NewServer(stub.handler())
+	srv := httptest.NewServer(stub.handler(t))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
 	require.NoError(t, err, "parse stub url")
@@ -144,7 +146,7 @@ func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, ins
 			require.True(t, ok, "broker stream closed unexpectedly")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
-				if json.Unmarshal(msg.Result, &res) == nil {
+				if assert.NoError(t, json.Unmarshal(msg.Result, &res)) {
 					if n, found := findNode(res.Nodes, instance); found && pred(n) {
 						return
 					}

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
@@ -48,7 +49,7 @@ func startCMEnv(t *testing.T, configDir string, port int, extraEnv []string) *cm
 	require.NoError(t, err, "stdout pipe")
 	cmd.Stderr = os.Stderr
 	require.NoError(t, cmd.Start(), "start cluster-manager")
-	return &cmProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1}
+	return &cmProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(t, stdout), nextID: 1}
 }
 
 func (p *cmProc) stop() {
@@ -86,12 +87,13 @@ func (p *cmProc) pump(want func(jsonrpc.Message) bool, timeout time.Duration) js
 	}
 }
 
-func idEquals(raw *json.RawMessage, id int) bool {
+func idEquals(t *testing.T, raw *json.RawMessage, id int) bool {
+	t.Helper()
 	if raw == nil {
 		return false
 	}
 	var got int
-	return json.Unmarshal(*raw, &got) == nil && got == id
+	return assert.NoError(t, json.Unmarshal(*raw, &got)) && got == id
 }
 
 func (p *cmProc) call(method string, params any) jsonrpc.Message {
@@ -102,11 +104,12 @@ func (p *cmProc) call(method string, params any) jsonrpc.Message {
 	if params != nil {
 		req["params"] = params
 	}
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	require.NoError(p.t, err, "encode %s", method)
 	b = append(b, '\n')
-	_, err := p.stdin.Write(b)
+	_, err = p.stdin.Write(b)
 	require.NoError(p.t, err, "write %s", method)
-	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
+	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(p.t, m.ID, id) }, 15*time.Second)
 	require.Nil(p.t, resp.Error, "%s returned a JSON-RPC error", method)
 	return resp
 }
@@ -121,11 +124,12 @@ func (p *cmProc) callExpectError(method string, params any) jsonrpc.Message {
 	if params != nil {
 		req["params"] = params
 	}
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	require.NoError(p.t, err, "encode %s", method)
 	b = append(b, '\n')
-	_, err := p.stdin.Write(b)
+	_, err = p.stdin.Write(b)
 	require.NoError(p.t, err, "write %s", method)
-	return p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
+	return p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(p.t, m.ID, id) }, 15*time.Second)
 }
 
 func (p *cmProc) waitNotify(method string) jsonrpc.Message {

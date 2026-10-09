@@ -307,7 +307,7 @@ func resetBroker(t *testing.T, result string) (*rpc.Client, <-chan string) {
 			} else {
 				reply.Result = json.RawMessage(`{}`)
 			}
-			_ = broker.Write(reply)
+			assert.NoError(t, broker.Write(reply))
 		}
 	}()
 	return client, called
@@ -592,10 +592,17 @@ func TestHiddenWorkersAccountsForTheHeader(t *testing.T) {
 
 // TestVisibleTableRows pins the header accounting the layout budgets depend on.
 func TestVisibleTableRows(t *testing.T) {
-	cases := map[int]int{0: 0, 1: 0, 2: 0, 3: 1, 5: 3, 13: 11}
-	for h, want := range cases {
-		assert.Equal(t, want, visibleTableRows(h), "visibleTableRows(%d)", h)
+	test := func(name string, height, want int) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, visibleTableRows(height))
+		})
 	}
+	test("zero height", 0, 0)
+	test("header only", 1, 0)
+	test("header and border only", 2, 0)
+	test("one data row", 3, 1)
+	test("three data rows", 5, 3)
+	test("eleven data rows", 13, 11)
 }
 
 var _ View = (*serviceView)(nil)

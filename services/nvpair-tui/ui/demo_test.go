@@ -263,33 +263,23 @@ func TestGeneratesMirrorsTheDispatcher(t *testing.T) {
 	// A model advertising neither a type nor capabilities gets the benefit of
 	// the doubt, because that is what the dispatcher itself does — being
 	// stricter here would silently exclude models the demo could have used.
-	cases := []struct {
-		name  string
-		model dispatcherModel
-		want  bool
-	}{
-		{"explicit llm", dispatcherModel{Type: "LLM"}, true},
-		{"explicit embedding", dispatcherModel{Type: "embeddings"}, false},
-		{"chat capability", dispatcherModel{Capabilities: []string{"vision", "chat"}}, true},
-		{"no generation capability", dispatcherModel{Capabilities: []string{"embedding"}}, false},
-		{"nothing declared", dispatcherModel{}, true},
-		{"type wins over capabilities", dispatcherModel{
-			Type: "embeddings", Capabilities: []string{"chat"}}, false},
-		// Verbatim from a live LM Studio: a real chat model whose advertised
-		// capabilities name neither chat nor completion. Checking capabilities
-		// ahead of the type would exclude the only usable model on the host, so
-		// the ordering above is load-bearing rather than arbitrary.
-		{"real llm with unrelated capabilities", dispatcherModel{
-			Type:         "llm",
-			Capabilities: []string{"trained_for_tool_use", "vision"},
-		}, true},
-		{"real embedding model", dispatcherModel{Type: "embedding"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, tc.model.generates())
+	test := func(name string, model dispatcherModel, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, model.generates())
 		})
 	}
+	test("explicit llm", dispatcherModel{Type: "LLM"}, true)
+	test("explicit embedding", dispatcherModel{Type: "embeddings"}, false)
+	test("chat capability", dispatcherModel{Capabilities: []string{"vision", "chat"}}, true)
+	test("no generation capability", dispatcherModel{Capabilities: []string{"embedding"}}, false)
+	test("nothing declared", dispatcherModel{}, true)
+	test("type wins over capabilities", dispatcherModel{Type: "embeddings", Capabilities: []string{"chat"}}, false)
+	// Verbatim from a live LM Studio: a real chat model whose advertised
+	// capabilities name neither chat nor completion. Checking capabilities
+	// ahead of the type would exclude the only usable model on the host, so
+	// the ordering above is load-bearing rather than arbitrary.
+	test("real llm with unrelated capabilities", dispatcherModel{Type: "llm", Capabilities: []string{"trained_for_tool_use", "vision"}}, true)
+	test("real embedding model", dispatcherModel{Type: "embedding"}, false)
 }
 
 // fakeDispatcher writes an executable that records its arguments and prints the
@@ -326,9 +316,11 @@ func TestProbeAsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing.
 	raw, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
 	args := strings.Fields(string(raw))
-	for _, want := range []string{"--backend", "ollama", "--port", "11434", "--list-models"} {
-		assert.Contains(t, args, want, "dispatcher argument")
-	}
+	assert.Contains(t, args, "--backend", "dispatcher argument")
+	assert.Contains(t, args, "ollama", "dispatcher argument")
+	assert.Contains(t, args, "--port", "dispatcher argument")
+	assert.Contains(t, args, "11434", "dispatcher argument")
+	assert.Contains(t, args, "--list-models", "dispatcher argument")
 }
 
 func TestProbeTreatsAnUnreachableEngineAsNoTargets(t *testing.T) {

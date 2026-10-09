@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,57 +51,8 @@ func pinMemberFixture(t *testing.T, m *Manager, host string) pinFixture {
 // launches each operation, and asserts it cannot commit while the boundary is
 // held; then it runs the teardown, releases, and checks the terminal state.
 func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
-	cases := []struct {
-		name       string
-		rejoin     func(m *Manager, p2 pinFixture)
-		assertDone func(t *testing.T, m *Manager, p1, p2 pinFixture)
-	}{
-		{
-			name: "stale set-identity restore behind teardown is refused",
-			rejoin: func(m *Manager, _ pinFixture) {
-				// The broker reflecting its still-persisted clusterId (same id)
-				// after the node has already been unclustered by the teardown.
-				params, _ := json.Marshal(map[string]string{"clusterId": "cluster-1", "clusterFriendlyName": "Restored"})
-				m.handleSetIdentity(&Message{Params: params})
-			},
-			assertDone: func(t *testing.T, m *Manager, p1, _ pinFixture) {
-				id, _ := m.clusterIdentity()
-				require.Equal(t, "", id, "after teardown a stale set-identity restore left clusterId")
-				_, ok := m.trust.Get(p1.uuid)
-				require.False(t, ok, "a pin survived teardown+stale-restore; want an empty pin set")
-				require.Empty(t, m.snapshotNodes())
-			},
-		},
-		{
-			name: "full pairing commit stays atomic across teardown",
-			rejoin: func(m *Manager, p2 pinFixture) {
-				m.withClusterComposition(func() {
-					m.setClusterIdentity("cluster-2", "Rejoined")
-					_ = m.trust.Pin(&TrustedPin{
-						NodeUUID: p2.uuid, NodeID: "peer-2", ClusterID: "cluster-2",
-						CertPem: p2.cert, CertFingerprint: p2.fp, PinnedAt: time.Now().UnixMilli(),
-					})
-					m.upsertMember(&ClusterNode{NodeUUID: p2.uuid, ID: "peer-2", ClusterID: "cluster-2", State: stateMember})
-					m.addSelfMember()
-				})
-			},
-			assertDone: func(t *testing.T, m *Manager, p1, p2 pinFixture) {
-				id, _ := m.clusterIdentity()
-				require.Equal(t, "cluster-2", id, "after rejoin clusterId")
-				_, ok := m.trust.Get(p2.uuid)
-				require.True(t, ok, "rejoined peer pin missing after teardown+rejoin")
-				_, ok = m.trust.Get(p1.uuid)
-				require.False(t, ok, "old cluster-1 pin survived teardown; state is inconsistent")
-				for _, n := range m.snapshotNodes() {
-					require.NotEqual(t, p1.uuid, n.NodeUUID, "old cluster-1 member survived teardown; state is inconsistent")
-				}
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, rejoin func(*testing.T, *Manager, pinFixture), assertDone func(*testing.T, *Manager, pinFixture, pinFixture)) {
+		t.Run(name, func(t *testing.T) {
 			m := newTestManagerPort(t, 15031)
 			p1 := pinMemberFixture(t, m, "peer-1") // pinned member in cluster-1
 			p2 := newPinFixture(t, "peer-2")       // identity to rejoin with
@@ -111,7 +63,7 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 
 			done := make(chan struct{})
 			go func() {
-				tc.rejoin(m, p2)
+				rejoin(t, m, p2)
 				close(done)
 			}()
 
@@ -138,7 +90,41 @@ func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				require.FailNow(t, "rejoin did not complete after the boundary was released")
 			}
-			tc.assertDone(t, m, p1, p2)
+			assertDone(t, m, p1, p2)
 		})
 	}
+	test("stale set-identity restore behind teardown is refused", func(t *testing.T, m *Manager, _ pinFixture) {
+		// The broker reflecting its still-persisted clusterId (same id)
+		// after the node has already been unclustered by the teardown.
+		params, err := json.Marshal(map[string]string{"clusterId": "cluster-1", "clusterFriendlyName": "Restored"})
+		assert.NoError(t, err)
+		m.handleSetIdentity(&Message{Params: params})
+	}, func(t *testing.T, m *Manager, p1, _ pinFixture) {
+		id, _ := m.clusterIdentity()
+		require.Equal(t, "", id, "after teardown a stale set-identity restore left clusterId")
+		_, ok := m.trust.Get(p1.uuid)
+		require.False(t, ok, "a pin survived teardown+stale-restore; want an empty pin set")
+		require.Empty(t, m.snapshotNodes())
+	})
+	test("full pairing commit stays atomic across teardown", func(t *testing.T, m *Manager, p2 pinFixture) {
+		m.withClusterComposition(func() {
+			m.setClusterIdentity("cluster-2", "Rejoined")
+			assert.NoError(t, m.trust.Pin(&TrustedPin{
+				NodeUUID: p2.uuid, NodeID: "peer-2", ClusterID: "cluster-2",
+				CertPem: p2.cert, CertFingerprint: p2.fp, PinnedAt: time.Now().UnixMilli(),
+			}))
+			m.upsertMember(&ClusterNode{NodeUUID: p2.uuid, ID: "peer-2", ClusterID: "cluster-2", State: stateMember})
+			m.addSelfMember()
+		})
+	}, func(t *testing.T, m *Manager, p1, p2 pinFixture) {
+		id, _ := m.clusterIdentity()
+		require.Equal(t, "cluster-2", id, "after rejoin clusterId")
+		_, ok := m.trust.Get(p2.uuid)
+		require.True(t, ok, "rejoined peer pin missing after teardown+rejoin")
+		_, ok = m.trust.Get(p1.uuid)
+		require.False(t, ok, "old cluster-1 pin survived teardown; state is inconsistent")
+		for _, n := range m.snapshotNodes() {
+			require.NotEqual(t, p1.uuid, n.NodeUUID, "old cluster-1 member survived teardown; state is inconsistent")
+		}
+	})
 }

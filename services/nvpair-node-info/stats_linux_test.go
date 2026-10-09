@@ -16,189 +16,76 @@ import (
 // (e.g. picking up a per-core "cpuN" line, or miscounting idle) would make
 // every Linux node report a wrong or zero utilization.
 func TestParseProcStat(t *testing.T) {
-	cases := []struct {
-		name      string
-		in        string
-		wantIdle  uint64
-		wantTotal uint64
-		wantValid bool
-	}{
-		{
-			name:      "typical aggregate line, idle = idle+iowait",
-			in:        "cpu  100 0 50 800 40 0 10 0 0 0\ncpu0 50 0 25 400 20 0 5 0 0 0\n",
-			wantIdle:  840, // idle 800 + iowait 40
-			wantTotal: 1000,
-			wantValid: true,
-		},
-		{
-			name:      "ignores cpuN lines, only aggregate counts",
-			in:        "cpu0 50 0 25 400 20 0 5 0 0 0\ncpu  10 0 10 70 10 0 0 0 0 0\n",
-			wantIdle:  80, // 70 + 10
-			wantTotal: 100,
-			wantValid: true,
-		},
-		{
-			name:      "no aggregate cpu line",
-			in:        "intr 12345\nctxt 6789\n",
-			wantValid: false,
-		},
-		{
-			name:      "too few fields",
-			in:        "cpu 1 2\n",
-			wantValid: false,
-		},
-		{
-			name:      "all-zero totals are invalid",
-			in:        "cpu  0 0 0 0 0 0 0 0 0 0\n",
-			wantValid: false,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := parseProcStat(c.in)
-			require.Equal(t, c.wantValid, got.valid, "valid")
-			if !c.wantValid {
+	test := func(name, in string, wantIdle, wantTotal uint64, wantValid bool) {
+		t.Run(name, func(t *testing.T) {
+			got := parseProcStat(in)
+			require.Equal(t, wantValid, got.valid)
+			if !wantValid {
 				return
 			}
-			require.Equal(t, c.wantIdle, got.idle, "idle/total")
-			require.Equal(t, c.wantTotal, got.total, "idle/total")
+			require.Equal(t, wantIdle, got.idle)
+			require.Equal(t, wantTotal, got.total)
 		})
 	}
+	// Idle includes both idle and iowait ticks.
+	test("typical aggregate line, idle = idle+iowait", "cpu  100 0 50 800 40 0 10 0 0 0\ncpu0 50 0 25 400 20 0 5 0 0 0\n", 840, 1000, true)
+	test("ignores cpuN lines, only aggregate counts", "cpu0 50 0 25 400 20 0 5 0 0 0\ncpu  10 0 10 70 10 0 0 0 0 0\n", 80, 100, true)
+	test("no aggregate cpu line", "intr 12345\nctxt 6789\n", 0, 0, false)
+	test("too few fields", "cpu 1 2\n", 0, 0, false)
+	test("all-zero totals are invalid", "cpu  0 0 0 0 0 0 0 0 0 0\n", 0, 0, false)
 }
 
 // TestCPUUtilization exercises the delta math and every guard: invalid
 // samples, counter resets, zero elapsed time, and rounding.
 func TestCPUUtilization(t *testing.T) {
-	cases := []struct {
-		name string
-		prev cpuTimes
-		cur  cpuTimes
-		want uint32
-	}{
-		{
-			name: "50 percent busy",
-			prev: cpuTimes{idle: 100, total: 200, valid: true},
-			cur:  cpuTimes{idle: 200, total: 400, valid: true},
-			want: 50,
-		},
-		{
-			name: "fully busy",
-			prev: cpuTimes{idle: 100, total: 200, valid: true},
-			cur:  cpuTimes{idle: 100, total: 300, valid: true},
-			want: 100,
-		},
-		{
-			name: "fully idle",
-			prev: cpuTimes{idle: 100, total: 200, valid: true},
-			cur:  cpuTimes{idle: 200, total: 300, valid: true},
-			want: 0,
-		},
-		{
-			name: "rounds half up",
-			prev: cpuTimes{idle: 0, total: 0, valid: true},
-			cur:  cpuTimes{idle: 425, total: 1000, valid: true}, // 57.5% busy
-			want: 58,
-		},
-		{
-			name: "invalid prev -> 0",
-			prev: cpuTimes{},
-			cur:  cpuTimes{idle: 1, total: 2, valid: true},
-			want: 0,
-		},
-		{
-			name: "counter reset (total went backwards) -> 0",
-			prev: cpuTimes{idle: 100, total: 500, valid: true},
-			cur:  cpuTimes{idle: 50, total: 200, valid: true},
-			want: 0,
-		},
-		{
-			name: "no elapsed jiffies -> 0",
-			prev: cpuTimes{idle: 100, total: 200, valid: true},
-			cur:  cpuTimes{idle: 100, total: 200, valid: true},
-			want: 0,
-		},
+	valid := func(idle, total uint64) cpuTimes {
+		return cpuTimes{idle: idle, total: total, valid: true}
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, cpuUtilization(c.prev, c.cur), "cpuUtilization()")
+	test := func(name string, prev, cur cpuTimes, want uint32) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, cpuUtilization(prev, cur))
 		})
 	}
+	test("50 percent busy", valid(100, 200), valid(200, 400), 50)
+	test("fully busy", valid(100, 200), valid(100, 300), 100)
+	test("fully idle", valid(100, 200), valid(200, 300), 0)
+	test("rounds half up", valid(0, 0), valid(425, 1000), 58) // 57.5% busy
+	test("invalid prev -> 0", cpuTimes{}, valid(1, 2), 0)
+	test("counter reset (total went backwards) -> 0", valid(100, 500), valid(50, 200), 0)
+	test("no elapsed jiffies -> 0", valid(100, 200), valid(100, 200), 0)
 }
 
 // TestInitialMemorySnapshot verifies that startup publishes a usable memory
 // sample before the first ticker event while preserving omission semantics
 // when /proc/meminfo cannot be read.
 func TestInitialMemorySnapshot(t *testing.T) {
-	cases := []struct {
-		name     string
-		readUsed func() (uint64, bool)
-		wantUsed uint64
-	}{
-		{
-			name: "successful startup read",
-			readUsed: func() (uint64, bool) {
-				return 48 << 30, true
-			},
-			wantUsed: 48 << 30,
-		},
-		{
-			name: "failed startup read remains unknown",
-			readUsed: func() (uint64, bool) {
-				return 123, false
-			},
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			snap := initialMemorySnapshot(c.readUsed)
-			require.Equal(t, c.wantUsed, snap.MemUsedBytes, "MemUsedBytes")
+	test := func(name string, used uint64, ok bool, wantUsed uint64) {
+		t.Run(name, func(t *testing.T) {
+			snap := initialMemorySnapshot(func() (uint64, bool) { return used, ok })
+			require.Equal(t, wantUsed, snap.MemUsedBytes)
 		})
 	}
+	test("successful startup read", 48<<30, true, 48<<30)
+	test("failed startup read remains unknown", 123, false, 0)
 }
 
 // TestParseMeminfoUsed pins the MemTotal-MemAvailable computation, the
 // MemFree fallback for pre-3.14 kernels, the kB->bytes conversion, and the
 // failure cases (missing total, underflow).
 func TestParseMeminfoUsed(t *testing.T) {
-	cases := []struct {
-		name     string
-		in       string
-		wantUsed uint64
-		wantOK   bool
-	}{
-		{
-			name:     "MemAvailable present",
-			in:       "MemTotal:       1000 kB\nMemFree:         200 kB\nMemAvailable:    400 kB\n",
-			wantUsed: 600 * 1024, // (1000 - 400) kB
-			wantOK:   true,
-		},
-		{
-			name:     "MemAvailable absent, falls back to MemFree",
-			in:       "MemTotal:       1000 kB\nMemFree:         200 kB\nBuffers:          50 kB\n",
-			wantUsed: 800 * 1024, // (1000 - 200) kB
-			wantOK:   true,
-		},
-		{
-			name:   "missing MemTotal",
-			in:     "MemFree:         200 kB\nMemAvailable:    400 kB\n",
-			wantOK: false,
-		},
-		{
-			name:   "available exceeds total and no usable free -> fail",
-			in:     "MemTotal:        100 kB\nMemAvailable:    200 kB\n",
-			wantOK: false,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			used, ok := parseMeminfoUsed(c.in)
-			require.Equal(t, c.wantOK, ok, "ok (%v)", ok)
+	test := func(name, in string, wantUsed uint64, wantOK bool) {
+		t.Run(name, func(t *testing.T) {
+			used, ok := parseMeminfoUsed(in)
+			require.Equal(t, wantOK, ok)
 			if ok {
-				require.Equal(t, c.wantUsed, used)
+				require.Equal(t, wantUsed, used)
 			}
 		})
 	}
+	test("MemAvailable present", "MemTotal:       1000 kB\nMemFree:         200 kB\nMemAvailable:    400 kB\n", 600*1024, true)                       // (1000 - 400) kB
+	test("MemAvailable absent, falls back to MemFree", "MemTotal:       1000 kB\nMemFree:         200 kB\nBuffers:          50 kB\n", 800*1024, true) // (1000 - 200) kB
+	test("missing MemTotal", "MemFree:         200 kB\nMemAvailable:    400 kB\n", 0, false)
+	test("available exceeds total and no usable free -> fail", "MemTotal:        100 kB\nMemAvailable:    200 kB\n", 0, false)
 }
 
 // TestParseNvidiaStatic pins the static enumeration parse: name + total VRAM
@@ -325,19 +212,16 @@ func TestParseNvidiaDynamic(t *testing.T) {
 
 // TestIsNvidiaSmiNA pins recognition of nvidia-smi not-applicable sentinels.
 func TestIsNvidiaSmiNA(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"[N/A]", true},
-		{"N/A", true},
-		{"[Not Supported]", true},
-		{"Not Supported", true},
-		{"8192", false},
-		{"notanumber", false},
-		{"", false},
+	test := func(name, in string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, isNvidiaSmiNA(in))
+		})
 	}
-	for _, c := range cases {
-		require.Equal(t, c.want, isNvidiaSmiNA(c.in), "isNvidiaSmiNA(%q)", c.in)
-	}
+	test("bracketed N/A", "[N/A]", true)
+	test("N/A", "N/A", true)
+	test("bracketed unsupported", "[Not Supported]", true)
+	test("unsupported", "Not Supported", true)
+	test("number", "8192", false)
+	test("malformed number", "notanumber", false)
+	test("empty", "", false)
 }

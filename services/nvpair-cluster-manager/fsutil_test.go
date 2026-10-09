@@ -77,8 +77,13 @@ func TestAtomicWriteNonTransientRenameFailsFast(t *testing.T) {
 }
 
 func TestIsTransientReplaceError(t *testing.T) {
-	require.True(t, isTransientReplaceError(errors.New("Access is denied.")), "expected Access is denied to be transient")
-	require.True(t, isTransientReplaceError(errors.New("The process cannot access the file because it is being used by another process.")), "expected sharing text to be transient")
-	require.False(t, isTransientReplaceError(errors.New("no such file or directory")), "ENOENT must not be treated as transient")
-	require.False(t, isTransientReplaceError(nil), "nil must not be transient")
+	test := func(name string, err error, want bool) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, isTransientReplaceError(err))
+		})
+	}
+	test("access denied", errors.New("Access is denied."), true)
+	test("sharing violation", errors.New("The process cannot access the file because it is being used by another process."), true)
+	test("missing file", errors.New("no such file or directory"), false)
+	test("nil error", nil, false)
 }

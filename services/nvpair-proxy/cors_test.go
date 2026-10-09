@@ -290,9 +290,11 @@ func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
 		clustertrusttest.Join(t, aDir, "cluster", "a")
 		clustertrusttest.Join(t, bDir, "cluster", "b")
 		pin := func(dst, src, id string) {
+			t.Helper()
 			pem, err := os.ReadFile(filepath.Join(src, "node.crt"))
 			require.NoError(t, err)
-			body, _ := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(pem)})
+			body, err := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(pem)})
+			assert.NoError(t, err)
 			require.NoError(t, os.MkdirAll(filepath.Join(dst, "trusted"), 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(dst, "trusted", id+".json"), body, 0600))
 		}
@@ -358,7 +360,8 @@ func TestCORSBrowserFixture(t *testing.T) {
 		none := proxyForCORSTargets(t, tc)
 		unavailable := httptest.NewServer(http.HandlerFunc(none.handlePlain))
 		defer unavailable.Close()
-		data, _ := json.Marshal(map[string]string{"allowed": allowed.URL, "denied": denied.URL, "proxy": proxy.URL, "engine": engine.URL, "unavailable": unavailable.URL, "models": tc.modelListPath})
+		data, err := json.Marshal(map[string]string{"allowed": allowed.URL, "denied": denied.URL, "proxy": proxy.URL, "engine": engine.URL, "unavailable": unavailable.URL, "models": tc.modelListPath})
+		assert.NoError(t, err)
 		require.NoError(t, os.WriteFile(file, data, 0600))
 		deadline := time.After(60 * time.Second)
 		tick := time.NewTicker(100 * time.Millisecond)

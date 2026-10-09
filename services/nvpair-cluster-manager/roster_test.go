@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,8 +28,8 @@ func TestReconcileMTLSFanout(t *testing.T) {
 
 	mA := newTestManagerPort(t, 15011)
 	mB := newTestManagerPort(t, 15012)
-	go func() { _ = mA.runHTTP(ctx) }()
-	go func() { _ = mB.runHTTP(ctx) }()
+	startTestHTTP(t, mA, ctx)
+	startTestHTTP(t, mB, ctx)
 	time.Sleep(400 * time.Millisecond)
 
 	// A and B trust each other (simulated completed pairing), with mutual member
@@ -75,6 +76,17 @@ func newTestManagerPort(t *testing.T, port int) *Manager {
 	return mgr
 }
 
+func startTestHTTP(t *testing.T, m *Manager, parent context.Context) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan error, 1)
+	go func() { done <- m.runHTTP(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		assert.NoError(t, <-done)
+	})
+}
+
 // makeNode mints a fresh node identity (uuid + self-signed leaf) and returns its
 // signing key, simulating a real peer for endorsement crafting.
 func makeNode(t *testing.T, host string) (uuid, certPEM, fingerprint string, priv ed25519.PrivateKey) {
@@ -84,9 +96,11 @@ func makeNode(t *testing.T, host string) (uuid, certPEM, fingerprint string, pri
 	certPEMb, keyPEMb, err := generateLeaf(uuid, host)
 	require.NoError(t, err, "leaf")
 	block, _ := pem.Decode(keyPEMb)
+	require.NotNil(t, block)
 	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	require.NoError(t, err, "parse key")
-	fp, _ := certFingerprintFromPEM(certPEMb)
+	fp, err := certFingerprintFromPEM(certPEMb)
+	assert.NoError(t, err)
 	return uuid, string(certPEMb), fp, k.(ed25519.PrivateKey)
 }
 

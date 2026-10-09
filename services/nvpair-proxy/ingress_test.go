@@ -97,19 +97,17 @@ func TestHandleClusterIngressUnclusteredForbids(t *testing.T) {
 }
 
 func TestIsLoopbackRemote(t *testing.T) {
-	for _, c := range []struct {
-		addr string
-		want bool
-	}{
-		{"127.0.0.1:5000", true},
-		{"[::1]:5000", true},
-		{"192.168.1.10:5000", false},
-		{"10.0.0.5:80", false},
-		{"", false},
-		{"garbage", false},
-	} {
-		assert.Equal(t, c.want, isLoopbackRemote(c.addr), "isLoopbackRemote(%q)", c.addr)
+	test := func(name, addr string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, isLoopbackRemote(addr))
+		})
 	}
+	test("IPv4 loopback", "127.0.0.1:5000", true)
+	test("IPv6 loopback", "[::1]:5000", true)
+	test("LAN address", "192.168.1.10:5000", false)
+	test("private address", "10.0.0.5:80", false)
+	test("empty address", "", false)
+	test("malformed address", "garbage", false)
 }
 
 func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {

@@ -52,25 +52,19 @@ func newTestModel(views ...View) Model {
 // frame scrolls the alt screen and leaves the previous frame's tail behind.
 func TestViewFrameIsExactlyTerminalSized(t *testing.T) {
 	const termWidth, termHeight = 80, 24
-	cases := []struct {
-		name string
-		view *stubView
-	}{
-		{"view renders far too many rows", &stubView{title: "Over", rows: 200, width: 40}},
-		{"view renders too few rows", &stubView{title: "Under", rows: 1, width: 40}},
-		{"view renders lines wider than the terminal", &stubView{title: "Wide", rows: 5, width: 500}},
-		{"view renders nothing", &stubView{title: "Empty", rows: 0, width: 0}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m := New(nil, nil, []View{tc.view})
+	test := func(name string, view *stubView) {
+		t.Run(name, func(t *testing.T) {
+			m := New(nil, nil, []View{view})
 			m.width, m.height = termWidth, termHeight
 			out := m.View()
 			assert.Equal(t, termHeight, lipgloss.Height(out), "frame height")
 			assert.LessOrEqual(t, lipgloss.Width(out), termWidth, "frame width")
 		})
 	}
+	test("view renders far too many rows", &stubView{title: "Over", rows: 200, width: 40})
+	test("view renders too few rows", &stubView{title: "Under", rows: 1, width: 40})
+	test("view renders lines wider than the terminal", &stubView{title: "Wide", rows: 5, width: 500})
+	test("view renders nothing", &stubView{title: "Empty", rows: 0, width: 0})
 }
 
 // TestFrameNeverOutgrowsTheTerminal pushes the view's budget as low as it goes
@@ -152,9 +146,8 @@ func TestMinimumWidthKeepsNavigationVisible(t *testing.T) {
 	lines := strings.Split(m.View(), "\n")
 	assert.Contains(t, lines[1], "Logs", "last tab is hidden at minimum width")
 	footer := lines[len(lines)-1]
-	for _, want := range []string{"quit", "help"} {
-		assert.Contains(t, footer, want, "footer at minimum width")
-	}
+	assert.Contains(t, footer, "quit", "footer at minimum width")
+	assert.Contains(t, footer, "help", "footer at minimum width")
 
 	// With an error count the names no longer fit, and every tab must still be
 	// reachable by the number the bar shows for it.
@@ -269,10 +262,15 @@ func TestJumpDigitsMatchTheTabsExactly(t *testing.T) {
 // TestJumpDigitsLabelDegenerateCounts covers the label at the edges, since it is
 // assembled rather than written out.
 func TestJumpDigitsLabelDegenerateCounts(t *testing.T) {
-	cases := map[int]string{1: "1", 2: "1-2", 5: "1-5", 9: "1-9"}
-	for tabs, want := range cases {
-		assert.Equal(t, want, tabDigitsHelp(tabs), "%d tabs", tabs)
+	test := func(name string, tabs int, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, tabDigitsHelp(tabs))
+		})
 	}
+	test("single tab", 1, "1")
+	test("two tabs", 2, "1-2")
+	test("five tabs", 5, "1-5")
+	test("all digit keys", 9, "1-9")
 }
 
 // closingView records being released.

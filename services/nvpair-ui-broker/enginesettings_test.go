@@ -74,7 +74,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	go func() {
 		for {
 			msg, err := proxyCodec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			if !msg.IsRequest() {
@@ -82,7 +82,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 			}
 			engine, method := engines.SplitAddressedMethod(msg.Method)
 			if engine == "" || method != "set-port" {
-				_ = proxyCodec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, proxyCodec.Respond(msg.ID, map[string]bool{"ok": true}))
 				continue
 			}
 			var p struct {
@@ -95,14 +95,14 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 			proxy.readyMu.Lock()
 			proxy.facadeState[engine] = proxyFacadeState{ready: true, port: p.Port}
 			proxy.readyMu.Unlock()
-			_ = proxyCodec.Respond(msg.ID, map[string]int{"port": p.Port})
+			assert.NoError(t, proxyCodec.Respond(msg.ID, map[string]int{"port": p.Port}))
 		}
 	}()
 	launch := settings.LaunchState{Engine: engine, ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
 	go func() {
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			if !msg.IsRequest() {
@@ -113,12 +113,12 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 				h.launchMu.Lock()
 				current := launch
 				h.launchMu.Unlock()
-				_ = codec.Respond(msg.ID, current)
+				assert.NoError(t, codec.Respond(msg.ID, current))
 			case "engine:configured-ports":
-				_ = codec.Respond(msg.ID, map[string]any{"engines": []any{map[string]any{"engine": "lmstudio", "port": h.otherEnginePort.Load()}}})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{"engines": []any{map[string]any{"engine": "lmstudio", "port": h.otherEnginePort.Load()}}}))
 			case "engine:preview-launch":
 				var p settings.Request
-				_ = json.Unmarshal(msg.Params, &p)
+				assert.NoError(t, json.Unmarshal(msg.Params, &p))
 				h.previewPreserveCORS.Store(p.PreserveCORS)
 				if p.Format == "pair-launch-v1" {
 					p.Settings.LaunchText = strings.TrimPrefix(p.Settings.LaunchText, "managed serve ")
@@ -126,7 +126,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 				h.launchMu.Lock()
 				restart := launch.Running && (p.Settings.ServerPort != launch.ServerPort || p.Settings.LaunchText != launch.LaunchText)
 				h.launchMu.Unlock()
-				_ = codec.Respond(msg.ID, settings.Preview{Settings: p.Settings, Restart: restart})
+				assert.NoError(t, codec.Respond(msg.ID, settings.Preview{Settings: p.Settings, Restart: restart}))
 			case "engine:configure-launch":
 				// Serve this off the reader loop: a suspended apply must not
 				// stop the fixture from answering an unrelated read, which is
@@ -145,22 +145,22 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 							proxy.facadeState[engine] = state
 							proxy.readyMu.Unlock()
 						}
-						_ = codec.RespondError(msg.ID, -32000, "stop failure")
+						assert.NoError(t, codec.RespondError(msg.ID, -32000, "stop failure"))
 						return
 					}
 					var p settings.Configure
-					_ = json.Unmarshal(msg.Params, &p)
+					assert.NoError(t, json.Unmarshal(msg.Params, &p))
 					h.launchMu.Lock()
 					launch.ServerPort = p.Settings.ServerPort
 					launch.LaunchText = p.Settings.LaunchText
 					launch.Running = false
 					h.launchMu.Unlock()
 					if err := h.b.rebindSettingsProxy(p.Engine, p.Settings.ProxyPort); err != nil {
-						_ = codec.RespondError(msg.ID, -32000, err.Error())
+						assert.NoError(t, codec.RespondError(msg.ID, -32000, err.Error()))
 						return
 					}
 					if h.fail.Load() {
-						_ = codec.RespondError(msg.ID, -32000, "startup failure")
+						assert.NoError(t, codec.RespondError(msg.ID, -32000, "startup failure"))
 						return
 					}
 					h.launchMu.Lock()
@@ -169,14 +169,15 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 					current := launch
 					h.launchMu.Unlock()
 					if h.failResultSave.Load() {
-						journal, _ := h.b.engineSettingsPath()
+						journal, pathErr := h.b.engineSettingsPath()
+						assert.NoError(t, pathErr)
 						assert.NoError(t, os.Remove(journal))
 						assert.NoError(t, os.Mkdir(journal, 0700))
 					}
-					_ = codec.Respond(msg.ID, current)
+					assert.NoError(t, codec.Respond(msg.ID, current))
 				}(msg)
 			default:
-				_ = codec.RespondError(msg.ID, -32601, "unsupported fixture method")
+				assert.NoError(t, codec.RespondError(msg.ID, -32601, "unsupported fixture method"))
 			}
 		}
 	}()
@@ -235,31 +236,22 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 }
 
 func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		stopFails  bool
-		proxyReady bool
-		advertised bool
-	}{
-		{"stop failed with engine still running", true, true, true},
-		{"engine stopped before startup failed", false, true, false},
-		{"proxy unavailable", true, false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, stopFails, proxyReady, advertised bool) {
+		t.Run(name, func(t *testing.T) {
 			h := newSettingsHarness(t)
 			p := h.request(t)
 			oldPort := p.Settings.ProxyPort
 			h.b.regCache = relay.NewRegistrationCache()
 			h.b.registerService(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: oldPort})
-			h.failBeforeStop.Store(tc.stopFails)
+			h.failBeforeStop.Store(stopFails)
 			h.fail.Store(true)
-			h.loseProxyOnStop.Store(!tc.proxyReady)
+			h.loseProxyOnStop.Store(!proxyReady)
 			p.Settings.LaunchText += " --new-option"
 			receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
 			require.NoError(t, err, "expected failed receipt (%v)", receipt)
 			require.Equal(t, "failed", receipt.Phase, "expected failed receipt (%v)", receipt)
 			registered := h.b.regCache.Snapshot()
-			if tc.advertised {
+			if advertised {
 				require.Len(t, registered, 1, "running engine lost registration")
 				require.Equal(t, noderec.ServiceOllama, registered[0].Service, "running engine lost registration (%v)", registered)
 				require.Equal(t, oldPort, registered[0].Port, "running engine lost registration (%v)", registered)
@@ -268,6 +260,9 @@ func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
 			}
 		})
 	}
+	test("stop failed with engine still running", true, true, true)
+	test("engine stopped before startup failed", false, true, false)
+	test("proxy unavailable", true, false, false)
 }
 
 func TestSettingsCoordinatorSerializesAndCancelsQueuedRequests(t *testing.T) {
@@ -335,7 +330,8 @@ func TestSettingsJournalFailureAndInterruptedRecovery(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	p.Settings.LaunchText += " --new"
-	path, _ := h.b.engineSettingsPath()
+	path, pathErr := h.b.engineSettingsPath()
+	assert.NoError(t, pathErr)
 	require.NoError(t, os.Remove(path))
 	require.NoError(t, os.Mkdir(path, 0700))
 	_, err := h.b.applyEngineSettings(context.Background(), p, "")
@@ -389,7 +385,8 @@ func TestSettingsPortValidationIncludesStoppedEnginesAndAliases(t *testing.T) {
 
 func TestSettingsMigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {
 	h := newSettingsHarness(t)
-	path, _ := h.b.engineSettingsPath()
+	path, pathErr := h.b.engineSettingsPath()
+	assert.NoError(t, pathErr)
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), []byte(`{"port":26080}`), 0600))
 	h.b.migrateLegacyEngineSettings()
 	config, ok := h.b.explicitEngineSettings("ollama")

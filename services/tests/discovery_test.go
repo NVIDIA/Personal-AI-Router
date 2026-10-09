@@ -68,7 +68,7 @@ func TestInProcessMultipleInstances(t *testing.T) {
 	var servers []*zeroconf.Server
 	for i, inst := range instances {
 		s, err := zeroconf.Register(inst, service, testDomain, 50000+i, nil, nil)
-		require.NoError(t, err, "register (%v, %v)", inst, err)
+		require.NoError(t, err, "register %s", inst)
 		servers = append(servers, s)
 		defer s.Shutdown()
 	}

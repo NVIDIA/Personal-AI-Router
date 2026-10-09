@@ -56,11 +56,12 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[
+			_, err := w.Write([]byte(`{"models":[
 				{"name":"z-embed","capabilities":["embedding"]},
 				{"name":"b-chat","capabilities":["chat"]},
 				{"name":"a-completion","capabilities":["completion"]}
 			]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/generate":
 			var request struct {
 				Model string `json:"model"`
@@ -69,7 +70,8 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 				return
 			}
 			receivedModel = request.Model
-			_, _ = w.Write([]byte(`{"response":"hello"}`))
+			_, err := w.Write([]byte(`{"response":"hello"}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -96,7 +98,8 @@ func TestExplicitModelSkipsInventoryRequest(t *testing.T) {
 			assert.Fail(t, "explicit model unexpectedly queried inventory")
 			return
 		}
-		_, _ = w.Write([]byte(`{"response":"ok"}`))
+		_, err := w.Write([]byte(`{"response":"ok"}`))
+		assert.NoError(t, err, "write engine response")
 	}))
 	defer server.Close()
 
@@ -118,9 +121,11 @@ func TestLMStudioFallsBackToOpenAIInventory(t *testing.T) {
 		case "/api/v1/models":
 			http.Error(w, "not found", http.StatusNotFound)
 		case "/v1/models":
-			_, _ = w.Write([]byte(`{"data":[{"id":"live-model"}]}`))
+			_, err := w.Write([]byte(`{"data":[{"id":"live-model"}]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/v1/chat/completions":
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+			_, err := w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -152,7 +157,8 @@ func TestLlamaCPPUsesOpenAIInventoryAndChat(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
 			observed <- observedRequest{method: r.Method, path: r.URL.Path}
-			_, _ = w.Write([]byte(`{"data":[{"id":"llama-demo"}]}`))
+			_, err := w.Write([]byte(`{"data":[{"id":"llama-demo"}]}`))
+			assert.NoError(t, err)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
 			var request struct {
 				Model    string `json:"model"`
@@ -168,7 +174,8 @@ func TestLlamaCPPUsesOpenAIInventoryAndChat(t *testing.T) {
 				model:        request.Model,
 				messageCount: len(request.Messages),
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+			_, err := w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+			assert.NoError(t, err)
 		default:
 			http.NotFound(w, r)
 		}
@@ -199,16 +206,18 @@ func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
-			_, _ = w.Write([]byte(`{"data":[
+			_, err := w.Write([]byte(`{"data":[
 				{"id":"remote-chat"},
 				{"id":"local-embed"},
 				{"id":"local-chat"}
 			]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/v1/models":
-			_, _ = w.Write([]byte(`{"models":[
+			_, err := w.Write([]byte(`{"models":[
 				{"key":"local-embed","type":"embeddings"},
 				{"key":"local-chat","type":"llm"}
 			]}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -242,7 +251,8 @@ func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
 
 func TestListModelsEmitsJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"models":[{"name":"test-model"}]}`))
+		_, err := w.Write([]byte(`{"models":[{"name":"test-model"}]}`))
+		assert.NoError(t, err, "write engine response")
 	}))
 	defer server.Close()
 
@@ -281,7 +291,8 @@ func TestCancellationStopsInFlightRequestCleanly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			_, err := w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/generate":
 			once.Do(func() { close(requestStarted) })
 			<-releaseServer
@@ -350,9 +361,11 @@ func TestResponseTextNeverReachesStdout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			_, err := w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			assert.NoError(t, err, "write engine response")
 		case "/api/generate":
-			_, _ = w.Write([]byte(`{"response":"` + secret + `"}`))
+			_, err := w.Write([]byte(`{"response":"` + secret + `"}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -376,7 +389,8 @@ func TestUpstreamErrorBodyNeverReachesLogs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			_, _ = w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			_, err := w.Write([]byte(`{"models":[{"name":"available"}]}`))
+			assert.NoError(t, err, "write engine response")
 		default:
 			http.Error(w, `{"error":{"message":"`+echoed+`"}}`, http.StatusBadRequest)
 		}
@@ -404,19 +418,19 @@ func TestUpstreamErrorBodyNeverReachesLogs(t *testing.T) {
 	require.NoError(t, err, "read result log")
 	errors, err := os.ReadFile(errorLog)
 	require.NoError(t, err, "read error log")
-	for name, content := range map[string]string{
-		"stdout":     stdout.String(),
-		"stderr":     stderr.String(),
-		"result log": string(results),
-		"error log":  string(errors),
-	} {
-		assert.NotContains(t, content, "quarterly", "%s leaked the upstream error body", name)
-		assert.NotContains(t, content, echoed, "%s leaked the upstream error body", name)
-		if name == "stdout" {
-			continue
-		}
-		assert.Contains(t, content, "400 Bad Request", "%s dropped the HTTP status", name)
+	test := func(name, content string, wantStatus bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.NotContains(t, content, "quarterly", "upstream error body must not leak")
+			assert.NotContains(t, content, echoed, "upstream error body must not leak")
+			if wantStatus {
+				assert.Contains(t, content, "400 Bad Request", "HTTP status must be preserved")
+			}
+		})
 	}
+	test("stdout", stdout.String(), false)
+	test("stderr", stderr.String(), true)
+	test("result log", string(results), true)
+	test("error log", string(errors), true)
 }
 
 func TestPromptDigestDoesNotLeakPromptText(t *testing.T) {

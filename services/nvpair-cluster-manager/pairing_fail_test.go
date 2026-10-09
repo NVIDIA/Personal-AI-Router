@@ -33,30 +33,20 @@ func putPendingInviterSession(t *testing.T, m *Manager, inviteID string) {
 // invite, and an empty reason (e.g. a transport-failure fail) still cleans up.
 // Every case ends the invite in state:"failed".
 func TestHandlePairingFailedReasonGuard(t *testing.T) {
-	cases := []struct {
-		name       string
-		sentReason string
-		wantReason string
-	}{
-		{"wrong pin is honored", reasonIncorrectPIN, reasonIncorrectPIN},
-		{"arbitrary reason is sanitized", "evil-arbitrary-text", ""},
-		{"empty reason is preserved", "", ""},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, sentReason, wantReason string) {
+		t.Run(name, func(t *testing.T) {
 			m := newTestManager(t) // clustered as cluster-1, inviteCreated=false
 			m.addSelfMember()
 			putPendingInviterSession(t, m, "inv-fail")
 
 			m.handlePairingFailed(httptest.NewRecorder(), &pairingEnvelope{
-				InviteID: "inv-fail", Phase: "fail", Reason: tc.sentReason,
+				InviteID: "inv-fail", Phase: "fail", Reason: sentReason,
 			})
 
 			inv, ok := m.getInvite("inv-fail")
 			require.True(t, ok, "invite missing after fail signal; want a failed record")
 			require.Equal(t, inviteStateFailed, inv.State, "invite state")
-			require.Equal(t, tc.wantReason, inv.Reason, "invite reason")
+			require.Equal(t, wantReason, inv.Reason, "invite reason")
 			// The EAP session is always torn down (PIN invalidated), whatever
 			// the reason.
 			_, ok = m.getSession("inv-fail")
@@ -66,6 +56,9 @@ func TestHandlePairingFailedReasonGuard(t *testing.T) {
 			require.NotEqual(t, "", id, "intentional cluster erased by a fail signal")
 		})
 	}
+	test("wrong pin is honored", reasonIncorrectPIN, reasonIncorrectPIN)
+	test("arbitrary reason is sanitized", "evil-arbitrary-text", "")
+	test("empty reason is preserved", "", "")
 }
 
 // TestHandlePairingFailedIdempotent verifies a duplicate or late fail signal is

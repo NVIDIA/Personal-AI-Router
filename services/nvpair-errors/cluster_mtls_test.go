@@ -36,8 +36,10 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err, "genkey")
-	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	uri, _ := url.Parse("urn:nvpair:node:" + uuid)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	assert.NoError(t, err, "generate certificate serial")
+	uri, err := url.Parse("urn:nvpair:node:" + uuid)
+	require.NoError(t, err, "parse certificate URI")
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: uuid},
@@ -50,7 +52,8 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
 	require.NoError(t, err, "create cert")
-	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	assert.NoError(t, err, "marshal private key")
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM
@@ -66,7 +69,8 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 	td := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(td, 0o700))
 	for uuid, pcert := range pins {
-		body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
+		body, err := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
+		assert.NoError(t, err, "marshal peer pin")
 		require.NoError(t, os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600))
 	}
 	return dir
@@ -124,7 +128,8 @@ func TestErrorsPeerSync_MTLSGate(t *testing.T) {
 	srv.StartTLS()
 	defer srv.Close()
 
-	body, _ := json.Marshal(errors.SyncEnvelope{NodeID: "uuid-b"})
+	body, err := json.Marshal(errors.SyncEnvelope{NodeID: "uuid-b"})
+	assert.NoError(t, err, "marshal sync envelope")
 	push := func(m *clustertrust.Mesh, peerUUID string) (int, error) {
 		cfg, ok := m.ClientTLSConfig(peerUUID)
 		if !ok {

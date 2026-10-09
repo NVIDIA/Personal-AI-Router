@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,7 +80,7 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	victim.addSelfMember()
 	_, err = pw.Write(payload)
 	require.NoError(t, err)
-	_ = pw.Close()
+	assert.NoError(t, pw.Close())
 
 	select {
 	case <-done:

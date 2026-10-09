@@ -88,12 +88,8 @@ func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
 }
 
 func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
-	for _, data := range []string{
-		`{`, `null`, `[]`, `{}`, `{"runtime":{}}`, `{"engine":"another-engine"}`,
-		`{"engine":"ollama","runtime":null}`,
-		`{"engine":"ollama","platforms":[]}`,
-	} {
-		t.Run(data, func(t *testing.T) {
+	test := func(name, data string) {
+		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "ollama.json")
 			ex := newBundledExecutor(t, dir)
@@ -101,12 +97,21 @@ func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
 			_, err := ex.SetPort(context.Background(), "ollama", 23001)
 			require.Error(t, err, "malformed override was overwritten")
 			got, err := os.ReadFile(path)
-			require.NoError(t, err, "invalid override changed (%v, %v)", got, err)
+			require.NoError(t, err, "read invalid override")
 			require.Equal(t, data, string(got), "invalid override changed")
-			status, _ := ex.Status("ollama")
+			status, err := ex.Status("ollama")
+			assert.NoError(t, err)
 			require.Equal(t, 11434, status.Port, "failed persistence changed runtime port (%v)", status)
 		})
 	}
+	test("invalid JSON", `{`)
+	test("null override", `null`)
+	test("array override", `[]`)
+	test("missing engine", `{}`)
+	test("runtime without engine", `{"runtime":{}}`)
+	test("wrong engine", `{"engine":"another-engine"}`)
+	test("null runtime", `{"engine":"ollama","runtime":null}`)
+	test("array platforms", `{"engine":"ollama","platforms":[]}`)
 }
 
 func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {

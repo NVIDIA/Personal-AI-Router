@@ -31,7 +31,7 @@ func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
 		var msg struct {
 			Method string `json:"method"`
 		}
-		if json.NewDecoder(server).Decode(&msg) == nil {
+		if assert.NoError(t, json.NewDecoder(server).Decode(&msg)) {
 			method <- msg.Method
 		}
 	}()
@@ -68,71 +68,27 @@ func TestPlanManagedOllamaPorts(t *testing.T) {
 		return func(port int) bool { return set[port] }
 	}
 
-	for _, tc := range []struct {
-		name      string
-		enabled   bool
-		status    ollamaPortStatus
-		available func(int) bool
-		want      managedPortPlan
-	}{
-		{
-			name:      "policy disabled changes nothing",
-			available: free(managedOllamaFacadePort, managedOllamaBackendStart),
-		},
-		{
-			name:      "stopped default engine moves behind facade",
-			enabled:   true,
-			status:    ollamaPortStatus{Port: managedOllamaFacadePort},
-			available: free(managedOllamaFacadePort, managedOllamaBackendStart),
-			want:      managedPortPlan{Enabled: true, BackendPort: managedOllamaBackendStart},
-		},
-		{
-			name:      "allocator skips occupied preferred backend",
-			enabled:   true,
-			status:    ollamaPortStatus{Port: managedOllamaFacadePort},
-			available: free(managedOllamaFacadePort, managedOllamaBackendStart+1),
-			want:      managedPortPlan{Enabled: true, BackendPort: managedOllamaBackendStart + 1},
-		},
-		{
-			name:      "occupied stopped backend advances",
-			enabled:   true,
-			status:    ollamaPortStatus{Port: managedOllamaBackendStart},
-			available: free(managedOllamaFacadePort, managedOllamaBackendStart+1),
-			want:      managedPortPlan{Enabled: true, BackendPort: managedOllamaBackendStart + 1},
-		},
-		{
-			name:      "running backend is preserved",
-			enabled:   true,
-			status:    ollamaPortStatus{Running: true, Port: managedOllamaBackendStart},
-			available: free(managedOllamaFacadePort, managedOllamaBackendStart+1),
-			want:      managedPortPlan{Enabled: true},
-		},
-		{
-			name:      "custom backend is preserved",
-			enabled:   true,
-			status:    ollamaPortStatus{Running: true, Port: 12000},
-			available: free(managedOllamaFacadePort),
-			want:      managedPortPlan{Enabled: true},
-		},
-		{
-			name:      "running default engine is never moved",
-			enabled:   true,
-			status:    ollamaPortStatus{Running: true, Port: managedOllamaFacadePort},
-			available: free(managedOllamaFacadePort, managedOllamaBackendStart),
-			want:      managedPortPlan{Blocked: "Ollama is already running on the compatibility port"},
-		},
-		{
-			name:      "unknown facade owner is never touched",
-			enabled:   true,
-			status:    ollamaPortStatus{Port: managedOllamaFacadePort},
-			available: free(managedOllamaBackendStart),
-			want:      managedPortPlan{Blocked: "the compatibility port is already in use"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, planManagedOllamaPorts(tc.enabled, tc.status, tc.available), "plan")
+	test := func(name string, enabled bool, status ollamaPortStatus, available func(int) bool, want managedPortPlan) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, planManagedOllamaPorts(enabled, status, available))
 		})
 	}
+	test("policy disabled changes nothing", false, ollamaPortStatus{},
+		free(managedOllamaFacadePort, managedOllamaBackendStart), managedPortPlan{})
+	test("stopped default engine moves behind facade", true, ollamaPortStatus{Port: managedOllamaFacadePort},
+		free(managedOllamaFacadePort, managedOllamaBackendStart), managedPortPlan{Enabled: true, BackendPort: managedOllamaBackendStart})
+	test("allocator skips occupied preferred backend", true, ollamaPortStatus{Port: managedOllamaFacadePort},
+		free(managedOllamaFacadePort, managedOllamaBackendStart+1), managedPortPlan{Enabled: true, BackendPort: managedOllamaBackendStart + 1})
+	test("occupied stopped backend advances", true, ollamaPortStatus{Port: managedOllamaBackendStart},
+		free(managedOllamaFacadePort, managedOllamaBackendStart+1), managedPortPlan{Enabled: true, BackendPort: managedOllamaBackendStart + 1})
+	test("running backend is preserved", true, ollamaPortStatus{Running: true, Port: managedOllamaBackendStart},
+		free(managedOllamaFacadePort, managedOllamaBackendStart+1), managedPortPlan{Enabled: true})
+	test("custom backend is preserved", true, ollamaPortStatus{Running: true, Port: 12000},
+		free(managedOllamaFacadePort), managedPortPlan{Enabled: true})
+	test("running default engine is never moved", true, ollamaPortStatus{Running: true, Port: managedOllamaFacadePort},
+		free(managedOllamaFacadePort, managedOllamaBackendStart), managedPortPlan{Blocked: "Ollama is already running on the compatibility port"})
+	test("unknown facade owner is never touched", true, ollamaPortStatus{Port: managedOllamaFacadePort},
+		free(managedOllamaBackendStart), managedPortPlan{Blocked: "the compatibility port is already in use"})
 }
 
 func TestNextAvailablePortExcludingCustomBackend(t *testing.T) {
@@ -185,8 +141,8 @@ func TestOwningOllamaReadyOpensGateAfterMove(t *testing.T) {
 	go func() {
 		codec := NewCodec(engineServer)
 		msg, err := codec.Read()
-		if err == nil {
-			_ = codec.Respond(msg.ID, ollamaPortStatus{Port: managedOllamaBackendStart + 1})
+		if assert.NoError(t, err) {
+			assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Port: managedOllamaBackendStart + 1}))
 		}
 	}()
 
@@ -199,38 +155,34 @@ func TestEnginePortAssignmentRequest(t *testing.T) {
 	require.True(t, ok, "valid engine set-port request")
 	require.Equal(t, "ollama", engine, "valid engine set-port request")
 	require.Equal(t, 11434, port, "valid engine set-port request")
-	for _, tc := range []struct {
-		method string
-		params string
-	}{
-		{"engine:status", `{"engine":"ollama","port":11434}`},
-		{"engine:set-port", `{"engine":"","port":11434}`},
-		{"engine:set-port", `{"engine":"ollama","port":0}`},
-		{"engine:install", `{"engine":"ollama","port":11433}`},
-		{"engine:restart", `{"engine":"ollama","port":11433}`},
-		{"engine:set-port", `{`},
-	} {
-		_, _, ok := enginePortAssignmentRequest(tc.method, []byte(tc.params))
-		require.False(t, ok, "unexpected engine set-port match for %s %s", tc.method, tc.params)
+	test := func(name, method, params string) {
+		t.Run(name, func(t *testing.T) {
+			_, _, ok := enginePortAssignmentRequest(method, []byte(params))
+			require.False(t, ok, "unexpected engine set-port match")
+		})
 	}
+	test("status is not an assignment", "engine:status", `{"engine":"ollama","port":11434}`)
+	test("empty engine is rejected", "engine:set-port", `{"engine":"","port":11434}`)
+	test("zero port is rejected", "engine:set-port", `{"engine":"ollama","port":0}`)
+	test("install is not an assignment", "engine:install", `{"engine":"ollama","port":11433}`)
+	test("restart is not an assignment", "engine:restart", `{"engine":"ollama","port":11433}`)
+	test("malformed parameters are rejected", "engine:set-port", `{`)
 }
 
 func TestLMStudioSetPortRequest(t *testing.T) {
 	port, ok := lmstudioSetPortRequest("engine:set-port", []byte(`{"engine":"lmstudio","port":1234}`))
 	require.True(t, ok, "valid LM Studio request")
 	require.Equal(t, managedLMStudioFacadePort, port, "valid LM Studio request")
-	for _, tc := range []struct {
-		method string
-		params string
-	}{
-		{"engine:status", `{"engine":"lmstudio","port":1234}`},
-		{"engine:set-port", `{"engine":"ollama","port":1234}`},
-		{"engine:set-port", `{"engine":"lmstudio","port":0}`},
-		{"engine:set-port", `{`},
-	} {
-		_, ok := lmstudioSetPortRequest(tc.method, []byte(tc.params))
-		require.False(t, ok, "unexpected LM Studio set-port match for %s %s", tc.method, tc.params)
+	test := func(name, method, params string) {
+		t.Run(name, func(t *testing.T) {
+			_, ok := lmstudioSetPortRequest(method, []byte(params))
+			require.False(t, ok, "unexpected LM Studio set-port match")
+		})
 	}
+	test("status is not an assignment", "engine:status", `{"engine":"lmstudio","port":1234}`)
+	test("another engine is rejected", "engine:set-port", `{"engine":"ollama","port":1234}`)
+	test("zero port is rejected", "engine:set-port", `{"engine":"lmstudio","port":0}`)
+	test("malformed parameters are rejected", "engine:set-port", `{`)
 }
 
 func TestManagedLMStudioRejectsFacadeBackendPort(t *testing.T) {
@@ -281,11 +233,11 @@ func TestLMStudioSetPortUpdatesBackendCache(t *testing.T) {
 	go func() {
 		codec := NewCodec(engineServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		request <- msg
-		_ = codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400})
+		assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400}))
 	}()
 	response := make(chan *Message, 1)
 	go func() {
@@ -318,17 +270,8 @@ func TestLMStudioSetPortUpdatesBackendCache(t *testing.T) {
 }
 
 func TestRelayRejectsEnginePortAssignmentToActiveOllamaHostAlias(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		method string
-		params string
-	}{
-		{name: "set Ollama port", method: "engine:set-port", params: `{"engine":"ollama","port":11433}`},
-		{name: "set LM Studio port", method: "engine:set-port", params: `{"engine":"lmstudio","port":11433}`},
-		{name: "start custom engine override", method: "engine:start", params: `{"engine":"custom","port":11433}`},
-		{name: "install and start custom engine override", method: "engine:install", params: `{"engine":"custom","port":11433,"start":true}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, method, params string) {
+		t.Run(name, func(t *testing.T) {
 			brokerConn, clientConn := net.Pipe()
 			defer brokerConn.Close()
 			defer clientConn.Close()
@@ -353,8 +296,8 @@ func TestRelayRejectsEnginePortAssignmentToActiveOllamaHostAlias(t *testing.T) {
 			b.relayToEngine(&Message{
 				JSONRPC: "2.0",
 				ID:      &id,
-				Method:  tc.method,
-				Params:  json.RawMessage(tc.params),
+				Method:  method,
+				Params:  json.RawMessage(params),
 			})
 
 			select {
@@ -369,6 +312,10 @@ func TestRelayRejectsEnginePortAssignmentToActiveOllamaHostAlias(t *testing.T) {
 			}
 		})
 	}
+	test("set Ollama port", "engine:set-port", `{"engine":"ollama","port":11433}`)
+	test("set LM Studio port", "engine:set-port", `{"engine":"lmstudio","port":11433}`)
+	test("start custom engine override", "engine:start", `{"engine":"custom","port":11433}`)
+	test("install and start custom engine override", "engine:install", `{"engine":"custom","port":11433,"start":true}`)
 }
 
 func TestBrokerRejectsLMStudioProxyPortAssignmentToActiveOllamaHostAlias(t *testing.T) {
@@ -425,12 +372,13 @@ func TestRelayCachesActualOllamaPortFromResponse(t *testing.T) {
 		codec := NewCodec(engineServer)
 		request, err := codec.Read()
 		if err == nil {
-			_ = codec.Respond(request.ID, map[string]any{"engine": "ollama", "port": 11435})
+			assert.NoError(t, codec.Respond(request.ID, map[string]any{"engine": "ollama", "port": 11435}))
 		}
 	}()
 	response := make(chan *Message, 1)
 	go func() {
-		msg, _ := NewCodec(clientConn).Read()
+		msg, err := NewCodec(clientConn).Read()
+		assert.NoError(t, err)
 		response <- msg
 	}()
 
@@ -460,7 +408,8 @@ func TestBrokerDoesNotExposeInternalReservationSetter(t *testing.T) {
 	id := json.RawMessage(`10`)
 	response := make(chan *Message, 1)
 	go func() {
-		msg, _ := NewCodec(clientConn).Read()
+		msg, err := NewCodec(clientConn).Read()
+		assert.NoError(t, err)
 		response <- msg
 	}()
 
@@ -482,22 +431,19 @@ func TestBrokerDoesNotExposeInternalReservationSetter(t *testing.T) {
 }
 
 func TestNeedsOllamaPortGate(t *testing.T) {
-	for _, tc := range []struct {
-		method string
-		params string
-		want   bool
-	}{
-		{"engine:get-installed", `{}`, true},
-		{"engine:status", `{"engine":"ollama"}`, true},
-		{"engine:install", `{"engine":"ollama"}`, true},
-		{"engine:start", `{"engine":"ollama"}`, true},
-		{"engine:restart", `{"engine":"ollama"}`, true},
-		{"engine:status", `{"engine":"lmstudio"}`, false},
-		{"engine:models", `{"engine":"ollama"}`, false},
-		{"engine:status", `{`, false},
-	} {
-		assert.Equal(t, tc.want, needsOllamaPortGate(tc.method, []byte(tc.params)), "needsOllamaPortGate(%q, %s)", tc.method, tc.params)
+	test := func(name, method, params string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, needsOllamaPortGate(method, []byte(params)))
+		})
 	}
+	test("inventory waits", "engine:get-installed", `{}`, true)
+	test("Ollama status waits", "engine:status", `{"engine":"ollama"}`, true)
+	test("Ollama install waits", "engine:install", `{"engine":"ollama"}`, true)
+	test("Ollama start waits", "engine:start", `{"engine":"ollama"}`, true)
+	test("Ollama restart waits", "engine:restart", `{"engine":"ollama"}`, true)
+	test("LM Studio status does not wait", "engine:status", `{"engine":"lmstudio"}`, false)
+	test("Ollama models do not wait", "engine:models", `{"engine":"ollama"}`, false)
+	test("malformed parameters do not wait", "engine:status", `{`, false)
 }
 
 func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
@@ -570,24 +516,18 @@ func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
 }
 
 func TestNextFreeProxyPort(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		want  int
-		req   int
-		taken []int
-	}{
-		{"free returns requested", 11435, 11435, nil},
-		{"free with others taken", 11435, 11435, []int{11434, 1234}},
-		{"single collision bumps by one", 11435, 11434, []int{11434}},
-		{"consecutive collisions skip", 11436, 11434, []int{11434, 11435}},
-		{"gap above collision", 11435, 11434, []int{11434, 11436}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, want, req int, takenPorts ...int) {
+		t.Run(name, func(t *testing.T) {
 			taken := map[int]bool{}
-			for _, p := range tc.taken {
+			for _, p := range takenPorts {
 				taken[p] = true
 			}
-			assert.Equal(t, tc.want, nextFreeProxyPort(tc.req, taken), "nextFreeProxyPort")
+			assert.Equal(t, want, nextFreeProxyPort(req, taken))
 		})
 	}
+	test("free returns requested", 11435, 11435)
+	test("free with others taken", 11435, 11435, 11434, 1234)
+	test("single collision bumps by one", 11435, 11434, 11434)
+	test("consecutive collisions skip", 11436, 11434, 11434, 11435)
+	test("gap above collision", 11435, 11434, 11434, 11436)
 }

@@ -40,15 +40,9 @@ func TestBrokerLlamaCPPProxySetPortRejectsInvalidPorts(t *testing.T) {
 		}
 	}()
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
-	for i, tc := range []struct{ name, params string }{
-		{"missing port", `{}`},
-		{"zero port", `{"port":0}`},
-		{"negative port", `{"port":-1}`},
-		{"oversized port", `{"port":65536}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			id := 7300 + i
-			_, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:set-port","params":%s}`+"\n", id, tc.params)
+	test := func(name, params string, id int) {
+		t.Run(name, func(t *testing.T) {
+			_, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:set-port","params":%s}`+"\n", id, params)
 			require.NoError(t, err, "write proxy port request")
 			response := waitForResponse(t, msgs, 10*time.Second)
 			require.NotNil(t, response.ID, "response ID")
@@ -58,6 +52,10 @@ func TestBrokerLlamaCPPProxySetPortRejectsInvalidPorts(t *testing.T) {
 			assert.Equal(t, "port must be between 1 and 65535", response.Error.Message)
 		})
 	}
+	test("missing port", `{}`, 7300)
+	test("zero port", `{"port":0}`, 7301)
+	test("negative port", `{"port":-1}`, 7302)
+	test("oversized port", `{"port":65536}`, 7303)
 }
 
 func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
@@ -69,14 +67,16 @@ func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/models":
 			modelListHits.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 				"object": "list",
 				"data":   []map[string]string{{"id": model}},
-			})
+			}))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
 			inferenceHits.Add(1)
-			_, _ = io.Copy(io.Discard, r.Body)
-			_, _ = io.WriteString(w, `{"choices":[]}`)
+			_, err := io.Copy(io.Discard, r.Body)
+			assert.NoError(t, err, "read inference request")
+			_, err = io.WriteString(w, `{"choices":[]}`)
+			assert.NoError(t, err, "write inference response")
 		default:
 			http.NotFound(w, r)
 		}
@@ -104,36 +104,33 @@ func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
-	getModelList := func(t *testing.T, path string) {
-		t.Helper()
-		hitsBefore := modelListHits.Load()
-		response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", proxyPort, path))
-		require.NoError(t, err, "get model list")
-		defer response.Body.Close()
-		var list struct {
-			Object string `json:"object"`
-			Data   []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-		}
-		require.NoError(t, json.NewDecoder(response.Body).Decode(&list), "decode model list")
-		found := false
-		for _, item := range list.Data {
-			if item.ID == model {
-				found = true
+	getModelList := func(name, path string) {
+		t.Run(name, func(t *testing.T) {
+			hitsBefore := modelListHits.Load()
+			response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", proxyPort, path))
+			require.NoError(t, err, "get model list")
+			defer func() { assert.NoError(t, response.Body.Close(), "close model-list response") }()
+			var list struct {
+				Object string `json:"object"`
+				Data   []struct {
+					ID string `json:"id"`
+				} `json:"data"`
 			}
-		}
-		assert.Equal(t, http.StatusOK, response.StatusCode)
-		assert.Equal(t, "list", list.Object)
-		assert.True(t, found, "model list must include the advertised model")
-		assert.Equal(t, hitsBefore+1, modelListHits.Load(), "upstream model-list requests")
+			require.NoError(t, json.NewDecoder(response.Body).Decode(&list), "decode model list")
+			found := false
+			for _, item := range list.Data {
+				if item.ID == model {
+					found = true
+				}
+			}
+			assert.Equal(t, http.StatusOK, response.StatusCode)
+			assert.Equal(t, "list", list.Object)
+			assert.True(t, found, "model list must include the advertised model")
+			assert.Equal(t, hitsBefore+1, modelListHits.Load(), "upstream model-list requests")
+		})
 	}
-	t.Run("remaps OpenAI model list to router inventory", func(t *testing.T) {
-		getModelList(t, "/v1/models")
-	})
-	t.Run("serves router model-list alias", func(t *testing.T) {
-		getModelList(t, "/models")
-	})
+	getModelList("remaps OpenAI model list to router inventory", "/v1/models")
+	getModelList("serves router model-list alias", "/models")
 
 	post := func(t *testing.T, requestedModel string) int {
 		t.Helper()

@@ -127,52 +127,52 @@ func TestOverrideDeepMergePreservesBundled(t *testing.T) {
 // a bundled engine that isn't running: the chosen port is written as a
 // manifest override and a fresh (startup-style) load comes back up on it.
 func TestSetPortPersistsAndRestores(t *testing.T) {
-	for _, tc := range []struct {
-		engine  string
-		port    int
-		bundled int
-	}{
-		{"ollama", 12345, 11434},
-		{"lmstudio", 4321, 1235},
-	} {
-		t.Run(tc.engine, func(t *testing.T) {
+	test := func(engine string, port, bundled int) {
+		t.Run(engine, func(t *testing.T) {
 			dir := t.TempDir()
 			ex := newBundledExecutor(t, dir)
 
-			st, err := ex.SetPort(context.Background(), tc.engine, tc.port)
+			st, err := ex.SetPort(context.Background(), engine, port)
 			require.NoError(t, err, "SetPort")
-			assert.Equal(t, tc.port, st.Port, "returned status port")
+			assert.Equal(t, port, st.Port, "returned status port")
 
 			// The override file is the minimal port delta.
-			data, err := os.ReadFile(filepath.Join(dir, tc.engine+".json"))
+			data, err := os.ReadFile(filepath.Join(dir, engine+".json"))
 			require.NoError(t, err, "override file not written")
 			var got map[string]any
 			require.NoError(t, json.Unmarshal(data, &got), "override file invalid JSON")
 			rt, _ := got["runtime"].(map[string]any)
 			if assert.NotNil(t, rt, "override file runtime.port:") {
-				assert.Equal(t, tc.port, int(rt["port"].(float64)), "override file runtime.port")
+				assert.Equal(t, port, int(rt["port"].(float64)), "override file runtime.port")
 			}
 
 			// Restore: a fresh startup-style load comes up on the chosen port.
-			assert.Equal(t, tc.port, hostPort(t, loadWithOverrides(t, dir), tc.engine), "restored port")
+			assert.Equal(t, port, hostPort(t, loadWithOverrides(t, dir), engine), "restored port")
 
 			// Reverting to the bundled default removes the override entirely.
-			_, err = ex.SetPort(context.Background(), tc.engine, tc.bundled)
+			_, err = ex.SetPort(context.Background(), engine, bundled)
 			require.NoError(t, err, "SetPort revert")
-			_, err = os.Stat(filepath.Join(dir, tc.engine+".json"))
+			_, err = os.Stat(filepath.Join(dir, engine+".json"))
 			assert.ErrorIs(t, err, os.ErrNotExist, "override file should be removed when reverting to default")
-			assert.Equal(t, tc.bundled, hostPort(t, loadWithOverrides(t, dir), tc.engine), "port after revert")
+			assert.Equal(t, bundled, hostPort(t, loadWithOverrides(t, dir), engine), "port after revert")
 		})
 	}
+	test("ollama", 12345, 11434)
+	test("lmstudio", 4321, 1235)
 }
 
 // TestSetPortRejectsOutOfRange guards the validation boundary.
 func TestSetPortRejectsOutOfRange(t *testing.T) {
 	ex := newBundledExecutor(t, t.TempDir())
-	for _, bad := range []int{0, -1, 70000} {
-		_, err := ex.SetPort(context.Background(), "ollama", bad)
-		assert.Error(t, err, "SetPort (%v)", bad)
+	test := func(name string, port int) {
+		t.Run(name, func(t *testing.T) {
+			_, err := ex.SetPort(context.Background(), "ollama", port)
+			assert.Error(t, err)
+		})
 	}
+	test("zero", 0)
+	test("negative", -1)
+	test("above maximum", 70000)
 }
 
 func TestSetPortMovesAdoptedCommandEngine(t *testing.T) {

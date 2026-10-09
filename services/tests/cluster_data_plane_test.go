@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/clustertrust"
@@ -98,9 +99,10 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID
 			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
+		body, readErr := io.ReadAll(r.Body)
+		assert.NoError(t, readErr)
 		var msg jsonrpc.Message
-		if json.Unmarshal(body, &msg) == nil {
+		if assert.NoError(t, json.Unmarshal(body, &msg)) {
 			select {
 			case received <- msg:
 			default:
@@ -157,7 +159,8 @@ func assertPlaintextRefused(t *testing.T, hostPath, body string) {
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, copyErr := io.Copy(io.Discard, resp.Body)
+	assert.NoError(t, copyErr)
 	require.GreaterOrEqual(t, resp.StatusCode, 400, "plaintext request to (%v)", hostPath)
 	t.Logf("plaintext request rejected with HTTP %d", resp.StatusCode)
 }
@@ -230,7 +233,8 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 	// Loopback: this node's own scanner path must keep working while unclustered.
 	resp, err := client.Get("http://127.0.0.1:14322/v1/models")
 	require.NoError(t, err, "loopback model fetch failed")
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	assert.NoError(t, readErr)
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "loopback model fetch: HTTP")
 	t.Logf("loopback model fetch OK: %s", strings.TrimSpace(string(body)))
@@ -242,7 +246,8 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 		t.Logf("LAN plaintext model fetch refused at the transport: %v", err)
 		return
 	}
-	lanBody, _ := io.ReadAll(lanResp.Body)
+	lanBody, readErr := io.ReadAll(lanResp.Body)
+	assert.NoError(t, readErr)
 	lanResp.Body.Close()
 	require.Equal(t, http.StatusForbidden, lanResp.StatusCode, "LAN plaintext model fetch: %s", lanBody)
 }
@@ -306,7 +311,8 @@ func assertForbidden(t *testing.T, client *http.Client, url, body string) {
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, copyErr := io.Copy(io.Discard, resp.Body)
+	assert.NoError(t, copyErr)
 	require.Equal(t, http.StatusForbidden, resp.StatusCode, "unpinned cluster peer got HTTP (%v)", url)
 }
 
@@ -320,7 +326,8 @@ func postUntil(t *testing.T, client *http.Client, url, body string, want int, ti
 		resp, err := client.Post(url, "application/json", strings.NewReader(body))
 		if err == nil {
 			code := resp.StatusCode
-			io.Copy(io.Discard, resp.Body)
+			_, copyErr := io.Copy(io.Discard, resp.Body)
+			assert.NoError(t, copyErr)
 			resp.Body.Close()
 			if code == want {
 				return
