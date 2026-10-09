@@ -80,6 +80,15 @@ This matters most for a genuinely headless deployment, where those operations ha
 no other route on that machine. Refer to
 [What the Terminal Interface Cannot Do](terminal-interface.mdx#what-the-terminal-interface-cannot-do).
 
+## PAIR Does Not Remove an LM Studio an Earlier Version Installed
+
+PAIR removes only the engines it has a record of installing, and versions before
+1.0.0 kept no record. An LM Studio installed by one of those versions is treated
+as your own: **Uninstall**, **Reset app data**, and uninstalling PAIR all leave
+it and `~/.lmstudio` in place. It keeps working with PAIR. To remove it, or to
+let PAIR manage it from now on, refer to
+[If an Earlier PAIR Installed LM Studio for You](upgrade-guide.mdx#if-an-earlier-pair-installed-lm-studio-for-you).
+
 ## Engine Binaries Are Not on Your PATH
 
 PAIR does not add the engines it installs to your `PATH`, so running an engine's

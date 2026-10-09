@@ -230,7 +230,9 @@ Each entry assumes the ones before it.
    together. Start here so the vocabulary in every other document makes sense.
 2. **[Getting started](docs/getting-started.mdx)** — install it, pair two
    machines, prepare a model, and send a first request. This is the only document
-   most users need.
+   most users need. When you update, **[Release notes](docs/release-notes.mdx)**
+   lists what changed and the **[Upgrade guide](docs/upgrade-guide.mdx)** covers
+   any steps the update needs.
 3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
    update, and uninstall engines; what PAIR restores after you quit or relaunch.
 4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and
