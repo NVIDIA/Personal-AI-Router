@@ -4,16 +4,17 @@
 package main
 
 import (
-	"bytes"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
+
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // pairingInfoFor builds an authenticated PairingInfo + parsed cert for a peer
@@ -31,13 +32,9 @@ func pairingInfoFor(t *testing.T, f pinFixture) (*PairingInfo, *x509.Certificate
 		Cert:           f.cert,
 	}
 	raw, err := json.Marshal(pi)
-	if err != nil {
-		t.Fatalf("marshal pairing info: %v", err)
-	}
+	require.NoError(t, err, "marshal pairing info")
 	parsed, cert, err := parsePairingInfo(raw)
-	if err != nil {
-		t.Fatalf("parse pairing info: %v", err)
-	}
+	require.NoError(t, err, "parse pairing info")
 	return parsed, cert
 }
 
@@ -69,22 +66,14 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		m.teardownClusterLocal()
 
 		committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
-		if err != nil {
-			t.Fatalf("commitPairing err: %v", err)
-		}
-		if committed {
-			t.Fatal("commitPairing committed after teardown; pin/member resurrected into an emptied cluster")
-		}
-		if _, ok := m.trust.Get(f.uuid); ok {
-			t.Fatal("joiner pinned after teardown")
-		}
-		if id, _ := m.clusterIdentity(); id != "" {
-			t.Fatalf("clusterId = %q after teardown, want empty", id)
-		}
+		require.NoError(t, err, "commitPairing err")
+		require.False(t, committed, "commitPairing committed after teardown; pin/member resurrected into an emptied cluster")
+		_, ok := m.trust.Get(f.uuid)
+		require.False(t, ok, "joiner pinned after teardown")
+		id, _ := m.clusterIdentity()
+		require.Equal(t, "", id, "clusterId")
 		for _, n := range m.snapshotNodes() {
-			if n.NodeUUID == f.uuid {
-				t.Fatal("joiner recorded as a member after teardown")
-			}
+			require.NotEqual(t, f.uuid, n.NodeUUID, "joiner recorded as a member after teardown")
 		}
 	})
 
@@ -95,31 +84,20 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		sess := putInviterSession(t, m, "inv-happy", "cluster-1")
 
 		committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
-		if err != nil {
-			t.Fatalf("commitPairing err: %v", err)
-		}
-		if !committed {
-			t.Fatal("commitPairing did not commit a normal pairing in the same cluster")
-		}
-		if _, ok := m.trust.Get(f.uuid); !ok {
-			t.Fatal("joiner not pinned after a normal pairing")
-		}
+		require.NoError(t, err, "commitPairing err")
+		require.True(t, committed, "commitPairing did not commit a normal pairing in the same cluster")
+		_, ok := m.trust.Get(f.uuid)
+		require.True(t, ok, "joiner not pinned after a normal pairing")
 		pin, _ := m.trust.Get(f.uuid)
-		if pin.ClusterID != "cluster-1" {
-			t.Fatalf("joiner pin clusterId = %q, want session cluster", pin.ClusterID)
-		}
+		require.Equal(t, "cluster-1", pin.ClusterID, "joiner pin clusterId")
 		found := false
 		for _, n := range m.snapshotNodes() {
 			if n.NodeUUID == f.uuid {
 				found = true
-				if n.ClusterID != "cluster-1" {
-					t.Fatalf("joiner member clusterId = %q, want session cluster", n.ClusterID)
-				}
+				require.Equal(t, "cluster-1", n.ClusterID, "joiner member clusterId")
 			}
 		}
-		if !found {
-			t.Fatal("joiner not recorded as a member after a normal pairing")
-		}
+		require.True(t, found, "joiner not recorded as a member after a normal pairing")
 	})
 
 	t.Run("abandoned session is discarded even when clusterId is unchanged", func(t *testing.T) {
@@ -134,19 +112,12 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		m.deleteSession("inv-abandoned")
 
 		committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
-		if err != nil {
-			t.Fatalf("commitPairing err: %v", err)
-		}
-		if committed {
-			t.Fatal("commitPairing committed for a session the teardown abandoned")
-		}
-		if _, ok := m.trust.Get(f.uuid); ok {
-			t.Fatal("joiner pinned via an abandoned session")
-		}
+		require.NoError(t, err, "commitPairing err")
+		require.False(t, committed, "commitPairing committed for a session the teardown abandoned")
+		_, ok := m.trust.Get(f.uuid)
+		require.False(t, ok, "joiner pinned via an abandoned session")
 		for _, n := range m.snapshotNodes() {
-			if n.NodeUUID == f.uuid {
-				t.Fatal("joiner recorded as a member via an abandoned session")
-			}
+			require.NotEqual(t, f.uuid, n.NodeUUID, "joiner recorded as a member via an abandoned session")
 		}
 	})
 
@@ -175,7 +146,7 @@ func TestCommitPairingEpochGate(t *testing.T) {
 		// run immediately and pin/record the joiner.
 		select {
 		case <-resCh:
-			t.Fatal("commitPairing ran while the teardown boundary was held; not serialized")
+			require.FailNow(t, "commitPairing ran while the teardown boundary was held; not serialized")
 		case <-time.After(300 * time.Millisecond):
 		}
 
@@ -185,21 +156,15 @@ func TestCommitPairingEpochGate(t *testing.T) {
 
 		select {
 		case r := <-resCh:
-			if r.err != nil {
-				t.Fatalf("commitPairing err: %v", r.err)
-			}
-			if r.committed {
-				t.Fatal("commitPairing committed after the racing teardown; pin/member resurrected")
-			}
+			require.Nil(t, r.err, "commitPairing err")
+			require.False(t, r.committed, "commitPairing committed after the racing teardown; pin/member resurrected")
 		case <-time.After(5 * time.Second):
-			t.Fatal("commitPairing did not return after the boundary was released")
+			require.FailNow(t, "commitPairing did not return after the boundary was released")
 		}
-		if _, ok := m.trust.Get(f.uuid); ok {
-			t.Fatal("joiner pinned despite the racing teardown")
-		}
-		if id, _ := m.clusterIdentity(); id != "" {
-			t.Fatalf("clusterId = %q after teardown, want empty", id)
-		}
+		_, ok := m.trust.Get(f.uuid)
+		require.False(t, ok, "joiner pinned despite the racing teardown")
+		id, _ := m.clusterIdentity()
+		require.Equal(t, "", id, "clusterId")
 	})
 }
 
@@ -209,21 +174,16 @@ func TestPairingCommitPersistenceFailureGrantsNoPin(t *testing.T) {
 	pi, cert := pairingInfoFor(t, f)
 	sess := putInviterSession(t, m, "inv-persist-fail", "cluster-1")
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
 	m.clusterDir = blocker
 
 	committed, err := m.commitPairing(sess, pi, cert, time.Now().UnixMilli())
-	if err == nil || committed {
-		t.Fatalf("commit = %v, err = %v; want durable refusal", committed, err)
-	}
-	if _, ok := m.trust.Get(f.uuid); ok {
-		t.Fatal("pairing persistence failure still granted an mTLS pin")
-	}
-	if _, ok := m.memberByNodeID(f.uuid); ok {
-		t.Fatal("pairing persistence failure left an in-memory member")
-	}
+	require.Error(t, err, "commit (%v, %v)", committed, err)
+	require.False(t, committed, "commit (%v, %v)", committed, err)
+	_, ok := m.trust.Get(f.uuid)
+	require.False(t, ok, "pairing persistence failure still granted an mTLS pin")
+	_, ok = m.memberByNodeID(f.uuid)
+	require.False(t, ok, "pairing persistence failure left an in-memory member")
 }
 
 // TestFinalizePairingAbortFailsLingeringInvite covers the post-commit bookkeeping
@@ -244,43 +204,26 @@ func TestFinalizePairingAbortFailsLingeringInvite(t *testing.T) {
 	// invite and session survive) before the Completion lands.
 	m.setClusterIdentity("cluster-2", "Switched")
 
-	err := m.finalizePairing(inviteID, sess, pi, cert)
-	if !errors.Is(err, errPairingCommitStale) {
-		t.Fatalf("finalizePairing error = %v, want stale commit refusal", err)
-	}
+	require.ErrorIs(t, m.finalizePairing(inviteID, sess, pi, cert), errPairingCommitStale, "finalizePairing error")
 
-	if _, ok := m.trust.Get(f.uuid); ok {
-		t.Fatal("joiner pinned after a cluster switch")
-	}
+	_, ok := m.trust.Get(f.uuid)
+	require.False(t, ok, "joiner pinned after a cluster switch")
 	inv, ok := m.getInvite(inviteID)
-	if !ok {
-		t.Fatal("invite missing; want a failed invite record, not a silent drop")
-	}
-	if inv.State != inviteStateFailed {
-		t.Fatalf("invite state = %q, want %q", inv.State, inviteStateFailed)
-	}
-	if _, ok := m.getSession(inviteID); ok {
-		t.Fatal("session not deleted after an aborted completion")
-	}
+	require.True(t, ok, "invite missing; want a failed invite record, not a silent drop")
+	require.Equal(t, inviteStateFailed, inv.State, "invite state")
+	_, ok = m.getSession(inviteID)
+	require.False(t, ok, "session not deleted after an aborted completion")
 }
 
 func TestPairingCommitFailureSuppressesEAPSuccess(t *testing.T) {
 	success := []byte("synthetic-eap-success")
 	rr := httptest.NewRecorder()
 	respondPairingCommit(rr, success, errPairingCommitStale)
-	if rr.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusConflict)
-	}
-	if bytes.Contains(rr.Body.Bytes(), success) {
-		t.Fatal("response leaked EAP-Success after inviter-side commit refusal")
-	}
+	require.Equal(t, http.StatusConflict, rr.Code, "status")
+	require.NotContains(t, rr.Body.String(), string(success), "response leaked EAP-Success after inviter-side commit refusal")
 
 	rr = httptest.NewRecorder()
 	respondPairingCommit(rr, success, nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("success status = %d, want 200", rr.Code)
-	}
-	if !bytes.Contains(rr.Body.Bytes(), []byte("msg")) {
-		t.Fatal("successful commit did not return the pairing frame")
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "success status")
+	require.Contains(t, rr.Body.String(), "msg", "successful commit did not return the pairing frame")
 }

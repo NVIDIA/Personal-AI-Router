@@ -3,7 +3,11 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 const ioRegistryGPUFixture = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -36,36 +40,24 @@ const ioRegistryGPUFixture = `<?xml version="1.0" encoding="UTF-8"?>
 func TestParseIORegistryGPUs(t *testing.T) {
 	const systemMemory = uint64(36 << 30)
 	records, err := parseIORegistryGPUs([]byte(ioRegistryGPUFixture), systemMemory)
-	if err != nil {
-		t.Fatalf("parseIORegistryGPUs() error = %v", err)
-	}
-	if len(records) != 2 {
-		t.Fatalf("got %d records, want 2", len(records))
-	}
+	require.NoError(t, err, "parseIORegistryGPUs() error")
+	require.Len(t, records, 2)
 
 	apple := records[0]
-	if apple.statsKey != "ioreg:2a" || apple.name != "Apple M3 Max" {
-		t.Fatalf("unexpected Apple identity: %+v", apple)
-	}
-	if apple.vramTotal != systemMemory || apple.vramUsed != 8<<30 {
-		t.Fatalf("unexpected Apple memory: %+v", apple)
-	}
-	if apple.utilizationPct != 100 || !apple.utilizationValid {
-		t.Fatalf("Apple utilization = %d valid:%v, want 100/true",
-			apple.utilizationPct, apple.utilizationValid)
-	}
+	require.Equal(t, "ioreg:2a", apple.statsKey, "unexpected Apple identity (%v)", apple)
+	require.Equal(t, "Apple M3 Max", apple.name, "unexpected Apple identity (%v)", apple)
+	require.Equal(t, systemMemory, apple.vramTotal, "unexpected Apple memory (%v)", apple)
+	require.Equal(t, uint64(8<<30), apple.vramUsed, "unexpected Apple memory (%v)", apple)
+	require.Equal(t, uint32(100), apple.utilizationPct, "Apple utilization")
+	require.True(t, apple.utilizationValid, "Apple utilization")
 
 	discrete := records[1]
-	if discrete.statsKey != "ioreg:63" || discrete.name != "AMD Radeon Pro" {
-		t.Fatalf("unexpected discrete identity: %+v", discrete)
-	}
-	if discrete.vramTotal != 8<<30 || discrete.vramUsed != 2<<30 {
-		t.Fatalf("unexpected discrete memory: %+v", discrete)
-	}
-	if discrete.utilizationPct != 25 || !discrete.utilizationValid {
-		t.Fatalf("discrete utilization = %d valid:%v, want 25/true",
-			discrete.utilizationPct, discrete.utilizationValid)
-	}
+	require.Equal(t, "ioreg:63", discrete.statsKey, "unexpected discrete identity (%v)", discrete)
+	require.Equal(t, "AMD Radeon Pro", discrete.name, "unexpected discrete identity (%v)", discrete)
+	require.Equal(t, uint64(8<<30), discrete.vramTotal, "unexpected discrete memory (%v)", discrete)
+	require.Equal(t, uint64(2<<30), discrete.vramUsed, "unexpected discrete memory (%v)", discrete)
+	require.Equal(t, uint32(25), discrete.utilizationPct, "discrete utilization")
+	require.True(t, discrete.utilizationValid, "discrete utilization")
 }
 
 func TestParseIORegistryGPUsRecursesAndOmitsMissingMetrics(t *testing.T) {
@@ -77,20 +69,15 @@ func TestParseIORegistryGPUsRecursesAndOmitsMissingMetrics(t *testing.T) {
 </dict></array>
 </dict></array></plist>`
 	records, err := parseIORegistryGPUs([]byte(fixture), 16<<30)
-	if err != nil {
-		t.Fatalf("parseIORegistryGPUs() error = %v", err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("got %d records, want 1", len(records))
-	}
+	require.NoError(t, err, "parseIORegistryGPUs() error")
+	require.Len(t, records, 1)
 	got := records[0]
-	if got.name != "IntelAccelerator" || got.statsKey != "ioreg:7" {
-		t.Fatalf("unexpected fallback identity: %+v", got)
-	}
-	if got.vramTotal != 0 || got.vramUsed != 0 || got.utilizationPct != 0 ||
-		got.utilizationValid {
-		t.Fatalf("missing metrics should remain zero: %+v", got)
-	}
+	require.Equal(t, "IntelAccelerator", got.name, "unexpected fallback identity (%v)", got)
+	require.Equal(t, "ioreg:7", got.statsKey, "unexpected fallback identity (%v)", got)
+	require.Equal(t, uint64(0), got.vramTotal, "missing metrics should remain zero (%v)", got)
+	require.Equal(t, uint64(0), got.vramUsed, "missing metrics should remain zero (%v)", got)
+	require.Equal(t, uint32(0), got.utilizationPct, "missing metrics should remain zero (%v)", got)
+	require.False(t, got.utilizationValid, "missing metrics should remain zero (%v)", got)
 }
 
 func TestParseIORegistryGPUsPreservesDedicatedCounterPresence(t *testing.T) {
@@ -125,30 +112,22 @@ func TestParseIORegistryGPUsPreservesDedicatedCounterPresence(t *testing.T) {
 </dict>
 </array></plist>`
 	records, err := parseIORegistryGPUs([]byte(fixture), 0)
-	if err != nil {
-		t.Fatalf("parseIORegistryGPUs() error = %v", err)
-	}
-	if len(records) != 3 {
-		t.Fatalf("got %d records, want 3", len(records))
-	}
-	if records[0].vramTotal != 0 || records[0].vramUsed != 1<<30 {
-		t.Fatalf("free-only counters inferred false capacity: %+v", records[0])
-	}
-	if records[0].utilizationValid {
-		t.Fatalf("missing utilization reported valid: %+v", records[0])
-	}
-	if records[1].vramTotal != 8<<30 || records[1].vramUsed != 0 ||
-		records[1].utilizationPct != 0 || !records[1].utilizationValid {
-		t.Fatalf("explicit zero used counter was not preserved: %+v", records[1])
-	}
-	if records[2].vramTotal != 8<<30 || records[2].vramUsed != 3<<30 ||
-		records[2].utilizationPct != 67 || !records[2].utilizationValid {
-		t.Fatalf("alias counters were not normalized: %+v", records[2])
-	}
+	require.NoError(t, err, "parseIORegistryGPUs() error")
+	require.Len(t, records, 3)
+	require.Equal(t, uint64(0), records[0].vramTotal, "free-only counters inferred false capacity")
+	require.Equal(t, uint64(1<<30), records[0].vramUsed, "free-only counters inferred false capacity")
+	require.False(t, records[0].utilizationValid, "missing utilization reported valid")
+	require.Equal(t, uint64(8<<30), records[1].vramTotal, "explicit zero used counter was not preserved")
+	require.Equal(t, uint64(0), records[1].vramUsed, "explicit zero used counter was not preserved")
+	require.Equal(t, uint32(0), records[1].utilizationPct, "explicit zero used counter was not preserved")
+	require.True(t, records[1].utilizationValid, "explicit zero used counter was not preserved")
+	require.Equal(t, uint64(8<<30), records[2].vramTotal, "alias counters were not normalized")
+	require.Equal(t, uint64(3<<30), records[2].vramUsed, "alias counters were not normalized")
+	require.Equal(t, uint32(67), records[2].utilizationPct, "alias counters were not normalized")
+	require.True(t, records[2].utilizationValid, "alias counters were not normalized")
 }
 
 func TestParseIORegistryGPUsRejectsMalformedPlist(t *testing.T) {
-	if _, err := parseIORegistryGPUs([]byte("<plist>"), 0); err == nil {
-		t.Fatal("malformed plist returned nil error")
-	}
+	_, err := parseIORegistryGPUs([]byte("<plist>"), 0)
+	require.Error(t, err, "malformed plist returned nil error")
 }

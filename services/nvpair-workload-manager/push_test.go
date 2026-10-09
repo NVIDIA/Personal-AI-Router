@@ -9,6 +9,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func lifecycleFrame(id, state, method, origin string) json.RawMessage {
@@ -36,24 +39,15 @@ func TestResyncBypassesReceiverDedup(t *testing.T) {
 
 	// Normal frame: emitted once.
 	normal, _ := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: mustJSON(map[string]json.RawMessage{"workloadInfo": wiRaw})})
-	if code := post(normal); code != http.StatusOK {
-		t.Fatalf("normal post = %d, want 200", code)
-	}
-	if emitCount() != 1 {
-		t.Fatalf("emits after first = %d, want 1", emitCount())
-	}
+	assert.Equal(t, http.StatusOK, post(normal))
+	assert.Equal(t, 1, emitCount(), "emits after first post")
 	// Same frame again: deduped, not re-emitted.
-	if code := post(normal); code != http.StatusOK || emitCount() != 1 {
-		t.Fatalf("repeat post: code=%d emits=%d, want 200/1 (deduped)", code, emitCount())
-	}
+	assert.Equal(t, http.StatusOK, post(normal))
+	assert.Equal(t, 1, emitCount(), "repeat post must dedup")
 	// Re-sync frame (same key + state): bypasses dedup, reaches the broker.
 	resync, _ := json.Marshal(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: mustJSON(map[string]json.RawMessage{"workloadInfo": wiRaw, "resync": json.RawMessage("true")})})
-	if code := post(resync); code != http.StatusOK {
-		t.Fatalf("resync post = %d, want 200", code)
-	}
-	if emitCount() != 2 {
-		t.Fatalf("emits after resync = %d, want 2 (resync must bypass dedup)", emitCount())
-	}
+	assert.Equal(t, http.StatusOK, post(resync))
+	assert.Equal(t, 2, emitCount(), "resync must bypass dedup")
 }
 
 func mustJSON(v any) json.RawMessage {
@@ -71,21 +65,15 @@ func TestActiveSnapshotTracking(t *testing.T) {
 
 	m.trackActive(k1, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "node-a"), StateRunning)
 	m.trackActive(k2, MethodStarted, lifecycleFrame("2", "running", MethodStarted, "node-a"), StateRunning)
-	if got := len(m.activeSnapshot()); got != 2 {
-		t.Fatalf("count = %d, want 2", got)
-	}
+	assert.Len(t, m.activeSnapshot(), 2)
 
 	// A terminal is retained (for re-sync redundancy), not dropped.
 	m.trackActive(k1, MethodErrored, lifecycleFrame("1", "failed", MethodErrored, "node-a"), StateFailed)
-	if got := len(m.activeSnapshot()); got != 2 {
-		t.Fatalf("count after terminal = %d, want 2 (terminal retained)", got)
-	}
+	assert.Len(t, m.activeSnapshot(), 2, "terminal must be retained")
 
 	// A removal drops immediately (matches on origin+id).
 	m.untrackActive("node-a", "2")
-	if got := len(m.activeSnapshot()); got != 1 {
-		t.Fatalf("count after removal = %d, want 1", got)
-	}
+	assert.Len(t, m.activeSnapshot(), 1, "removal must drop immediately")
 
 	// Once a terminal's retention expires, the snapshot prunes it.
 	m.activeMu.Lock()
@@ -93,9 +81,7 @@ func TestActiveSnapshotTracking(t *testing.T) {
 	e.expiresAt = time.Now().Add(-time.Minute)
 	m.activeLocal[k1] = e
 	m.activeMu.Unlock()
-	if got := len(m.activeSnapshot()); got != 0 {
-		t.Fatalf("count after terminal expiry = %d, want 0", got)
-	}
+	assert.Empty(t, m.activeSnapshot(), "expired terminal must be pruned")
 }
 
 // TestActiveSnapshotDistinguishesEngineAndRun: the re-sync set keys on engine +
@@ -108,14 +94,10 @@ func TestActiveSnapshotDistinguishesEngineAndRun(t *testing.T) {
 	m.trackActive(workloadKey{origin: "a", engine: "ollama", runID: "r1", id: "1"}, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
 	m.trackActive(workloadKey{origin: "a", engine: "lmstudio", runID: "r2", id: "1"}, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
 	m.trackActive(workloadKey{origin: "a", engine: "ollama", runID: "r3", id: "1"}, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
-	if got := len(m.activeSnapshot()); got != 3 {
-		t.Fatalf("count = %d, want 3 (engine + runId keep same-id workloads distinct)", got)
-	}
+	assert.Len(t, m.activeSnapshot(), 3, "engine and runId must keep workloads distinct")
 
 	m.untrackActive("a", "1")
-	if got := len(m.activeSnapshot()); got != 0 {
-		t.Fatalf("count after removal = %d, want 0 (removal drops every composite key for the pair)", got)
-	}
+	assert.Empty(t, m.activeSnapshot(), "removal must drop every composite key for the pair")
 }
 
 // TestTrackActiveMonotonicTerminal: once an identity is terminal in the re-sync
@@ -130,13 +112,7 @@ func TestTrackActiveMonotonicTerminal(t *testing.T) {
 	m.trackActive(k, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
 
 	snap := m.activeSnapshot()
-	if len(snap) != 1 {
-		t.Fatalf("count = %d, want 1", len(snap))
-	}
-	if !snap[0].terminal {
-		t.Fatal("a stale running overwrote the terminal in the re-sync set")
-	}
-	if snap[0].expiresAt.IsZero() {
-		t.Fatal("terminal event lost its expiry (a running with no expiry overwrote it)")
-	}
+	require.Len(t, snap, 1)
+	assert.True(t, snap[0].terminal, "a stale running must not overwrite the terminal")
+	assert.False(t, snap[0].expiresAt.IsZero(), "terminal must retain its expiry")
 }

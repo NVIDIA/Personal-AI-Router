@@ -9,10 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type routingUpstream struct {
@@ -121,35 +123,23 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", tc.port, tc.path)
 			resp, err := client.Post(endpoint, "application/json",
 				bytes.NewBufferString(fmt.Sprintf(`{"model":%q,"messages":[]}`, targetModel)))
-			if err != nil {
-				t.Fatalf("target-model request failed: %v", err)
-			}
+			require.NoError(t, err, "target-model request failed")
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("target-model response = %d %s, want owner failover success", resp.StatusCode, body)
-			}
+			require.Equal(t, http.StatusOK, resp.StatusCode, "target-model response (%v)", body)
 			after := snapshot()
-			if after[0] != before[0]+1 || after[1] != before[1]+1 || after[2] != before[2] {
-				t.Fatalf("target-model hit deltas = %v -> %v, want owner 404/200 once and ineligible zero",
-					before, after)
-			}
+			require.Equal(t, [3]int32{before[0] + 1, before[1] + 1, before[2]}, after, "target-model hit deltas")
 
 			before = snapshot()
 			resp, err = client.Post(endpoint, "application/json",
 				bytes.NewBufferString(`{"model":"no-advertised-owner","messages":[]}`))
-			if err != nil {
-				t.Fatalf("ownerless request failed: %v", err)
-			}
+			require.NoError(t, err, "ownerless request failed")
 			body, _ = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusBadGateway ||
-				!strings.Contains(string(body), "no available node advertises the requested model") {
-				t.Fatalf("ownerless response = %d %s, want actionable local 502", resp.StatusCode, body)
-			}
-			if after = snapshot(); after != before {
-				t.Fatalf("ownerless request reached an upstream: hits %v -> %v", before, after)
-			}
+			require.Equal(t, http.StatusBadGateway, resp.StatusCode, "ownerless response (%v)", body)
+			require.Contains(t, string(body), "no available node advertises the requested model", "ownerless response")
+			after = snapshot()
+			require.Equal(t, before, after, "ownerless request reached an upstream")
 		})
 	}
 }

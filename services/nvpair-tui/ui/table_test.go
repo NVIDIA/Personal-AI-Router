@@ -10,6 +10,8 @@ import (
 	svcerrors "nvpair-shared/errors"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestTruncate covers the cut and its edges. It counts runes, not bytes: GPU
@@ -35,12 +37,8 @@ func TestTruncate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := truncate(tc.in, tc.max)
-			if got != tc.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
-			}
-			if !utf8.ValidString(got) {
-				t.Errorf("truncate(%q, %d) produced invalid UTF-8: %q", tc.in, tc.max, got)
-			}
+			assert.Equal(t, tc.want, got)
+			assert.True(t, utf8.ValidString(got), "truncate must produce valid UTF-8")
 		})
 	}
 }
@@ -107,9 +105,7 @@ func TestLayoutColumnsFillsWidthExactly(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := rendered(tc.cols, tc.total); got != tc.total {
-				t.Errorf("row consumes %d columns, terminal is %d", got, tc.total)
-			}
+			assert.Equal(t, tc.total, rendered(tc.cols, tc.total), "row must consume the terminal width")
 		})
 	}
 }
@@ -121,12 +117,8 @@ func TestLayoutColumnsWeightedFlex(t *testing.T) {
 	got := layoutColumns(60, cols)
 
 	// budget 60-4=56, minimums 20, surplus 36 split 1:3 -> +9 / +27.
-	if got[0].Width != 19 {
-		t.Errorf("ID width = %d, want 19", got[0].Width)
-	}
-	if got[1].Width != 37 {
-		t.Errorf("MESSAGE width = %d, want 37", got[1].Width)
-	}
+	assert.Equal(t, 19, got[0].Width)
+	assert.Equal(t, 37, got[1].Width)
 }
 
 // TestLayoutColumnsNarrowTerminal checks a terminal too narrow for the
@@ -136,12 +128,8 @@ func TestLayoutColumnsNarrowTerminal(t *testing.T) {
 	cols := []column{fixedCol("SEV", 9), flexCol("MESSAGE", 10, 1)}
 	for _, total := range []int{0, 1, 10, 20} {
 		got := layoutColumns(total, cols)
-		if got[0].Width != 9 {
-			t.Errorf("total=%d: SEV width = %d, want the declared 9", total, got[0].Width)
-		}
-		if got[1].Width != 10 {
-			t.Errorf("total=%d: MESSAGE width = %d, want the 10 minimum", total, got[1].Width)
-		}
+		assert.Equal(t, 9, got[0].Width, "total=%d: SEV must retain its declared width", total)
+		assert.Equal(t, 10, got[1].Width, "total=%d: MESSAGE must retain its minimum width", total)
 	}
 }
 
@@ -150,9 +138,7 @@ func TestLayoutColumnsNarrowTerminal(t *testing.T) {
 func TestLayoutColumnsHonoursMinimum(t *testing.T) {
 	cols := []column{fixedCol("WIDE", 50), flexCol("REST", 12, 1)}
 	got := layoutColumns(40, cols)
-	if got[1].Width < 12 {
-		t.Errorf("REST width = %d, want at least the 12 minimum", got[1].Width)
-	}
+	assert.GreaterOrEqual(t, got[1].Width, 12, "REST must retain its minimum width")
 }
 
 // TestViewsAcceptRowsBeforeResize guards a panic every table view was exposed
@@ -211,13 +197,9 @@ func TestEveryTableViewHasColumnsAtConstruction(t *testing.T) {
 		"service workers":       serviceWorkerColumns(defaultTableWidth),
 	}
 	for name, cols := range widths {
-		if len(cols) == 0 {
-			t.Errorf("%s: no columns", name)
-		}
+		assert.NotEmpty(t, cols, "%s: no columns", name)
 		for _, c := range cols {
-			if c.Width < minCellWidth {
-				t.Errorf("%s: column %q width %d below minimum", name, c.Title, c.Width)
-			}
+			assert.GreaterOrEqual(t, c.Width, minCellWidth, "%s: column %q", name, c.Title)
 		}
 	}
 }
@@ -276,12 +258,8 @@ func assertRowWidths(t *testing.T, m table.Model) {
 	t.Helper()
 	cols := len(m.Columns())
 	rows := m.Rows()
-	if len(rows) == 0 {
-		t.Fatal("no rows to check; the fixture did not populate the table")
-	}
+	require.NotEmpty(t, rows, "no rows to check; the fixture did not populate the table")
 	for i, row := range rows {
-		if len(row) != cols {
-			t.Errorf("row %d has %d cell(s), table has %d column(s)", i, len(row), cols)
-		}
+		assert.Len(t, row, cols, "row %d must match the table's columns", i)
 	}
 }

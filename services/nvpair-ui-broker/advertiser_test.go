@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
@@ -21,12 +24,12 @@ import (
 // running without engine-manager still advertises at the sensible default.
 func TestLocalEnginePortFallback(t *testing.T) {
 	b := &Broker{} // no engine-manager worker
-	if got, ok := b.localEnginePort("ollama", defaultOllamaPort); !ok || got != defaultOllamaPort {
-		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultOllamaPort)
-	}
-	if got, ok := b.localEnginePort("lmstudio", defaultLMStudioPort); !ok || got != defaultLMStudioPort {
-		t.Errorf("no engine-manager: localEnginePort = (%d, %v), want (%d, true)", got, ok, defaultLMStudioPort)
-	}
+	got, ok := b.localEnginePort("ollama", defaultOllamaPort)
+	assert.True(t, ok, "no engine-manager: Ollama port fallback")
+	assert.Equal(t, defaultOllamaPort, got, "no engine-manager: Ollama port fallback")
+	got, ok = b.localEnginePort("lmstudio", defaultLMStudioPort)
+	assert.True(t, ok, "no engine-manager: LM Studio port fallback")
+	assert.Equal(t, defaultLMStudioPort, got, "no engine-manager: LM Studio port fallback")
 }
 
 func TestRunningEnginePort(t *testing.T) {
@@ -43,9 +46,8 @@ func TestRunningEnginePort(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			port, ok := runningEnginePort([]byte(tc.raw))
-			if port != tc.port || ok != tc.ok {
-				t.Fatalf("runningEnginePort = (%d, %v), want (%d, %v)", port, ok, tc.port, tc.ok)
-			}
+			require.Equal(t, tc.port, port, "runningEnginePort")
+			require.Equal(t, tc.ok, ok, "runningEnginePort")
 		})
 	}
 }
@@ -80,16 +82,13 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 	// A nil client is intentional: collision detection must short-circuit before
 	// any health request can mistake the proxy for LM Studio.
 	b.reconcileAdvertiseLMStudio(nil)
-	if got := b.regCache.Snapshot(); len(got) != 0 {
-		t.Fatalf("LM Studio proxy was advertised as an engine: %+v", got)
-	}
+	require.Empty(t, b.regCache.Snapshot(), "LM Studio proxy was advertised as an engine")
 	select {
 	case got := <-localBackend:
-		if got.Port != 0 || got.Healthy {
-			t.Fatalf("proxy listener was retained as the local backend: %+v", got)
-		}
+		require.Equal(t, 0, got.Port, "proxy listener was retained as the local backend (%v)", got)
+		require.False(t, got.Healthy, "proxy listener was retained as the local backend (%v)", got)
 	case <-time.After(2 * time.Second):
-		t.Fatal("LM Studio proxy did not receive a cleared local backend")
+		require.FailNow(t, "LM Studio proxy did not receive a cleared local backend")
 	}
 }
 
@@ -106,9 +105,7 @@ func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 	// the cache with defaultLMStudioPort.
 	b.reconcileAdvertiseLMStudio(nil)
 
-	if got := int(b.lmstudioState().backendPort.Load()); got != managedLMStudioBackendStart {
-		t.Fatalf("backend cache = %d, want %d (fallback must not overwrite the confirmed backend)", got, managedLMStudioBackendStart)
-	}
+	require.Equal(t, managedLMStudioBackendStart, int(b.lmstudioState().backendPort.Load()), "fallback must not overwrite the confirmed backend")
 }
 
 func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
@@ -117,13 +114,9 @@ func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
 	}))
 	defer backend.Close()
 	_, portText, err := net.SplitHostPort(backend.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	backendPort, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	proxyPort := 44000
 	if backendPort == proxyPort {
 		proxyPort++
@@ -138,22 +131,20 @@ func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
 
 	b.reconcileAdvertiseEngine(profile, backend.Client())
 	registrations := b.regCache.Snapshot()
-	if len(registrations) != 1 || registrations[0].Service != profile.DiscoveryService ||
-		registrations[0].Port != proxyPort {
-		t.Fatalf("healthy registration = %+v, want %s on %d", registrations, profile.DiscoveryService, proxyPort)
-	}
-	if got := <-updates; !got.Healthy || got.Port != backendPort || got.Engine != profile.Name {
-		t.Fatalf("healthy local backend = %+v", got)
-	}
+	require.Len(t, registrations, 1, "healthy registration")
+	assert.Equal(t, profile.DiscoveryService, registrations[0].Service)
+	assert.Equal(t, proxyPort, registrations[0].Port)
+	update := <-updates
+	assert.True(t, update.Healthy, "healthy local backend")
+	assert.Equal(t, backendPort, update.Port)
+	assert.Equal(t, profile.Name, update.Engine)
 
 	backend.Close()
 	b.reconcileAdvertiseEngine(profile, backend.Client())
-	if got := b.regCache.Snapshot(); len(got) != 0 {
-		t.Fatalf("unhealthy engine remained advertised: %+v", got)
-	}
-	if got := <-updates; got.Healthy || got.Port != backendPort {
-		t.Fatalf("unhealthy local backend = %+v", got)
-	}
+	assert.Empty(t, b.regCache.Snapshot(), "unhealthy engine remained advertised")
+	update = <-updates
+	assert.False(t, update.Healthy, "unhealthy local backend")
+	assert.Equal(t, backendPort, update.Port)
 }
 
 func TestEngineAdvertiserRejectsSelfForwardLoop(t *testing.T) {
@@ -168,12 +159,8 @@ func TestEngineAdvertiserRejectsSelfForwardLoop(t *testing.T) {
 	// A nil client proves the collision check short-circuits before probing the
 	// facade as though it were the backend.
 	b.reconcileAdvertiseEngine(profile, nil)
-	if got := b.regCache.Snapshot(); len(got) != 0 {
-		t.Fatalf("self-forwarding facade remained advertised: %+v", got)
-	}
-	if got := <-updates; got.Healthy {
-		t.Fatalf("self-forwarding backend remained healthy: %+v", got)
-	}
+	assert.Empty(t, b.regCache.Snapshot(), "self-forwarding facade remained advertised")
+	assert.False(t, (<-updates).Healthy, "self-forwarding backend remained healthy")
 }
 
 func attachAdvertiserProxy(
@@ -217,31 +204,21 @@ func attachAdvertiserProxy(
 // so the self-forward collision check (port == proxy port) never falsely trips.
 func TestProxyListenPortNoProxy(t *testing.T) {
 	b := &Broker{} // no proxy worker
-	if got := b.proxyListenPort(); got != 0 {
-		t.Errorf("no proxy: proxyListenPort = %d, want 0", got)
-	}
+	assert.Equal(t, 0, b.proxyListenPort(), "no proxy: proxyListenPort")
 }
 
 func TestOllamaFacadeIsPendingBackend(t *testing.T) {
 	b := &Broker{}
 	b.ollamaState().managedFacade.Store(true)
 	b.ollamaState().backendPort.Store(managedOllamaFacadePort)
-	if !b.ollamaFacadeIsPendingBackend() {
-		t.Fatal("managed facade must block liveness probes while the backend still points at 11434")
-	}
+	require.True(t, b.ollamaFacadeIsPendingBackend(), "managed facade must block liveness probes while the backend still points at 11434")
 	b.ollamaState().backendPort.Store(11435)
-	if b.ollamaFacadeIsPendingBackend() {
-		t.Fatal("liveness probes should resume after the backend moves off 11434")
-	}
+	require.False(t, b.ollamaFacadeIsPendingBackend(), "liveness probes should resume after the backend moves off 11434")
 	b.managedOllamaBackend.Store(11436)
-	if !b.ollamaFacadeIsPendingBackend() {
-		t.Fatal("a pending 11435 to 11436 move must keep liveness probes gated")
-	}
+	require.True(t, b.ollamaFacadeIsPendingBackend(), "a pending 11435 to 11436 move must keep liveness probes gated")
 	b.managedOllamaBackend.Store(0)
 	b.ollamaMoveInFlight.Store(true)
-	if !b.ollamaFacadeIsPendingBackend() {
-		t.Fatal("an in-flight backend move must keep liveness probes gated")
-	}
+	require.True(t, b.ollamaFacadeIsPendingBackend(), "an in-flight backend move must keep liveness probes gated")
 	b.ollamaMoveInFlight.Store(false)
 
 	b.ollamaState().managedFacade.Store(false)
@@ -249,7 +226,5 @@ func TestOllamaFacadeIsPendingBackend(t *testing.T) {
 	b.setProxy(&proxyProcess{
 		facadeState: readyFacade(ollamaProxyProfile.Name, managedOllamaFacadePort),
 	})
-	if !b.ollamaFacadeIsPendingBackend() {
-		t.Fatal("recovery must keep probes blocked until the proxy vacates 11434")
-	}
+	require.True(t, b.ollamaFacadeIsPendingBackend(), "recovery must keep probes blocked until the proxy vacates 11434")
 }

@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -21,15 +24,9 @@ func TestDiscoveryStoreRekeysOnRename(t *testing.T) {
 	s.Upsert(EnrichedNode{ID: "new-host", HostUUID: uuid}, sourceScanner)
 
 	snap := s.Snapshot()
-	if len(snap) != 1 {
-		t.Fatalf("a rename must not duplicate the node: got %d entries, want 1", len(snap))
-	}
-	if snap[0].ID != "new-host" {
-		t.Fatalf("store did not track the new name: got id=%q want %q", snap[0].ID, "new-host")
-	}
-	if snap[0].HostUUID != uuid {
-		t.Fatalf("hostUuid not projected to the wire: got %q want %q", snap[0].HostUUID, uuid)
-	}
+	require.Len(t, snap, 1, "a rename must not duplicate the node")
+	require.Equal(t, "new-host", snap[0].ID, "store did not track the new name")
+	require.Equal(t, uuid, snap[0].HostUUID, "hostUuid not projected to the wire")
 }
 
 // TestDiscoveryStoreDistinctUUIDsSameName verifies the same-hostname collision
@@ -38,9 +35,7 @@ func TestDiscoveryStoreDistinctUUIDsSameName(t *testing.T) {
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "aaaaaaaa-0000-0000-0000-000000000001"}, sourceScanner)
 	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "bbbbbbbb-0000-0000-0000-000000000002"}, sourceScanner)
-	if got := len(s.Snapshot()); got != 2 {
-		t.Fatalf("two machines sharing a hostname must not merge: got %d entries, want 2", got)
-	}
+	require.Len(t, s.Snapshot(), 2, "two machines sharing a hostname must not merge")
 }
 
 // TestManualToEnrichedHostUUID verifies the manual-node ingestion boundary: a
@@ -48,13 +43,9 @@ func TestDiscoveryStoreDistinctUUIDsSameName(t *testing.T) {
 // by its manual id until then.
 func TestManualToEnrichedHostUUID(t *testing.T) {
 	withUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9", HostUUID: "real-uuid"})
-	if withUUID.storeKey() != "real-uuid" {
-		t.Fatalf("store key = %q, want the real hostUuid", withUUID.storeKey())
-	}
+	require.Equal(t, "real-uuid", withUUID.storeKey(), "store key")
 	noUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9"})
-	if noUUID.storeKey() != "manual:10.0.0.9" {
-		t.Fatalf("store key = %q, want the manual id fallback", noUUID.storeKey())
-	}
+	require.Equal(t, "manual:10.0.0.9", noUUID.storeKey(), "store key")
 }
 
 // TestDiscoveryStoreRejectsEmptyKey verifies a node with no operational key is
@@ -62,9 +53,7 @@ func TestManualToEnrichedHostUUID(t *testing.T) {
 func TestDiscoveryStoreRejectsEmptyKey(t *testing.T) {
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "no-uuid"}, sourceManual) // HostUUID empty
-	if got := len(s.Snapshot()); got != 0 {
-		t.Fatalf("a node with no hostUuid must be dropped, got %d entries", got)
-	}
+	require.Empty(t, s.Snapshot(), "a node with no hostUuid must be dropped")
 }
 
 // TestDiscoveryStoreSourceOwnership verifies that a manual node and an mDNS
@@ -80,26 +69,18 @@ func TestDiscoveryStoreSourceOwnership(t *testing.T) {
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid, Port: 14318}, sourceScanner)
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid, Port: 14318}, sourceManual)
-	if got := len(s.Snapshot()); got != 1 {
-		t.Fatalf("shared uuid should be one record, got %d", got)
-	}
+	require.Len(t, s.Snapshot(), 1, "shared uuid should be one record")
 	s.Remove(uuid, sourceManual)
-	if got := len(s.Snapshot()); got != 1 {
-		t.Fatalf("removing the manual claim evicted the live scanner node (got %d entries)", got)
-	}
+	require.Len(t, s.Snapshot(), 1, "removing the manual claim evicted the live scanner node")
 	s.Remove(uuid, sourceScanner)
-	if got := len(s.Snapshot()); got != 0 {
-		t.Fatalf("record should be gone once no source claims it, got %d", got)
-	}
+	require.Empty(t, s.Snapshot(), "record should be gone once no source claims it")
 
 	// Symmetric: removing the scanner claim leaves the manual node.
 	s = newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceManual)
 	s.Remove(uuid, sourceScanner)
-	if got := len(s.Snapshot()); got != 1 {
-		t.Fatalf("removing the scanner claim evicted the manual node (got %d entries)", got)
-	}
+	require.Len(t, s.Snapshot(), 1, "removing the scanner claim evicted the manual node")
 }
 
 // TestDiscoveryStoreScannerProjectionWins: when both sources claim a node, the
@@ -111,18 +92,14 @@ func TestDiscoveryStoreScannerProjectionWins(t *testing.T) {
 	s.Upsert(EnrichedNode{ID: "manual-host", HostUUID: uuid, Trusted: false}, sourceManual)
 	s.Upsert(EnrichedNode{ID: "mdns-host", HostUUID: uuid, Trusted: true}, sourceScanner)
 	snap := s.Snapshot()
-	if len(snap) != 1 {
-		t.Fatalf("want one record, got %d", len(snap))
-	}
-	if snap[0].ID != "mdns-host" || !snap[0].Trusted {
-		t.Fatalf("scanner projection should win when both claim: %+v", snap[0])
-	}
+	require.Len(t, snap, 1, "want one record")
+	require.Equal(t, "mdns-host", snap[0].ID, "scanner projection should win when both claim")
+	require.True(t, snap[0].Trusted, "scanner projection should win when both claim")
 	// Drop the scanner claim: the manual projection takes over.
 	s.Remove(uuid, sourceScanner)
 	snap = s.Snapshot()
-	if len(snap) != 1 || snap[0].ID != "manual-host" {
-		t.Fatalf("manual projection should surface after scanner removal: %+v", snap)
-	}
+	require.Len(t, snap, 1, "manual projection should surface after scanner removal")
+	require.Equal(t, "manual-host", snap[0].ID, "manual projection should surface after scanner removal (%v)", snap)
 }
 
 func newManualTestBroker() *Broker {
@@ -158,26 +135,18 @@ func TestManualAliasesShareKeyUntilLastRemoved(t *testing.T) {
 			b := newManualTestBroker()
 			b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", uuid))
 			b.upsertManualNode(manualStatus("alias-b", "10.0.0.2", uuid))
-			if got := len(b.store.Snapshot()); got != 1 {
-				t.Fatalf("two aliases for one machine should be one record, got %d", got)
-			}
+			require.Len(t, b.store.Snapshot(), 1, "two aliases for one machine should be one record")
 
 			b.removeManualNode(tc.removeFirst)
 			snap := b.store.Snapshot()
-			if len(snap) != 1 {
-				t.Fatalf("removing one of two aliases evicted the shared node (got %d)", len(snap))
-			}
+			require.Len(t, snap, 1, "removing one of two aliases evicted the shared node")
 			// The surviving alias must be reprojected: its id and address, not
 			// the removed alias's stale payload.
-			if snap[0].ID != tc.survivorID || snap[0].IPAddress != tc.survivorAddr {
-				t.Fatalf("survivor not reprojected: got id=%q ip=%q, want id=%q ip=%q",
-					snap[0].ID, snap[0].IPAddress, tc.survivorID, tc.survivorAddr)
-			}
+			require.Equal(t, tc.survivorID, snap[0].ID, "survivor not reprojected")
+			require.Equal(t, tc.survivorAddr, snap[0].IPAddress, "survivor not reprojected")
 
 			b.removeManualNode(tc.survivorID)
-			if got := len(b.store.Snapshot()); got != 0 {
-				t.Fatalf("record should be gone once the last alias left, got %d", got)
-			}
+			require.Empty(t, b.store.Snapshot(), "record should be gone once the last alias left")
 		})
 	}
 }
@@ -197,9 +166,7 @@ func TestManualRekeyReprojectsSharedOldKey(t *testing.T) {
 	b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", "alias-a-uuid"))
 
 	snap := b.store.Snapshot()
-	if len(snap) != 2 {
-		t.Fatalf("want two records (shared survivor + rekeyed alias), got %d", len(snap))
-	}
+	require.Len(t, snap, 2, "want two records (shared survivor + rekeyed alias)")
 	// The shared key must now project alias-b (the surviving owner).
 	var sharedNode *AvailableNode
 	for i := range snap {
@@ -207,12 +174,9 @@ func TestManualRekeyReprojectsSharedOldKey(t *testing.T) {
 			sharedNode = &snap[i]
 		}
 	}
-	if sharedNode == nil {
-		t.Fatalf("shared key %q dropped after a co-owner rekeyed away", shared)
-	}
-	if sharedNode.ID != "alias-b" || sharedNode.IPAddress != "10.0.0.2" {
-		t.Fatalf("shared key not reprojected from the surviving alias: %+v", *sharedNode)
-	}
+	require.NotNil(t, sharedNode, "shared key (%v)", shared)
+	require.Equal(t, "alias-b", sharedNode.ID, "shared key not reprojected from the surviving alias")
+	require.Equal(t, "10.0.0.2", sharedNode.IPAddress, "shared key not reprojected from the surviving alias")
 }
 
 // TestDiscoveryStoreRemoveWrongSourceNoop: removing a source that never claimed
@@ -221,12 +185,9 @@ func TestDiscoveryStoreRemoveWrongSourceNoop(t *testing.T) {
 	const uuid = "u"
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
-	if s.Remove(uuid, sourceManual) { // manual never claimed it
-		t.Fatal("removing an unowned source must report false (nothing removed)")
-	}
-	if got := len(s.Snapshot()); got != 1 {
-		t.Fatalf("removing an unowned source must not drop the record, got %d", got)
-	}
+	// manual never claimed it
+	require.False(t, s.Remove(uuid, sourceManual), "removing an unowned source must report false (nothing removed)")
+	assert.Len(t, s.Snapshot(), 1, "removing an unowned source must not drop the record")
 }
 
 // TestDiscoveryStoreRemoveReportsFinalClaim: Remove reports whether it dropped
@@ -237,15 +198,9 @@ func TestDiscoveryStoreRemoveReportsFinalClaim(t *testing.T) {
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceManual)
 
-	if s.Remove(uuid, sourceScanner) {
-		t.Fatal("removing one of two claims must report false (node still present)")
-	}
-	if s.Remove(uuid, sourceManual) == false {
-		t.Fatal("removing the surviving claim must report true (node now gone)")
-	}
-	if s.Remove(uuid, sourceScanner) {
-		t.Fatal("removing from an absent record must report false")
-	}
+	require.False(t, s.Remove(uuid, sourceScanner), "removing one of two claims must report false (node still present)")
+	require.True(t, s.Remove(uuid, sourceManual), "removing the surviving claim must report true (node now gone)")
+	require.False(t, s.Remove(uuid, sourceScanner), "removing from an absent record must report false")
 }
 
 // nodeRemovedFrame builds the params of a discovery:node-removed for a node with
@@ -253,9 +208,7 @@ func TestDiscoveryStoreRemoveReportsFinalClaim(t *testing.T) {
 func nodeRemovedFrame(t *testing.T, name, uuid string) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(noderec.NodeEvent{Node: noderec.DirectoryNode{Name: name, HostUUID: uuid}})
-	if err != nil {
-		t.Fatalf("marshal node event: %v", err)
-	}
+	require.NoError(t, err, "marshal node event")
 	return b
 }
 
@@ -274,12 +227,8 @@ func TestHandleNotifyNodeLostOnlyOnFinalClaim(t *testing.T) {
 
 	sp.handleNotify(noderec.NotifyNodeRemoved, nodeRemovedFrame(t, "peer-friendly-name", uuid))
 
-	if calls != 0 {
-		t.Fatalf("onNodeLost fired %d time(s) for a node still held by a manual claim, want 0", calls)
-	}
-	if got := len(store.Snapshot()); got != 1 {
-		t.Fatalf("dual-source node should remain after one source leaves, got %d entries", got)
-	}
+	require.Equal(t, 0, calls, "onNodeLost fired")
+	require.Len(t, store.Snapshot(), 1, "dual-source node should remain after one source leaves")
 }
 
 // TestHandleNotifyNodeLostUsesHostUUID: removing a node's final claim fires the
@@ -297,15 +246,9 @@ func TestHandleNotifyNodeLostUsesHostUUID(t *testing.T) {
 
 	sp.handleNotify(noderec.NotifyNodeRemoved, nodeRemovedFrame(t, name, uuid))
 
-	if calls != 1 {
-		t.Fatalf("onNodeLost calls = %d, want 1 (final claim removed)", calls)
-	}
-	if gotUUID != uuid {
-		t.Errorf("onNodeLost uuid = %q, want %q (must be HostUUID, not the hostname)", gotUUID, uuid)
-	}
-	if gotName != name {
-		t.Errorf("onNodeLost name = %q, want %q", gotName, name)
-	}
+	require.Equal(t, 1, calls, "onNodeLost calls")
+	assert.Equal(t, uuid, gotUUID, "onNodeLost must use HostUUID, not the hostname")
+	assert.Equal(t, name, gotName, "onNodeLost name")
 }
 
 func TestScannerProcessRoutesAndRemovesTelemetry(t *testing.T) {
@@ -316,9 +259,7 @@ func TestScannerProcessRoutesAndRemovesTelemetry(t *testing.T) {
 		MSSince:           137,
 	}
 	params, err := json.Marshal(want)
-	if err != nil {
-		t.Fatalf("marshal telemetry: %v", err)
-	}
+	require.NoError(t, err, "marshal telemetry")
 
 	var got noderec.NodeTelemetry
 	var removed string
@@ -327,15 +268,11 @@ func TestScannerProcessRoutesAndRemovesTelemetry(t *testing.T) {
 		onTelemetryRemoved: func(hostUUID string) { removed = hostUUID },
 	}
 	sp.handleNotify(noderec.NotifyNodeTelemetry, params)
-	if got.HostUUID != want.HostUUID || !got.TelemetryValid || got.MSSince != want.MSSince {
-		t.Fatalf("routed telemetry = %+v, want %+v", got, want)
-	}
-	if got.GPUUtilizationPct != 84 {
-		t.Fatalf("routed utilization = %d, want 84", got.GPUUtilizationPct)
-	}
+	require.Equal(t, want.HostUUID, got.HostUUID, "routed telemetry (%v, %v)", got, want)
+	require.True(t, got.TelemetryValid, "routed telemetry (%v, %v)", got, want)
+	require.Equal(t, want.MSSince, got.MSSince, "routed telemetry (%v, %v)", got, want)
+	require.Equal(t, uint32(84), got.GPUUtilizationPct, "routed utilization")
 
 	sp.handleNotify(noderec.NotifyNodeRemoved, nodeRemovedFrame(t, "peer", "peer-uuid"))
-	if removed != "peer-uuid" {
-		t.Fatalf("removed telemetry host = %q, want peer-uuid", removed)
-	}
+	require.Equal(t, "peer-uuid", removed, "removed telemetry host")
 }

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"net"
 	"os"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	settings "nvpair-shared/enginesettings"
 )
@@ -19,24 +21,19 @@ func callBrokerPortRequest(t *testing.T, b *Broker, method string, params json.R
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-	if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatalf("set response deadline: %v", err)
-	}
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(5*time.Second)), "set response deadline")
 	b.codec = NewCodec(server)
 	id := json.RawMessage(`1`)
 	go b.handleMessage(&Message{JSONRPC: "2.0", ID: &id, Method: method, Params: params})
 	codec := NewCodec(client)
 	for {
 		response, err := codec.Read()
-		if err != nil {
-			t.Fatalf("read %s response: %v", method, err)
-		}
+		require.NoError(t, err, "read %s response", method)
 		if response.IsNotification() {
 			continue
 		}
-		if response.ID == nil || string(*response.ID) != string(id) {
-			t.Fatalf("unexpected response ID: %+v", response)
-		}
+		require.NotNil(t, response.ID, "response ID")
+		require.Equal(t, string(id), string(*response.ID), "response ID")
 		return response
 	}
 }
@@ -53,9 +50,9 @@ func TestBrokerProxySetPortRejectsInvalidPorts(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					response := callBrokerPortRequest(t, &Broker{}, profile.ComponentName()+":set-port", json.RawMessage(tc.params))
-					if response.Error == nil || response.Error.Code != -32602 || response.Error.Message != "port must be between 1 and 65535" {
-						t.Fatalf("response = %+v, want invalid-port error", response)
-					}
+					require.NotNil(t, response.Error, "invalid-port error")
+					assert.Equal(t, -32602, response.Error.Code)
+					assert.Equal(t, "port must be between 1 and 65535", response.Error.Message)
 				})
 			}
 		})
@@ -68,9 +65,9 @@ func TestBrokerProxySetPortRejectsInheritedAlias(t *testing.T) {
 			b := &Broker{}
 			b.setOllamaHostAlias(ollamaHostAlias{Port: 11433})
 			response := callBrokerPortRequest(t, b, profile.ComponentName()+":set-port", json.RawMessage(`{"port":11433}`))
-			if response.Error == nil || response.Error.Code != -32000 || !strings.Contains(response.Error.Message, "OLLAMA_HOST proxy alias") {
-				t.Fatalf("response = %+v, want alias-port rejection", response)
-			}
+			require.NotNil(t, response.Error, "alias-port rejection")
+			assert.Equal(t, -32000, response.Error.Code)
+			assert.Contains(t, response.Error.Message, "OLLAMA_HOST proxy alias")
 		})
 	}
 }
@@ -80,23 +77,19 @@ func TestBrokerLlamaCPPProxySetPortRejectsConflicts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newSettingsHarnessForEngine(t, "llamacpp")
 			before, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "llamacpp"}, "")
-			if err != nil {
-				t.Fatalf("read initial settings: %v", err)
-			}
+			require.NoError(t, err, "read initial settings")
 			target := port(t, h, before)
 			response := callBrokerPortRequest(t, h.b, "llamacpp-proxy:set-port", settingsJSON(map[string]int{"port": target}))
-			if response.Error == nil || response.Error.Code != -32000 || response.Error.Message != "resolve settings errors and port conflicts before applying" {
-				t.Fatalf("error = %+v, want settings-conflict rejection", response.Error)
-			}
-			if h.applies.Load() != 0 || h.proxyRebinds.Load() != 0 {
-				t.Fatal("rejected port request changed runtime")
-			}
+			require.NotNil(t, response.Error, "settings-conflict rejection")
+			assert.Equal(t, -32000, response.Error.Code)
+			assert.Equal(t, "resolve settings errors and port conflicts before applying", response.Error.Message)
+			assert.Equal(t, int32(0), h.applies.Load(), "rejected port request changed runtime")
+			assert.Equal(t, int32(0), h.proxyRebinds.Load(), "rejected port request rebound the proxy")
 			h.b.engineConfigMu.Lock()
 			after := h.b.engineSettings["llamacpp"].Snapshot
 			h.b.engineConfigMu.Unlock()
-			if after.Settings != before.Settings || after.Revision != before.Revision {
-				t.Fatalf("rejection changed desired settings: before=%+v after=%+v", before, after)
-			}
+			assert.Equal(t, before.Settings, after.Settings, "rejection changed desired settings")
+			assert.Equal(t, before.Revision, after.Revision, "rejection changed settings revision")
 		})
 	}
 	test("PAIR service port", func(t *testing.T, h *settingsHarness, before settings.Snapshot) int {
@@ -115,9 +108,7 @@ func TestBrokerLlamaCPPProxySetPortRejectsConflicts(t *testing.T) {
 	})
 	test("occupied listener", func(t *testing.T, h *settingsHarness, before settings.Snapshot) int {
 		ln, err := net.Listen("tcp", ":0")
-		if err != nil {
-			t.Fatalf("bind occupied port: %v", err)
-		}
+		require.NoError(t, err, "bind occupied port")
 		t.Cleanup(func() { _ = ln.Close() })
 		return ln.Addr().(*net.TCPAddr).Port
 	})
@@ -126,61 +117,43 @@ func TestBrokerLlamaCPPProxySetPortRejectsConflicts(t *testing.T) {
 func TestBrokerLlamaCPPProxySetPortPersistsOnlyRequestedFacade(t *testing.T) {
 	h := newSettingsHarnessForEngine(t, "llamacpp")
 	before, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "llamacpp"}, "")
-	if err != nil {
-		t.Fatalf("read initial settings: %v", err)
-	}
+	require.NoError(t, err, "read initial settings")
 	otherPorts := make(map[string]int)
 	for _, engine := range []string{"ollama", "lmstudio"} {
 		_, otherPorts[engine] = h.b.getProxy().Status(engine)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("allocate target port: %v", err)
-	}
+	require.NoError(t, err, "allocate target port")
 	target := ln.Addr().(*net.TCPAddr).Port
-	if err := ln.Close(); err != nil {
-		t.Fatalf("release target port: %v", err)
-	}
+	require.NoError(t, ln.Close(), "release target port")
 	// The namespace determines the engine, even if parameters name another.
 	response := callBrokerPortRequest(t, h.b, "llamacpp-proxy:set-port", settingsJSON(map[string]any{"engine": "ollama", "port": target}))
-	if response.Error != nil {
-		t.Fatalf("set proxy port: %+v", response.Error)
-	}
+	require.Nil(t, response.Error, "set proxy port")
 	var result struct {
 		Port int `json:"port"`
 	}
-	if err := json.Unmarshal(response.Result, &result); err != nil {
-		t.Fatalf("decode port result: %v", err)
-	}
-	if result.Port != target || h.proxyRebinds.Load() != 1 {
-		t.Fatalf("port=%d rebinds=%d, want port=%d and one rebind", result.Port, h.proxyRebinds.Load(), target)
-	}
+	require.NoError(t, json.Unmarshal(response.Result, &result), "decode port result")
+	assert.Equal(t, target, result.Port)
+	assert.Equal(t, int32(1), h.proxyRebinds.Load(), "proxy rebind count")
 	ready, actual := h.b.getProxy().Status("llamacpp")
-	if !ready || actual != target {
-		t.Fatalf("llama.cpp facade ready=%v port=%d, want %d", ready, actual, target)
-	}
+	assert.True(t, ready, "llama.cpp facade must be ready")
+	assert.Equal(t, target, actual, "llama.cpp facade port")
 	for engine, want := range otherPorts {
 		_, actual := h.b.getProxy().Status(engine)
-		if actual != want {
-			t.Fatalf("%s facade moved from %d to %d", engine, want, actual)
-		}
+		assert.Equal(t, want, actual, "%s facade moved", engine)
 	}
 	path, err := h.b.engineSettingsPath()
-	if err != nil {
-		t.Fatalf("resolve journal path: %v", err)
-	}
+	require.NoError(t, err, "resolve journal path")
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read journal: %v", err)
-	}
+	require.NoError(t, err, "read journal")
 	var records map[string]*engineSettingsRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		t.Fatalf("decode journal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(data, &records), "decode journal")
 	record := records["llamacpp"]
 	want := before.Settings
 	want.ProxyPort = target
-	if record == nil || !record.Explicit || record.Snapshot.Settings != want || record.Snapshot.Phase != "succeeded" || record.Snapshot.Revision != before.Revision+1 {
-		t.Fatalf("persisted record = %+v, want successful explicit proxy-port change", record)
-	}
+	require.NotNil(t, record, "persisted llama.cpp record")
+	assert.True(t, record.Explicit, "persisted proxy-port change must be explicit")
+	assert.Equal(t, want, record.Snapshot.Settings)
+	assert.Equal(t, "succeeded", record.Snapshot.Phase)
+	assert.Equal(t, before.Revision+1, record.Snapshot.Revision)
 }

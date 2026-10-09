@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
@@ -83,20 +85,12 @@ func startBrokerWithDirsAndEnv(t *testing.T, configDir, clusterDir string, extra
 	cmd.Env = append(cmd.Env, extraEnv...)
 
 	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
 	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatalf("broker stderr pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stderr pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	t.Logf("broker started: pid=%d", cmd.Process.Pid)
 
 	ch := startMsgReader(stdoutPipe)
@@ -140,14 +134,12 @@ func waitForStderr(t *testing.T, lines <-chan string, re *regexp.Regexp, timeout
 	for {
 		select {
 		case line, ok := <-lines:
-			if !ok {
-				t.Fatalf("broker stderr closed before matching %q", re.String())
-			}
+			require.True(t, ok, "broker stderr closed before matching")
 			if re.MatchString(line) {
 				return line
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for stderr matching %q", timeout, re.String())
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for stderr matching %q", timeout, re.String()))
 		}
 	}
 }
@@ -161,16 +153,14 @@ func waitForErrorsUpdateContaining(t *testing.T, msgs <-chan jsonrpc.Message, id
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatalf("broker stream closed before errors:update containing %q", id)
-			}
+			require.True(t, ok, "broker stream closed before errors:update containing (%v)", id)
 			if msg.Method == methodErrorsUpdate {
 				if errorsListHasID(t, msg.Params, id) {
 					return
 				}
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for errors:update containing %q", timeout, id)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for errors:update containing %q", timeout, id))
 		}
 	}
 }
@@ -178,9 +168,7 @@ func waitForErrorsUpdateContaining(t *testing.T, msgs <-chan jsonrpc.Message, id
 func errorsListHasID(t *testing.T, raw json.RawMessage, id string) bool {
 	t.Helper()
 	var list []errors.ServiceError
-	if err := json.Unmarshal(raw, &list); err != nil {
-		t.Fatalf("unmarshal errors:update: %v\nraw: %s", err, raw)
-	}
+	require.NoError(t, json.Unmarshal(raw, &list), "unmarshal errors:update, raw: %s", raw)
 	for _, e := range list {
 		if e.ID == id {
 			return true
@@ -248,31 +236,23 @@ func TestBrokerCrashSurfacingAndRestart(t *testing.T) {
 	// errors:get-initial must relay the same entry from nvpair-errors.
 	sendReq(t, stdin, 900, "errors:get-initial")
 	resp := waitForResponse(t, msgs, 5*time.Second)
-	if !errorsListHasID(t, resp.Result, crashID) {
-		t.Fatalf("errors:get-initial missing the crash entry: %s", resp.Result)
-	}
+	require.True(t, errorsListHasID(t, resp.Result, crashID), "errors:get-initial missing the crash entry")
 	t.Log("errors:get-initial carries the crash entry")
 
 	// The supervisor must restart the proxy: a second "proxy started" with
 	// a different pid (backoff is ~1s).
 	secondLine := waitForStderr(t, stderr, proxyPidRe, 15*time.Second)
 	pid2 := mustPid(t, secondLine)
-	if pid2 == pid1 {
-		t.Fatalf("proxy was not restarted: same pid %d", pid2)
-	}
+	require.NotEqual(t, pid1, pid2, "proxy was not restarted")
 	t.Logf("proxy auto-restarted: pid %d -> %d", pid1, pid2)
 }
 
 func mustPid(t *testing.T, line string) int {
 	t.Helper()
 	m := proxyPidRe.FindStringSubmatch(line)
-	if m == nil {
-		t.Fatalf("no proxy pid in line: %q", line)
-	}
+	require.GreaterOrEqual(t, len(m), 2, "no proxy pid in line (%v)", line)
 	pid, err := strconv.Atoi(m[1])
-	if err != nil {
-		t.Fatalf("bad pid %q: %v", m[1], err)
-	}
+	require.NoError(t, err, "bad pid")
 	return pid
 }
 
@@ -314,10 +294,9 @@ func TestAllDefaultEnginesAreServedByOneProxyProcess(t *testing.T) {
 	ollamaPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	lmstudioPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
 	llamacppPort := waitEngineProxyReady(t, "llamacpp-proxy", stdin, msgs, 15*time.Second)
-	if len(map[int]bool{ollamaPort: true, lmstudioPort: true, llamacppPort: true}) != 3 {
-		t.Fatalf("facade ports must be distinct: ollama=%d lmstudio=%d llamacpp=%d",
-			ollamaPort, lmstudioPort, llamacppPort)
-	}
+	require.Len(t, map[int]bool{ollamaPort: true, lmstudioPort: true, llamacppPort: true}, 3,
+		"facade ports must be distinct: ollama=%d lmstudio=%d llamacpp=%d",
+		ollamaPort, lmstudioPort, llamacppPort)
 	t.Logf("facades ready: ollama=%d lmstudio=%d llamacpp=%d",
 		ollamaPort, lmstudioPort, llamacppPort)
 
@@ -333,9 +312,7 @@ func TestAllDefaultEnginesAreServedByOneProxyProcess(t *testing.T) {
 			collecting = false
 		}
 	}
-	if len(seen) != 1 {
-		t.Fatalf("saw %d proxy processes %v, want exactly 1 hosting all default engines", len(seen), seen)
-	}
+	require.Len(t, seen, 1, "exactly one proxy process must host all default engines")
 	t.Logf("all default engines served by pid %v", seen)
 }
 
@@ -364,24 +341,16 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 	// purely by the signal, not by stdin EOF (closing stdin would shut the
 	// broker down even with the old blocking read loop, masking the bug).
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	defer stdin.Close()
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	msgs := startMsgReader(stdoutPipe)
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
 	// SIGINT to the broker only (children are in their own process groups).
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		t.Fatalf("signal broker: %v", err)
-	}
+	require.NoError(t, cmd.Process.Signal(os.Interrupt), "signal broker")
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -390,7 +359,7 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 		// Exited — the broker observed the signal and tore down cleanly.
 	case <-time.After(10 * time.Second):
 		cmd.Process.Kill()
-		t.Fatal("broker did not exit within 10s of SIGINT (read loop blocked on stdin?)")
+		require.FailNow(t, "broker did not exit within 10s of SIGINT (read loop blocked on stdin?)")
 	}
 }
 
@@ -445,15 +414,11 @@ func TestBrokerEngineRelay(t *testing.T) {
 
 	sendReq(t, stdin, 700, "engine:get-installed")
 	resp := waitForResponse(t, msgs, 10*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("engine:get-installed errored: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "engine:get-installed errored: code")
 	var result struct {
 		Engines []json.RawMessage `json:"engines"`
 	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		t.Fatalf("unmarshal engine:get-installed result: %v\nraw: %s", err, resp.Result)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &result), "unmarshal engine:get-installed result")
 	// The host may have zero installed engines; the contract is just that
 	// the relay returns a well-formed { engines: [...] } payload.
 	t.Logf("engine:get-installed returned %d engine(s)", len(result.Engines))
@@ -466,16 +431,12 @@ func proxyStatus(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, id 
 	t.Helper()
 	sendReq(t, stdin, id, "ollama-proxy:get-status")
 	resp := waitForResponse(t, msgs, 5*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("ollama-proxy:get-status errored: %d %s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "ollama-proxy:get-status errored")
 	var s struct {
 		Ready bool `json:"ready"`
 		Port  int  `json:"port"`
 	}
-	if err := json.Unmarshal(resp.Result, &s); err != nil {
-		t.Fatalf("parse ollama-proxy:get-status: %v\nraw: %s", err, resp.Result)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &s), "parse ollama-proxy:get-status")
 	return s.Ready, s.Port
 }
 
@@ -505,16 +466,10 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 	)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	t.Cleanup(func() {
 		stdin.Close()
 		done := make(chan error, 1)
@@ -538,30 +493,21 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 			break
 		}
 		id++
-		if time.Now().After(deadline) {
-			t.Fatal("proxy never reported ready")
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "proxy never reported ready")
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	target := freePort(t)
 	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":860,"method":"ollama-proxy:set-port","params":{"port":%d}}`, target) + "\n"
-	if _, err := stdin.Write([]byte(req)); err != nil {
-		t.Fatalf("write ollama-proxy:set-port: %v", err)
-	}
+	_, err = stdin.Write([]byte(req))
+	require.NoError(t, err, "write ollama-proxy:set-port")
 	resp := waitForResponse(t, msgs, 10*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("ollama-proxy:set-port errored: %d %s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "ollama-proxy:set-port errored")
 	var sp struct {
 		Port int `json:"port"`
 	}
-	if err := json.Unmarshal(resp.Result, &sp); err != nil {
-		t.Fatalf("parse ollama-proxy:set-port result: %v\nraw: %s", err, resp.Result)
-	}
-	if sp.Port != target {
-		t.Fatalf("set-port result port = %d, want %d (no engine running, so no bump expected)", sp.Port, target)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &sp), "parse ollama-proxy:set-port result")
+	require.Equal(t, target, sp.Port, "set-port should not bump when no engine is running")
 
 	// ollama-proxy:get-status must now reflect the rebound port.
 	id = 870
@@ -572,9 +518,7 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 			break
 		}
 		id++
-		if time.Now().After(deadline) {
-			t.Fatalf("ollama-proxy:get-status never reported the rebound port %d", target)
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "ollama-proxy:get-status never reported the rebound port (%v)", target)
 		time.Sleep(300 * time.Millisecond)
 	}
 }
@@ -593,9 +537,8 @@ func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
 	// loopback address so the probe resolves quickly whether or not a
 	// local service answers.
 	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":800,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
-	if _, err := stdin.Write([]byte(addReq)); err != nil {
-		t.Fatalf("write node/add: %v", err)
-	}
+	_, err := stdin.Write([]byte(addReq))
+	require.NoError(t, err, "write node/add")
 
 	// Poll discovery:get-nodes until the manual node's id appears (the
 	// node/discovered event fires after the first probe completes).
@@ -607,9 +550,7 @@ func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before the manual node appeared")
-			}
+			require.True(t, ok, "broker stream closed before the manual node appeared")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
 				if json.Unmarshal(msg.Result, &res) == nil && containsNode(res.Nodes, nodeName) {
@@ -621,7 +562,7 @@ func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
 			reqID++
 			sendReq(t, stdin, reqID, "discovery:get-nodes")
 		case <-deadline:
-			t.Fatalf("timed out waiting for manual node %q in discovery:get-nodes", nodeName)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for manual node %q in discovery:get-nodes", nodeName))
 		}
 	}
 }

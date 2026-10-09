@@ -10,51 +10,35 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestAtomicWriteCreatesAndReplaces(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "admission.json")
 
-	if err := atomicWrite(path, []byte("first\n"), 0o600); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	require.NoError(t, atomicWrite(path, []byte("first\n"), 0o600), "create")
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(got) != "first\n" {
-		t.Fatalf("got %q, want first", got)
-	}
+	require.NoError(t, err, "read")
+	require.Equal(t, "first\n", string(got), "got (%v)", got)
 
-	if err := atomicWrite(path, []byte("second\n"), 0o600); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
+	require.NoError(t, atomicWrite(path, []byte("second\n"), 0o600), "replace")
 	got, err = os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read after replace: %v", err)
-	}
-	if string(got) != "second\n" {
-		t.Fatalf("got %q, want second", got)
-	}
+	require.NoError(t, err, "read after replace")
+	require.Equal(t, "second\n", string(got), "got (%v)", got)
 
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
+	require.NoError(t, err, "readdir")
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".tmp") {
-			t.Fatalf("leftover temp file %q", e.Name())
-		}
+		require.False(t, strings.HasSuffix(e.Name(), ".tmp"), "leftover temp file")
 	}
 }
 
 func TestAtomicWriteRetriesTransientRename(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "admission.json")
-	if err := os.WriteFile(path, []byte("old\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
 
 	var attempts atomic.Int32
 	orig := renameFile
@@ -67,19 +51,11 @@ func TestAtomicWriteRetriesTransientRename(t *testing.T) {
 	}
 	t.Cleanup(func() { renameFile = orig })
 
-	if err := atomicWrite(path, []byte("new\n"), 0o600); err != nil {
-		t.Fatalf("atomicWrite: %v", err)
-	}
-	if got := attempts.Load(); got != 3 {
-		t.Fatalf("rename attempts = %d, want 3", got)
-	}
+	require.NoError(t, atomicWrite(path, []byte("new\n"), 0o600), "atomicWrite")
+	require.Equal(t, int32(3), attempts.Load(), "rename attempts")
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "new\n" {
-		t.Fatalf("got %q, want new", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "new\n", string(got), "got (%v)", got)
 }
 
 func TestAtomicWriteNonTransientRenameFailsFast(t *testing.T) {
@@ -95,28 +71,14 @@ func TestAtomicWriteNonTransientRenameFailsFast(t *testing.T) {
 	t.Cleanup(func() { renameFile = orig })
 
 	err := atomicWrite(path, []byte("x\n"), 0o600)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if got := attempts.Load(); got != 1 {
-		t.Fatalf("rename attempts = %d, want 1 (no retry)", got)
-	}
-	if !strings.Contains(err.Error(), "no such file or directory") {
-		t.Fatalf("error = %v, want wrapped non-transient cause", err)
-	}
+	require.Error(t, err, "expected error")
+	require.Equal(t, int32(1), attempts.Load(), "rename attempts")
+	require.ErrorContains(t, err, "no such file or directory")
 }
 
 func TestIsTransientReplaceError(t *testing.T) {
-	if !isTransientReplaceError(errors.New("Access is denied.")) {
-		t.Fatal("expected Access is denied to be transient")
-	}
-	if !isTransientReplaceError(errors.New("The process cannot access the file because it is being used by another process.")) {
-		t.Fatal("expected sharing text to be transient")
-	}
-	if isTransientReplaceError(errors.New("no such file or directory")) {
-		t.Fatal("ENOENT must not be treated as transient")
-	}
-	if isTransientReplaceError(nil) {
-		t.Fatal("nil must not be transient")
-	}
+	require.True(t, isTransientReplaceError(errors.New("Access is denied.")), "expected Access is denied to be transient")
+	require.True(t, isTransientReplaceError(errors.New("The process cannot access the file because it is being used by another process.")), "expected sharing text to be transient")
+	require.False(t, isTransientReplaceError(errors.New("no such file or directory")), "ENOENT must not be treated as transient")
+	require.False(t, isTransientReplaceError(nil), "nil must not be transient")
 }

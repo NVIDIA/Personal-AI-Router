@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The Logs view had no behavioural coverage at all, which is how a keybinding
@@ -46,20 +48,14 @@ func logsKey(v *logsView, k string) {
 // on first press, in the view they had opened to scroll back through.
 func TestLogsFollowKeyDoesNotCollideWithPaging(t *testing.T) {
 	for _, reserved := range []string{"f", "b", "u", "d", "g", "G", " "} {
-		for _, bound := range logFollowKey.Keys() {
-			if bound == reserved {
-				t.Errorf("follow is bound to %q, which the viewport uses for scrolling", bound)
-			}
-		}
+		assert.NotContains(t, logFollowKey.Keys(), reserved, "the viewport uses this key for scrolling")
 	}
 
 	// And it still toggles.
 	v := logsWith(t, 50)
 	before := v.follow
 	logsKey(v, logFollowKey.Keys()[0])
-	if v.follow == before {
-		t.Error("the follow key did not toggle follow")
-	}
+	assert.NotEqual(t, before, v.follow, "the follow key did not toggle follow")
 }
 
 // TestLogsFilterRoundTrip covers opening the filter, applying it, and clearing
@@ -71,32 +67,21 @@ func TestLogsFilterRoundTrip(t *testing.T) {
 	logLine(v, "engine stopped")
 
 	logsKey(v, "/")
-	if !v.editing {
-		t.Fatal("/ did not open the filter")
-	}
+	require.True(t, v.editing, "/ did not open the filter")
 	for _, r := range "engine" {
 		logsKey(v, string(r))
 	}
 	v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if v.editing {
-		t.Error("enter did not close the filter field")
-	}
-	if v.filter != "engine" {
-		t.Errorf("filter = %q", v.filter)
-	}
+	assert.False(t, v.editing, "enter did not close the filter field")
+	assert.Equal(t, "engine", v.filter)
 	body := v.View()
-	if !contains(body, "engine started") || contains(body, "pairing failed") {
-		t.Errorf("filter did not narrow the buffer:\n%s", body)
-	}
+	assert.Contains(t, body, "engine started", "filter must narrow the buffer")
+	assert.NotContains(t, body, "pairing failed", "filter must narrow the buffer")
 
 	logsKey(v, "c")
-	if v.filter != "" {
-		t.Errorf("c did not clear the filter, got %q", v.filter)
-	}
-	if !contains(v.View(), "pairing failed") {
-		t.Error("clearing the filter did not restore the hidden lines")
-	}
+	assert.Empty(t, v.filter, "c did not clear the filter")
+	assert.Contains(t, v.View(), "pairing failed", "clearing the filter must restore the hidden lines")
 }
 
 // TestLogsFilterCanBeAbandoned checks esc leaves the previous filter alone
@@ -111,12 +96,8 @@ func TestLogsFilterCanBeAbandoned(t *testing.T) {
 	}
 	v.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
-	if v.editing {
-		t.Error("esc did not close the field")
-	}
-	if v.filter != "engine" {
-		t.Errorf("esc committed the abandoned text: filter = %q", v.filter)
-	}
+	assert.False(t, v.editing, "esc did not close the field")
+	assert.Equal(t, "engine", v.filter, "esc must preserve the filter when abandoning text")
 }
 
 // TestLogsHelpReflectsTheFieldState checks the footer names the keys that work
@@ -130,12 +111,9 @@ func TestLogsHelpReflectsTheFieldState(t *testing.T) {
 		keys = append(keys, b.Help().Key)
 	}
 	joined := strings.Join(keys, ",")
-	if !contains(joined, "enter") || !contains(joined, "esc") {
-		t.Errorf("filter-mode help = %v, want enter and esc", keys)
-	}
-	if contains(joined, "/") {
-		t.Errorf("filter-mode help still advertises %v, which now type characters", keys)
-	}
+	assert.Contains(t, joined, "enter")
+	assert.Contains(t, joined, "esc")
+	assert.NotContains(t, joined, "/", "filter-mode help must omit keys that now type characters")
 }
 
 // TestLogsSaveWritesTheWholeBuffer checks the file contains every line, not
@@ -151,25 +129,14 @@ func TestLogsSaveWritesTheWholeBuffer(t *testing.T) {
 	v.filter = "engine" // showing one line
 
 	msg, ok := v.saveCmd()().(logsSavedMsg)
-	if !ok {
-		t.Fatalf("save produced %T", v.saveCmd()())
-	}
-	if msg.err != nil {
-		t.Fatalf("save failed: %v", msg.err)
-	}
+	require.True(t, ok, "save should produce logsSavedMsg")
+	require.NoError(t, msg.err, "save failed")
 
 	body, err := os.ReadFile(msg.path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	for _, want := range []string{"engine started", "something failed"} {
-		if !contains(string(body), want) {
-			t.Errorf("saved file is missing %q; the filter should not narrow it", want)
-		}
-	}
-	if filepath.Dir(msg.path) != home {
-		t.Errorf("saved to %q, want the home directory", msg.path)
-	}
+	require.NoError(t, err, "read back")
+	assert.Contains(t, string(body), "engine started", "the filter should not narrow the saved file")
+	assert.Contains(t, string(body), "something failed", "the filter should not narrow the saved file")
+	assert.Equal(t, home, filepath.Dir(msg.path), "save should use the home directory")
 }
 
 // TestLogsSaveNeverOverwrites checks a second save in the same second does not
@@ -182,26 +149,18 @@ func TestLogsSaveNeverOverwrites(t *testing.T) {
 	v := logsWith(t, 0)
 	logLine(v, "first")
 	first, ok := v.saveCmd()().(logsSavedMsg)
-	if !ok || first.err != nil {
-		t.Fatalf("first save: %+v", first)
-	}
+	require.True(t, ok, "first save should produce logsSavedMsg")
+	require.NoError(t, first.err, "first save")
 
 	logLine(v, "second")
 	second, ok := v.saveCmd()().(logsSavedMsg)
-	if !ok || second.err != nil {
-		t.Fatalf("second save: %+v", second)
-	}
+	require.True(t, ok, "second save should produce logsSavedMsg")
+	require.NoError(t, second.err, "second save")
 
-	if first.path == second.path {
-		t.Fatal("the second save reused the first file's name and destroyed it")
-	}
+	require.NotEqual(t, first.path, second.path, "the second save must preserve the first file")
 	body, err := os.ReadFile(first.path)
-	if err != nil {
-		t.Fatalf("the first file is gone: %v", err)
-	}
-	if contains(string(body), "second") {
-		t.Error("the first file was overwritten")
-	}
+	require.NoError(t, err, "the first file is gone")
+	assert.NotContains(t, string(body), "second", "the first file must not be overwritten")
 }
 
 var _ View = (*logsView)(nil)

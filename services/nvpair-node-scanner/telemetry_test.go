@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -34,40 +37,24 @@ func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
+	require.NoError(t, err, "parse server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
+	require.NoError(t, err, "parse server port")
 
 	var output bytes.Buffer
 	d := &daemon{codec: NewCodec(&output), http: server.Client()}
-	if !d.refreshNodeTelemetry(context.Background(), "node-a", serverURL.Hostname(), port) {
-		t.Fatal("valid node-info response did not emit telemetry")
-	}
+	require.True(t, d.refreshNodeTelemetry(context.Background(), "node-a", serverURL.Hostname(), port), "valid node-info response did not emit telemetry")
 
 	var message Message
-	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message); err != nil {
-		t.Fatalf("decode notification: %v", err)
-	}
-	if message.Method != noderec.NotifyNodeTelemetry {
-		t.Fatalf("notification method = %q, want %q", message.Method, noderec.NotifyNodeTelemetry)
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message), "decode notification")
+	require.Equal(t, noderec.NotifyNodeTelemetry, message.Method, "notification method")
 	var got noderec.NodeTelemetry
-	if err := json.Unmarshal(message.Params, &got); err != nil {
-		t.Fatalf("decode telemetry: %v", err)
-	}
-	if got.HostUUID != "node-a" || !got.TelemetryValid {
-		t.Fatalf("telemetry identity/validity = %+v", got)
-	}
-	if got.GPUUtilizationPct != 84 {
-		t.Fatalf("GPU utilization = %d, want max 84", got.GPUUtilizationPct)
-	}
-	if got.MSSince < 137 || got.MSSince >= 3_500 {
-		t.Fatalf("age = %d, want node age plus bounded fetch time", got.MSSince)
-	}
+	require.NoError(t, json.Unmarshal(message.Params, &got), "decode telemetry")
+	require.Equal(t, "node-a", got.HostUUID, "telemetry identity/validity (%v)", got)
+	require.True(t, got.TelemetryValid, "telemetry identity/validity (%v)", got)
+	require.Equal(t, uint32(84), got.GPUUtilizationPct, "GPU utilization")
+	require.GreaterOrEqual(t, got.MSSince, int64(137), "age")
+	require.Less(t, got.MSSince, int64(3_500), "age")
 }
 
 func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
@@ -79,22 +66,14 @@ func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
+	require.NoError(t, err, "parse server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
+	require.NoError(t, err, "parse server port")
 
 	var output bytes.Buffer
 	d := &daemon{codec: NewCodec(&output), http: server.Client()}
-	if d.refreshNodeTelemetry(context.Background(), "node-a", serverURL.Hostname(), port) {
-		t.Fatal("mismatched host emitted telemetry")
-	}
-	if output.Len() != 0 {
-		t.Fatalf("mismatched host wrote notification: %s", output.String())
-	}
+	require.False(t, d.refreshNodeTelemetry(context.Background(), "node-a", serverURL.Hostname(), port), "mismatched host emitted telemetry")
+	require.Empty(t, output.Bytes(), "mismatched host wrote notification")
 }
 
 // TestRefreshTelemetryFailsOverToAnAnsweringAddress: this sweep is the only source
@@ -113,13 +92,9 @@ func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
+	require.NoError(t, err, "parse server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
+	require.NoError(t, err, "parse server port")
 
 	var output bytes.Buffer
 	d := &daemon{
@@ -143,42 +118,29 @@ func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	d.refreshTelemetryOnce(context.Background())
 
 	var message Message
-	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message); err != nil {
-		t.Fatalf("decode notification: %v (output %q)", err, output.String())
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message), "decode notification")
 	var got noderec.NodeTelemetry
-	if err := json.Unmarshal(message.Params, &got); err != nil {
-		t.Fatalf("decode telemetry: %v", err)
-	}
-	if got.HostUUID != "node-a" || got.GPUUtilizationPct != 61 || !got.TelemetryValid {
-		t.Fatalf("telemetry = %+v, want node-a at 61%% from its second address", got)
-	}
+	require.NoError(t, json.Unmarshal(message.Params, &got), "decode telemetry")
+	require.Equal(t, "node-a", got.HostUUID, "telemetry (%v)", got)
+	require.Equal(t, uint32(61), got.GPUUtilizationPct, "telemetry (%v)", got)
+	require.True(t, got.TelemetryValid, "telemetry (%v)", got)
 
 	// And the address that answered is remembered — in the memory the enrichment
 	// sweeps share — so the sweeps behind this one ask it alone rather than paying
 	// the unreachable address on every due telemetry attempt.
 	key := hostKey{hostUUID: "node-a", service: noderec.ServiceNodeInfo}
-	if remembered := d.enrichHosts.get(key); remembered != serverURL.Hostname() {
-		t.Fatalf("remembered address = %q, want %q", remembered, serverURL.Hostname())
-	}
+	require.Equal(t, serverURL.Hostname(), d.enrichHosts.get(key), "remembered address")
 }
 
 func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
-	if got := telemetryIntervalForNode(""); got != telemetryRefreshInterval {
-		t.Fatalf("empty identity interval = %v, want %v", got, telemetryRefreshInterval)
-	}
+	require.Equal(t, telemetryRefreshInterval, telemetryIntervalForNode(""), "empty identity interval")
 	first := telemetryIntervalForNode("node-a")
-	if again := telemetryIntervalForNode("node-a"); again != first {
-		t.Fatalf("node jitter changed from %v to %v", first, again)
-	}
+	require.Equal(t, first, telemetryIntervalForNode("node-a"), "node jitter must be stable")
 	minimum := telemetryRefreshInterval - telemetryRefreshJitter
 	maximum := telemetryRefreshInterval + telemetryRefreshJitter
-	if first < minimum || first > maximum {
-		t.Fatalf("node-a interval = %v, want within [%v,%v]", first, minimum, maximum)
-	}
-	if second := telemetryIntervalForNode("node-b"); second == first {
-		t.Fatalf("distinct identities received identical test intervals: %v", first)
-	}
+	require.GreaterOrEqual(t, first, minimum, "node-a interval (%v, %v, %v)", first, minimum, maximum)
+	require.LessOrEqual(t, first, maximum, "node-a interval (%v, %v, %v)", first, minimum, maximum)
+	require.NotEqual(t, first, telemetryIntervalForNode("node-b"), "distinct identities received identical test intervals (%v)", first)
 }
 
 func TestTelemetryRetryDelay(t *testing.T) {
@@ -194,9 +156,7 @@ func TestTelemetryRetryDelay(t *testing.T) {
 		{100, 30 * time.Second},
 	}
 	for _, test := range cases {
-		if got := telemetryRetryDelay(test.failures); got != test.want {
-			t.Errorf("telemetryRetryDelay(%d) = %v, want %v", test.failures, got, test.want)
-		}
+		assert.Equal(t, test.want, telemetryRetryDelay(test.failures), "telemetryRetryDelay(%d)", test.failures)
 	}
 }
 
@@ -206,26 +166,21 @@ func TestTelemetryRetryGateBacksOffAndResets(t *testing.T) {
 	targetKey := telemetryTargetKey([]string{"192.0.2.1"}, 14318)
 
 	first, ok := gate.claim("node-a", targetKey, startedAt)
-	if !ok || first == 0 {
-		t.Fatal("first telemetry attempt was not due")
-	}
-	if _, ok := gate.claim("node-a", targetKey, startedAt); ok {
-		t.Fatal("a second attempt started while the first was in flight")
-	}
+	require.True(t, ok, "first telemetry attempt was not due")
+	require.NotEqual(t, uint64(0), first, "first telemetry attempt was not due")
+	_, ok = gate.claim("node-a", targetKey, startedAt)
+	require.False(t, ok, "a second attempt started while the first was in flight")
 	gate.finish("node-a", first, false, startedAt)
 
-	if _, ok := gate.claim("node-a", targetKey, startedAt.Add(4*time.Second-time.Nanosecond)); ok {
-		t.Fatal("failed telemetry retried before its first backoff elapsed")
-	}
+	_, ok = gate.claim("node-a", targetKey, startedAt.Add(4*time.Second-time.Nanosecond))
+	require.False(t, ok, "failed telemetry retried before its first backoff elapsed")
 	second, ok := gate.claim("node-a", targetKey, startedAt.Add(4*time.Second))
-	if !ok || second == first {
-		t.Fatal("failed telemetry was not due at its retry deadline")
-	}
+	require.True(t, ok, "failed telemetry was not due at its retry deadline")
+	require.NotEqual(t, first, second, "failed telemetry was not due at its retry deadline")
 	gate.finish("node-a", second, true, startedAt.Add(4*time.Second))
 
-	if _, ok := gate.claim("node-a", targetKey, startedAt.Add(4*time.Second)); !ok {
-		t.Fatal("successful telemetry did not reset the retry gate")
-	}
+	_, ok = gate.claim("node-a", targetKey, startedAt.Add(4*time.Second))
+	require.True(t, ok, "successful telemetry did not reset the retry gate")
 }
 
 func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
@@ -239,17 +194,13 @@ func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
 			var gate telemetryRetryGate
 			now := time.Unix(1_500, 0)
 			oldToken, ok := gate.claim("node-a", oldTarget, now)
-			if !ok {
-				t.Fatal("old endpoint telemetry attempt was not due")
-			}
-			if _, ok := gate.claim("node-a", changedTarget, now); ok {
-				t.Fatal("changed endpoint started while the old attempt was in flight")
-			}
+			require.True(t, ok, "old endpoint telemetry attempt was not due")
+			_, ok = gate.claim("node-a", changedTarget, now)
+			require.False(t, ok, "changed endpoint started while the old attempt was in flight")
 
 			gate.finish("node-a", oldToken, false, now)
-			if _, ok := gate.claim("node-a", changedTarget, now); !ok {
-				t.Fatal("old endpoint failure backed off the changed endpoint")
-			}
+			_, ok = gate.claim("node-a", changedTarget, now)
+			require.True(t, ok, "old endpoint failure backed off the changed endpoint")
 		})
 	}
 }
@@ -259,18 +210,14 @@ func TestTelemetryRetryGateRemoveRediscoverPreservesActiveClaim(t *testing.T) {
 	now := time.Unix(2_000, 0)
 	targetKey := telemetryTargetKey([]string{"192.0.2.1"}, 14318)
 	token, ok := gate.claim("node-a", targetKey, now)
-	if !ok {
-		t.Fatal("first telemetry attempt was not due")
-	}
+	require.True(t, ok, "first telemetry attempt was not due")
 
 	gate.forget("node-a")
-	if _, ok := gate.claim("node-a", targetKey, now); ok {
-		t.Fatal("re-discovered node started telemetry before its removed attempt finished")
-	}
+	_, ok = gate.claim("node-a", targetKey, now)
+	require.False(t, ok, "re-discovered node started telemetry before its removed attempt finished")
 	gate.finish("node-a", token, false, now)
-	if _, ok := gate.claim("node-a", targetKey, now); !ok {
-		t.Fatal("removed attempt's late failure backed off the re-discovered node")
-	}
+	_, ok = gate.claim("node-a", targetKey, now)
+	require.True(t, ok, "removed attempt's late failure backed off the re-discovered node")
 }
 
 func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing.T) {
@@ -281,13 +228,9 @@ func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing
 	}))
 	defer backedOff.Close()
 	backedOffURL, err := url.Parse(backedOff.URL)
-	if err != nil {
-		t.Fatalf("parse backed-off server URL: %v", err)
-	}
+	require.NoError(t, err, "parse backed-off server URL")
 	backedOffPort, err := strconv.Atoi(backedOffURL.Port())
-	if err != nil {
-		t.Fatalf("parse backed-off server port: %v", err)
-	}
+	require.NoError(t, err, "parse backed-off server port")
 
 	var healthyCalls atomic.Int32
 	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -296,13 +239,9 @@ func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing
 	}))
 	defer healthy.Close()
 	healthyURL, err := url.Parse(healthy.URL)
-	if err != nil {
-		t.Fatalf("parse healthy server URL: %v", err)
-	}
+	require.NoError(t, err, "parse healthy server URL")
 	healthyPort, err := strconv.Atoi(healthyURL.Port())
-	if err != nil {
-		t.Fatalf("parse healthy server port: %v", err)
-	}
+	require.NoError(t, err, "parse healthy server port")
 
 	var output bytes.Buffer
 	d := &daemon{
@@ -327,19 +266,13 @@ func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing
 	now := time.Now()
 	targetKey := telemetryTargetKey([]string{backedOffURL.Hostname()}, backedOffPort)
 	token, ok := d.telemetryRetries.claim("node-backed-off", targetKey, now)
-	if !ok {
-		t.Fatal("could not seed backed-off peer")
-	}
+	require.True(t, ok, "could not seed backed-off peer")
 	d.telemetryRetries.finish("node-backed-off", token, false, now)
 
 	d.refreshTelemetryOnce(context.Background())
 
-	if got := backedOffCalls.Load(); got != 0 {
-		t.Fatalf("backed-off peer received %d requests, want 0", got)
-	}
-	if got := healthyCalls.Load(); got != 1 {
-		t.Fatalf("healthy peer received %d requests, want 1", got)
-	}
+	require.Equal(t, int32(0), backedOffCalls.Load(), "backed-off peer received")
+	require.Equal(t, int32(1), healthyCalls.Load(), "healthy peer received")
 }
 
 func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
@@ -350,13 +283,9 @@ func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
+	require.NoError(t, err, "parse server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
+	require.NoError(t, err, "parse server port")
 
 	d := newSelfTestDaemon("self-uuid", "127.0.0.1")
 	d.dir.upsert(noderec.DirectoryNode{
@@ -369,9 +298,7 @@ func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
 	now := time.Now()
 	targetKey := telemetryTargetKey([]string{serverURL.Hostname()}, port)
 	token, ok := d.telemetryRetries.claim("peer-uuid", targetKey, now)
-	if !ok {
-		t.Fatal("could not seed peer retry state")
-	}
+	require.True(t, ok, "could not seed peer retry state")
 	d.telemetryRetries.finish("peer-uuid", token, false, now)
 
 	d.onBrowse(DiscoveryEvent{
@@ -389,12 +316,9 @@ func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
 		},
 	})
 
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("browse enrichment made %d node-info requests, want 1", got)
-	}
-	if _, ok := d.telemetryRetries.claim("peer-uuid", targetKey, now); ok {
-		t.Fatal("TXT-only update cleared telemetry backoff for an unchanged endpoint")
-	}
+	require.Equal(t, int32(1), calls.Load(), "browse enrichment made")
+	_, ok = d.telemetryRetries.claim("peer-uuid", targetKey, now)
+	require.False(t, ok, "TXT-only update cleared telemetry backoff for an unchanged endpoint")
 }
 
 func TestBrowseRemovalClearsTelemetryRetry(t *testing.T) {
@@ -404,9 +328,7 @@ func TestBrowseRemovalClearsTelemetryRetry(t *testing.T) {
 	port := 14318
 	targetKey := telemetryTargetKey([]string{host}, port)
 	token, ok := d.telemetryRetries.claim("peer-uuid", targetKey, now)
-	if !ok {
-		t.Fatal("could not seed peer retry state")
-	}
+	require.True(t, ok, "could not seed peer retry state")
 	d.telemetryRetries.finish("peer-uuid", token, false, now)
 
 	d.onBrowse(DiscoveryEvent{
@@ -423,9 +345,8 @@ func TestBrowseRemovalClearsTelemetryRetry(t *testing.T) {
 		},
 	})
 
-	if _, ok := d.telemetryRetries.claim("peer-uuid", targetKey, now); !ok {
-		t.Fatal("removed peer endpoint remained backed off")
-	}
+	_, ok = d.telemetryRetries.claim("peer-uuid", targetKey, now)
+	require.True(t, ok, "removed peer endpoint remained backed off")
 }
 
 func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *testing.T) {
@@ -459,26 +380,18 @@ func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *te
 		select {
 		case <-ch:
 		case <-time.After(time.Second):
-			t.Fatalf("timed out waiting for %s", what)
+			require.FailNowf(t, "timed out waiting for telemetry", "%s", what)
 		}
 	}
 
 	newURL, err := url.Parse(newServer.URL)
-	if err != nil {
-		t.Fatalf("parse new server URL: %v", err)
-	}
+	require.NoError(t, err, "parse new server URL")
 	newPort, err := strconv.Atoi(newURL.Port())
-	if err != nil {
-		t.Fatalf("parse new server port: %v", err)
-	}
+	require.NoError(t, err, "parse new server port")
 	oldURL, err := url.Parse(oldServer.URL)
-	if err != nil {
-		t.Fatalf("parse old server URL: %v", err)
-	}
+	require.NoError(t, err, "parse old server URL")
 	oldPort, err := strconv.Atoi(oldURL.Port())
-	if err != nil {
-		t.Fatalf("parse old server port: %v", err)
-	}
+	require.NoError(t, err, "parse old server port")
 
 	d := newSelfTestDaemon("self-uuid", "127.0.0.1")
 	d.dir.upsert(noderec.DirectoryNode{
@@ -518,15 +431,13 @@ func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *te
 	release(releaseNew)
 	waitFor(browseDone, "directory update")
 	replacementTarget := telemetryTargetKey([]string{newURL.Hostname()}, newPort)
-	if _, ok := d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now()); ok {
-		t.Fatal("replacement endpoint started while old endpoint telemetry was in flight")
-	}
+	_, ok := d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now())
+	require.False(t, ok, "replacement endpoint started while old endpoint telemetry was in flight")
 	release(releaseOld)
 	waitFor(telemetryDone, "old endpoint result")
 
-	if _, ok := d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now()); !ok {
-		t.Fatal("old endpoint failure backed off the replacement endpoint")
-	}
+	_, ok = d.telemetryRetries.claim("peer-uuid", replacementTarget, time.Now())
+	require.True(t, ok, "old endpoint failure backed off the replacement endpoint")
 }
 
 func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) {
@@ -540,13 +451,9 @@ func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) 
 	}))
 	defer slow.Close()
 	slowURL, err := url.Parse(slow.URL)
-	if err != nil {
-		t.Fatalf("parse slow server URL: %v", err)
-	}
+	require.NoError(t, err, "parse slow server URL")
 	slowPort, err := strconv.Atoi(slowURL.Port())
-	if err != nil {
-		t.Fatalf("parse slow server port: %v", err)
-	}
+	require.NoError(t, err, "parse slow server port")
 
 	healthyThird := make(chan struct{}, 1)
 	var healthyCalls atomic.Int32
@@ -561,13 +468,9 @@ func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) 
 	}))
 	defer healthy.Close()
 	healthyURL, err := url.Parse(healthy.URL)
-	if err != nil {
-		t.Fatalf("parse healthy server URL: %v", err)
-	}
+	require.NoError(t, err, "parse healthy server URL")
 	healthyPort, err := strconv.Atoi(healthyURL.Port())
-	if err != nil {
-		t.Fatalf("parse healthy server port: %v", err)
-	}
+	require.NoError(t, err, "parse healthy server port")
 
 	d := &daemon{
 		dir:  newDirectory(),
@@ -599,18 +502,18 @@ func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) 
 	select {
 	case <-slowStarted:
 	case <-time.After(time.Second):
-		t.Fatal("blocked peer telemetry did not start")
+		require.FailNow(t, "blocked peer telemetry did not start")
 	}
 	select {
 	case <-healthyThird:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("blocked peer delayed repeated healthy telemetry polls")
+		require.FailNow(t, "blocked peer delayed repeated healthy telemetry polls")
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("telemetry loop did not drain blocked work after cancellation")
+		require.FailNow(t, "telemetry loop did not drain blocked work after cancellation")
 	}
 }
 
@@ -636,13 +539,9 @@ func TestTelemetryLoopDoesNotOverlapNodePolls(t *testing.T) {
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
+	require.NoError(t, err, "parse server URL")
 	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
+	require.NoError(t, err, "parse server port")
 
 	d := &daemon{
 		dir:  newDirectory(),
@@ -659,12 +558,8 @@ func TestTelemetryLoopDoesNotOverlapNodePolls(t *testing.T) {
 	defer cancel()
 	d.runTelemetryLoop(ctx, 5*time.Millisecond)
 
-	if calls.Load() < 2 {
-		t.Fatalf("telemetry loop made %d calls, want at least two", calls.Load())
-	}
-	if maxActive.Load() != 1 {
-		t.Fatalf("maximum concurrent requests for one node = %d, want 1", maxActive.Load())
-	}
+	require.GreaterOrEqual(t, calls.Load(), int32(2), "telemetry loop request count")
+	require.Equal(t, int32(1), maxActive.Load(), "maximum concurrent requests for one node")
 }
 
 func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
@@ -696,13 +591,9 @@ func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 		serverURL, err := url.Parse(server.URL)
-		if err != nil {
-			t.Fatalf("parse server URL: %v", err)
-		}
+		require.NoError(t, err, "parse server URL")
 		port, err := strconv.Atoi(serverURL.Port())
-		if err != nil {
-			t.Fatalf("parse server port: %v", err)
-		}
+		require.NoError(t, err, "parse server port")
 		d.dir.upsert(noderec.DirectoryNode{
 			HostUUID: nodeID,
 			IP:       serverURL.Hostname(),
@@ -729,7 +620,7 @@ func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
 			releaseOnce.Do(func() { close(releaseWork) })
 			cancel()
 			<-done
-			t.Fatal("telemetry loop did not fill its concurrency allowance")
+			require.FailNow(t, "telemetry loop did not fill its concurrency allowance")
 		}
 	}
 	overflowed := false
@@ -746,20 +637,16 @@ func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
 		case <-time.After(time.Second):
 			cancel()
 			<-done
-			t.Fatal("queued telemetry did not start when capacity became available")
+			require.FailNow(t, "queued telemetry did not start when capacity became available")
 		}
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("telemetry loop did not drain bounded workers after cancellation")
+		require.FailNow(t, "telemetry loop did not drain bounded workers after cancellation")
 	}
 
-	if overflowed {
-		t.Fatalf("more than %d telemetry requests ran concurrently", telemetryRefreshConcurrency)
-	}
-	if got := maxActive.Load(); got != telemetryRefreshConcurrency {
-		t.Fatalf("maximum concurrent telemetry work = %d, want %d", got, telemetryRefreshConcurrency)
-	}
+	require.False(t, overflowed, "more than (%v)", telemetryRefreshConcurrency)
+	require.Equal(t, int32(telemetryRefreshConcurrency), maxActive.Load(), "maximum concurrent telemetry work")
 }

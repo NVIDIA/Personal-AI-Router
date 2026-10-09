@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-ui-broker/workloadstore"
 )
 
@@ -39,9 +42,7 @@ func TestActiveLocalReplayFrames(t *testing.T) {
 	b.workloads.Apply(storeIncoming("5", "host", "ollama", "r4", "completed", "host")) // local-origin recent terminal → replay
 
 	frames := b.activeLocalReplayFrames()
-	if len(frames) != 4 {
-		t.Fatalf("got %d replay frames, want 4 (local-origin active + recent terminals)", len(frames))
-	}
+	require.Len(t, frames, 4)
 
 	got := map[string]string{} // id -> method
 	for _, f := range frames {
@@ -51,26 +52,14 @@ func TestActiveLocalReplayFrames(t *testing.T) {
 				State string `json:"state"`
 			} `json:"workloadInfo"`
 		}
-		if err := json.Unmarshal(f.params, &env); err != nil {
-			t.Fatalf("bad replay frame params: %v", err)
-		}
+		require.NoError(t, json.Unmarshal(f.params, &env), "bad replay frame params")
 		got[env.WorkloadInfo.ID] = f.method
 	}
-	if got["1"] != "workload:started" {
-		t.Errorf("id 1 (running) method = %q, want workload:started", got["1"])
-	}
-	if got["2"] != "workload:errored" {
-		t.Errorf("id 2 (failed) method = %q, want workload:errored", got["2"])
-	}
-	if got["4"] != "workload:submitted" {
-		t.Errorf("id 4 (queued) method = %q, want workload:submitted", got["4"])
-	}
-	if got["5"] != "workload:completed" {
-		t.Errorf("id 5 (completed) method = %q, want workload:completed", got["5"])
-	}
-	if _, ok := got["3"]; ok {
-		t.Error("peer-origin workload 3 must not be replayed")
-	}
+	assert.Equal(t, "workload:started", got["1"], "id 1 (running) method")
+	assert.Equal(t, "workload:errored", got["2"], "id 2 (failed) method")
+	assert.Equal(t, "workload:submitted", got["4"], "id 4 (queued) method")
+	assert.Equal(t, "workload:completed", got["5"], "id 5 (completed) method")
+	assert.NotContains(t, got, "3", "peer-origin workload 3 must not be replayed")
 }
 
 // TestWorkloadHistoryFlusherFlushesOnShutdown is the shutdown-flush regression:
@@ -86,20 +75,15 @@ func TestWorkloadHistoryFlusherFlushesOnShutdown(t *testing.T) {
 
 	// A terminal completes. With the default 5 s periodic flush and an immediate
 	// shutdown, only the flusher's shutdown (join) flush can have persisted it.
-	if !b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "completed", "host")) {
-		t.Fatal("terminal apply should be accepted")
-	}
+	require.True(t, b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "completed", "host")), "terminal apply should be accepted")
 	stop() // cancels + joins the flusher; its final flush must have completed
 
 	// Restart: a fresh store loading the same file must see the terminal —
 	// proving the shutdown flush ran before stop() returned, not raced with exit.
 	s2 := workloadstore.New().WithPersistence(path)
-	if err := s2.Load(); err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if _, ok := s2.Get("host", "1"); !ok {
-		t.Fatal("terminal workload lost on shutdown before the first periodic flush")
-	}
+	require.NoError(t, s2.Load(), "load")
+	_, ok := s2.Get("host", "1")
+	require.True(t, ok, "terminal workload lost on shutdown before the first periodic flush")
 }
 
 // TestWorkloadHistoryFlusherOutlivesParentCancel is the normal-cancellation-path
@@ -121,18 +105,13 @@ func TestWorkloadHistoryFlusherOutlivesParentCancel(t *testing.T) {
 	time.Sleep(150 * time.Millisecond) // give a (hypothetically coupled) flusher time to exit
 
 	// A producer emits a terminal during teardown — after parent cancel, before stop().
-	if !b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "failed", "host")) {
-		t.Fatal("terminal apply should be accepted")
-	}
+	require.True(t, b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "failed", "host")), "terminal apply should be accepted")
 	stop() // now cancel + join the flusher; its final flush must include the terminal
 
 	s2 := workloadstore.New().WithPersistence(path)
-	if err := s2.Load(); err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if _, ok := s2.Get("host", "1"); !ok {
-		t.Fatal("terminal applied after parent cancel (during teardown) was lost — flusher exited too early")
-	}
+	require.NoError(t, s2.Load(), "load")
+	_, ok := s2.Get("host", "1")
+	require.True(t, ok, "terminal applied after parent cancel (during teardown) was lost — flusher exited too early")
 }
 
 // TestFailWorkloadsForNodeMatchesByHostUUID: the node-loss sweep must match
@@ -142,19 +121,15 @@ func TestWorkloadHistoryFlusherOutlivesParentCancel(t *testing.T) {
 func TestFailWorkloadsForNodeMatchesByHostUUID(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
 	// A peer-origin running workload stamped with the peer's HostUUID.
-	if !b.workloads.Apply(storeIncoming("7", "peer-uuid", "ollama", "r1", "running", "peer-uuid")) {
-		t.Fatal("running apply should be accepted")
-	}
+	require.True(t, b.workloads.Apply(storeIncoming("7", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "running apply should be accepted")
 
 	// Sweeping by the display name must NOT match (it's not the workload's key).
 	b.failWorkloadsForNode("peer-friendly-name", "peer-friendly-name")
-	if r, _ := b.workloads.Get("peer-uuid", "7"); r.State != "running" {
-		t.Fatalf("state after name-keyed sweep = %q, want running (name must not match a UUID-keyed workload)", r.State)
-	}
+	r, _ := b.workloads.Get("peer-uuid", "7")
+	require.Equal(t, "running", r.State, "state after name-keyed sweep")
 
 	// Sweeping by the HostUUID must fail it.
 	b.failWorkloadsForNode("peer-uuid", "peer-friendly-name")
-	if r, _ := b.workloads.Get("peer-uuid", "7"); r.State != "failed" {
-		t.Fatalf("state after UUID-keyed sweep = %q, want failed", r.State)
-	}
+	r, _ = b.workloads.Get("peer-uuid", "7")
+	require.Equal(t, "failed", r.State, "state after UUID-keyed sweep")
 }

@@ -10,9 +10,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"slices"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/noderec"
@@ -24,9 +25,7 @@ import (
 func nonLoopbackIPv4(t *testing.T) string {
 	t.Helper()
 	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		t.Fatalf("enumerate interface addresses: %v", err)
-	}
+	require.NoError(t, err, "enumerate interface addresses")
 	for _, a := range addrs {
 		ipnet, ok := a.(*net.IPNet)
 		if !ok {
@@ -80,9 +79,7 @@ func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("inventory status = %d, want 200", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode, "inventory status")
 
 	var out bytes.Buffer
 	observer.report(applog.NewNotifier(&out))
@@ -92,15 +89,10 @@ func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
 		Method  string                          `json:"method"`
 		Params  noderec.ObservedAddressesParams `json:"params"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &frame); err != nil {
-		t.Fatalf("decode report %q: %v", out.String(), err)
-	}
-	if frame.JSONRPC != "2.0" || frame.Method != noderec.NotifyObservedAddresses {
-		t.Fatalf("report = %s %s, want a 2.0 %s notification", frame.JSONRPC, frame.Method, noderec.NotifyObservedAddresses)
-	}
-	if !slices.Contains(frame.Params.Addresses, local) {
-		t.Fatalf("reported addresses = %v, want the address the client connected to (%s)", frame.Params.Addresses, local)
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &frame), "decode report")
+	require.Equal(t, "2.0", frame.JSONRPC)
+	require.Equal(t, noderec.NotifyObservedAddresses, frame.Method, "report")
+	require.Contains(t, frame.Params.Addresses, local, "reported addresses")
 }
 
 // addrConn presents a connection under the addresses a remote peer's connection
@@ -167,14 +159,9 @@ func TestServerRecordsTheServingConnectionWhenARequestArrives(t *testing.T) {
 		DialContext: func(context.Context, string, string) (net.Conn, error) { return clientConn, nil },
 	}}
 	resp, err := client.Get("http://10.172.54.70:14318/v1/node-info")
-	if err != nil {
-		t.Fatalf("inventory request: %v", err)
-	}
+	require.NoError(t, err, "inventory request")
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 
-	got := observer.addresses()
-	if len(got) != 1 || got[0] != "10.172.54.70" {
-		t.Fatalf("observed = %v, want the local address that served the request", got)
-	}
+	require.Equal(t, []string{"10.172.54.70"}, observer.addresses(), "observed")
 }

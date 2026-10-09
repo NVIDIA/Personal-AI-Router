@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // putPendingInviterSession registers a pending outbound invite plus its
@@ -52,24 +54,16 @@ func TestHandlePairingFailedReasonGuard(t *testing.T) {
 			})
 
 			inv, ok := m.getInvite("inv-fail")
-			if !ok {
-				t.Fatal("invite missing after fail signal; want a failed record")
-			}
-			if inv.State != inviteStateFailed {
-				t.Fatalf("invite state = %q, want %q", inv.State, inviteStateFailed)
-			}
-			if inv.Reason != tc.wantReason {
-				t.Fatalf("invite reason = %q, want %q", inv.Reason, tc.wantReason)
-			}
+			require.True(t, ok, "invite missing after fail signal; want a failed record")
+			require.Equal(t, inviteStateFailed, inv.State, "invite state")
+			require.Equal(t, tc.wantReason, inv.Reason, "invite reason")
 			// The EAP session is always torn down (PIN invalidated), whatever
 			// the reason.
-			if _, ok := m.getSession("inv-fail"); ok {
-				t.Fatal("fail signal must drop the inviter's EAP session")
-			}
+			_, ok = m.getSession("inv-fail")
+			require.False(t, ok, "fail signal must drop the inviter's EAP session")
 			// An intentional (non-invite-created) cluster is preserved.
-			if id, _ := m.clusterIdentity(); id == "" {
-				t.Fatal("intentional cluster erased by a fail signal")
-			}
+			id, _ := m.clusterIdentity()
+			require.NotEqual(t, "", id, "intentional cluster erased by a fail signal")
 		})
 	}
 }
@@ -87,9 +81,9 @@ func TestHandlePairingFailedIdempotent(t *testing.T) {
 	m.handlePairingFailed(httptest.NewRecorder(), first)
 
 	inv, ok := m.getInvite("inv-dup")
-	if !ok || inv.State != inviteStateFailed || inv.Reason != reasonIncorrectPIN {
-		t.Fatalf("after first fail: invite = %+v, want failed + incorrect-pin", inv)
-	}
+	require.True(t, ok, "after first fail: invite (%v)", inv)
+	require.Equal(t, inviteStateFailed, inv.State, "after first fail: invite (%v)", inv)
+	require.Equal(t, reasonIncorrectPIN, inv.Reason, "after first fail: invite (%v)", inv)
 
 	// Redeliver with a different reason; the session is gone so it must no-op.
 	m.handlePairingFailed(httptest.NewRecorder(), &pairingEnvelope{
@@ -97,9 +91,9 @@ func TestHandlePairingFailedIdempotent(t *testing.T) {
 	})
 
 	inv, ok = m.getInvite("inv-dup")
-	if !ok || inv.State != inviteStateFailed || inv.Reason != reasonIncorrectPIN {
-		t.Fatalf("after duplicate fail: invite = %+v, want unchanged failed + incorrect-pin", inv)
-	}
+	require.True(t, ok, "after duplicate fail: invite (%v)", inv)
+	require.Equal(t, inviteStateFailed, inv.State, "after duplicate fail: invite (%v)", inv)
+	require.Equal(t, reasonIncorrectPIN, inv.Reason, "after duplicate fail: invite (%v)", inv)
 }
 
 // TestHandlePairingFailedNonInviterIgnored verifies the guard on session role:
@@ -113,9 +107,8 @@ func TestHandlePairingFailedNonInviterIgnored(t *testing.T) {
 	m.handlePairingFailed(httptest.NewRecorder(), &pairingEnvelope{
 		InviteID: "inv-unknown", Phase: "fail", Reason: reasonIncorrectPIN,
 	})
-	if _, ok := m.getInvite("inv-unknown"); ok {
-		t.Fatal("fail signal for an unknown invite must not create a record")
-	}
+	_, ok := m.getInvite("inv-unknown")
+	require.False(t, ok, "fail signal for an unknown invite must not create a record")
 
 	// A joiner-role session must not be torn down by an inviter fail signal.
 	m.putInvite(&Invite{
@@ -131,10 +124,8 @@ func TestHandlePairingFailedNonInviterIgnored(t *testing.T) {
 	})
 
 	inv, ok := m.getInvite("inv-inbound")
-	if !ok || inv.State != inviteStatePending {
-		t.Fatalf("inbound invite state = %+v, want still pending (fail ignored for non-inviter)", inv)
-	}
-	if _, ok := m.getSession("inv-inbound"); !ok {
-		t.Fatal("joiner session wrongly evicted by an inviter fail signal")
-	}
+	require.True(t, ok, "inbound invite state (%v)", inv)
+	require.Equal(t, inviteStatePending, inv.State, "inbound invite state (%v)", inv)
+	_, ok = m.getSession("inv-inbound")
+	require.True(t, ok, "joiner session wrongly evicted by an inviter fail signal")
 }

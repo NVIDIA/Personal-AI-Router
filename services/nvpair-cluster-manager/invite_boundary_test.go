@@ -6,6 +6,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // inviterSession builds a bare inviter-side pairing session for the boundary
@@ -20,15 +22,10 @@ func inviterSession(inviteID, clusterID string) *pairingSession {
 // a teardown races the Initial Exchange.
 func assertFullyUnclustered(t *testing.T, m *Manager) {
 	t.Helper()
-	if id, _ := m.clusterIdentity(); id != "" {
-		t.Fatalf("clusterId = %q, want empty", id)
-	}
-	if n := len(m.trust.List()); n != 0 {
-		t.Fatalf("pins = %d, want 0", n)
-	}
-	if n := len(m.snapshotNodes()); n != 0 {
-		t.Fatalf("members = %d, want 0", n)
-	}
+	id, _ := m.clusterIdentity()
+	require.Equal(t, "", id, "clusterId")
+	require.Empty(t, m.trust.List(), "pins")
+	require.Empty(t, m.snapshotNodes(), "members")
 }
 
 // TestInitialExchangeTeardownBoundary is the deterministic control for the
@@ -61,7 +58,7 @@ func TestInitialExchangeTeardownBoundary(t *testing.T) {
 		}()
 		select {
 		case <-done:
-			t.Fatal("initial invite published while teardown boundary was held")
+			require.FailNow(t, "initial invite published while teardown boundary was held")
 		case <-time.After(200 * time.Millisecond):
 		}
 		m.teardownClusterLocalLocked()
@@ -69,15 +66,12 @@ func TestInitialExchangeTeardownBoundary(t *testing.T) {
 
 		select {
 		case got := <-done:
-			if got.ok {
-				t.Fatalf("stale publication succeeded with session generation %d", got.gen)
-			}
+			require.False(t, got.ok, "stale publication succeeded with session generation")
 		case <-time.After(5 * time.Second):
-			t.Fatal("blocked publication did not return")
+			require.FailNow(t, "blocked publication did not return")
 		}
-		if _, ok := m.getInvite(inv.InviteID); ok {
-			t.Fatal("pending invite survived teardown/publication race")
-		}
+		_, ok := m.getInvite(inv.InviteID)
+		require.False(t, ok, "pending invite survived teardown/publication race")
 		assertFullyUnclustered(t, m)
 	})
 
@@ -93,12 +87,9 @@ func TestInitialExchangeTeardownBoundary(t *testing.T) {
 		m.teardownClusterLocal()
 
 		sess := inviterSession("inv-1", cid0)
-		if m.registerInviterSession(sess, cid0, sessGen0) {
-			t.Fatal("registerInviterSession succeeded after teardown; want refusal")
-		}
-		if _, ok := m.getSession("inv-1"); ok {
-			t.Fatal("a session was installed after teardown")
-		}
+		require.False(t, m.registerInviterSession(sess, cid0, sessGen0), "registerInviterSession succeeded after teardown; want refusal")
+		_, ok := m.getSession("inv-1")
+		require.False(t, ok, "a session was installed after teardown")
 		assertFullyUnclustered(t, m)
 	})
 
@@ -111,23 +102,16 @@ func TestInitialExchangeTeardownBoundary(t *testing.T) {
 		publishPendingInvite(t, m, "inv-2")
 
 		sess := inviterSession("inv-2", cid0)
-		if !m.registerInviterSession(sess, cid0, sessGen0) {
-			t.Fatal("registerInviterSession refused a live cluster")
-		}
+		require.True(t, m.registerInviterSession(sess, cid0, sessGen0), "registerInviterSession refused a live cluster")
 
 		// The teardown lands while the exchange is in flight, clearing the session.
 		m.teardownClusterLocal()
 
 		published := false
-		if m.withLivePairing(sess, func() { published = true }) {
-			t.Fatal("withLivePairing ran after the session was torn down")
-		}
-		if published {
-			t.Fatal("invite republish ran after teardown")
-		}
-		if _, ok := m.getInvite("inv-2"); ok {
-			t.Fatal("an invite record survived the teardown")
-		}
+		require.False(t, m.withLivePairing(sess, func() { published = true }), "withLivePairing ran after the session was torn down")
+		require.False(t, published, "invite republish ran after teardown")
+		_, ok := m.getInvite("inv-2")
+		require.False(t, ok, "an invite record survived the teardown")
 		assertFullyUnclustered(t, m)
 	})
 
@@ -150,12 +134,9 @@ func TestInitialExchangeTeardownBoundary(t *testing.T) {
 		})
 
 		sess := inviterSession("inv-3", cid0)
-		if m.registerInviterSession(sess, cid0, sessGen0) {
-			t.Fatal("registerInviterSession succeeded after a same-cluster rejoin; want refusal")
-		}
-		if _, ok := m.getSession("inv-3"); ok {
-			t.Fatal("a stale session was installed after a same-cluster rejoin")
-		}
+		require.False(t, m.registerInviterSession(sess, cid0, sessGen0), "registerInviterSession succeeded after a same-cluster rejoin; want refusal")
+		_, ok := m.getSession("inv-3")
+		require.False(t, ok, "a stale session was installed after a same-cluster rejoin")
 	})
 
 	t.Run("live pairing registers and republishes", func(t *testing.T) {
@@ -167,25 +148,20 @@ func TestInitialExchangeTeardownBoundary(t *testing.T) {
 		publishPendingInvite(t, m, "inv-4")
 
 		sess := inviterSession("inv-4", cid0)
-		if !m.registerInviterSession(sess, cid0, sessGen0) {
-			t.Fatal("registerInviterSession refused a live, unchanged cluster")
-		}
+		require.True(t, m.registerInviterSession(sess, cid0, sessGen0), "registerInviterSession refused a live, unchanged cluster")
 		inv, _ := m.getInvite("inv-4")
 
 		pin := "123456"
 		published := false
-		if !m.withLivePairing(sess, func() {
+		require.True(t, m.withLivePairing(sess, func() {
 			inv.Pin = &pin
 			m.putInvite(inv)
 			published = true
-		}) {
-			t.Fatal("withLivePairing refused a live pairing")
-		}
-		if !published {
-			t.Fatal("invite republish did not run for a live pairing")
-		}
-		if got, ok := m.getInvite("inv-4"); !ok || got.Pin == nil || *got.Pin != pin {
-			t.Fatalf("invite PIN not published for a live pairing: %+v", got)
-		}
+		}), "withLivePairing refused a live pairing")
+		require.True(t, published, "invite republish did not run for a live pairing")
+		got, ok := m.getInvite("inv-4")
+		require.True(t, ok, "invite PIN not published for a live pairing (%v)", got)
+		require.NotNil(t, got.Pin, "invite PIN not published for a live pairing (%v)", got)
+		require.Equal(t, pin, *got.Pin, "invite PIN not published for a live pairing (%v)", got)
 	})
 }

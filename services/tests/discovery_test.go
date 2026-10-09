@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/grandcat/zeroconf"
 )
 
@@ -22,16 +25,12 @@ func TestInProcessDiscovery(t *testing.T) {
 	)
 
 	server, err := zeroconf.Register(instance, service, testDomain, port, []string{"env=test"}, nil)
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
+	require.NoError(t, err, "register")
 	defer server.Shutdown()
 	time.Sleep(500 * time.Millisecond)
 
 	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
+	require.NoError(t, err, "resolver")
 
 	entries := make(chan *zeroconf.ServiceEntry)
 	found := make(chan *zeroconf.ServiceEntry, 1)
@@ -48,25 +47,17 @@ func TestInProcessDiscovery(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := resolver.Browse(ctx, service, testDomain, entries); err != nil {
-		t.Fatalf("browse: %v", err)
-	}
+	require.NoError(t, resolver.Browse(ctx, service, testDomain, entries), "browse")
 
 	select {
 	case entry := <-found:
-		if entry.Port != port {
-			t.Errorf("port = %d, want %d", entry.Port, port)
-		}
-		if len(entry.Text) == 0 || entry.Text[0] != "env=test" {
-			t.Errorf("txt = %v, want [env=test]", entry.Text)
-		}
-		if !hasAddress(entry) {
-			t.Error("no addresses resolved")
-		}
+		assert.Equal(t, port, entry.Port, "port (%v)", port)
+		assert.True(t, len(entry.Text) > 0 && entry.Text[0] == "env=test", "txt: %v", entry.Text)
+		assert.True(t, hasAddress(entry), "no addresses resolved")
 		t.Logf("OK: %s @ %s:%d addrs=%v txt=%v",
 			entry.Instance, entry.HostName, entry.Port, entry.AddrIPv4, entry.Text)
 	case <-ctx.Done():
-		t.Fatal("timed out waiting for discovery")
+		require.FailNow(t, "timed out waiting for discovery")
 	}
 }
 
@@ -77,18 +68,14 @@ func TestInProcessMultipleInstances(t *testing.T) {
 	var servers []*zeroconf.Server
 	for i, inst := range instances {
 		s, err := zeroconf.Register(inst, service, testDomain, 50000+i, nil, nil)
-		if err != nil {
-			t.Fatalf("register %s: %v", inst, err)
-		}
+		require.NoError(t, err, "register (%v, %v)", inst, err)
 		servers = append(servers, s)
 		defer s.Shutdown()
 	}
 	time.Sleep(500 * time.Millisecond)
 
 	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
+	require.NoError(t, err, "resolver")
 
 	entries := make(chan *zeroconf.ServiceEntry)
 	foundSet := make(map[string]bool)
@@ -106,17 +93,13 @@ func TestInProcessMultipleInstances(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := resolver.Browse(ctx, service, testDomain, entries); err != nil {
-		t.Fatalf("browse: %v", err)
-	}
+	require.NoError(t, resolver.Browse(ctx, service, testDomain, entries), "browse")
 	<-ctx.Done()
 	<-done
 
-	for _, inst := range instances {
-		if !foundSet[inst] {
-			t.Errorf("instance %q not discovered", inst)
-		}
-	}
+	assert.Contains(t, foundSet, "node-alpha", "registered instance must be discovered")
+	assert.Contains(t, foundSet, "node-beta", "registered instance must be discovered")
+	assert.Contains(t, foundSet, "node-gamma", "registered instance must be discovered")
 	t.Logf("OK: discovered %d/%d instances", len(foundSet), len(instances))
 }
 
@@ -128,15 +111,11 @@ func TestInProcessRemoval(t *testing.T) {
 	)
 
 	server, err := zeroconf.Register(instance, service, testDomain, port, nil, nil)
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
+	require.NoError(t, err, "register")
 
 	// Phase 1: verify discoverable
 	entry := browseForInstance(t, service, instance, 5*time.Second)
-	if entry == nil {
-		t.Fatal("service not found before removal")
-	}
+	require.NotNil(t, entry, "service not found before removal")
 	t.Log("phase 1: service discovered")
 
 	// Shut down the service
@@ -146,7 +125,7 @@ func TestInProcessRemoval(t *testing.T) {
 	// Phase 2: verify no longer discoverable
 	entry = browseForInstance(t, service, instance, 5*time.Second)
 	if entry != nil {
-		t.Error("service still discoverable after shutdown")
+		assert.Fail(t, "service still discoverable after shutdown")
 	} else {
 		t.Log("phase 2: service correctly absent after removal")
 	}
@@ -157,9 +136,7 @@ func TestInProcessRemoval(t *testing.T) {
 func browseForInstance(t *testing.T, service, instance string, timeout time.Duration) *zeroconf.ServiceEntry {
 	t.Helper()
 	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
+	require.NoError(t, err, "resolver")
 
 	entries := make(chan *zeroconf.ServiceEntry)
 	found := make(chan *zeroconf.ServiceEntry, 1)
@@ -176,9 +153,7 @@ func browseForInstance(t *testing.T, service, instance string, timeout time.Dura
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := resolver.Browse(ctx, service, testDomain, entries); err != nil {
-		t.Fatalf("browse: %v", err)
-	}
+	require.NoError(t, resolver.Browse(ctx, service, testDomain, entries), "browse")
 
 	select {
 	case e := <-found:

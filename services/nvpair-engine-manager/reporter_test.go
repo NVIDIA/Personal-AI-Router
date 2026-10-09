@@ -6,8 +6,10 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"strings"
+
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestReporterDedupCapClear(t *testing.T) {
@@ -17,26 +19,22 @@ func TestReporterDedupCapClear(t *testing.T) {
 	// Same id reported twice → one entry, latest wins.
 	r.report(serviceError{ID: "a", Message: "first"})
 	r.report(serviceError{ID: "a", Message: "second"})
-	if snap := r.snapshot(); len(snap) != 1 || snap[0].Message != "second" {
-		t.Fatalf("expected 1 deduped error (latest wins), got %+v", snap)
-	}
+	snap := r.snapshot()
+	require.Len(t, snap, 1, "expected 1 deduped error (latest wins)")
+	require.Equal(t, "second", snap[0].Message, "expected 1 deduped error (latest wins) (%v)", snap)
 
 	r.clear("a")
-	if len(r.snapshot()) != 0 {
-		t.Fatalf("expected empty after clear, got %+v", r.snapshot())
-	}
+	require.Empty(t, r.snapshot(), "expected empty after clear")
 
 	// Both wire frames should have been emitted on the codec.
-	if out := buf.String(); !strings.Contains(out, `"errors:report"`) || !strings.Contains(out, `"errors:clear"`) {
-		t.Fatalf("expected report + clear frames emitted, got: %s", out)
-	}
+	out := buf.String()
+	require.Contains(t, out, `"errors:report"`, "expected report + clear frames emitted")
+	require.Contains(t, out, `"errors:clear"`, "expected report + clear frames emitted")
 
 	// Ring is bounded.
 	r2 := NewReporter(nil)
 	for i := 0; i < maxRecentErrors+25; i++ {
 		r2.report(serviceError{ID: fmt.Sprintf("e%d", i)})
 	}
-	if got := len(r2.snapshot()); got > maxRecentErrors {
-		t.Fatalf("ring exceeded cap: %d > %d", got, maxRecentErrors)
-	}
+	require.LessOrEqual(t, len(r2.snapshot()), maxRecentErrors, "ring exceeded cap")
 }

@@ -26,6 +26,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	settings "nvpair-shared/enginesettings"
 )
@@ -34,50 +37,34 @@ func settingsMesh(t *testing.T, id string) (string, []byte) {
 	t.Helper()
 	dir := t.TempDir()
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	uri, _ := url.Parse("urn:nvpair:node:" + id)
 	cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: id}, URIs: []*url.URL{uri}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyDER, _ := x509.MarshalPKCS8PrivateKey(key)
 	for name, data := range map[string][]byte{"node.crt": certPEM, "node.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})} {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0600))
 	}
 	return dir, certPEM
 }
 func settingsPin(t *testing.T, dir, id string, cert []byte) {
 	t.Helper()
 	path := filepath.Join(dir, "trusted")
-	if err := os.MkdirAll(path, 0700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(path, 0700))
 	data, _ := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(cert)})
-	if err := os.WriteFile(filepath.Join(path, id+".json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(path, id+".json"), data, 0600))
 }
 
 func TestNotifyPeerSettingsForwardsEverySupportedEngine(t *testing.T) {
 	emitted := []settings.Snapshot{}
 	exec := &Executor{emit: func(method string, value any) {
-		if method != "engine:settings-changed" {
-			t.Fatalf("notification method = %q, want engine:settings-changed", method)
-		}
+		require.Equal(t, "engine:settings-changed", method)
 		data, err := json.Marshal(value)
-		if err != nil {
-			t.Fatalf("marshal notification: %v", err)
-		}
+		require.NoError(t, err, "marshal notification")
 		var snapshot settings.Snapshot
-		if err := json.Unmarshal(data, &snapshot); err != nil {
-			t.Fatalf("decode notification: %v", err)
-		}
+		require.NoError(t, json.Unmarshal(data, &snapshot), "decode notification")
 		emitted = append(emitted, snapshot)
 	}}
 	manager := &Manager{exec: exec}
@@ -89,16 +76,10 @@ func TestNotifyPeerSettingsForwardsEverySupportedEngine(t *testing.T) {
 	})
 
 	wantEngines := []string{"ollama", "lmstudio", "llamacpp"}
-	if len(emitted) != len(wantEngines) {
-		t.Fatalf("emitted %d snapshots, want %d: %+v", len(emitted), len(wantEngines), emitted)
-	}
+	require.Len(t, emitted, len(wantEngines))
 	for i, wantEngine := range wantEngines {
-		if emitted[i].Engine != wantEngine {
-			t.Errorf("snapshot %d engine = %q, want %q", i, emitted[i].Engine, wantEngine)
-		}
-		if emitted[i].NodeID != "peer-node" {
-			t.Errorf("snapshot %d nodeId = %q, want peer-node", i, emitted[i].NodeID)
-		}
+		assert.Equal(t, wantEngine, emitted[i].Engine, "snapshot %d engine", i)
+		assert.Equal(t, "peer-node", emitted[i].NodeID, "snapshot %d nodeId", i)
 	}
 }
 
@@ -122,9 +103,7 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		callerSeen = caller
-		if p.NodeID != "" {
-			t.Error("forwarded another target through settings HTTP")
-		}
+		assert.Equal(t, "", p.NodeID, "forwarded another target through settings HTTP")
 		if method == "apply" {
 			snapshot.Revision++
 			snapshot.Sequence++
@@ -141,9 +120,7 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 	client := func(dir string) *http.Client {
 		m := clustertrust.Open(dir)
 		config, ok := m.ClientTLSConfig("a")
-		if !ok {
-			t.Fatal("pin unavailable")
-		}
+		require.True(t, ok, "pin unavailable")
 		tr := &http.Transport{TLSClientConfig: config}
 		t.Cleanup(tr.CloseIdleConnections)
 		return &http.Client{Transport: tr}
@@ -154,9 +131,7 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 	open := func(cl *http.Client) (*http.Response, *bufio.Scanner) {
 		req, _ := http.NewRequestWithContext(ctx, "GET", server.URL+settingsPath+"events", nil)
 		res, err := cl.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = res.Body.Close() })
 		return res, bufio.NewScanner(res.Body)
 	}
@@ -166,56 +141,40 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 		t.Helper()
 		for scan.Scan() {
 			var rows []settings.Snapshot
-			if json.Unmarshal(scan.Bytes(), &rows) != nil {
-				t.Fatal("invalid stream")
-			}
+			require.NoError(t, json.Unmarshal(scan.Bytes(), &rows), "invalid stream")
 			if len(rows) > 0 {
-				if rows[0].Revision != want {
-					t.Fatalf("revision=%d want=%d", rows[0].Revision, want)
-				}
+				require.Equal(t, want, rows[0].Revision, "revision")
 				return
 			}
 		}
-		t.Fatalf("stream ended: %v", scan.Err())
+		require.FailNowf(t, "stream ended", "%v", scan.Err())
 	}
 	read(scanB, 1)
 	read(scanC, 1)
 	config := settings.Config{ServerPort: 12002, ProxyPort: 12003, LaunchText: "managed serve --parallel 2"}
 	body, _ := json.Marshal(settings.Request{NodeID: "forwarding-forbidden", Engine: "ollama", Settings: config})
 	response, err := clientB.Post(server.URL+settingsPath+"apply", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	_ = response.Body.Close()
-	if response.StatusCode != 200 {
-		t.Fatalf("paired mutation rejected: %d", response.StatusCode)
-	}
+	require.Equal(t, 200, response.StatusCode, "paired mutation rejected")
 	read(scanB, 2)
 	read(scanC, 2)
 	mu.Lock()
 	seen := callerSeen
 	mu.Unlock()
-	if seen != "b" {
-		t.Fatalf("caller not authenticated: %q", seen)
-	}
+	require.Equal(t, "b", seen, "caller not authenticated")
 	response, err = client(stranger).Post(server.URL+settingsPath+"apply", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	_ = response.Body.Close()
-	if response.StatusCode != 403 {
-		t.Fatal("unpinned mutation accepted")
-	}
-	if err := os.Remove(filepath.Join(a, "trusted", "c.json")); err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, 403, response.StatusCode, "unpinned mutation accepted")
+	require.NoError(t, os.Remove(filepath.Join(a, "trusted", "c.json")))
 	mesh.Refresh()
 	ended := make(chan error, 1)
 	go func() { _, err := io.Copy(io.Discard, resC.Body); ended <- err }()
 	select {
 	case <-ended:
 	case <-time.After(3 * time.Second):
-		t.Fatal("revoked peer stream did not close")
+		require.FailNow(t, "revoked peer stream did not close")
 	}
 	// A reconnected remaining peer atomically receives the latest full state.
 	_, again := open(clientB)
@@ -239,53 +198,39 @@ func TestSettingsRemoteOnlyCORSIsLocalOnly(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	config, ok := clustertrust.Open(b).ClientTLSConfig("a")
-	if !ok {
-		t.Fatal("pin unavailable")
-	}
+	require.True(t, ok, "pin unavailable")
 	transport := &http.Transport{TLSClientConfig: config}
 	t.Cleanup(transport.CloseIdleConnections)
 	peer := &http.Client{Transport: transport}
 	post := func(request settings.Request) int {
 		body, _ := json.Marshal(request)
 		response, err := peer.Post(server.URL+settingsPath+"apply", "application/json", bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_ = response.Body.Close()
 		return response.StatusCode
 	}
 	arguments := settingsRequest(t, exec)
 	arguments.Settings.LaunchText += " --parallel 3"
-	if code := post(arguments); code != 200 {
-		t.Fatalf("peer argument change refused: %d", code)
-	}
+	require.Equal(t, 200, post(arguments), "peer argument change refused")
 	ports := settingsRequest(t, exec)
 	next := ports.Settings.ServerPort + 1
 	ports.Settings.LaunchText = strings.Replace(ports.Settings.LaunchText,
 		strconv.Itoa(ports.Settings.ServerPort), strconv.Itoa(next), 1)
 	ports.Settings.ServerPort = next
-	if code := post(ports); code != 200 {
-		t.Fatalf("peer port change refused: %d", code)
-	}
+	require.Equal(t, 200, post(ports), "peer port change refused")
 	environment := settingsRequest(t, exec)
 	environment.Settings.LaunchText = `FUTURE_ENGINE_SETTING="unknown-value" ` + environment.Settings.LaunchText
-	if code := post(environment); code != 200 {
-		t.Fatalf("peer opaque environment change refused: %d", code)
-	}
+	require.Equal(t, 200, post(environment), "peer opaque environment change refused")
 	environment = settingsRequest(t, exec)
 	environment.Settings.LaunchText = `OLLAMA_ORIGINS="http://localhost" ` + environment.Settings.LaunchText
-	if code := post(environment); code != 403 {
-		t.Fatalf("peer CORS environment change accepted: %d", code)
-	}
+	require.Equal(t, 403, post(environment), "peer CORS environment change accepted")
 	// Exercise switch-based policy on the same authenticated route.
 	state := settingsState(t, exec)
 	state.plat.Runtime.EditableLaunch.Controls[1] = LaunchControl{Value: "{cors.enabled}", Implicit: implicitLaunchValue("true"), Flags: []string{"--cors", "-c"}}
 	for _, text := range []string{"--cors", "-c", "--cors=false", "-- --cors", "-vc"} {
 		request := settingsRequest(t, exec)
 		request.Settings.LaunchText += " " + text
-		if code := post(request); code != 403 {
-			t.Fatalf("peer CORS switch %q accepted: %d", text, code)
-		}
+		require.Equal(t, 403, post(request), "peer CORS switch (%v)", text)
 	}
 }
 
@@ -324,24 +269,16 @@ func TestSettingsRelayCorrelationCancellationAndCleanup(t *testing.T) {
 		relay.reply(data)
 	}
 	got := map[string]bool{<-results: true, <-results: true}
-	if !got[`"one"`] || !got[`"two"`] {
-		t.Fatal("responses were not correlated")
-	}
+	require.Contains(t, got, `"one"`, "responses were not correlated")
+	require.Contains(t, got, `"two"`, "responses were not correlated")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := relay.call(ctx, "apply", settings.Request{}, ""); done <- err }()
 	request := <-sent
 	cancel()
-	if err := <-done; err == nil {
-		t.Fatal("cancellation ignored")
-	}
-	if <-canceled != request.ID {
-		t.Fatal("wrong canceled correlation")
-	}
+	require.Error(t, <-done, "cancellation ignored")
+	require.Equal(t, request.ID, <-canceled, "wrong canceled correlation")
 	relay.mu.Lock()
-	pending := len(relay.pending)
+	assert.Empty(t, relay.pending, "relay leaked requests")
 	relay.mu.Unlock()
-	if pending != 0 {
-		t.Fatal("relay leaked requests")
-	}
 }

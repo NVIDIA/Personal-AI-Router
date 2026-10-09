@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestStreamOpEmitsProgressThenResult verifies streamOp forwards published
@@ -28,18 +30,14 @@ func TestStreamOpEmitsProgressThenResult(t *testing.T) {
 	})
 
 	frames := decodeFrames(t, rec.Body.String())
-	if len(frames) != 2 {
-		t.Fatalf("expected 2 frames (progress, result), got %d: %s", len(frames), rec.Body.String())
-	}
-	if frames[0].Type != "progress" || frames[0].Percent != 42 || frames[0].OpID != "op1" {
-		t.Fatalf("bad progress frame: %+v", frames[0])
-	}
-	if frames[1].Type != "result" || frames[1].Status == nil || !frames[1].Status.Running {
-		t.Fatalf("bad result frame: %+v", frames[1])
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/x-ndjson" {
-		t.Fatalf("expected ndjson content-type, got %q", ct)
-	}
+	require.Len(t, frames, 2, "expected 2 frames (progress, result)")
+	require.Equal(t, "progress", frames[0].Type, "bad progress frame")
+	require.Equal(t, 42, frames[0].Percent, "bad progress frame")
+	require.Equal(t, "op1", frames[0].OpID, "bad progress frame")
+	require.Equal(t, "result", frames[1].Type, "bad result frame")
+	require.NotNil(t, frames[1].Status, "bad result frame")
+	require.True(t, frames[1].Status.Running, "bad result frame")
+	require.Equal(t, "application/x-ndjson", rec.Header().Get("Content-Type"), "expected ndjson content-type")
 }
 
 // TestStreamOpEmitsErrorFrame verifies a failing op yields a terminal error
@@ -56,9 +54,9 @@ func TestStreamOpEmitsErrorFrame(t *testing.T) {
 	})
 
 	frames := decodeFrames(t, rec.Body.String())
-	if len(frames) != 1 || frames[0].Type != "error" || frames[0].Message == "" {
-		t.Fatalf("expected one error frame, got %+v", frames)
-	}
+	require.Len(t, frames, 1, "expected one error frame")
+	require.Equal(t, "error", frames[0].Type, "expected one error frame (%v)", frames)
+	require.NotEqual(t, "", frames[0].Message, "expected one error frame (%v)", frames)
 }
 
 // TestHandleInstallRejectsMissingEngine verifies request-body validation.
@@ -67,9 +65,7 @@ func TestHandleInstallRejectsMissingEngine(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", controlInstallPath, strings.NewReader(`{"opId":"x"}`))
 	s.handleInstall(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 for missing engine, got %d", rec.Code)
-	}
+	require.Equal(t, 400, rec.Code, "expected 400 for missing engine")
 }
 
 func decodeFrames(t *testing.T, body string) []streamFrame {
@@ -82,9 +78,7 @@ func decodeFrames(t *testing.T, body string) []streamFrame {
 			continue
 		}
 		var f streamFrame
-		if err := json.Unmarshal([]byte(line), &f); err != nil {
-			t.Fatalf("bad frame line %q: %v", line, err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(line), &f), "bad frame line (%v)", line)
 		out = append(out, f)
 	}
 	return out

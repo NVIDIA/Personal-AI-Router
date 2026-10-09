@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestStopAllStopsEveryEngine guards the concurrent StopAll: with more than one
@@ -33,26 +35,18 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 
 	ports := make([]int, len(names))
 	for i, name := range names {
-		if err := ex.Start(ctx, name); err != nil {
-			t.Fatalf("start %s: %v", name, err)
-		}
+		require.NoError(t, ex.Start(ctx, name), "start (%v)", name)
 		st, _ := ex.Status(name)
-		if !st.Running || st.Port == 0 {
-			t.Fatalf("%s not running: %+v", name, st)
-		}
+		require.True(t, st.Running, " (%v, %v)", name, st)
+		require.NotEqual(t, 0, st.Port, " (%v, %v)", name, st)
 		ports[i] = st.Port
 	}
 
 	ex.StopAll()
 
-	for i, name := range names {
-		if !waitPortClosed(ports[i], 5*time.Second) {
-			t.Fatalf("engine %s still serving on port %d after StopAll", name, ports[i])
-		}
-	}
-	if err := ex.Start(ctx, names[0]); !errors.Is(err, context.Canceled) {
-		t.Fatalf("start after StopAll error = %v, want context canceled", err)
-	}
+	require.True(t, waitPortClosed(ports[0], 5*time.Second), "engine (%v)", names[0])
+	require.True(t, waitPortClosed(ports[1], 5*time.Second), "engine (%v)", names[1])
+	require.ErrorIs(t, ex.Start(ctx, names[0]), context.Canceled, "start after StopAll error")
 }
 
 func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
@@ -83,9 +77,7 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 			time.Sleep(25 * time.Millisecond)
 		}
 	}
-	if pid == 0 {
-		t.Fatal("command-mode fake engine did not publish its PID")
-	}
+	require.NotEqual(t, 0, pid, "command-mode fake engine did not publish its PID")
 	t.Cleanup(func() {
 		if pidAlive(pid) {
 			_ = signalPID(pid, true)
@@ -97,14 +89,10 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("command-mode start did not return after StopAll")
+		require.FailNow(t, "command-mode start did not return after StopAll")
 	}
-	if pidAlive(pid) {
-		t.Fatalf("command-mode fake engine PID %d survived StopAll", pid)
-	}
-	if hasErr(ex.Errors(), startFailedID("fake")) {
-		t.Fatalf("shutdown cancellation retained a command-mode start-failed error: %+v", ex.Errors())
-	}
+	require.False(t, pidAlive(pid), "command-mode fake engine PID (%v)", pid)
+	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "shutdown cancellation retained a command-mode start-failed error")
 }
 
 func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
@@ -112,9 +100,7 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	startMarker := filepath.Join(dir, "started")
 	stopMarker := filepath.Join(dir, "stopped")
 	port, err := freePort()
-	if err != nil {
-		t.Fatalf("free port: %v", err)
-	}
+	require.NoError(t, err, "free port")
 
 	manifest := testEngineManifest(fakeEngineBin)
 	platform := manifest.Platforms[hostKey()]
@@ -178,29 +164,19 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 
 	started := make(chan error, 1)
 	go func() { started <- ex.Start(context.Background(), "fake") }()
-	if err := <-daemonStarted; err != nil {
-		t.Fatalf("detached command daemon: %v", err)
-	}
-	if !portServing(port) {
-		t.Fatal("detached command daemon did not start serving")
-	}
+	require.NoError(t, <-daemonStarted, "detached command daemon")
+	require.True(t, portServing(port), "detached command daemon did not start serving")
 
 	ex.StopAll()
 
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("command-mode start did not return after StopAll")
+		require.FailNow(t, "command-mode start did not return after StopAll")
 	}
-	if !fileExists(stopMarker) {
-		t.Fatal("StopAll skipped the command-mode stop CLI after start detached")
-	}
-	if !waitPortClosed(port, 5*time.Second) {
-		t.Fatalf("detached command daemon remained on port %d after StopAll", port)
-	}
-	if hasErr(ex.Errors(), startFailedID("fake")) {
-		t.Fatalf("shutdown cancellation retained a command-mode start-failed error: %+v", ex.Errors())
-	}
+	require.FileExists(t, stopMarker, "StopAll skipped the command-mode stop CLI after start detached")
+	require.True(t, waitPortClosed(port, 5*time.Second), "detached command daemon remained on port (%v)", port)
+	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "shutdown cancellation retained a command-mode start-failed error")
 }
 
 // TestE2EStdinCloseStopsEngine drives the real engine-manager binary and stops
@@ -221,16 +197,13 @@ func TestE2EStdinCloseStopsEngine(t *testing.T) {
 	m := startE2EManager(t, cfg, home)
 	send(t, m.stdin, 1, "engine:start", map[string]any{"engine": "fake"})
 	var started EngineStatus
-	if err := json.Unmarshal(waitResult(t, m.frames, "1", 20*time.Second), &started); err != nil || !started.Running {
-		t.Fatalf("start status=%+v err=%v", started, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, m.frames, "1", 20*time.Second), &started), "start status")
+	require.True(t, started.Running, "start status (%v)", started)
 
 	// stop() closes stdin and waits for the process to exit on its own.
 	m.stop(t)
 
-	if !waitPortClosed(started.Port, 5*time.Second) {
-		t.Fatalf("engine port %d remained open after stdin close", started.Port)
-	}
+	require.True(t, waitPortClosed(started.Port, 5*time.Second), "engine port")
 }
 
 // waitPortClosed polls until nothing is serving on the port or the timeout

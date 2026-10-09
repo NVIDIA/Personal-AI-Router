@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
+
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Render the legacy full command only for migration and argv regression tests.
@@ -24,9 +26,7 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 	vars := map[string]string{"host": "127.0.0.1", "port": "12345", "cli": "/test path/lms", "install_dir": "/test path", "models_dir": "/test models"}
 	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
 		manifest, ok := reg.Get(engine)
-		if !ok {
-			t.Fatalf("missing bundled engine %q", engine)
-		}
+		require.True(t, ok, "missing bundled engine (%v)", engine)
 		// Exercise every platform even when running on Windows or macOS, so
 		// Linux-only launch environment requirements are covered locally too.
 		for platformKey, platform := range manifest.Platforms {
@@ -54,38 +54,29 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 						want = append([]string{"LD_LIBRARY_PATH=/test path"}, want...)
 					}
 				}
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				text, err := launch.text()
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				got, err := parseLaunchText(text)
-				if err != nil || !reflect.DeepEqual(got, want) {
-					t.Fatalf("launch description differs from executable inputs: got %#v, want %#v, error %v", got, want, err)
-				}
+				require.NoError(t, err, "launch description differs from executable inputs: (%v, %v, %v)", got, want, err)
+				require.Equal(t, want, got, "launch description differs from executable inputs: (%v, %v, %v)", got, want, err)
 			})
 		}
 	}
-	if _, changed := vars["bin"]; changed {
-		t.Fatal("process builder mutated caller's resolution context")
-	}
+	require.NotContains(t, vars, "bin", "process builder mutated caller's resolution context")
 }
 
 func TestLaunchEnvironmentFormattingIsDeterministic(t *testing.T) {
 	launch := launchCommand{Bin: "engine", Env: map[string]string{"Z_SETTING": "z", "A_SETTING": "a b"}}
 	text, err := launch.text()
-	if err != nil || text != `A_SETTING="a b" Z_SETTING="z" engine` {
-		t.Fatalf("unstable environment order or quoting: %q, %v", text, err)
-	}
+	require.NoError(t, err, "unstable environment order or quoting (%v, %v)", text, err)
+	require.Equal(t, `A_SETTING="a b" Z_SETTING="z" engine`, text, "unstable environment order or quoting (%v, %v)", text, err)
 }
 
 func TestCommandLaunchRejectsEmptyExecutable(t *testing.T) {
 	for _, template := range [][]string{{"", "start"}, {"{cli}", "start"}} {
-		if _, err := resolveCommandLaunch(template, map[string]string{"cli": ""}); err == nil {
-			t.Fatal("empty executable must fail rather than skip the start command")
-		}
+		_, err := resolveCommandLaunch(template, map[string]string{"cli": ""})
+		require.Error(t, err, "empty executable must fail rather than skip the start command")
 	}
 }
 
@@ -96,22 +87,16 @@ func TestLaunchTextReachesChildLiterally(t *testing.T) {
 	want := []string{"", "two words", "日本語", `C:\new\tools\`, `\\server\share`, `a"b`, "$HOME", "%USERPROFILE%", "{port}", "$(ignored)", "line\nbreak"}
 	tokens := append([]string{fakeEngineBin, "captureargs", path}, want...)
 	text, err := formatLaunchText(tokens)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	parsed, err := parseLaunchText(text)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	proc, err := startManagedProc(parsed[0], parsed[1:], nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { proc.stop(0) })
 	select {
 	case <-proc.done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("argument-capture child did not exit")
+		require.FailNow(t, "argument-capture child did not exit")
 	}
 	assertCapturedArgs(t, path, want)
 }
@@ -129,16 +114,12 @@ func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
 				manifest.Platforms[key] = platform
 			}
 			ex := newTestExecutor(t, manifest)
-			if err := ex.Start(context.Background(), "fake"); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, ex.Start(context.Background(), "fake"))
 			t.Cleanup(func() { _ = ex.Stop("fake") })
 			// Process mode has no readiness probe here; wait for the short-lived
 			// fixture to finish writing before inspecting its actual argv.
 			st, err := ex.state("fake")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			st.mu.Lock()
 			proc := st.proc
 			st.mu.Unlock()
@@ -146,7 +127,7 @@ func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
 				select {
 				case <-proc.done:
 				case <-time.After(10 * time.Second):
-					t.Fatal("capture process did not exit")
+					require.FailNow(t, "capture process did not exit")
 				}
 			}
 			assertCapturedArgs(t, path, []string{"127.0.0.1", "25001", "two words", ""})
@@ -157,14 +138,8 @@ func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
 func assertCapturedArgs(t *testing.T, path string, want []string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var got []string
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("child received %#v; want %#v", got, want)
-	}
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, want, got, "child received")
 }

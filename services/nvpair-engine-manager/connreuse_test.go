@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 )
@@ -35,9 +37,8 @@ func TestRemoteClient_ReusesPeerConnections(t *testing.T) {
 
 	selfMesh := clustertrust.Open(selfDir)
 	peerMesh := clustertrust.Open(peerDir)
-	if !selfMesh.Clustered() || !peerMesh.Clustered() {
-		t.Fatal("both nodes must read as clustered")
-	}
+	require.True(t, selfMesh.Clustered(), "both nodes must read as clustered")
+	require.True(t, peerMesh.Clustered(), "both nodes must read as clustered")
 
 	var mu sync.Mutex
 	newConns := 0
@@ -62,13 +63,9 @@ func TestRemoteClient_ReusesPeerConnections(t *testing.T) {
 	defer ts.Close()
 
 	host, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var out bytes.Buffer
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, selfMesh)
@@ -81,40 +78,27 @@ func TestRemoteClient_ReusesPeerConnections(t *testing.T) {
 		port:        port,
 		clusterUUID: "uuid-peer",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	const rounds = 5
 	for i := 0; i < rounds; i++ {
-		if _, gerr := client.getEngines(context.Background()); gerr != nil {
-			t.Fatalf("round %d: %v", i, gerr)
-		}
+		_, gerr := client.getEngines(context.Background())
+		require.NoError(t, gerr, "round (%v, %v)", i, gerr)
 	}
 
 	mu.Lock()
 	got := newConns
 	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("peer accepted %d connections for %d getEngines calls, want 1", got, rounds)
-	}
+	require.Equal(t, 1, got, "peer accepted (%v, %v)", got, rounds)
 }
 
 func writePinFromCert(t *testing.T, clusterDir, peerUUID, certPath string) {
 	t.Helper()
 	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	trusted := filepath.Join(clusterDir, "trusted")
-	if err := os.MkdirAll(trusted, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(trusted, 0o700))
 	body, err := json.Marshal(map[string]string{"nodeUuid": peerUUID, "certPem": string(certPEM)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(trusted, peerUUID+".json"), body, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(trusted, peerUUID+".json"), body, 0o600))
 }

@@ -10,6 +10,9 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func startTermIgnoringProcess(t *testing.T) *managedProc {
@@ -19,9 +22,7 @@ func startTermIgnoringProcess(t *testing.T) *managedProc {
 : > "$1"
 while :; do sleep 1; done`
 	proc, err := startManagedProc("/bin/sh", []string{"-c", script, "stubborn-engine", ready}, nil, nil)
-	if err != nil {
-		t.Fatalf("start term-ignoring process: %v", err)
-	}
+	require.NoError(t, err, "start term-ignoring process")
 	t.Cleanup(func() {
 		select {
 		case <-proc.done:
@@ -32,7 +33,7 @@ while :; do sleep 1; done`
 		select {
 		case <-proc.done:
 		case <-time.After(2 * time.Second):
-			t.Errorf("term-ignoring process did not exit during cleanup")
+			assert.Fail(t, "term-ignoring process did not exit during cleanup")
 		}
 	})
 
@@ -40,9 +41,7 @@ while :; do sleep 1; done`
 	for !fileExists(ready) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !fileExists(ready) {
-		t.Fatal("term-ignoring process did not become ready")
-	}
+	require.FileExists(t, ready, "term-ignoring process did not become ready")
 	return proc
 }
 
@@ -57,9 +56,7 @@ func TestStopHonorsProcessSignalPolicy(t *testing.T) {
 		manifest.Platforms[key] = platform
 		ex := newTestExecutor(t, manifest)
 		state, err := ex.state(manifest.Engine)
-		if err != nil {
-			t.Fatalf("resolve engine state: %v", err)
-		}
+		require.NoError(t, err, "resolve engine state")
 		state.mu.Lock()
 		state.running = true
 		state.healthy = true
@@ -73,22 +70,19 @@ func TestStopHonorsProcessSignalPolicy(t *testing.T) {
 		}()
 		select {
 		case err := <-result:
-			if err != nil {
-				t.Fatalf("stop engine: %v", err)
-			}
+			require.NoError(t, err, "stop engine")
 		case <-time.After(maxElapsed + time.Second):
 			_ = signalPID(proc.cmd.Process.Pid, true)
-			t.Fatalf("stop did not finish within %s", maxElapsed+time.Second)
+			require.FailNowf(t, "stop did not finish", "within %s", maxElapsed+time.Second)
 		}
 
 		elapsed := time.Since(started)
-		if elapsed < minElapsed || elapsed > maxElapsed {
-			t.Fatalf("stop elapsed %s, want between %s and %s", elapsed, minElapsed, maxElapsed)
-		}
+		require.GreaterOrEqual(t, elapsed, minElapsed)
+		require.LessOrEqual(t, elapsed, maxElapsed)
 		select {
 		case <-proc.done:
 		default:
-			t.Fatal("stop returned before the owned process exited")
+			require.FailNow(t, "stop returned before the owned process exited")
 		}
 	}
 

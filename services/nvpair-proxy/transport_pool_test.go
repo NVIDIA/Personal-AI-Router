@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 )
@@ -15,12 +18,8 @@ func TestCandidateTransportReusesPlainTransport(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	a := p.candidateTransport(candidate{})
 	b := p.candidateTransport(candidate{id: "manual"})
-	if a != b {
-		t.Fatalf("plain candidates returned distinct Transports")
-	}
-	if a == nil {
-		t.Fatal("plain Transport is nil")
-	}
+	require.Same(t, a, b, "plain candidates returned distinct Transports")
+	require.NotNil(t, a, "plain Transport is nil")
 }
 
 func TestCandidateTransportReusesPeerTransport(t *testing.T) {
@@ -33,17 +32,11 @@ func TestCandidateTransportReusesPeerTransport(t *testing.T) {
 
 	a := p.candidateTransport(candidate{peerUUID: peerUUID})
 	b := p.candidateTransport(candidate{peerUUID: peerUUID})
-	if a != b {
-		t.Fatalf("same peerUUID returned distinct Transports")
-	}
-	if a.TLSClientConfig == nil {
-		t.Fatal("peer Transport missing TLSClientConfig")
-	}
+	require.Same(t, a, b, "same peerUUID returned distinct Transports")
+	require.NotNil(t, a.TLSClientConfig, "peer Transport missing TLSClientConfig")
 
 	other := p.candidateTransport(candidate{peerUUID: "principal-other"})
-	if other == a {
-		t.Fatal("unpinned peer reused pinned peer Transport")
-	}
+	require.NotSame(t, a, other, "unpinned peer reused pinned peer Transport")
 }
 
 func TestDropUnpinnedPeerTransportsRemovesEntry(t *testing.T) {
@@ -56,10 +49,7 @@ func TestDropUnpinnedPeerTransportsRemovesEntry(t *testing.T) {
 
 	tr := p.candidateTransport(candidate{peerUUID: peerUUID})
 	p.transportMu.Lock()
-	if _, ok := p.peerTransports[peerUUID]; !ok {
-		p.transportMu.Unlock()
-		t.Fatal("peer Transport was not cached")
-	}
+	assert.Contains(t, p.peerTransports, peerUUID, "peer Transport was not cached")
 	p.transportMu.Unlock()
 
 	clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
@@ -67,10 +57,7 @@ func TestDropUnpinnedPeerTransportsRemovesEntry(t *testing.T) {
 	p.dropUnpinnedPeerTransports()
 
 	p.transportMu.Lock()
-	_, still := p.peerTransports[peerUUID]
+	assert.NotContains(t, p.peerTransports, peerUUID, "peer Transport remained after pin removal")
 	p.transportMu.Unlock()
-	if still {
-		t.Fatal("peer Transport remained after pin removal")
-	}
 	_ = tr
 }

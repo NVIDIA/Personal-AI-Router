@@ -6,6 +6,9 @@ package main
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsOurEngineImage(t *testing.T) {
@@ -21,26 +24,16 @@ func TestIsOurEngineImage(t *testing.T) {
 		{``, false},
 	}
 	for _, tc := range cases {
-		if got := isOurEngineImage(tc.image, bin); got != tc.want {
-			t.Errorf("isOurEngineImage(%q, %q) = %v, want %v", tc.image, bin, got, tc.want)
-		}
+		assert.Equal(t, tc.want, isOurEngineImage(tc.image, bin), "isOurEngineImage (%v)", bin)
 	}
-	if isOurEngineImage(bin, ``) {
-		t.Fatal("empty binPath must not match")
-	}
+	require.False(t, isOurEngineImage(bin, ``), "empty binPath must not match")
 }
 
 func TestIsManagedInstallPath(t *testing.T) {
 	base := t.TempDir()
 	inside := filepath.Join(base, "ollama", "bin", "ollama"+exeExt())
 	outside := filepath.Join(t.TempDir(), "ollama"+exeExt())
-	if !isManagedInstallPath(inside, filepath.Join(base, "ollama")) {
-		t.Fatalf("managed child path %q was rejected", inside)
-	}
-	if isManagedInstallPath(outside, filepath.Join(base, "ollama")) {
-		t.Fatalf("external path %q was accepted", outside)
-	}
-	if isManagedInstallPath("", filepath.Join(base, "ollama")) {
-		t.Fatal("empty binary path must not be managed")
-	}
+	require.True(t, isManagedInstallPath(inside, filepath.Join(base, "ollama")), "managed child path (%v)", inside)
+	require.False(t, isManagedInstallPath(outside, filepath.Join(base, "ollama")), "external path (%v)", outside)
+	require.False(t, isManagedInstallPath("", filepath.Join(base, "ollama")), "empty binary path must not be managed")
 }

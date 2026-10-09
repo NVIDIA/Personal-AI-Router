@@ -19,6 +19,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLivePoundFixesOllama(t *testing.T) {
@@ -37,18 +40,15 @@ func TestLivePoundFixesOllama(t *testing.T) {
 		defer stop()
 		send(t, stdin, 1, "engine:get-installed", nil)
 		r := string(waitResult(t, frames, "1", 10*time.Second))
-		if !strings.Contains(r, `"engine":"ollama"`) || !strings.Contains(r, `"running":true`) {
-			t.Fatalf("#3 adoption: expected ollama running:true, got %s", r)
-		}
+		require.Contains(t, r, `"engine":"ollama"`, "#3 adoption: expected ollama running:true")
+		require.Contains(t, r, `"running":true`, "#3 adoption: expected ollama running:true")
 		t.Logf("#3 adoption OK: ollama reported running without a start")
 	}()
 
 	// Spawn tests: start on a spare port so the manager SPAWNS a fresh
 	// instance (the adoption probe on the spare port finds nothing).
 	spare, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cfg := t.TempDir()
 	frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
 	defer stop()
@@ -57,11 +57,9 @@ func TestLivePoundFixesOllama(t *testing.T) {
 	// so the spawned engine listens on loopback only — never directly
 	// LAN-reachable. Cluster peers reach it through the proxy's mTLS ingress.
 	send(t, stdin, 1, "engine:start", map[string]any{"engine": "ollama", "port": spare})
-	if r := string(waitResult(t, frames, "1", 90*time.Second)); !strings.Contains(r, `"running":true`) {
-		t.Fatalf("start{port}: expected running:true, got %s", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 90*time.Second)), `"running":true`, "start{port}: expected running:true")
 	if addrs := listenAddrs(t, spare); !isLoopbackOnly(addrs) {
-		t.Errorf("bind default: want loopback only (127.0.0.1/::1), got %v", addrs)
+		assert.Failf(t, "bind default: want loopback only (127.0.0.1/::1)", "got %v", addrs)
 	} else {
 		t.Logf("bind default OK: loopback only %v on %d", addrs, spare)
 	}
@@ -71,11 +69,9 @@ func TestLivePoundFixesOllama(t *testing.T) {
 
 	// Bind override to loopback: spawned engine must listen on loopback only.
 	send(t, stdin, 3, "engine:start", map[string]any{"engine": "ollama", "port": spare, "bind": "127.0.0.1"})
-	if r := string(waitResult(t, frames, "3", 90*time.Second)); !strings.Contains(r, `"running":true`) {
-		t.Fatalf("start{port,bind}: expected running:true, got %s", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "3", 90*time.Second)), `"running":true`, "start{port,bind}: expected running:true")
 	if addrs := listenAddrs(t, spare); !isLoopbackOnly(addrs) {
-		t.Errorf("bind override: want loopback only (127.0.0.1/::1), got %v", addrs)
+		assert.Failf(t, "bind override: want loopback only (127.0.0.1/::1)", "got %v", addrs)
 	} else {
 		t.Logf("bind override OK: loopback only %v on %d", addrs, spare)
 	}
@@ -85,7 +81,7 @@ func TestLivePoundFixesOllama(t *testing.T) {
 
 	// The pre-existing Ollama on 11434 must be untouched the whole time.
 	if len(listenAddrs(t, 11434)) == 0 {
-		t.Errorf("the pre-existing Ollama on 11434 must remain running")
+		assert.Fail(t, "the pre-existing Ollama on 11434 must remain running")
 	} else {
 		t.Logf("pre-existing Ollama on 11434 untouched")
 	}
@@ -128,5 +124,5 @@ func waitGone(t *testing.T, port int) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("port %d still listening after stop", port)
+	require.FailNowf(t, "port still listening after stop", "port %d", port)
 }

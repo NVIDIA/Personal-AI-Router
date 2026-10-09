@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -77,9 +79,7 @@ func TestActivityIsRelayedAsANotificationNotARequest(t *testing.T) {
 		noderec.NotifyNodeActivity, json.RawMessage(`{"hostUuid":"busy-peer"}`))
 
 	msg := awaitRelay(t, relayed)
-	if msg.IsRequest() {
-		t.Fatal("activity was relayed as an id-bearing request; it must be a notification")
-	}
+	require.False(t, msg.IsRequest(), "activity was relayed as an id-bearing request; it must be a notification")
 }
 
 // A scanner that never acks must not wedge the relay: the queue keeps draining
@@ -104,16 +104,10 @@ func TestOllamaProxyActivityReachesTheScanner(t *testing.T) {
 		noderec.NotifyNodeActivity, json.RawMessage(`{"hostUuid":"busy-peer"}`))
 
 	msg := awaitRelay(t, relayed)
-	if msg.Method != noderec.MethodNodeActivity {
-		t.Fatalf("relayed method = %q, want %q", msg.Method, noderec.MethodNodeActivity)
-	}
+	require.Equal(t, noderec.MethodNodeActivity, msg.Method, "relayed method")
 	var got noderec.NodeActivityParams
-	if err := json.Unmarshal(msg.Params, &got); err != nil {
-		t.Fatalf("decode relayed params %s: %v", msg.Params, err)
-	}
-	if got.HostUUID != "busy-peer" {
-		t.Fatalf("relayed hostUuid = %q, want %q", got.HostUUID, "busy-peer")
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &got), "decode relayed params")
+	require.Equal(t, "busy-peer", got.HostUUID, "relayed hostUuid")
 }
 
 // Both proxies produce this signal, so both forwarding paths must carry it. The
@@ -126,9 +120,7 @@ func TestLMStudioProxyActivityReachesTheScanner(t *testing.T) {
 		json.RawMessage(`{"hostUuid":"busy-peer"}`))
 
 	msg := awaitRelay(t, relayed)
-	if msg.Method != noderec.MethodNodeActivity {
-		t.Fatalf("relayed method = %q, want %q", msg.Method, noderec.MethodNodeActivity)
-	}
+	require.Equal(t, noderec.MethodNodeActivity, msg.Method, "relayed method")
 }
 
 // The report crosses two pipes and a goroutine hop, and the scanner measures
@@ -141,12 +133,8 @@ func TestRelayedActivityAgeAccumulatesTransitDelay(t *testing.T) {
 		noderec.NotifyNodeActivity, json.RawMessage(`{"hostUuid":"busy-peer","msSince":4000}`))
 
 	var got noderec.NodeActivityParams
-	if err := json.Unmarshal(awaitRelay(t, relayed).Params, &got); err != nil {
-		t.Fatalf("decode relayed params: %v", err)
-	}
-	if got.MSSince < 4000 {
-		t.Fatalf("relayed msSince = %d, want at least the 4000ms the proxy reported", got.MSSince)
-	}
+	require.NoError(t, json.Unmarshal(awaitRelay(t, relayed).Params, &got), "decode relayed params")
+	require.GreaterOrEqual(t, got.MSSince, int64(4000), "relayed msSince")
 }
 
 // The reported age crosses a process boundary and is multiplied into a duration,
@@ -166,12 +154,8 @@ func TestReportedAgeIsClampedAtBothEnds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := clampActivityAge(tc.msSince)
-			if got != tc.want {
-				t.Fatalf("clampActivityAge(%d) = %s, want %s", tc.msSince, got, tc.want)
-			}
-			if got < 0 {
-				t.Fatalf("clampActivityAge(%d) returned a negative duration; the observation would be in the future", tc.msSince)
-			}
+			require.Equal(t, tc.want, got, "clampActivityAge")
+			require.GreaterOrEqual(t, got, time.Duration(0), "clampActivityAge")
 		})
 	}
 }
@@ -186,7 +170,7 @@ func TestActivityWithoutAHostUUIDIsNotRelayed(t *testing.T) {
 
 	select {
 	case msg := <-relayed:
-		t.Fatalf("relayed an activity report with no hostUuid: %s", msg.Params)
+		require.FailNowf(t, "relayed an activity report with no hostUuid", "%s", msg.Params)
 	case <-time.After(200 * time.Millisecond):
 	}
 }
@@ -237,7 +221,7 @@ func TestActivityIsNotForwardedToClients(t *testing.T) {
 
 	select {
 	case msg := <-toClient:
-		t.Fatalf("activity leaked onto the client stream as %q", msg.Method)
+		require.FailNowf(t, "activity leaked onto the client stream", "method %q", msg.Method)
 	case <-time.After(200 * time.Millisecond):
 	}
 }
@@ -248,7 +232,7 @@ func awaitRelay(t *testing.T, relayed <-chan *Message) *Message {
 	case msg := <-relayed:
 		return msg
 	case <-time.After(2 * time.Second):
-		t.Fatal("the activity report never reached the scanner")
+		require.FailNow(t, "the activity report never reached the scanner")
 		return nil
 	}
 }

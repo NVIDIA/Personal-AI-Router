@@ -3,39 +3,36 @@
 
 package enginesettings
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestFullBaselineCoalescingAndLimits(t *testing.T) {
 	h := &Hub{}
 	h.Publish([]Snapshot{{Revision: 1}})
 	ch, closeSub, ok := h.Subscribe()
-	if !ok || (<-ch)[0].Revision != 1 {
-		t.Fatal("baseline missing")
-	}
+	require.True(t, ok, "baseline missing")
+	assert.Equal(t, uint64(1), (<-ch)[0].Revision, "baseline missing")
 	for i := uint64(2); i < 1000; i++ {
 		h.Publish([]Snapshot{{Revision: i}})
 	}
-	if (<-ch)[0].Revision != 999 {
-		t.Fatal("slow subscriber missed latest full state")
-	}
+	assert.Equal(t, uint64(999), (<-ch)[0].Revision, "slow subscriber missed latest full state")
 	closeSub()
 	var closeAll []func()
 	for i := 0; i < 64; i++ {
 		_, close, ok := h.Subscribe()
-		if !ok {
-			t.Fatal("early subscriber cap")
-		}
+		require.True(t, ok, "early subscriber cap")
 		closeAll = append(closeAll, close)
 	}
-	if _, _, ok := h.Subscribe(); ok {
-		t.Fatal("unbounded subscribers")
-	}
+	_, _, ok = h.Subscribe()
+	require.False(t, ok, "unbounded subscribers")
 	for _, close := range closeAll {
 		close()
 	}
-	if _, close, ok := h.Subscribe(); !ok {
-		t.Fatal("cleanup leaked capacity")
-	} else {
-		close()
-	}
+	_, close, ok := h.Subscribe()
+	require.True(t, ok, "cleanup leaked capacity")
+	close()
 }

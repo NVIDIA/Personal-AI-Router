@@ -6,19 +6,18 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"reflect"
-	"slices"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // These synthetic engines exercise different syntax, not per-engine code paths.
 // The same fixtures are also usable with the authoring JSON Schema.
 func TestDeclarativeLaunchBindings(t *testing.T) {
 	data, err := os.ReadFile("testdata/launch-bindings.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var cases []struct {
 		Name       string
 		Host       string
@@ -27,14 +26,10 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 		Policy     []string
 		Invalid    []string
 	}
-	if err := json.Unmarshal(data, &cases); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(data, &cases))
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			if err := tc.Definition.validateControls(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, tc.Definition.validateControls())
 			e := settingsExecutor(t, true)
 			rt := &settingsState(t, e).plat.Runtime
 			rt.EditableLaunch = &tc.Definition
@@ -45,33 +40,22 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 			request := settingsRequest(t, e)
 			request.Settings.LaunchText, request.Resolution = tc.Input+" --unrelated literal", "launch"
 			preview := previewSettings(t, e, request)
-			if len(preview.Errors) != 0 || preview.Conflict != nil || preview.Settings.ServerPort != 23456 {
-				t.Fatalf("%+v", preview)
-			}
+			require.Empty(t, preview.Errors, " (%v)", preview)
+			require.Nil(t, preview.Conflict, " (%v)", preview)
+			require.Equal(t, 23456, preview.Settings.ServerPort, " (%v)", preview)
 			policy, err := launchCORSAssignments(preview.Settings.LaunchText, rt.EditableLaunch)
-			if err != nil || !slices.Equal(policy, tc.Policy) {
-				t.Fatalf("policy=%v, want %v: %v", policy, tc.Policy, err)
-			}
+			require.NoError(t, err, "policy (%v, %v)", policy, err)
+			assert.Equal(t, tc.Policy, policy)
 			request.Settings = preview.Settings
-			if again := previewSettings(t, e, request); !reflect.DeepEqual(preview, again) {
-				t.Fatal("preview does not round-trip")
-			}
+			require.Equal(t, previewSettings(t, e, request), preview, "preview does not round-trip")
 			rt.LaunchArgs, rt.LaunchEnv = &preview.Args, &preview.Env
 			launch, err := launchForState(settingsState(t, e), 23456)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := validateEffectiveLaunch(*rt, launch, tc.Host, "23456"); err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(launch.Args[len(launch.Args)-2:], []string{"--unrelated", "literal"}) {
-				t.Fatal("unrelated arguments changed")
-			}
+			require.NoError(t, err)
+			require.NoError(t, validateEffectiveLaunch(*rt, launch, tc.Host, "23456"))
+			assert.Equal(t, []string{"--unrelated", "literal"}, launch.Args[len(launch.Args)-2:], "unrelated arguments changed")
 			for _, invalid := range tc.Invalid {
 				request.Settings.LaunchText = invalid
-				if result := previewSettings(t, e, request); len(result.Errors) == 0 {
-					t.Fatalf("accepted %q", invalid)
-				}
+				require.NotEmpty(t, previewSettings(t, e, request).Errors, "accepted (%v)", invalid)
 			}
 			assertNoSettingsOverride(t, e)
 		})
@@ -97,9 +81,8 @@ func TestManifestLoadRejectsInvalidLaunchBindings(t *testing.T) {
 			// Include otherwise complete bindings so rejection cannot be caused
 			// merely by missing managed fields. Exercise the real manifest loader.
 			manifest := `{"engine":"fixture","display_name":"Fixture","manifest_version":1,"platforms":{"linux/amd64":{"runtime":{"bin":"fixture","args":[],"editable_launch":{"controls":[{"env":["ADDRESS"],"value":"{server.host}:{server.port}"},` + control + `]}}}}}`
-			if _, err := NewRegistry().addManifest("fixture.json", []byte(manifest)); err == nil {
-				t.Fatal("invalid binding survived manifest loading")
-			}
+			_, err := NewRegistry().addManifest("fixture.json", []byte(manifest))
+			require.Error(t, err, "invalid binding survived manifest loading")
 		})
 	}
 }
@@ -109,14 +92,12 @@ func TestManagedBindingRoundTripsWithOverlappingSeparators(t *testing.T) {
 		for _, format := range []string{"{server.host}:{server.port}", "{server.port}:{server.host}", "{server.port}0{server.host}", "http://[{server.host}]:{server.port}"} {
 			control := LaunchControl{Env: []string{"ENDPOINT"}, Value: format}
 			rendered, managed := control.managedValue(host, "23456")
-			if !managed {
-				t.Fatalf("invalid binding %q", format)
-			}
+			require.True(t, managed, "invalid binding (%v)", format)
 			values := launchValues{host: host}
 			normalized, err := values.accept(&control, rendered)
-			if err != nil || normalized != rendered || values.serverPort() != 23456 {
-				t.Fatalf("format %q host %q: %q (%v)", format, host, normalized, err)
-			}
+			require.NoError(t, err, "format (%v, %v, %v, %v)", format, host, normalized, err)
+			require.Equal(t, rendered, normalized, "format (%v, %v)", format, host)
+			require.Equal(t, 23456, values.serverPort(), "format (%v, %v, %v, %v)", format, host, normalized, err)
 		}
 	}
 }
@@ -139,11 +120,9 @@ func FuzzLaunchBindings(f *testing.F) {
 			return
 		}
 		again, err := values.accept(&control, normalized)
-		if err != nil || again != normalized {
-			t.Fatalf("unstable binding normalization: %q -> %q (%v)", normalized, again, err)
-		}
-		if managed, ok := control.managedValue(values.host, strconv.Itoa(values.serverPort())); ok && managed != normalized {
-			t.Fatalf("preview and launch disagree: %q / %q", normalized, managed)
-		}
+		require.NoError(t, err, "unstable binding normalization (%v, %v, %v)", normalized, again, err)
+		require.Equal(t, normalized, again, "unstable binding normalization")
+		managed, ok := control.managedValue(values.host, strconv.Itoa(values.serverPort()))
+		require.False(t, ok && managed != normalized, "preview and launch disagree (%v, %v)", normalized, managed)
 	})
 }

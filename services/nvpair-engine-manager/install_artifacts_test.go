@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type installProgressRecorder struct {
@@ -43,22 +44,16 @@ func (r *installProgressRecorder) assertSingleTerminal(t *testing.T, want string
 	terminal := make([]string, 0, 1)
 	for index, params := range events {
 		event, ok := params.(map[string]any)
-		if !ok {
-			t.Fatalf("install progress event %d params type = %T, want map[string]any", index, params)
-		}
+		require.True(t, ok, "install progress event %d params must be map[string]any", index)
 		stage, ok := event["stage"].(string)
-		if !ok {
-			t.Fatalf("install progress event %d stage = %v, want string", index, event["stage"])
-		}
+		require.True(t, ok, "install progress event %d stage must be a string", index)
 		stages = append(stages, stage)
 		switch stage {
 		case "done", "already-installed", "failed":
 			terminal = append(terminal, stage)
 		}
 	}
-	if len(terminal) != 1 || terminal[0] != want {
-		t.Fatalf("terminal install progress stages = %v, want [%s]; all stages = %v", terminal, want, stages)
-	}
+	require.Equal(t, []string{want}, terminal, "all install progress stages: %v", stages)
 }
 
 func TestInstallDownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
@@ -78,21 +73,14 @@ func TestInstallDownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
 	progress := &installProgressRecorder{}
 	executor.emit = progress.emit
 
-	if err := executor.Install(context.Background(), manifest.Engine); err != nil {
-		t.Fatalf("install named artifacts: %v", err)
-	}
+	require.NoError(t, executor.Install(context.Background(), manifest.Engine), "install named artifacts")
 	progress.assertSingleTerminal(t, "done")
 	data, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatalf("read captured install arguments: %v", err)
-	}
+	require.NoError(t, err, "read captured install arguments")
 	var downloads []string
-	if err := json.Unmarshal(data, &downloads); err != nil {
-		t.Fatalf("decode captured install arguments: %v", err)
-	}
-	if len(downloads) != 2 || downloads[0] == downloads[1] {
-		t.Fatalf("resolved artifact paths = %v", downloads)
-	}
+	require.NoError(t, json.Unmarshal(data, &downloads), "decode captured install arguments")
+	require.Len(t, downloads, 2)
+	require.NotEqual(t, downloads[0], downloads[1], "artifacts must resolve to distinct paths")
 	assertNoArtifactTemps(t, manifest.Engine)
 }
 
@@ -113,14 +101,9 @@ func TestInstallRejectsBadSecondArtifactBeforeCommand(t *testing.T) {
 	progress := &installProgressRecorder{}
 	executor.emit = progress.emit
 
-	err := executor.Install(context.Background(), manifest.Engine)
-	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Fatalf("install error = %v, want checksum mismatch", err)
-	}
+	require.ErrorContains(t, executor.Install(context.Background(), manifest.Engine), "checksum mismatch")
 	progress.assertSingleTerminal(t, "failed")
-	if fileExists(marker) {
-		t.Fatal("install command ran after an artifact checksum failed")
-	}
+	require.False(t, fileExists(marker), "install command ran after an artifact checksum failed")
 	assertNoArtifactTemps(t, manifest.Engine)
 }
 
@@ -160,15 +143,13 @@ func TestInstallCancellationRemovesDownloadedArtifacts(t *testing.T) {
 	case <-secondStarted:
 		cancel()
 	case <-time.After(5 * time.Second):
-		t.Fatal("second artifact download did not start")
+		require.FailNow(t, "second artifact download did not start")
 	}
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("install error = %v, want context cancellation", err)
-		}
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(5 * time.Second):
-		t.Fatal("cancelled install did not return")
+		require.FailNow(t, "cancelled install did not return")
 	}
 	progress.assertSingleTerminal(t, "failed")
 	assertNoArtifactTemps(t, manifest.Engine)
@@ -191,19 +172,13 @@ func artifactInstallManifest(t *testing.T, engine, marker string, artifacts []In
 		Run:       []string{fakeEngineBin, "captureargs", marker, "{download_server}", "{download_cudart}"},
 	}
 	manifest.Platforms[hostKey()] = platform
-	if err := manifest.Validate(); err != nil {
-		t.Fatalf("validate fixture: %v", err)
-	}
+	require.NoError(t, manifest.Validate(), "validate fixture")
 	return manifest
 }
 
 func assertNoArtifactTemps(t *testing.T, engine string) {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "nvpair-engine-"+engine+"-*"))
-	if err != nil {
-		t.Fatalf("glob temporary artifacts: %v", err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("temporary artifacts remain: %v", matches)
-	}
+	require.NoError(t, err, "glob temporary artifacts")
+	require.Empty(t, matches, "temporary artifacts remain")
 }

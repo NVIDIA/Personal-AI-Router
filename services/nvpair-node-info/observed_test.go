@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/applog"
 	"nvpair-shared/noderec"
 )
@@ -29,9 +31,7 @@ func (c stubConn) RemoteAddr() net.Addr { return c.remote }
 func tcpAddr(t *testing.T, s string) *net.TCPAddr {
 	t.Helper()
 	a, err := net.ResolveTCPAddr("tcp", s)
-	if err != nil {
-		t.Fatalf("resolve %s: %v", s, err)
-	}
+	require.NoError(t, err, "resolve (%v, %v)", s, err)
 	return a
 }
 
@@ -42,10 +42,7 @@ func TestObserverRecordsTheAddressARemotePeerReached(t *testing.T) {
 		remote: tcpAddr(t, "10.172.55.129:51000"),
 	}, http.StateActive)
 
-	got := o.addresses()
-	if len(got) != 1 || got[0] != "10.172.54.70" {
-		t.Fatalf("addresses = %v, want [10.172.54.70]", got)
-	}
+	require.Equal(t, []string{"10.172.54.70"}, o.addresses(), "addresses")
 }
 
 // A loopback caller is this machine talking to itself and proves nothing about
@@ -57,9 +54,7 @@ func TestObserverIgnoresLoopbackPeers(t *testing.T) {
 		remote: tcpAddr(t, "127.0.0.1:51000"),
 	}, http.StateActive)
 
-	if got := o.addresses(); len(got) != 0 {
-		t.Fatalf("addresses = %v, want none", got)
-	}
+	require.Empty(t, o.addresses(), "addresses")
 }
 
 // A connection that never became a request is not evidence; only StateActive is.
@@ -72,9 +67,7 @@ func TestObserverIgnoresConnectionsThatSendNothing(t *testing.T) {
 	o.connState(conn, http.StateNew)
 	o.connState(conn, http.StateClosed)
 
-	if got := o.addresses(); len(got) != 0 {
-		t.Fatalf("addresses = %v, want none", got)
-	}
+	require.Empty(t, o.addresses(), "addresses")
 }
 
 // An address peers have stopped reaching must stop being reported, or a link that
@@ -89,9 +82,7 @@ func TestObserverExpiresStaleObservations(t *testing.T) {
 	}, http.StateActive)
 
 	now = now.Add(observationTTL + time.Second)
-	if got := o.addresses(); len(got) != 0 {
-		t.Fatalf("addresses = %v, want the expired observation dropped", got)
-	}
+	require.Empty(t, o.addresses(), "addresses")
 }
 
 func TestObserverReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {
@@ -107,15 +98,9 @@ func TestObserverReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {
 		Method string                          `json:"method"`
 		Params noderec.ObservedAddressesParams `json:"params"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &msg); err != nil {
-		t.Fatalf("decode report: %v", err)
-	}
-	if msg.Method != noderec.NotifyObservedAddresses {
-		t.Fatalf("method = %q, want %q", msg.Method, noderec.NotifyObservedAddresses)
-	}
-	if len(msg.Params.Addresses) != 0 {
-		t.Fatalf("reported addresses = %v, want an explicit empty replacement", msg.Params.Addresses)
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &msg), "decode report")
+	require.Equal(t, noderec.NotifyObservedAddresses, msg.Method, "method")
+	require.Empty(t, msg.Params.Addresses, "reported addresses")
 }
 
 func TestObserverReportsASortedSet(t *testing.T) {
@@ -126,8 +111,5 @@ func TestObserverReportsASortedSet(t *testing.T) {
 			remote: tcpAddr(t, "10.172.55.129:51000"),
 		}, http.StateActive)
 	}
-	got := o.addresses()
-	if len(got) != 2 || got[0] != "10.0.0.5" || got[1] != "10.172.54.70" {
-		t.Fatalf("addresses = %v, want a sorted pair", got)
-	}
+	require.Equal(t, []string{"10.0.0.5", "10.172.54.70"}, o.addresses(), "addresses")
 }

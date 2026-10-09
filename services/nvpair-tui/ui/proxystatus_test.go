@@ -6,6 +6,9 @@ package ui
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-tui/rpc"
 )
 
@@ -19,27 +22,19 @@ func TestProxyErrorTakesProxyDown(t *testing.T) {
 		Method: "ollama-proxy:ready",
 		Params: []byte(`{"port":11434}`),
 	})
-	if port, ready := p.portForEngine("ollama"); !ready || port != 11434 {
-		t.Fatalf("after ready: port=%d ready=%v", port, ready)
-	}
+	port, ready := p.portForEngine("ollama")
+	require.True(t, ready, "after ready")
+	require.Equal(t, 11434, port)
 
 	p.handleNotification(&rpc.Message{Method: "ollama-proxy:error", Params: []byte(`{}`)})
-	port, ready := p.portForEngine("ollama")
-	if ready {
-		t.Error("proxy still reads ready after an error frame")
-	}
-	if port != 11434 {
-		t.Errorf("port = %d; the configured port should survive so the strip can name "+
-			"which endpoint is down", port)
-	}
-	if !contains(p.strip(), "down") {
-		t.Errorf("strip does not report the proxy down: %s", p.strip())
-	}
+	port, ready = p.portForEngine("ollama")
+	assert.False(t, ready, "proxy still reads ready after an error frame")
+	assert.Equal(t, 11434, port, "the configured port should survive so the strip can name which endpoint is down")
+	assert.Contains(t, p.strip(), "down", "strip must report the proxy down")
 
 	// The other proxy is untouched.
-	if _, ready := p.portForEngine("lmstudio"); ready {
-		t.Error("an ollama-proxy error changed the LM Studio proxy")
-	}
+	_, ready = p.portForEngine("lmstudio")
+	assert.False(t, ready, "an ollama-proxy error changed the LM Studio proxy")
 }
 
 // TestProxyNotificationsAreScopedByPrefix checks the two proxies are told apart.
@@ -52,12 +47,11 @@ func TestProxyNotificationsAreScopedByPrefix(t *testing.T) {
 		Params: []byte(`{"port":1234}`),
 	})
 
-	if port, ready := p.portForEngine("lmstudio"); !ready || port != 1234 {
-		t.Errorf("lmstudio proxy: port=%d ready=%v, want 1234/true", port, ready)
-	}
-	if _, ready := p.portForEngine("ollama"); ready {
-		t.Error("an lmstudio-proxy frame marked the ollama proxy ready")
-	}
+	port, ready := p.portForEngine("lmstudio")
+	assert.True(t, ready)
+	assert.Equal(t, 1234, port)
+	_, ready = p.portForEngine("ollama")
+	assert.False(t, ready, "an lmstudio-proxy frame marked the ollama proxy ready")
 }
 
 // TestProxyPushesUseTheFacadePrefix is the regression guard for the Ollama
@@ -71,18 +65,16 @@ func TestProxyPushesUseTheFacadePrefix(t *testing.T) {
 	p := newProxyTracker()
 	for _, e := range p.engines {
 		p.handleNotification(&rpc.Message{Method: e.prefix + ":ready", Params: []byte(`{"port":4000}`)})
-		if port, ready := p.portForEngine(e.engine); !ready || port != 4000 {
-			t.Errorf("%s: a ready push under %q was not applied (port=%d ready=%v)",
-				e.engine, e.prefix, port, ready)
-		}
+		port, ready := p.portForEngine(e.engine)
+		assert.True(t, ready, "%s: a ready push under %q must be applied", e.engine, e.prefix)
+		assert.Equal(t, 4000, port, "%s: a ready push under %q must be applied", e.engine, e.prefix)
 	}
 
 	p = newProxyTracker()
 	p.handleNotification(&rpc.Message{Method: "proxy:ready", Params: []byte(`{"port":4000}`)})
 	for _, e := range p.engines {
-		if _, ready := p.portForEngine(e.engine); ready {
-			t.Errorf("%s: an unaddressed push was attributed to it", e.engine)
-		}
+		_, ready := p.portForEngine(e.engine)
+		assert.False(t, ready, "%s: an unaddressed push was attributed to it", e.engine)
 	}
 }
 
@@ -94,12 +86,8 @@ func TestFailedStatusReadTakesTheProxyDown(t *testing.T) {
 	p.apply(proxyStatusMsg{idx: 0, ready: true, port: 11434})
 	p.apply(proxyStatusMsg{idx: 0, err: errFake{}})
 	port, ready := p.portForEngine("ollama")
-	if ready {
-		t.Error("the proxy still reads ready after its status read failed")
-	}
-	if port != 11434 {
-		t.Errorf("port = %d; the last known port should stay, shown as down", port)
-	}
+	assert.False(t, ready, "the proxy still reads ready after its status read failed")
+	assert.Equal(t, 11434, port, "the last known port should stay, shown as down")
 }
 
 // TestNotRunningKeepsTheLastKnownPort checks the broker's {ready:false, port:0}
@@ -109,9 +97,9 @@ func TestNotRunningKeepsTheLastKnownPort(t *testing.T) {
 	p := newProxyTracker()
 	p.apply(proxyStatusMsg{idx: 0, ready: true, port: 11434})
 	p.apply(proxyStatusMsg{idx: 0, ready: false, port: 0})
-	if port, ready := p.portForEngine("ollama"); ready || port != 11434 {
-		t.Errorf("port=%d ready=%v, want 11434 shown as down", port, ready)
-	}
+	port, ready := p.portForEngine("ollama")
+	assert.False(t, ready)
+	assert.Equal(t, 11434, port, "last known port should be shown as down")
 }
 
 // TestPortForEngineDistinguishesDownFromUnknown checks a port is not treated as
@@ -119,10 +107,9 @@ func TestNotRunningKeepsTheLastKnownPort(t *testing.T) {
 // down both have to read as unusable.
 func TestPortForEngineDistinguishesDownFromUnknown(t *testing.T) {
 	p := newProxyTracker()
-	if _, ready := p.portForEngine("ollama"); ready {
-		t.Error("a proxy that has never reported reads as ready")
-	}
-	if port, ready := p.portForEngine("vllm"); ready || port != 0 {
-		t.Errorf("unknown engine: port=%d ready=%v, want 0/false", port, ready)
-	}
+	_, ready := p.portForEngine("ollama")
+	assert.False(t, ready, "a proxy that has never reported reads as ready")
+	port, ready := p.portForEngine("vllm")
+	assert.False(t, ready)
+	assert.Zero(t, port)
 }

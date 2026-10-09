@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // writeAdmission drops an admission.json into dir carrying the given active
@@ -21,12 +24,8 @@ func writeAdmission(t *testing.T, dir, clusterID string, epoch uint64) {
 		"epoch":     epoch,
 		"retired":   clusterID == "",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, admissionFileName), body, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, admissionFileName), body, 0o600))
 }
 
 // TestClustered_KeypairIsNotMembership is the regression guard for the invite
@@ -41,28 +40,20 @@ func TestClustered_KeypairIsNotMembership(t *testing.T) {
 	leftover := t.TempDir()
 	writeIdentity(t, leftover, certPEM, keyPEM)
 	m := Open(leftover)
-	if !m.hasIdentity() {
-		t.Fatal("the keypair on disk must load as an identity")
-	}
-	if m.Clustered() {
-		t.Fatal("a leftover keypair with no admission/pins must NOT be clustered")
-	}
+	assert.True(t, m.hasIdentity(), "the keypair on disk must load as an identity")
+	assert.False(t, m.Clustered(), "a leftover keypair with no admission/pins must NOT be clustered")
 
 	// (b) An already-clustered node: a live admission (even a cluster of one with
 	// no pinned peers) reads as clustered, so it re-advertises.
 	writeAdmission(t, leftover, "cluster-abc", 1)
 	m.Refresh()
-	if !m.Clustered() {
-		t.Fatal("an active admission must make the node clustered")
-	}
+	assert.True(t, m.Clustered(), "an active admission must make the node clustered")
 
 	// (c) A torn-down admission (clusterId cleared, epoch 0) is not membership,
 	// even with the keypair still present.
 	writeAdmission(t, leftover, "", 0)
 	m.Refresh()
-	if m.Clustered() {
-		t.Fatal("a cleared admission must NOT be clustered")
-	}
+	assert.False(t, m.Clustered(), "a cleared admission must NOT be clustered")
 
 	// (d) A pinned peer means membership even on a legacy dir with no
 	// admission.json (older builds predate it).
@@ -70,23 +61,20 @@ func TestClustered_KeypairIsNotMembership(t *testing.T) {
 	writeIdentity(t, legacy, certPEM, keyPEM)
 	peerPEM, _, _ := genLeaf(t, "uuid-peer")
 	writePin(t, legacy, "uuid-peer", string(peerPEM))
-	if !Open(legacy).Clustered() {
-		t.Fatal("a node with a pinned peer must be clustered")
-	}
+	assert.True(t, Open(legacy).Clustered(), "a node with a pinned peer must be clustered")
 
 	// (e) A dir with no keypair at all is never clustered, admission or not.
 	bare := t.TempDir()
 	writeAdmission(t, bare, "cluster-abc", 1)
-	if Open(bare).Clustered() {
-		t.Fatal("a node with no identity must never be clustered")
-	}
+	assert.False(t, Open(bare).Clustered(), "a node with no identity must never be clustered")
 
 	// (f) A nil mesh (a service with no cluster dir) reads as unclustered rather
 	// than panicking, so callers need no special case.
 	var nilMesh *Mesh
-	if nilMesh.Clustered() || nilMesh.hasIdentity() || nilMesh.NodeUUID() != "" || nilMesh.HasPin("uuid-self") {
-		t.Fatal("a nil mesh must read as permanently unclustered")
-	}
+	assert.False(t, nilMesh.Clustered(), "a nil mesh must read as permanently unclustered")
+	assert.False(t, nilMesh.hasIdentity(), "a nil mesh must read as permanently unclustered")
+	assert.Equal(t, "", nilMesh.NodeUUID(), "a nil mesh must read as permanently unclustered")
+	assert.False(t, nilMesh.HasPin("uuid-self"), "a nil mesh must read as permanently unclustered")
 }
 
 // TestMesh_ConvergesOnACluster_JoinedAfterOpen is the regression guard for the
@@ -101,15 +89,12 @@ func TestMesh_ConvergesOnACluster_JoinedAfterOpen(t *testing.T) {
 	// The cluster dir exists but is empty: this is a service that started before
 	// the cluster-manager minted anything (the startup-order race).
 	m := Open(dir)
-	if m.Clustered() || m.hasIdentity() {
-		t.Fatal("an empty cluster dir must read as unclustered")
-	}
-	if _, ok := m.ClientTLSConfig("uuid-peer"); ok {
-		t.Fatal("an unclustered mesh must not build a peer client")
-	}
-	if _, ok := m.ClientTLSConfigAny(); ok {
-		t.Fatal("an unclustered mesh must not build an any-pin client")
-	}
+	assert.False(t, m.Clustered(), "an empty cluster dir must read as unclustered")
+	assert.False(t, m.hasIdentity(), "an empty cluster dir must read as unclustered")
+	_, ok := m.ClientTLSConfig("uuid-peer")
+	require.False(t, ok, "an unclustered mesh must not build a peer client")
+	_, ok = m.ClientTLSConfigAny()
+	require.False(t, ok, "an unclustered mesh must not build an any-pin client")
 
 	// The user creates/joins a cluster: the cluster-manager mints the keypair,
 	// activates the admission, and writes the peer's pin.
@@ -120,24 +105,17 @@ func TestMesh_ConvergesOnACluster_JoinedAfterOpen(t *testing.T) {
 	writePin(t, dir, "uuid-peer", string(peerPEM))
 
 	m.Refresh()
-	if !m.Clustered() {
-		t.Fatal("the mesh must be clustered once the dir is populated")
-	}
-	if m.NodeUUID() != "uuid-self" {
-		t.Fatalf("NodeUUID = %q, want uuid-self", m.NodeUUID())
-	}
-	if _, ok := m.ClientTLSConfig("uuid-peer"); !ok {
-		t.Fatal("a pinned peer must be dialable after the transition")
-	}
-	if _, ok := m.ClientTLSConfigAny(); !ok {
-		t.Fatal("the any-pin client must be available after the transition")
-	}
+	assert.True(t, m.Clustered(), "the mesh must be clustered once the dir is populated")
+	assert.Equal(t, "uuid-self", m.NodeUUID())
+	_, ok = m.ClientTLSConfig("uuid-peer")
+	require.True(t, ok, "a pinned peer must be dialable after the transition")
+	_, ok = m.ClientTLSConfigAny()
+	require.True(t, ok, "the any-pin client must be available after the transition")
 	// Refreshing again with nothing on disk changed must leave the answer alone:
 	// a repeat read is not a teardown.
 	m.Refresh()
-	if !m.Clustered() || m.NodeUUID() != "uuid-self" {
-		t.Fatal("a no-op Refresh must not disturb a live membership")
-	}
+	assert.True(t, m.Clustered(), "a no-op Refresh must not disturb a live membership")
+	assert.Equal(t, "uuid-self", m.NodeUUID(), "a no-op Refresh must not disturb a live membership")
 }
 
 // TestMesh_UnreadableKeypairDoesNotDemoteAMember: once an identity is loaded, a
@@ -153,25 +131,18 @@ func TestMesh_UnreadableKeypairDoesNotDemoteAMember(t *testing.T) {
 	writeAdmission(t, dir, "cluster-abc", 1)
 
 	m := Open(dir)
-	if !m.Clustered() {
-		t.Fatal("a populated dir must be clustered")
-	}
+	assert.True(t, m.Clustered(), "a populated dir must be clustered")
 
-	if err := os.Remove(filepath.Join(dir, "node.key")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(filepath.Join(dir, "node.key")))
 	m.Refresh()
-	if !m.Clustered() || m.NodeUUID() != "uuid-self" {
-		t.Fatal("a live member must keep serving after a failed keypair read")
-	}
+	assert.True(t, m.Clustered(), "a live member must keep serving after a failed keypair read")
+	assert.Equal(t, "uuid-self", m.NodeUUID(), "a live member must keep serving after a failed keypair read")
 
 	// Teardown, on the other hand, is authoritative: clearing the admission
 	// drops membership even though the identity stays loaded in memory.
 	writeAdmission(t, dir, "", 0)
 	m.Refresh()
-	if m.Clustered() {
-		t.Fatal("a cleared admission must drop membership")
-	}
+	assert.False(t, m.Clustered(), "a cleared admission must drop membership")
 }
 
 // TestMesh_RotatedKeypairIsPickedUp: a rejoin can mint a new identity in place,
@@ -184,20 +155,12 @@ func TestMesh_RotatedKeypairIsPickedUp(t *testing.T) {
 	writeAdmission(t, dir, "cluster-abc", 1)
 
 	m := Open(dir)
-	if m.NodeUUID() != "uuid-first" {
-		t.Fatalf("NodeUUID = %q, want uuid-first", m.NodeUUID())
-	}
+	assert.Equal(t, "uuid-first", m.NodeUUID())
 
 	secondCert, secondKey, _ := genLeaf(t, "uuid-second")
 	writeIdentity(t, dir, secondCert, secondKey)
 	m.Refresh()
-	if m.NodeUUID() != "uuid-second" {
-		t.Fatalf("NodeUUID = %q, want uuid-second after rotation", m.NodeUUID())
-	}
-	if !m.HasPin("uuid-second") {
-		t.Fatal("self-trust must follow the rotated principal")
-	}
-	if m.HasPin("uuid-first") {
-		t.Fatal("the retired principal must no longer be self-trusted")
-	}
+	assert.Equal(t, "uuid-second", m.NodeUUID())
+	assert.True(t, m.HasPin("uuid-second"), "self-trust must follow the rotated principal")
+	assert.False(t, m.HasPin("uuid-first"), "the retired principal must no longer be self-trusted")
 }

@@ -7,6 +7,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/schedulerwire"
 )
 
@@ -76,9 +79,7 @@ func TestReserveCandidate_ConcurrentEqualLoadHasAtMostOneSkew(t *testing.T) {
 			max = counts[id]
 		}
 	}
-	if max-min > 1 {
-		t.Fatalf("100 equal-load reservations are imbalanced: %v", counts)
-	}
+	require.LessOrEqual(t, max-min, 1, "100 equal-load reservations are imbalanced (%v)", counts)
 }
 
 func TestReserveCandidate_ConvergesUnequalPendingDepths(t *testing.T) {
@@ -102,9 +103,7 @@ func TestReserveCandidate_ConvergesUnequalPendingDepths(t *testing.T) {
 		"b": 2 + assigned["b"],
 		"c": 4 + assigned["c"],
 	}
-	if total["a"] != 4 || total["b"] != 4 || total["c"] != 4 {
-		t.Fatalf("unequal depths did not converge: assigned=%v total=%v", assigned, total)
-	}
+	require.Equal(t, map[string]int{"a": 4, "b": 4, "c": 4}, total, "unequal depths did not converge: assigned %v", assigned)
 }
 
 func TestReserveCandidate_CombinesPendingPressureAndReservations(t *testing.T) {
@@ -123,12 +122,7 @@ func TestReserveCandidate_CombinesPendingPressureAndReservations(t *testing.T) {
 		reservedID(p, candidates),
 		reservedID(p, candidates),
 	}
-	want := []string{"b", "b", "c"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("GPU-aware reservations = %v, want %v", got, want)
-		}
-	}
+	require.Equal(t, []string{"b", "b", "c"}, got, "GPU-aware reservations")
 }
 
 func TestSetPrioritySnapshotClampsGPUPressure(t *testing.T) {
@@ -144,9 +138,8 @@ func TestSetPrioritySnapshotClampsGPUPressure(t *testing.T) {
 	low := p.priorityGPUPressure["low"]
 	high := p.priorityGPUPressure["high"]
 	p.priorityMu.RUnlock()
-	if low != 0 || high != schedulerwire.MaxGPUPressure {
-		t.Fatalf("clamped GPU pressure = low:%d high:%d", low, high)
-	}
+	require.Equal(t, 0, low, "clamped GPU pressure = low (%v, %v)", low, high)
+	require.Equal(t, schedulerwire.MaxGPUPressure, high, "clamped GPU pressure = low (%v, %v)", low, high)
 }
 
 // A node/set-priority call can time out after the proxy already applied it, so
@@ -175,18 +168,15 @@ func TestSetPrioritySnapshot_RedeliveredGenerationKeepsReservations(t *testing.T
 	p.priorityMu.RLock()
 	kept := p.priorityReservations[first]
 	p.priorityMu.RUnlock()
-	if kept != 1 {
-		t.Fatalf("reservation on %q after redelivery = %d, want 1 (redelivery cleared it)", first, kept)
-	}
+	require.Equal(t, 1, kept, "reservation on (%v, %v)", first, kept)
 
 	// An older generation is stale and must not roll the baseline back either.
 	applySnapshot(p, schedulerwire.Priority{Generation: 6, Nodes: []string{"only-stale"}})
 	p.priorityMu.RLock()
 	order := append([]string(nil), p.priority...)
 	p.priorityMu.RUnlock()
-	if len(order) != 2 || order[0] != "a" {
-		t.Fatalf("priority after a stale generation = %v, want the generation-7 order", order)
-	}
+	require.Len(t, order, 2, "priority after a stale generation")
+	require.Equal(t, "a", order[0], "priority after a stale generation (%v)", order)
 
 	// A newer generation applies and clears, which is the behavior the
 	// idempotency must not have broken.
@@ -196,11 +186,8 @@ func TestSetPrioritySnapshot_RedeliveredGenerationKeepsReservations(t *testing.T
 		Ranks:      []schedulerwire.NodeRank{{ID: "a", Pending: 0}, {ID: "b", Pending: 0}},
 	})
 	p.priorityMu.RLock()
-	cleared := len(p.priorityReservations)
+	assert.Empty(t, p.priorityReservations, "reservations after a newer generation")
 	p.priorityMu.RUnlock()
-	if cleared != 0 {
-		t.Fatalf("reservations after a newer generation = %d, want 0", cleared)
-	}
 }
 
 func TestReserveCandidate_LegacyNodesOnlyUsesZeroBaseline(t *testing.T) {
@@ -213,9 +200,7 @@ func TestReserveCandidate_LegacyNodesOnlyUsesZeroBaseline(t *testing.T) {
 	}
 	want := map[string]int{"a": 2, "b": 2, "c": 1}
 	for id, n := range want {
-		if counts[id] != n {
-			t.Fatalf("legacy nodes-only assignments = %v, want %v", counts, want)
-		}
+		require.Equal(t, n, counts[id], "legacy nodes-only assignments (%v, %v)", counts, want)
 	}
 }
 
@@ -234,9 +219,7 @@ func TestReserveCandidate_UsesEligibleCandidates(t *testing.T) {
 
 	for range 8 {
 		got := reservedID(p, candidates)
-		if got != "owner-a" && got != "owner-b" {
-			t.Fatalf("reservation escaped eligible candidates to %q", got)
-		}
+		require.Contains(t, []string{"owner-a", "owner-b"}, got, "reservation escaped eligible candidates")
 	}
 }
 
@@ -248,14 +231,10 @@ func TestReserveCandidate_ManualPinBypassesReservations(t *testing.T) {
 	})
 	p.soleFacade().SetSelected("b")
 	candidates := reservationCandidates("b", "a") // resolveCandidates puts the pin first
-	if got := reservedID(p, candidates); got != "b" {
-		t.Fatalf("manual pin resolved to %q, want b", got)
-	}
+	require.Equal(t, "b", reservedID(p, candidates), "manual pin resolved to")
 	p.priorityMu.RLock()
 	defer p.priorityMu.RUnlock()
-	if len(p.priorityReservations) != 0 {
-		t.Fatalf("manual pin created optimistic reservations: %v", p.priorityReservations)
-	}
+	require.Empty(t, p.priorityReservations, "manual pin created optimistic reservations")
 }
 
 func TestReserveCandidate_IneligibleManualPinDoesNotBypassReservations(t *testing.T) {
@@ -265,9 +244,7 @@ func TestReserveCandidate_IneligibleManualPinDoesNotBypassReservations(t *testin
 		Ranks: []schedulerwire.NodeRank{{ID: "owner-b"}, {ID: "owner-a"}},
 	})
 	p.soleFacade().SetSelected("missing")
-	if got := reservedID(p, reservationCandidates("owner-a", "owner-b")); got != "owner-b" {
-		t.Fatalf("reservation with ineligible pin = %q, want owner-b", got)
-	}
+	require.Equal(t, "owner-b", reservedID(p, reservationCandidates("owner-a", "owner-b")), "reservation with ineligible pin")
 }
 
 func TestReserveCandidate_PreservesFailoverAndSnapshotReset(t *testing.T) {
@@ -281,20 +258,13 @@ func TestReserveCandidate_PreservesFailoverAndSnapshotReset(t *testing.T) {
 		},
 	})
 	got, _ := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b", "c"))
-	want := []string{"b", "a", "c"}
-	for i, id := range want {
-		if got[i].id != id {
-			t.Fatalf("reserved failover order = %v, want %v", candidateIDsFrom(got), want)
-		}
-	}
+	require.Equal(t, []string{"b", "a", "c"}, candidateIDsFrom(got), "reserved failover order")
 
 	applySnapshot(p, schedulerwire.Priority{
 		Nodes: []string{"a", "b", "c"},
 		Ranks: []schedulerwire.NodeRank{{ID: "a"}, {ID: "b"}, {ID: "c"}},
 	})
-	if next := reservedID(p, reservationCandidates("a", "b", "c")); next != "a" {
-		t.Fatalf("new snapshot did not reset reservations: next = %q, want a", next)
-	}
+	require.Equal(t, "a", reservedID(p, reservationCandidates("a", "b", "c")), "new snapshot did not reset reservations")
 }
 
 func candidateIDsFrom(candidates []candidate) []string {
@@ -334,25 +304,16 @@ func TestReleasedReservationStopsCountingAsLoad(t *testing.T) {
 	flatPriority(p, 1, "a", "b")
 
 	_, held := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
-	if !held.held {
-		t.Fatal("no reservation was taken on a flat snapshot")
-	}
-	if got := reservationCount(p, held.nodeID); got != 1 {
-		t.Fatalf("reservation count for %q = %d, want 1", held.nodeID, got)
-	}
+	require.True(t, held.held, "no reservation was taken on a flat snapshot")
+	require.Equal(t, 1, reservationCount(p, held.nodeID), "reservation count for")
 
 	p.releaseReservation(held)
-	if got := reservationCount(p, held.nodeID); got != 0 {
-		t.Fatalf("reservation count for %q after release = %d, want 0", held.nodeID, got)
-	}
+	require.Equal(t, 0, reservationCount(p, held.nodeID), "reservation count for")
 	// The entry is deleted rather than left at zero, so the map cannot grow one
 	// key per node ever dispatched to.
 	p.priorityMu.RLock()
-	_, present := p.priorityReservations[held.nodeID]
+	assert.NotContains(t, p.priorityReservations, held.nodeID, "released reservation left a zero entry for")
 	p.priorityMu.RUnlock()
-	if present {
-		t.Errorf("released reservation left a zero entry for %q", held.nodeID)
-	}
 }
 
 // A snapshot supersedes every reservation taken before it, because its pending
@@ -364,9 +325,7 @@ func TestReleaseFromBeforeASnapshotIsIgnored(t *testing.T) {
 	flatPriority(p, 1, "a", "b")
 
 	_, stale := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
-	if !stale.held {
-		t.Fatal("no reservation was taken")
-	}
+	require.True(t, stale.held, "no reservation was taken")
 
 	// A new snapshot arrives, resetting reservations, and another request
 	// reserves against it.
@@ -377,15 +336,9 @@ func TestReleaseFromBeforeASnapshotIsIgnored(t *testing.T) {
 	// The first request now finishes.
 	p.releaseReservation(stale)
 
-	if got := reservationCount(p, fresh.nodeID); got != freshCount {
-		t.Fatalf("a release from generation %d changed the generation-%d count for %q: %d, want %d",
-			stale.generation, fresh.generation, fresh.nodeID, got, freshCount)
-	}
-	for _, id := range []string{"a", "b"} {
-		if got := reservationCount(p, id); got < 0 {
-			t.Fatalf("reservation count for %q went negative: %d", id, got)
-		}
-	}
+	require.Equal(t, freshCount, reservationCount(p, fresh.nodeID), "release from generation %d must preserve the generation-%d count for %q", stale.generation, fresh.generation, fresh.nodeID)
+	require.GreaterOrEqual(t, reservationCount(p, "a"), 0, "reservation count must not be negative")
+	require.GreaterOrEqual(t, reservationCount(p, "b"), 0, "reservation count must not be negative")
 }
 
 // Failover moves the claim to the node that actually served. The node that
@@ -403,21 +356,13 @@ func TestFailoverMovesTheReservationToTheServingNode(t *testing.T) {
 	}
 
 	moved := p.moveReservation(held, to)
-	if moved.nodeID != to {
-		t.Fatalf("moved reservation node = %q, want %q", moved.nodeID, to)
-	}
-	if got := reservationCount(p, from); got != 0 {
-		t.Errorf("refusing node %q still holds %d reservations", from, got)
-	}
-	if got := reservationCount(p, to); got != 1 {
-		t.Errorf("serving node %q holds %d reservations, want 1", to, got)
-	}
+	require.Equal(t, to, moved.nodeID, "moved reservation node (%v)", to)
+	assert.Equal(t, 0, reservationCount(p, from), "refusing node %q must release its reservation", from)
+	assert.Equal(t, 1, reservationCount(p, to), "serving node %q must hold the reservation", to)
 
 	// Releasing the moved token clears the serving node, not the original.
 	p.releaseReservation(moved)
-	if got := reservationCount(p, to); got != 0 {
-		t.Errorf("serving node %q still holds %d reservations after release", to, got)
-	}
+	assert.Equal(t, 0, reservationCount(p, to), "serving node %q must release the reservation", to)
 }
 
 // Two facades in one process compete for the same GPU, so a dispatch through
@@ -431,12 +376,7 @@ func TestReservationsAreSharedAcrossFacades(t *testing.T) {
 	_, first := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
 	_, second := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
 
-	if first.nodeID == second.nodeID {
-		t.Fatalf("both dispatches chose %q; the second did not see the first's reservation", first.nodeID)
-	}
-	for _, r := range []reservation{first, second} {
-		if got := reservationCount(p, r.nodeID); got != 1 {
-			t.Errorf("node %q holds %d reservations, want 1", r.nodeID, got)
-		}
-	}
+	require.NotEqual(t, second.nodeID, first.nodeID, "both dispatches chose")
+	assert.Equal(t, 1, reservationCount(p, first.nodeID), "node")
+	assert.Equal(t, 1, reservationCount(p, second.nodeID), "node")
 }

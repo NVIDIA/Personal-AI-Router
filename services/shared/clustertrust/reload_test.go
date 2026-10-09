@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestReloadKeepsPinsWhenDirUnreadable is the anti-flap guard. Consumers poll
@@ -29,36 +32,26 @@ func TestReloadKeepsPinsWhenDirUnreadable(t *testing.T) {
 
 	trust := newTrust(clusterDir)
 	trust.Reload()
-	if got, ok := trust.DER("uuid-peer"); !ok || string(got) != string(der) {
-		t.Fatalf("first load: ok=%v, want the pinned DER", ok)
-	}
+	got, ok := trust.DER("uuid-peer")
+	require.True(t, ok, "first load")
+	assert.Equal(t, string(der), string(got), "first load")
 
 	trusted := filepath.Join(clusterDir, "trusted")
-	if err := os.Chmod(trusted, 0o000); err != nil {
-		t.Fatalf("chmod trusted: %v", err)
-	}
+	require.NoError(t, os.Chmod(trusted, 0o000), "chmod trusted")
 	t.Cleanup(func() { _ = os.Chmod(trusted, 0o700) })
 
 	trust.Reload()
-	if _, ok := trust.DER("uuid-peer"); !ok {
-		t.Fatal("an unreadable trusted/ dir dropped a pin we already held")
-	}
-	if trust.Count() != 1 {
-		t.Fatalf("pin count = %d, want the previous set retained", trust.Count())
-	}
+	_, ok = trust.DER("uuid-peer")
+	require.True(t, ok, "an unreadable trusted/ dir dropped a pin we already held")
+	assert.Equal(t, 1, trust.Count(), "pin count")
 
 	// Readable again with the pin genuinely gone: that IS a revocation and must
 	// take effect, which is what keeps a removal propagating.
-	if err := os.Chmod(trusted, 0o700); err != nil {
-		t.Fatalf("restore chmod: %v", err)
-	}
-	if err := os.Remove(filepath.Join(trusted, "uuid-peer.json")); err != nil {
-		t.Fatalf("remove pin: %v", err)
-	}
+	require.NoError(t, os.Chmod(trusted, 0o700), "restore chmod")
+	require.NoError(t, os.Remove(filepath.Join(trusted, "uuid-peer.json")), "remove pin")
 	trust.Reload()
-	if _, ok := trust.DER("uuid-peer"); ok {
-		t.Fatal("a removed pin survived a successful reload")
-	}
+	_, ok = trust.DER("uuid-peer")
+	require.False(t, ok, "a removed pin survived a successful reload")
 }
 
 // TestReloadEmptiesWhenDirAbsent keeps the other half honest: an absent
@@ -72,17 +65,11 @@ func TestReloadEmptiesWhenDirAbsent(t *testing.T) {
 
 	trust := newTrust(clusterDir)
 	trust.Reload()
-	if trust.Count() != 1 {
-		t.Fatalf("first load count = %d, want 1", trust.Count())
-	}
+	assert.Equal(t, 1, trust.Count(), "first load count")
 
-	if err := os.RemoveAll(filepath.Join(clusterDir, "trusted")); err != nil {
-		t.Fatalf("remove trusted dir: %v", err)
-	}
+	require.NoError(t, os.RemoveAll(filepath.Join(clusterDir, "trusted")), "remove trusted dir")
 	trust.Reload()
-	if trust.Count() != 0 {
-		t.Fatalf("count after teardown = %d, want 0", trust.Count())
-	}
+	assert.Equal(t, 0, trust.Count(), "count after teardown")
 }
 
 // TestReloadDropsUnparseablePin separates the transient case from the content
@@ -96,16 +83,11 @@ func TestReloadDropsUnparseablePin(t *testing.T) {
 
 	trust := newTrust(clusterDir)
 	trust.Reload()
-	if trust.Count() != 1 {
-		t.Fatalf("first load count = %d, want 1", trust.Count())
-	}
+	assert.Equal(t, 1, trust.Count(), "first load count")
 
 	pin := filepath.Join(clusterDir, "trusted", "uuid-peer.json")
-	if err := os.WriteFile(pin, []byte("{not json"), 0o600); err != nil {
-		t.Fatalf("corrupt pin: %v", err)
-	}
+	require.NoError(t, os.WriteFile(pin, []byte("{not json"), 0o600), "corrupt pin")
 	trust.Reload()
-	if _, ok := trust.DER("uuid-peer"); ok {
-		t.Fatal("a pin that no longer parses was carried forward")
-	}
+	_, ok := trust.DER("uuid-peer")
+	require.False(t, ok, "a pin that no longer parses was carried forward")
 }

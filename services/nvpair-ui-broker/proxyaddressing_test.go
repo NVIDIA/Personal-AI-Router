@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
@@ -66,12 +69,9 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 
 			select {
 			case got := <-seen:
-				want := profile.addressed("nodes/list")
-				if got != want {
-					t.Fatalf("relayed method = %q, want %q", got, want)
-				}
+				require.Equal(t, profile.addressed("nodes/list"), got, "relayed method")
 			case <-time.After(2 * time.Second):
-				t.Fatal("relay sent nothing downward")
+				require.FailNow(t, "relay sent nothing downward")
 			}
 		})
 	}
@@ -110,9 +110,8 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 
 	b.blockManagedOllamaFacade("the Ollama proxy facade could not be brought up")
 
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Errorf("blocking released the alias a retry still needs: %+v", got)
-	}
+	got := b.currentOllamaHostAlias()
+	assert.Equal(t, alias.Port, got.Port, "blocking released the alias a retry still needs (%v)", got)
 }
 
 // An engine that failed inside a process that is staying gets terminal
@@ -127,14 +126,12 @@ func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
 	}
 	alias := ollamaHostAlias{Address: "127.0.0.1:11433", Port: 11433}
 	b.setOllamaHostAlias(alias)
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Fatalf("alias not established for the test: %+v", got)
-	}
+	got := b.currentOllamaHostAlias()
+	require.Equal(t, alias.Port, got.Port, "alias not established for the test (%v)", got)
 
 	b.blockAndFinishEngineProxy(ollamaProxyProfile)
-	if got := b.currentOllamaHostAlias(); got.Port != 0 {
-		t.Errorf("terminal treatment did not release the alias: %+v", got)
-	}
+	got = b.currentOllamaHostAlias()
+	assert.Equal(t, 0, got.Port, "terminal treatment did not release the alias (%v)", got)
 }
 
 // A facade that reported ready is kept when its enable call went unanswered,
@@ -178,9 +175,7 @@ func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := facadeCameUpAnyway(tc.pp, engine, tc.err); got != tc.want {
-				t.Fatalf("facadeCameUpAnyway = %v, want %v", got, tc.want)
-			}
+			require.Equal(t, tc.want, facadeCameUpAnyway(tc.pp, engine, tc.err), "facadeCameUpAnyway")
 		})
 	}
 }
@@ -216,22 +211,16 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 
 	for engine, wantPort := range map[string]int{first.Name: 11434, second.Name: 1234} {
 		ready, port := p.Status(engine)
-		if !ready {
-			t.Errorf("%s facade is not ready", engine)
-		}
-		if port != wantPort {
-			t.Errorf("%s facade port = %d, want %d", engine, port, wantPort)
-		}
-		if p.ReadyParams(engine) == nil {
-			t.Errorf("%s facade has no replayable ready payload", engine)
-		}
+		assert.True(t, ready, "engine %s must be ready", engine)
+		assert.Equal(t, wantPort, port, "engine %s facade port", engine)
+		assert.NotNil(t, p.ReadyParams(engine), "engine %s ready params", engine)
 	}
 
 	// An engine that never announced itself is not ready, rather than
 	// inheriting a sibling's port.
-	if ready, port := p.Status("vllm"); ready || port != 0 {
-		t.Errorf("an unannounced engine reported ready=%v port=%d", ready, port)
-	}
+	ready, port := p.Status("vllm")
+	assert.False(t, ready, "an unannounced engine reported ready")
+	assert.Equal(t, 0, port, "an unannounced engine reported a port")
 }
 
 func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
@@ -265,54 +254,39 @@ func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
 				}()
 				frames := make([]*Message, 0, frameCount)
 				for range frameCount {
-					if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-						t.Fatalf("set read deadline: %v", err)
-					}
+					require.NoError(t, client.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 					frame, err := reader.Read()
-					if err != nil {
-						t.Fatalf("read %s frame: %v", method, err)
-					}
+					require.NoError(t, err, "read %s frame", method)
 					frames = append(frames, frame)
 				}
 				select {
 				case <-done:
 				case <-time.After(2 * time.Second):
-					t.Fatalf("%s handler did not finish after %d frame(s)", method, frameCount)
+					require.FailNowf(t, "handler did not finish", "%s after %d frame(s)", method, frameCount)
 				}
 				return frames
 			}
 
 			statusFrames := call("get-status", 1)
 			var status ProxyStatusResult
-			if err := json.Unmarshal(statusFrames[0].Result, &status); err != nil {
-				t.Fatalf("decode status: %v", err)
-			}
-			if !status.Ready || status.Port != profile.FacadePort {
-				t.Fatalf("status = %+v, want ready on %d", status, profile.FacadePort)
-			}
+			require.NoError(t, json.Unmarshal(statusFrames[0].Result, &status), "decode status")
+			assert.True(t, status.Ready)
+			assert.Equal(t, profile.FacadePort, status.Port)
 
 			subscribeFrames := call("subscribe", 2)
 			var subscribed SubscriptionResult
-			if err := json.Unmarshal(subscribeFrames[0].Result, &subscribed); err != nil || !subscribed.Subscribed {
-				t.Fatalf("subscribe response = %s, error %v", subscribeFrames[0].Result, err)
-			}
-			if subscribeFrames[1].Method != profile.ComponentName()+":ready" {
-				t.Fatalf("second subscribe frame = %q, want ready baseline after response", subscribeFrames[1].Method)
-			}
-			if string(subscribeFrames[1].Params) != string(payload) {
-				t.Fatalf("ready baseline = %s, want %s", subscribeFrames[1].Params, payload)
-			}
+			require.NoError(t, json.Unmarshal(subscribeFrames[0].Result, &subscribed), "subscribe response")
+			assert.True(t, subscribed.Subscribed)
+			assert.Equal(t, profile.ComponentName()+":ready", subscribeFrames[1].Method, "ready baseline after response")
+			assert.Equal(t, string(payload), string(subscribeFrames[1].Params), "ready baseline")
 
 			unsubscribeFrames := call("unsubscribe", 1)
-			if err := json.Unmarshal(unsubscribeFrames[0].Result, &subscribed); err != nil || subscribed.Subscribed {
-				t.Fatalf("unsubscribe response = %s, error %v", unsubscribeFrames[0].Result, err)
-			}
+			require.NoError(t, json.Unmarshal(unsubscribeFrames[0].Result, &subscribed), "unsubscribe response")
+			assert.False(t, subscribed.Subscribed)
 			b.proxyMu.Lock()
 			stillSubscribed := b.engineProxySubscribed(profile)
 			b.proxyMu.Unlock()
-			if stillSubscribed {
-				t.Fatal("facade remained subscribed after unsubscribe")
-			}
+			assert.False(t, stillSubscribed, "facade remained subscribed after unsubscribe")
 		})
 	}
 }
@@ -344,9 +318,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 		params, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{service},
 		})
-		if err != nil {
-			t.Fatalf("marshal subscribe for %s: %v", engine, err)
-		}
+		require.NoError(t, err, "marshal subscribe for %s", engine)
 		p.handleSubscribe(engine, params)
 	}
 
@@ -356,18 +328,11 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	if len(p.subIDs) != len(engines.All()) {
-		t.Fatalf("tracked %d subscriptions for %d engines: %v",
-			len(p.subIDs), len(engines.All()), p.subIDs)
-	}
+	require.Len(t, p.subIDs, len(engines.All()), "tracked")
 	seen := map[int]string{}
 	for engine, id := range p.subIDs {
-		if id == 0 {
-			t.Errorf("engine %q has subscription id 0", engine)
-		}
-		if other, dup := seen[id]; dup {
-			t.Errorf("engines %q and %q share subscription id %d", engine, other, id)
-		}
+		assert.NotEqual(t, 0, id, "engine (%v)", engine)
+		assert.NotContains(t, seen, id, "engine %s reused a subscription ID", engine)
 		seen[id] = engine
 	}
 }
@@ -403,9 +368,7 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 		raw, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{e.DiscoveryService},
 		})
-		if err != nil {
-			t.Fatalf("marshal subscribe: %v", err)
-		}
+		require.NoError(t, err, "marshal subscribe")
 		return raw
 	}
 
@@ -420,14 +383,8 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	if p.subIDs[first.Name] == firstID {
-		t.Errorf("re-subscribe kept %s's original id %d, so it is now double-fed",
-			first.Name, firstID)
-	}
-	if p.subIDs[second.Name] != secondID {
-		t.Errorf("re-subscribing %s changed %s's id from %d to %d",
-			first.Name, second.Name, secondID, p.subIDs[second.Name])
-	}
+	assert.NotEqual(t, firstID, p.subIDs[first.Name], "re-subscribe kept %s's original ID, so it is now double-fed", first.Name)
+	assert.Equal(t, secondID, p.subIDs[second.Name], "re-subscribing %s changed %s's ID", first.Name, second.Name)
 }
 
 // The read pump reports ready and wires subscriptions by matching bare method
@@ -484,13 +441,9 @@ func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := facadeMethodFor(tc.profile, tc.method)
-			if ok != tc.ok {
-				t.Fatalf("facadeMethodFor(%s, %q) ok = %v, want %v",
-					tc.profile.Name, tc.method, ok, tc.ok)
-			}
-			if ok && got != tc.want {
-				t.Fatalf("facadeMethodFor(%s, %q) = %q, want %q",
-					tc.profile.Name, tc.method, got, tc.want)
+			require.Equal(t, tc.ok, ok, "facadeMethodFor")
+			if ok {
+				require.Equal(t, tc.want, got, "facadeMethodFor")
 			}
 		})
 	}

@@ -14,26 +14,23 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // bundledManifestSet loads the compiled-in manifests the way main.go does.
 func bundledManifestSet(t *testing.T) map[string]*Manifest {
 	t.Helper()
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatalf("load bundled manifests: %v", err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "load bundled manifests")
 	out := map[string]*Manifest{}
 	for _, name := range reg.Names() {
 		manifest, ok := reg.Get(name)
-		if !ok {
-			t.Fatalf("registry lost manifest %q", name)
-		}
+		require.True(t, ok, "registry lost manifest %q", name)
 		out[name] = manifest
 	}
-	if len(out) == 0 {
-		t.Fatal("no bundled manifests loaded")
-	}
+	require.NotEmpty(t, out, "no bundled manifests loaded")
 	return out
 }
 
@@ -64,17 +61,7 @@ func TestBundledRuntimeBinIsDetected(t *testing.T) {
 			if bin == "" || len(platform.Detect) == 0 {
 				continue
 			}
-			found := false
-			for _, candidate := range platform.Detect {
-				if candidate == bin {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("%s/%s: runtime.bin %q is not among the detect paths %v — the engine would report installed and then fail to start",
-					name, key, bin, platform.Detect)
-			}
+			assert.Contains(t, platform.Detect, bin, "%s/%s: runtime.bin must be among detect paths so the installed engine can start", name, key)
 		}
 	}
 }
@@ -121,10 +108,8 @@ func TestBundledInstallLayout(t *testing.T) {
 					// Manifests spell Windows paths with backslashes; the host
 					// separator is what the extracted tree uses.
 					relative = filepath.FromSlash(strings.ReplaceAll(relative, `\`, "/"))
-					if _, err := os.Stat(filepath.Join(installDir, relative)); err != nil {
-						t.Errorf("detect path %q is absent after extraction (strip=%v): %v",
-							candidate, strip, err)
-					}
+					_, err := os.Stat(filepath.Join(installDir, relative))
+					assert.NoError(t, err, "detect path %q is absent after extraction (strip=%v)", candidate, strip)
 				}
 			})
 		}
@@ -161,7 +146,7 @@ func extractArchive(t *testing.T, download Fetch, installDir string, strip bool)
 		// every platform; on Windows this runs curl.exe, not PowerShell's alias.
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == 22 {
-			t.Fatalf("%s is not downloadable: %s", download.URL, strings.TrimSpace(string(out)))
+			require.FailNowf(t, "archive is not downloadable", "%s: %s", download.URL, strings.TrimSpace(string(out)))
 		}
 		t.Skipf("cannot reach %s (%v): %s", download.URL, err, strings.TrimSpace(string(out)))
 	}
@@ -171,9 +156,8 @@ func extractArchive(t *testing.T, download Fetch, installDir string, strip bool)
 		args = append(args, "--strip-components=1")
 	}
 	extract := exec.Command("tar", args...)
-	if out, err := extract.CombinedOutput(); err != nil {
-		t.Fatalf("tar %v on %s failed (%v): %s", args, runtime.GOOS, err, strings.TrimSpace(string(out)))
-	}
+	out, err := extract.CombinedOutput()
+	require.NoError(t, err, "tar %v on %s: %s", args, runtime.GOOS, strings.TrimSpace(string(out)))
 }
 
 // verifyChecksum compares the download against the manifest's pin. The runner
@@ -187,15 +171,10 @@ func verifyChecksum(t *testing.T, archive string, download Fetch) {
 		return // an unpinned fetch; the runner warns rather than verifies
 	}
 	file, err := os.Open(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer file.Close()
 	digest := sha256.New()
-	if _, err := io.Copy(digest, file); err != nil {
-		t.Fatal(err)
-	}
-	if got := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(got, want) {
-		t.Errorf("%s checksum is %s, manifest pins %s", download.URL, got, want)
-	}
+	_, err = io.Copy(digest, file)
+	require.NoError(t, err)
+	assert.Equal(t, strings.ToLower(want), hex.EncodeToString(digest.Sum(nil)), "%s checksum", download.URL)
 }

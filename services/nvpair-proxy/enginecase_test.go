@@ -21,6 +21,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type engineCase struct {
@@ -58,9 +60,7 @@ type engineCase struct {
 func ollamaCase(t *testing.T) engineCase {
 	t.Helper()
 	p, ok := profileFor("ollama")
-	if !ok {
-		t.Fatal("ollama profile missing")
-	}
+	require.True(t, ok, "ollama profile missing")
 	return engineCase{
 		profile:          p,
 		inferencePath:    "/api/chat",
@@ -75,9 +75,7 @@ func ollamaCase(t *testing.T) engineCase {
 func lmstudioCase(t *testing.T) engineCase {
 	t.Helper()
 	p, ok := profileFor("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio profile missing")
-	}
+	require.True(t, ok, "lmstudio profile missing")
 	return engineCase{
 		profile:       p,
 		inferencePath: "/v1/chat/completions",
@@ -151,7 +149,7 @@ func otherEngine(t *testing.T, tc engineCase) engineProfile {
 			return candidate.profile
 		}
 	}
-	t.Fatal("no sibling engine to contrast against")
+	require.FailNow(t, "no sibling engine to contrast against")
 	return engineProfile{}
 }
 

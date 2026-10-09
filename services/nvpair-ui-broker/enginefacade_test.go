@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 )
@@ -61,25 +64,16 @@ func TestDefaultEngineFacadeRetriesAwayFromReservedPorts(t *testing.T) {
 		ollamaHostAlias{},
 		func(int) bool { return true },
 	)
-	if err != nil {
-		t.Fatalf("enable engine facade: %v", err)
-	}
+	require.NoError(t, err, "enable engine facade")
 	first, second := <-attempts, <-attempts
-	if first.Port != profile.FacadePort {
-		t.Fatalf("first port = %d, want stock facade %d", first.Port, profile.FacadePort)
-	}
+	assert.Equal(t, profile.FacadePort, first.Port, "first attempt must use the stock facade port")
 	// 1234 is this backend and LM Studio's facade; 1235 is LM Studio's backend.
-	if second.Port != 1236 {
-		t.Fatalf("fallback port = %d, want 1236 after backend and sibling exclusions", second.Port)
-	}
-	if !second.IgnorePersistedPort {
-		t.Fatal("fallback retry could restore the port that just failed")
-	}
+	assert.Equal(t, 1236, second.Port, "fallback must exclude backend and sibling ports")
+	assert.True(t, second.IgnorePersistedPort, "fallback retry could restore the port that just failed")
 
 	restart := b.defaultEngineFacadeSpec(profile)
-	if restart.Port != second.Port || !restart.IgnorePersistedPort {
-		t.Fatalf("restart spec = %+v, want explicit fallback port %d", restart, second.Port)
-	}
+	assert.Equal(t, second.Port, restart.Port, "restart must use the fallback port")
+	assert.True(t, restart.IgnorePersistedPort, "restart must ignore the persisted port")
 }
 
 func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
@@ -116,8 +110,7 @@ func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
 						return
 					}
 					calls.Add(1)
-					if err := codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: tc.serverPort}); err != nil {
-						t.Errorf("respond to unexpected engine request %s: %v", msg.Method, err)
+					if !assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: tc.serverPort}), "respond to unexpected engine request %s", msg.Method) {
 						return
 					}
 				}
@@ -125,19 +118,11 @@ func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
 
 			b.prepareEnabledFacades()
 
-			if got := calls.Load(); got != 0 {
-				t.Fatalf("preparation issued %d engine requests, want no probing or relocation", got)
-			}
+			assert.Equal(t, int32(0), calls.Load(), "preparation must not probe or relocate the engine")
 			state := b.engineProxy(profile)
-			if got := int(state.backendPort.Load()); got != tc.serverPort {
-				t.Fatalf("engine port = %d, want %d", got, tc.serverPort)
-			}
-			if got := int(state.startupPort.Load()); got != tc.proxyPort {
-				t.Fatalf("startup proxy port = %d, want %d", got, tc.proxyPort)
-			}
-			if got := state.explicitSettings.Load(); got != tc.explicit {
-				t.Fatalf("explicit settings = %v, want %v", got, tc.explicit)
-			}
+			assert.Equal(t, int32(tc.serverPort), state.backendPort.Load(), "engine port")
+			assert.Equal(t, int32(tc.proxyPort), state.startupPort.Load(), "startup proxy port")
+			assert.Equal(t, tc.explicit, state.explicitSettings.Load(), "explicit settings")
 		})
 	}
 }
@@ -153,19 +138,16 @@ func TestLlamaCPPProxyTerminalHandlingPreservesEngineState(t *testing.T) {
 	b.blockAndFinishEngineProxy(profile)
 	b.finishEngineProxyStartup(profile)
 
-	if got := int(state.backendPort.Load()); got != profile.EnginePortBase {
-		t.Fatalf("engine port = %d, want %d", got, profile.EnginePortBase)
-	}
-	if got := state.startupPort.Load(); got != 18080 || !state.managedFacade.Load() {
-		t.Fatalf("terminal handling changed facade state: port=%d managed=%v", got, state.managedFacade.Load())
-	}
+	assert.Equal(t, int32(profile.EnginePortBase), state.backendPort.Load(), "engine port")
+	assert.Equal(t, int32(18080), state.startupPort.Load(), "terminal handling changed facade port")
+	assert.True(t, state.managedFacade.Load(), "terminal handling changed facade ownership")
 	for _, gate := range []struct {
 		name  string
 		ready <-chan struct{}
 	}{{"Ollama", b.ollamaPortReady}, {"LM Studio", b.lmstudioPortReady}} {
 		select {
 		case <-gate.ready:
-			t.Fatalf("llama.cpp terminal handling released %s's gate", gate.name)
+			require.FailNowf(t, "llama.cpp terminal handling released another engine's gate", "engine %s", gate.name)
 		default:
 		}
 	}
@@ -189,23 +171,13 @@ func TestLlamaCPPEngineStatusRelaysBeforeOtherPortGates(t *testing.T) {
 
 	b.relayToEngine(&Message{ID: &id, Method: "engine:status", Params: json.RawMessage(`{"engine":"llamacpp"}`)})
 
-	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set response deadline: %v", err)
-	}
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(2*time.Second)), "set response deadline")
 	response, err := NewCodec(client).Read()
-	if err != nil {
-		t.Fatalf("read llama.cpp status while other port gates are pending: %v", err)
-	}
-	if response.Error != nil {
-		t.Fatalf("llama.cpp status failed: %+v", response.Error)
-	}
+	require.NoError(t, err, "read llama.cpp status while other port gates are pending")
+	require.Nil(t, response.Error, "llama.cpp status failed")
 	var status ollamaPortStatus
-	if err := json.Unmarshal(response.Result, &status); err != nil {
-		t.Fatalf("decode llama.cpp status: %v", err)
-	}
-	if status.Port != profile.EnginePortBase {
-		t.Fatalf("status port = %d, want %d", status.Port, profile.EnginePortBase)
-	}
+	require.NoError(t, json.Unmarshal(response.Result, &status), "decode llama.cpp status")
+	assert.Equal(t, profile.EnginePortBase, status.Port)
 }
 
 func TestLlamaCPPProxyNotificationDispatchPreservesFacadeAddress(t *testing.T) {
@@ -226,26 +198,16 @@ func TestLlamaCPPProxyNotificationDispatchPreservesFacadeAddress(t *testing.T) {
 		b.forwardProxyProcessNotification(0, 0, profile.addressed("ready"), payload)
 		close(done)
 	}()
-	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 	msg, err := NewCodec(client).Read()
-	if err != nil {
-		t.Fatalf("read forwarded notification: %v", err)
-	}
-	if msg.Method != profile.ComponentName()+":ready" {
-		t.Fatalf("notification method = %s, want %s:ready", msg.Method, profile.ComponentName())
-	}
+	require.NoError(t, err, "read forwarded notification")
+	assert.Equal(t, profile.ComponentName()+":ready", msg.Method)
 	var ready proxyReadyParams
-	if err := json.Unmarshal(msg.Params, &ready); err != nil {
-		t.Fatalf("decode ready notification: %v", err)
-	}
-	if ready.Port != 8080 {
-		t.Fatalf("ready port = %d, want 8080", ready.Port)
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &ready), "decode ready notification")
+	assert.Equal(t, 8080, ready.Port)
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("notification forwarding did not finish")
+		require.FailNow(t, "notification forwarding did not finish")
 	}
 }

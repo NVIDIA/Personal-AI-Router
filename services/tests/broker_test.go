@@ -31,6 +31,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 
 	"github.com/grandcat/zeroconf"
@@ -63,16 +66,10 @@ func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Messag
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	t.Logf("broker started: pid=%d", cmd.Process.Pid)
 
 	ch := startMsgReader(stdoutPipe)
@@ -93,9 +90,8 @@ func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Messag
 func sendReq(t *testing.T, w io.Writer, id int, method string) {
 	t.Helper()
 	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q}`, id, method) + "\n"
-	if _, err := w.Write([]byte(req)); err != nil {
-		t.Fatalf("write %s request: %v", method, err)
-	}
+	_, err := w.Write([]byte(req))
+	require.NoError(t, err, "write %s request", method)
 }
 
 func registerNodeInfo(t *testing.T, instance string, port int) *zeroconf.Server {
@@ -106,9 +102,7 @@ func registerNodeInfo(t *testing.T, instance string, port int) *zeroconf.Server 
 	// directory, and pushes it to the broker store.
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", fmt.Sprintf("ni=%d", port)}
 	srv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
-	if err != nil {
-		t.Fatalf("register %s: %v", instance, err)
-	}
+	require.NoError(t, err, "register %s", instance)
 	t.Cleanup(srv.Shutdown)
 	t.Logf("advertising %s @ %s (ni=%d)", instance, nodeRecordService, port)
 	return srv
@@ -138,18 +132,12 @@ func pollNodeListed(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, 
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed unexpectedly")
-			}
+			require.True(t, ok, "broker stream closed unexpectedly")
 			switch {
 			case msg.Method == "discovery:nodes-changed":
 				var nodes []availableNode
-				if err := json.Unmarshal(msg.Params, &nodes); err != nil {
-					t.Fatalf("unmarshal discovery:nodes-changed: %v\nraw: %s", err, msg.Params)
-				}
-				if allowPush != nil && !allowPush(nodes) {
-					t.Fatalf("unexpected discovery:nodes-changed: %s", msg.Params)
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &nodes), "unmarshal discovery:nodes-changed")
+				require.False(t, allowPush != nil && !allowPush(nodes), "unexpected discovery:nodes-changed")
 			case msg.Method == "" && msg.ID != nil:
 				var res availableNodesResult
 				if json.Unmarshal(msg.Result, &res) == nil && containsNode(res.Nodes, instance) {
@@ -160,7 +148,7 @@ func pollNodeListed(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, 
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
 		case <-deadline:
-			t.Fatalf("timed out (%s) waiting for %q in discovery:get-nodes", timeout, instance)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for %q in discovery:get-nodes", timeout, instance))
 		}
 	}
 }
@@ -173,20 +161,16 @@ func waitForPushContaining(t *testing.T, msgs <-chan jsonrpc.Message, instance s
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatalf("broker stream closed before push containing %q", instance)
-			}
+			require.True(t, ok, "broker stream closed before push containing (%v)", instance)
 			if msg.Method == "discovery:nodes-changed" {
 				var nodes []availableNode
-				if err := json.Unmarshal(msg.Params, &nodes); err != nil {
-					t.Fatalf("unmarshal discovery:nodes-changed: %v\nraw: %s", err, msg.Params)
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &nodes), "unmarshal discovery:nodes-changed")
 				if containsNode(nodes, instance) {
 					return
 				}
 			}
 		case <-to:
-			t.Fatalf("timed out (%s) waiting for discovery:nodes-changed containing %q", timeout, instance)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for discovery:nodes-changed containing %q", timeout, instance))
 		}
 	}
 }
@@ -224,30 +208,22 @@ func TestCrossProcessBrokerSubscription(t *testing.T) {
 	for !(gotAck && gotBaseline) {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed waiting for subscribe ack/baseline")
-			}
+			require.True(t, ok, "broker stream closed waiting for subscribe ack/baseline")
 			switch {
 			case msg.Method == "" && msg.ID != nil:
 				var sr subscriptionResult
 				if json.Unmarshal(msg.Result, &sr) == nil {
-					if !sr.Subscribed {
-						t.Errorf("subscribe ack subscribed=false, want true")
-					}
+					assert.True(t, sr.Subscribed, "subscribe ack subscribed=false, want true")
 					gotAck = true
 				}
 			case msg.Method == "discovery:nodes-changed":
 				var nodes []availableNode
-				if err := json.Unmarshal(msg.Params, &nodes); err != nil {
-					t.Fatalf("unmarshal baseline: %v\nraw: %s", err, msg.Params)
-				}
-				if !containsNode(nodes, inst1) {
-					t.Errorf("baseline snapshot missing %q: %s", inst1, msg.Params)
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &nodes), "unmarshal baseline")
+				assert.True(t, containsNode(nodes, inst1), "baseline snapshot missing (%v)", inst1)
 				gotBaseline = true
 			}
 		case <-deadline:
-			t.Fatalf("timed out waiting for subscribe ack=%v baseline=%v", gotAck, gotBaseline)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for subscribe ack=%v baseline=%v", gotAck, gotBaseline))
 		}
 	}
 	t.Log("phase 2 OK: subscribe acked and baseline snapshot received")
@@ -264,23 +240,19 @@ func TestCrossProcessBrokerSubscription(t *testing.T) {
 	for !ackd {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed waiting for unsubscribe ack")
-			}
+			require.True(t, ok, "broker stream closed waiting for unsubscribe ack")
 			// Discovery:nodes-changed frames may still be in flight here
 			// for inst1/inst2 from just before the unsubscribe took
 			// effect; ignore them and wait for the ack.
 			if msg.Method == "" && msg.ID != nil {
 				var sr subscriptionResult
 				if json.Unmarshal(msg.Result, &sr) == nil {
-					if sr.Subscribed {
-						t.Errorf("unsubscribe ack subscribed=true, want false")
-					}
+					assert.False(t, sr.Subscribed, "unsubscribe ack subscribed=true, want false")
 					ackd = true
 				}
 			}
 		case <-deadline:
-			t.Fatal("timed out waiting for unsubscribe ack")
+			require.FailNow(t, "timed out waiting for unsubscribe ack")
 		}
 	}
 	t.Log("phase 4 OK: unsubscribe acked")

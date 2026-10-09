@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestOwnLogReachesTheLogsTab checks this program's log goes where it can be
@@ -18,9 +21,7 @@ func TestOwnLogReachesTheLogsTab(t *testing.T) {
 	out := &logOutput{fallback: &stderr}
 
 	_, _ = out.Write([]byte("before\n"))
-	if stderr.String() != "before\n" {
-		t.Errorf("a line before the program started did not reach stderr: %q", stderr.String())
-	}
+	assert.Equal(t, "before\n", stderr.String(), "a line before the program started should reach stderr")
 
 	lines := make(chan string, 4)
 	out.attach(lines)
@@ -28,19 +29,15 @@ func TestOwnLogReachesTheLogsTab(t *testing.T) {
 	for _, want := range []string{"one", "two"} {
 		select {
 		case got := <-lines:
-			if got != want {
-				t.Errorf("Logs tab got %q, want %q", got, want)
-			}
+			assert.Equal(t, want, got, "Logs tab")
 		case <-time.After(time.Second):
-			t.Fatalf("%q never reached the Logs tab", want)
+			require.FailNowf(t, "line never reached the Logs tab", "%q", want)
 		}
 	}
 
 	out.detach()
 	_, _ = out.Write([]byte("after\n"))
-	if stderr.String() != "before\nafter\n" {
-		t.Errorf("a line after the program ended did not reach stderr: %q", stderr.String())
-	}
+	assert.Equal(t, "before\nafter\n", stderr.String(), "a line after the program ended should reach stderr")
 }
 
 // TestOwnLogNeverBlocksOnAFullTab checks a full buffer drops a line rather
@@ -59,7 +56,7 @@ func TestOwnLogNeverBlocksOnAFullTab(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("writing to a full Logs tab blocked")
+		require.FailNow(t, "writing to a full Logs tab blocked")
 	}
 }
 
@@ -69,13 +66,8 @@ func TestDecodeOrLogReportsAMismatch(t *testing.T) {
 	var into struct {
 		Port int `json:"port"`
 	}
-	if decodeOrLog("test:method", json.RawMessage(`{"port":"not a number"}`), &into) {
-		t.Error("a payload that did not fit its type was reported as decoded")
-	}
-	if !decodeOrLog("test:method", json.RawMessage(`{"port":1234}`), &into) || into.Port != 1234 {
-		t.Errorf("a good payload did not decode: %+v", into)
-	}
-	if !decodeOrLog("test:method", nil, &into) {
-		t.Error("an empty payload, which carries nothing to decode, was reported as a failure")
-	}
+	assert.False(t, decodeOrLog("test:method", json.RawMessage(`{"port":"not a number"}`), &into), "a payload that did not fit its type was reported as decoded")
+	assert.True(t, decodeOrLog("test:method", json.RawMessage(`{"port":1234}`), &into), "a good payload should decode")
+	assert.Equal(t, 1234, into.Port)
+	assert.True(t, decodeOrLog("test:method", nil, &into), "an empty payload carries nothing to decode")
 }
