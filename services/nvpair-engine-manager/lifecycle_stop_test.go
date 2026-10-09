@@ -22,21 +22,15 @@ import (
 )
 
 func TestStopGrace(t *testing.T) {
-	tests := []struct {
-		name string
-		stop *StopSpec
-		want time.Duration
-	}{
-		{name: "default without stop spec", want: 5 * time.Second},
-		{name: "default with zero grace", stop: &StopSpec{Signal: "term"}, want: 5 * time.Second},
-		{name: "configured grace", stop: &StopSpec{Signal: "term", GraceS: 10}, want: 10 * time.Second},
-		{name: "kill is immediate", stop: &StopSpec{Signal: "kill", GraceS: 10}, want: 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, stopGrace(Runtime{Stop: tt.stop}))
+	test := func(name string, stop *StopSpec, want time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, stopGrace(Runtime{Stop: stop}))
 		})
 	}
+	test("default without stop spec", nil, 5*time.Second)
+	test("default with zero grace", &StopSpec{Signal: "term"}, 5*time.Second)
+	test("configured grace", &StopSpec{Signal: "term", GraceS: 10}, 10*time.Second)
+	test("kill is immediate", &StopSpec{Signal: "kill", GraceS: 10}, 0)
 }
 
 // spawnFakeListener starts a fake-engine copied to binPath, bound to

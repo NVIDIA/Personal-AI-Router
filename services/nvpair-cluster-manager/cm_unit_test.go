@@ -112,15 +112,19 @@ func TestTrustStoreAntiTamper(t *testing.T) {
 }
 
 func TestPINNoobRoundTrip(t *testing.T) {
-	cases := []string{"000000", "000123", "402199", "999999"}
-	for _, pin := range cases {
-		noob := noobFromPIN(pin)
-		require.Len(t, noob, 16, "noob length")
-		got := new(big.Int).SetBytes(noob).String()
-		want := new(big.Int)
-		want.SetString(pin, 10)
-		require.Equal(t, want.String(), got, "noob decodes incorrectly")
+	test := func(name, pin string) {
+		t.Run(name, func(t *testing.T) {
+			noob := noobFromPIN(pin)
+			require.Len(t, noob, 16, "noob length")
+			want := new(big.Int)
+			want.SetString(pin, 10)
+			require.Equal(t, want.String(), new(big.Int).SetBytes(noob).String(), "noob decodes incorrectly")
+		})
 	}
+	test("all zeroes", "000000")
+	test("leading zeroes", "000123")
+	test("ordinary PIN", "402199")
+	test("maximum PIN", "999999")
 
 	gp, noob, err := generatePIN()
 	require.NoError(t, err, "generatePIN")

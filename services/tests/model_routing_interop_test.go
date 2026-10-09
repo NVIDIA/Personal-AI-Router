@@ -66,31 +66,19 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	ollamaPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	lmstudioPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
 
-	type proxyCase struct {
-		name      string
-		rpcPrefix string
-		path      string
-		port      int
-	}
-	cases := []proxyCase{
-		{name: "ollama", rpcPrefix: "ollama-proxy", path: "/api/chat", port: ollamaPort},
-		{name: "ollama-anthropic", rpcPrefix: "ollama-proxy", path: "/v1/messages", port: ollamaPort},
-		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", path: "/v1/chat/completions", port: lmstudioPort},
-		{name: "lmstudio-anthropic", rpcPrefix: "lmstudio-proxy", path: "/v1/messages", port: lmstudioPort},
-	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
 	snapshot := func() [3]int32 {
 		return [3]int32{owner404.hits.Load(), ownerOK.hits.Load(), ineligible.hits.Load()}
 	}
 
-	for caseIndex, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			targetModel := "strict-routing-" + tc.name
-			owner404ID := tc.name + "-owner-404"
-			ownerOKID := tc.name + "-owner-ok"
-			missingID := tc.name + "-known-missing"
-			unknownID := tc.name + "-unknown"
+	test := func(name, rpcPrefix, path string, port, caseIndex int) {
+		t.Run(name, func(t *testing.T) {
+			targetModel := "strict-routing-" + name
+			owner404ID := name + "-owner-404"
+			ownerOKID := name + "-owner-ok"
+			missingID := name + "-known-missing"
+			unknownID := name + "-unknown"
 			nodes := []struct {
 				id     string
 				port   int
@@ -113,10 +101,10 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 				if node.models != nil {
 					params["models"] = node.models
 				}
-				callBrokerRPC(t, stdin, msgs, requestID, tc.rpcPrefix+":node/add-manual", params)
+				callBrokerRPC(t, stdin, msgs, requestID, rpcPrefix+":node/add-manual", params)
 				requestID++
 			}
-			callBrokerRPC(t, stdin, msgs, requestID, tc.rpcPrefix+":node/set-priority", map[string]any{
+			callBrokerRPC(t, stdin, msgs, requestID, rpcPrefix+":node/set-priority", map[string]any{
 				// Both facades share one proxy process, so every snapshot must
 				// advance the process-wide generation.
 				"generation": caseIndex + 1,
@@ -124,7 +112,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			})
 
 			before := snapshot()
-			endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", tc.port, tc.path)
+			endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 			resp, err := client.Post(endpoint, "application/json",
 				bytes.NewBufferString(fmt.Sprintf(`{"model":%q,"messages":[]}`, targetModel)))
 			require.NoError(t, err, "target-model request failed")
@@ -148,4 +136,8 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 			require.Equal(t, before, after, "ownerless request reached an upstream")
 		})
 	}
+	test("ollama", "ollama-proxy", "/api/chat", ollamaPort, 0)
+	test("ollama-anthropic", "ollama-proxy", "/v1/messages", ollamaPort, 1)
+	test("lmstudio", "lmstudio-proxy", "/v1/chat/completions", lmstudioPort, 2)
+	test("lmstudio-anthropic", "lmstudio-proxy", "/v1/messages", lmstudioPort, 3)
 }

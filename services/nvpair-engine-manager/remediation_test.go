@@ -358,25 +358,21 @@ func TestActionUnknownAndHTTPError(t *testing.T) {
 
 func TestExpandPathForms(t *testing.T) {
 	t.Setenv("NVPAIR_TEST_VAR", "xyz")
-	for _, tc := range []struct {
-		name, goos, input, want string
-	}{
-		{"windows percent", "windows", "a/%NVPAIR_TEST_VAR%/b", "a/xyz/b"},
-		{"windows dollar", "windows", "a/$NVPAIR_TEST_VAR/b", "a/$NVPAIR_TEST_VAR/b"},
-		{"windows braced dollar", "windows", "a/${NVPAIR_TEST_VAR}/b", "a/${NVPAIR_TEST_VAR}/b"},
-		{"unix dollar", "linux", "a/$NVPAIR_TEST_VAR/b", "a/xyz/b"},
-		{"unix braced dollar", "linux", "a/${NVPAIR_TEST_VAR}/b", "a/xyz/b"},
-		{"unix percent", "linux", "a/%NVPAIR_TEST_VAR%/b", "a/%NVPAIR_TEST_VAR%/b"},
-		{"unix shell parameters", "linux", `tar -xzf "$1" -C "$3"`, `tar -xzf "$1" -C "$3"`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, expandPathForOS(tc.input, tc.goos), "expandPathForOS")
+	test := func(name, goos, input, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, expandPathForOS(input, goos))
 		})
 	}
+	test("windows percent", "windows", "a/%NVPAIR_TEST_VAR%/b", "a/xyz/b")
+	test("windows dollar", "windows", "a/$NVPAIR_TEST_VAR/b", "a/$NVPAIR_TEST_VAR/b")
+	test("windows braced dollar", "windows", "a/${NVPAIR_TEST_VAR}/b", "a/${NVPAIR_TEST_VAR}/b")
+	test("unix dollar", "linux", "a/$NVPAIR_TEST_VAR/b", "a/xyz/b")
+	test("unix braced dollar", "linux", "a/${NVPAIR_TEST_VAR}/b", "a/xyz/b")
+	test("unix percent", "linux", "a/%NVPAIR_TEST_VAR%/b", "a/%NVPAIR_TEST_VAR%/b")
+	test("unix shell parameters", "linux", `tar -xzf "$1" -C "$3"`, `tar -xzf "$1" -C "$3"`)
 	if home, err := os.UserHomeDir(); err == nil {
-		for _, goos := range []string{"windows", "linux"} {
-			assert.Equal(t, filepath.Join(home, "sub"), expandPathForOS("~/sub", goos), " (%v)", goos)
-		}
+		test("windows home", "windows", "~/sub", filepath.Join(home, "sub"))
+		test("unix home", "linux", "~/sub", filepath.Join(home, "sub"))
 	}
 }
 

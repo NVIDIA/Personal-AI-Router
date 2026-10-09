@@ -21,17 +21,17 @@ func TestParseLifecycleValid(t *testing.T) {
 }
 
 func TestParseLifecycleRejectsMissingFields(t *testing.T) {
-	cases := map[string]string{
-		"no workloadInfo":      `{}`,
-		"empty id":             `{"workloadInfo":{"id":"","model":"m","engine":"e","state":"queued","originatedFrom":"n"}}`,
-		"empty engine":         `{"workloadInfo":{"id":"x","model":"m","engine":"","state":"queued","originatedFrom":"n"}}`,
-		"empty state":          `{"workloadInfo":{"id":"x","model":"m","engine":"e","state":"","originatedFrom":"n"}}`,
-		"empty originatedFrom": `{"workloadInfo":{"id":"x","model":"m","engine":"e","state":"queued","originatedFrom":""}}`,
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseLifecycle(json.RawMessage(body))
+			assert.Error(t, err)
+		})
 	}
-	for name, body := range cases {
-		_, err := parseLifecycle(json.RawMessage(body))
-		assert.Error(t, err, "%s", name)
-	}
+	test("no workloadInfo", `{}`)
+	test("empty id", `{"workloadInfo":{"id":"","model":"m","engine":"e","state":"queued","originatedFrom":"n"}}`)
+	test("empty engine", `{"workloadInfo":{"id":"x","model":"m","engine":"","state":"queued","originatedFrom":"n"}}`)
+	test("empty state", `{"workloadInfo":{"id":"x","model":"m","engine":"e","state":"","originatedFrom":"n"}}`)
+	test("empty originatedFrom", `{"workloadInfo":{"id":"x","model":"m","engine":"e","state":"queued","originatedFrom":""}}`)
 }
 
 func TestParseRemove(t *testing.T) {
@@ -50,15 +50,16 @@ func TestParseRemove(t *testing.T) {
 }
 
 func TestLifecycleMethodMapping(t *testing.T) {
-	for method, want := range map[string]WorkloadState{
-		MethodSubmitted: StateQueued,
-		MethodStarted:   StateRunning,
-		MethodCompleted: StateCompleted,
-		MethodErrored:   StateFailed,
-	} {
-		assert.True(t, isLifecycleMethod(method), "%s should be a lifecycle method", method)
-		assert.Equal(t, want, lifecycleMethods[method], "%s", method)
+	test := func(name, method string, want WorkloadState) {
+		t.Run(name, func(t *testing.T) {
+			assert.True(t, isLifecycleMethod(method), "must be a lifecycle method")
+			assert.Equal(t, want, lifecycleMethods[method])
+		})
 	}
+	test("submitted", MethodSubmitted, StateQueued)
+	test("started", MethodStarted, StateRunning)
+	test("completed", MethodCompleted, StateCompleted)
+	test("errored", MethodErrored, StateFailed)
 	assert.False(t, isLifecycleMethod(MethodRemove), "workloads:remove is not a lifecycle method")
 	assert.False(t, isLifecycleMethod("bogus:method"), "unknown method should not be a lifecycle method")
 }

@@ -236,31 +236,22 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 }
 
 func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		stopFails  bool
-		proxyReady bool
-		advertised bool
-	}{
-		{"stop failed with engine still running", true, true, true},
-		{"engine stopped before startup failed", false, true, false},
-		{"proxy unavailable", true, false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, stopFails, proxyReady, advertised bool) {
+		t.Run(name, func(t *testing.T) {
 			h := newSettingsHarness(t)
 			p := h.request(t)
 			oldPort := p.Settings.ProxyPort
 			h.b.regCache = relay.NewRegistrationCache()
 			h.b.registerService(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: oldPort})
-			h.failBeforeStop.Store(tc.stopFails)
+			h.failBeforeStop.Store(stopFails)
 			h.fail.Store(true)
-			h.loseProxyOnStop.Store(!tc.proxyReady)
+			h.loseProxyOnStop.Store(!proxyReady)
 			p.Settings.LaunchText += " --new-option"
 			receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
 			require.NoError(t, err, "expected failed receipt (%v)", receipt)
 			require.Equal(t, "failed", receipt.Phase, "expected failed receipt (%v)", receipt)
 			registered := h.b.regCache.Snapshot()
-			if tc.advertised {
+			if advertised {
 				require.Len(t, registered, 1, "running engine lost registration")
 				require.Equal(t, noderec.ServiceOllama, registered[0].Service, "running engine lost registration (%v)", registered)
 				require.Equal(t, oldPort, registered[0].Port, "running engine lost registration (%v)", registered)
@@ -269,6 +260,9 @@ func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
 			}
 		})
 	}
+	test("stop failed with engine still running", true, true, true)
+	test("engine stopped before startup failed", false, true, false)
+	test("proxy unavailable", true, false, false)
 }
 
 func TestSettingsCoordinatorSerializesAndCancelsQueuedRequests(t *testing.T) {

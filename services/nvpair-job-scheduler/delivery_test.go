@@ -46,11 +46,7 @@ func (w *recoveringWriter) Write(data []byte) (int, error) {
 }
 
 func TestFailedNotificationRetriesWithoutChangingRanks(t *testing.T) {
-	for _, shortWrite := range []bool{false, true} {
-		name := "write-error"
-		if shortWrite {
-			name = "zero-byte-write"
-		}
+	test := func(name string, shortWrite bool) {
 		t.Run(name, func(t *testing.T) {
 			writer := &recoveringWriter{remaining: 1, shortWrite: shortWrite}
 			m := mgrWith(writer, []string{"test-node-a", "test-node-b"})
@@ -65,6 +61,8 @@ func TestFailedNotificationRetriesWithoutChangingRanks(t *testing.T) {
 			}
 		})
 	}
+	test("write-error", false)
+	test("zero-byte-write", true)
 }
 
 func TestFailedChangedNotificationRetainsDeliveredRanks(t *testing.T) {

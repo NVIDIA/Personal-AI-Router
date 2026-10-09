@@ -39,14 +39,18 @@ func loadMeshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) *
 // but unclustered mesh, so the caller serves plain HTTP from the same object it
 // will later serve cluster mTLS from.
 func TestMesh_Open_UnclusteredCases(t *testing.T) {
-	for name, dir := range map[string]string{"no cluster dir": "", "empty cluster dir": t.TempDir()} {
-		m := Open(dir)
-		require.NotNil(t, m, "%s", name)
-		assert.False(t, m.Clustered(), "%s", name)
-		assert.False(t, m.hasIdentity(), "%s", name)
-		m.Refresh()
-		assert.False(t, m.Clustered(), "%s after refresh", name)
+	test := func(name, dir string) {
+		t.Run(name, func(t *testing.T) {
+			m := Open(dir)
+			require.NotNil(t, m)
+			assert.False(t, m.Clustered())
+			assert.False(t, m.hasIdentity())
+			m.Refresh()
+			assert.False(t, m.Clustered(), "after refresh")
+		})
 	}
+	test("no cluster dir", "")
+	test("empty cluster dir", t.TempDir())
 }
 
 // TestMesh_GateSelfTrustAndAnyPin drives the full server/client handshake the

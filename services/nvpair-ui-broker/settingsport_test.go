@@ -20,7 +20,10 @@ import (
 func callBrokerPortRequest(t *testing.T, b *Broker, method string, params json.RawMessage) *Message {
 	t.Helper()
 	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	t.Cleanup(func() {
+		assert.NoError(t, client.Close())
+		assert.NoError(t, server.Close())
+	})
 	require.NoError(t, client.SetReadDeadline(time.Now().Add(5*time.Second)), "set response deadline")
 	b.codec = NewCodec(server)
 	id := json.RawMessage(`1`)
@@ -41,20 +44,19 @@ func callBrokerPortRequest(t *testing.T, b *Broker, method string, params json.R
 func TestBrokerProxySetPortRejectsInvalidPorts(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
-			for _, tc := range []struct{ name, params string }{
-				{"malformed parameters", `{`},
-				{"missing port", `{}`},
-				{"zero port", `{"port":0}`},
-				{"negative port", `{"port":-1}`},
-				{"oversized port", `{"port":65536}`},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					response := callBrokerPortRequest(t, &Broker{}, profile.ComponentName()+":set-port", json.RawMessage(tc.params))
+			test := func(name, params string) {
+				t.Run(name, func(t *testing.T) {
+					response := callBrokerPortRequest(t, &Broker{}, profile.ComponentName()+":set-port", json.RawMessage(params))
 					require.NotNil(t, response.Error, "invalid-port error")
 					assert.Equal(t, -32602, response.Error.Code)
 					assert.Equal(t, "port must be between 1 and 65535", response.Error.Message)
 				})
 			}
+			test("malformed parameters", `{`)
+			test("missing port", `{}`)
+			test("zero port", `{"port":0}`)
+			test("negative port", `{"port":-1}`)
+			test("oversized port", `{"port":65536}`)
 		})
 	}
 }
@@ -109,7 +111,7 @@ func TestBrokerLlamaCPPProxySetPortRejectsConflicts(t *testing.T) {
 	test("occupied listener", func(t *testing.T, h *settingsHarness, before settings.Snapshot) int {
 		ln, err := net.Listen("tcp", ":0")
 		require.NoError(t, err, "bind occupied port")
-		t.Cleanup(func() { _ = ln.Close() })
+		t.Cleanup(func() { assert.NoError(t, ln.Close()) })
 		return ln.Addr().(*net.TCPAddr).Port
 	})
 }

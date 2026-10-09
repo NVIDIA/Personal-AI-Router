@@ -21,19 +21,11 @@ import (
 // a renamed method silently stops membership reaching it — and the only symptom
 // would be peers going on suppressing an invite for a node that has left.
 func TestWriteClusterIdentityFrame(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		clusterUUID string
-	}{
-		{"a principal", "our-principal"},
-		// A departure is the value peers are waiting for, so it is sent like any
-		// other rather than skipped as empty.
-		{"a departure", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, clusterUUID string) {
+		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
 			var mu sync.Mutex
-			require.NoError(t, writeClusterIdentityFrame(&mu, &buf, tc.clusterUUID), "write")
+			require.NoError(t, writeClusterIdentityFrame(&mu, &buf, clusterUUID), "write")
 
 			line := buf.String()
 			assert.True(t, strings.HasSuffix(line, "\n"), "frame is not newline-terminated; node-info reads line-delimited frames")
@@ -51,10 +43,14 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 			// A notification, not a request: node-info's stdout is drained to
 			// io.Discard, so an id-bearing frame would strand a reply.
 			assert.Empty(t, frame.ID, "the push must be a notification")
-			assert.Equal(t, tc.clusterUUID, frame.Params.ClusterUUID, "clusterUuid")
+			assert.Equal(t, clusterUUID, frame.Params.ClusterUUID, "clusterUuid")
 			// The field must be on the wire even when empty, since that is how a
 			// departure is expressed.
 			assert.Contains(t, line, `"clusterUuid"`, "frame omitted clusterUuid")
 		})
 	}
+	test("a principal", "our-principal")
+	// A departure is the value peers are waiting for, so it is sent like any
+	// other rather than skipped as empty.
+	test("a departure", "")
 }

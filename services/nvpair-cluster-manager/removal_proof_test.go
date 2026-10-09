@@ -205,25 +205,21 @@ func TestRemovalProofTamperingFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	base, _ := relay.removalProofFor(victim.identity.NodeUUID)
 
-	cases := map[string]func(*RemovalProof){
-		"victim uuid":       func(p *RemovalProof) { p.Tombstone.NodeUUID = "other" },
-		"cluster":           func(p *RemovalProof) { p.Tombstone.ClusterID = "other" },
-		"victim admission":  func(p *RemovalProof) { p.Tombstone.AdmissionEpoch++ },
-		"remover admission": func(p *RemovalProof) { p.Tombstone.ByAdmissionEpoch++ },
-		"signer cert": func(p *RemovalProof) {
-			p.SignerCertPem = string(victim.identity.CertPEM)
-		},
-		"fingerprint":       func(p *RemovalProof) { p.SignerFingerprint = "sha256:bad" },
-		"tombstone sig":     func(p *RemovalProof) { p.Tombstone.SigV2 = "bad" },
-		"relay endorsement": func(p *RemovalProof) { p.Endorsements[0].SigV2 = "bad" },
-	}
-	for name, mutate := range cases {
+	test := func(name string, mutate func(*RemovalProof)) {
 		t.Run(name, func(t *testing.T) {
 			p := cloneProof(t, base)
 			mutate(&p)
 			require.False(t, victim.rejectionProvesRemoval(proofRejectionBody(t, p), relay.identity.NodeUUID), "tampered proof was accepted")
 		})
 	}
+	test("victim uuid", func(p *RemovalProof) { p.Tombstone.NodeUUID = "other" })
+	test("cluster", func(p *RemovalProof) { p.Tombstone.ClusterID = "other" })
+	test("victim admission", func(p *RemovalProof) { p.Tombstone.AdmissionEpoch++ })
+	test("remover admission", func(p *RemovalProof) { p.Tombstone.ByAdmissionEpoch++ })
+	test("signer cert", func(p *RemovalProof) { p.SignerCertPem = string(victim.identity.CertPEM) })
+	test("fingerprint", func(p *RemovalProof) { p.SignerFingerprint = "sha256:bad" })
+	test("tombstone sig", func(p *RemovalProof) { p.Tombstone.SigV2 = "bad" })
+	test("relay endorsement", func(p *RemovalProof) { p.Endorsements[0].SigV2 = "bad" })
 }
 
 func TestNewerAdmissionSupersedesProofAndStaleGossip(t *testing.T) {

@@ -47,23 +47,22 @@ func TestFilterNodeRowsMatchesNameAndAddress(t *testing.T) {
 		{key: "c", name: "Server-01", address: "10.0.1.7"},
 	}
 
-	cases := map[string][]string{
-		"work":        {"a"},      // name substring
-		"10.0.0.":     {"a", "b"}, // shared address prefix
-		"192.168.1.9": {"a"},      // a secondary address
-		"SERVER":      {"c"},      // case-insensitive
-		"  laptop  ":  {"b"},      // surrounding whitespace ignored
-		"nothing":     {},
+	test := func(name, needle string, want ...string) {
+		t.Run(name, func(t *testing.T) {
+			got := filterNodeRows(rows, needle)
+			keys := make([]string, len(got))
+			for i, row := range got {
+				keys[i] = row.key
+			}
+			assert.Equal(t, append([]string{}, want...), keys)
+		})
 	}
-	for needle, want := range cases {
-		got := filterNodeRows(rows, needle)
-		if !assert.Len(t, got, len(want), "filter %q", needle) {
-			continue
-		}
-		for i, key := range want {
-			assert.Equal(t, key, got[i].key, "filter %q row %d", needle, i)
-		}
-	}
+	test("name substring", "work", "a")
+	test("shared address prefix", "10.0.0.", "a", "b")
+	test("secondary address", "192.168.1.9", "a")
+	test("case insensitive name", "SERVER", "c")
+	test("surrounding whitespace", "  laptop  ", "b")
+	test("no matches", "nothing")
 
 	// An empty filter is not a filter.
 	assert.Len(t, filterNodeRows(rows, "   "), len(rows), "blank filter must preserve rows")
@@ -251,15 +250,15 @@ func TestTLSNodeInfoIsNotPolledInPlainText(t *testing.T) {
 // TestMembershipGovernsInvitability is the guard for re-inviting a node that
 // already has a relationship. Only a standalone node may be invited.
 func TestMembershipGovernsInvitability(t *testing.T) {
-	cases := map[nodeMembership]bool{
-		membershipNone:    true,
-		membershipMember:  false,
-		membershipForeign: false,
-		membershipPending: false,
+	test := func(name string, membership nodeMembership, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, membership.invitable())
+		})
 	}
-	for membership, want := range cases {
-		assert.Equal(t, want, membership.invitable(), "%v", membership)
-	}
+	test("standalone node can be invited", membershipNone, true)
+	test("cluster member cannot be invited", membershipMember, false)
+	test("foreign member cannot be invited", membershipForeign, false)
+	test("pairing node cannot be invited", membershipPending, false)
 }
 
 // TestMergeMarksSelf checks this machine is identified and always reads online.

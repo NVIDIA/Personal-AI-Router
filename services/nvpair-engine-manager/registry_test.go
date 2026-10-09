@@ -208,11 +208,20 @@ func setInstallArtifacts(m *Manifest, artifacts []InstallArtifact) {
 }
 
 func TestValidateRejectsBadEngineName(t *testing.T) {
-	for _, bad := range []string{"../evil", "a/b", `a\b`, "..", ".", "a b", ""} {
-		m := validManifest()
-		m.Engine = bad
-		assert.Error(t, m.Validate(), "expected rejection of engine name (%v)", bad)
+	test := func(name, engine string) {
+		t.Run(name, func(t *testing.T) {
+			m := validManifest()
+			m.Engine = engine
+			assert.Error(t, m.Validate(), "invalid engine name must be rejected")
+		})
 	}
+	test("parent traversal", "../evil")
+	test("forward slash", "a/b")
+	test("backslash", `a\b`)
+	test("parent directory", "..")
+	test("current directory", ".")
+	test("space", "a b")
+	test("empty name", "")
 }
 
 func TestValidateRejectsScriptWithFetch(t *testing.T) {

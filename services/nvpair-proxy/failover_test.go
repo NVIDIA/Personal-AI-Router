@@ -546,7 +546,8 @@ func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method, "upstream request method")
 		assert.Equal(t, "/models", r.URL.Path, "upstream request path")
 		assert.Equal(t, "scope=all", r.URL.RawQuery, "upstream request query")
-		_, _ = io.WriteString(w, `{"data":[{"id":"remapped"}]}`)
+		_, err := io.WriteString(w, `{"data":[{"id":"remapped"}]}`)
+		assert.NoError(t, err)
 	}))
 	defer upstream.Close()
 

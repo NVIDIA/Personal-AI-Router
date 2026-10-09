@@ -155,7 +155,7 @@ func awaitNodeEvent(t *testing.T, events <-chan jsonrpc.Message, method, hostUUI
 				continue
 			}
 			var ev noderec.NodeEvent
-			if err := json.Unmarshal(msg.Params, &ev); !assert.NoError(t, err) {
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &ev)) {
 				continue
 			}
 			if ev.Node.HostUUID == hostUUID {

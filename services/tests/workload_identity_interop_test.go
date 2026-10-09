@@ -131,7 +131,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 				continue
 			}
 			var p wlParams
-			if err := json.Unmarshal(msg.Params, &p); !assert.NoError(t, err) {
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &p)) {
 				continue
 			}
 			eng := p.WorkloadInfo.Engine

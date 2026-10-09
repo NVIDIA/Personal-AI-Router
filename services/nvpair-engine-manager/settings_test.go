@@ -144,18 +144,20 @@ func TestSettingsPreviewPortConflict(t *testing.T) {
 
 func TestSettingsPreviewChecksOnlyDeclaredControls(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
-		for _, suffix := range []string{" | other", " && other"} {
-			p := settingsRequest(t, e)
-			p.Settings.LaunchText += suffix
-			require.NotEqual(t, "", previewSettings(t, e, p).Errors["launchText"], "accepted shell syntax (%v)", suffix)
-		}
-		policy := settingsState(t, e).plat.Runtime.EditableLaunch
-		if policy.Controls[0].Value == "{server.port}" {
-			for _, suffix := range []string{" --bind 0.0.0.0", " --port 0", " -- --bind 0.0.0.0"} {
+		test := func(name, suffix string) {
+			t.Run(name, func(t *testing.T) {
 				p := settingsRequest(t, e)
 				p.Settings.LaunchText += suffix
-				require.NotEqual(t, "", previewSettings(t, e, p).Errors["launchText"], "accepted invalid managed control (%v)", suffix)
-			}
+				require.NotEmpty(t, previewSettings(t, e, p).Errors["launchText"], "invalid launch syntax accepted")
+			})
+		}
+		test("shell pipe", " | other")
+		test("shell conjunction", " && other")
+		policy := settingsState(t, e).plat.Runtime.EditableLaunch
+		if policy.Controls[0].Value == "{server.port}" {
+			test("external bind", " --bind 0.0.0.0")
+			test("zero port", " --port 0")
+			test("external bind after terminator", " -- --bind 0.0.0.0")
 		} else {
 			p := settingsRequest(t, e)
 			p.Settings.LaunchText = "OLLAMA_HOST=0.0.0.0:12345"
@@ -582,13 +584,18 @@ func TestSavedLaunchOverridesManifestEnvironmentLiterally(t *testing.T) {
 	}
 	args := []string{}
 	rt.LaunchArgs = &args
-	for _, value := range []string{"/custom", "", "{install_dir}/other"} {
-		env := []string{"LD_LIBRARY_PATH=" + value}
-		rt.LaunchEnv = &env
-		launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"})
-		assert.NoError(t, err, "saved launch environment (%v, %v)", err, value)
-		assert.Equal(t, value, launch.Env["LD_LIBRARY_PATH"], "saved launch environment (%v)", err)
+	test := func(name, value string) {
+		t.Run(name, func(t *testing.T) {
+			env := []string{"LD_LIBRARY_PATH=" + value}
+			rt.LaunchEnv = &env
+			launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"})
+			assert.NoError(t, err, "saved launch environment")
+			assert.Equal(t, value, launch.Env["LD_LIBRARY_PATH"], "saved launch environment")
+		})
 	}
+	test("custom directory", "/custom")
+	test("empty value", "")
+	test("template remains literal", "{install_dir}/other")
 }
 
 func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
@@ -660,8 +667,8 @@ func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T
 }
 
 func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) {
-	for _, command := range []bool{false, true} {
-		t.Run(fmt.Sprint(command), func(t *testing.T) {
+	test := func(name string, command bool) {
+		t.Run(name, func(t *testing.T) {
 			e := settingsExecutor(t, command)
 			st := settingsState(t, e)
 			if command {
@@ -712,17 +719,24 @@ func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) 
 			require.Equal(t, `$HOME {port} C:\new\tools`, env["PAIR_TEST_LITERAL"], "unrelated environment values lost (%v)", env)
 		})
 	}
+	test("process", false)
+	test("command", true)
 }
 
 func TestSettingsEnvironmentValidation(t *testing.T) {
 	e := settingsExecutor(t, false)
-	for _, prefix := range []string{"9BAD=value", "BAD-NAME=value", "PAIR_TEST=x PAIR_TEST=y"} {
-		p := settingsRequest(t, e)
-		p.Settings.LaunchText = prefix + " " + p.Settings.LaunchText
-		result, err := e.PreviewLaunch(p)
-		require.NoError(t, err, "invalid assignment accepted (%v, %v)", result, err)
-		require.NotEmpty(t, result.Errors, "invalid assignment accepted (%v, %v)", result, err)
+	test := func(name, prefix string) {
+		t.Run(name, func(t *testing.T) {
+			p := settingsRequest(t, e)
+			p.Settings.LaunchText = prefix + " " + p.Settings.LaunchText
+			result, err := e.PreviewLaunch(p)
+			require.NoError(t, err)
+			require.NotEmpty(t, result.Errors, "invalid assignment accepted")
+		})
 	}
+	test("leading digit", "9BAD=value")
+	test("hyphenated name", "BAD-NAME=value")
+	test("duplicate assignment", "PAIR_TEST=x PAIR_TEST=y")
 }
 
 // A stop that fails has to leave the saved configuration alone. Persisting

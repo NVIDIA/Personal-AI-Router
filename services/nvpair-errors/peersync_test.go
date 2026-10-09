@@ -210,29 +210,23 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 // TestPeerHostPorts covers address propagation: preserve every ranked address,
 // fall back to the hostname, and reject nodes with no usable destination.
 func TestPeerHostPorts(t *testing.T) {
-	cases := []struct {
-		name string
-		node RawNode
-		want []string
-	}{
-		{"ip preserved", RawNode{Addresses: []string{"192.168.1.5"}, Host: "h.local.", Port: 14319}, []string{"192.168.1.5:14319"}},
-		{"host fallback", RawNode{Host: "h.local.", Port: 14319}, []string{"h.local.:14319"}},
-		{"no address", RawNode{Port: 14319}, []string{}},
-		{"no port", RawNode{Addresses: []string{"192.168.1.5"}}, nil},
-		{"all ipv4 deterministic", RawNode{Addresses: []string{"192.168.1.9", "192.168.1.5"}, Port: 14319}, []string{"192.168.1.5:14319", "192.168.1.9:14319"}},
-		{"ipv4 before ipv6", RawNode{Addresses: []string{"2001:db8::1", "192.168.1.5"}, Port: 14319}, []string{"192.168.1.5:14319", "[2001:db8::1]:14319"}},
-		// No private range outranks another. Which one a peer can actually be
-		// reached on is not something its subnet number states, so two private
-		// addresses tie and the tie is broken deterministically rather than by
-		// the order the browse happened to resolve them in.
-		{"private ranges tie", RawNode{Addresses: []string{"10.221.0.9", "192.168.1.5"}, Port: 14319}, []string{"10.221.0.9:14319", "192.168.1.5:14319"}},
-		{"ip= TXT leads without dropping others", RawNode{Addresses: []string{"10.221.0.9"}, TXT: []string{"ip=192.168.1.5"}, Port: 14319}, []string{"192.168.1.5:14319", "10.221.0.9:14319"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, peerHostPorts(tc.node))
+	test := func(name string, node RawNode, want []string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, peerHostPorts(node))
 		})
 	}
+	test("ip preserved", RawNode{Addresses: []string{"192.168.1.5"}, Host: "h.local.", Port: 14319}, []string{"192.168.1.5:14319"})
+	test("host fallback", RawNode{Host: "h.local.", Port: 14319}, []string{"h.local.:14319"})
+	test("no address", RawNode{Port: 14319}, []string{})
+	test("no port", RawNode{Addresses: []string{"192.168.1.5"}}, nil)
+	test("all ipv4 deterministic", RawNode{Addresses: []string{"192.168.1.9", "192.168.1.5"}, Port: 14319}, []string{"192.168.1.5:14319", "192.168.1.9:14319"})
+	test("ipv4 before ipv6", RawNode{Addresses: []string{"2001:db8::1", "192.168.1.5"}, Port: 14319}, []string{"192.168.1.5:14319", "[2001:db8::1]:14319"})
+	// No private range outranks another. Which one a peer can actually be
+	// reached on is not something its subnet number states, so two private
+	// addresses tie and the tie is broken deterministically rather than by
+	// the order the browse happened to resolve them in.
+	test("private ranges tie", RawNode{Addresses: []string{"10.221.0.9", "192.168.1.5"}, Port: 14319}, []string{"10.221.0.9:14319", "192.168.1.5:14319"})
+	test("ip= TXT leads without dropping others", RawNode{Addresses: []string{"10.221.0.9"}, TXT: []string{"ip=192.168.1.5"}, Port: 14319}, []string{"192.168.1.5:14319", "10.221.0.9:14319"})
 }
 
 // TestUnclusteredNodeKeepsNoPeers: a node that belongs to no cluster holds no

@@ -12,23 +12,14 @@ import (
 )
 
 func TestUnwrapPullCause(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{
-			"action command failed: exit status 1: Error: Download failed: Timed-out. Please try to resume.",
-			"Download failed: Timed-out. Please try to resume.",
-		},
-		{`engine "lmstudio" is not running`, `engine "lmstudio" is not running`},
-		{"", ""},
+	test := func(name string, err error, want string) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, unwrapPullCause(err))
+		})
 	}
-	for _, c := range cases {
-		var err error
-		if c.in != "" {
-			err = errors.New(c.in)
-		}
-		require.Equal(t, c.want, unwrapPullCause(err), "unwrapPullCause")
-	}
+	test("command prefix removed", errors.New("action command failed: exit status 1: Error: Download failed: Timed-out. Please try to resume."), "Download failed: Timed-out. Please try to resume.")
+	test("engine detail preserved", errors.New(`engine "lmstudio" is not running`), `engine "lmstudio" is not running`)
+	test("nil error", nil, "")
 }
 
 func TestFormatEnginePullError(t *testing.T) {

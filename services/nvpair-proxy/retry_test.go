@@ -98,22 +98,18 @@ func TestBackoffFor(t *testing.T) {
 	// Indexed by dispatches already made, so the wait after the first dispatch
 	// is the first entry. A deadline an hour out keeps the remaining-time clamp
 	// out of it. Jitter is up to ±25%, so assert a band.
-	for _, tc := range []struct {
-		dispatches int
-		want       time.Duration
-	}{
-		{dispatches: 1, want: time.Second},
-		{dispatches: 2, want: 2 * time.Second},
-		{dispatches: 3, want: 4 * time.Second},
-		{dispatches: 4, want: 8 * time.Second},
-		{dispatches: 9, want: 8 * time.Second}, // clamped to the last entry
-	} {
-		got := backoffFor(tc.dispatches, time.Hour)
-		lo := tc.want - tc.want/4
-		hi := tc.want + tc.want/4
-		assert.GreaterOrEqual(t, got, lo, "backoffFor")
-		assert.LessOrEqual(t, got, hi, "backoffFor")
+	test := func(name string, dispatches int, want time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			got := backoffFor(dispatches, time.Hour)
+			assert.GreaterOrEqual(t, got, want-want/4)
+			assert.LessOrEqual(t, got, want+want/4)
+		})
 	}
+	test("first dispatch", 1, time.Second)
+	test("second dispatch", 2, 2*time.Second)
+	test("third dispatch", 3, 4*time.Second)
+	test("fourth dispatch", 4, 8*time.Second)
+	test("clamped to final entry", 9, 8*time.Second)
 }
 
 // TestBackoffFor_NeverOutlastsTheDeadline: a wait longer than the time left

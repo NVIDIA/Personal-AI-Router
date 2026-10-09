@@ -55,7 +55,8 @@ func TestProbeHTTPMatchesJSONIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client, _ := testclient.New(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, body)
+				_, err := io.WriteString(w, body)
+				assert.NoError(t, err, "write probe response")
 			}))
 			ex := &Executor{client: client}
 			probe := &Probe{

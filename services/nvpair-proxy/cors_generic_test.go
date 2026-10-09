@@ -21,16 +21,16 @@ func TestCORSPolicyIsIndependentOfEngineIdentity(t *testing.T) {
 			upstream := corsEngine(t, tc, allowed, http.StatusOK)
 			defer upstream.Close()
 			proxy := proxyForCORSTargets(t, tc, upstream)
-			for _, method := range []string{http.MethodOptions, http.MethodGet} {
-				rec := httptest.NewRecorder()
-				proxy.handlePlain(rec, corsRequest(method, "/future-api", "https://app.test"))
-				wantStatus := http.StatusOK
-				if method == http.MethodOptions {
-					wantStatus = http.StatusNoContent
-				}
-				require.Equal(t, wantStatus, rec.Code, " (%v)", method)
-				require.Equal(t, allowed, rec.Header().Get("Access-Control-Allow-Origin"), " (%v)", method)
+			request := func(name, method string, wantStatus int) {
+				t.Run(name, func(t *testing.T) {
+					rec := httptest.NewRecorder()
+					proxy.handlePlain(rec, corsRequest(method, "/future-api", "https://app.test"))
+					require.Equal(t, wantStatus, rec.Code)
+					require.Equal(t, allowed, rec.Header().Get("Access-Control-Allow-Origin"))
+				})
 			}
+			request("preflight", http.MethodOptions, http.StatusNoContent)
+			request("ordinary request", http.MethodGet, http.StatusOK)
 		})
 	}
 	test("engine grants browser access", "https://app.test")

@@ -126,7 +126,7 @@ type proxyNodesResult struct {
 func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 	t.Helper()
 	var res proxyNodesResult
-	if err := json.Unmarshal(raw, &res); !assert.NoError(t, err) {
+	if !assert.NoError(t, json.Unmarshal(raw, &res)) {
 		return false
 	}
 	for _, n := range res.Nodes {

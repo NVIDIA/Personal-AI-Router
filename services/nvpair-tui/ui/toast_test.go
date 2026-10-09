@@ -73,19 +73,18 @@ func TestSetReplacesPinned(t *testing.T) {
 }
 
 func TestInviteOutcome(t *testing.T) {
-	resolved := []string{
-		"cluster:invite-declined",
-		"cluster:invite-expired",
-		"cluster:invite-canceled",
-		"cluster:invite-failed",
+	test := func(name, method string) {
+		t.Run(name, func(t *testing.T) {
+			outcome, ok := inviteOutcome(method)
+			if assert.True(t, ok, "recognised as a terminal invite event") {
+				assert.NotEmpty(t, outcome.label, "operator-facing label")
+			}
+		})
 	}
-	for _, method := range resolved {
-		outcome, ok := inviteOutcome(method)
-		if !assert.True(t, ok, "%s is not recognised as a terminal invite event", method) {
-			continue
-		}
-		assert.NotEmpty(t, outcome.label, "%s has no operator-facing label", method)
-	}
+	test("declined", "cluster:invite-declined")
+	test("expired", "cluster:invite-expired")
+	test("canceled", "cluster:invite-canceled")
+	test("failed", "cluster:invite-failed")
 
 	// An invite arriving is not an invite resolving.
 	_, ok := inviteOutcome("cluster:invite-received")
@@ -108,7 +107,7 @@ func TestNodesViewRetiresPinOnInviteDeclined(t *testing.T) {
 	v.outboundInviteID = "inv-1"
 	v.status.pin("invite sent to peer - PIN 123456")
 
-	v.Update(inviteEvent("cluster:invite-declined", "inv-1"))
+	v.Update(inviteEvent(t, "cluster:invite-declined", "inv-1"))
 
 	assert.Empty(t, v.invitedKey, "pending invite still tracked after it was declined")
 	rendered := v.status.render()
@@ -148,16 +147,20 @@ func TestNodesViewKeepsPinWhileInvitePending(t *testing.T) {
 }
 
 // inviteEvent builds a terminal invite notification carrying an inviteId.
-func inviteEvent(method, inviteID string) NotificationMsg {
-	params, _ := json.Marshal(map[string]string{"inviteId": inviteID})
+func inviteEvent(t *testing.T, method, inviteID string) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(map[string]string{"inviteId": inviteID})
+	assert.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{Method: method, Params: params}}
 }
 
 // inviteReceived is an inbound pairing request, as the cluster manager pushes it.
-func inviteReceived(inviteID, from string) NotificationMsg {
-	params, _ := json.Marshal(map[string]string{
+func inviteReceived(t *testing.T, inviteID, from string) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(map[string]string{
 		"inviteId": inviteID, "fromNodeName": from,
 	})
+	assert.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{
 		Method: "cluster:invite-received", Params: params,
 	}}
@@ -172,7 +175,7 @@ func inviteReceived(inviteID, from string) NotificationMsg {
 func TestInboundPairingIsPromptedOnce(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
-	v.Update(inviteReceived("inv-1", "M2GT9CR405"))
+	v.Update(inviteReceived(t, "inv-1", "M2GT9CR405"))
 
 	prompt := v.inboundPrompt()
 	require.Contains(t, prompt, "M2GT9CR405", "the prompt names the machine asking")
@@ -192,7 +195,7 @@ func TestInboundInviteDoesNotHideOutboundPIN(t *testing.T) {
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "outbound", pin: "123456"})
 	require.Contains(t, v.View(), "PIN 123456", "outbound PIN was not visible before the inbound invite arrived")
 
-	v.Update(inviteReceived("inbound", "other peer"))
+	v.Update(inviteReceived(t, "inbound", "other peer"))
 
 	require.Equal(t, "outbound", v.outboundInviteID, "outbound invite is no longer pending")
 	require.NotNil(t, v.inbound, "inbound invite was not recorded")
@@ -209,7 +212,7 @@ func TestInboundInviteDoesNotHideOutboundPIN(t *testing.T) {
 func TestAcceptingPairingChangesThePrompt(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
-	v.Update(inviteReceived("inv-2", "M2GT9CR405"))
+	v.Update(inviteReceived(t, "inv-2", "M2GT9CR405"))
 	v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(nodePairKey.Help().Key)})
 
 	require.Equal(t, nodesInputPin, v.mode, "accept did not open the PIN field")
@@ -240,20 +243,20 @@ func TestInviteOutcomeMatchesBySession(t *testing.T) {
 	assert.NotNil(t, v.inbound, "an unattributable event cleared a live pairing session")
 
 	// A decline for a third, unrelated session touches neither.
-	v.Update(inviteEvent("cluster:invite-declined", "somebody-else"))
+	v.Update(inviteEvent(t, "cluster:invite-declined", "somebody-else"))
 	assert.Equal(t, "mine", v.outboundInviteID, "an unrelated invite's decline cleared our outbound session")
 	assert.NotEmpty(t, v.invitedKey, "an unrelated invite's decline cleared our outbound session")
 	assert.NotNil(t, v.inbound, "an unrelated invite's decline cleared the inbound prompt")
 
 	// A decline for our outbound invite clears that, and leaves the inbound
 	// request alone.
-	v.Update(inviteEvent("cluster:invite-declined", "mine"))
+	v.Update(inviteEvent(t, "cluster:invite-declined", "mine"))
 	assert.Empty(t, v.outboundInviteID, "our own decline did not clear the outbound session")
 	assert.Empty(t, v.invitedKey, "our own decline did not clear the outbound session")
 	assert.NotNil(t, v.inbound, "our outbound decline also cleared the unrelated inbound prompt")
 
 	// And the inbound one resolves on its own id.
-	v.Update(inviteEvent("cluster:invite-expired", "theirs"))
+	v.Update(inviteEvent(t, "cluster:invite-expired", "theirs"))
 	assert.Nil(t, v.inbound, "the inbound prompt survived its own expiry")
 }
 
@@ -286,12 +289,18 @@ func TestAddressMatches(t *testing.T) {
 		address:   "10.0.0.7",
 		addresses: []string{"10.0.0.7", "192.168.1.9"},
 	}
-	for _, in := range []string{"10.0.0.7", "10.0.0.7:14321", "192.168.1.9", "HOST-A"} {
-		assert.True(t, addressMatches(row, in), "addressMatches(%q)", in)
+	test := func(name, in string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, addressMatches(row, in))
+		})
 	}
-	for _, in := range []string{"", "10.0.0.8", "other-host"} {
-		assert.False(t, addressMatches(row, in), "addressMatches(%q)", in)
-	}
+	test("primary address", "10.0.0.7", true)
+	test("address with port", "10.0.0.7:14321", true)
+	test("secondary address", "192.168.1.9", true)
+	test("case insensitive hostname", "HOST-A", true)
+	test("empty", "", false)
+	test("different address", "10.0.0.8", false)
+	test("different hostname", "other-host", false)
 }
 
 // TestRemoveMemberRequiresConfirmation checks un-pairing a peer is armed rather
@@ -486,7 +495,7 @@ func TestRosterReadDoesNotOverwriteANewerPush(t *testing.T) {
 func TestMalformedPINKeepsTheRequest(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
-	v.Update(inviteReceived("inv-1", "peer"))
+	v.Update(inviteReceived(t, "inv-1", "peer"))
 
 	require.NotNil(t, v.respondToInvite(true, "12345"), "the answer was not sent")
 	require.NotNil(t, v.inbound, "the request left the screen before it was settled")
@@ -510,14 +519,14 @@ func TestMalformedPINKeepsTheRequest(t *testing.T) {
 func TestInboundRequestsWaitTheirTurn(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
-	v.Update(inviteReceived("first", "alpha"))
-	v.Update(inviteReceived("second", "beta"))
-	v.Update(inviteReceived("second", "beta")) // delivered twice
+	v.Update(inviteReceived(t, "first", "alpha"))
+	v.Update(inviteReceived(t, "second", "beta"))
+	v.Update(inviteReceived(t, "second", "beta")) // delivered twice
 
 	require.Equal(t, "first", v.inbound.InviteID, "the newer request replaced the one on screen")
 	assert.Contains(t, v.inboundPrompt(), "1 more waiting", "the prompt says another request is waiting")
 
-	v.Update(inviteEvent("cluster:invite-expired", "first"))
+	v.Update(inviteEvent(t, "cluster:invite-expired", "first"))
 	require.NotNil(t, v.inbound, "the waiting request did not come up next")
 	require.Equal(t, "second", v.inbound.InviteID, "the waiting request did not come up next")
 	assert.NotContains(t, v.inboundPrompt(), "more waiting", "a request delivered twice was queued twice")
@@ -530,15 +539,15 @@ func TestInboundRequestsWaitTheirTurn(t *testing.T) {
 func TestDroppedRequestTakesItsPINWithIt(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
-	v.Update(inviteReceived("first", "alpha"))
-	v.Update(inviteReceived("second", "beta"))
+	v.Update(inviteReceived(t, "first", "alpha"))
+	v.Update(inviteReceived(t, "second", "beta"))
 
 	v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1234")})
 	require.Equal(t, nodesInputPin, v.mode, "the PIN field did not take the digits")
 	require.Equal(t, "1234", v.input.Value(), "the PIN field did not take the digits")
 
-	v.Update(inviteEvent("cluster:invite-expired", "first"))
+	v.Update(inviteEvent(t, "cluster:invite-expired", "first"))
 	require.NotNil(t, v.inbound, "the waiting request did not come up next")
 	require.Equal(t, "second", v.inbound.InviteID, "the waiting request did not come up next")
 	assert.NotEqual(t, nodesInputPin, v.mode, "the PIN field outlived its request")
@@ -577,18 +586,18 @@ func TestJoiningDeclinesEveryOtherRequest(t *testing.T) {
 			}
 			if req.Method == "cluster:respond-to-invite" {
 				var a answer
-				_ = json.Unmarshal(req.Params, &a)
+				assert.NoError(t, json.Unmarshal(req.Params, &a))
 				answers <- a
 			}
-			_ = broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{}`)})
+			assert.NoError(t, broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{}`)}))
 		}
 	}()
 
 	v := newNodesView(client)
 	v.SetSize(120, 30)
-	v.Update(inviteReceived("a", "alpha"))
-	v.Update(inviteReceived("b", "beta"))
-	v.Update(inviteReceived("c", "gamma"))
+	v.Update(inviteReceived(t, "a", "alpha"))
+	v.Update(inviteReceived(t, "b", "beta"))
+	v.Update(inviteReceived(t, "c", "gamma"))
 
 	cmd := v.Update(pairingResultMsg{inviteID: "a", from: "alpha", state: inviteStatePaired})
 	require.Nil(t, v.inbound, "requests are still waiting after joining")
@@ -625,7 +634,7 @@ func TestJoiningDeclinesEveryOtherRequest(t *testing.T) {
 func TestJoiningWithNothingWaitingDeclinesNothing(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
-	v.Update(inviteReceived("a", "alpha"))
+	v.Update(inviteReceived(t, "a", "alpha"))
 	v.Update(pairingResultMsg{inviteID: "a", from: "alpha", state: inviteStatePaired})
 	got := v.status.render()
 	assert.Contains(t, got, "paired with alpha", "lone accept")
@@ -646,7 +655,7 @@ func TestPairingStaysVisibleOverTheDetailScreen(t *testing.T) {
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "out", pin: "123456"})
 	assert.Contains(t, v.View(), "PIN 123456", "a live PIN is hidden behind the detail screen")
 
-	v.Update(inviteReceived("in", "other peer"))
+	v.Update(inviteReceived(t, "in", "other peer"))
 	got := v.View()
 	assert.Contains(t, got, "pairing request from other peer", "an inbound request is hidden behind the detail screen")
 	assert.LessOrEqual(t, renderedRows(got), height, "pairing line stays within the frame")
@@ -682,13 +691,17 @@ func TestRejectionAdviceMatchesTheReason(t *testing.T) {
 	v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reasonAlreadyClustered})
 	assert.Contains(t, v.status.render(), "leave that cluster", "an already-clustered peer is told what to do")
 
-	for _, reason := range []string{"", "evil-arbitrary-text"} {
-		v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reason})
-		got := v.status.render()
-		assert.NotContains(t, got, "leave that cluster", "reason %q got advice meant for an already-clustered peer", reason)
-		assert.NotContains(t, got, "relationship", "reason %q got advice meant for an already-clustered peer", reason)
-		assert.Contains(t, got, "rejected the invite", "reason %q: rejection is reported", reason)
+	test := func(name, reason string) {
+		t.Run(name, func(t *testing.T) {
+			v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reason})
+			got := v.status.render()
+			assert.NotContains(t, got, "leave that cluster", "advice meant for an already-clustered peer")
+			assert.NotContains(t, got, "relationship", "advice meant for an already-clustered peer")
+			assert.Contains(t, got, "rejected the invite", "rejection is reported")
+		})
 	}
+	test("no reason", "")
+	test("unrecognised reason", "evil-arbitrary-text")
 }
 
 // TestInviteThatDidNotGoOutIsNotReportedSent is the regression guard for a
@@ -696,18 +709,21 @@ func TestRejectionAdviceMatchesTheReason(t *testing.T) {
 // when the first exchange does not complete, and anything short of "rejected"
 // was reported as "invite sent" and left pending.
 func TestInviteThatDidNotGoOutIsNotReportedSent(t *testing.T) {
-	for _, state := range []string{"failed", "canceled"} {
-		v := newNodesView(nil)
-		v.SetSize(120, 30)
-		v.invitedKey, v.inviteSending = "peer-uuid", true
-
-		v.Update(inviteResultMsg("peer", "", inviteNodeResult{InviteID: "inv", State: state}, nil))
-		got := v.status.render()
-		assert.NotContains(t, got, "invite sent", "a %q reply", state)
-		assert.Contains(t, got, "did not go out", "a %q reply", state)
-		assert.Empty(t, v.invitedKey, "a %q reply left the invite pending", state)
-		assert.Empty(t, v.outboundInviteID, "a %q reply left the invite pending", state)
+	test := func(name, state string) {
+		t.Run(name, func(t *testing.T) {
+			v := newNodesView(nil)
+			v.SetSize(120, 30)
+			v.invitedKey, v.inviteSending = "peer-uuid", true
+			v.Update(inviteResultMsg("peer", "", inviteNodeResult{InviteID: "inv", State: state}, nil))
+			got := v.status.render()
+			assert.NotContains(t, got, "invite sent")
+			assert.Contains(t, got, "did not go out")
+			assert.Empty(t, v.invitedKey, "invite must not remain pending")
+			assert.Empty(t, v.outboundInviteID, "invite must not remain pending")
+		})
 	}
+	test("failed", "failed")
+	test("canceled", "canceled")
 
 	pin := "123456"
 	v := newNodesView(nil)
@@ -757,21 +773,18 @@ func TestWrongPinIsNotReportedAsSuccess(t *testing.T) {
 // TestPairingOutcomesAreDistinguished checks each terminal state gets its own
 // answer, since they call for different things from the operator.
 func TestPairingOutcomesAreDistinguished(t *testing.T) {
-	cases := []struct {
-		state, reason string
-		want          string
-	}{
-		{state: "paired", want: "paired with peer"},
-		{state: "failed", reason: reasonIncorrectPIN, want: "wrong PIN"},
-		{state: "failed", reason: "unreachable", want: "failed"},
-		{state: "declined", want: "declined"},
+	test := func(name, state, reason, want string) {
+		t.Run(name, func(t *testing.T) {
+			v := newNodesView(nil)
+			v.SetSize(100, 30)
+			v.Update(pairingResultMsg{from: "peer", state: state, reason: reason})
+			assert.Contains(t, v.status.render(), want)
+		})
 	}
-	for _, tc := range cases {
-		v := newNodesView(nil)
-		v.SetSize(100, 30)
-		v.Update(pairingResultMsg{from: "peer", state: tc.state, reason: tc.reason})
-		assert.Contains(t, v.status.render(), tc.want, "state=%q reason=%q", tc.state, tc.reason)
-	}
+	test("paired", "paired", "", "paired with peer")
+	test("incorrect PIN", "failed", reasonIncorrectPIN, "wrong PIN")
+	test("unreachable", "failed", "unreachable", "failed")
+	test("declined", "declined", "", "declined")
 }
 
 // TestNodesViewClearsInboundInviteOnExpiry checks an inbound prompt stops
@@ -784,10 +797,10 @@ func TestNodesViewClearsInboundInviteOnExpiry(t *testing.T) {
 	accept := nodePairKey.Help().Key
 
 	v := newNodesView(nil)
-	v.Update(inviteReceived("inv-1", "peer"))
+	v.Update(inviteReceived(t, "inv-1", "peer"))
 	require.Contains(t, v.inboundPrompt(), "to accept", "no prompt after a pairing request arrived")
 
-	v.Update(inviteEvent("cluster:invite-expired", "inv-1"))
+	v.Update(inviteEvent(t, "cluster:invite-expired", "inv-1"))
 
 	assert.Nil(t, v.inbound, "expired inbound invite is still pending; accept would target a dead invite")
 	assert.NotContains(t, v.inboundPrompt(), "to accept", "still offering accept/decline for an expired invite")
@@ -832,17 +845,10 @@ func TestNodesViewSelectionSurvivesReorder(t *testing.T) {
 // discovered-node path only, so the by-address path could still send a doomed
 // invite.
 func TestNodesViewGuardsInviteOnEveryPath(t *testing.T) {
-	cases := []struct {
-		name string
-		node availableNode
-	}{
-		{"already a member of our cluster", availableNode{HostUUID: "k", Name: "peer", Trusted: true}},
-		{"a member of another cluster", availableNode{HostUUID: "k", Name: "peer", Clustered: true}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, node availableNode) {
+		t.Run(name, func(t *testing.T) {
 			v := newNodesView(nil)
-			v.feeds.discovered = []availableNode{tc.node}
+			v.feeds.discovered = []availableNode{node}
 			v.rebuild()
 			v.selectedKey = "k"
 
@@ -851,6 +857,8 @@ func TestNodesViewGuardsInviteOnEveryPath(t *testing.T) {
 			assert.NotEmpty(t, v.status.render(), "invite blocked with no explanation to the operator")
 		})
 	}
+	test("already a member of our cluster", availableNode{HostUUID: "k", Name: "peer", Trusted: true})
+	test("a member of another cluster", availableNode{HostUUID: "k", Name: "peer", Clustered: true})
 }
 
 // TestNodesViewRefusesSelfInvite checks this machine cannot be invited to its

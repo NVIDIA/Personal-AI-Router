@@ -282,14 +282,15 @@ func TestConnectionEndpointsAreNotRequestMethods(t *testing.T) {
 func TestRemovedLegacyMethodsReturnMethodNotFound(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
-	for i, method := range []string{
-		"settings/get-auto-join-invites",
-		"settings/set-auto-join-invites",
-		"settings/get-cluster-secret",
-		"settings/set-cluster-secret",
-	} {
-		callExpectError(t, m, rw, i+1, method, map[string]any{"value": "ignored"}, -32601)
+	test := func(name string, id int, method string) {
+		t.Run(name, func(t *testing.T) {
+			callExpectError(t, m, rw, id, method, map[string]any{"value": "ignored"}, -32601)
+		})
 	}
+	test("get auto-join invites", 1, "settings/get-auto-join-invites")
+	test("set auto-join invites", 2, "settings/set-auto-join-invites")
+	test("get cluster secret", 3, "settings/get-cluster-secret")
+	test("set cluster secret", 4, "settings/set-cluster-secret")
 }
 
 // TestSetClusterIDEmitsConnectionIdentityNotification verifies the
@@ -604,40 +605,19 @@ func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
 func TestTypeValidationRejectsWrongTypeAndMissingValue(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
-	// Wrong type for a bool field.
-	m.handleMessage(requestMessageRaw(t, 1, "settings/set-cluster-auto-sync",
-		json.RawMessage(`{"value":"not-a-bool"}`)))
-	resp := readCaptureFrame(t, rw)
-	require.NotNil(t, resp.Error, "wrong-type bool error")
-	assert.Equal(t, -32602, resp.Error.Code, "wrong-type bool error")
-
-	// Missing `value` field.
-	m.handleMessage(requestMessageRaw(t, 2, "settings/set-cluster-auto-sync",
-		json.RawMessage(`{}`)))
-	resp = readCaptureFrame(t, rw)
-	require.NotNil(t, resp.Error, "missing-value error")
-	assert.Equal(t, -32602, resp.Error.Code, "missing-value error")
-
-	// Wrong type for cluster-id (number where string expected).
-	m.handleMessage(requestMessageRaw(t, 3, "settings/set-cluster-id",
-		json.RawMessage(`{"value":123}`)))
-	resp = readCaptureFrame(t, rw)
-	require.NotNil(t, resp.Error, "wrong-type cluster-id error")
-	assert.Equal(t, -32602, resp.Error.Code, "wrong-type cluster-id error")
-
-	// Wrong type for cluster-friendly-name (bool where string expected).
-	m.handleMessage(requestMessageRaw(t, 4, "settings/set-cluster-friendly-name",
-		json.RawMessage(`{"value":true}`)))
-	resp = readCaptureFrame(t, rw)
-	require.NotNil(t, resp.Error, "wrong-type cluster-friendly-name error")
-	assert.Equal(t, -32602, resp.Error.Code, "wrong-type cluster-friendly-name error")
-
-	// Wrong type for the force-ports bool (a string).
-	m.handleMessage(requestMessageRaw(t, 5, "settings/set-force-ports",
-		json.RawMessage(`{"value":"on"}`)))
-	resp = readCaptureFrame(t, rw)
-	require.NotNil(t, resp.Error, "wrong-type force-ports error")
-	assert.Equal(t, -32602, resp.Error.Code, "wrong-type force-ports error")
+	test := func(name string, id int, method, params string) {
+		t.Run(name, func(t *testing.T) {
+			m.handleMessage(requestMessageRaw(t, id, method, json.RawMessage(params)))
+			resp := readCaptureFrame(t, rw)
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, -32602, resp.Error.Code)
+		})
+	}
+	test("wrong-type bool", 1, "settings/set-cluster-auto-sync", `{"value":"not-a-bool"}`)
+	test("missing value", 2, "settings/set-cluster-auto-sync", `{}`)
+	test("wrong-type cluster ID", 3, "settings/set-cluster-id", `{"value":123}`)
+	test("wrong-type cluster friendly name", 4, "settings/set-cluster-friendly-name", `{"value":true}`)
+	test("wrong-type force ports", 5, "settings/set-force-ports", `{"value":"on"}`)
 }
 
 func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {

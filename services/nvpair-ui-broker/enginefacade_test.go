@@ -49,8 +49,8 @@ func TestDefaultEngineFacadeRetriesAwayFromReservedPorts(t *testing.T) {
 
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
-		_ = proxyClient.Close()
-		_ = proxyServer.Close()
+		assert.NoError(t, proxyClient.Close())
+		assert.NoError(t, proxyServer.Close())
 	})
 	proxy := &proxyProcess{peer: NewPeer(NewCodec(proxyClient))}
 	go proxy.peer.Serve(nil, nil)
@@ -78,25 +78,17 @@ func TestDefaultEngineFacadeRetriesAwayFromReservedPorts(t *testing.T) {
 
 func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
 	profile := mustEngineProxyProfile("llamacpp")
-	for _, tc := range []struct {
-		name       string
-		serverPort int
-		proxyPort  int
-		explicit   bool
-	}{
-		{name: "manifest default", serverPort: profile.EnginePortBase},
-		{name: "explicit settings", serverPort: 18081, proxyPort: 18080, explicit: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, serverPort, proxyPort int, explicit bool) {
+		t.Run(name, func(t *testing.T) {
 			b := &Broker{
 				proxyPath:            "test-proxy",
 				proxyEngines:         []string{profile.Name},
 				engineSettingsLoaded: true,
 			}
-			if tc.explicit {
+			if explicit {
 				b.engineSettings = map[string]*engineSettingsRecord{
 					profile.Name: {Explicit: true, Snapshot: settings.Snapshot{
-						Settings: settings.Config{ServerPort: tc.serverPort, ProxyPort: tc.proxyPort},
+						Settings: settings.Config{ServerPort: serverPort, ProxyPort: proxyPort},
 					}},
 				}
 			}
@@ -106,11 +98,11 @@ func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
 			go func() {
 				for {
 					msg, err := codec.Read()
-					if err != nil {
+					if !assertRPCRead(t, err) {
 						return
 					}
 					calls.Add(1)
-					if !assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: tc.serverPort}), "respond to unexpected engine request %s", msg.Method) {
+					if !assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: serverPort}), "respond to unexpected engine request %s", msg.Method) {
 						return
 					}
 				}
@@ -120,11 +112,13 @@ func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
 
 			assert.Equal(t, int32(0), calls.Load(), "preparation must not probe or relocate the engine")
 			state := b.engineProxy(profile)
-			assert.Equal(t, int32(tc.serverPort), state.backendPort.Load(), "engine port")
-			assert.Equal(t, int32(tc.proxyPort), state.startupPort.Load(), "startup proxy port")
-			assert.Equal(t, tc.explicit, state.explicitSettings.Load(), "explicit settings")
+			assert.Equal(t, int32(serverPort), state.backendPort.Load(), "engine port")
+			assert.Equal(t, int32(proxyPort), state.startupPort.Load(), "startup proxy port")
+			assert.Equal(t, explicit, state.explicitSettings.Load(), "explicit settings")
 		})
 	}
+	test("manifest default", profile.EnginePortBase, 0, false)
+	test("explicit settings", 18081, 18080, true)
 }
 
 func TestLlamaCPPProxyTerminalHandlingPreservesEngineState(t *testing.T) {
@@ -163,8 +157,8 @@ func TestLlamaCPPEngineStatusRelaysBeforeOtherPortGates(t *testing.T) {
 	t.Cleanup(func() {
 		close(b.ollamaPortReady)
 		close(b.lmstudioPortReady)
-		_ = client.Close()
-		_ = server.Close()
+		assert.NoError(t, client.Close())
+		assert.NoError(t, server.Close())
 	})
 	b.codec = NewCodec(server)
 	id := json.RawMessage(`1`)
@@ -184,8 +178,8 @@ func TestLlamaCPPProxyNotificationDispatchPreservesFacadeAddress(t *testing.T) {
 	profile := mustEngineProxyProfile("llamacpp")
 	client, server := net.Pipe()
 	t.Cleanup(func() {
-		_ = client.Close()
-		_ = server.Close()
+		assert.NoError(t, client.Close())
+		assert.NoError(t, server.Close())
 	})
 	b := &Broker{codec: NewCodec(server)}
 	b.proxyMu.Lock()

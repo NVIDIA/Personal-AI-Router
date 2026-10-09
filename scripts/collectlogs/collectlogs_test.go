@@ -296,25 +296,22 @@ func TestIsHostnameRejectsNonHosts(t *testing.T) {
 }
 
 func TestClassifyIP(t *testing.T) {
-	cases := map[string]struct {
-		class string
-		keep  bool
-	}{
-		"127.0.0.1":     {"loopback", true},
-		"::1":           {"loopback", true},
-		"0.0.0.0":       {"loopback", true},
-		"192.168.1.10":  {"lan", false},
-		"10.221.6.52":   {"lan", false},
-		"172.16.4.4":    {"lan", false},
-		"100.64.0.1":    {"cgnat", false},
-		"8.8.8.8":       {"public", false},
-		"169.254.10.10": {"link-local", true},
+	test := func(name, input, wantClass string, wantKeep bool) {
+		t.Run(name, func(t *testing.T) {
+			class, keep := classifyIP(input)
+			assert.Equal(t, wantClass, class)
+			assert.Equal(t, wantKeep, keep)
+		})
 	}
-	for input, want := range cases {
-		class, keep := classifyIP(input)
-		assert.Equal(t, want.class, class, "IP %q", input)
-		assert.Equal(t, want.keep, keep, "IP %q", input)
-	}
+	test("IPv4 loopback", "127.0.0.1", "loopback", true)
+	test("IPv6 loopback", "::1", "loopback", true)
+	test("unspecified", "0.0.0.0", "loopback", true)
+	test("192.168 LAN", "192.168.1.10", "lan", false)
+	test("10 LAN", "10.221.6.52", "lan", false)
+	test("172.16 LAN", "172.16.4.4", "lan", false)
+	test("carrier-grade NAT", "100.64.0.1", "cgnat", false)
+	test("public", "8.8.8.8", "public", false)
+	test("link-local", "169.254.10.10", "link-local", true)
 }
 
 // Tokens must be identical across runs on the same input, otherwise two

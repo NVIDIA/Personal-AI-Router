@@ -66,22 +66,18 @@ func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
 
 func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 	require.Greater(t, remoteReadyResponseHeaderTimeout, remoteResponseHeaderTimeout, "readiness budget")
-	cases := []struct {
-		path   string
-		engine string
-		want   bool
-	}{
-		{controlStartPath, "ollama", true},
-		{controlDeletePath, "lmstudio", true},
-		{controlLoadPath, "ollama", true},
-		{controlLoadPath, "lmstudio", false},
-		{controlStopPath, "ollama", false},
-		{controlUnloadPath, "ollama", false},
-		{controlEnginesPath, "", false},
+	test := func(name, path, engine string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, waitsForEngineReadiness(path, engine))
+		})
 	}
-	for _, tc := range cases {
-		assert.Equal(t, tc.want, waitsForEngineReadiness(tc.path, tc.engine), "waitsForEngineReadiness")
-	}
+	test("start waits", controlStartPath, "ollama", true)
+	test("delete waits", controlDeletePath, "lmstudio", true)
+	test("Ollama load waits", controlLoadPath, "ollama", true)
+	test("LM Studio load does not wait", controlLoadPath, "lmstudio", false)
+	test("stop does not wait", controlStopPath, "ollama", false)
+	test("unload does not wait", controlUnloadPath, "ollama", false)
+	test("listing does not wait", controlEnginesPath, "", false)
 }
 
 func TestRemoteStartHeaderWaitRemainsBounded(t *testing.T) {

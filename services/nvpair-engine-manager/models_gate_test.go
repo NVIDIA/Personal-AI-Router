@@ -96,21 +96,19 @@ func okHandler(t *testing.T) http.Handler {
 func TestModelSurface_LoopbackOnlyForPlaintext(t *testing.T) {
 	h := loopbackOnly(okHandler(t))
 
-	for _, remote := range []string{"127.0.0.1:51234", "[::1]:51234"} {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, modelsPath, nil)
-		req.RemoteAddr = remote
-		h(rec, req)
-		require.Equal(t, http.StatusOK, rec.Code, "loopback (%v)", remote)
+	test := func(name, remote string, wantStatus int) {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, modelsPath, nil)
+			req.RemoteAddr = remote
+			h(rec, req)
+			require.Equal(t, wantStatus, rec.Code)
+		})
 	}
-
-	for _, remote := range []string{"192.168.1.42:51234", "10.0.0.7:51234"} {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, modelsPath, nil)
-		req.RemoteAddr = remote
-		h(rec, req)
-		require.Equal(t, http.StatusForbidden, rec.Code, "LAN (%v)", remote)
-	}
+	test("IPv4 loopback", "127.0.0.1:51234", http.StatusOK)
+	test("IPv6 loopback", "[::1]:51234", http.StatusOK)
+	test("private LAN", "192.168.1.42:51234", http.StatusForbidden)
+	test("private network", "10.0.0.7:51234", http.StatusForbidden)
 }
 
 // TestModelSurface_PinGateIsUnconditional: the mTLS personality admits a pinned
@@ -153,13 +151,17 @@ func TestModelSurface_PinGateIsUnconditional(t *testing.T) {
 
 	// An unauthenticated request never carries a client cert, so it is refused
 	// whatever this node's membership is — the gate has no membership branch.
-	for _, name := range []string{"clustered", "unclustered"} {
-		mesh := selfMesh
-		if name == "unclustered" {
-			mesh = clustertrust.Open(t.TempDir())
-		}
-		rec := httptest.NewRecorder()
-		requirePinnedPeer(mesh, okHandler(t))(rec, httptest.NewRequest(http.MethodGet, modelsPath, nil))
-		require.Equal(t, http.StatusForbidden, rec.Code, " (%v)", name)
+	test := func(name string, clustered bool) {
+		t.Run(name, func(t *testing.T) {
+			mesh := selfMesh
+			if !clustered {
+				mesh = clustertrust.Open(t.TempDir())
+			}
+			rec := httptest.NewRecorder()
+			requirePinnedPeer(mesh, okHandler(t))(rec, httptest.NewRequest(http.MethodGet, modelsPath, nil))
+			require.Equal(t, http.StatusForbidden, rec.Code)
+		})
 	}
+	test("clustered", true)
+	test("unclustered", false)
 }

@@ -31,7 +31,10 @@ func TestMain(m *testing.M) {
 		return
 	}
 	if os.Getenv("NVPAIR_TUI_SILENT_BROKER") == "1" {
-		runSilentBroker()
+		if err := runSilentBroker(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 	os.Exit(m.Run())
@@ -76,11 +79,14 @@ func runFakeBroker() error {
 
 // runSilentBroker handshakes and then answers nothing, standing in for a broker
 // that has stopped responding.
-func runSilentBroker() {
-	fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`)
+func runSilentBroker() error {
+	if _, err := fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`); err != nil {
+		return err
+	}
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 	}
+	return sc.Err()
 }
 
 func TestResolveBrokerPathOverride(t *testing.T) {

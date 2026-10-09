@@ -20,97 +20,61 @@ import (
 )
 
 func TestLMSGetCandidates(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{
-			name: "bare owner/name falls back to Hugging Face",
-			in:   "lmstudio-community/Qwen3.5-397B-A17B-MLX-4bit",
-			want: []string{
-				"lmstudio-community/Qwen3.5-397B-A17B-MLX-4bit",
-				"https://huggingface.co/lmstudio-community/Qwen3.5-397B-A17B-MLX-4bit",
-			},
-		},
-		{
-			name: "quant qualifier is preserved",
-			in:   "owner/name@q4_k_m",
-			want: []string{
-				"owner/name@q4_k_m",
-				"https://huggingface.co/owner/name@q4_k_m",
-			},
-		},
-		{
-			name: "explicit Hugging Face URL is honored first, then Hub",
-			in:   "https://huggingface.co/lmstudio-community/Foo-MLX-4bit",
-			want: []string{
-				"https://huggingface.co/lmstudio-community/Foo-MLX-4bit",
-				"lmstudio-community/Foo-MLX-4bit",
-			},
-		},
-		{
-			name: "lmstudio.ai /models URL keeps Hub first, then Hugging Face",
-			in:   "https://lmstudio.ai/models/qwen/qwen3.5-9b",
-			want: []string{
-				"https://lmstudio.ai/models/qwen/qwen3.5-9b",
-				"https://huggingface.co/qwen/qwen3.5-9b",
-			},
-		},
-		{
-			name: "lmstudio.ai URL without /models",
-			in:   "https://lmstudio.ai/qwen/qwen3.5-9b",
-			want: []string{
-				"https://lmstudio.ai/qwen/qwen3.5-9b",
-				"https://huggingface.co/qwen/qwen3.5-9b",
-			},
-		},
-		{
-			name: "search term passes through unchanged",
-			in:   "llama3.2",
-			want: []string{"llama3.2"},
-		},
-		{
-			name: "unrecognized URL is honored verbatim with no fallback",
-			in:   "https://example.com/a/b",
-			want: []string{"https://example.com/a/b"},
-		},
-		{
-			name: "blank yields no candidates",
-			in:   "   ",
-			want: nil,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, lmsGetCandidates(c.in), "lmsGetCandidates")
+	test := func(name, input string, want []string) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, lmsGetCandidates(input))
 		})
 	}
+	test("bare owner/name falls back to Hugging Face", "lmstudio-community/Qwen3.5-397B-A17B-MLX-4bit", []string{
+		"lmstudio-community/Qwen3.5-397B-A17B-MLX-4bit",
+		"https://huggingface.co/lmstudio-community/Qwen3.5-397B-A17B-MLX-4bit",
+	})
+	test("quant qualifier is preserved", "owner/name@q4_k_m", []string{"owner/name@q4_k_m", "https://huggingface.co/owner/name@q4_k_m"})
+	test("explicit Hugging Face URL is honored first, then Hub", "https://huggingface.co/lmstudio-community/Foo-MLX-4bit", []string{
+		"https://huggingface.co/lmstudio-community/Foo-MLX-4bit",
+		"lmstudio-community/Foo-MLX-4bit",
+	})
+	test("lmstudio.ai /models URL keeps Hub first, then Hugging Face", "https://lmstudio.ai/models/qwen/qwen3.5-9b", []string{
+		"https://lmstudio.ai/models/qwen/qwen3.5-9b",
+		"https://huggingface.co/qwen/qwen3.5-9b",
+	})
+	test("lmstudio.ai URL without /models", "https://lmstudio.ai/qwen/qwen3.5-9b", []string{"https://lmstudio.ai/qwen/qwen3.5-9b", "https://huggingface.co/qwen/qwen3.5-9b"})
+	test("search term passes through unchanged", "llama3.2", []string{"llama3.2"})
+	test("unrecognized URL is honored verbatim with no fallback", "https://example.com/a/b", []string{"https://example.com/a/b"})
+	test("blank yields no candidates", "   ", nil)
 }
 
 func TestIsLMSResolveFailure(t *testing.T) {
 	const missingArtifact = `exit status 1: Error: Failed to resolve artifact "x/y": The artifact does not exist or you do not have permission to read it`
-	assert.True(t, isLMSResolveFailure(errors.New(missingArtifact)), "expected resolve failure")
-	assert.True(t, isLMSResolveFailure(errors.New("this model is not supported in LM Studio")), "expected resolve failure")
-	assert.True(t, isLMSResolveFailure(errors.New("no models found matching that term")), "expected resolve failure")
-
-	assert.False(t, isLMSResolveFailure(nil), "did not expect resolve failure")
-	assert.False(t, isLMSResolveFailure(errors.New("exit status 1: write error: disk full")), "did not expect resolve failure")
-	assert.False(t, isLMSResolveFailure(errors.New("network connection failed")), "did not expect resolve failure")
+	test := func(name string, err error, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, isLMSResolveFailure(err))
+		})
+	}
+	test("missing artifact", errors.New(missingArtifact), true)
+	test("unsupported model", errors.New("this model is not supported in LM Studio"), true)
+	test("no matching models", errors.New("no models found matching that term"), true)
+	test("no error", nil, false)
+	test("disk full", errors.New("exit status 1: write error: disk full"), false)
+	test("network failure", errors.New("network connection failed"), false)
 }
 
 func TestIsLMSTransientDownloadError(t *testing.T) {
 	const downloadTimeout = "exit status 1: Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio."
-	assert.True(t, isLMSTransientDownloadError(errors.New(downloadTimeout)), "expected transient download error")
-	assert.True(t, isLMSTransientDownloadError(errors.New("exit status 1: read ECONNRESET")), "expected transient download error")
-	assert.True(t, isLMSTransientDownloadError(errors.New("exit status 1: socket hang up")), "expected transient download error")
-	assert.True(t, isLMSTransientDownloadError(errors.New("exit status 1: fetch failed")), "expected transient download error")
-
-	assert.False(t, isLMSTransientDownloadError(nil), "did not expect transient download error")
-	assert.False(t, isLMSTransientDownloadError(errors.New("exit status 1: write error: disk full")), "did not expect transient download error")
+	test := func(name string, err error, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, isLMSTransientDownloadError(err))
+		})
+	}
+	test("download timeout", errors.New(downloadTimeout), true)
+	test("connection reset", errors.New("exit status 1: read ECONNRESET"), true)
+	test("socket hang up", errors.New("exit status 1: socket hang up"), true)
+	test("fetch failed", errors.New("exit status 1: fetch failed"), true)
+	test("no error", nil, false)
+	test("disk full", errors.New("exit status 1: write error: disk full"), false)
 	// A resolution failure is permanent for this source (handled by the
 	// candidate loop), so it must NOT be treated as a transient download.
-	assert.False(t, isLMSTransientDownloadError(errors.New(`exit status 1: Failed to resolve artifact "x/y": the artifact does not exist`)), "did not expect transient download error")
+	test("permanent resolution failure", errors.New(`exit status 1: Failed to resolve artifact "x/y": the artifact does not exist`), false)
 }
 
 // TestCmdActionLMSGetFallback drives a cmd action that opts into lms-get
@@ -207,25 +171,19 @@ func readCount(t *testing.T, path string) int {
 }
 
 func TestModelResolutionValidation(t *testing.T) {
-	cases := []struct {
-		name    string
-		action  Action
-		wantErr bool
-	}{
-		{"valid lms-get", Action{Cmd: []string{"{cli}", "get", "{model}", "--yes"}, ModelResolution: "lms-get"}, false},
-		{"unknown strategy", Action{Cmd: []string{"{cli}", "get", "{model}"}, ModelResolution: "bogus"}, true},
-		{"http cannot resolve models", Action{HTTP: &ActionHTTP{Method: "POST", Path: "/x"}, ModelResolution: "lms-get"}, true},
-		{"cmd must template {model}", Action{Cmd: []string{"{cli}", "ls"}, ModelResolution: "lms-get"}, true},
-		{"plain cmd still valid", Action{Cmd: []string{"{cli}", "ls"}}, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			err := c.action.validate("pull_model")
-			if c.wantErr {
-				require.Error(t, err, "expected a validation error")
+	test := func(name string, action Action, wantErr bool) {
+		t.Run(name, func(t *testing.T) {
+			err := action.validate("pull_model")
+			if wantErr {
+				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
 			}
 		})
 	}
+	test("valid lms-get", Action{Cmd: []string{"{cli}", "get", "{model}", "--yes"}, ModelResolution: "lms-get"}, false)
+	test("unknown strategy", Action{Cmd: []string{"{cli}", "get", "{model}"}, ModelResolution: "bogus"}, true)
+	test("http cannot resolve models", Action{HTTP: &ActionHTTP{Method: "POST", Path: "/x"}, ModelResolution: "lms-get"}, true)
+	test("cmd must template {model}", Action{Cmd: []string{"{cli}", "ls"}, ModelResolution: "lms-get"}, true)
+	test("plain cmd still valid", Action{Cmd: []string{"{cli}", "ls"}}, false)
 }

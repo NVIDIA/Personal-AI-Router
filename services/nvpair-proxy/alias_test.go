@@ -20,28 +20,29 @@ import (
 )
 
 func TestSetLoopbackAliasValidation(t *testing.T) {
-	for _, tc := range []struct {
-		address  string
-		wantErr  bool
-		wantAddr string
-	}{
-		{"127.0.0.1:11433", false, "127.0.0.1:11433"},
-		{"127.0.0.2:11433", false, "127.0.0.2:11433"},
-		{"localhost:11433", false, "127.0.0.1:11433"},
-		{"[::1]:11433", false, "[::1]:11433"},
-		{"0.0.0.0:11433", true, ""},
-		{"192.168.1.20:11433", true, ""},
-		{"localhost:11434", true, ""},
-		{"localhost:0", true, ""},
-		{"not-an-address", true, ""},
-	} {
-		p := newTestProxy(ollamaOnlyProfile(t), NewCodec(rwNop{}), NewDiscovery(), 11434)
-		if err := p.soleFacade().setLoopbackAlias(tc.address); (err != nil) != tc.wantErr {
-			assert.Fail(t, fmt.Sprintf("setLoopbackAlias(%q) error = %v, wantErr %v", tc.address, err, tc.wantErr))
-		} else if err == nil {
-			assert.Equal(t, tc.wantAddr, p.soleFacade().aliasAddr, "setLoopbackAlias")
-		}
+	accept := func(name, address, wantAddr string) {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(ollamaOnlyProfile(t), NewCodec(rwNop{}), NewDiscovery(), 11434)
+			if assert.NoError(t, p.soleFacade().setLoopbackAlias(address)) {
+				assert.Equal(t, wantAddr, p.soleFacade().aliasAddr)
+			}
+		})
 	}
+	reject := func(name, address string) {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(ollamaOnlyProfile(t), NewCodec(rwNop{}), NewDiscovery(), 11434)
+			assert.Error(t, p.soleFacade().setLoopbackAlias(address))
+		})
+	}
+	accept("primary loopback address", "127.0.0.1:11433", "127.0.0.1:11433")
+	accept("alternate loopback address", "127.0.0.2:11433", "127.0.0.2:11433")
+	accept("localhost resolves to loopback", "localhost:11433", "127.0.0.1:11433")
+	accept("IPv6 loopback", "[::1]:11433", "[::1]:11433")
+	reject("wildcard address", "0.0.0.0:11433")
+	reject("LAN address", "192.168.1.20:11433")
+	reject("primary listener port", "localhost:11434")
+	reject("zero port", "localhost:0")
+	reject("malformed address", "not-an-address")
 }
 
 func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {

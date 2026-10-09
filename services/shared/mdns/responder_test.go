@@ -36,21 +36,15 @@ func testResponder(txt []string) *Responder {
 func TestNewResponderValidation(t *testing.T) {
 	// These cases return before any interface enumeration, so they're
 	// environment-independent.
-	cases := []struct {
-		name                      string
-		instance, service, domain string
-		port                      int
-	}{
-		{"missing instance", "", "_nvpair-test._tcp", "local", 14318},
-		{"missing service", "myhost", "", "local", 14318},
-		{"missing port", "myhost", "_nvpair-test._tcp", "local", 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewResponder(tc.instance, tc.service, tc.domain, tc.port, nil)
-			require.Error(t, err, "NewResponder")
+	test := func(name, instance, service, domain string, port int) {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewResponder(instance, service, domain, port, nil)
+			require.Error(t, err)
 		})
 	}
+	test("missing instance", "", "_nvpair-test._tcp", "local", 14318)
+	test("missing service", "myhost", "", "local", 14318)
+	test("missing port", "myhost", "_nvpair-test._tcp", "local", 0)
 }
 
 func TestNewResponderNormalizesNames(t *testing.T) {

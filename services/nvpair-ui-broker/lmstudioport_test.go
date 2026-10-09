@@ -38,26 +38,18 @@ func TestPlanManagedLMStudioPorts(t *testing.T) {
 		}
 		return func(port int) bool { return set[port] }
 	}
-	tests := []struct {
-		name string
-		on   bool
-		st   ollamaPortStatus
-		free func(int) bool
-		want managedPortPlan
-	}{
-		{"disabled", false, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{}},
-		{"stopped default moves", true, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{Enabled: true, BackendPort: 1235}},
-		{"running identified default moves", true, ollamaPortStatus{Running: true, Port: 1234}, free(1235), managedPortPlan{Enabled: true, BackendPort: 1235}},
-		{"occupied stopped backend advances", true, ollamaPortStatus{Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true, BackendPort: 1236}},
-		{"running backend is preserved", true, ollamaPortStatus{Running: true, Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true}},
-		{"custom backend preserved", true, ollamaPortStatus{Running: true, Port: 12400}, free(1234), managedPortPlan{Enabled: true}},
-		{"unknown facade owner blocks", true, ollamaPortStatus{Port: 1235}, free(1235), managedPortPlan{Blocked: "the compatibility port is already in use"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, planManagedLMStudioPorts(tc.on, tc.st, tc.free), "planManagedLMStudioPorts")
+	test := func(name string, on bool, st ollamaPortStatus, available func(int) bool, want managedPortPlan) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, planManagedLMStudioPorts(on, st, available))
 		})
 	}
+	test("disabled", false, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{})
+	test("stopped default moves", true, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{Enabled: true, BackendPort: 1235})
+	test("running identified default moves", true, ollamaPortStatus{Running: true, Port: 1234}, free(1235), managedPortPlan{Enabled: true, BackendPort: 1235})
+	test("occupied stopped backend advances", true, ollamaPortStatus{Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true, BackendPort: 1236})
+	test("running backend is preserved", true, ollamaPortStatus{Running: true, Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true})
+	test("custom backend preserved", true, ollamaPortStatus{Running: true, Port: 12400}, free(1234), managedPortPlan{Enabled: true})
+	test("unknown facade owner blocks", true, ollamaPortStatus{Port: 1235}, free(1235), managedPortPlan{Blocked: "the compatibility port is already in use"})
 }
 
 // The engine, its port, and the ignore-persisted decision travel in
@@ -143,8 +135,8 @@ func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
 	select {
 	case got := <-backend:
 		require.Equal(t, "lmstudio", got.Engine, "local backend (%v, %v)", got, managedLMStudioBackendStart)
-		require.Equal(t, managedLMStudioBackendStart, got.Port, "local backend (%v, %v)", got, managedLMStudioBackendStart)
-		require.True(t, got.Healthy, "local backend (%v, %v)", got, managedLMStudioBackendStart)
+		require.Equal(t, managedLMStudioBackendStart, got.Port, "local backend")
+		require.True(t, got.Healthy, "local backend must be healthy")
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "LM Studio ready did not push the local backend")
 	}
@@ -239,17 +231,8 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 }
 
 func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
-	tests := []struct {
-		method string
-		params string
-	}{
-		{"engine:get-installed", `{}`},
-		{"engine:status", `{"engine":"lmstudio"}`},
-		{"engine:start", `{"engine":"lmstudio"}`},
-		{"engine:restart", `{"engine":"lmstudio"}`},
-	}
-	for _, tc := range tests {
-		t.Run(tc.method, func(t *testing.T) {
+	test := func(name, requestMethod, params string) {
+		t.Run(name, func(t *testing.T) {
 			engineClient, engineServer := net.Pipe()
 			brokerClient, brokerServer := net.Pipe()
 			t.Cleanup(func() {
@@ -288,8 +271,8 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 			b.relayToEngine(&Message{
 				JSONRPC: "2.0",
 				ID:      &id,
-				Method:  tc.method,
-				Params:  json.RawMessage(tc.params),
+				Method:  requestMethod,
+				Params:  json.RawMessage(params),
 			})
 
 			select {
@@ -300,9 +283,9 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 			close(b.lmstudioPortReady)
 			select {
 			case got := <-method:
-				require.Equal(t, tc.method, got, "relayed method")
+				require.Equal(t, requestMethod, got, "relayed method")
 			case <-time.After(2 * time.Second):
-				require.FailNow(t, fmt.Sprintf("%q was not relayed after the LM Studio port gate opened", tc.method))
+				require.FailNow(t, "request was not relayed after the LM Studio port gate opened")
 			}
 			select {
 			case err := <-response:
@@ -312,29 +295,29 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 			}
 		})
 	}
+	test("inventory", "engine:get-installed", `{}`)
+	test("status", "engine:status", `{"engine":"lmstudio"}`)
+	test("start", "engine:start", `{"engine":"lmstudio"}`)
+	test("restart", "engine:restart", `{"engine":"lmstudio"}`)
 }
 
 func TestManagedLMStudioPortGateRequestMatcher(t *testing.T) {
-	for _, tc := range []struct {
-		method string
-		params string
-		want   bool
-	}{
-		{"engine:get-installed", `{}`, true},
-		{"engine:status", `{"engine":"lmstudio"}`, true},
-		{"engine:start", `{"engine":"lmstudio"}`, true},
-		{"engine:restart", `{"engine":"lmstudio"}`, true},
-		// Gated for the same reason Ollama gates it: an install that starts
-		// the engine assigns a port, and mid-transition that can be the port
-		// the proxy is taking.
-		{"engine:install", `{"engine":"lmstudio"}`, true},
-		{"engine:install", `{"engine":"ollama"}`, false},
-		{"engine:status", `{"engine":"ollama"}`, false},
-		{"engine:models", `{"engine":"lmstudio"}`, false},
-		{"engine:status", `{`, false},
-	} {
-		assert.Equal(t, tc.want, needsLMStudioPortGate(tc.method, json.RawMessage(tc.params)), "needsLMStudioPortGate(%q, %s)", tc.method, tc.params)
+	test := func(name, method, params string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, needsLMStudioPortGate(method, json.RawMessage(params)))
+		})
 	}
+	test("inventory waits", "engine:get-installed", `{}`, true)
+	test("LM Studio status waits", "engine:status", `{"engine":"lmstudio"}`, true)
+	test("LM Studio start waits", "engine:start", `{"engine":"lmstudio"}`, true)
+	test("LM Studio restart waits", "engine:restart", `{"engine":"lmstudio"}`, true)
+	// An install that starts the engine assigns a port, and mid-transition
+	// that can be the port the proxy is taking.
+	test("LM Studio install waits", "engine:install", `{"engine":"lmstudio"}`, true)
+	test("Ollama install does not wait", "engine:install", `{"engine":"ollama"}`, false)
+	test("Ollama status does not wait", "engine:status", `{"engine":"ollama"}`, false)
+	test("LM Studio models do not wait", "engine:models", `{"engine":"lmstudio"}`, false)
+	test("malformed parameters do not wait", "engine:status", `{`, false)
 }
 
 func TestManagedLMStudioPortGateHonorsCancellation(t *testing.T) {
@@ -488,17 +471,19 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 		assert.NoError(t, settingsCodec.Respond(msg.ID, map[string]bool{"value": true}))
 	}()
 	go func() {
+		type enginePortRequest struct {
+			Engine string `json:"engine"`
+			Port   int    `json:"port"`
+		}
 		status, err := engineCodec.Read()
 		if !assertRPCRead(t, err) {
 			return
 		}
 		calls <- status.Method
-		var statusRequest struct {
-			Engine string `json:"engine"`
-			Port   int    `json:"port"`
+		var statusRequest enginePortRequest
+		if assert.NoError(t, json.Unmarshal(status.Params, &statusRequest)) {
+			assert.Equal(t, enginePortRequest{"lmstudio", managedLMStudioFacadePort}, statusRequest, "engine:status params")
 		}
-		assert.False(t, !assert.NoError(t, json.Unmarshal(status.Params, &statusRequest)) ||
-			statusRequest.Engine != "lmstudio" || statusRequest.Port != managedLMStudioFacadePort, "engine:status params")
 		assert.NoError(t, engineCodec.Respond(status.ID, ollamaPortStatus{Running: true, Port: managedLMStudioFacadePort}))
 
 		setPort, err := engineCodec.Read()
@@ -506,11 +491,10 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 			return
 		}
 		calls <- setPort.Method
-		var request struct {
-			Engine string `json:"engine"`
-			Port   int    `json:"port"`
+		var request enginePortRequest
+		if assert.NoError(t, json.Unmarshal(setPort.Params, &request)) {
+			assert.Equal(t, enginePortRequest{"lmstudio", managedLMStudioBackendStart}, request, "engine:set-port params")
 		}
-		assert.False(t, !assert.NoError(t, json.Unmarshal(setPort.Params, &request)) || request.Engine != "lmstudio" || request.Port != managedLMStudioBackendStart, "engine:set-port params")
 		assert.NoError(t, engineCodec.Respond(setPort.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart}))
 	}()
 

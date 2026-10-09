@@ -69,38 +69,37 @@ func TestNodesViewNeverOverflowsItsBudget(t *testing.T) {
 		return v
 	}
 
-	cases := map[string]func(*nodesView){
-		"plain":   func(*nodesView) {},
-		"filter":  func(v *nodesView) { v.filter = "node"; v.rebuild() },
-		"warning": func(v *nodesView) { v.noteFeed(feedManual, errStub{}) },
-		"status":  func(v *nodesView) { v.status.error("something failed") },
-		"inbound": func(v *nodesView) { v.inbound = &clusterInvite{FromNodeName: "peer"} },
-		"editor":  func(v *nodesView) { v.beginInput(nodesInputManualAddress, "host") },
-		"filter+warning": func(v *nodesView) {
-			v.filter = "node"
-			v.rebuild()
-			v.noteFeed(feedManual, errStub{})
-		},
-		"everything": func(v *nodesView) {
-			v.filter = "node"
-			v.rebuild()
-			v.noteFeed(feedManual, errStub{})
-			v.inbound = &clusterInvite{FromNodeName: "peer"}
-			v.beginInput(nodesInputManualAddress, "host")
-			v.status.error("something failed")
-		},
-		"filter matches nothing": func(v *nodesView) {
-			v.filter = "no-such-node"
-			v.rebuild()
-			v.status.error("something failed")
-		},
+	test := func(name string, setup func(*nodesView)) {
+		t.Run(name, func(t *testing.T) {
+			v := build()
+			setup(v)
+			assert.LessOrEqual(t, renderedRows(v.View()), budget, "the shell must not delete the last lines")
+		})
 	}
-
-	for name, setup := range cases {
-		v := build()
-		setup(v)
-		assert.LessOrEqual(t, renderedRows(v.View()), budget, "%s: the shell must not delete the last lines", name)
-	}
+	test("plain", func(*nodesView) {})
+	test("filter", func(v *nodesView) { v.filter = "node"; v.rebuild() })
+	test("warning", func(v *nodesView) { v.noteFeed(feedManual, errStub{}) })
+	test("status", func(v *nodesView) { v.status.error("something failed") })
+	test("inbound", func(v *nodesView) { v.inbound = &clusterInvite{FromNodeName: "peer"} })
+	test("editor", func(v *nodesView) { v.beginInput(nodesInputManualAddress, "host") })
+	test("filter+warning", func(v *nodesView) {
+		v.filter = "node"
+		v.rebuild()
+		v.noteFeed(feedManual, errStub{})
+	})
+	test("everything", func(v *nodesView) {
+		v.filter = "node"
+		v.rebuild()
+		v.noteFeed(feedManual, errStub{})
+		v.inbound = &clusterInvite{FromNodeName: "peer"}
+		v.beginInput(nodesInputManualAddress, "host")
+		v.status.error("something failed")
+	})
+	test("filter matches nothing", func(v *nodesView) {
+		v.filter = "no-such-node"
+		v.rebuild()
+		v.status.error("something failed")
+	})
 }
 
 // TestErrorsViewNeverOverflowsItsBudget covers the context line added for the
@@ -129,14 +128,19 @@ func TestErrorsViewNeverOverflowsItsBudget(t *testing.T) {
 		return v
 	}
 
-	for _, n := range []int{0, 1, 30} {
-		v := build(n)
-		assert.LessOrEqual(t, renderedRows(v.View()), budget, "%d errors", n)
+	test := func(name string, n int) {
+		t.Run(name, func(t *testing.T) {
+			v := build(n)
+			assert.LessOrEqual(t, renderedRows(v.View()), budget)
 
-		v = build(n)
-		v.status.ok("cleared")
-		assert.LessOrEqual(t, renderedRows(v.View()), budget, "%d errors + status: the status line must not be cut", n)
+			v = build(n)
+			v.status.ok("cleared")
+			assert.LessOrEqual(t, renderedRows(v.View()), budget, "the status line must not be cut")
+		})
 	}
+	test("no errors", 0)
+	test("one error", 1)
+	test("many errors", 30)
 }
 
 // TestNodeDetailNeverOverflowsItsBudget covers the screen with two tables
@@ -162,26 +166,25 @@ func TestNodeDetailNeverOverflowsItsBudget(t *testing.T) {
 		return d
 	}
 
-	cases := map[string]func(*nodeDetail){
-		"plain":  func(*nodeDetail) {},
-		"editor": func(d *nodeDetail) { d.mode = detailInputEnginePort },
-		"status": func(d *nodeDetail) { d.status.error("start failed: no such engine") },
-		"editor+status": func(d *nodeDetail) {
-			d.mode = detailInputModelName
-			d.status.error("download failed")
-		},
-		"hardware": func(d *nodeDetail) {
-			d.telemetryOK = true
-			d.telemetry = nodeTelemetry{TelemetryValid: true}
-			d.SetSize(w, budget)
-		},
+	test := func(name string, setup func(*nodeDetail)) {
+		t.Run(name, func(t *testing.T) {
+			d := build()
+			setup(d)
+			assert.LessOrEqual(t, renderedRows(d.View()), budget)
+		})
 	}
-
-	for name, setup := range cases {
-		d := build()
-		setup(d)
-		assert.LessOrEqual(t, renderedRows(d.View()), budget, "%s", name)
-	}
+	test("plain", func(*nodeDetail) {})
+	test("editor", func(d *nodeDetail) { d.mode = detailInputEnginePort })
+	test("status", func(d *nodeDetail) { d.status.error("start failed: no such engine") })
+	test("editor+status", func(d *nodeDetail) {
+		d.mode = detailInputModelName
+		d.status.error("download failed")
+	})
+	test("hardware", func(d *nodeDetail) {
+		d.telemetryOK = true
+		d.telemetry = nodeTelemetry{TelemetryValid: true}
+		d.SetSize(w, budget)
+	})
 }
 
 // TestEveryViewRendersWithinBudget is the blanket guard.

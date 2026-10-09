@@ -19,27 +19,21 @@ import (
 )
 
 func TestTLSClientOptionsValidate(t *testing.T) {
-	cases := []struct {
-		name string
-		o    tlsClientOptions
-		ok   bool
-	}{
-		{"none", tlsClientOptions{}, true},
-		{"ca only", tlsClientOptions{CABundlePath: "ca.pem"}, true},
-		{"cert+key", tlsClientOptions{CertPath: "c", KeyPath: "k"}, true},
-		{"cert without key", tlsClientOptions{CertPath: "c"}, false},
-		{"key without cert", tlsClientOptions{KeyPath: "k"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.o.validate()
-			if tc.ok {
-				require.NoError(t, err, "validate()")
+	test := func(name string, options tlsClientOptions, wantOK bool) {
+		t.Run(name, func(t *testing.T) {
+			err := options.validate()
+			if wantOK {
+				require.NoError(t, err)
 			} else {
-				require.Error(t, err, "validate()")
+				require.Error(t, err)
 			}
 		})
 	}
+	test("none", tlsClientOptions{}, true)
+	test("ca only", tlsClientOptions{CABundlePath: "ca.pem"}, true)
+	test("cert+key", tlsClientOptions{CertPath: "c", KeyPath: "k"}, true)
+	test("cert without key", tlsClientOptions{CertPath: "c"}, false)
+	test("key without cert", tlsClientOptions{KeyPath: "k"}, false)
 }
 
 // TestBuildTLSClientUnconfiguredIsNil is the dormant-by-default guarantee: with

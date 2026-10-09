@@ -59,19 +59,23 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 	waitForResponse(t, msgs, 5*time.Second)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	for _, host := range []string{"127.0.0.1", "[::1]"} {
-		resp, err := client.Post(
-			fmt.Sprintf("http://%s:%d/api/chat", host, aliasPort),
-			"application/json",
-			strings.NewReader(`{"model":"alias-e2e-model","messages":[]}`),
-		)
-		require.NoError(t, err, "POST through inherited OLLAMA_HOST alias (%v, %v)", host, err)
-		body, readErr := io.ReadAll(resp.Body)
-		assert.NoError(t, readErr)
-		_ = resp.Body.Close()
-		require.Equal(t, http.StatusOK, resp.StatusCode, "alias (%v, %v)", host, body)
-		require.Contains(t, string(body), "routed-through-alias", "alias (%v, %v)", host, body)
+	test := func(name, host string) {
+		t.Run(name, func(t *testing.T) {
+			resp, err := client.Post(
+				fmt.Sprintf("http://%s:%d/api/chat", host, aliasPort),
+				"application/json",
+				strings.NewReader(`{"model":"alias-e2e-model","messages":[]}`),
+			)
+			require.NoError(t, err, "POST through inherited OLLAMA_HOST alias")
+			body, readErr := io.ReadAll(resp.Body)
+			assert.NoError(t, readErr)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode, "alias response %s", body)
+			require.Contains(t, string(body), "routed-through-alias", "alias response")
+		})
 	}
+	test("IPv4 loopback", "127.0.0.1")
+	test("IPv6 loopback", "[::1]")
 
 	wantStates := map[string]bool{"running": false, "completed": false}
 	deadline := time.After(10 * time.Second)

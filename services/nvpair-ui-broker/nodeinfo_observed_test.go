@@ -22,18 +22,8 @@ import (
 // the notification leaves address ranking with no peer evidence at all while every
 // component's own unit tests still pass.
 func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		from  string
-		addrs []string
-	}{
-		{"a reported set", `{"addresses":["10.172.54.70","10.0.0.5"]}`, []string{"10.172.54.70", "10.0.0.5"}},
-		// An empty set is a withdrawal, not a no-op: it retires evidence whose TTL
-		// expired, and suppressing it would leave the scanner ranking on a link
-		// that has gone away.
-		{"a withdrawal", `{"addresses":[]}`, []string{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, from string, addrs []string) {
+		t.Run(name, func(t *testing.T) {
 			brokerSide, scannerSide := net.Pipe()
 			t.Cleanup(func() {
 				_ = brokerSide.Close()
@@ -56,17 +46,22 @@ func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
 				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			}()
 
-			b.forwardNodeInfoNotification(noderec.NotifyObservedAddresses, json.RawMessage(tc.from))
+			b.forwardNodeInfoNotification(noderec.NotifyObservedAddresses, json.RawMessage(from))
 
 			select {
 			case msg := <-relayed:
 				require.Equal(t, noderec.MethodSetObservedAddresses, msg.Method, "relayed method")
 				var got noderec.ObservedAddressesParams
 				require.NoError(t, json.Unmarshal(msg.Params, &got), "decode relayed params")
-				require.Equal(t, tc.addrs, append([]string{}, got.Addresses...), "relayed addresses")
+				require.Equal(t, addrs, append([]string{}, got.Addresses...), "relayed addresses")
 			case <-time.After(2 * time.Second):
 				require.FailNow(t, "observed addresses never reached the scanner")
 			}
 		})
 	}
+	test("a reported set", `{"addresses":["10.172.54.70","10.0.0.5"]}`, []string{"10.172.54.70", "10.0.0.5"})
+	// An empty set is a withdrawal, not a no-op: it retires evidence whose TTL
+	// expired, and suppressing it would leave the scanner ranking on a link
+	// that has gone away.
+	test("a withdrawal", `{"addresses":[]}`, []string{})
 }

@@ -312,15 +312,16 @@ func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) 
 func TestNodeAddValidationErrors(t *testing.T) {
 	m, rw, _ := newTestManager()
 
-	m.handleMessage(requestMessageRaw(t, 1, "node/add", json.RawMessage(`"bad"`)))
-	resp := readCaptureFrame(t, rw)
-	require.NotNil(t, resp.Error, "malformed params error")
-	assert.Equal(t, -32602, resp.Error.Code, "malformed params error")
-
-	m.handleMessage(requestMessage(t, 2, "node/add", ManualEntry{}))
-	resp = readCaptureFrame(t, rw)
-	require.NotNil(t, resp.Error, "missing address error")
-	assert.Equal(t, -32602, resp.Error.Code, "missing address error")
+	test := func(name string, request *Message) {
+		t.Run(name, func(t *testing.T) {
+			m.handleMessage(request)
+			resp := readCaptureFrame(t, rw)
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, -32602, resp.Error.Code)
+		})
+	}
+	test("malformed params", requestMessageRaw(t, 1, "node/add", json.RawMessage(`"bad"`)))
+	test("missing address", requestMessage(t, 2, "node/add", ManualEntry{}))
 
 	require.Empty(t, m.listNodes(), "validation errors added nodes")
 }

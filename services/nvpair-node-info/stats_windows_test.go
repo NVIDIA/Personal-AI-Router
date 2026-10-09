@@ -22,20 +22,13 @@ import (
 // bit-reinterpretation for the signed HighPart rather than numeric sign-
 // extension.
 func TestLuidKey(t *testing.T) {
-	cases := []struct {
-		name string
-		low  uint32
-		high int32
-		want string
-	}{
-		{"typical", 0x000054F0, 0x00000000, "luid_0x00000000_0x000054f0_phys_0"},
-		{"high-bit-set", 0xDEADBEEF, -1, "luid_0xffffffff_0xdeadbeef_phys_0"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, luidKey(c.low, c.high), "luidKey")
+	test := func(name string, low uint32, high int32, want string) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, luidKey(low, high))
 		})
 	}
+	test("typical", 0x000054F0, 0x00000000, "luid_0x00000000_0x000054f0_phys_0")
+	test("high-bit-set", 0xDEADBEEF, -1, "luid_0xffffffff_0xdeadbeef_phys_0")
 }
 
 // TestPDHFmtCounterValueSize pins the scalar pdhFmtCounterValue to the

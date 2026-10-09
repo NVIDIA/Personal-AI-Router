@@ -35,14 +35,16 @@ func TestLlamaCPPProfile(t *testing.T) {
 func TestLlamaCPPModelListRoutes(t *testing.T) {
 	profile, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")
-	for _, path := range []string{"/models", "/v1/models"} {
-		t.Run(path, func(t *testing.T) {
+	test := func(name, path string) {
+		t.Run(name, func(t *testing.T) {
 			route, ok := profile.routeFor(http.MethodGet, path)
 			require.True(t, ok, "model list route is not classified")
 			require.Equal(t, roleModelListOpenAIGET, route.Role, "model list route")
 			require.Equal(t, "/models", route.upstreamPath(), "upstream model list path")
 		})
 	}
+	test("native model list", "/models")
+	test("OpenAI model list", "/v1/models")
 }
 
 // Routes is a classifier, not an allowlist. handlePlain forwards every
@@ -115,24 +117,20 @@ func TestModelNaming(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	for _, tc := range []struct {
-		profile engineProfile
-		in      string
-		want    string
-	}{
-		{ollama, "llama3", "llama3:latest"},
-		{ollama, "llama3:latest", "llama3:latest"},
-		{ollama, "llama3:8b", "llama3:8b"},
-		{ollama, "registry.example/llama3", "registry.example/llama3:latest"},
-		{ollama, "llama3@sha256:abc", "llama3@sha256:abc"},
-		{ollama, "", ""},
-
-		{lmstudio, "qwen3-8b", "qwen3-8b"},
-		{lmstudio, "qwen3-8b:latest", "qwen3-8b:latest"},
-		{lmstudio, "", ""},
-	} {
-		assert.Equal(t, tc.want, tc.profile.normalizeModel(tc.in), "%s normalizeModel(%q)", tc.profile.Name, tc.in)
+	test := func(name string, profile engineProfile, in, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, profile.normalizeModel(in))
+		})
 	}
+	test("Ollama default tag", ollama, "llama3", "llama3:latest")
+	test("Ollama explicit default tag", ollama, "llama3:latest", "llama3:latest")
+	test("Ollama explicit tag", ollama, "llama3:8b", "llama3:8b")
+	test("Ollama registry prefix", ollama, "registry.example/llama3", "registry.example/llama3:latest")
+	test("Ollama digest", ollama, "llama3@sha256:abc", "llama3@sha256:abc")
+	test("Ollama empty name", ollama, "", "")
+	test("LM Studio untagged name", lmstudio, "qwen3-8b", "qwen3-8b")
+	test("LM Studio exact tag", lmstudio, "qwen3-8b:latest", "qwen3-8b:latest")
+	test("LM Studio empty name", lmstudio, "", "")
 }
 
 func TestNodeAdvertisesModelUsesTheProfilesNaming(t *testing.T) {

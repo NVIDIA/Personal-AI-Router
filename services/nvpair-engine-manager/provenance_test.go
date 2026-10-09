@@ -154,7 +154,7 @@ func TestUninstallManagedCarriesOnPastAPartialRemoval(t *testing.T) {
 	// The engine's bin directory cannot be emptied, so the binary survives and
 	// the engine is still detected. Its cache can be, and goes.
 	require.NoError(t, os.Chmod(filepath.Dir(stuckBinary), 0o500))
-	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(stuckBinary), 0o700) })
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(filepath.Dir(stuckBinary), 0o700), "restore directory permissions") })
 	stuck := vendorEngineManifest(stuckRoot, filepath.Join(stuckRoot, "models"), []string{stuckRoot})
 	stuck.Engine = "stuck"
 

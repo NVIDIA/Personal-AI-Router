@@ -145,39 +145,18 @@ func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
 	ready := &proxyProcess{facadeState: readyFacade(engine, 11434)}
 	notReady := &proxyProcess{}
 
-	for _, tc := range []struct {
-		name string
-		pp   *proxyProcess
-		err  error
-		want bool
-	}{
-		{
-			// A timeout or closed pipe: the child does the bind, two notifies
-			// and the serve inside the call, so it may genuinely be serving.
-			name: "unanswered enable, facade reported ready",
-			pp:   ready, err: context.DeadlineExceeded, want: true,
-		},
-		{
-			name: "unanswered enable, facade never reported ready",
-			pp:   notReady, err: context.DeadlineExceeded, want: false,
-		},
-		{
-			// The child answered, so it decided against the facade and
-			// withdrew it: an earlier ready from the same attempt is stale.
-			name: "answered rejection, stale ready ignored",
-			pp:   ready, err: fmt.Errorf("%w: rejected", errRPCAnswered), want: false,
-		},
-		{
-			name: "answered bind failure, stale ready ignored",
-			pp:   ready,
-			err:  fmt.Errorf("%w: %w: taken", errRPCAnswered, errFacadeBindFailed),
-			want: false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, facadeCameUpAnyway(tc.pp, engine, tc.err), "facadeCameUpAnyway")
+	test := func(name string, pp *proxyProcess, err error, want bool) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, facadeCameUpAnyway(pp, engine, err))
 		})
 	}
+	// The child does the bind, notifications and serve inside an unanswered call,
+	// so it may genuinely be serving despite a timeout or closed pipe.
+	test("unanswered enable, facade reported ready", ready, context.DeadlineExceeded, true)
+	test("unanswered enable, facade never reported ready", notReady, context.DeadlineExceeded, false)
+	// An answered rejection withdraws the facade, making an earlier ready stale.
+	test("answered rejection, stale ready ignored", ready, fmt.Errorf("%w: rejected", errRPCAnswered), false)
+	test("answered bind failure, stale ready ignored", ready, fmt.Errorf("%w: %w: taken", errRPCAnswered, errFacadeBindFailed), false)
 }
 
 // readyFacade is the handle state one engine's facade would leave behind after
@@ -391,60 +370,21 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 // names, so it has to see through the address. An unaddressed notification is
 // process-scoped and passes through untouched.
 func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		profile engineProxyProfile
-		method  string
-		want    string
-		ok      bool
-	}{
-		{
-			name:    "own address is stripped",
-			profile: ollamaProxyProfile,
-			method:  ollamaProxyProfile.addressed("ready"),
-			want:    "ready",
-			ok:      true,
-		},
-		{
-			// forwardProxyProcessNotification routes by engine before this
-			// reader sees anything, so reaching it with another engine's
-			// address means addressing broke. Forwarding it would file one
-			// engine's event under another.
-			name:    "another engine's address is dropped",
-			profile: ollamaProxyProfile,
-			method:  lmstudioProxyProfile.addressed("ready"),
-			ok:      false,
-		},
-		{
-			name:    "process-scoped method passes through",
-			profile: ollamaProxyProfile,
-			method:  "workload:started",
-			want:    "workload:started",
-			ok:      true,
-		},
-		{
-			// The errors relay matches bare names, so an addressed error has to
-			// come out as errors:report and not as ollama:errors:report.
-			name:    "addressed error becomes a bare errors method",
-			profile: ollamaProxyProfile,
-			method:  ollamaProxyProfile.addressed(methodErrorsReport),
-			want:    methodErrorsReport,
-			ok:      true,
-		},
-		{
-			name:    "unaddressed error is untouched",
-			profile: lmstudioProxyProfile,
-			method:  methodErrorsReport,
-			want:    methodErrorsReport,
-			ok:      true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := facadeMethodFor(tc.profile, tc.method)
-			require.Equal(t, tc.ok, ok, "facadeMethodFor")
+	test := func(name string, profile engineProxyProfile, method, want string, wantOK bool) {
+		t.Run(name, func(t *testing.T) {
+			got, ok := facadeMethodFor(profile, method)
+			require.Equal(t, wantOK, ok)
 			if ok {
-				require.Equal(t, tc.want, got, "facadeMethodFor")
+				require.Equal(t, want, got)
 			}
 		})
 	}
+	test("own address is stripped", ollamaProxyProfile, ollamaProxyProfile.addressed("ready"), "ready", true)
+	// Another engine's address means routing broke: forwarding would file one
+	// engine's event under another.
+	test("another engine's address is dropped", ollamaProxyProfile, lmstudioProxyProfile.addressed("ready"), "", false)
+	test("process-scoped method passes through", ollamaProxyProfile, "workload:started", "workload:started", true)
+	// The errors relay matches bare names, so an addressed error must come out bare.
+	test("addressed error becomes a bare errors method", ollamaProxyProfile, ollamaProxyProfile.addressed(methodErrorsReport), methodErrorsReport, true)
+	test("unaddressed error is untouched", lmstudioProxyProfile, methodErrorsReport, methodErrorsReport, true)
 }

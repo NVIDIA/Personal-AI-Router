@@ -179,47 +179,26 @@ func TestReconcileUnmanagedProxyPortLeavesFreePortAlone(t *testing.T) {
 // argv carries only process-scoped flags, because a single-valued flag cannot
 // express a different port plan per engine.
 func TestOllamaFacadeSpec(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		startupPort int
-		alias       ollamaHostAlias
-		want        enableFacadeRequest
-	}{
-		{
-			name:        "managed facade",
-			startupPort: managedOllamaFacadePort,
-			want: enableFacadeRequest{
-				Engine:              "ollama",
-				Port:                managedOllamaFacadePort,
-				IgnorePersistedPort: true,
-			},
-		},
-		{
-			// No port named, so the child keeps its persisted one. Naming a port
-			// here would override whatever the user last chose via set-port.
-			name:        "no startup port leaves the proxy on its persisted or default port",
-			startupPort: 0,
-			want:        enableFacadeRequest{Engine: "ollama"},
-		},
-		{
-			name:        "inherited OLLAMA_HOST alias is threaded through",
-			startupPort: managedOllamaFacadePort,
-			alias:       ollamaHostAlias{Address: "127.0.0.1:11433", AlternateAddress: "[::1]:11433"},
-			want: enableFacadeRequest{
-				Engine:              "ollama",
-				Port:                managedOllamaFacadePort,
-				IgnorePersistedPort: true,
-				AliasAddresses:      []string{"127.0.0.1:11433", "[::1]:11433"},
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, startupPort int, alias ollamaHostAlias, want enableFacadeRequest) {
+		t.Run(name, func(t *testing.T) {
 			b := &Broker{}
-			b.ollamaState().startupPort.Store(int32(tc.startupPort))
+			b.ollamaState().startupPort.Store(int32(startupPort))
 
-			require.Equal(t, tc.want, b.ollamaFacadeSpec(tc.alias), "facade spec")
+			require.Equal(t, want, b.ollamaFacadeSpec(alias), "facade spec")
 		})
 	}
+	test("managed facade", managedOllamaFacadePort, ollamaHostAlias{}, enableFacadeRequest{
+		Engine: "ollama", Port: managedOllamaFacadePort, IgnorePersistedPort: true,
+	})
+	// No port named, so the child keeps its persisted one. Naming a port here
+	// would override whatever the user last chose via set-port.
+	test("no startup port preserves persisted or default port", 0, ollamaHostAlias{}, enableFacadeRequest{Engine: "ollama"})
+	test("inherited OLLAMA_HOST alias is threaded through", managedOllamaFacadePort,
+		ollamaHostAlias{Address: "127.0.0.1:11433", AlternateAddress: "[::1]:11433"},
+		enableFacadeRequest{
+			Engine: "ollama", Port: managedOllamaFacadePort, IgnorePersistedPort: true,
+			AliasAddresses: []string{"127.0.0.1:11433", "[::1]:11433"},
+		})
 }
 
 // serveFacadeEnable answers facade/enable frames on a pipe, recording the port
@@ -240,7 +219,7 @@ func serveFacadeEnable(t *testing.T, conn net.Conn, reject map[int]bool, attempt
 				continue
 			}
 			var spec enableFacadeRequest
-			if err := json.Unmarshal(msg.Params, &spec); !assert.NoError(t, err) {
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &spec)) {
 				return
 			}
 			attempts <- spec

@@ -24,11 +24,7 @@ import (
 // a test process is unset and lipgloss then drops colour from the output
 // entirely: the rendered strings for a right and a wrong pairing are identical.
 func TestTextOnAnAdaptiveBackgroundAdaptsToo(t *testing.T) {
-	cases := map[string]lipgloss.Style{
-		"active tab":         tabActiveStyle,
-		"selected table row": tableStyles().Selected,
-	}
-	for name, style := range cases {
+	test := func(name string, style lipgloss.Style) {
 		t.Run(name, func(t *testing.T) {
 			_, bgAdaptive := style.GetBackground().(lipgloss.AdaptiveColor)
 			if !bgAdaptive {
@@ -42,6 +38,8 @@ func TestTextOnAnAdaptiveBackgroundAdaptsToo(t *testing.T) {
 			assert.NotEqual(t, fg.Light, fg.Dark, "foreground must suit both the light and dark backgrounds")
 		})
 	}
+	test("active tab", tabActiveStyle)
+	test("selected table row", tableStyles().Selected)
 }
 
 // TestAppearanceOverrideIsExplicit checks the flag accepts exactly the three
@@ -53,24 +51,31 @@ func TestTextOnAnAdaptiveBackgroundAdaptsToo(t *testing.T) {
 // so falling back to detection leaves them exactly where they started with no
 // indication why.
 func TestAppearanceOverrideIsExplicit(t *testing.T) {
-	good := map[string]Appearance{
-		"auto":    AppearanceAuto,
-		"":        AppearanceAuto,
-		"light":   AppearanceLight,
-		"dark":    AppearanceDark,
-		"  Dark ": AppearanceDark,
-		"LIGHT":   AppearanceLight,
+	accept := func(name, in string, want Appearance) {
+		t.Run(name, func(t *testing.T) {
+			got, ok := ParseAppearance(in)
+			assert.True(t, ok)
+			assert.Equal(t, want, got)
+		})
 	}
-	for in, want := range good {
-		got, ok := ParseAppearance(in)
-		assert.True(t, ok, "appearance %q", in)
-		assert.Equal(t, want, got, "appearance %q", in)
+	reject := func(name, in string) {
+		t.Run(name, func(t *testing.T) {
+			_, ok := ParseAppearance(in)
+			assert.False(t, ok, "appearance must be refused")
+		})
 	}
-
-	for _, in := range []string{"lite", "black", "white", "true", "1", "no"} {
-		_, ok := ParseAppearance(in)
-		assert.False(t, ok, "appearance %q should be refused", in)
-	}
+	accept("automatic detection", "auto", AppearanceAuto)
+	accept("empty uses detection", "", AppearanceAuto)
+	accept("light", "light", AppearanceLight)
+	accept("dark", "dark", AppearanceDark)
+	accept("case and whitespace", "  Dark ", AppearanceDark)
+	accept("uppercase", "LIGHT", AppearanceLight)
+	reject("misspelled light", "lite")
+	reject("background color black", "black")
+	reject("background color white", "white")
+	reject("boolean true", "true")
+	reject("numeric boolean", "1")
+	reject("boolean no", "no")
 }
 
 // TestStartAppearanceSettlesBeforeTheFirstFrame checks the background is

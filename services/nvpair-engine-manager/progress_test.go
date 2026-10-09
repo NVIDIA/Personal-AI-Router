@@ -132,7 +132,7 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 	payload := []byte("engine payload")
 	sum := sha256.Sum256(payload)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(payload)
+		writeTestResponse(t, w, payload)
 	}))
 	defer srv.Close()
 	bin := filepath.Join(t.TempDir(), "engine"+exeExt())

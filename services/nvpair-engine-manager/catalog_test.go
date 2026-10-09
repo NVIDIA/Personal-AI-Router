@@ -96,7 +96,7 @@ func TestLmStudioCatalogCoalescesConcurrentCallers(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		<-release // hold the request open so the callers genuinely overlap
-		_, _ = w.Write([]byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
+		writeTestResponse(t, w, []byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
 	}))
 	defer srv.Close()
 
@@ -140,7 +140,7 @@ func TestLmStudioCatalogBacksOffAfterFailure(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
+		writeTestResponse(t, w, []byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
 	}))
 	defer srv.Close()
 
@@ -193,25 +193,27 @@ func TestLmStudioCatalogBacksOffWithNothingCached(t *testing.T) {
 	c.lmStudio.mu.Lock()
 	c.lmStudio.failed = time.Now().Add(-2 * catalogRetryAfterFailure)
 	c.lmStudio.mu.Unlock()
-	_, _, _ = c.lmStudio.get(context.Background())
+	_, _, err := c.lmStudio.get(context.Background())
+	assert.Error(t, err, "retry against a failing upstream must still report failure")
 	assert.Equal(t, int32(2), requests.Load(), "backoff expiry must permit a second attempt")
 }
 
 func TestNormalizeCatalogEngine(t *testing.T) {
-	expectNormalized := func(in, want string) {
-		t.Helper()
-		assert.Equal(t, want, normalizeCatalogEngine(in), "normalizeCatalogEngine(%q)", in)
+	test := func(name, input, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, normalizeCatalogEngine(input))
+		})
 	}
-	expectNormalized("ollama", "ollama")
-	expectNormalized("Ollama", "ollama")
-	expectNormalized("  ollama ", "ollama")
-	expectNormalized("lmstudio", "lmstudio")
-	expectNormalized("LM Studio", "lmstudio")
-	expectNormalized("lm-studio", "lmstudio")
-	expectNormalized("llamacpp", "llamacpp")
-	expectNormalized("llama-cpp", "llamacpp")
-	expectNormalized("llama.cpp", "llamacpp")
-	expectNormalized("vllm", "vllm")
+	test("canonical Ollama", "ollama", "ollama")
+	test("case insensitive Ollama", "Ollama", "ollama")
+	test("trimmed Ollama", "  ollama ", "ollama")
+	test("canonical LM Studio", "lmstudio", "lmstudio")
+	test("spaced LM Studio", "LM Studio", "lmstudio")
+	test("hyphenated LM Studio", "lm-studio", "lmstudio")
+	test("canonical llama.cpp", "llamacpp", "llamacpp")
+	test("hyphenated llama.cpp", "llama-cpp", "llamacpp")
+	test("dotted llama.cpp", "llama.cpp", "llamacpp")
+	test("other engine preserved", "vllm", "vllm")
 }
 
 // TestCatalogRejectsUnknownEngine checks an engine with no curated source errors
@@ -255,17 +257,18 @@ func TestFilterForTarget(t *testing.T) {
 	}
 
 	assert.Len(t, filterForTarget(models, "darwin", "arm64"), 2, "Apple Silicon target must keep both models")
-	for _, target := range []struct{ platform, arch string }{
-		{"darwin", "amd64"},
-		{"darwin", ""},
-		{"linux", "arm64"},
-		{"windows", "amd64"},
-	} {
-		got := filterForTarget(models, target.platform, target.arch)
-		if assert.Len(t, got, 1, "%s/%s target must keep only the portable model", target.platform, target.arch) {
-			assert.Equal(t, "plain/gguf", got[0].ID, "%s/%s target", target.platform, target.arch)
-		}
+	test := func(name, platform, arch string) {
+		t.Run(name, func(t *testing.T) {
+			got := filterForTarget(models, platform, arch)
+			if assert.Len(t, got, 1, "target must keep only the portable model") {
+				assert.Equal(t, "plain/gguf", got[0].ID)
+			}
+		})
 	}
+	test("Intel Mac", "darwin", "amd64")
+	test("Mac with unknown architecture", "darwin", "")
+	test("ARM Linux", "linux", "arm64")
+	test("Windows", "windows", "amd64")
 }
 
 // TestCatalogEchoesTarget checks the reply says which machine it was filtered
@@ -439,7 +442,7 @@ func llamaCPPServer(t *testing.T, failAuthor string) (*httptest.Server, func() [
 		case search != "":
 			rows = []hfModelRow{ggufRow("found/"+strings.ReplaceAll(search, " ", "-"), 1)}
 		}
-		_ = json.NewEncoder(w).Encode(rows)
+		assert.NoError(t, json.NewEncoder(w).Encode(rows), "encode catalog response")
 	}))
 	t.Cleanup(srv.Close)
 	return srv, func() []string {
