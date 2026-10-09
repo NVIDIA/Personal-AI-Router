@@ -62,32 +62,32 @@ The [Upgrade Guide](upgrade-guide.mdx) walks through each of these.
 
 - Added Anthropic Messages API routing through Ollama and LM Studio, so
   compatible clients such as Claude Code can use PAIR's model-aware routing and
-  failover. Thanks @Ratherrayees!
+  failover. Thanks [@Ratherrayees](https://github.com/Ratherrayees)!
   ([#27](https://github.com/NVIDIA/Personal-AI-Router/pull/27))
 - Made engine monitoring more efficient by reusing HTTP connections for health
-  checks. Thanks @Psych0h3ad!
+  checks. Thanks [@Psych0h3ad](https://github.com/Psych0h3ad)!
   ([#37](https://github.com/NVIDIA/Personal-AI-Router/pull/37))
 - Fixed unnecessary cluster trust refreshes: notifications are now sent only
-  after new peer endorsements are saved. Thanks @RecursiveIntell!
+  after new peer endorsements are saved. Thanks [@RecursiveIntell](https://github.com/RecursiveIntell)!
   ([#62](https://github.com/NVIDIA/Personal-AI-Router/pull/62))
 - Fixed workload synchronization between nodes: broadcasts preserve event
   order, and a failed broker notification stays eligible for retry. Thanks
-  @mkalkere! ([#80](https://github.com/NVIDIA/Personal-AI-Router/pull/80))
+  [@mkalkere](https://github.com/mkalkere)! ([#80](https://github.com/NVIDIA/Personal-AI-Router/pull/80))
 - Fixed scheduler priority updates being marked as delivered after a failed
   notification, so they are retried and the status stays accurate. Thanks
-  @sylvesterkaczmarek!
+  [@sylvesterkaczmarek](https://github.com/sylvesterkaczmarek)!
   ([#122](https://github.com/NVIDIA/Personal-AI-Router/pull/122))
 - Isolated the service integration and proxy failover tests from local PAIR
   settings, so tests no longer read or overwrite a developer's configuration.
-  Thanks @somtri! ([#95](https://github.com/NVIDIA/Personal-AI-Router/pull/95))
+  Thanks [@somtri](https://github.com/somtri)! ([#95](https://github.com/NVIDIA/Personal-AI-Router/pull/95))
 - Corrected the release-intent examples to use the required services version
-  key. Thanks @somtri!
+  key. Thanks [@somtri](https://github.com/somtri)!
   ([#120](https://github.com/NVIDIA/Personal-AI-Router/pull/120))
 - Updated the contributor instructions to branch from and rebase onto
-  `develop`. Thanks @somtri!
+  `develop`. Thanks [@somtri](https://github.com/somtri)!
   ([#126](https://github.com/NVIDIA/Personal-AI-Router/pull/126))
 - Fixed node cards showing only the first GPU on multi-GPU systems; they now
-  show every GPU. Thanks @CryptoJones!
+  show every GPU. Thanks [@CryptoJones](https://github.com/CryptoJones)!
   ([#34](https://github.com/NVIDIA/Personal-AI-Router/pull/34))
 
 ### Special Thanks
@@ -95,9 +95,9 @@ The [Upgrade Guide](upgrade-guide.mdx) walks through each of these.
 Thank you to these community members for sharing ideas, submitting proposals
 and fixes, investigating issues, and testing PAIR:
 
-@XxSilentStormIxX, @agenticocho, @Mayimbe07, @cruzanstx, @pettersandvand,
-@cguldogan, @mkalkere, @CryptoJones, @woodsonl, @stevbev, @habakan, @arcaven,
-@somtri, @imluffy000, @ndizazzo, and @fpvo.
+[@XxSilentStormIxX](https://github.com/XxSilentStormIxX), [@agenticocho](https://github.com/agenticocho), [@Mayimbe07](https://github.com/Mayimbe07), [@cruzanstx](https://github.com/cruzanstx), [@pettersandvand](https://github.com/pettersandvand),
+[@cguldogan](https://github.com/cguldogan), [@mkalkere](https://github.com/mkalkere), [@CryptoJones](https://github.com/CryptoJones), [@woodsonl](https://github.com/woodsonl), [@stevbev](https://github.com/stevbev), [@habakan](https://github.com/habakan), [@arcaven](https://github.com/arcaven),
+[@somtri](https://github.com/somtri), [@imluffy000](https://github.com/imluffy000), [@ndizazzo](https://github.com/ndizazzo), and [@fpvo](https://github.com/fpvo).
 
 We are grateful for every contribution, and for the warm welcome from the local
 AI community.
