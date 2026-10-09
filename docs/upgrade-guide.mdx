@@ -1,0 +1,127 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Upgrade Guide
+
+Updating to PAIR 1.0.0 works the same way as any other update. Your settings,
+cluster membership, and downloaded models all carry over, so for most machines
+there is nothing extra to do. Install the update as described in
+[Keeping PAIR Up to Date](getting-started.mdx#keeping-pair-up-to-date), and
+update each machine in your cluster so they all run the same version.
+
+A few situations call for a small extra step. Each section below says who it
+applies to, so you can skip the ones that do not:
+
+- [On macOS, tidy up the old app](#on-macos-tidy-up-the-old-app)
+- [If an earlier PAIR installed LM Studio for you](#if-an-earlier-pair-installed-lm-studio-for-you)
+- [If you use PAIR from a web page or browser extension](#if-you-use-pair-from-a-web-page-or-browser-extension)
+
+For everything that is new in this release, refer to
+[Release Notes](release-notes.mdx).
+
+## On macOS, Tidy Up the Old App
+
+The macOS application is now called **NVIDIA PAIR**. Earlier versions were
+installed as `PAIR.app`, and because the name changed, the new disk image adds
+`NVIDIA PAIR.app` beside the old app instead of replacing it. Keep just one by
+removing the old app with the uninstaller it includes. The uninstaller keeps
+your settings, cluster membership, engines, and models.
+
+1. Quit PAIR.
+2. In Terminal, run the old app's uninstaller:
+
+   ```bash
+   sudo /Applications/PAIR.app/Contents/Resources/installer-tools/uninstall-macos.sh
+   ```
+
+   It finishes with `User data preserved`. Leave off the `--purge` option, which
+   is only for removing PAIR's data as well.
+3. Open the new disk image, drag **NVIDIA PAIR** to **Applications**, and launch
+   it from there.
+
+The uninstaller is a better choice than dragging the old app to the Trash,
+because it also removes PAIR's firewall rules and the helper that manages them.
+
+If you updated from within PAIR using **Restart & install**, the update was
+applied to your existing app, which keeps working under the `PAIR.app` name.
+PAIR finds its files and data from wherever the app is, not by its name, so
+there is nothing more to do unless you also install `NVIDIA PAIR.app` from the
+disk image, in which case remove `PAIR.app` as above. If PAIR does not reopen
+after **Restart & install**, open it from **Applications**.
+
+## If an Earlier PAIR Installed LM Studio for You
+
+This applies only if you used an earlier version of PAIR to install LM Studio.
+That LM Studio keeps working with PAIR 1.0.0 exactly as before.
+
+What is different is how PAIR cleans up. PAIR now keeps a record of the engines
+it installs, so that removing PAIR, or resetting its data, only ever removes
+engines PAIR put there itself. Earlier versions did not keep that record, so
+PAIR treats an LM Studio they installed as one you installed yourself, and
+leaves it in place. **Uninstall** in LM Studio's **Engine settings** says so,
+and **Reset app data** and uninstalling PAIR skip it.
+
+If you are happy to keep LM Studio, you do not need to do anything. If you would
+rather remove it, or have PAIR manage it from now on, follow these steps. They
+keep the models you downloaded.
+
+1. If you also use the LM Studio desktop application, remove LM Studio through
+   that application instead, since it shares the same `.lmstudio` folder.
+2. Quit PAIR, which stops the LM Studio server it started.
+3. Stop LM Studio and delete everything in `.lmstudio` except the `models`
+   folder.
+
+   On macOS or Linux:
+
+   ```bash
+   ~/.lmstudio/bin/lms server stop
+   find ~/.lmstudio -mindepth 1 -maxdepth 1 ! -name models -exec rm -rf {} +
+   ```
+
+   On Windows, in PowerShell:
+
+   ```powershell
+   & "$env:USERPROFILE\.lmstudio\bin\lms.exe" server stop
+   Get-ChildItem "$env:USERPROFILE\.lmstudio" -Force |
+     Where-Object Name -ne 'models' |
+     Remove-Item -Recurse -Force
+   ```
+
+   To remove your downloaded LM Studio models too, delete the whole `.lmstudio`
+   folder instead.
+
+To have PAIR manage LM Studio from now on, install it again from
+**Engine settings** after these steps. PAIR keeps a record of that install, and
+your kept `models` folder is still there for it to use.
+
+## If You Use PAIR from a Web Page or Browser Extension
+
+This applies only to browser-based clients. Command-line tools, IDEs, agents,
+and desktop applications are not affected.
+
+PAIR's local endpoints now use each engine's own browser access setting, known
+as CORS, rather than allowing every website. That means a web page can reach
+your models through PAIR only if you have allowed it in the engine. If a
+browser-based client stopped connecting after the update, add its address in
+the engine's launch options:
+
+| Engine | Setting |
+| --- | --- |
+| Ollama | `OLLAMA_ORIGINS`, for example `OLLAMA_ORIGINS="https://example.com"` |
+| LM Studio | The `--cors` switch |
+| llama.cpp | `--cors-origins` |
+
+Make the change on the machine that runs the engine. Include the address's
+scheme, such as `https://`; a wildcard on its own (`*`) or a bare `localhost`
+is not accepted. If requests can be routed to other machines in your cluster,
+allow the address on each of them. [Engine Settings](engine-settings.mdx) has
+the details.
+
+## Checking Everything Is Working
+
+After updating each machine, you can confirm that **Settings → Service** shows
+the new version, its engines are running in **Overview**, and its paired
+machines are still listed. If anything looks wrong,
+[Troubleshooting](troubleshooting.mdx) can help.
