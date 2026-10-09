@@ -353,10 +353,10 @@ Shuts down on stdin EOF (parent closed the pipe), `SIGINT`/`SIGTERM`, or a
 are orphaned.
 
 That engine sweep (`StopAll`) runs **exactly once per process**, and every
-caller returns only once it has finished. An ordinary desktop quit asks for it
-three times: the desktop sends `engine:prepare-shutdown`, the broker sends it
-again from its own teardown, and then closing stdin reaches the EOF path. Each
-is the right trigger for a different way of being shut down, so all three stay.
+caller returns only once it has finished. An ordinary quit asks for it twice:
+the broker sends `engine:prepare-shutdown` from its own teardown, and then
+closing stdin reaches the EOF path. Each is the right trigger for a different
+way of being shut down, so both stay.
 
 Later callers **wait** for the sweep in flight rather than returning early:
 returning early would report engines stopped before they were, and the broker

@@ -127,7 +127,7 @@ type Executor struct {
 	reservedPort atomic.Int32
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
 	shuttingDown atomic.Bool
-	// stopAllOnce collapses the three shutdown entry points into a single sweep.
+	// stopAllOnce collapses the shutdown entry points into a single sweep.
 	// See StopAll.
 	stopAllOnce sync.Once
 	// retryMu guards failedStops: the engines whose stop failed through a

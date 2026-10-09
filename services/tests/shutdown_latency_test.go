@@ -99,14 +99,14 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 }
 
 // TestQuitSweepsEnginesOnce is the end-to-end guard for quit latency, driving
-// the real broker and engine-manager through the exact sequence the desktop
-// uses on quit: engine:prepare-shutdown, then close stdin.
+// the real broker and engine-manager through the sequence the desktop and the
+// TUI use on quit: the broker's shutdown request, then close stdin.
 //
-// Three separate paths ask engine-manager to stop its engines on that sequence
-// — the desktop's engine:prepare-shutdown, the broker's own teardown call, and
-// engine-manager's stdin-EOF path. Each is the right trigger for a different
-// way of being shut down, so all three stay; the sweep behind them must run
-// once.
+// Two separate paths ask engine-manager to stop its engines on that sequence —
+// the broker's engine:prepare-shutdown during its teardown, and
+// engine-manager's stdin-EOF path once the broker closes its stdin. Each is the
+// right trigger for a different way of being shut down, so both stay; the sweep
+// behind them must run once.
 //
 // This counts sweeps rather than milliseconds so it cannot flake on a loaded
 // CI machine. An engine whose stop can only be declined stays marked running,
@@ -131,9 +131,8 @@ func TestQuitSweepsEnginesOnce(t *testing.T) {
 		t.Fatalf("engine:get-installed errored: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
 	}
 
-	// The desktop's quit sequence.
 	started := time.Now()
-	sendReq(t, stdin, 99, "engine:prepare-shutdown")
+	sendReq(t, stdin, 99, "shutdown")
 	sweeps := quitAndCountStderr(t, msgs, stderrLines, foreignStopDeclinedRe, stdin, 99, 30*time.Second)
 	elapsed := time.Since(started)
 
@@ -147,10 +146,10 @@ func TestQuitSweepsEnginesOnce(t *testing.T) {
 	}
 }
 
-// quitAndCountStderr completes the desktop's quit sequence and counts stderr
-// lines matching re until the broker exits. Like the desktop, it closes stdin
-// only once the engine:prepare-shutdown reply (replyID) has arrived. Both
-// streams are drained throughout, so the broker never blocks writing to either.
+// quitAndCountStderr completes a client's quit sequence and counts stderr lines
+// matching re until the broker exits. It closes stdin once the shutdown reply
+// (replyID) has arrived. Both streams are drained throughout, so the broker
+// never blocks writing to either.
 func quitAndCountStderr(t *testing.T, msgs <-chan jsonrpc.Message, lines <-chan string, re *regexp.Regexp, stdin io.Closer, replyID int, timeout time.Duration) int {
 	t.Helper()
 	replied := false
@@ -168,7 +167,7 @@ func quitAndCountStderr(t *testing.T, msgs <-chan jsonrpc.Message, lines <-chan 
 				continue
 			}
 			if msg.Error != nil {
-				t.Fatalf("engine:prepare-shutdown errored: code=%d msg=%s", msg.Error.Code, msg.Error.Message)
+				t.Fatalf("shutdown errored: code=%d msg=%s", msg.Error.Code, msg.Error.Message)
 			}
 			replied = true
 			if err := stdin.Close(); err != nil {
@@ -177,7 +176,7 @@ func quitAndCountStderr(t *testing.T, msgs <-chan jsonrpc.Message, lines <-chan 
 		case line, ok := <-lines:
 			if !ok {
 				if !replied {
-					t.Fatalf("broker exited before replying to engine:prepare-shutdown; counted %d sweep(s)", count)
+					t.Fatalf("broker exited before replying to shutdown; counted %d sweep(s)", count)
 				}
 				return count
 			}

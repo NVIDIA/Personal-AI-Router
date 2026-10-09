@@ -752,12 +752,12 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
 //
-// Three entry points ask for it on an ordinary quit — the
-// engine:prepare-shutdown handler (which the desktop calls directly, and the
-// broker calls again from its own teardown) and the stdin-EOF path in Run —
-// because each is the right trigger for a different way of being shut down: a
-// desktop quit, a TUI or signal shutdown, and a parent that simply severed the
-// pipe.
+// Two entry points ask for it on an ordinary quit — the
+// engine:prepare-shutdown handler, which the broker calls from its own
+// teardown, and the stdin-EOF path in Run, which follows when the broker then
+// closes stdin — because each is the right trigger for a different way of
+// being shut down: a broker ordering its teardown, and a parent that simply
+// severed the pipe.
 //
 // One sweep runs per process, and every caller returns only once it has
 // finished. A caller that returned while the sweep was still running would

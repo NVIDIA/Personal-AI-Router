@@ -87,10 +87,10 @@ func adoptedEngineOnLivePort(t *testing.T, ex *Executor) {
 }
 
 // TestStopAllSweepsOnce is the quit-latency guard. An ordinary quit asks for
-// StopAll three times — the desktop's engine:prepare-shutdown, the broker's own
-// teardown call, and the stdin-EOF path in Run. An engine whose stop can only
-// be declined stays running, so each repeat sweep would re-pay doStop's
-// readiness probe for it.
+// StopAll twice — the broker's engine:prepare-shutdown during its teardown, and
+// the stdin-EOF path in Run once the broker closes stdin. An engine whose stop
+// can only be declined stays running, so each repeat sweep would re-pay
+// doStop's readiness probe for it.
 func TestStopAllSweepsOnce(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	adoptedEngineOnLivePort(t, ex)
