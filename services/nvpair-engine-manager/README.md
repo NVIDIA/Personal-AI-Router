@@ -351,3 +351,17 @@ termination, console hiding) are the only build-tagged Go
 Shuts down on stdin EOF (parent closed the pipe), `SIGINT`/`SIGTERM`, or a
 `shutdown` JSON-RPC request — stopping any running engines first so none
 are orphaned.
+
+That engine sweep (`StopAll`) runs **exactly once per process**, and every
+caller returns only once it has finished. An ordinary quit asks for it twice:
+the broker sends `engine:prepare-shutdown` from its own teardown, and then
+closing stdin reaches the EOF path. Each is the right trigger for a different
+way of being shut down, so both stay.
+
+Later callers **wait** for the sweep in flight rather than returning early:
+returning early would report engines stopped before they were, and the broker
+would close stdin and exit while they were still running. They do not repeat
+the sweep, which would re-pay the readiness probe for every adopted engine whose
+stop is declined. They do retry any engine whose stop failed through a process
+handle or a stop command, such as an `lms server stop` that errored, because
+another attempt can succeed where a declined stop cannot.
