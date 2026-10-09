@@ -40,7 +40,7 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 			if len(preview.Errors) > 0 || preview.Conflict != nil {
 				t.Fatalf("%+v", preview)
 			}
-			rt.LaunchArgs, rt.LaunchEnv = &preview.Args, &preview.Env
+			rt.LaunchArgs, rt.LaunchEnv = preview.Args, preview.Env
 			launch, err := launchForState(settingsState(t, e), preview.Settings.ServerPort)
 			if err != nil {
 				t.Fatal(err)
@@ -90,10 +90,10 @@ func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
 		}
 		if command {
 			args := []string{"-p0"}
-			rt.LaunchArgs = &args
+			rt.LaunchArgs = args
 		} else {
 			env := []string{`OLLAMA_ORIGINS="*"`}
-			rt.LaunchEnv = &env
+			rt.LaunchEnv = env
 		}
 		settingsState(t, e).plat.Runtime = rt
 		if state, err := e.LaunchSettings("fake"); err != nil || !state.Editable {

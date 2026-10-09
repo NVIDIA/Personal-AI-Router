@@ -132,8 +132,5 @@ func (o *startupOutput) failure(err error) error {
 }
 
 func launchDiagnosticArgs(rt Runtime) []string {
-	if rt.LaunchArgs != nil {
-		return *rt.LaunchArgs
-	}
-	return nil
+	return rt.LaunchArgs
 }
