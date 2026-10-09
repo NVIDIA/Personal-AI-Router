@@ -474,7 +474,17 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: http.HandlerFunc(p.soleFacade().handleHTTP)}
+	// Limit the sender as well: default TCP buffers can absorb the entire
+	// five-second paced stream without ever blocking a flush.
+	srv := &http.Server{
+		Handler: http.HandlerFunc(p.soleFacade().handleHTTP),
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if err := c.(*net.TCPConn).SetWriteBuffer(4096); err != nil {
+				t.Errorf("set proxy write buffer: %v", err)
+			}
+			return ctx
+		},
+	}
 	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 
@@ -494,6 +504,11 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 		t.Fatalf("write request: %v", err)
 	}
 
+	// Bound the receive buffer so a paced stream reaches backpressure within
+	// the test budget rather than fitting in host-dependent TCP buffers.
+	if err := conn.(*net.TCPConn).SetReadBuffer(1024); err != nil {
+		t.Fatalf("set client read buffer: %v", err)
+	}
 	// Read the status line only, then stop reading so the proxy's send buffer
 	// backs up and a Flush blocks.
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
