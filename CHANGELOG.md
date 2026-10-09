@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.0 — Personal AI Router 1.0.0
+
+- Cuts release 1.0.0, which collects every change since 0.1.1 listed below. See the [1.0.0 release notes](docs/release-notes.mdx).
+
 ## 0.1.15 — Safer engine removal and data resets (#153)
 
 - Removing an engine never follows a symlink or Windows junction into another folder.
