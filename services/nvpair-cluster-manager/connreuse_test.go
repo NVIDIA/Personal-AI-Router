@@ -104,7 +104,7 @@ func TestPeerClient_ForgetRevokesWithPinStillOnDisk(t *testing.T) {
 	if _, err := m.peerClient(peerUUID); err != nil {
 		t.Fatalf("pinned peer must yield a client: %v", err)
 	}
-	pinPath := m.trust.pinPath(peerUUID)
+	pinPath := mustPinPath(t, m.trust, peerUUID)
 	if _, err := os.Stat(pinPath); err != nil {
 		t.Fatalf("stat pin before Forget: %v", err)
 	}

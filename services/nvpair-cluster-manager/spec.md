@@ -406,7 +406,7 @@ Two integration notes:
     <peerNodeUuid>.json      # 0600; the pin for one peer (schema below)
 ```
 
-**The trusted-node store is a directory, one file per peer, named `<peerNodeUuid>.json`.** The filename *is* the store key (the peer's `nodeUuid` — a v4 UUID, so always a filesystem-safe name on every platform; this is another payoff of keying trust on the UUID rather than a hostname, which would not be a safe filename). Each file holds one pin:
+**The trusted-node store is a directory, one file per peer, named `<peerNodeUuid>.json`.** The filename *is* the store key (the peer's `nodeUuid`, normally a generated v4 UUID). The store validates peer identifiers before loading, pinning, or removing files: identifiers must be nonempty local filename components, with no directory separators, Windows drive/stream syntax, NUL bytes, or native reserved filenames. Both Unix and Windows path syntax is rejected on every platform. Invalid identifiers are rejected rather than cleaned or renamed, and no pin mutation or change notification occurs. Certificate principal matching remains required. Each file holds one pin:
 ```json
 {
   "nodeUuid": "7a1c9e22-44b0-4d3f-8e10-aa55cc77dd99",
