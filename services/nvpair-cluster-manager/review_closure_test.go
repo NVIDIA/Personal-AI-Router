@@ -60,7 +60,7 @@ func TestFailedTeardownBlocksTrustAndReadmission(t *testing.T) {
 		AdmissionEpoch: 1, State: stateMember,
 	})
 
-	pinPath := m.trust.pinPath(peer.uuid)
+	pinPath := mustPinPath(t, m.trust, peer.uuid)
 	if err := os.Remove(pinPath); err != nil {
 		t.Fatal(err)
 	}
