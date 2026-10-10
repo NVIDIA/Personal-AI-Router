@@ -109,6 +109,8 @@ type daemon struct {
 	// same /v1/models fetch, so a transient miss reuses it rather than blanking
 	// a remote node's loaded state. Keyed by hostUuid.
 	lastLoadedByEngine map[string]map[string][]string
+	// Last-successful model VRAM observations, following the inventory cache lifecycle.
+	lastLoadedVRAMByEngine map[string]map[string]map[string]uint64
 	// nodeInfoDown holds the nodes whose last node-info enrichment failed, so
 	// the outage is reported when it starts and when it ends rather than once
 	// per sweep. Guarded by infoMu with the caches it explains: the reason a
@@ -832,6 +834,10 @@ func (d *daemon) dropSelf(oldHostUUID, newHostUUID string) {
 	delete(d.lastModels, oldHostUUID)
 	delete(d.lastModelsByEngine, oldHostUUID)
 	delete(d.lastLoadedByEngine, oldHostUUID)
+	if value, ok := d.lastLoadedVRAMByEngine[oldHostUUID]; ok {
+		d.lastLoadedVRAMByEngine[newHostUUID] = value
+		delete(d.lastLoadedVRAMByEngine, oldHostUUID)
+	}
 	d.infoMu.Unlock()
 	if existed {
 		d.emit(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: oldHostUUID, Name: node.Name})
@@ -1334,11 +1340,11 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 		return
 	}
 	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, em.Port, node.ClusterUUID)
+		models, byEngine, loadedByEngine, loadedVRAMByEngine, fetched := d.fetchModels(host, em.Port, node.ClusterUUID)
 		if !fetched {
 			return modelInventory{}, false
 		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
+		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine, loadedVRAMByEngine: loadedVRAMByEngine}, true
 	}
 	key := hostKey{hostUUID: node.HostUUID, service: noderec.ServiceEngineManager}
 	if _, inventory, ok := askRemembered(&d.enrichHosts, key, hosts, ask); ok {
@@ -1355,21 +1361,28 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 		d.lastModels[node.HostUUID] = inventory.models
 		d.lastModelsByEngine[node.HostUUID] = inventory.byEngine
 		d.lastLoadedByEngine[node.HostUUID] = inventory.loadedByEngine
+		if d.lastLoadedVRAMByEngine == nil {
+			d.lastLoadedVRAMByEngine = make(map[string]map[string]map[string]uint64)
+		}
+		d.lastLoadedVRAMByEngine[node.HostUUID] = inventory.loadedVRAMByEngine
 		d.infoMu.Unlock()
 		node.Models = inventory.models
 		node.ModelsByEngine = inventory.byEngine
 		node.LoadedByEngine = inventory.loadedByEngine
+		node.LoadedVRAMByEngine = inventory.loadedVRAMByEngine
 		return
 	}
 	d.infoMu.Lock()
 	cached, had := d.lastModels[node.HostUUID]
 	cachedByEngine := d.lastModelsByEngine[node.HostUUID]
 	cachedLoaded := d.lastLoadedByEngine[node.HostUUID]
+	cachedVRAM := d.lastLoadedVRAMByEngine[node.HostUUID]
 	d.infoMu.Unlock()
 	if had {
 		node.Models = cached
 		node.ModelsByEngine = cachedByEngine
 		node.LoadedByEngine = cachedLoaded
+		node.LoadedVRAMByEngine = cachedVRAM
 	}
 }
 
@@ -1387,32 +1400,33 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 // dialed over loopback (both callers force that for self), which stays plain and
 // therefore keeps working when this node belongs to no cluster — a standalone
 // machine still has to show its own models.
-func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string, map[string][]string, map[string][]string, bool) {
+func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string, map[string][]string, map[string][]string, map[string]map[string]uint64, bool) {
 	client, scheme, ok := d.modelsClient(ip, clusterUUID)
 	if !ok {
 		slog.Debug("model enrichment skipped: peer is not a pinned cluster member",
 			"ip", ip, "clusterUuid", clusterUUID)
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/models"
 	resp, err := client.Get(url)
 	if err != nil {
 		slog.Debug("model enrichment failed", "ip", ip, "url", url, "err", err)
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	var body struct {
-		Models         []string            `json:"models"`
-		ModelsByEngine map[string][]string `json:"modelsByEngine"`
-		LoadedByEngine map[string][]string `json:"loadedByEngine"`
+		Models             []string                     `json:"models"`
+		ModelsByEngine     map[string][]string          `json:"modelsByEngine"`
+		LoadedByEngine     map[string][]string          `json:"loadedByEngine"`
+		LoadedVRAMByEngine map[string]map[string]uint64 `json:"loadedVramByEngine"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
-	return body.Models, body.ModelsByEngine, body.LoadedByEngine, true
+	return body.Models, body.ModelsByEngine, body.LoadedByEngine, body.LoadedVRAMByEngine, true
 }
 
 // modelsClient picks the transport for a model fetch: the plain client over
@@ -1809,11 +1823,11 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 		hosts = []string{loopbackHost}
 	}
 	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, emPort, clusterUUID)
+		models, byEngine, loadedByEngine, loadedVRAMByEngine, fetched := d.fetchModels(host, emPort, clusterUUID)
 		if !fetched {
 			return modelInventory{}, false
 		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
+		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine, loadedVRAMByEngine: loadedVRAMByEngine}, true
 	}
 	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager}
 	_, inventory, fetched := askRemembered(&d.enrichHosts, key, hosts, ask)
@@ -1842,9 +1856,13 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 	d.lastModels[hostUUID] = models
 	d.lastModelsByEngine[hostUUID] = byEngine
 	d.lastLoadedByEngine[hostUUID] = loadedByEngine
+	if d.lastLoadedVRAMByEngine == nil {
+		d.lastLoadedVRAMByEngine = make(map[string]map[string]map[string]uint64)
+	}
+	d.lastLoadedVRAMByEngine[hostUUID] = inventory.loadedVRAMByEngine
 	d.infoMu.Unlock()
 
-	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, models, byEngine, loadedByEngine)
+	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, models, byEngine, loadedByEngine, inventory.loadedVRAMByEngine)
 	if !valid {
 		return false
 	}
@@ -1864,6 +1882,7 @@ func (d *daemon) forget(hostUUID string) {
 	delete(d.lastModels, hostUUID)
 	delete(d.lastModelsByEngine, hostUUID)
 	delete(d.lastLoadedByEngine, hostUUID)
+	delete(d.lastLoadedVRAMByEngine, hostUUID)
 	delete(d.nodeInfoDown, hostUUID)
 	d.infoMu.Unlock()
 	d.activityMu.Lock()
