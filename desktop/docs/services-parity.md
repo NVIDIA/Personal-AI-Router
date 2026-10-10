@@ -21,7 +21,7 @@ history.
 | Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                      |
 | Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                 |
 | Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                 |
-| Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
+| Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                     |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
 | llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                            |
@@ -485,7 +485,6 @@ provide an equivalent client-facing contract:
 | Responsibility                                              | Location                                         |
 | ----------------------------------------------------------- | ------------------------------------------------ |
 | Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                            |
-| Persist and replay manual node entries                      | `manual-nodes-store.ts`, `modular-supervisor.ts` |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
 | Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |
