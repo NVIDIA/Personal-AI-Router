@@ -662,6 +662,23 @@ func (b *Broker) handleSettingsRelay(raw json.RawMessage) {
 			} else {
 				err = b.rebindSettingsProxy(operation.Engine, operation.Port)
 			}
+		} else if strings.HasPrefix(relay.Method, "settings/") {
+			// A worker reading a node setting (e.g. the engine-manager
+			// checking engine_allow_lan_bind). Forwarded verbatim to
+			// nvpair-node-settings, same as an inbound settings/ request.
+			st := b.getSettings()
+			if st == nil {
+				err = fmt.Errorf("node-settings not available")
+			} else {
+				var res json.RawMessage
+				var rpcErr *RPCError
+				res, rpcErr, err = st.Call(ctx, relay.Method, nil)
+				if rpcErr != nil {
+					err = fmt.Errorf("%s", rpcErr.Message)
+				} else {
+					result = res
+				}
+			}
 		} else {
 			result, err = b.dispatchEngineSettings(ctx, relay.Method, relay.Request, relay.Caller)
 		}

@@ -145,6 +145,10 @@ as a simple ack so React-init code can rely on a single round-trip.
 // cluster-friendly-name (string)
 {"jsonrpc":"2.0","id":8,"method":"settings/get-cluster-friendly-name"}                                  // -> {"value": ""}
 {"jsonrpc":"2.0","id":9,"method":"settings/set-cluster-friendly-name","params":{"value":"Lab 3 desks"}} // -> {"ok": true}
+
+// engine-allow-lan-bind (bool)
+{"jsonrpc":"2.0","id":10,"method":"settings/get-engine-allow-lan-bind"}                                   // -> {"value": false}
+{"jsonrpc":"2.0","id":11,"method":"settings/set-engine-allow-lan-bind","params":{"value": true}}          // -> {"ok": true}
 ```
 
 `settings/get-cluster-id` returns the raw stored `cluster_id`
