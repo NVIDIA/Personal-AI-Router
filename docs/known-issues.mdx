@@ -71,15 +71,23 @@ been seen on macOS.
 `nvpair-tui` is an operations tool for headless machines rather than a full
 replacement. It cannot do any of the following:
 
-- List or delete models
-- Change an engine's port
-- Update an engine
-- Control engines on other nodes
-- Show which node served a workload
+- Update an engine to a newer version
+- Send an inference request of your own
+- Install PAIR updates
+- Survive losing your terminal connection
 
 This matters most for a genuinely headless deployment, where those operations have
 no other route on that machine. Refer to
 [What the Terminal Interface Cannot Do](terminal-interface.mdx#what-the-terminal-interface-cannot-do).
+
+## PAIR Does Not Remove an LM Studio That It Installed Before Version 1.0.0
+
+PAIR removes only the engines it has a record of installing, and versions before
+1.0.0 kept no record. An LM Studio installed by one of those versions is treated
+as your own: **Uninstall**, **Reset app data**, and uninstalling PAIR all leave
+it and `~/.lmstudio` in place. It keeps working with PAIR. To remove it, or to
+let PAIR manage it from now on, refer to
+[If an Earlier PAIR Installed LM Studio for You](upgrade-guide.mdx#if-an-earlier-pair-installed-lm-studio-for-you).
 
 ## Engine Binaries Are Not on Your PATH
 

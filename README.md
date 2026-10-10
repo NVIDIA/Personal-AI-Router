@@ -75,7 +75,7 @@ Release downloads include:
 - a macOS disk image.
 
 **On Windows and macOS,** double-click the download and follow the installer's
-usual prompts — on macOS that means dragging **PAIR** to your
+usual prompts — on macOS that means dragging **NVIDIA PAIR** to your
 **Applications** folder.
 
 **On Linux,** install the package from the directory you downloaded it into:
@@ -101,9 +101,7 @@ you want by its full filename instead.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
   select **Install** next to Ollama, LM Studio, or llama.cpp. PAIR downloads and
-  sets the engine up for you, so nothing needs to be in place beforehand. The
-  llama.cpp install is a separate, on-demand download and is not selected during
-  first-run setup by default.
+  sets the engine up for you, so nothing needs to be in place beforehand.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
@@ -215,7 +213,8 @@ If this machine belongs to a cluster, deal with membership too — otherwise the
 other nodes keep listing it as a member. You have two options:
 
 - **Leave from this machine** before uninstalling: **Settings → Cluster →
-  Leave**, or press `L` on the terminal interface's **Cluster** tab.
+  Leave**, or press `l` on the terminal interface's **Nodes** tab and confirm
+  with `y`.
 - **Remove it from another node**, which any member can do from
   **Settings → Cluster** by removing that node from the list.
 
@@ -231,7 +230,9 @@ Each entry assumes the ones before it.
    together. Start here so the vocabulary in every other document makes sense.
 2. **[Getting started](docs/getting-started.mdx)** — install it, pair two
    machines, prepare a model, and send a first request. This is the only document
-   most users need.
+   most users need. When you update, **[Release notes](docs/release-notes.mdx)**
+   lists what changed and the **[Upgrade guide](docs/upgrade-guide.mdx)** covers
+   any steps the update needs.
 3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
    update, and uninstall engines; what PAIR restores after you quit or relaunch.
 4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and

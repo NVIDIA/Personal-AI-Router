@@ -55,9 +55,9 @@ capacity, model locality, latency, and affinity can grow later behind the same
 - **Simultaneous local burst**: before each auto-routed inference forward, the
   proxy atomically increments a local reservation for its chosen node. Concurrent
   requests therefore see one another even before workload feedback completes.
-- **Cross-engine contention**: an Ollama workload and an LM Studio workload both
-  consume the destination node's execution resources, so either one changes both
-  engine outputs.
+- **Cross-engine contention**: Ollama, LM Studio, and llama.cpp workloads all
+  consume the destination node's execution resources, so any one of them changes
+  every engine output.
 - **Periodic reconciliation**: the runtime-adjustable timer recomputes the same
   order as a safety net even when no fresh event arrives.
 - **Load shifts**: as a node drains it rises toward the top; as it fills it sinks; a
@@ -100,7 +100,7 @@ capacity, model locality, latency, and affinity can grow later behind the same
 - **Manual pin precedence (decided — manual pin wins).** A user `node/select` pin
   overrides the list; the list governs only auto routing (§7.3).
 - **`node/set-priority` proxy semantics (decided — GPU-aware reservations).**
-  Both proxies store the ordered nodes and optional ranks. For auto-routed
+  Every engine facade stores the ordered nodes and optional ranks. For auto-routed
   model-bearing inference they atomically minimize
   `rank.pending + rank.gpuPressure + localReservations` within the best
   model-eligibility tier,
@@ -147,7 +147,7 @@ capacity, model locality, latency, and affinity can grow later behind the same
   (`discovery:nodes-changed`).
 - After each meaningful input change, and on a fixed reconciliation interval
   (default 1 s, runtime-adjustable), compute one node-wide GPU-aware order (§7.2)
-  and publish it through both engine outputs. **Emit `schedule:priority` only when
+  and publish it through every engine output. **Emit `schedule:priority` only when
   its order, pending counts, or pressure changed** (a forced `scheduler:tick`
   re-emits regardless).
 - Emit `errors:report` / `errors:clear` for the Broker to forward to `nvpair-errors`
@@ -157,7 +157,7 @@ capacity, model locality, latency, and affinity can grow later behind the same
 - No network listener, no mDNS, no port — stdio/`--ipc` only.
 - Never addresses a proxy; all delivery/liveness/resync is the Broker's (§7.4).
 - Stateless across restarts; recomputed from live inputs.
-- A fault on one engine must not block the other or crash the loop.
+- A fault on one engine must not block the others or crash the loop.
 - Windows / macOS / Linux × amd64 / arm64. Serialize `stdout` so frames never
   interleave.
 
@@ -205,7 +205,7 @@ Requests (Broker → scheduler):
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `scheduler:get-status` | — | `{ interval_ms, engines: { ollama: EngineSchedule, lmstudio: EngineSchedule } }` |
+| `scheduler:get-status` | — | `{ interval_ms, engines: { ollama: EngineSchedule, lmstudio: EngineSchedule, llamacpp: EngineSchedule } }` |
 | `scheduler:get-interval` | — | `{ interval_ms }` |
 | `scheduler:set-interval` | `{ interval_ms }` | `{ interval_ms }` — live; clamped to the floor (§7.5); effective next tick |
 | `scheduler:tick` | — | `{ ticked: true }` — force an immediate recompute + re-emit (tests/debug) |
@@ -215,7 +215,7 @@ Requests (Broker → scheduler):
 `EngineSchedule`:
 ```json
 {
-  engine: string          // "ollama" | "lmstudio"
+  engine: string          // "ollama" | "lmstudio" | "llamacpp"
   emitted: [NodeRank]      // last order emitted (empty if none yet)
   lastEmittedAt: number    // epoch ms; 0 if never
 }

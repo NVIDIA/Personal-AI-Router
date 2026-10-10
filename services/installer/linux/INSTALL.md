@@ -13,7 +13,7 @@ API and supervises the workers under `bin/`.
 ## 1. Extract
 
 ```bash
-tar xf NVIDIA-Personal-AI-Router-<version>-linux-amd64.tar.gz
+tar xf NVIDIA-Personal-AI-Router-<version>-linux-amd64.tar.gz   # or -linux-arm64
 cd NVIDIA-Personal-AI-Router-<version>
 ```
 
@@ -32,7 +32,8 @@ NVIDIA-Personal-AI-Router-<version>/
 │   ├── nvpair-engine-manager
 │   ├── nvpair-node-settings
 │   ├── nvpair-cluster-manager
-│   └── nvpair-job-scheduler
+│   ├── nvpair-job-scheduler
+│   └── nvpair-tui                    # terminal interface; starts the broker beside it
 └── INSTALL.md                     # this file
 ```
 
@@ -64,9 +65,14 @@ The workers store configuration in `~/.config/Nvidia Corporation/Personal AI Rou
 (manual-node list, log-level preference, cluster identity/pins, etc.). Remove
 that directory too if you want a fully clean slate.
 
+Downloaded models are not in either directory. Each engine keeps them in its own
+store — `~/.ollama`, `~/.lmstudio/models`, and `~/.llamacpp` — so deleting the
+bundle or the configuration directory leaves them in place.
+
 ## Requirements
 
-- 64-bit Linux on `x86_64`. ARM builds are not produced yet.
+- 64-bit Linux on `x86_64` or `arm64` (`aarch64`). Use the archive whose name
+  matches your machine.
 - mDNS on UDP 5353. The workers run their own — a custom per-interface responder
   (`nvpair-shared/mdns`) plus a `grandcat/zeroconf` browser (`nvpair-shared/discovery`),
   bound with `SO_REUSEADDR` — and coexist fine with a system responder like
@@ -77,9 +83,10 @@ that directory too if you want a fully clean slate.
 - **No nodes discovered**: confirm UDP 5353 isn't blocked by your firewall and
   that other machines on the LAN are actually advertising. Run the broker with
   `--log-level debug` to see live discovery logs on stderr.
-- **"Bind: address already in use"**: port 11435 is the Ollama proxy port;
-  another instance of the proxy or another process is holding it. Find the
-  offender with `ss -tlnp | grep 11435` and stop or kill it.
+- **"Bind: address already in use"**: the proxies listen on `11434` (Ollama),
+  `1234` (LM Studio), and `8080` (llama.cpp); another instance of the proxy or
+  another process is holding one of them. Find the offender with
+  `ss -tlnp | grep -E ':(11434|1234|8080)\b'` and stop or kill it.
 
 Report issues at the project's tracker. Include the broker's `--log-level debug`
 output and your distro / kernel version.

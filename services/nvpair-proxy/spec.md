@@ -475,9 +475,9 @@ here.
 
 ### 5.7 Accepted behavior
 
-**An abandoned attempt may still run inside the engine.** Neither engine PAIR
-supports today exposes a way to withdraw a request it has accepted, and both
-queue internally, so a retried job can have more than one copy generating while
+**An abandoned attempt may still run inside the engine.** None of the engines
+PAIR supports today exposes a way to withdraw a request it has accepted, and all
+of them queue internally, so a retried job can have more than one copy generating while
 the abandoned copy keeps its node busy.
 
 Whether closing the connection cancels anything upstream is **unverified** —

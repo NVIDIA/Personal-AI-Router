@@ -308,8 +308,9 @@ the engine simply shows as stopped and then running.
 
 A local `pull_model` streams live download progress: the engine-manager routes
 `engine:action{pull_model}` through its streaming pull path and emits
-`engine:pull-progress` (`{ engine, op, stage, percent, message }`) — the local
-counterpart of `engine:remote-progress`. Personal AI Router consumes it in
+`engine:pull-progress` (`{ engine, op, stage, percent?, message }`; `percent` is
+omitted when the engine cannot measure progress) — the local counterpart of
+`engine:remote-progress`. Personal AI Router consumes it in
 `applyLocalEngineProgress` (`modular-supervisor.ts` → `modular-state.ts`),
 backfilling the dispatched model (the frame carries none) and advancing the
 optimistic pull entry's percent in place, so a local pull shows "Pulling · N%"
