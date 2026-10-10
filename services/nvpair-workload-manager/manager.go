@@ -4,6 +4,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,6 +68,25 @@ type workloadEvent struct {
 	expiresAt time.Time
 }
 
+// removedKey is the identity an ingress removal tombstones: the (origin, id)
+// pair the removal wire carries, which has no engine or runId.
+type removedKey struct {
+	origin string
+	id     string
+}
+
+// removedEntry is one tombstone in Manager.removedOrder.
+type removedEntry struct {
+	key       removedKey
+	expiresAt time.Time
+}
+
+// maxRemovedIngress bounds the removal memory. A producer can remove workloads
+// it never reported, so without a bound the memory would grow with the removal
+// rate for as long as terminalRetention. At the bound the oldest tombstone is
+// evicted, which only means a very old removal can no longer suppress a replay.
+const maxRemovedIngress = 4096
+
 // ReadyParams is the payload of the startup "ready" notification, matching
 // the convention used by the other subprocesses.
 type ReadyParams struct {
@@ -93,6 +113,20 @@ type Manager struct {
 	activeMu    sync.Mutex
 	activeLocal map[workloadKey]workloadEvent
 
+	// removedIngress tombstones the workloads a producer removed through the
+	// loopback ingress, keyed by the (origin, id) pair a removal carries, until
+	// terminalRetention has passed. The broker replays its store to a restarted
+	// worker, and that replay can land after the removal, when nothing is
+	// tracked yet; a replayed lifecycle frame for a tombstoned pair is dropped
+	// instead of re-tracked and re-broadcast. A fresh ingress lifecycle frame
+	// for the pair clears the tombstone. At most maxRemovedIngress are kept:
+	// removedOrder holds them oldest first (every entry expires terminalRetention
+	// after it was written or refreshed, so that is also expiry order), which makes
+	// pruning and eviction amortized O(1). Guarded by activeMu, and only written or read under
+	// broadcastMu (commitLocal), so it stays ordered with activeLocal.
+	removedIngress map[removedKey]*list.Element
+	removedOrder   *list.List
+
 	// broadcastMu keeps snapshot enqueueing ordered with local lifecycle and
 	// removal updates. Always acquire it before activeMu.
 	broadcastMu sync.Mutex
@@ -104,6 +138,23 @@ type Manager struct {
 	// this, each frame fanned out in its own goroutine and a late upsert
 	// could resurrect a workload on peers that had already removed it.
 	broadcastCh chan []byte
+
+	// selfUUID is this node's stable UUID; the loopback ingress stamps it as
+	// originatedFrom on frames whose producer left it empty and refuses any
+	// other origin.
+	selfUUID string
+
+	// ingress is the optional loopback listener for third-party local
+	// producers (localingress.go); nil unless EnableLocalIngress was called.
+	ingress *localIngress
+
+	// ingestMu serializes ingress frames from validation through the enqueue
+	// for peers, so for one workload the order frames reach the broker equals
+	// the order peers are queued. Lock order: ingestMu, then broadcastMu, then
+	// activeMu. Only the ingress takes ingestMu, so a broker write that stalls
+	// under it holds up other ingress POSTs but never the stdio read loop or
+	// the re-sync heartbeat.
+	ingestMu sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -138,9 +189,23 @@ func NewManager(codec *Codec, port int, selfUUID, clusterDir string) *Manager {
 		relaySource: relaySource,
 		activeLocal: make(map[workloadKey]workloadEvent),
 		broadcastCh: make(chan []byte, broadcastQueueDepth),
+		selfUUID:    selfUUID,
 	}
 	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove)
 	return m
+}
+
+// EnableLocalIngress turns on the plaintext loopback workload ingress for
+// third-party local producers, bound to addr when Run starts. It must be called
+// before Run. A non-loopback address is an error, because that listener is
+// plaintext by design.
+func (m *Manager) EnableLocalIngress(addr string) error {
+	li, err := newLocalIngress(addr, m.ingestLocal)
+	if err != nil {
+		return err
+	}
+	m.ingress = li
+	return nil
 }
 
 func (m *Manager) Run(ctx context.Context) error {
@@ -168,6 +233,19 @@ func (m *Manager) Run(ctx context.Context) error {
 			serverErrCh <- err
 		}
 	}()
+
+	// The loopback ingress binds synchronously so a port already in use is a
+	// startup failure the broker's supervisor sees, not a silent no-listener.
+	if m.ingress != nil {
+		if err := m.ingress.Listen(); err != nil {
+			return err
+		}
+		go func() {
+			if err := m.ingress.Serve(ctx); err != nil {
+				serverErrCh <- err
+			}
+		}()
+	}
 
 	go m.discoveryLoop(ctx)
 	go m.resyncLoop(ctx)
@@ -339,38 +417,124 @@ func (m *Manager) applyDiscovery(msg *Message) {
 	m.relaySource.set(res.Nodes)
 }
 
-// handleLocalLifecycle validates a Broker-originated lifecycle notification
-// and broadcasts it to peers. Malformed payloads are dropped-and-logged and
-// never broadcast (spec §7).
+// localFrame is a validated local-origin lifecycle or removal frame. Exactly
+// one of wl (lifecycle) and removeID (removal) is set. ingress marks a frame
+// that came in through the loopback ingress rather than from the broker.
+type localFrame struct {
+	method     string
+	params     json.RawMessage
+	wl         *Workload
+	removeID   string
+	removeNode string
+	ingress    bool
+}
+
+// parseLocalFrame validates a local-origin frame without side effects, so a
+// malformed payload is rejected before anything is tracked, broadcast or
+// emitted (spec §7).
+func parseLocalFrame(method string, params json.RawMessage) (localFrame, error) {
+	switch {
+	case isLifecycleMethod(method):
+		wl, err := parseLifecycle(params)
+		if err != nil {
+			return localFrame{}, err
+		}
+		return localFrame{method: method, params: params, wl: wl}, nil
+	case method == MethodRemove:
+		id, node, err := parseRemove(params)
+		if err != nil {
+			return localFrame{}, err
+		}
+		return localFrame{method: method, params: params, removeID: id, removeNode: node}, nil
+	}
+	return localFrame{}, fmt.Errorf("unknown method: %s", method)
+}
+
+// commitLocal records a validated frame in the re-sync set and enqueues it for
+// peers. broadcastMu is held across both steps, so a snapshot can never
+// interleave and enqueue a workload after its removal was enqueued. The
+// original params are broadcast unchanged so any nodeId the producer supplied
+// is preserved for peers' dedup. The removal wire carries only (workloadId,
+// originatedFrom) — no engine/runId — so a removal drops every composite key
+// matching that pair.
+//
+// A removal through the ingress also tombstones its (origin, id) pair, and a
+// non-ingress lifecycle frame for a tombstoned pair is skipped entirely (see
+// Manager.removedIngress). A re-sync-tagged frame is an explicit re-assertion
+// rather than a replay, so it is not skipped.
+func (m *Manager) commitLocal(f localFrame) {
+	m.broadcastMu.Lock()
+	defer m.broadcastMu.Unlock()
+	if f.wl != nil {
+		key := workloadKey{origin: f.wl.OriginatedFrom, engine: f.wl.Engine, runID: f.wl.RunID, id: f.wl.ID}
+		if f.ingress {
+			m.clearRemoved(f.wl.OriginatedFrom, f.wl.ID)
+		} else if !isResyncFrame(f.params) && m.wasRemoved(f.wl.OriginatedFrom, f.wl.ID) {
+			slog.Debug("dropping replayed lifecycle for a workload removed through the ingress", "method", f.method, "id", f.wl.ID)
+			return
+		}
+		m.trackActive(key, f.method, f.params, f.wl.State)
+		slog.Debug("broadcasting local lifecycle", "method", f.method, "id", f.wl.ID, "state", f.wl.State, "peers", m.peers.count())
+	} else {
+		m.untrackActive(f.removeNode, f.removeID)
+		if f.ingress {
+			m.markRemoved(f.removeNode, f.removeID)
+		}
+		slog.Debug("broadcasting local removal", "workloadId", f.removeID, "node", f.removeNode, "peers", m.peers.count())
+	}
+	m.broadcastFrame(f.method, f.params)
+}
+
+// handleLocalLifecycle applies a Broker-originated lifecycle notification.
+// The broker has already applied it to its own store before forwarding, so
+// nothing is emitted back up.
 func (m *Manager) handleLocalLifecycle(msg *Message) {
-	wl, err := parseLifecycle(msg.Params)
+	f, err := parseLocalFrame(msg.Method, msg.Params)
 	if err != nil {
 		slog.Warn("dropping malformed local lifecycle", "method", msg.Method, "err", err)
 		return
 	}
-	key := workloadKey{origin: wl.OriginatedFrom, engine: wl.Engine, runID: wl.RunID, id: wl.ID}
-	m.broadcastMu.Lock()
-	defer m.broadcastMu.Unlock()
-	m.trackActive(key, msg.Method, msg.Params, wl.State)
-	slog.Debug("broadcasting local lifecycle", "method", msg.Method, "id", wl.ID, "state", wl.State, "peers", m.peers.count())
-	m.broadcastFrame(msg.Method, msg.Params)
+	m.commitLocal(f)
 }
 
 func (m *Manager) handleLocalRemove(msg *Message) {
-	workloadID, nodeID, err := parseRemove(msg.Params)
+	f, err := parseLocalFrame(msg.Method, msg.Params)
 	if err != nil {
 		slog.Warn("dropping malformed local removal", "err", err)
 		return
 	}
-	// Broadcast the original params unchanged so any nodeId the broker supplied
-	// is preserved for peers' dedup. The removal wire carries only
-	// (workloadId, originatedFrom) — no engine/runId — so drop every composite
-	// key matching that pair.
-	m.broadcastMu.Lock()
-	defer m.broadcastMu.Unlock()
-	m.untrackActive(nodeID, workloadID)
-	slog.Debug("broadcasting local removal", "workloadId", workloadID, "node", nodeID, "peers", m.peers.count())
-	m.broadcastFrame(msg.Method, msg.Params)
+	m.commitLocal(f)
+}
+
+// ingestLocal is the loopback ingress's entry: a frame from a local producer
+// that is NOT the broker. The broker only applies what this process sends it,
+// so the frame is first emitted UP as the translated workloads:upsert /
+// workloads:remove — that upward path is what updates the local store, the Jobs
+// list, the persisted history and the scheduler's counts — and only on success
+// committed like a Broker-originated frame (re-sync set + peer broadcast).
+//
+// A failed broker write therefore leaves nothing tracked and nothing queued, so
+// peers never show a workload the origin broker does not hold; the producer
+// gets an error and may retry. ingestMu keeps concurrent POSTs in one order at
+// the broker and in the peer queue, and is deliberately not broadcastMu: the
+// broker write can block, and broadcastMu is taken by the stdio read loop.
+func (m *Manager) ingestLocal(method string, params json.RawMessage) error {
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
+	f, err := parseIngressFrame(method, params, m.selfUUID)
+	if err != nil {
+		return err
+	}
+	if f.wl != nil {
+		err = m.emitUpsert(f.wl)
+	} else {
+		err = m.emitRemove(f.removeID, f.removeNode)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", errBrokerWrite, err)
+	}
+	m.commitLocal(f)
+	return nil
 }
 
 // broadcastQueueDepth bounds how many outbound frames can wait for the
@@ -456,6 +620,59 @@ func (m *Manager) untrackActive(origin, id string) {
 		}
 	}
 	m.activeMu.Unlock()
+}
+
+// markRemoved tombstones the (origin, id) pair of an ingress removal, whether
+// or not anything was tracked for it. It drops the tombstones that have expired
+// and, when the memory is still full, the oldest ones (maxRemovedIngress).
+func (m *Manager) markRemoved(origin, id string) {
+	now := time.Now()
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	if m.removedIngress == nil {
+		m.removedIngress = make(map[removedKey]*list.Element)
+		m.removedOrder = list.New()
+	}
+	for front := m.removedOrder.Front(); front != nil && now.After(front.Value.(removedEntry).expiresAt); front = m.removedOrder.Front() {
+		m.dropRemoved(front)
+	}
+	key := removedKey{origin, id}
+	if el, ok := m.removedIngress[key]; ok {
+		m.dropRemoved(el)
+	}
+	for len(m.removedIngress) >= maxRemovedIngress {
+		m.dropRemoved(m.removedOrder.Front())
+	}
+	m.removedIngress[key] = m.removedOrder.PushBack(removedEntry{key: key, expiresAt: now.Add(terminalRetention)})
+}
+
+// dropRemoved removes one tombstone. The caller holds activeMu.
+func (m *Manager) dropRemoved(el *list.Element) {
+	delete(m.removedIngress, m.removedOrder.Remove(el).(removedEntry).key)
+}
+
+// wasRemoved reports whether (origin, id) holds an unexpired ingress-removal
+// tombstone.
+func (m *Manager) wasRemoved(origin, id string) bool {
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	el, ok := m.removedIngress[removedKey{origin, id}]
+	if !ok {
+		return false
+	}
+	if time.Now().After(el.Value.(removedEntry).expiresAt) {
+		m.dropRemoved(el)
+		return false
+	}
+	return true
+}
+
+func (m *Manager) clearRemoved(origin, id string) {
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	if el, ok := m.removedIngress[removedKey{origin, id}]; ok {
+		m.dropRemoved(el)
+	}
 }
 
 // activeSnapshot copies the current re-sync set (active + not-yet-expired
