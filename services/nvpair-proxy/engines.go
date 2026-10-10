@@ -150,6 +150,7 @@ var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
 	{Path: "/v1/completions", Role: roleInferencePOST},
 	{Path: "/v1/embeddings", Role: roleInferencePOST},
+	{Path: "/v1/responses", Role: roleInferencePOST},
 }
 
 // anthropicInferenceRoutes is the Anthropic-compatible inference surface.

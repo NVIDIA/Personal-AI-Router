@@ -444,9 +444,9 @@ What that base URL serves depends on the engine behind it:
 
 | Endpoint | Default base URL | Paths it serves |
 | --- | --- | --- |
-| Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — and the OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, plus the Anthropic Messages API `/v1/messages` |
-| LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`) and the Anthropic Messages API `/v1/messages` |
-| llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, plus `/models`). Not Ollama's `/api/...` and not the Anthropic Messages API |
+| Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — and the OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `/v1/models`, plus the Anthropic Messages API `/v1/messages` |
+| LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `/v1/models`) and the Anthropic Messages API `/v1/messages` |
+| llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `/v1/models`, plus `/models`). Not Ollama's `/api/...` and not the Anthropic Messages API |
 
 The distinction matters when you fill in an application's settings. A client
 written against the OpenAI API usually wants the `/v1` included, as in
