@@ -263,7 +263,7 @@ func confirmedFirst(addrs []string, confirmed string) []string {
 // reconcileWith to try the next candidate; every actual response — including a
 // rejection — is that peer's answer and ends the walk.
 func (m *Manager) reconcileOnce(ctx context.Context, client *http.Client, body []byte, addr, peerUUID string) (outcome reconcileOutcome, provenRemoval, answered bool) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+addr+rosterPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, peerURL("https", addr, rosterPath), bytes.NewReader(body))
 	if err != nil {
 		log.Printf("roster: build reconcile request for %s (%s): %v", addr, peerUUID, err)
 		return reconcileUnreachable, false, false
