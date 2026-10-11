@@ -46,7 +46,9 @@ NATs. Inference still works; the first token just takes longer to arrive.
 ## Add a node by host name, pair it, and check it
 
 Do this on one machine. Both must have PAIR running, and both must be on the same
-tailnet.
+tailnet. Both must also run a PAIR release that includes this feature: an older
+peer still answers on node info, but it reports no service list, so it is
+treated as a plain inference host and never becomes a full cluster peer.
 
 1. **Confirm the tailnet reaches the peer.** On the machine you are adding
    *from*:
@@ -103,7 +105,7 @@ what PAIR needs between machines tagged `tag:pair`, and nothing else:
     {
       "action": "accept",
       "src": ["tag:pair"],
-      "dst": ["tag:pair:1234,11434,14318,14319,14320,14321,14322,14323"]
+      "dst": ["tag:pair:1234,8080,11434,14318,14319,14320,14321,14322,14323"]
     }
   ]
 }
@@ -119,11 +121,12 @@ What each port is for:
 | `14323` | Engine control | Remote engine and model operations. Mutual TLS, cluster members only. |
 | `11434` | Ollama-compatible proxy | Where inference is routed. Mutual TLS from a peer; plaintext is refused from anything but the machine's own loopback. |
 | `1234` | OpenAI-compatible proxy | The same, for the OpenAI-compatible surface. |
+| `8080` | llama.cpp proxy | The same, for llama.cpp. |
 | `14319` | Error sync | Cross-node error reporting. Mutual TLS. |
 | `14320` | Workload manager | Job and telemetry exchange. Mutual TLS. |
 
-Two things this table is worth reading carefully for. First, `11434` and `1234`
-on a PAIR node are **proxy front doors, not the engines themselves**. The engines
+Two things this table is worth reading carefully for. First, `11434`, `1234`, and
+`8080` on a PAIR node are **proxy front doors, not the engines themselves**. The engines
 listen on loopback only and are never exposed. A peer connects to the front door
 with its pinned certificate and the proxy passes the request to the local engine.
 Second, `14318` is the one surface deliberately served in plaintext, so that a
@@ -161,8 +164,8 @@ Two causes, and they are worth telling apart:
   control, workloads, and inference only to certificates it pins. Removing a node
   from a cluster takes effect on the very next request, so a node that worked
   yesterday and 403s today may simply have been removed. Pair again.
-- **Something dialed a proxy port in plaintext.** `11434` and `1234` accept
-  plaintext only from the machine's own loopback. If you are testing by hand with
+- **Something dialed a proxy port in plaintext.** `11434`, `1234`, and `8080`
+  accept plaintext only from the machine's own loopback. If you are testing by hand with
   `curl http://gpu-box.tail1234.ts.net:11434/`, a `403` is the correct answer and
   not a fault. Route inference through your *local* endpoint and let PAIR make the
   connection.

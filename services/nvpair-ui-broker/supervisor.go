@@ -106,9 +106,6 @@ const (
 	// watchExited means the worker process exited on its own (an
 	// unexpected death the supervisor should react to).
 	watchExited
-	// watchRestart means Restart was called: stop the current (healthy)
-	// worker and respawn it promptly, without counting it as a crash.
-	watchRestart
 )
 
 // supervisor owns the lifecycle of a single broker worker: it spawns the
@@ -146,28 +143,34 @@ type supervisor struct {
 	// before it waits for Stop.
 	onExhausted func(attempt int)
 
+	// onSpawned, if set, is invoked after every successful spawn — the first
+	// from Start and each respawn from monitor — and always after spawn has
+	// published the handle. It exists because a fresh worker process starts
+	// with none of the state the broker pushed into its predecessor, and spawn
+	// is the only event that loses that state.
+	//
+	// Invoked on its own goroutine, deliberately. The respawn sites run on the
+	// monitor goroutine, which is the only thing that reaches h.Stop() when
+	// stopCh closes, so a callback that blocks there delays crash detection and
+	// makes Stop wait it out inside the shared teardown budget. A callback that
+	// talks to the worker must give up when Stopping() closes, or it races a
+	// teardown that is about to close the worker's stdin.
+	onSpawned func()
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	doneCh   chan struct{}
-
-	// restartCh requests a graceful restart of the current worker process so
-	// it re-reads external state it only loads at startup — e.g. cluster
-	// identity/pins that appear under --cluster-dir when this node joins a
-	// cluster, flipping the worker from plain HTTP to pin-gated mTLS (a
-	// bind-time decision). Buffered + coalesced via Restart.
-	restartCh chan struct{}
 }
 
 // newSupervisor constructs a supervisor for one worker. onCrash and
 // onRecovered are set by the caller as needed before Start.
 func newSupervisor(name string, policy restartPolicy, spawn func() (supervisedHandle, error)) *supervisor {
 	return &supervisor{
-		name:      name,
-		policy:    policy,
-		spawn:     spawn,
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
-		restartCh: make(chan struct{}, 1),
+		name:   name,
+		policy: policy,
+		spawn:  spawn,
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
 	}
 }
 
@@ -181,8 +184,21 @@ func (s *supervisor) Start() error {
 	if err != nil {
 		return err
 	}
+	s.notifySpawned()
 	go s.monitor(h)
 	return nil
+}
+
+// Stopping reports teardown to an onSpawned callback, so work it started
+// against the worker can be abandoned rather than racing a closing stdin.
+func (s *supervisor) Stopping() <-chan struct{} { return s.stopCh }
+
+// notifySpawned runs onSpawned off the calling goroutine. See the field comment
+// for why that is required rather than tidy.
+func (s *supervisor) notifySpawned() {
+	if s.onSpawned != nil {
+		go s.onSpawned()
+	}
 }
 
 // workerStopReportAfter is how long a worker may take to tear down before this
@@ -215,19 +231,6 @@ func (s *supervisor) Stop() {
 		"worker", s.name, "waitedMs", time.Since(started).Milliseconds())
 }
 
-// Restart asks the supervisor to stop the current worker process and spawn a
-// fresh one, without counting it as a crash. Used to re-point a worker at
-// external state it only reads at startup — e.g. cluster identity/pins that
-// appear under --cluster-dir when this node joins a cluster, which flip the
-// worker from plain HTTP to pin-gated mTLS (a bind-time decision). Non-blocking
-// and coalescing: a burst collapses to one restart. A no-op once Stopped.
-func (s *supervisor) Restart() {
-	select {
-	case s.restartCh <- struct{}{}:
-	default:
-	}
-}
-
 // monitor is the supervisor's control loop. It watches the current handle;
 // on an unexpected exit it surfaces the crash, then backs off and respawns
 // per the policy, until either the worker recovers (resetting the budget),
@@ -255,26 +258,7 @@ func (s *supervisor) monitor(h supervisedHandle) {
 			h.Stop()
 			return
 		}
-		if res == watchRestart {
-			// Graceful, operator-driven restart (e.g. cluster certs appeared on
-			// join): stop the running worker and respawn it promptly. Not a
-			// crash — it surfaces no error and doesn't spend the restart budget.
-			slog.Info("supervisor: restarting worker on request", "worker", s.name)
-			h.Stop()
-			if nh, err := s.spawn(); err == nil {
-				attempts = 0
-				h = nh
-				continue
-			} else {
-				// A requested respawn failed (rare — the same command was just
-				// running). Fall through to the crash/backoff path so it still
-				// recovers rather than wedging the worker down.
-				slog.Warn("supervisor: requested restart respawn failed; falling back to crash recovery", "worker", s.name, "err", err)
-			}
-		}
-
-		// Unexpected exit (crash) — or a failed requested respawn above. Surface
-		// it and decide whether to restart.
+		// Unexpected exit (crash). Surface it and decide whether to restart.
 		attempts++
 		slog.Warn("supervisor: worker exited unexpectedly", "worker", s.name, "attempt", attempts)
 		if s.onCrash != nil {
@@ -308,6 +292,7 @@ func (s *supervisor) monitor(h supervisedHandle) {
 		}
 		slog.Info("supervisor: worker restarted", "worker", s.name, "attempt", attempts)
 		h = next
+		s.notifySpawned()
 	}
 }
 
@@ -350,8 +335,6 @@ func (s *supervisor) watch(h supervisedHandle, onStable func()) watchResult {
 		select {
 		case <-s.stopCh:
 			return watchStopped
-		case <-s.restartCh:
-			return watchRestart
 		case <-healthyC:
 			// Fire once: nil-out the channel so this arm blocks forever
 			// after the first tick (the worker is now considered stable).

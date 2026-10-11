@@ -5,14 +5,37 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-engine-manager
 
-A config-driven control plane for local inference engines (Ollama today;
-Intel/others via a dropped-in manifest). It manages everything about an
-engine **except serving inference**: detect, user-mode install,
+A config-driven control plane for local inference engines. The bundled
+manifests support Ollama, LM Studio, and llama.cpp. It manages everything about
+an engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
+
+### llama.cpp backend checkpoint
+
+The `llamacpp` manifest runs `llama-server` in router mode on loopback port
+`8081`. It can list, download, load, unload, and delete exact model ids such as
+`owner/repository:Q4_K_M`. Downloads use `/models/sse` for progress; deletion
+uses the router's native `DELETE /models` cache operation and does not restart
+the router. `LLAMA_CACHE` points at the manifest's `models_dir`, `~/.llamacpp`,
+which no removal this service performs will delete.
+Readiness requires `/props` to report `role:"router"`, so model-selection
+arguments that switch `llama-server` to single-model mode and incompatible
+listeners already occupying the port are rejected rather than adopted.
+After five minutes without inference work, a loaded model enters llama.cpp sleep
+mode and releases its model and KV-cache memory; the next request wakes it. The
+router child remains alive and can retain a residual backend GPU context.
+
+Windows and Linux installs download checksum-pinned server and CUDA-runtime
+archive pairs (CUDA 12.x for x64 and CUDA 13.4 for arm64); macOS uses the
+standard Metal-capable archive. These on-demand downloads are roughly
+0.6–0.8 GiB and do not enlarge the PAIR installer. llama.cpp keeps its `auto`
+GPU-layer policy: supported NVIDIA/Metal devices can accelerate, while the
+dynamic CPU backend remains the fallback. Hardware acceptance, not `/health`
+alone, is required to claim GPU activation.
 
 ## Communication
 
@@ -35,6 +58,7 @@ Requests (caller → service):
 | `engine:status` | `{ engine }` | `EngineStatus` |
 | `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
+| `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes every engine this service installed, selected by its install marker, each through the `engine:uninstall` path. Backs "reset all data" in both clients; downloaded models are kept. Neither `removed` nor `error` means the engine was left alone as not ours |
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
@@ -42,6 +66,7 @@ Requests (caller → service):
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
+| `engine:catalog` | `{ engine, platform?, arch?, query? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Each engine has one curated source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. llama.cpp downloads any GGUF repo as `repo:quantization`; its browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. It is the one `searchable` source: a `query` searches all of Hugging Face under the same rules, each query cached on its own (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
@@ -59,17 +84,46 @@ Notifications (service → caller): `engine:ready{version}`,
 loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `loadedByEngine`) so a consumer swaps its whole snapshot,
-`engine:install-progress{engine, stage, percent}`,
-`engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
+`engine:install-progress{engine, stage, percent?, error?}` (`error` on the
+terminal `failed` frame),
+`engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
 stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
 a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
 UI converges even if its synchronous call already timed out),
-`engine:remote-progress{opId, node, engine, op, stage, percent, message}`
+`engine:remote-progress{opId, node, engine, op, stage, percent?, message}`
 (relayed live progress for a remote install/pull), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
+
+Streaming HTTP pulls have a 30-minute **inactivity** watchdog. Each increase in
+an Ollama layer's or llama.cpp file's completed byte count refreshes that
+watchdog, so an active download may run longer than 30 minutes; duplicate
+progress frames and heartbeats do not extend a stalled pull. CLI-driven pulls
+without structured byte progress retain the fixed 30-minute action timeout.
+
+For llama.cpp, an accepted pull that ends before a matching `download_finished`
+or `download_failed` event stops the active download. This includes caller
+cancellation, remote caller disconnect, inactivity timeout, and premature SSE
+termination. Cleanup checks `GET /models` and sends `POST /models/unload` only
+when the exact model is still `downloading`; cached files are retained, and
+models that have already completed are left alone.
+
+The initial `POST /models` handshake has a separate 30-second total timeout and
+continues through caller cancellation so its acceptance can still be read.
+The pull then waits for cleanup, which has a separate five-second budget for
+the inventory check and stop request together. A failed cleanup reports that
+the download could not be confirmed stopped alongside the original pull error.
+If the start acknowledgement is lost or unreadable, acceptance and cancellation
+are reported as unconfirmed without unloading an unowned download. The monitored
+model must match `params.model`; mismatches are rejected before subscribing.
+
+`percent` on all three progress notifications is present only when the step is
+measurable (download bytes, byte-progress pulls) or terminal (`100` on install
+`done` / `already-installed`, `-1` on install `failed` and pull `error`). An
+indeterminate step omits it — the install `verified` and `installing` stages
+always do — so a UI renders the stage alone.
 
 The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
@@ -93,7 +147,12 @@ to the per-user `engines/` dir that deep-merges onto the bundled manifest, so
 `runtime.port` becomes the single source of truth and the port is restored on
 the next start with no separate store), and applies it — bouncing the engine
 onto the new port if it was running. Setting the port back to the bundled
-default removes the override file. Because the chosen port lives in the
+default removes only the shared and host-platform port overrides; the file is
+removed only when no other overrides remain. Arguments, environment, install
+settings and other platform overrides are preserved. A host-platform port is
+updated when necessary so it cannot shadow the saved value on restart.
+Malformed override files fail the save instead of being replaced.
+Because the chosen port lives in the
 effective manifest, restore is automatic: a normal `engine:start` (no explicit
 port) and the adopt-on-fixed-port path both come up on the retained port.
 Moving a **running, adopted** engine is **refused** with an error (nothing is
@@ -101,10 +160,18 @@ persisted) — NVPAIR can't relocate a process it didn't start; see Adoption bel
 
 ## Lifecycle
 
+Combined launch/server/proxy edits use the broker's
+[engine settings protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md). The worker
+checks basic argument syntax and adapter-declared networking/CORS controls
+using [`pair-arguments-v1`](LAUNCH_TEXT.md), persists host-platform `launch_args` and `launch_env`
+with the port, and holds its operation lock through stop/rebind/start. The
+paired engine-control surface relays settings to its local broker and streams
+full authoritative snapshots to pinned peers.
+
 ```
 NotInstalled --engine:install--> (HTTPS download + verify-if-pinned + user-mode run) --> Stopped
 Stopped      --engine:start----> (adopt if already serving the port, else spawn) --> Running --health--> Running
-Running      --engine:stop-----> (stop signal, wait for exit; no timeout) --> Stopped
+Running      --engine:stop-----> (stop signal, bounded grace, force if needed) --> Stopped
 ```
 
 Detect uses the manifest's `detect` paths. Install is one-shot and
@@ -115,16 +182,18 @@ unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
-reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+reports the failed start. On Unix, stopping an owned process sends SIGTERM to
+its process group, waits the manifest's `stop.grace_s` (five seconds by
+default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
+startup cleanup uses the same policy. On Windows, the windowless engines we
+spawn cannot receive a graceful (non-`/F`) close, so stopping uses immediate
+`taskkill /T /F`.
 
 ### Adoption — start may attach to an engine it didn't launch
 
 Before spawning, `engine:start` **probes the chosen port's readiness
-endpoint**. If something already answers there — the engine's own desktop
+endpoint**, including any manifest-declared JSON identity. If a compatible
+service answers there — the engine's own desktop
 app (e.g. the Ollama tray app on `11434`), or an instance left running from a
 previous session — the service **adopts** that instance: it marks the engine
 `running` without launching its own, rather than spawning a duplicate that
@@ -226,6 +295,7 @@ its own.
 | `--cluster-dir <dir>` | _(none)_ | Cluster identity/pin directory; gates the `ec` surface on and supplies the leaf/pins used to serve it and to dial peers |
 | `--loaded-poll-interval <sec>` | `5` | Seconds between loaded-model polls that drive `engine:models-changed`; `0` disables the watcher |
 | `--log-level <level>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
+| `--uninstall-managed` | | Remove every engine PAIR installed, then exit; for the platform uninstallers, which have no broker to call `engine:uninstall-managed` through. Same selection and safety path as that method, loading only the manifests compiled into this binary. Always exits 0 so an uninstaller cannot stall |
 | `--version` | | Print version and exit |
 
 Logs go to **stderr** via the shared `nvpair-shared/applog` format; stdout is

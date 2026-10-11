@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-; NVIDIA Personal AI Router - NSIS Installer Script
+; NVIDIA PAIR - NSIS Installer Script
 ; Requires NSIS 3.x with MUI2
 ;
 ; REFERENCE FILE. This is the NSIS definition NVIDIA builds the Windows services
@@ -13,12 +13,17 @@
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 ;---------------------------------------
 ; General
 ;---------------------------------------
+; PRODUCT_NAME keys the uninstall registry entry, the default install directory,
+; and the Start menu folder, all of which an earlier install's uninstaller finds
+; by this exact string. User-visible text uses PRODUCT_DISPLAY_NAME instead.
 !define PRODUCT_NAME "NVIDIA Personal AI Router"
-!define PRODUCT_PUBLISHER "NVIDIA"
+!define PRODUCT_DISPLAY_NAME "NVIDIA PAIR"
+!define PRODUCT_PUBLISHER "NVIDIA Corporation"
 !define PRODUCT_URL "https://github.com/NVIDIA/Personal-AI-Router"
 
 ; Version can be overridden from CLI: makensis /DPRODUCT_VERSION=1.2.3
@@ -33,7 +38,7 @@
 ; users whose profile paths contain non-ASCII characters.
 Unicode true
 
-Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
+Name "${PRODUCT_DISPLAY_NAME} ${PRODUCT_VERSION}"
 OutFile "..\dist\NVIDIA-Personal-AI-Router-${PRODUCT_VERSION}-Setup.exe"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "${ARP_KEY}" "InstallLocation"
@@ -85,7 +90,7 @@ Function .onInit
   ; installs just proceed.
   IfSilent done 0
   MessageBox MB_OKCANCEL|MB_ICONQUESTION \
-    "${PRODUCT_NAME} is already installed.$\n$\nClick OK to continue - the previous version will be removed when you click Install on the next screen. Click Cancel to abort." \
+    "${PRODUCT_DISPLAY_NAME} is already installed.$\n$\nClick OK to continue - the previous version will be removed when you click Install on the next screen. Click Cancel to abort." \
     /SD IDOK IDOK done
   Abort
 
@@ -106,7 +111,10 @@ FunctionEnd
 ; return code.
 ;---------------------------------------
 !macro CloseRunningInstance
-  DetailPrint "Checking for running ${PRODUCT_NAME} processes..."
+  DetailPrint "Checking for running ${PRODUCT_DISPLAY_NAME} processes..."
+  nsExec::ExecToLog 'taskkill /F /IM "nvpair-proxy.exe"'
+  ; Pre-unification names. An orphan still holding 11434 or 1234 is exactly
+  ; what the managed-facade planner has to block on, so kill it here too.
   nsExec::ExecToLog 'taskkill /F /IM "ollama-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "lmstudio-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-node-info.exe"'
@@ -124,6 +132,38 @@ FunctionEnd
   Sleep 500
 !macroend
 
+; Install the centrally serviced Microsoft runtime required by the managed
+; llama.cpp binaries. Microsoft's x64 package also contains the ARM64 runtime.
+!macro InstallVcRuntime
+  DetailPrint "Installing Microsoft Visual C++ Runtime..."
+  ClearErrors
+  ExecWait '"$PLUGINSDIR\VC_redist.x64.exe" /install /quiet /norestart' $R4
+  ${if} ${Errors}
+    ClearErrors
+    Delete "$PLUGINSDIR\VC_redist.x64.exe"
+    MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_DISPLAY_NAME} could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+
+  Delete "$PLUGINSDIR\VC_redist.x64.exe"
+  ${if} $R4 == 0
+    DetailPrint "Microsoft Visual C++ Runtime installed."
+  ${elseIf} $R4 == 1638
+    DetailPrint "Microsoft Visual C++ Runtime is already installed."
+  ${elseIf} $R4 == 1641
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart initiated."
+    SetRebootFlag true
+  ${elseIf} $R4 == 3010
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart required."
+    SetRebootFlag true
+  ${else}
+    MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_DISPLAY_NAME} could not install the Microsoft Visual C++ Runtime (exit code $R4).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+!macroend
+
 ;---------------------------------------
 ; Installer Section
 ;---------------------------------------
@@ -132,6 +172,10 @@ Section "Install"
   ; to touch — otherwise File / the prior uninstaller's Delete will fail
   ; with a sharing violation and leave a half-installed mess.
   !insertmacro CloseRunningInstance
+
+  SetOutPath "$PLUGINSDIR"
+  File /oname=VC_redist.x64.exe "..\..\.build\vc-redist\VC_redist.x64.exe"
+  !insertmacro InstallVcRuntime
 
   ; If .onInit found a previous install, remove it now — at this point the
   ; user has clicked Install, so the destructive step is safe.
@@ -144,21 +188,44 @@ Section "Install"
     Delete "$PrevInstallDir\uninstall.exe"
   skip_prev_uninstall:
 
+  ; Revoke the pre-unification rules unconditionally, not only when a previous
+  ; uninstaller was found and ran. The cases where that matters most are exactly
+  ; the ones the branch above skips: no recorded UninstallString, or an ExecWait
+  ; that failed (nothing checks $R3). On those paths the old rules survive and
+  ; pre-approve inbound traffic to whatever later lands at the old binary paths.
+  ;
+  ; "NVPAIR mDNS (UDP 5353)" is included even though the old uninstaller did
+  ; delete it: on the skip paths it never ran, and this installer never
+  ; re-creates it because nvpair-proxy opens no UDP socket. The leftover
+  ; executables go with the rules for the same reason — a stale allow entry
+  ; plus the binary it names is the combination worth removing.
+  ;
+  ; None of these names is re-added by this installer, and deleting an absent
+  ; rule is a documented no-op.
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Ollama Proxy"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR LM Studio Proxy"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS LM Studio Proxy (UDP 5353)"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS (UDP 5353)"'
+  ; $INSTDIR, not $PrevInstallDir: the latter is empty on the no-UninstallString
+  ; path this block exists for, and $INSTDIR is where a leftover would sit
+  ; alongside the binaries about to be written.
+  Delete "$INSTDIR\bin\ollama-proxy.exe"
+  Delete "$INSTDIR\bin\lmstudio-proxy.exe"
+
   SetOutPath "$INSTDIR"
   File "EULA.txt"
 
   SetOutPath "$INSTDIR\bin"
-  ; ollama-proxy's listen port is now a dual-protocol endpoint: loopback
-  ; plaintext for local clients, and pin-gated cluster mTLS for peers (it
+  ; nvpair-proxy fronts every engine from one process, hosting a facade per
+  ; enabled engine. Each facade's listen port is a dual-protocol endpoint:
+  ; loopback plaintext for local clients, and pin-gated cluster mTLS for peers (it
   ; forwards a validated peer straight to the loopback engine). Plaintext
   ; requests from the LAN are rejected in-process, so only pinned cluster
   ; members can run inference — the firewall rule below still allows the
-  ; executable because that same user-configurable port carries the mTLS ingress.
-  File "..\build\bin\ollama-proxy.exe"
-  ; lmstudio-proxy fronts the cluster's LM Studio engines (OpenAI API) with the
-  ; same dual-protocol port (loopback plaintext + cluster mTLS ingress); it
-  ; listens for clients and browses mDNS, so it gets firewall rules below.
-  File "..\build\bin\lmstudio-proxy.exe"
+  ; executable because that same user-configurable port carries the mTLS
+  ; ingress. It does not browse mDNS: its routing targets arrive over the
+  ; broker's discovery relay, so it opens no UDP socket of its own.
+  File "..\build\bin\nvpair-proxy.exe"
   File "..\build\bin\nvpair-node-info.exe"
   File "..\build\bin\nvpair-node-scanner.exe"
   File "..\build\bin\nvpair-manual-nodes.exe"
@@ -200,7 +267,7 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
   ; Add/Remove Programs registry
-  WriteRegStr   HKLM "${ARP_KEY}" "DisplayName"     "${PRODUCT_NAME}"
+  WriteRegStr   HKLM "${ARP_KEY}" "DisplayName"     "${PRODUCT_DISPLAY_NAME}"
   WriteRegStr   HKLM "${ARP_KEY}" "DisplayVersion"  "${PRODUCT_VERSION}"
   WriteRegStr   HKLM "${ARP_KEY}" "Publisher"        "${PRODUCT_PUBLISHER}"
   WriteRegStr   HKLM "${ARP_KEY}" "URLInfoAbout"     "${PRODUCT_URL}"
@@ -227,15 +294,17 @@ Section "Install"
   ; nodes"). Scoping to localsubnet keeps the ports closed to anything off the
   ; local link, so covering all profiles does not expose the node on untrusted
   ; public networks.
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Ollama Proxy" dir=in action=allow program="$INSTDIR\bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR LM Studio Proxy" dir=in action=allow program="$INSTDIR\bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Engine Proxy" dir=in action=allow program="$INSTDIR\bin\nvpair-proxy.exe" enable=yes profile=any remoteip=localsubnet'
 
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Node Info" dir=in action=allow program="$INSTDIR\bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Node Scanner" dir=in action=allow program="$INSTDIR\bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
 
   ; mDNS needs UDP 5353 inbound
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS LM Studio Proxy (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  ; No mDNS rule for nvpair-proxy: it opens no UDP socket. Its routing targets
+  ; arrive over the broker's discovery relay, and zeroconf/miekg are indirect
+  ; dependencies it never browses with. The pre-unification ollama-proxy did
+  ; browse, which is where this rule came from; the delete below stays so an
+  ; upgrade clears the inherited entry.
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS Node Info (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS Node Scanner (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS Workload Manager (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\nvpair-workload-manager.exe" enable=yes profile=any remoteip=localsubnet'
@@ -271,7 +340,13 @@ Section "Uninstall"
   !insertmacro CloseRunningInstance
 
   ; Remove firewall exceptions
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Engine Proxy"'
+  ; The per-engine rules a pre-unification install created. Deleting a rule
+  ; that does not exist is a harmless no-op, and without these an upgrade
+  ; leaves rules pointing at binaries this version no longer ships.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Ollama Proxy"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR LM Studio Proxy"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS LM Studio Proxy (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Node Info"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Node Scanner"'
@@ -288,6 +363,8 @@ Section "Uninstall"
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Engine Manager Control (TCP 14323)"'
 
   ; Remove files
+  Delete "$INSTDIR\bin\nvpair-proxy.exe"
+  ; Shipped by a pre-unification install; Delete is a no-op when absent.
   Delete "$INSTDIR\bin\ollama-proxy.exe"
   Delete "$INSTDIR\bin\lmstudio-proxy.exe"
   Delete "$INSTDIR\bin\nvpair-node-info.exe"

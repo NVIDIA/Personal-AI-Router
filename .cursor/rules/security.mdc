@@ -1,0 +1,37 @@
+---
+description: Security ownership boundary — the backend owns all cluster trust; PAIR implements none
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Security
+
+PAIR implements **no** security or cryptography. Cluster identity, PIN pairing,
+trusted certificates, membership, removal, and every node-to-node mTLS channel
+are owned entirely by the backend (`nvpair-cluster-manager`, supervised by
+`nvpair-ui-broker`). Do not mirror the backend's trust mechanics in TypeScript
+and do not document them here as if PAIR owned them.
+
+PAIR only:
+
+- relays `cluster:*` and `nodes:*` requests to the broker;
+- consumes and renders the resulting notifications (invite status, membership);
+- persists the public cluster identity through `nvpair-node-settings`.
+
+## UI copy guardrails
+
+- The pairing PIN is a low-entropy convenience code. Never present it as a
+  strong authenticator.
+- Cluster membership is not proof of a vetted, individually-paired peer. Do not
+  build flows that assume it is.
+
+## Prohibited in PAIR code
+
+- any cluster-secret, auth-proof, certificate, or CA generation/handling;
+- renderer access to private key material;
+- reimplementing or wrapping the backend trust fabric in TypeScript;
+- logging PINs, certificates, private keys, inference prompts, or response
+  bodies.

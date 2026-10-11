@@ -17,22 +17,30 @@ import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
 import {
     getModularBridgeState,
-    isProxyEngine,
     isUpstreamUnreachableError,
     parseServiceErrors,
-    parseWorkloadsInitial,
-    PROXY_ENGINES,
-    type ProxyEngine
+    parseWorkloadsInitial
 } from './modular-state'
+import {
+    isProxyEngine,
+    proxyEngineFromManagerId,
+    proxyEngineFromSource,
+    proxySourceForEngine,
+    PROXY_ENGINES,
+    PROXY_NODE_SOURCES,
+    type ProxyEngine
+} from './proxy-engines'
 import { emitBridgePush } from './broadcaster'
+import { parseEngineSettings } from './engine-settings'
 import { resolvePullCatchError } from './pull-error-handling'
 import { serviceLogLevel } from './service-log-level'
-import { engineManagerEngineName } from './empty-handlers'
+import { engineManagerName } from '@/shared/utils/engines'
 import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
+    MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
     isModularLogLevel,
@@ -47,10 +55,10 @@ import type { ModularProcessName } from '@/shared/constants/modular-binaries'
 import type { ServiceError, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { ClusterNode } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
+import type { ManagedEngineUninstall } from '@/shared/types/engine-api'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 
 const log = createStructuredLogger('service-bridge')
-const ENGINE_PREPARE_SHUTDOWN_METHOD = 'engine:prepare-shutdown'
 
 export class ModularStartupTimeoutError extends Error {
     constructor(timeoutMs: number) {
@@ -67,13 +75,6 @@ interface ReadinessWaiter {
     timeout: ReturnType<typeof setTimeout>
 }
 
-/** Ask engine-manager to stop runtime processes without changing saved intent. */
-export async function prepareLocalEnginesForShutdown(
-    broker: Pick<JsonRpcSubprocess, 'call'>
-): Promise<void> {
-    await broker.call(ENGINE_PREPARE_SHUTDOWN_METHOD, undefined, 30_000)
-}
-
 export function getCliBinDir(): string {
     if (app.isPackaged) {
         return path.join(process.resourcesPath, 'cli-bin')
@@ -87,23 +88,23 @@ function getModularBinaryPath(baseName: string): string {
 }
 
 /**
- * Read the build provenance (`sourceFingerprint` + `product`) and per-component
+ * Read the build provenance (`sourceFingerprint` + `services`) and per-component
  * versions that `scripts/build-modular-binaries.ts` stamps into
  * `cli-bin/manifest.json`.
- * `components` is keyed by binary base name (e.g. `ollama-proxy`). Returns empty
+ * `components` is keyed by binary base name (e.g. `nvpair-proxy`). Returns empty
  * values when the manifest is absent.
  */
 export function readCliBinManifest(): {
     commit: string
-    product: string
+    services: string
     components: Record<string, string>
 } {
     try {
         const manifestPath = path.join(getCliBinDir(), 'manifest.json')
-        if (!fs.existsSync(manifestPath)) return { commit: '', product: '', components: {} }
+        if (!fs.existsSync(manifestPath)) return { commit: '', services: '', components: {} }
         const parsed: JsonValue = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
         const obj = objectValue(parsed)
-        if (!obj) return { commit: '', product: '', components: {} }
+        if (!obj) return { commit: '', services: '', components: {} }
         const components: Record<string, string> = {}
         const componentsObj = objectValue(obj['components'])
         if (componentsObj) {
@@ -114,22 +115,22 @@ export function readCliBinManifest(): {
         }
         return {
             commit: stringValue(obj['sourceFingerprint']) || stringValue(obj['commit']),
-            product: stringValue(obj['product']),
+            services: stringValue(obj['services']),
             components
         }
     } catch {
-        return { commit: '', product: '', components: {} }
+        return { commit: '', services: '', components: {} }
     }
 }
 
 /**
- * Read the build provenance (`commit` + `product`) that
+ * Read the build provenance (`commit` + `services`) that
  * `scripts/build-modular-binaries.ts` stamps into `cli-bin/manifest.json`. Used
  * for diagnostics only; returns empty strings when the manifest is absent.
  */
-function readCliBinManifestInfo(): { commit: string; product: string } {
-    const { commit, product } = readCliBinManifest()
-    return { commit, product }
+function readCliBinManifestInfo(): { commit: string; services: string } {
+    const { commit, services } = readCliBinManifest()
+    return { commit, services }
 }
 
 function objectValue(value: JsonValue | undefined): JsonObject | null {
@@ -153,26 +154,43 @@ function booleanValue(value: JsonValue | undefined): boolean {
  * Extract model names from a `nvpair-engine-manager` `list_models` action result.
  * The action returns the engine's raw response, which differs per engine:
  * Ollama's `/api/tags` yields `{ models: [{ name }] }`, LM Studio's native
- * `/api/v1/models` yields `{ models: [{ key }] }`. A present empty array is
- * authoritative; a missing or malformed inventory throws so callers retain or
- * fall back to their last-good source instead of silently clearing it.
+ * `/api/v1/models` yields `{ models: [{ key }] }`, and llama.cpp's router
+ * `/models` yields `{ data: [{ id }] }`. A present empty array is authoritative;
+ * a missing or malformed inventory throws so callers retain or fall back to
+ * their last-good source instead of silently clearing it.
  */
 export function parseListModelNames(result: JsonValue | undefined): string[] {
     const obj = objectValue(result)
     if (!obj) throw new Error('list_models returned a non-object response')
-    const names: string[] = []
+
+    let rows: JsonValue[]
+    let fields: string[]
     if (Array.isArray(obj.models)) {
-        for (const entry of obj.models) {
-            const row = objectValue(entry)
-            const name = stringValue(row?.name) || stringValue(row?.key)
-            if (name) names.push(name)
-        }
-        if (obj.models.length > 0 && names.length === 0) {
-            throw new Error('list_models returned no usable model names')
-        }
-        return names
+        rows = obj.models
+        fields = ['name', 'key']
+    } else if (obj.models !== undefined) {
+        throw new Error('list_models response is missing its model array')
+    } else if (Array.isArray(obj.data)) {
+        rows = obj.data
+        fields = ['id']
+    } else {
+        throw new Error('list_models response is missing its model array')
     }
-    throw new Error('list_models response is missing its model array')
+
+    const names: string[] = []
+    for (const entry of rows) {
+        const row = objectValue(entry)
+        for (const field of fields) {
+            const name = stringValue(row?.[field])
+            if (!name) continue
+            names.push(name)
+            break
+        }
+    }
+    if (rows.length > 0 && names.length === 0) {
+        throw new Error('list_models returned no usable model names')
+    }
+    return names
 }
 
 /**
@@ -202,16 +220,16 @@ function normalizeLogLevel(value: string | undefined): ModularLogLevel {
 
 /**
  * Shape the `pull_model` action params per engine. Ollama's `pull_model` body is
- * sent verbatim to `/api/pull` (reads `name`); LM Studio's CLI action templates
- * `{model}` into `lms get {model} --yes`. Sending the wrong key leaves the
- * placeholder unresolved and the engine-manager rejects the call.
+ * sent verbatim to `/api/pull` (reads `name`); every other manifest consumes
+ * `model` either as an HTTP body field or a CLI template. Sending the wrong key
+ * leaves the placeholder unresolved or fails body-schema validation.
  */
-function pullModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+export function pullModelParams(engineManagerEngine: string, model: string): JsonObject {
+    return engineManagerEngine === 'ollama' ? { name: model } : { model }
 }
 
 function deleteModelParams(engineManagerEngine: string, model: string): JsonObject {
-    return engineManagerEngine === 'lmstudio' ? { model } : { name: model }
+    return engineManagerEngine === 'ollama' ? { name: model } : { model }
 }
 
 /**
@@ -290,23 +308,6 @@ function emptyLocalEngineBridge(): LocalEngineBridge {
     return { running: false, port: 0, bridgedId: '', bridgedPort: 0, selfWarned: false }
 }
 
-/** Translate our `EngineType` into the engine-manager's engine id. */
-function engineManagerId(engine: ProxyEngine): string {
-    return engine === 'lm-studio' ? 'lmstudio' : engine
-}
-
-/** Translate an engine-manager engine id into a proxy engine, or null. */
-function proxyEngineFromManagerId(id: string): ProxyEngine | null {
-    if (id === 'ollama') return 'ollama'
-    if (id === 'lmstudio') return 'lm-studio'
-    return null
-}
-
-/** The broker relay namespace fronting an engine's reverse proxy. */
-function proxyRelayPrefix(engine: ProxyEngine): string {
-    return engine === 'ollama' ? 'proxy' : 'lmstudio-proxy'
-}
-
 /**
  * Spawns and supervises the modular backend.
  *
@@ -314,12 +315,12 @@ function proxyRelayPrefix(engine: ProxyEngine): string {
  * `docs/services-backend.md`):
  *
  * - The `nvpair-ui-broker` is the **only** Electron-spawned binary and is itself the
- *   parent of every broker-owned worker (`ollama-proxy`, `lmstudio-proxy`,
+ *   parent of every broker-owned worker (`nvpair-proxy`,
  *   `nvpair-node-scanner`, `nvpair-node-info`, `nvpair-workload-manager`,
  *   `nvpair-cluster-manager`, `nvpair-node-settings`, `nvpair-manual-nodes`,
  *   `nvpair-engine-manager`, `nvpair-errors`, `nvpair-job-scheduler`). Electron passes their resolved paths to
  *   the broker (see `brokerStartupArgs`) and reaches each through a broker relay:
- *   `proxy:` / `lmstudio-proxy:` for the two engine proxies, `engine:` for the
+ *   the mapped `<engine>-proxy:` facade relays, `engine:` for the
  *   engine-manager, `errors:` for the error pipeline, `node/*` for manual nodes,
  *   `settings/*` and `cluster:` for the rest. Local inference jobs arrive on the
  *   broker's `workloads:subscribe` stream.
@@ -484,7 +485,7 @@ class ModularSupervisor {
                 mode: app.isPackaged ? 'packaged' : 'dev',
                 binDir,
                 modularCommit: manifestInfo.commit,
-                modularProduct: manifestInfo.product,
+                modularServices: manifestInfo.services,
                 resourcesPath: process.resourcesPath,
                 appPath: app.getAppPath()
             }
@@ -564,15 +565,12 @@ class ModularSupervisor {
         // where the time actually went.
         const teardownStartedAt = Date.now()
 
-        // Stop running engines first, while engine-manager is fully alive and not
-        // under a shutdown deadline, so its child engine processes (e.g. Ollama)
-        // are gone before the teardown loop below — never orphaned by a SIGKILL.
-        await this.stopLocalEnginesForShutdown()
-        log.info({
-            sublevel: 'lifecycle',
-            message: `Stopped local engines for shutdown in ${Date.now() - teardownStartedAt}ms`
-        })
-
+        // The engines are not stopped from here. The broker's own shutdown
+        // orders it: the proxy first, so no new inference arrives, then the
+        // engines, keeping their saved on/off state, then the workers. Stopping
+        // the engines ahead of that ran the same step early and in the opposite
+        // order — engines went down while the proxy was still routing requests
+        // to them.
         const processes = Array.from(this.processes.values()).reverse()
         this.processes.clear()
         this.localBridges.clear()
@@ -604,20 +602,6 @@ class ModularSupervisor {
             sublevel: 'lifecycle',
             message: `Stopped modular service processes in ${Date.now() - teardownStartedAt}ms`
         })
-    }
-
-    /** Stop engine processes before teardown without changing saved ON/OFF intent. */
-    private async stopLocalEnginesForShutdown(): Promise<void> {
-        const broker = this.processes.get('broker')
-        if (!broker) return
-        try {
-            await prepareLocalEnginesForShutdown(broker)
-        } catch (err) {
-            log.warn({
-                sublevel: 'engine-manager',
-                message: `Could not stop engines for shutdown: ${getErrorString(err)}`
-            })
-        }
     }
 
     hasProcess(name: ModularProcessName): boolean {
@@ -681,7 +665,7 @@ class ModularSupervisor {
         method: string,
         params?: JsonValue
     ): Promise<JsonValue | undefined> {
-        return this.callProcess('broker', `${proxyRelayPrefix(engine)}:${method}`, params)
+        return this.callProcess('broker', `${proxySourceForEngine(engine)}:${method}`, params)
     }
 
     /**
@@ -825,8 +809,9 @@ class ModularSupervisor {
         }
         passPath('--scanner-path', 'scanner')
         passPath('--node-info-path', 'node-info')
-        passPath('--proxy-path', 'proxy')
-        passPath('--lmstudio-proxy-path', 'lmstudio-proxy')
+        // One process fronts every engine; the broker starts it once and enables
+        // a facade per entry in its own --proxy-engines default.
+        passPath('--proxy-path', 'nvpair-proxy')
         passPath('--workload-manager-path', 'workload-manager')
         passPath('--cluster-manager-path', 'cluster-manager')
         passPath('--settings-path', 'node-settings')
@@ -876,8 +861,9 @@ class ModularSupervisor {
             }
         }
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
-        await subscribe('proxy:subscribe', 'subscribe to broker ollama-proxy relay')
-        await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
+        for (const source of PROXY_NODE_SOURCES) {
+            await subscribe(`${source}:subscribe`, `subscribe to broker ${source} relay`)
+        }
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1074,12 +1060,12 @@ class ModularSupervisor {
         try {
             const result = await this.callProcess(
                 'broker',
-                `${proxyRelayPrefix(engine)}:get-status`
+                `${proxySourceForEngine(engine)}:get-status`
             )
             const obj = objectValue(result)
             if (obj && booleanValue(obj.ready)) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxySourceForEngine(engine),
                     method: 'ready',
                     params: { port: numberValue(obj.port) }
                 })
@@ -1100,14 +1086,14 @@ class ModularSupervisor {
             if (!obj || !Array.isArray(obj.nodes)) return
             for (const node of obj.nodes) {
                 getModularBridgeState().handleNotification({
-                    source: engine === 'ollama' ? 'proxy' : 'lmstudio-proxy',
+                    source: proxySourceForEngine(engine),
                     method: 'node/discovered',
                     params: node
                 })
             }
         } catch (err) {
             log.verbose({
-                sublevel: proxyRelayPrefix(engine),
+                sublevel: proxySourceForEngine(engine),
                 message: `Unable to hydrate ${engine} proxy nodes: ${getErrorString(err)}`
             })
         }
@@ -1154,7 +1140,7 @@ class ModularSupervisor {
             if (status.nodeId !== selfId) continue
             if (status.processStatus !== 'stopped' && status.processStatus !== 'running') continue
 
-            const engine = engineManagerEngineName(status.engineType)
+            const engine = engineManagerName(status.engineType)
             // A stopped engine will emit `engine:state-changed` on start, which
             // clears this optimistic op; a running engine's start is a backend
             // no-op (no state event), so we skip the op to avoid a stuck spinner —
@@ -1266,12 +1252,7 @@ class ModularSupervisor {
             this.scheduleRemoteEngineStatusRefresh()
         }
 
-        const proxyEngine: ProxyEngine | null =
-            event.source === 'proxy'
-                ? 'ollama'
-                : event.source === 'lmstudio-proxy'
-                  ? 'lm-studio'
-                  : null
+        const proxyEngine = proxyEngineFromSource(event.source)
         if (proxyEngine && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
@@ -1316,21 +1297,23 @@ class ModularSupervisor {
         this.readinessWaiters.clear()
     }
 
-    /** Rewrite broker `proxy:`/`lmstudio-proxy:` relay frames into proxy-source events. */
+    /**
+     * Rewrite a broker `<engine>-proxy:` relay frame into a proxy-source event.
+     *
+     * The prefix and the resulting source are the same string — the engine's
+     * component id — so this stays a loop over the known proxy sources rather
+     * than a branch per engine.
+     */
     private normalizeBrokerProxy(notification: JsonRpcNotification): JsonRpcNotification {
         if (notification.source !== 'broker') return notification
-        if (notification.method.startsWith('lmstudio-proxy:')) {
-            return {
-                source: 'lmstudio-proxy',
-                method: notification.method.slice('lmstudio-proxy:'.length),
-                params: notification.params
-            }
-        }
-        if (notification.method.startsWith('proxy:')) {
-            return {
-                source: 'proxy',
-                method: notification.method.slice('proxy:'.length),
-                params: notification.params
+        for (const source of PROXY_NODE_SOURCES) {
+            const prefix = `${source}:`
+            if (notification.method.startsWith(prefix)) {
+                return {
+                    source,
+                    method: notification.method.slice(prefix.length),
+                    params: notification.params
+                }
             }
         }
         return notification
@@ -1606,6 +1589,25 @@ class ModularSupervisor {
     }
 
     private handleEngineManagerNotification(notification: JsonRpcNotification): void {
+        if (notification.method === 'engine:settings-changed') {
+            try {
+                emitBridgePush('engines:settings-changed', parseEngineSettings(notification.params))
+            } catch {
+                /* Unsupported peer version. */
+            }
+            return
+        }
+        if (notification.method === 'engine:settings-disconnected') {
+            const params = notification.params
+            if (
+                params &&
+                typeof params === 'object' &&
+                !Array.isArray(params) &&
+                typeof params.nodeId === 'string'
+            )
+                emitBridgePush('engines:settings-disconnected', { nodeId: params.nodeId })
+            return
+        }
         if (notification.method === 'engine:ready') {
             void this.hydrateEngineManager()
             return
@@ -1721,6 +1723,41 @@ class ModularSupervisor {
      * push. Without that context the error lands unattributed and the spinner
      * spins on to the safety-net timeout even though the operation is over.
      */
+    /**
+     * Remove the engines PAIR installed, for the "reset app data" flow.
+     *
+     * One backend call rather than a loop over engines: engine-manager owns
+     * which installs are PAIR's and what removing one safely involves, down to
+     * preserving each engine's model store. The TUI and the platform
+     * uninstallers reach the same method, so the rule has one implementation.
+     *
+     * Returns a per-engine outcome. An engine PAIR did not install comes back
+     * neither removed nor failed, which is the expected result and not an error.
+     */
+    async uninstallManagedEngines(): Promise<ManagedEngineUninstall[]> {
+        const result = await this.callProcess(
+            'broker',
+            'engine:uninstall-managed',
+            undefined,
+            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+        )
+        if (typeof result !== 'object' || result === null || Array.isArray(result)) return []
+        const engines = result.engines
+        if (!Array.isArray(engines)) return []
+        const outcomes: ManagedEngineUninstall[] = []
+        for (const entry of engines) {
+            if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+            const { engine, removed, error } = entry
+            if (typeof engine !== 'string' || engine === '') continue
+            outcomes.push({
+                engine,
+                removed: removed === true,
+                error: typeof error === 'string' ? error : ''
+            })
+        }
+        return outcomes
+    }
+
     async deleteModel(engine: string, engineType: EngineType, model: string): Promise<void> {
         const errorContext = { engineType, operation: 'delete', modelName: model } as const
         if (!this.brokerReady) {
@@ -2031,7 +2068,7 @@ class ModularSupervisor {
         }
         const generation = this.beginModelRefresh(engine)
         this.callProcess('broker', 'engine:action', {
-            engine: engineManagerId(engine),
+            engine: engineManagerName(engine),
             action: 'list_models'
         })
             .then(result => {
@@ -2118,8 +2155,8 @@ class ModularSupervisor {
      * engine:state-changed and reconcile. The engine:state-changed carries the
      * **real** local engine port, which is the one the proxy must route to (mDNS
      * self-discovery can advertise the wrong port even when it works). Applies to
-     * every proxy-fronted engine (Ollama → ollama-proxy, LM Studio →
-     * lmstudio-proxy); loopback-only engines are ignored.
+     * every proxy-fronted engine through the mapping in proxy-engines.ts;
+     * loopback-only engines are ignored.
      */
     private updateLocalNodeBridgeFromEngineState(params: JsonValue | undefined): void {
         const obj = objectValue(params)
@@ -2169,7 +2206,7 @@ class ModularSupervisor {
             if (!bridge.selfWarned) {
                 bridge.selfWarned = true
                 log.warn({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message:
                         `Skipping local-node ${engine} proxy bridge: engine port ` +
                         `${bridge.port} matches the proxy's own listen port ` +
@@ -2196,7 +2233,7 @@ class ModularSupervisor {
                 bridge.bridgedPort = bridge.port
             } catch (err) {
                 log.warn({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message: `Failed to bridge local node into ${engine} proxy: ${getErrorString(err)}`
                 })
             }
@@ -2211,7 +2248,7 @@ class ModularSupervisor {
                 await this.callProxy(engine, 'node/remove-manual', { id: previousId })
             } catch (err) {
                 log.verbose({
-                    sublevel: proxyRelayPrefix(engine),
+                    sublevel: proxySourceForEngine(engine),
                     message: `Local node was not bridged into ${engine} proxy: ${getErrorString(err)}`
                 })
             }

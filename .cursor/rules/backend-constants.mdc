@@ -1,0 +1,54 @@
+---
+description: Prefer backend-reported values over hardcoded constants; keep the remaining backend-coupled constants in one canonical file
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Backend-coupled Constants
+
+PAIR UI is a UI for the `services/` backend. Values the backend owns (ports, endpoints,
+service names, intervals it drives) belong to the backend. Hardcoding them risks
+silent drift the moment the backend changes a default.
+
+## 1. Prefer backend-reported values
+
+Never hardcode a value the backend reports. Source it from the live contract and
+fall back to a constant only before the backend has reported (cold start):
+
+- Engine server port -> `engine:status` / `engine:state-changed` `port`.
+- Ollama proxy port -> `proxy:get-status`.
+- Per-node node-info port -> discovery `AvailableNode.port`.
+
+If a value you need is **not** reported, record the current limitation in
+`docs/services-parity.md`, then hardcode it temporarily per rule 3.
+
+## 2. One canonical file
+
+All hardcoded backend-coupled constants live in
+**`src/shared/constants/modular-runtime.ts`** — ports, local endpoint paths,
+backend-poll intervals, engine-port fallbacks, and log levels.
+
+- Do **not** scatter backend literals (port numbers, `127.0.0.1`, `/v1/...`
+  paths, poll intervals) inline across the codebase.
+- Do **not** encode backend discovery service names or TXT layouts in PAIR.
+  Consume the broker's reported discovery snapshots.
+- Do **not** create sibling constants files for backend values (no `ports.ts`,
+  no per-feature copies). Pure UI timings (animation throttles, tooltip delays,
+  blur grace) are **not** backend-coupled and stay with their component.
+
+## 3. Track backend-owned hardcodes
+
+A constant that exists **only** because the backend doesn't expose the value yet
+must carry a comment linking the current capability status, e.g.:
+
+```ts
+// Hardcoded pending backend exposure — see
+// docs/services-parity.md#current-client-side-responsibilities
+export const MODULAR_CLUSTER_MANAGER_PORT = 14321
+```
+
+When the backend starts reporting the value, source it and **delete** the
+constant (no "just in case" fallback — see `no-legacy-fallbacks.mdc`).

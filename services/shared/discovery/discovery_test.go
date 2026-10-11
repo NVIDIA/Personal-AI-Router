@@ -5,7 +5,9 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -443,6 +445,90 @@ func TestRunEmitsAndCloses(t *testing.T) {
 			cancel()
 			t.Fatalf("timed out; events seen: %v", got)
 		}
+	}
+}
+
+func TestSendMulticastQueryOnInterfaceUsesFirstIPv4AndMDNSTarget(t *testing.T) {
+	ifi := &net.Interface{Index: 7, Name: "eth0"}
+	wantSource := net.IPv4(192, 0, 2, 10)
+	addrs := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("2001:db8::10")},
+		&net.IPNet{IP: wantSource},
+		&net.IPNet{IP: net.IPv4(198, 51, 100, 20)},
+	}
+	payload := []byte("PTR query")
+
+	var gotPayload []byte
+	var gotInterface *net.Interface
+	var gotSource net.IP
+	var gotTarget *net.UDPAddr
+	source, err := sendMulticastQueryOnInterface(
+		payload,
+		ifi,
+		addrs,
+		func(buf []byte, sentIfi *net.Interface, src net.IP, target *net.UDPAddr) error {
+			gotPayload = append([]byte(nil), buf...)
+			gotInterface = sentIfi
+			gotSource = append(net.IP(nil), src...)
+			gotTarget = target
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("sendMulticastQueryOnInterface: %v", err)
+	}
+	if !source.Equal(wantSource) || !gotSource.Equal(wantSource) {
+		t.Fatalf("source = %s / sent %s, want %s", source, gotSource, wantSource)
+	}
+	if gotInterface != ifi {
+		t.Errorf("interface = %v, want %v", gotInterface, ifi)
+	}
+	if string(gotPayload) != string(payload) {
+		t.Errorf("payload = %q, want %q", gotPayload, payload)
+	}
+	if gotTarget == nil || !gotTarget.IP.Equal(net.IPv4(224, 0, 0, 251)) || gotTarget.Port != 5353 {
+		t.Errorf("target = %v, want 224.0.0.251:5353", gotTarget)
+	}
+}
+
+func TestSendMulticastQueryOnInterfaceReturnsSenderFailure(t *testing.T) {
+	wantErr := errors.New("send refused")
+	wantSource := net.IPv4(192, 0, 2, 10)
+	source, err := sendMulticastQueryOnInterface(
+		[]byte("PTR query"),
+		&net.Interface{Index: 7, Name: "eth0"},
+		[]net.Addr{&net.IPNet{IP: wantSource}},
+		func([]byte, *net.Interface, net.IP, *net.UDPAddr) error {
+			return wantErr
+		},
+	)
+	if !source.Equal(wantSource) {
+		t.Fatalf("source = %s, want %s", source, wantSource)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestSendMulticastQueryOnInterfaceSkipsInterfacesWithoutIPv4(t *testing.T) {
+	called := false
+	source, err := sendMulticastQueryOnInterface(
+		[]byte("PTR query"),
+		&net.Interface{Index: 7, Name: "eth0"},
+		[]net.Addr{&net.IPNet{IP: net.ParseIP("2001:db8::10")}},
+		func([]byte, *net.Interface, net.IP, *net.UDPAddr) error {
+			called = true
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("sendMulticastQueryOnInterface: %v", err)
+	}
+	if source != nil {
+		t.Fatalf("source = %s, want nil", source)
+	}
+	if called {
+		t.Fatal("sender called without an IPv4 address")
 	}
 }
 

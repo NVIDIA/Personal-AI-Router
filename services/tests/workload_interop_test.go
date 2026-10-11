@@ -32,6 +32,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -367,7 +368,7 @@ func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
 
 	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
 		"--scanner-path", scannerBin,
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 		"--workload-manager-path", workloadMgrBin,
 	)
 	t.Cleanup(cleanup)
@@ -375,15 +376,15 @@ func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 	t.Log("broker ready")
 
-	// The proxy reports its bound port asynchronously; poll proxy:get-status.
+	// The proxy reports its bound port asynchronously; poll ollama-proxy:get-status.
 	proxyPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	t.Logf("proxy ready on port %d", proxyPort)
 
 	// Register the fake Ollama as a manual node and pin it as the target so
 	// the proxy forwards there deterministically.
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["test-model"]}}`, ollamaPort))
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":50,"method":"ollama-proxy:node/add-manual","params":{"id":"fake-ollama","host":"127.0.0.1","port":%d,"addresses":["127.0.0.1"],"models":["test-model"]}}`, ollamaPort))
 	waitForResponse(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"proxy:node/select","params":{"id":"fake-ollama"}}`)
+	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":51,"method":"ollama-proxy:node/select","params":{"id":"fake-ollama"}}`)
 	waitForResponse(t, msgs, 5*time.Second)
 	t.Log("fake ollama pinned as proxy target")
 
@@ -465,12 +466,42 @@ func postPeerEvent(t *testing.T, client *http.Client, endpoint, body string, tim
 	}
 }
 
-// waitProxyReady polls proxy:get-status until the proxy reports ready and
-// returns its bound port.
+// waitProxyReady polls ollama-proxy:get-status until the Ollama proxy reports ready
+// and returns its bound port.
 func waitProxyReady(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration) int {
 	t.Helper()
-	id := 9000
-	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"proxy:get-status"}`, id))
+	return waitEngineProxyReady(t, "ollama-proxy", stdin, msgs, timeout)
+}
+
+// waitLMStudioProxyReady is waitProxyReady for the LM Studio relay namespace.
+func waitLMStudioProxyReady(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration) int {
+	t.Helper()
+	return waitEngineProxyReady(t, "lmstudio-proxy", stdin, msgs, timeout)
+}
+
+// engineReadyPollSeq hands every readiness poll a distinct JSON-RPC id. Based
+// at 9000 to stay clear of the fixed ids other helpers on this stream use.
+var engineReadyPollSeq atomic.Int64
+
+// waitEngineProxyReady polls <namespace>:get-status until that proxy reports
+// ready and returns its bound port. The two engines differ only by relay
+// namespace, so they share one implementation.
+func waitEngineProxyReady(t *testing.T, namespace string, stdin io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration) int {
+	t.Helper()
+	method := namespace + ":get-status"
+	// Accept only replies to this invocation's own polls. One process hosts
+	// both facades and answers get-status for each on this one stream, so a
+	// poll's reply can still be in flight when the next wait begins — and
+	// every one of them looks alike: a response frame carrying ready and port.
+	// Matching on shape alone returns the other engine's port, which is
+	// exactly what the tests waiting on both facades assert is different.
+	pending := map[int64]bool{}
+	poll := func() {
+		id := 9000 + engineReadyPollSeq.Add(1)
+		pending[id] = true
+		writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q}`, id, method))
+	}
+	poll()
 	deadline := time.After(timeout)
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
@@ -478,22 +509,27 @@ func waitProxyReady(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, 
 		select {
 		case msg, ok := <-msgs:
 			if !ok {
-				t.Fatal("broker stream closed waiting for proxy:get-status")
+				t.Fatalf("broker stream closed waiting for %s", method)
 			}
-			if msg.ID != nil && msg.Method == "" {
-				var st struct {
-					Ready bool `json:"ready"`
-					Port  int  `json:"port"`
-				}
-				if json.Unmarshal(msg.Result, &st) == nil && st.Ready {
-					return st.Port
-				}
+			if msg.ID == nil || msg.Method != "" {
+				continue
+			}
+			var id int64
+			if json.Unmarshal(*msg.ID, &id) != nil || !pending[id] {
+				continue
+			}
+			delete(pending, id)
+			var st struct {
+				Ready bool `json:"ready"`
+				Port  int  `json:"port"`
+			}
+			if json.Unmarshal(msg.Result, &st) == nil && st.Ready {
+				return st.Port
 			}
 		case <-tick.C:
-			id++
-			writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"proxy:get-status"}`, id))
+			poll()
 		case <-deadline:
-			t.Fatalf("timed out (%s) waiting for proxy to become ready", timeout)
+			t.Fatalf("timed out (%s) waiting for %s proxy to become ready", timeout, namespace)
 		}
 	}
 }

@@ -5,7 +5,7 @@
 // address — the shape of every peer on a Tailscale tailnet, where no multicast
 // crosses and nothing is ever discovered.
 //
-// Node A is a real broker with its real workers. Node B is a real ollama-proxy
+// Node A is a real broker with its real workers. Node B is a real nvpair-proxy
 // serving cluster mTLS in front of a fake engine, plus the two HTTP surfaces a
 // peer exposes: a plain node-info reporting its identity and service map, and a
 // pin-gated engine manager serving its model list. The two nodes cross-pin, as
@@ -195,8 +195,7 @@ func startBrokerWithClusterDir(t *testing.T, clusterDir string) *brokerProc {
 		"--cluster-dir", clusterDir,
 		"--scanner-path", scannerBin,
 		"--node-info-path", nodeInfoBin,
-		"--proxy-path", proxyBin,
-		"--lmstudio-proxy-path", lmstudioProxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama,lmstudio",
 		"--workload-manager-path", workloadMgrBin,
 		"--errors-path", errorsBin,
 		"--engine-manager-path", engineMgrBin,
@@ -327,7 +326,7 @@ func TestManualPairPeerBehavesLikeADiscoveredPeer(t *testing.T) {
 	awaitPortFree(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(clusterManagerPort)))
 	brokerA := startBrokerWithClusterDir(t, dirA)
 	brokerA.call("discovery:subscribe", nil)
-	brokerA.call("proxy:subscribe", nil)
+	brokerA.call("ollama-proxy:subscribe", nil)
 	awaitPortListening(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(clusterManagerPort)))
 	awaitPortListening(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(portB)))
 
@@ -348,7 +347,7 @@ func TestManualPairPeerBehavesLikeADiscoveredPeer(t *testing.T) {
 		t.Fatal("the peer must read as a cluster member after pairing")
 	}
 
-	// B: a real ollama-proxy over cluster mTLS in front of a fake engine.
+	// B: a real nvpair-proxy Ollama facade over cluster mTLS in front of a fake engine.
 	engineHost, enginePort, generates := startFakeOllama(t)
 	proxyB := startProxyProc(t, dirB, freePort(t))
 	t.Cleanup(proxyB.stop)
@@ -463,7 +462,7 @@ func pairFromBroker(t *testing.T, b *brokerProc, joiner *cmProc, joinerPort int)
 	}
 }
 
-// awaitRoutablePeerAtProxy waits until the broker's ollama-proxy lists the peer
+// awaitRoutablePeerAtProxy waits until the broker's Ollama facade lists the peer
 // as a routing target and returns the proxy's listen port.
 func awaitRoutablePeerAtProxy(t *testing.T, b *brokerProc, hostUUID string) int {
 	t.Helper()
@@ -473,13 +472,13 @@ func awaitRoutablePeerAtProxy(t *testing.T, b *brokerProc, hostUUID string) int 
 		var status struct {
 			Port int `json:"port"`
 		}
-		if err := json.Unmarshal(b.call("proxy:get-status", nil).Result, &status); err == nil && status.Port > 0 {
+		if err := json.Unmarshal(b.call("ollama-proxy:get-status", nil).Result, &status); err == nil && status.Port > 0 {
 			var listed struct {
 				Nodes []struct {
 					ID string `json:"id"`
 				} `json:"nodes"`
 			}
-			resp := b.call("proxy:nodes/list", nil)
+			resp := b.call("ollama-proxy:nodes/list", nil)
 			lastNodes = resp.Result
 			if json.Unmarshal(resp.Result, &listed) == nil {
 				for _, n := range listed.Nodes {

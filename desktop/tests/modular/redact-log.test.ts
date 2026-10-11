@@ -71,12 +71,29 @@ describe('redactSensitiveLogText', () => {
         expect(redactSensitiveLogText(line)).toBe(line)
     })
 
+    it.each([
+        '{"launchText":"TOKEN=secret',
+        '{"pin":"secret',
+        '{"pin":123456',
+        'worker: {"launchText":"safe \\" secret',
+        '{"launch_env":["VALUE=]secret",',
+        '{"launch_args":[["secret"],',
+        '{"launchText":"safe", "pin":"secret'
+    ])('redacts sensitive tails of malformed frames: %s', frame => {
+        const out = redactSensitiveLogText(frame)
+
+        expect(out).not.toContain('secret')
+        expect(out).not.toContain('123456')
+        expect(out).toContain('[redacted]')
+    })
+
     it('is linear-time on hostile input', () => {
         const hostile = `{"pin":"${'a'.repeat(200_000)}`
         const start = performance.now()
-        redactSensitiveLogText(hostile)
+        const out = redactSensitiveLogText(hostile)
         const elapsed = performance.now() - start
 
         expect(elapsed).toBeLessThan(500)
+        expect(out.includes('a'.repeat(100))).toBe(false)
     })
 })

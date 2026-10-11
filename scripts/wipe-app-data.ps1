@@ -23,8 +23,10 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.sh (Unix twin — update both in the same change)
 #
-# Explicit exclusions (never add): %USERPROFILE%\.ollama, .lmstudio, external
-# engine installs, and the application install tree (Program Files\PAIR).
+# Explicit exclusions (never add): %USERPROFILE%\.ollama, %USERPROFILE%\.llamacpp,
+# %USERPROFILE%\.lmstudio, external engine installs, and the application install
+# tree (Program Files\PAIR). Those three are the engines' model stores; each
+# engine declares its own as models_dir, and nothing PAIR removes may delete one.
 # ---------------------------------------------------------------------------
 
 [CmdletBinding()]
@@ -48,10 +50,10 @@ function Show-Usage {
 Usage: scripts\wipe-app-data.cmd [options]
        scripts\wipe-app-data.ps1 [options]
 
-Delete all Personal AI Router-owned application data (settings, logs, cluster
+Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
 identity, chat history, PAIR-managed engines under the app data root).
 
-Does NOT delete third-party model libraries (e.g. %USERPROFILE%\.ollama).
+Does NOT delete model libraries (%USERPROFILE%\.ollama, .llamacpp, .lmstudio\models).
 Does NOT uninstall the application binary.
 
 Options:
@@ -64,7 +66,7 @@ Options:
   --help             Show this help
 
 Interactive mode requires typing "$ConfirmPhrase" to proceed.
-Quit Personal AI Router before running unless --force-kill is set.
+Quit NVIDIA PAIR before running unless --force-kill is set.
 "@
 }
 
@@ -134,6 +136,8 @@ $Targets = @(
 $PairProcs = @(
     'PAIR',
     'nvpair-ui-broker',
+    'nvpair-proxy',
+    # Pre-unification names, so this still cleans up after an older install.
     'ollama-proxy',
     'lmstudio-proxy',
     'nvpair-node-info',
@@ -192,7 +196,7 @@ foreach ($proc in $PairProcs) {
 }
 
 if ($running.Count -gt 0 -and -not $ForceKill) {
-    Write-Error ("Personal AI Router appears to be running ({0}). Quit the app first, or pass --force-kill." -f ($running -join ', '))
+    Write-Error ("NVIDIA PAIR appears to be running ({0}). Quit the app first, or pass --force-kill." -f ($running -join ', '))
     exit 1
 }
 
@@ -222,8 +226,8 @@ if (-not $Confirmed) {
         exit 2
     }
     Write-Host ''
-    Write-Host 'WARNING: This permanently deletes all Personal AI Router app data.'
-    Write-Host 'Third-party model libraries (e.g. %USERPROFILE%\.ollama) are NOT removed.'
+    Write-Host 'WARNING: This permanently deletes all NVIDIA PAIR app data.'
+    Write-Host 'Model libraries (%USERPROFILE%\.ollama, .llamacpp, .lmstudio\models) are NOT removed.'
     Write-Host ''
     Write-Host 'Paths to remove:'
     foreach ($t in $Targets) { Write-Host ("  - {0}" -f $t.Path) }
@@ -280,5 +284,5 @@ if ($RelaunchExec) {
     exit 1
 }
 
-Write-Host 'Done. Restart Personal AI Router to begin with a clean state.'
+Write-Host 'Done. Restart NVIDIA PAIR to begin with a clean state.'
 exit 0

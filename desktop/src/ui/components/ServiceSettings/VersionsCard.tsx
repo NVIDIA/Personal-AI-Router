@@ -79,8 +79,8 @@ export default function VersionsCard() {
                 <Stack gap="2">
                     <Stack gap="2">
                         <VersionRow label="Application" value={appVersion} />
-                        {versions?.modularProduct && (
-                            <VersionRow label="Services" value={versions.modularProduct} />
+                        {versions?.modularServices && (
+                            <VersionRow label="Services" value={versions.modularServices} />
                         )}
                     </Stack>
 

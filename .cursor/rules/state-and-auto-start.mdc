@@ -1,0 +1,42 @@
+---
+description: Push-driven renderer state and centralized optimistic engine actions
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Reactive State
+
+The modular service is the source of truth. Renderer stores display snapshots
+and push events.
+
+- Fetch an initial snapshot before or while subscribing to domain pushes.
+- Treat engine and model commands as fire-and-forget mutations.
+- Do not populate durable state from mutation responses.
+- Render engine lifecycle from `engines:state-changed`.
+- Render operation progress from `engines:progress-changed` and
+  `engines:progress-cleared`.
+- Keep node, metrics, workloads, discovery, cluster, and error state in their
+  own stores.
+
+## Pending actions
+
+`src/ui/stores/pending-actions.store.ts` is the only optimistic operation state
+for engine and model commands.
+
+- `fireCommand` in `src/ui/api/engine-api.ts` starts pending entries.
+- Components may read pending entries but must not write them.
+- Backend state, progress, and matching errors supersede optimistic state.
+- Pending state is memory-only and must not survive reload.
+- Entries are keyed by node and action so remote and local operations share the
+  same mechanism.
+
+Do not add per-component lifecycle or model loading flags.
+
+## Backend-owned lifecycle preferences
+
+Engine auto-start and lifecycle persistence are owned by
+`nvpair-engine-manager`. PAIR sends commands and reflects reported state; it
+must not maintain a second auto-start source of truth.

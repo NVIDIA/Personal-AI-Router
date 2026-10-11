@@ -30,13 +30,11 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 	}
 }
 
-// gracefulSignal stops the process tree and is the only stop signal
-// engine-manager sends: stop() sends this once and waits for the engine to
-// exit. Windows has no SIGTERM, and the engines we spawn run windowless
-// (CREATE_NO_WINDOW), so a non-/F taskkill only posts WM_CLOSE — which a
-// windowless process can't receive ("can only be terminated forcefully"), i.e.
-// it does nothing. Never force-killing such a process would leave the engine
-// running forever, so on Windows the stop is taskkill /T /F.
+// gracefulSignal stops the process tree. Windows has no SIGTERM, and the
+// engines we spawn run windowless (CREATE_NO_WINDOW), so a non-/F taskkill only
+// posts WM_CLOSE — which a windowless process can't receive ("can only be
+// terminated forcefully"), i.e. it does nothing. The graceful and forced
+// managed-process steps therefore both use taskkill /T /F on Windows.
 func gracefulSignal(cmd *exec.Cmd) error {
 	return taskkill(cmd, true)
 }
@@ -172,10 +170,8 @@ func imagePathForPID(pid int) string {
 	return windows.UTF16ToString(buf[:size])
 }
 
-// signalPID asks the PID's process tree to stop (taskkill /T), escalating to
-// a forced /F kill when force is set. It is the PID-addressed kill used only by
-// the orphan reclaim (a process we lost the *exec.Cmd handle to), distinct from
-// the normal graceful-only stop() path.
+// signalPID asks the PID's process tree to stop (taskkill /T), adding /F when
+// force is set. The owned-process escalation and orphan reclaim share it.
 func signalPID(pid int, force bool) error {
 	if pid <= 0 {
 		return nil

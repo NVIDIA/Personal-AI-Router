@@ -17,6 +17,22 @@ import (
 // headroom, so a healthy call never times out under us.
 const callTimeout = 35 * time.Second
 
+// uiTickInterval drives everything that ages on screen: the relative age
+// columns ("12s", "5m") and the expiry of transient status messages. Bubble Tea
+// only re-renders in response to a message, so without this the SEEN column sat
+// at whatever it read when the last notification happened to arrive.
+const uiTickInterval = time.Second
+
+// TickMsg is the shell's periodic re-render pulse, broadcast to every view.
+// Views that render relative times need no state to handle it; the redraw alone
+// refreshes them.
+type TickMsg struct{ Now time.Time }
+
+// uiTick schedules the next pulse. The root model re-arms it on each TickMsg.
+func uiTick() tea.Cmd {
+	return tea.Tick(uiTickInterval, func(t time.Time) tea.Msg { return TickMsg{Now: t} })
+}
+
 // NotificationMsg carries one broker server-push frame into the Bubble
 // Tea update loop. Every view receives it.
 type NotificationMsg struct{ Msg *rpc.Message }
@@ -25,22 +41,18 @@ type NotificationMsg struct{ Msg *rpc.Message }
 // (broker exited or the connection dropped).
 type DisconnectedMsg struct{}
 
-// LogLineMsg carries one line of the broker's (and its workers') stderr
-// into the update loop for the Logs view.
+// LogLineMsg carries one log line into the update loop for the Logs view: the
+// broker's and its workers' stderr, and this program's own log.
 type LogLineMsg struct{ Line string }
 
-// LogClosedMsg is emitted once the broker's stderr stream ends.
-type LogClosedMsg struct{}
-
-// waitForLog blocks on the next captured stderr line, re-arming itself
-// after each one. A closed channel yields LogClosedMsg.
+// waitForLog blocks on the next log line, re-arming itself after each one.
+//
+// The channel is never closed. The broker's stderr ending is not the end of
+// the log — this program still writes to it — and a close would make that next
+// write panic.
 func waitForLog(lines <-chan string) tea.Cmd {
 	return func() tea.Msg {
-		line, ok := <-lines
-		if !ok {
-			return LogClosedMsg{}
-		}
-		return LogLineMsg{Line: line}
+		return LogLineMsg{Line: <-lines}
 	}
 }
 
@@ -61,8 +73,20 @@ func waitForNotification(client *rpc.Client) tea.Cmd {
 // outcome back into the update loop via decode, which maps the response
 // (or error) to a view-specific message.
 func call(client *rpc.Client, method string, params any, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
+	return callWithin(client, callTimeout, method, params, decode)
+}
+
+// callWithin is call with an explicit budget, for a request whose duration is
+// set by the work it starts rather than by the round trip.
+//
+// callTimeout was reasoned about for control calls, whose slowest leg is a
+// thirty-second relay. A request that waits on an engine restarting is not one
+// of those, and giving it the same deadline reported a working change as a
+// failure half a minute in, while the backend carried on and finished it.
+func callWithin(client *rpc.Client, budget time.Duration, method string, params any,
+	decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 		msg, err := client.Call(ctx, method, params)
 		return decode(msg, err)
