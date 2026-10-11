@@ -6,7 +6,9 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,6 +95,42 @@ func TestClientCallSurfacesRPCError(t *testing.T) {
 	}
 	if rpcErr, ok := err.(*RPCError); !ok || rpcErr.Code != -32000 {
 		t.Fatalf("expected *RPCError -32000, got %v", err)
+	}
+}
+
+// recordingWriter counts writes, to show a refused request never reached the
+// wire.
+type recordingWriter struct{ writes int }
+
+func (w *recordingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return len(p), nil
+}
+
+// TestClientCallRefusesBeforeWriting checks a request is not sent when its
+// caller has already given up or the connection is gone. Sent, the broker
+// would carry it out regardless — for a mutation, while the caller reported
+// that it had not happened.
+func TestClientCallRefusesBeforeWriting(t *testing.T) {
+	w := &recordingWriter{}
+	client := NewClient(strings.NewReader(""), w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.Call(ctx, "engine:apply-settings", nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled call returned %v, want context.Canceled", err)
+	}
+	if w.writes != 0 {
+		t.Errorf("a cancelled call wrote %d frame(s)", w.writes)
+	}
+
+	// Run returns at once on the empty stream, which closes the connection.
+	_ = client.Run(context.Background())
+	if _, err := client.Call(context.Background(), "engine:apply-settings", nil); err == nil {
+		t.Error("a call on a closed connection returned no error")
+	}
+	if w.writes != 0 {
+		t.Errorf("a call on a closed connection wrote %d frame(s)", w.writes)
 	}
 }
 

@@ -152,6 +152,64 @@ func TestLMStudioFallsBackToOpenAIInventory(t *testing.T) {
 	}
 }
 
+func TestLlamaCPPUsesOpenAIInventoryAndChat(t *testing.T) {
+	type observedRequest struct {
+		method       string
+		path         string
+		model        string
+		messageCount int
+	}
+	observed := make(chan observedRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+			observed <- observedRequest{method: r.Method, path: r.URL.Path}
+			_, _ = w.Write([]byte(`{"data":[{"id":"llama-demo"}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
+			var request struct {
+				Model    string `json:"model"`
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode chat request: %v", err)
+			}
+			observed <- observedRequest{
+				method:       r.Method,
+				path:         r.URL.Path,
+				model:        request.Model,
+				messageCount: len(request.Messages),
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	exit := runAgainstServer(
+		t,
+		context.Background(),
+		[]string{"--backend", "llamacpp", "--prompt", "test"},
+		server.URL,
+		&stdout,
+		&stderr,
+	)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if got := <-observed; got.method != http.MethodGet || got.path != "/v1/models" {
+		t.Fatalf("inventory request = %+v, want GET /v1/models", got)
+	}
+	if got := <-observed; got.method != http.MethodPost || got.path != "/v1/chat/completions" ||
+		got.model != "llama-demo" || got.messageCount != 1 {
+		t.Fatalf("inference request = %+v, want OpenAI chat for llama-demo", got)
+	}
+}
+
 // A Personal AI Router proxy answers /v1/models with the whole cluster's
 // inventory and forwards /api/v1/models to one node, so the aggregated list must
 // win. The native list still supplies the type and capability fields the
@@ -331,6 +389,17 @@ func TestLMStudioDefaultPort(t *testing.T) {
 	}
 	if port := effectivePort(cfg); port != 1234 {
 		t.Fatalf("LM Studio default port=%d, want 1234", port)
+	}
+}
+
+func TestLlamaCPPDefaultPort(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, err := parseConfig([]string{"--backend", "llamacpp"}, &stderr)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if port := effectivePort(cfg); port != 8080 {
+		t.Fatalf("llama.cpp default port=%d, want 8080", port)
 	}
 }
 

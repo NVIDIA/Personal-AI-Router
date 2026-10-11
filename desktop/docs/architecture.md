@@ -42,8 +42,7 @@ The canonical runtime inventory is
 | Binary                    | Owner            | Purpose                                     |
 | ------------------------- | ---------------- | ------------------------------------------- |
 | `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay  |
-| `ollama-proxy`            | Broker           | Ollama-compatible proxy and cluster routing |
-| `lmstudio-proxy`          | Broker, optional | LM Studio OpenAI-compatible proxy           |
+| `nvpair-proxy`            | Broker           | Engine proxy and cluster routing; one process hosting a facade per enabled engine |
 | `nvpair-node-scanner`     | Broker           | LAN discovery and announcement              |
 | `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint        |
 | `nvpair-workload-manager` | Broker, optional | Workload replication                        |
@@ -110,7 +109,7 @@ subscribes to broker relays after `app:ready`, and converts backend responses
 into stable UI contracts.
 
 Electron reports the service connected after broker `app:ready`. The
-broker-owned Ollama and LM Studio proxies remain asynchronous capabilities; a
+broker-owned engine proxies remain asynchronous capabilities; a
 late or failed proxy does not misreport the broker startup as failed. If
 `app:ready` does not arrive within the startup deadline, Overview opens Settings
 
@@ -145,12 +144,16 @@ Personal AI Router uses commands down and events up:
 Renderer stores fetch domain snapshots at startup and then subscribe to push
 events. Engine lifecycle and model commands do not return replacement state.
 The centralized pending-actions store is the only optimistic renderer state for
-engine operations.
+engine operations, and it covers applying engine settings as well: that call
+waits for the owning node's stop, rebind, restart, and readiness checks before
+returning an operation receipt. Settings snapshots supply the authoritative state
+and progress while the call is in flight.
 
 Important push domains include:
 
 - `nodes:upsert` / `nodes:remove`;
 - `engines:state-changed`;
+- `engines:settings-changed` / `engines:settings-disconnected`;
 - `engines:progress-changed` / `engines:progress-cleared`;
 - `metrics:update`;
 - `workloads:upsert` / `workloads:remove`;
@@ -194,8 +197,37 @@ repository [`SECURITY.md`](../../SECURITY.md).
 Engine lifecycle and model operations flow through the broker's `engine:*`
 relay to `nvpair-engine-manager`. The renderer identifies engines with the
 closed `EngineType` union and narrows external strings with `isEngineType()`.
+`engineManagerName()` / `engineTypeFromManagerName()` are the one place that
+translation to and from the engine manager's own spelling lives.
 
-The Ollama and LM Studio proxies are cluster-aware. For model-bearing inference,
+### Engine settings
+
+Server port, proxy port, and the engine arguments are one authoritative
+record owned by the node running the engine. The broker exposes it as
+`engines:get-settings`, `engines:preview-settings`, and
+`engines:apply-settings`; a request naming another node is relayed to that
+peer's engine manager, so a clustered device is edited exactly like the local
+one.
+
+Preview validates without persisting or touching a process. Apply journals the
+accepted revision, then stops, rebinds the proxy, and restarts as needed; its
+response is only an acknowledgement, and the outcome arrives as an
+`engines:settings-changed` snapshot. A revision mismatch is rejected rather than
+merged, and an operation interrupted by a crash is recovered from the journal at
+startup. The deadline ladder for all of this is declared once in
+`nvpair-ui-broker/enginesettings.go`, each rung with headroom over the layer it
+waits on.
+
+Launch arguments and environment values pass through literally, without a
+per-engine option catalog. Semantic validation is limited to managed networking
+and CORS. The owning node rejects managed CORS origin changes relayed from a peer;
+ordinary environment assignments can be edited locally or by a pinned peer.
+
+`engine:set-port` remains a separate port-only RPC for the TUI. It runs the same
+authoritative settings operation rather than forwarding to the engine manager,
+so both entry points validate, restart, and persist identically.
+
+All engine proxies are cluster-aware. For model-bearing inference,
 each proxy first keeps only nodes whose per-engine discovery inventory advertises
 the requested model. Empty and non-matching inventories are excluded; an empty
 owner set returns a local `502`. Routing precedence within the eligible set is:
@@ -204,7 +236,7 @@ owner set returns a local `502`. Routing precedence within the eligible set is:
 2. the priority list emitted by `nvpair-job-scheduler`;
 3. the proxy's deterministic default ordering.
 
-The scheduler combines total pending (queued and running) workload across both
+The scheduler combines total pending (queued and running) workload across all
 engines with a smoothed 0–3 pressure derived from the busiest GPU. Missing,
 invalid, or older-than-10-second telemetry has neutral pressure. It emits the
 order, pending count, and pressure, reranking on meaningful workload, discovery,
@@ -218,21 +250,39 @@ not select or pin proxy routes.
 An NVPAIR-launched engine binds to loopback and is never directly LAN-reachable.
 Peers reach it only through the node's proxy over a cluster-mTLS ingress, so
 discovery advertises the promoted proxy port for `ol`/`lm` rather than the
-engine's private port. This transport security is backend-owned; Electron only
+engine's private port; llama.cpp uses the additional `lc` key. Transport
+security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.
 
-The model hub is Electron-main functionality in `src/electron/model-hub/`:
+The model catalogue is owned by `nvpair-engine-manager` and served over
+`engine:catalog`. Electron relays it through
+`src/electron/service-bridge/model-catalog.ts`; the terminal interface calls the
+same method, so both front ends browse one implementation.
 
 - Ollama models come from a locked, committed list
-  (`src/electron/model-hub/ollama-models.json`) bundled into the main process —
-  there is no runtime Ollama scraping. Devs regenerate the list with
+  (`services/nvpair-engine-manager/catalog/ollama-models.json`) compiled in with
+  `go:embed` — there is no runtime Ollama scraping. Devs regenerate the list with
   `npm run scrape:ollama-models` (`scripts/scrape-ollama-models.ts`) and commit
   it when Ollama's catalog changes;
 - LM Studio models come from the curated `lmstudio-community` catalog, still
-  fetched live from Hugging Face and cached for six hours. The cache is warmed
+  fetched live from Hugging Face and cached for six hours, with concurrent
+  callers coalesced onto one request and a failure backoff. The cache is warmed
   when the Overview renderer reports ready, not when the service connects, so a
   slow or hanging catalog fetch cannot compete with the window's first paint;
+- llama.cpp models come from the 50 most-downloaded GGUF repositories of each
+  approved publisher (`ggml-org`, `bartowski`, and `unsloth`), fetched and cached
+  the same way. It is the one searchable source: a `query` searches up to 50
+  public Hugging Face matches across publishers, each query cached on its own.
+  Both keep only public, generative repositories with a primary `Q4_K_M` file
+  and emit exact `owner/repository:Q4_K_M` pull IDs;
+- the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
+  rows, keeps them only for Apple Silicon, and echoes the target it filtered
+  for, so a client driving a peer is not offered models that peer cannot
+  install. The desktop names no target: the hub installs only to this machine,
+  which is also the one answering;
+- the Ollama reply is a single multi-megabyte frame, so every hop on its path
+  shares `jsonrpc.WorkerFrameBytes`. See `docs/services-backend.md`;
 - model pulls still run through `nvpair-engine-manager`.
 
 ## Inference Demo
@@ -241,14 +291,22 @@ The Inference Demo sends a fixed sixty-second burst of synthetic inference
 traffic through the local proxies so job activity is visible on Overview. It is
 the one place Electron launches a non-broker executable.
 
+Both front ends offer it. The terminal interface runs the same schedule from its
+Jobs tab (`services/nvpair-tui/ui/demoschedule.go`), against the same
+dispatcher, so a headless machine can demonstrate routing too. The two schedules
+are deliberately identical; neither drives the other, because demo state is
+node-local.
+
 - The schedule is built and owned by Electron main
   (`src/electron/inference-demo.ts` and
   `src/electron/inference-demo-schedule.ts`).
 - Each scheduled request spawns the bundled `inference-dispatcher` client, a
   standalone Go HTTP client that knows nothing about the broker, JSON-RPC, or
-  discovery. Its source is `scripts/inference-dispatcher` at the monorepo root
-  and it ships in `resources/tools`, outside the services `cli-bin` inventory.
-  See [Inference dispatcher](../../docs/inference-dispatcher.mdx).
+  discovery. Its source is `scripts/inference-dispatcher` at the monorepo root.
+  It ships inside `cli-bin` — it is still not a services component and has no
+  entry in `versions.json`, but sharing the directory is what lets `nvpair-tui`
+  find it beside its own executable in a packaged app as well as in a services
+  install. See [Inference dispatcher](../../docs/inference-dispatcher.mdx).
 - Requests are addressed to a proxy port reported by the broker, never to an
   engine's own port, so the backend places them exactly as it would place any
   third-party client's traffic. PAIR makes no routing decision.
@@ -270,14 +328,26 @@ cannot yet be reported are centralized in
 - Node telemetry is read from `/v1/node-info` at each discovered node's
   advertised port.
 
+Browser access is decided by the engines, not by the proxies. A proxy passes
+through the upstream engine's CORS headers and its refusals, and adds no
+permissive default, so a web page reaches a model through PAIR only where the
+engine would have allowed it directly. A request that fans out across the
+cluster needs every engine that responded to allow the origin; an engine that
+denied it fails the request rather than returning a partial model list, while an
+engine that was unreachable is excluded instead of failing it. Preflights carry
+a short non-zero `Access-Control-Max-Age` so a browser is not re-fanning out on
+every request.
+
 Inference prompts, messages, chunks, and response bodies must not be logged.
 
 ## Build
 
 `npm run build:modular-binaries` compiles the sibling `services/` tree for the
 selected platform and architecture. The `cli-bin/manifest.json` it writes records
-the source path and fingerprint, the product and component versions, the target,
-and per-file hashes. The build rejects unexpected files in `cli-bin/`.
+the source path and fingerprint, the product and component versions, the release
+version stamped into `nvpair-tui`, the target, and per-file hashes. A change to
+any of them makes `cli-bin/` stale. The build rejects unexpected files in
+`cli-bin/`.
 
 Electron Builder produces:
 
@@ -285,9 +355,11 @@ Electron Builder produces:
 - Linux `.deb` packages;
 - macOS `.dmg` installers and `.zip` update payloads.
 
-`npm run build:tools` compiles the `inference-dispatcher` client into `tools/`,
-which is packaged as a separate `extraResources` directory with its own manifest
-and packaging assertion.
+The same build compiles the Inference Demo's `inference-dispatcher` client from
+`scripts/inference-dispatcher` at the monorepo root into `cli-bin/`, beside the
+binaries it is not one of, so the desktop app and `nvpair-tui` resolve it the
+same way. It is not a worker: it has no entry in `services/versions.json` or
+`modular-binaries.ts`, and carries the services version.
 
 The macOS build also compiles the `SMAppService` privileged helper used to
 configure Application Firewall rules. Firewall membership comes from
@@ -319,7 +391,7 @@ from any prior version remain recoverable. No Node runtime is required.
 
 | Path                                                     | Behavior                                                                                               |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Settings → Service → **Reset app data**                  | Confirms stop → wipe; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
+| Settings → Service → **Reset app data**                  | Confirms → removes PAIR-installed engines → stop → wipe; stops before the wipe if an engine cannot be removed or the service is down; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
 | `scripts/wipe-app-data.sh` / `scripts/wipe-app-data.cmd` | Clean-only manual entrypoints; require confirmation; do not relaunch                                   |
 
 Packaged builds ship the same scripts under `resources/scripts/` so the app invokes
@@ -336,8 +408,11 @@ deletes finish. Unpackaged (`electron-vite dev`) builds omit relaunch and the UI
 tells the developer to run `npm start` again — quitting Electron tears down the Vite
 renderer server, so auto-relaunch would come up with nothing to load.
 
-Third-party model libraries (`~/.ollama`, `~/.lmstudio`) and the application install
-tree are never removed.
+The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`) and
+the application install tree are never removed. The reset does uninstall the
+engines PAIR installed, through `engine:uninstall-managed` while the broker is
+still running, so an engine a vendor installer placed in the user's home is
+removed too rather than only those inside the app data folder.
 
 ## Sources of truth
 

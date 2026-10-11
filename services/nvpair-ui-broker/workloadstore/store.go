@@ -548,21 +548,26 @@ func recordFrom(in Incoming, now time.Time) Record {
 	}
 }
 
-// isTerminal reports whether a state ends a workload's life.
+// isTerminal reports whether a state ends a workload's life. A state missing
+// from here is treated as live forever: it would keep counting toward the
+// scheduler's pending total for its node and stay exposed to the staleness
+// sweeps, so every terminal state must be listed.
 func isTerminal(state string) bool {
-	return state == "completed" || state == "failed"
+	return state == "completed" || state == "failed" || state == "cancelled"
 }
 
 // rank orders lifecycle states so state only moves forward within a
-// generation: queued < running < {completed, failed}. "initializing" and any
-// unknown value rank below queued (they're never transmitted; see spec §4).
+// generation: queued < running < {completed, failed, cancelled}. An unknown
+// value ranks below queued, which means a state missing from here is not
+// merely mis-sorted — applyLocked rejects every event carrying it, so the
+// transition is dropped and never reaches the scheduler or any client.
 func rank(state string) int {
 	switch state {
 	case "queued":
 		return 1
 	case "running":
 		return 2
-	case "completed", "failed":
+	case "completed", "failed", "cancelled":
 		return 3
 	default:
 		return 0

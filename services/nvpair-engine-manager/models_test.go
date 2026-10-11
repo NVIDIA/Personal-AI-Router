@@ -69,6 +69,12 @@ func TestExtractStrings(t *testing.T) {
 			want: []string{"a"},
 		},
 		{
+			name: "nested string-in match excludes missing and malformed paths",
+			raw:  `{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"not-loaded"}},{"id":"c","status":{}},{"id":"d","status":"loaded"}]}`,
+			spec: &ActionResult{Array: "data", Field: "id", Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}}},
+			want: []string{"a"},
+		},
+		{
 			name: "match with no accepted values yields nothing",
 			raw:  `{"data":[{"id":"a","state":"loaded"}]}`,
 			spec: &ActionResult{Array: "data", Field: "id", Match: &ResultMatch{Field: "state", In: []string{"other"}}},

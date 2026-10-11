@@ -17,8 +17,8 @@ import (
 //
 // This proves the runner correctly drives list/download/use/delete and that
 // each step is observable. LM Studio's cmd-shape actions (lms get/ls/load)
-// are covered by TestCmdAction; LM Studio has no CLI model-delete (vendor
-// limitation), which is why only Ollama exposes delete_model.
+// and guarded filesystem deletion are covered separately, as is llama.cpp's
+// query-parameter delete endpoint.
 func TestModelLifecycle(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin) // already has list_models (GET /api/tags)
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}

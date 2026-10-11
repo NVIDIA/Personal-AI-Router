@@ -207,8 +207,8 @@ func (ts *TrustStore) Pin(pin *TrustedPin) error {
 			}
 			// Identical re-pin: fold in any newly-seen endorsements so the
 			// gossiped trust web thickens (idempotent on the cert itself).
-			err := ts.mergeEndorsementsLocked(pin.NodeUUID, pin.Endorsements)
-			changed = err == nil
+			merged, err := ts.mergeEndorsementsLocked(pin.NodeUUID, pin.Endorsements)
+			changed = merged
 			return err
 		}
 		return fmt.Errorf("uuid %s already pinned to a different certificate; remove it first to re-pin", pin.NodeUUID)
@@ -239,10 +239,10 @@ func (ts *TrustStore) writePinLocked(pin *TrustedPin) error {
 // mergeEndorsementsLocked unions incoming endorsements into an existing pin
 // (dedup by signer+signature) and persists if anything new was added. Caller
 // holds ts.mu. A missing pin is a silent no-op.
-func (ts *TrustStore) mergeEndorsementsLocked(uuid string, incoming []Endorsement) error {
+func (ts *TrustStore) mergeEndorsementsLocked(uuid string, incoming []Endorsement) (bool, error) {
 	pin, ok := ts.pins[uuid]
 	if !ok || len(incoming) == 0 {
-		return nil
+		return false, nil
 	}
 	seen := make(map[string]struct{}, len(pin.Endorsements))
 	for _, e := range pin.Endorsements {
@@ -260,9 +260,12 @@ func (ts *TrustStore) mergeEndorsementsLocked(uuid string, incoming []Endorsemen
 		added = true
 	}
 	if !added {
-		return nil
+		return false, nil
 	}
-	return ts.writePinLocked(updated)
+	if err := ts.writePinLocked(updated); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func endorsementKey(e Endorsement) string {
@@ -279,8 +282,8 @@ func (ts *TrustStore) AddEndorsements(uuid string, endorsements []Endorsement) e
 	defer ts.announce(&changed)
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	err := ts.mergeEndorsementsLocked(uuid, endorsements)
-	changed = err == nil
+	merged, err := ts.mergeEndorsementsLocked(uuid, endorsements)
+	changed = merged
 	return err
 }
 

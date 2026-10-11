@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { DispatcherBackend } from '@/shared/types/inference-dispatcher'
+import type { EngineType } from '@/shared/types/engines'
 
 /**
  * Inference Demo — a fixed, node-local burst of synthetic inference traffic sent
@@ -17,8 +18,8 @@ import type { DispatcherBackend } from '@/shared/types/inference-dispatcher'
  * status toast.
  *
  * Scheduling lives entirely in the Electron main process
- * (`@/electron/inference-demo`). The Go `inference-dispatcher` binary is
- * unchanged and is invoked once per scheduled request group.
+ * (`@/electron/inference-demo`). The Go `inference-dispatcher` binary is invoked
+ * once per scheduled request.
  */
 
 /** Wall-clock offsets, in seconds, at which a cohort of simulated agents starts. */
@@ -38,13 +39,13 @@ export const DEMO_MAX_SUBMIT_SECONDS = 60
 export const DEMO_REQUEST_TIMEOUT_SECONDS = 120
 
 /**
- * Engines the demo can drive, paired with the proxy each one sits behind.
+ * Engines the demo can drive, paired with the proxy facade each one sits behind.
  *
- * Ports are deliberately absent. The broker owns `ollama-proxy` and
- * `lmstudio-proxy` and reports their bound listeners; PAIR never fabricates a
- * port (see the note at the top of `@/shared/constants/modular-runtime`). The
- * demo resolves each port at start via `getProxyPort()` and skips any engine
- * whose proxy has not reported.
+ * Ports are deliberately absent. The broker owns one `nvpair-proxy` process
+ * hosting a facade per engine, and reports each facade's bound listener; PAIR
+ * never fabricates a port (see the note at the top of
+ * `@/shared/constants/modular-runtime`). The demo resolves each port at start
+ * via `getProxyPort()` and skips any engine whose facade has not reported.
  *
  * Targeting a proxy rather than the engine itself is what makes the demo a
  * demo: requests enter PAIR's router and are placed by it. Hitting an engine's
@@ -54,10 +55,11 @@ export const DEMO_REQUEST_TIMEOUT_SECONDS = 120
 export const DEMO_ENGINE_PROBES: readonly {
     backend: DispatcherBackend
     /** Engine key used by the broker's proxy port registry. */
-    proxyEngine: 'ollama' | 'lm-studio'
+    proxyEngine: EngineType
 }[] = [
     { backend: 'ollama', proxyEngine: 'ollama' },
-    { backend: 'lmstudio', proxyEngine: 'lm-studio' }
+    { backend: 'lmstudio', proxyEngine: 'lm-studio' },
+    { backend: 'llamacpp', proxyEngine: 'llama-cpp' }
 ]
 
 /**

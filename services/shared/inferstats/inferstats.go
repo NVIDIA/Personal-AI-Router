@@ -79,18 +79,26 @@ type Tap struct {
 	opaque bool
 	// sse is set for a text/event-stream body, where a stream event is a
 	// `data:` line; otherwise (Ollama's NDJSON) an event is a line.
-	sse         bool
-	firstAt     time.Time
-	lastAt      time.Time
-	events      int64
-	atLineStart bool
+	sse     bool
+	firstAt time.Time
+	lastAt  time.Time
+	events  int64
+	// dataMatched is how many bytes of the SSE `data:` field name the current
+	// line has matched so far, or -1 once the line can no longer be an event
+	// (or was already counted). Tracked across writes, because a body write can
+	// end anywhere: the proxy peeks one byte to confirm the engine is producing
+	// before it commits, so the first write of a stream is a lone "d".
+	dataMatched int
 	tail        []byte
 }
+
+// sseData is the field name that starts an SSE event line.
+var sseData = []byte("data:")
 
 // NewTap returns a Tap for a request that began at start. It observes nothing
 // until Arm is called.
 func NewTap(start time.Time) *Tap {
-	return &Tap{start: start, atLineStart: true}
+	return &Tap{start: start}
 }
 
 // Arm starts observation once the proxy has committed to an upstream response,
@@ -128,15 +136,31 @@ func (t *Tap) Observe(p []byte) {
 		return
 	}
 	if t.sse {
-		if t.atLineStart && bytes.HasPrefix(p, []byte("data:")) {
-			t.events++
-		}
-		t.events += int64(bytes.Count(p, []byte("\ndata:")))
+		t.countSSE(p)
 	} else {
 		t.events += int64(bytes.Count(p, []byte{'\n'}))
 	}
-	t.atLineStart = p[len(p)-1] == '\n'
 	t.retain(p)
+}
+
+// countSSE counts the `data:` lines in p, continuing a match left open by the
+// previous write.
+func (t *Tap) countSSE(p []byte) {
+	for _, c := range p {
+		switch {
+		case c == '\n':
+			t.dataMatched = 0
+		case t.dataMatched < 0:
+		case c == sseData[t.dataMatched]:
+			t.dataMatched++
+			if t.dataMatched == len(sseData) {
+				t.events++
+				t.dataMatched = -1
+			}
+		default:
+			t.dataMatched = -1
+		}
+	}
 }
 
 // retain appends p to the rolling tail, keeping only the last tailSize bytes.

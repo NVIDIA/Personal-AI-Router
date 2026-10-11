@@ -114,6 +114,17 @@ func TestObserve_SSEEventSplitAtLineStart(t *testing.T) {
 	}
 }
 
+// A write boundary inside the field name must not lose the event. The proxy
+// peeks the first body byte before committing, so a stream's first write is a
+// lone "d" and the second starts mid-name.
+func TestObserve_SSEEventSplitInsideFieldName(t *testing.T) {
+	s := feed(t, headers("text/event-stream", ""), 0,
+		"d", "ata: {\"a\":1}\n\nda", "ta: {\"b\":2}\n\ndata:", " {\"c\":3}\n\n", "data: [DONE]\n\n")
+	if s == nil || s.CompletionTokens != 3 || !s.Estimated {
+		t.Fatalf("got %+v, want estimated completion=3", s)
+	}
+}
+
 func TestFinish_OllamaNativeStream(t *testing.T) {
 	chunks := []string{
 		`{"model":"llama3","message":{"role":"assistant","content":"Hi"},"done":false}` + "\n",

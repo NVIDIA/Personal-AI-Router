@@ -6,9 +6,13 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
+	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
 
@@ -51,9 +55,8 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 	defer proxyClient.Close()
 	defer proxyServer.Close()
 	proxy := &proxyProcess{
-		peer:  NewPeer(NewCodec(proxyClient)),
-		ready: true,
-		port:  defaultLMStudioPort,
+		peer:        NewPeer(NewCodec(proxyClient)),
+		facadeState: readyFacade(lmstudioProxyProfile.Name, defaultLMStudioPort),
 	}
 	go proxy.peer.Serve(nil, nil)
 
@@ -97,15 +100,117 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 // proxy on :1234 for the backend and disables managed mode.
 func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 	b := &Broker{regCache: relay.NewRegistrationCache()}
-	b.lmstudioBackendPort.Store(managedLMStudioBackendStart)
+	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
 
 	// No engine-manager and no proxy: the fallback path that used to poison
 	// the cache with defaultLMStudioPort.
 	b.reconcileAdvertiseLMStudio(nil)
 
-	if got := int(b.lmstudioBackendPort.Load()); got != managedLMStudioBackendStart {
+	if got := int(b.lmstudioState().backendPort.Load()); got != managedLMStudioBackendStart {
 		t.Fatalf("backend cache = %d, want %d (fallback must not overwrite the confirmed backend)", got, managedLMStudioBackendStart)
 	}
+}
+
+func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	_, portText, err := net.SplitHostPort(backend.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendPort, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyPort := 44000
+	if backendPort == proxyPort {
+		proxyPort++
+	}
+
+	profile := testDefaultEngineProxyProfile()
+	profile.DiscoveryService = noderec.ServiceLMStudio
+	b := brokerWithEngineProxyProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+	b.engineProxy(profile).backendPort.Store(int32(backendPort))
+	updates := attachAdvertiserProxy(t, b, profile, proxyPort)
+
+	b.reconcileAdvertiseEngine(profile, backend.Client())
+	registrations := b.regCache.Snapshot()
+	if len(registrations) != 1 || registrations[0].Service != profile.DiscoveryService ||
+		registrations[0].Port != proxyPort {
+		t.Fatalf("healthy registration = %+v, want %s on %d", registrations, profile.DiscoveryService, proxyPort)
+	}
+	if got := <-updates; !got.Healthy || got.Port != backendPort || got.Engine != profile.Name {
+		t.Fatalf("healthy local backend = %+v", got)
+	}
+
+	backend.Close()
+	b.reconcileAdvertiseEngine(profile, backend.Client())
+	if got := b.regCache.Snapshot(); len(got) != 0 {
+		t.Fatalf("unhealthy engine remained advertised: %+v", got)
+	}
+	if got := <-updates; got.Healthy || got.Port != backendPort {
+		t.Fatalf("unhealthy local backend = %+v", got)
+	}
+}
+
+func TestEngineAdvertiserRejectsSelfForwardLoop(t *testing.T) {
+	profile := testDefaultEngineProxyProfile()
+	profile.DiscoveryService = noderec.ServiceLMStudio
+	b := brokerWithEngineProxyProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+	b.regCache.Register(noderec.RegisterParams{Service: profile.DiscoveryService, Port: 44000})
+	b.engineProxy(profile).backendPort.Store(44000)
+	updates := attachAdvertiserProxy(t, b, profile, 44000)
+
+	// A nil client proves the collision check short-circuits before probing the
+	// facade as though it were the backend.
+	b.reconcileAdvertiseEngine(profile, nil)
+	if got := b.regCache.Snapshot(); len(got) != 0 {
+		t.Fatalf("self-forwarding facade remained advertised: %+v", got)
+	}
+	if got := <-updates; got.Healthy {
+		t.Fatalf("self-forwarding backend remained healthy: %+v", got)
+	}
+}
+
+func attachAdvertiserProxy(
+	t *testing.T,
+	b *Broker,
+	profile engineProxyProfile,
+	port int,
+) <-chan proxyLocalBackend {
+	t.Helper()
+	proxyClient, proxyServer := net.Pipe()
+	t.Cleanup(func() {
+		_ = proxyClient.Close()
+		_ = proxyServer.Close()
+	})
+	proxy := &proxyProcess{
+		peer:        NewPeer(NewCodec(proxyClient)),
+		facadeState: readyFacade(profile.Name, port),
+	}
+	go proxy.peer.Serve(nil, nil)
+	b.setEngineProxyHandle(profile, proxy)
+
+	updates := make(chan proxyLocalBackend, 4)
+	go func() {
+		codec := NewCodec(proxyServer)
+		for {
+			msg, err := codec.Read()
+			if err != nil {
+				return
+			}
+			var update proxyLocalBackend
+			if json.Unmarshal(msg.Params, &update) == nil {
+				updates <- update
+			}
+			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		}
+	}()
+	return updates
 }
 
 // TestProxyListenPortNoProxy: with no proxy supervised, proxyListenPort is 0,
@@ -119,12 +224,12 @@ func TestProxyListenPortNoProxy(t *testing.T) {
 
 func TestOllamaFacadeIsPendingBackend(t *testing.T) {
 	b := &Broker{}
-	b.managedOllamaFacade.Store(true)
-	b.ollamaBackendPort.Store(managedOllamaFacadePort)
+	b.ollamaState().managedFacade.Store(true)
+	b.ollamaState().backendPort.Store(managedOllamaFacadePort)
 	if !b.ollamaFacadeIsPendingBackend() {
 		t.Fatal("managed facade must block liveness probes while the backend still points at 11434")
 	}
-	b.ollamaBackendPort.Store(11435)
+	b.ollamaState().backendPort.Store(11435)
 	if b.ollamaFacadeIsPendingBackend() {
 		t.Fatal("liveness probes should resume after the backend moves off 11434")
 	}
@@ -139,9 +244,11 @@ func TestOllamaFacadeIsPendingBackend(t *testing.T) {
 	}
 	b.ollamaMoveInFlight.Store(false)
 
-	b.managedOllamaFacade.Store(false)
-	b.ollamaBackendPort.Store(managedOllamaFacadePort)
-	b.setProxy(&proxyProcess{ready: true, port: managedOllamaFacadePort})
+	b.ollamaState().managedFacade.Store(false)
+	b.ollamaState().backendPort.Store(managedOllamaFacadePort)
+	b.setProxy(&proxyProcess{
+		facadeState: readyFacade(ollamaProxyProfile.Name, managedOllamaFacadePort),
+	})
 	if !b.ollamaFacadeIsPendingBackend() {
 		t.Fatal("recovery must keep probes blocked until the proxy vacates 11434")
 	}

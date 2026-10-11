@@ -1,0 +1,19 @@
+---
+description: TypeScript safety rules — no casts, no any, no unknown in signatures
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Type Safety
+
+- **No type casting.** Never use `as Type`, `as any`, `as unknown`, or `: any`.
+  All types must be explicit and correct. If a cast seems necessary, the types
+  are wrong — fix the types.
+- **No `unknown`** in function signatures or data structures. Use properly
+  typed interfaces.
+
+See also **`type-discipline.mdc`** for rules about creating, consolidating,
+and exporting types.

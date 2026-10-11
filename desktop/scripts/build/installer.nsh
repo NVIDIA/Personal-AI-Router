@@ -9,7 +9,7 @@
 ; `npm start` need none of this.
 
 !macro pairCloseRunningProcesses
-  DetailPrint "Checking for running Personal AI Router processes..."
+  DetailPrint "Checking for running NVIDIA PAIR processes..."
   ; taskkill exits non-zero when the image isn't running; nsExec routes that
   ; into the log and we never check the return code, so a missing process is a
   ; no-op and never aborts the (un)installer. Keep this list in sync with
@@ -17,6 +17,9 @@
   ; src/shared/constants/modular-binaries.ts.
   nsExec::ExecToLog 'taskkill /F /T /IM "${APP_EXECUTABLE_FILENAME}"'
   nsExec::ExecToLog 'taskkill /F /T /IM "nvpair-tui.exe"'
+  nsExec::ExecToLog 'taskkill /F /T /IM "nvpair-proxy.exe"'
+  ; Pre-unification names. An orphan still holding 11434 or 1234 is exactly
+  ; what the managed-facade planner has to block on, so kill it here too.
   nsExec::ExecToLog 'taskkill /F /T /IM "ollama-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /T /IM "lmstudio-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /T /IM "nvpair-node-info.exe"'
@@ -38,8 +41,11 @@
 ; of that section, so an appended customUnInstallSection would never execute.
 ;
 ; Per-user data here means settings, logs, cluster identity and certificates,
-; and engines Personal AI Router installed. Downloaded model weights live
-; outside these roots and are never touched.
+; and engines NVIDIA PAIR installed (those are removed by
+; pairUninstallManagedEngines above, which runs first). Downloaded model weights
+; live outside these roots and are never touched: every engine declares its
+; model store as models_dir, and a test in services/nvpair-engine-manager fails
+; if one of them resolves inside the app data root.
 ;
 ; UNINSTALLER SAFETY: only ever delete the three per-user AppData roots below.
 ; Never touch $INSTDIR (C:\Program Files\...). The uninstaller itself lives at
@@ -65,7 +71,7 @@
 ; Per-user data roots. Keep in sync with src/shared/constants/app.ts and the
 ; append-only inventory in repo-root scripts/wipe-app-data.ps1 / wipe-app-data.sh.
 !macro pairRemoveUserData
-  DetailPrint "Removing Personal AI Router user data..."
+  DetailPrint "Removing NVIDIA PAIR user data..."
   ClearErrors
   ReadEnvStr $0 LOCALAPPDATA
   RMDir /r "$0\Nvidia Corporation\Personal AI Router"
@@ -73,6 +79,31 @@
   RMDir "$0\NVIDIA Corporation"
   RMDir /r "$0\nvpair-updater"
   ClearErrors
+!macroend
+
+; Remove the engines NVIDIA PAIR installed, which the data-root removal below
+; cannot do on its own. Ollama and llama.cpp install under a data root and so
+; disappear with it, but LM Studio's vendor installer always lands in
+; %USERPROFILE%\.lmstudio and nothing here ever reached it — so removing "the
+; engines NVIDIA PAIR installed" removed one engine and left the other.
+;
+; engine-manager owns this because the manifests do: it knows each engine's
+; install location, and it skips each engine's model store, so the prompt's
+; promise that downloaded models are kept holds for engine files too. It also
+; only removes an install PAIR recorded as its own, so a copy of LM Studio the
+; user installed themselves is left alone.
+;
+; ORDER MATTERS: this must run before pairRemoveUserData (the records of which
+; installs were ours live in the data root) and before the template's
+; RMDir /r $INSTDIR (which deletes the binary doing the work). Engines are
+; already stopped by pairCloseRunningProcesses and pairKillProcessesInDataDirs.
+;
+; nsExec::ExecToLog never aborts the (un)installer, and the binary exits 0 even
+; when an individual engine cannot be removed, so every failure mode here lets
+; the uninstall continue.
+!macro pairUninstallManagedEngines
+  DetailPrint "Removing engines NVIDIA PAIR installed..."
+  nsExec::ExecToLog '"$INSTDIR\resources\cli-bin\nvpair-engine-manager.exe" --uninstall-managed'
 !macroend
 
 ; Best-effort: when the user opts to remove data, stop any process whose
@@ -85,7 +116,7 @@
 ; uninstall continue. PowerShell reads $env:LOCALAPPDATA itself so usernames
 ; containing spaces need no extra quoting.
 !macro pairKillProcessesInDataDirs
-  DetailPrint "Stopping any processes running from Personal AI Router data folders..."
+  DetailPrint "Stopping any processes running from NVIDIA PAIR data folders..."
   nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and ($$_.ExecutablePath -like \"$$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*\") } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   ; Give the OS a moment to release the file handles before RMDir /r.
   Sleep 1000
@@ -105,7 +136,7 @@
   IfFileExists "$0\nvpair-updater\*.*" 0 +2
     StrCpy $9 "$9$\n$0\nvpair-updater"
   StrCmp $9 "" pairNoLeftover
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Some Personal AI Router data could not be removed because files were still in use (for example, a running engine such as Ollama).$\n$\nClose those programs, then delete these folders manually:$9"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Some NVIDIA PAIR data could not be removed because files were still in use (for example, a running engine such as Ollama).$\n$\nClose those programs, then delete these folders manually:$9"
   pairNoLeftover:
 !macroend
 
@@ -118,18 +149,25 @@
 ; missing from "Available nodes"). Scoping to localsubnet keeps the ports
 ; closed to anything off the local link, so covering all profiles does not
 ; expose the node on untrusted public networks.
+;
+; The rule names keep the "Personal AI Router" prefix even though the product is
+; shown as NVIDIA PAIR: pairRemoveFirewallRules, including the copy inside every
+; already-installed uninstaller, deletes rules by exact name. Renaming them would
+; leave the old allow rules behind on upgraded machines.
 !macro pairAddFirewallRules
-  DetailPrint "Adding Personal AI Router firewall rules..."
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Ollama Proxy" dir=in action=allow program="$INSTDIR\resources\cli-bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router LM Studio Proxy" dir=in action=allow program="$INSTDIR\resources\cli-bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  DetailPrint "Adding NVIDIA PAIR firewall rules..."
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Engine Proxy" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-proxy.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Node Info" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Node Scanner" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Workload Manager" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-workload-manager.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Errors" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-errors.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Cluster Manager" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-cluster-manager.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router Engine Manager" dir=in action=allow program="$INSTDIR\resources\cli-bin\nvpair-engine-manager.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS LM Studio Proxy (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  ; No mDNS rule for nvpair-proxy: it opens no UDP socket. Its routing targets
+  ; arrive over the broker's discovery relay, and zeroconf/miekg are indirect
+  ; dependencies it never browses with. The pre-unification ollama-proxy did
+  ; browse, which is where this rule came from; the delete below stays so an
+  ; upgrade clears the inherited entry.
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS Node Info (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS Node Scanner (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Personal AI Router mDNS Workload Manager (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\resources\cli-bin\nvpair-workload-manager.exe" enable=yes profile=any remoteip=localsubnet'
@@ -140,7 +178,11 @@
 !macroend
 
 !macro pairRemoveFirewallRules
-  DetailPrint "Removing Personal AI Router firewall rules..."
+  DetailPrint "Removing NVIDIA PAIR firewall rules..."
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Engine Proxy"'
+  ; The per-engine rules a pre-unification install created. Deleting a rule
+  ; that does not exist is a harmless no-op, and without these an upgrade
+  ; leaves rules pointing at binaries this version no longer ships.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Ollama Proxy"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router LM Studio Proxy"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Node Info"'
@@ -150,6 +192,7 @@
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Cluster Manager"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router Engine Manager"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS (UDP 5353)"'
+  ; Pre-unification; see above.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS LM Studio Proxy (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS Node Info (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Personal AI Router mDNS Node Scanner (UDP 5353)"'
@@ -257,14 +300,48 @@
     Delete "$newDesktopLink"
     Delete "$newStartMenuLink"
     ClearErrors
-    MessageBox MB_OK|MB_ICONSTOP "Personal AI Router could not be installed.$\n$\nThe installer unpacked its files but these executables are missing:$9$\n$\nThis usually means security software removed them, or a previous version was still running and held them open. Close Personal AI Router, allow it in your security software, and run the installer again.$\n$\nUninstall the partial installation from Add/Remove Programs first if the problem repeats." /SD IDOK
+    MessageBox MB_OK|MB_ICONSTOP "NVIDIA PAIR could not be installed.$\n$\nThe installer unpacked its files but these executables are missing:$9$\n$\nThis usually means security software removed them, or a previous version was still running and held them open. Close NVIDIA PAIR, allow it in your security software, and run the installer again.$\n$\nUninstall the partial installation from Add/Remove Programs first if the problem repeats." /SD IDOK
     SetErrorLevel 2
+    Quit
+  ${endif}
+!macroend
+
+; Install the centrally serviced Microsoft runtime required by the managed
+; llama.cpp binaries. The x64 package also carries the ARM64 runtime, so both
+; Windows installer architectures intentionally use this one prerequisite.
+!macro pairInstallVcRuntime
+  DetailPrint "Installing Microsoft Visual C++ Runtime..."
+  ClearErrors
+  ExecWait '"$INSTDIR\resources\installer-tools\VC_redist.x64.exe" /install /quiet /norestart' $8
+  ${if} ${Errors}
+    ClearErrors
+    Delete "$INSTDIR\resources\installer-tools\VC_redist.x64.exe"
+    MessageBox MB_OK|MB_ICONSTOP "NVIDIA PAIR could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+
+  Delete "$INSTDIR\resources\installer-tools\VC_redist.x64.exe"
+  ${if} $8 == 0
+    DetailPrint "Microsoft Visual C++ Runtime installed."
+  ${elseIf} $8 == 1638
+    DetailPrint "Microsoft Visual C++ Runtime is already installed."
+  ${elseIf} $8 == 1641
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart initiated."
+    SetRebootFlag true
+  ${elseIf} $8 == 3010
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart required."
+    SetRebootFlag true
+  ${else}
+    MessageBox MB_OK|MB_ICONSTOP "NVIDIA PAIR could not install the Microsoft Visual C++ Runtime (exit code $8).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
     Quit
   ${endif}
 !macroend
 
 !macro customInstall
   !insertmacro pairAssertPayloadInstalled
+  !insertmacro pairInstallVcRuntime
   !insertmacro pairAddFirewallRules
 !macroend
 
@@ -298,13 +375,14 @@
     ${if} $PairInteractiveUninstall == "1"
       ; A plain MessageBox (no /SD) still displays in NSIS silent mode, so the
       ; one-click interactive uninstall shows this prompt. Default button = No.
-      MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also remove all Personal AI Router data?$\n$\nThis permanently deletes your settings, logs, cluster identity and certificates, and any engines Personal AI Router installed. Downloaded models are not removed. Click No to keep your data for a future reinstall." IDYES pairDataYes IDNO pairDataDone
+      MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also remove all NVIDIA PAIR data?$\n$\nThis permanently deletes your settings, logs, cluster identity and certificates, and any engines NVIDIA PAIR installed. Your downloaded models are not removed, and neither are engines you installed yourself. Click No to keep your data for a future reinstall." IDYES pairDataYes IDNO pairDataDone
       pairDataYes:
         StrCpy $8 "1"
       pairDataDone:
     ${endif}
     ${if} $8 == "1"
       !insertmacro pairKillProcessesInDataDirs
+      !insertmacro pairUninstallManagedEngines
       !insertmacro pairRemoveUserData
       !insertmacro pairWarnIfDataRemains
     ${endif}

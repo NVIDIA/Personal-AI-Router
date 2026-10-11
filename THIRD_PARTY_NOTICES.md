@@ -15,7 +15,7 @@ distributed under its own license; the full license text for each component is
 reproduced in this file.
 
 Scope: npm dependencies and the Electron runtime shipped in the desktop
-application, plus the Go modules linked into the thirteen shipped service
+application, plus the Go modules linked into the twelve shipped service
 binaries across the Windows, Linux, and macOS targets. First-party modules
 (`nvpair-shared`, `eapnoob`) are excluded.
 

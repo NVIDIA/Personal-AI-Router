@@ -148,7 +148,7 @@ func TestNextAvailablePortExcludingCustomBackend(t *testing.T) {
 
 func TestTakePendingManagedOllamaBackendOnce(t *testing.T) {
 	b := &Broker{}
-	b.managedOllamaFacade.Store(true)
+	b.ollamaState().managedFacade.Store(true)
 	b.managedOllamaBackend.Store(11435)
 
 	if got := b.takePendingManagedOllamaBackend(11436); got != 0 {
@@ -167,7 +167,7 @@ func TestOllamaBackendSourcePort(t *testing.T) {
 	if got := b.ollamaBackendSourcePort(); got != managedOllamaFacadePort {
 		t.Fatalf("unset source = %d, want %d", got, managedOllamaFacadePort)
 	}
-	b.ollamaBackendPort.Store(managedOllamaBackendStart)
+	b.ollamaState().backendPort.Store(managedOllamaBackendStart)
 	if got := b.ollamaBackendSourcePort(); got != managedOllamaBackendStart {
 		t.Fatalf("configured source = %d, want %d", got, managedOllamaBackendStart)
 	}
@@ -175,7 +175,7 @@ func TestOllamaBackendSourcePort(t *testing.T) {
 
 func TestDuplicateOllamaReadyDoesNotOpenGateDuringMove(t *testing.T) {
 	b := &Broker{ollamaPortReady: make(chan struct{})}
-	b.managedOllamaFacade.Store(true)
+	b.ollamaState().managedFacade.Store(true)
 	b.managedOllamaBackend.Store(managedOllamaBackendStart + 1)
 	b.setProxy(&proxyProcess{})
 	if got := b.takePendingManagedOllamaBackend(managedOllamaFacadePort); got != managedOllamaBackendStart+1 {
@@ -183,11 +183,7 @@ func TestDuplicateOllamaReadyDoesNotOpenGateDuringMove(t *testing.T) {
 	}
 
 	b.reconcileProxyPortOnReady(managedOllamaFacadePort)
-	select {
-	case <-b.ollamaPortReady:
-		t.Fatal("duplicate ready opened the gate while the backend move was in flight")
-	default:
-	}
+	requireGateShutNow(t, b.ollamaPortReady, "a duplicate ready while the backend move was in flight")
 }
 
 func TestOwningOllamaReadyOpensGateAfterMove(t *testing.T) {
@@ -198,9 +194,9 @@ func TestOwningOllamaReadyOpensGateAfterMove(t *testing.T) {
 	go worker.peer.Serve(nil, nil)
 
 	b := &Broker{ollamaPortReady: make(chan struct{})}
-	b.managedOllamaFacade.Store(true)
+	b.ollamaState().managedFacade.Store(true)
 	b.managedOllamaBackend.Store(managedOllamaBackendStart + 1)
-	b.ollamaBackendPort.Store(managedOllamaBackendStart)
+	b.ollamaState().backendPort.Store(managedOllamaBackendStart)
 	b.setEngineMgr(worker)
 	b.setProxy(&proxyProcess{})
 
@@ -213,11 +209,7 @@ func TestOwningOllamaReadyOpensGateAfterMove(t *testing.T) {
 	}()
 
 	b.reconcileProxyPortOnReady(managedOllamaFacadePort)
-	select {
-	case <-b.ollamaPortReady:
-	default:
-		t.Fatal("owning reconciler did not open the gate after a successful move")
-	}
+	requireGateOpenNow(t, b.ollamaPortReady, "a successful backend move")
 }
 
 func TestEnginePortAssignmentRequest(t *testing.T) {
@@ -267,7 +259,7 @@ func TestManagedLMStudioRejectsFacadeBackendPort(t *testing.T) {
 	defer brokerClient.Close()
 	defer brokerServer.Close()
 	b := &Broker{codec: NewCodec(brokerClient)}
-	b.managedLMStudioFacade.Store(true)
+	b.lmstudioState().managedFacade.Store(true)
 
 	response := make(chan *Message, 1)
 	go func() {
@@ -348,7 +340,7 @@ func TestLMStudioSetPortUpdatesBackendCache(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("missing LM Studio set-port response")
 	}
-	if got := b.lmstudioBackendPort.Load(); got != 12400 {
+	if got := b.lmstudioState().backendPort.Load(); got != 12400 {
 		t.Fatalf("cached LM Studio backend = %d, want 12400", got)
 	}
 }
@@ -486,7 +478,7 @@ func TestRelayCachesActualOllamaPortFromResponse(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for engine:start response")
 	}
-	if got := b.ollamaBackendPort.Load(); got != 11435 {
+	if got := b.ollamaState().backendPort.Load(); got != 11435 {
 		t.Fatalf("cached Ollama backend port = %d, want returned port 11435", got)
 	}
 }
@@ -553,8 +545,8 @@ func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
 	defer brokerServer.Close()
 	b := &Broker{codec: NewCodec(brokerClient), ollamaPortReady: make(chan struct{})}
 	b.setEngineMgr(worker)
-	b.managedOllamaFacade.Store(true)
-	b.ollamaBackendPort.Store(managedOllamaFacadePort)
+	b.ollamaState().managedFacade.Store(true)
+	b.ollamaState().backendPort.Store(managedOllamaFacadePort)
 
 	method := make(chan string, 1)
 	workerErr := make(chan error, 1)
@@ -591,7 +583,7 @@ func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
 	}
 
 	// Model the successful backend move before releasing the existing gate.
-	b.ollamaBackendPort.Store(managedOllamaBackendStart)
+	b.ollamaState().backendPort.Store(managedOllamaBackendStart)
 	close(b.ollamaPortReady)
 	select {
 	case got := <-method:

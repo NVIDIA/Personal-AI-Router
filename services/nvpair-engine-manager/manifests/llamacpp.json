@@ -1,0 +1,117 @@
+{
+  "$schema": "../manifest.schema.json",
+  "engine": "llamacpp",
+  "display_name": "llama.cpp",
+  "manifest_version": 1,
+  "install": { "mode": "user" },
+  "models_dir": "~/.llamacpp",
+  "uninstall": { "remove": ["{install_dir}"] },
+  "runtime": {
+    "editable_launch": {
+      "fixed_args": ["--sleep-idle-seconds", "300"],
+      "controls": [
+        { "flags": ["--host"], "value": "{server.host}" },
+        { "flags": ["--port"], "value": "{server.port}" },
+        { "flags": ["--cors-origins"], "value": "{cors.origins}" }
+      ]
+    },
+    "args": ["--sleep-idle-seconds", "300", "--host", "{host}", "--port", "{port}", "--cors-origins", ""],
+    "env": { "LLAMA_CACHE": "{models_dir}" },
+    "bind": "127.0.0.1",
+    "port": 8081,
+    "ready": { "http": "http://127.0.0.1:{port}/props", "status": 200, "timeout_s": 60, "json_match": { "field": "role", "value": "router" } },
+    "stop": { "signal": "term", "grace_s": 10 },
+    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5 }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "detect": ["{install_dir}\\llama-server.exe"],
+      "install": {
+        "artifacts": [
+          { "name": "server", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cuda-12.4-x64.zip", "sha256": "3c806a6ceccc3dae1c743ceb1a1fb2cce5b76f40bfbd4c6b7b8afb6ef45a5807" },
+          { "name": "cudart", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-bin-win-cuda-12.4-x64.zip", "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6" }
+        ],
+        "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "& { $ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:NVPAIR_INSTALL_DOWNLOAD_SERVER -DestinationPath $env:NVPAIR_INSTALL_DIR -Force; Expand-Archive -LiteralPath $env:NVPAIR_INSTALL_DOWNLOAD_CUDART -DestinationPath $env:NVPAIR_INSTALL_DIR -Force }"]
+      },
+      "runtime": { "bin": "{install_dir}\\llama-server.exe" }
+    },
+    "windows/arm64": {
+      "detect": ["{install_dir}\\llama-server.exe"],
+      "install": {
+        "artifacts": [
+          { "name": "server", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cuda-13.4-arm64.zip", "sha256": "a4060b5031a0e862e225d4a7c4aa403852ebedf598906ef8258a86cb77de8351" },
+          { "name": "cudart", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-bin-win-cuda-13.4-arm64.zip", "sha256": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774" }
+        ],
+        "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "& { $ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:NVPAIR_INSTALL_DOWNLOAD_SERVER -DestinationPath $env:NVPAIR_INSTALL_DIR -Force; Expand-Archive -LiteralPath $env:NVPAIR_INSTALL_DOWNLOAD_CUDART -DestinationPath $env:NVPAIR_INSTALL_DIR -Force }"]
+      },
+      "runtime": { "bin": "{install_dir}\\llama-server.exe" }
+    },
+    "linux/amd64": {
+      "detect": ["{install_dir}/llama-server"],
+      "install": {
+        "artifacts": [
+          { "name": "server", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-12.8-x64.tar.gz", "sha256": "c2ab9e19838513ff69d1af8d999ad717dd3c7ee4714ac04c7ed5ab9077c50e4e" },
+          { "name": "cudart", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-12.8-x64.tar.gz", "sha256": "1466daea60aad1144819e151b2bae19d54556cf1da6c129c4f55a5ded2637c25" }
+        ],
+        "run": ["sh", "-c", "tar -xzf \"$1\" -C \"$3\" --strip-components=1 && tar -xzf \"$2\" -C \"$3\" --strip-components=1", "llamacpp-install", "{download_server}", "{download_cudart}", "{install_dir}"]
+      },
+      "runtime": { "bin": "{install_dir}/llama-server", "env": { "LD_LIBRARY_PATH": "{install_dir}" } }
+    },
+    "linux/arm64": {
+      "detect": ["{install_dir}/llama-server"],
+      "install": {
+        "artifacts": [
+          { "name": "server", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz", "sha256": "4e00496ab6cdee9c00afb11de3cb9d10f9da7e17147d8ed14ca3af05209b400f" },
+          { "name": "cudart", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz", "sha256": "7f46057efcba6338c58ed9f91c06f268c290f3a228fdbdd4bea229dd60b0e094" }
+        ],
+        "run": ["sh", "-c", "tar -xzf \"$1\" -C \"$3\" --strip-components=1 && tar -xzf \"$2\" -C \"$3\" --strip-components=1", "llamacpp-install", "{download_server}", "{download_cudart}", "{install_dir}"]
+      },
+      "runtime": { "bin": "{install_dir}/llama-server", "env": { "LD_LIBRARY_PATH": "{install_dir}" } }
+    },
+    "darwin/arm64": {
+      "detect": ["{install_dir}/llama-server"],
+      "install": {
+        "fetch": { "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-arm64.tar.gz", "sha256": "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711" },
+        "run": ["tar", "-xzf", "{download}", "-C", "{install_dir}", "--strip-components=1"]
+      },
+      "runtime": { "bin": "{install_dir}/llama-server" }
+    },
+    "darwin/amd64": {
+      "detect": ["{install_dir}/llama-server"],
+      "install": {
+        "fetch": { "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-x64.tar.gz", "sha256": "305f0e3a17d2c01eb205cd0a62128357f1ec3b55329cb084d94e5ec0115d7a3b" },
+        "run": ["tar", "-xzf", "{download}", "-C", "{install_dir}", "--strip-components=1"]
+      },
+      "runtime": { "bin": "{install_dir}/llama-server" }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List models available in the managed llama.cpp cache.",
+      "http": { "method": "GET", "path": "/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "loaded_models": {
+      "description": "List models currently resident in memory.",
+      "http": { "method": "GET", "path": "/models" },
+      "result": { "array": "data", "field": "id", "match": { "field": "status.value", "in": ["loaded"] } }
+    },
+    "pull_model": {
+      "description": "Download a model into the managed cache (params: {\"model\": \"<Hugging Face repo:quant>\"}).",
+      "http": { "method": "POST", "path": "/models", "body_schema": { "model": "string" } },
+      "progress_protocol": "llamacpp-models-sse"
+    },
+    "load_model": {
+      "description": "Load a cached model into memory (params: {\"model\": \"<model>\"}).",
+      "http": { "method": "POST", "path": "/models/load", "body_schema": { "model": "string" } }
+    },
+    "unload_model": {
+      "description": "Unload a model from memory (params: {\"model\": \"<model>\"}).",
+      "http": { "method": "POST", "path": "/models/unload", "body_schema": { "model": "string" } }
+    },
+    "delete_model": {
+      "description": "Delete a model from the managed cache (params: {\"model\": \"<model>\"}).",
+      "http": { "method": "DELETE", "path": "/models", "params_in": "query" }
+    }
+  }
+}

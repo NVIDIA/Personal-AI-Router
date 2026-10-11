@@ -23,6 +23,16 @@ Install these first:
 - [jq](https://jqlang.github.io/jq/download/) on your `PATH`. Install it with
   `sudo apt install jq`, `sudo dnf install jq`, `brew install jq`, or
   `winget install jqlang.jq`.
+- On Windows, install the
+  [latest Microsoft Visual C++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe)
+  before using PAIR-managed llama.cpp from a source or services-only run.
+  Release installers install it automatically. Microsoft's x64 package supplies
+  both the x64 and ARM64 runtime binaries.
+
+The reference Windows installer builds stage Microsoft's unmodified
+Redistributable package. Redistributing that package is limited to licensed
+Visual Studio users and remains subject to the
+[Microsoft Software License Terms](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files).
 
 ## Quick Start from Source
 
@@ -238,8 +248,9 @@ application running:
 ```
 
 On Windows use `scripts\wipe-app-data.cmd` with the same flags. Neither script
-needs Node, and both exclude engine model libraries such as `~/.ollama` and
-`~/.lmstudio` by design, so a reset does not cost you re-downloading models.
+needs Node, and both exclude engine model libraries such as `~/.ollama`,
+`~/.lmstudio/models`, and `~/.llamacpp` by design, so a reset does not cost you
+re-downloading models.
 Start with `--dry-run`; it prints the exact paths and deletes nothing.
 
 If the machine belongs to a cluster, leave the cluster as well, or the other
