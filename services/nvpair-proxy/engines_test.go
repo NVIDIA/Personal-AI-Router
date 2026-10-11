@@ -57,8 +57,8 @@ func TestLlamaCPPModelListRoutes(t *testing.T) {
 
 // Routes is a classifier, not an allowlist. handlePlain forwards every
 // loopback path into handleHTTP with no filtering, so a path the table does
-// not mention must still reach the upstream verbatim — that is how /api/show,
-// /api/pull, /api/ps, /api/version and OPTIONS preflights keep working.
+// not mention must still reach the upstream verbatim — that is how /api/pull,
+// /api/ps, /api/version and OPTIONS preflights keep working.
 func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	ollama, ok := profileFor("ollama")
 	if !ok {
@@ -86,6 +86,7 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		{"ollama anthropic messages", ollama, "POST", "/v1/messages", roleInferencePOST, true},
 		{"ollama native list", ollama, "GET", "/api/tags", roleModelListNativeGET, true},
 		{"ollama openai list", ollama, "GET", "/v1/models", roleModelListOpenAIGET, true},
+		{"ollama show", ollama, "POST", "/api/show", roleModelLookupPOST, true},
 		{"ollama passthrough", ollama, "POST", "/api/pull", 0, false},
 		{"ollama version passthrough", ollama, "GET", "/api/version", 0, false},
 		{"ollama models passthrough", ollama, http.MethodGet, "/models", 0, false},
@@ -97,12 +98,14 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		// LM Studio serves no native Ollama routes, so /api/chat is not
 		// inference for it — it is forwarded verbatim like any other path.
 		{"lmstudio has no native routes", lmstudio, "POST", "/api/chat", 0, false},
+		{"lmstudio has no show", lmstudio, "POST", "/api/show", 0, false},
 
 		// The method is part of the classification. Without it a POST to the
 		// model-list path would be served as a list, and a GET to an
 		// inference path would emit a workload.
 		{"wrong method on list", ollama, "POST", "/v1/models", 0, false},
 		{"wrong method on inference", ollama, "GET", "/api/chat", 0, false},
+		{"wrong method on show", ollama, "GET", "/api/show", 0, false},
 		{"llamacpp models post passthrough", llamacpp, http.MethodPost, "/models", 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +132,9 @@ func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
 	}
 	if isInferenceRequest(ollama, "GET", "/api/tags") {
 		t.Error("a model list is not inference")
+	}
+	if isInferenceRequest(ollama, "POST", "/api/show") {
+		t.Error("a model lookup is not inference")
 	}
 }
 
