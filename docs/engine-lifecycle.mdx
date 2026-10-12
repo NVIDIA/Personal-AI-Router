@@ -80,10 +80,11 @@ When you install an engine, consider the following:
 - llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
   checksum-pinned CUDA server/runtime archives. Apple silicon Macs download the
   standard Metal-enabled archive, and Intel Macs download the CPU-only build,
-  because upstream builds it without Metal. The roughly 0.6–0.8 GiB engine
-  download happens on demand and is not part of the PAIR installer. Package
-  choice is not driver-aware; llama.cpp retains CPU fallback when GPU
-  acceleration is unavailable.
+  because upstream builds it without Metal. The engine download, roughly
+  0.3–0.7 GiB for the CUDA archives and about 11 MiB on macOS, happens on
+  demand and is not part of the PAIR installer. Package choice is not
+  driver-aware; llama.cpp retains CPU fallback when GPU acceleration is
+  unavailable.
 
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model

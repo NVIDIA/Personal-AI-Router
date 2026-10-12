@@ -163,9 +163,9 @@ and can retain a residual backend GPU context.
 Windows and Linux installs use checksum-pinned server and CUDA-runtime archive
 pairs. Apple silicon Macs use the standard Metal-enabled archive; Intel Macs use
 the upstream x64 archive, which is built without Metal and runs on the CPU. The
-on-demand download is roughly 0.6–0.8 GiB and is not part of the application
-installer. GPU layers
-remain `auto`, allowing supported NVIDIA/Metal acceleration and dynamic CPU
+on-demand download is roughly 0.3–0.7 GiB for the CUDA archive pairs and about
+11 MiB on macOS, and is not part of the application installer. GPU layers remain
+`auto`, allowing supported NVIDIA/Metal acceleration and dynamic CPU
 fallback; hardware acceptance is still required to confirm acceleration.
 
 The facade is in the default broker and TUI set: local OpenAI-compatible clients
