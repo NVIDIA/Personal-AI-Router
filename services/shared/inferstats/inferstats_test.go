@@ -125,6 +125,32 @@ func TestObserve_SSEEventSplitInsideFieldName(t *testing.T) {
 	}
 }
 
+// An Anthropic Messages stream reports its count on the final message_delta.
+// message_start carries an early output_tokens of 1, and the ping and
+// content_block events are not tokens, so neither the first count nor an event
+// count may be used.
+func TestFinish_AnthropicMessagesStream(t *testing.T) {
+	s := feed(t, headers("text/event-stream", ""), time.Millisecond,
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n",
+		"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":15}}\n\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	if s == nil || s.Estimated || s.CompletionTokens != 15 || s.PromptTokens != 25 {
+		t.Fatalf("got %+v, want engine-reported completion=15 prompt=25", s)
+	}
+}
+
+func TestFinish_AnthropicMessagesNonStreaming(t *testing.T) {
+	s := feed(t, headers("application/json", ""), 0,
+		`{"id":"msg_1","type":"message","content":[{"type":"text","text":"Hi"}],"usage":{"input_tokens":12,"output_tokens":6}}`)
+	if s == nil || s.Estimated || s.CompletionTokens != 6 || s.PromptTokens != 12 {
+		t.Fatalf("got %+v, want completion=6 prompt=12", s)
+	}
+}
+
 func TestFinish_OllamaNativeStream(t *testing.T) {
 	chunks := []string{
 		`{"model":"llama3","message":{"role":"assistant","content":"Hi"},"done":false}` + "\n",

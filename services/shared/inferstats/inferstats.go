@@ -3,18 +3,20 @@
 
 // Package inferstats derives per-request inference statistics — token counts,
 // decode throughput, and time to first token — from an inference response as
-// the proxy streams it to the client. Both inference proxies front engines that
-// speak the OpenAI-compatible API (and Ollama's native one), so keeping one
-// implementation is what stops the two from drifting apart.
+// the proxy streams it to the client. Every facade of nvpair-proxy fronts an
+// engine that speaks the OpenAI-compatible API, and some also speak Ollama's
+// native one or the Anthropic Messages API, so keeping one implementation is
+// what stops the engines' figures from drifting apart.
 //
 // The design goal is negligible overhead on the hot path. A Tap never buffers
 // or parses the whole body: per body write it records a timestamp, counts
 // stream events, and keeps only the last few kilobytes. Every engine puts its
 // usage report at the END of the response — the OpenAI `usage` object trails
 // `choices` in a non-streaming reply and rides the final chunk of a stream
-// (`stream_options.include_usage`), and Ollama's native `eval_count` /
-// `eval_duration` sit on the terminal `"done":true` line — so that tail is all
-// Finish needs. Token counts are pulled from the tail with a byte search, not a
+// (`stream_options.include_usage`), Ollama's native `eval_count` /
+// `eval_duration` sit on the terminal `"done":true` line, and an Anthropic
+// Messages reply carries `output_tokens` in its trailing `usage` (the final
+// `message_delta` of a stream) — so that tail is all Finish needs. Token counts are pulled from the tail with a byte search, not a
 // JSON decode, so a truncated leading object (a long non-streaming completion)
 // is not a problem.
 //
@@ -214,6 +216,16 @@ func (t *Tap) Finish() *Stats {
 			}
 			if d, ok := lastNumber(tail, `"eval_duration":`); ok && d > 0 {
 				genDur = time.Duration(d)
+			}
+		} else if n, ok := lastNumber(tail, `"output_tokens":`); ok {
+			// Anthropic Messages usage: the final message_delta of a stream, or
+			// the usage object closing a non-streaming reply. message_start
+			// also carries an early output_tokens, which the last-occurrence
+			// search skips. input_tokens is reported when still in the tail;
+			// a long stream leaves message_start, which carries it, behind.
+			s.CompletionTokens = n
+			if p, ok := lastNumber(tail, `"input_tokens":`); ok {
+				s.PromptTokens = p
 			}
 		} else if t.events > 0 {
 			// No usage report: approximate from stream events, discounting the

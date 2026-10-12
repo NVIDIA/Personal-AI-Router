@@ -139,6 +139,35 @@ func TestHandleHTTP_OllamaNativeStreamStats(t *testing.T) {
 	}
 }
 
+// TestHandleHTTP_AnthropicMessagesStats: the Anthropic Messages route reports
+// usage as input_tokens / output_tokens on its final message_delta, and its
+// stream carries non-token events (message_start, ping, content_block_*), so a
+// chunk count would overstate it. Both facades that serve /v1/messages are
+// checked.
+func TestHandleHTTP_AnthropicMessagesStats(t *testing.T) {
+	for _, engine := range []string{"ollama", "lmstudio"} {
+		t.Run(engine, func(t *testing.T) {
+			upstream := httptest.NewServer(streamChunks("text/event-stream",
+				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n",
+				"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi\"}}\n\n",
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":15}}\n\n",
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			))
+			defer upstream.Close()
+			f, rec := statsFacade(t, engine, upstream.URL)
+
+			f.handleHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/messages",
+				strings.NewReader(`{"model":"llama","stream":true}`)))
+
+			s := recordedWorkload(t, rec, "workload:completed").Stats
+			if s == nil || s.Estimated || s.CompletionTokens != 15 || s.PromptTokens != 25 {
+				t.Fatalf("stats = %+v, want engine-reported completion=15 prompt=25", s)
+			}
+		})
+	}
+}
+
 // TestHandleHTTP_StreamWithoutUsageEstimates: an engine that streams without a
 // usage report still yields a token count, counted from chunks and flagged as
 // an estimate.
