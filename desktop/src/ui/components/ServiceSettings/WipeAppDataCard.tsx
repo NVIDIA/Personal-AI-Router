@@ -12,12 +12,17 @@ function wipeMessage() {
     return (
         <Stack gap="3" className="mt-3">
             <Text kind="body/regular/sm">
-                This deletes settings, logs, cluster identity, certificates, and {APP_DISPLAY_NAME}{' '}
-                engine installations under the app data folder.
+                This deletes settings, logs, cluster identity, certificates, and the engines{' '}
+                {APP_DISPLAY_NAME} installed.
             </Text>
             <Text kind="body/regular/sm">
-                Third-party model libraries (for example <code>~/.ollama</code> and{' '}
-                <code>~/.lmstudio</code>) are <strong>not</strong> deleted.
+                Your downloaded models (for example <code>~/.ollama</code>, <code>~/.llamacpp</code>
+                , and <code>~/.lmstudio/models</code>) are <strong>not</strong> deleted, and neither
+                are engines you installed yourself.
+            </Text>
+            <Text kind="body/regular/sm">
+                If an engine {APP_DISPLAY_NAME} installed cannot be removed, the reset stops before
+                deleting anything and says which one.
             </Text>
         </Stack>
     )

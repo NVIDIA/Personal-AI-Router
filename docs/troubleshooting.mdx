@@ -138,14 +138,22 @@ That relaunches PAIR's proxy on `11434`. Send another request and the job should
 appear. This is about the Ollama *desktop application* specifically. PAIR can
 manage or adopt an Ollama it starts itself.
 
+The same thing happens with llama.cpp when a `llama-server` you started yourself
+is on `8080`, which is both its default and the port PAIR's llama.cpp proxy
+uses. PAIR does not adopt an existing llama.cpp, so stop that server, or start
+it on another port, and then quit and reopen PAIR so its proxy takes `8080`
+again.
+
 ## Jobs Do Not Show Expected Routing
 
 Routing confirmation happens on **Overview**:
 
 1. Use the **Jobs** filter in the left column to show active, completed, or
    failed requests.
-2. Open a job card and read **Ran on** or **Running on** to see which node
-   served the request.
+2. Open a job card and read **Running on** or **Ran on** to see which node
+   served the request. Once a job has been sent to a node, its card shows
+   **Sent to** until the job starts, and keeps it if the job ends without
+   starting.
 
 Send several independent requests to observe multi-node routing. One request
 runs on one selected node.

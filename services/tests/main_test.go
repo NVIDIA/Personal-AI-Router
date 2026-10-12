@@ -12,27 +12,30 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"nvpair-shared/appdir"
+	"nvpair-shared/engines"
 	"nvpair-shared/jsonrpc"
 )
 
 var (
-	proxyBin         string
-	lmstudioProxyBin string
-	errorsBin        string
-	nodeInfoBin      string
-	scannerBin       string
-	nodeSettingsBin  string
-	brokerBin        string
-	workloadMgrBin   string
-	engineMgrBin     string
-	manualNodesBin   string
-	clusterMgrBin    string
-	schedulerBin     string
-	tuiBin           string
-	stubBrokerBin    string
+	proxyBin        string
+	errorsBin       string
+	nodeInfoBin     string
+	scannerBin      string
+	nodeSettingsBin string
+	brokerBin       string
+	workloadMgrBin  string
+	engineMgrBin    string
+	manualNodesBin  string
+	clusterMgrBin   string
+	schedulerBin    string
+	testsConfigBase string
+	tuiBin          string
+	stubBrokerBin   string
 )
 
 func TestMain(m *testing.M) {
@@ -46,8 +49,7 @@ func TestMain(m *testing.M) {
 		ext = ".exe"
 	}
 
-	proxyBin = filepath.Join(tmpDir, "ollama-proxy"+ext)
-	lmstudioProxyBin = filepath.Join(tmpDir, "lmstudio-proxy"+ext)
+	proxyBin = filepath.Join(tmpDir, "nvpair-proxy"+ext)
 	errorsBin = filepath.Join(tmpDir, "nvpair-errors"+ext)
 	nodeInfoBin = filepath.Join(tmpDir, "nvpair-node-info"+ext)
 	scannerBin = filepath.Join(tmpDir, "nvpair-node-scanner"+ext)
@@ -61,18 +63,12 @@ func TestMain(m *testing.M) {
 	tuiBin = filepath.Join(tmpDir, "nvpair-tui"+ext)
 	stubBrokerBin = filepath.Join(tmpDir, "stubbroker"+ext)
 
-	log.Println("building ollama-proxy...")
-	if err := goBuild(filepath.Join("..", "ollama-proxy"), proxyBin); err != nil {
+	// One process fronts every engine, with a facade enabled per engine, so
+	// both the Ollama and LM Studio bridge tests run against this build.
+	log.Println("building nvpair-proxy...")
+	if err := goBuild(filepath.Join("..", "nvpair-proxy"), proxyBin); err != nil {
 		os.RemoveAll(tmpDir)
-		log.Fatalf("build ollama-proxy: %v", err)
-	}
-
-	// The broker supervises lmstudio-proxy too, so the LM Studio bridge test
-	// needs its binary (pointed at via --lmstudio-proxy-path).
-	log.Println("building lmstudio-proxy...")
-	if err := goBuild(filepath.Join("..", "lmstudio-proxy"), lmstudioProxyBin); err != nil {
-		os.RemoveAll(tmpDir)
-		log.Fatalf("build lmstudio-proxy: %v", err)
+		log.Fatalf("build nvpair-proxy: %v", err)
 	}
 
 	log.Println("building nvpair-errors...")
@@ -163,6 +159,19 @@ func TestMain(m *testing.M) {
 		log.Fatalf("build stubbroker: %v", err)
 	}
 
+	// Every child binary inherits this environment, so its persisted state
+	// (ports, workloads, settings) lands under tmpDir instead of the
+	// developer's real config. These are the variables appdir resolves
+	// through on each platform. They are set after the builds, because go
+	// derives its module and build caches from these variables.
+	testsConfigBase = filepath.Join(tmpDir, "config")
+	for _, key := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA", "LOCALAPPDATA"} {
+		if err := os.Setenv(key, testsConfigBase); err != nil {
+			os.RemoveAll(tmpDir)
+			log.Fatalf("set %s: %v", key, err)
+		}
+	}
+
 	code := m.Run()
 	os.RemoveAll(tmpDir)
 	os.Exit(code)
@@ -236,4 +245,105 @@ func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Durat
 		}
 	}
 	return jsonrpc.Message{}
+}
+
+// codeFacadeBindFailed mirrors the constant of the same name in nvpair-proxy:
+// facade/enable answers with it when the port was taken before it could bind.
+const codeFacadeBindFailed = -32010
+
+// requestOnFreePort sends the request that build makes for a free port and
+// returns the port the proxy accepted. freePort closes its probe before the
+// proxy binds, so another process can take the port first. A request refused
+// for that reason is retried on a new port; any other error fails the test.
+func requestOnFreePort(t *testing.T, w io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration, build func(port int) map[string]any) int {
+	t.Helper()
+	for attempt := 0; attempt < 8; attempt++ {
+		port := freePort(t)
+		req := build(port)
+		sendLine(t, w, req)
+		resp := waitForResponse(t, msgs, timeout)
+		if resp.Error == nil {
+			return port
+		}
+		if !isBindRace(resp.Error) {
+			t.Fatalf("%s failed: %v", req["method"], resp.Error)
+		}
+	}
+	t.Fatal("every probed port was taken before the proxy could bind it")
+	return 0
+}
+
+// isBindRace reports a request the proxy refused only because the port was
+// taken. facade/enable says so with codeFacadeBindFailed; set-port has no
+// dedicated code, so its bind error is matched by message.
+func isBindRace(e *jsonrpc.RPCError) bool {
+	return e.Code == codeFacadeBindFailed || strings.HasPrefix(e.Message, "failed to bind port")
+}
+
+// TestLMStudioFacadeChildPersistsUnderPrivateBase proves a real proxy child
+// writes its persisted LM Studio port under the TestMain config base, so no
+// cross-process test can clobber the developer's saved port.
+func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
+	cmd := exec.Command(proxyBin)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	msgs := startMsgReader(stdout)
+
+	requestOnFreePort(t, stdin, msgs, 10*time.Second, func(port int) map[string]any {
+		return map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "facade/enable",
+			"params": map[string]any{
+				"engine":              "lmstudio",
+				"port":                port,
+				"ignorePersistedPort": true,
+			},
+		}
+	})
+
+	persistedPort := requestOnFreePort(t, stdin, msgs, 5*time.Second, func(port int) map[string]any {
+		return map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  engines.AddressMethod("lmstudio", "set-port"),
+			"params":  map[string]any{"port": port},
+		}
+	})
+
+	path, err := appdir.Path("lmstudio-proxy-port.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(testsConfigBase, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		t.Fatalf("lmstudio port path %q is outside test config base %q", path, testsConfigBase)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read persisted lmstudio port: %v", err)
+	}
+	var saved struct {
+		Port int `json:"port"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("parse persisted lmstudio port: %v", err)
+	}
+	if saved.Port != persistedPort {
+		t.Fatalf("persisted lmstudio port = %d, want %d", saved.Port, persistedPort)
+	}
 }

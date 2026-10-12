@@ -83,11 +83,11 @@ The set in `native/PrivilegedHelper/main.swift` must stay in sync with the
 (`src/shared/constants/modular-binaries.ts`) and the manual uninstaller.
 `npm run service-contracts:check` fails when the Swift list differs from that canonical set:
 
-`ollama-proxy`, `lmstudio-proxy`, `nvpair-node-info`, `nvpair-node-scanner`,
+`nvpair-proxy`, `nvpair-node-info`, `nvpair-node-scanner`,
 `nvpair-workload-manager`, `nvpair-errors`, `nvpair-cluster-manager`,
 `nvpair-engine-manager`.
 
-> These eight mirror the per-program/per-port `netsh` rules in
+> These seven mirror the per-program/per-port `netsh` rules in
 > `scripts/build/installer.nsh` on Windows. macOS's Application Firewall is
 > per-application and inbound-only, so one `--add`/`--unblockapp` per binary
 > collapses Windows's per-port rules.

@@ -7,11 +7,11 @@ package main
 // start a broker or a UI: it connects to the control socket of a TUI that is
 // already running on this machine and drives that TUI's pairing, so an
 // operator on a headless box can pair from a script or a single SSH command
-// instead of pressing keys in the Cluster tab.
+// instead of pressing keys in the Nodes tab.
 //
 // Everything here is presentation and exit codes. The pairing itself lives in
 // nvpair-tui/pairing, on the other side of the socket, which is the same code
-// the Cluster tab drives.
+// the Nodes tab drives.
 
 import (
 	"context"

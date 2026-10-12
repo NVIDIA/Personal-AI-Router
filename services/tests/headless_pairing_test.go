@@ -33,6 +33,7 @@ package tests
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,12 +187,32 @@ func (n *tuiNode) awaitControlSocket() {
 	for time.Now().Before(deadline) {
 		out, err := n.run("pending", "--json")
 		if err == nil && strings.Contains(out, "invites") {
+			n.awaitPairingPort(deadline)
 			return
 		}
 		last = out
 		time.Sleep(250 * time.Millisecond)
 	}
 	n.t.Fatalf("%s never served its control socket at %s; last answer = %q", n.name, n.socket, last)
+}
+
+// awaitPairingPort blocks until the node's cluster manager accepts connections.
+// The control socket answers from the TUI's own state, so it is up before the
+// broker has started the cluster manager; an invite sent to this node in that
+// window is refused. It is a real window on a host that scans a freshly built
+// binary on its first launch, which can take seconds.
+func (n *tuiNode) awaitPairingPort(deadline time.Time) {
+	n.t.Helper()
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(n.port))
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	n.t.Fatalf("%s's cluster manager never listened on %s", n.name, addr)
 }
 
 // run invokes one nvpair-tui subcommand against this node and returns its

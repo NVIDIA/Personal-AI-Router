@@ -9,10 +9,11 @@ export const JOBS_FILTER_STORAGE_KEY = 'nvpair.jobs.filter'
 export const DEFAULT_JOBS_FILTER: Record<JobsFilterType, boolean> = {
     active: true,
     completed: true,
-    failed: true
+    failed: true,
+    cancelled: true
 }
 
-const KEYS: JobsFilterType[] = ['active', 'completed', 'failed']
+const KEYS: JobsFilterType[] = ['active', 'completed', 'failed', 'cancelled']
 
 /** Merge stored booleans with defaults so missing/invalid keys do not break the UI. */
 export function parseJobsFilterRecord(raw: unknown): Record<JobsFilterType, boolean> {

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-shared/engines"
 	"nvpair-shared/jsonrpc"
 )
 
@@ -60,11 +61,9 @@ type proxyProc struct {
 func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc {
 	t.Helper()
 	cfg := t.TempDir()
-	cmd := exec.Command(proxyBin,
-		"--cluster-dir", clusterDir,
-		"--port", strconv.Itoa(listenPort),
-		"--ignore-persisted-port",
-	)
+	// The engine and its port arrive over facade/enable below; only the cluster
+	// dir is process-scoped enough to stay on argv.
+	cmd := exec.Command(proxyBin, "--cluster-dir", clusterDir)
 	cmd.Env = append(os.Environ(),
 		"HOME="+cfg, "XDG_CONFIG_HOME="+cfg, "APPDATA="+cfg, "LOCALAPPDATA="+cfg,
 	)
@@ -82,14 +81,22 @@ func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc 
 	}
 	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1}
 
-	ready := p.pump(func(m jsonrpc.Message) bool { return m.Method == "ready" }, 15*time.Second)
-	var rp struct {
-		Port int `json:"port"`
+	// The mTLS ingress under test is engine-agnostic; Ollama is an arbitrary
+	// pick. The bound port comes from the enable response rather than the ready
+	// notification, which is where the broker reads it too.
+	resp := p.call("facade/enable", map[string]any{
+		"engine":              "ollama",
+		"port":                listenPort,
+		"ignorePersistedPort": true,
+	})
+	var enabled struct {
+		Engine string `json:"engine"`
+		Port   int    `json:"port"`
 	}
-	if err := json.Unmarshal(ready.Params, &rp); err != nil || rp.Port == 0 {
-		t.Fatalf("proxy ready params = %s (err %v)", ready.Params, err)
+	if err := json.Unmarshal(resp.Result, &enabled); err != nil || enabled.Port == 0 {
+		t.Fatalf("facade/enable result = %s (err %v)", resp.Result, err)
 	}
-	p.port = rp.Port
+	p.port = enabled.Port
 	return p
 }
 
@@ -163,10 +170,10 @@ func (p *proxyProc) notify(method string, params any) {
 	}
 }
 
-// setLocalBackend points the proxy's cluster ingress + local self candidate at a
-// loopback engine.
+// setLocalBackend points one facade's cluster ingress + local self candidate at
+// a loopback engine. Addressed to that engine, the way the broker sends it.
 func (p *proxyProc) setLocalBackend(engine, host string, port int, healthy bool) {
-	p.call("node/set-local-backend", map[string]any{
+	p.call(engines.AddressMethod(engine, "node/set-local-backend"), map[string]any{
 		"engine": engine, "host": host, "port": port, "healthy": healthy,
 	})
 }
@@ -175,7 +182,7 @@ func (p *proxyProc) setLocalBackend(engine, host string, port int, healthy bool)
 // remote peer that runs ollama at proxyPort, tagged as a trusted cluster member
 // keyed by clusterUUID (the peer's cluster cert principal).
 func (p *proxyProc) pushOllamaPeer(name, ip, clusterUUID string, proxyPort int, models []string) {
-	p.notify("discovery:nodes", map[string]any{
+	p.notify(engines.AddressMethod("ollama", "discovery:nodes"), map[string]any{
 		"nodes": []map[string]any{{
 			"hostUuid":       name,
 			"name":           name,
@@ -196,7 +203,7 @@ func (p *proxyProc) waitForRoutableNode(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		resp := p.call("nodes/list", nil)
+		resp := p.call(engines.AddressMethod("ollama", "nodes/list"), nil)
 		var r struct {
 			Nodes []json.RawMessage `json:"nodes"`
 		}

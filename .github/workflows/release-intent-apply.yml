@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Applies a merged pull request's release-intent block to the version files.
+#
+# Kept in its own file precisely because it holds a credential. ci.yml and
+# release-intent-check.yml run on pull requests from forks and must stay free
+# of secrets; this one is only ever reachable from a push to an integration
+# branch, which requires write access. Do not add a pull_request or
+# pull_request_target trigger here.
+#
+# Runs on `develop`, not `main`: one merge produces one apply, and the
+# Applies-PR trailer assumes exactly that. A release cut merges an accumulated
+# range into `main`, which this would see as a single push covering many pull
+# requests — and the script cannot aggregate them. The cut carries the already
+# applied bumps forward instead.
+name: Release intent
+
+on:
+    push:
+        branches: [develop]
+
+permissions:
+    contents: read
+
+# Concurrent applies are handled by the script, not here: it commits with
+# `force: false` and re-reads the ref when the branch moved underneath it.
+# Do not add a `concurrency:` group — GitHub keeps only one pending run and
+# cancels any earlier one, so a burst of merges silently loses bumps.
+
+jobs:
+    apply:
+        name: Apply
+        runs-on: ubuntu-latest
+        # The bot's own push triggers this workflow: an app installation token,
+        # unlike GITHUB_TOKEN, does start workflow runs. The script exits early
+        # on its own commits; this skips them without booting a runner first.
+        if: ${{ !startsWith(github.event.head_commit.message, '[release-intent]') }}
+        steps:
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+            # An installation token, not a PAT: it expires in an hour and is
+            # scoped to this repository. Granted `contents: write` and
+            # deliberately NOT the Workflows permission, so a compromise of this
+            # job cannot rewrite .github/workflows.
+            - name: Mint an app token
+              id: app-token
+              uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+              with:
+                  app-id: ${{ vars.RELEASE_INTENT_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_INTENT_APP_PRIVATE_KEY }}
+
+            - name: Apply release intent
+              env:
+                  RELEASE_INTENT_TOKEN: ${{ steps.app-token.outputs.token }}
+              run: python3 scripts/release-intent/apply_pr.py

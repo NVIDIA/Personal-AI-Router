@@ -7,10 +7,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestPullProgressFromLine(t *testing.T) {
@@ -56,6 +62,325 @@ func TestModelFromParams(t *testing.T) {
 		if got := modelFromParams([]byte(c.params)); got != c.want {
 			t.Fatalf("modelFromParams(%q) = %q, want %q", c.params, got, c.want)
 		}
+	}
+}
+
+func TestLlamaCPPModelsEventPercentAggregatesFiles(t *testing.T) {
+	var event llamaCPPModelsEvent
+	err := json.Unmarshal([]byte(`{
+		"model":"owner/repo:Q4_K_M",
+		"event":"download_progress",
+		"data":{"progress":{
+			"model.gguf":{"done":75,"total":100},
+			"mmproj.gguf":{"done":25,"total":100}
+		}}
+	}`), &event)
+	if err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	if got := event.percent(); got != 50 {
+		t.Fatalf("aggregate percent = %d, want 50", got)
+	}
+}
+
+func newHTTPPullTestExecutor(t *testing.T, server *httptest.Server, action Action) *Executor {
+	t.Helper()
+	_, portText, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+	manifest := testEngineManifest(fakeEngineBin)
+	manifest.Actions[pullModelAction] = action
+	registry := NewRegistry()
+	registry.engines[manifest.Engine] = manifest
+	executor := NewExecutor(registry, NewReporter(nil), nil, t.TempDir())
+	state, err := executor.state(manifest.Engine)
+	if err != nil {
+		t.Fatalf("resolve engine state: %v", err)
+	}
+	state.running = true
+	state.port = port
+	return executor
+}
+
+func TestPullModelLlamaCPPSSESubscribesBeforeStarting(t *testing.T) {
+	const model = "owner/repo:Q4_K_M"
+	subscribed := make(chan struct{})
+	started := make(chan struct{})
+	var postBeforeSubscribe atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models/sse", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		close(subscribed)
+		_, _ = fmt.Fprint(w, ": ready\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-started:
+		case <-r.Context().Done():
+			return
+		}
+		write := func(event map[string]any) {
+			data, err := json.Marshal(event)
+			if err != nil {
+				t.Errorf("encode SSE event: %v", err)
+				return
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			w.(http.Flusher).Flush()
+		}
+		write(map[string]any{"model": "other/model", "event": "download_finished", "data": map[string]any{}})
+		write(map[string]any{
+			"model": model,
+			"event": "download_progress",
+			"data": map[string]any{"progress": map[string]any{
+				"model.gguf":  map[string]int64{"done": 75, "total": 100},
+				"mmproj.gguf": map[string]int64{"done": 25, "total": 100},
+			}},
+		})
+		write(map[string]any{"model": model, "event": "download_finished", "data": map[string]any{}})
+	})
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-subscribed:
+		default:
+			postBeforeSubscribe.Store(true)
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Model != model {
+			http.Error(w, "invalid model", http.StatusBadRequest)
+			return
+		}
+		close(started)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"success":true}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP:             &ActionHTTP{Method: http.MethodPost, Path: "/models"},
+		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+	})
+	progress, cancel := ex.progress.subscribe("fake")
+	defer cancel()
+
+	result, err := ex.PullModelStream(context.Background(), "fake", model, json.RawMessage(`{"model":"`+model+`"}`))
+	if err != nil {
+		t.Fatalf("pull model: %v", err)
+	}
+	var response struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil || !response.Success {
+		t.Fatalf("pull result = %s, error %v", result, err)
+	}
+	if postBeforeSubscribe.Load() {
+		t.Fatal("download POST arrived before the SSE subscription was open")
+	}
+	var events []ProgressEvent
+	for len(progress) > 0 {
+		events = append(events, <-progress)
+	}
+	if len(events) != 2 {
+		t.Fatalf("progress events = %+v, want downloading and success", events)
+	}
+	if events[0].Stage != "downloading" || events[0].Percent != 50 {
+		t.Fatalf("download event = %+v, want 50%%", events[0])
+	}
+	if events[1].Stage != "success" || events[1].Percent != 100 {
+		t.Fatalf("terminal event = %+v, want success at 100%%", events[1])
+	}
+}
+
+func TestPullModelOllamaAdvancingProgressRefreshesTimeout(t *testing.T) {
+	const (
+		idleTimeout     = 400 * time.Millisecond
+		progressDelay   = 90 * time.Millisecond
+		progressUpdates = 6
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, _ *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test response does not support flushing")
+			return
+		}
+		for completed := 1; completed <= progressUpdates; completed++ {
+			if _, err := fmt.Fprintf(
+				w,
+				"{\"status\":\"pulling\",\"digest\":\"sha256:model\",\"total\":%d,\"completed\":%d}\n",
+				progressUpdates,
+				completed,
+			); err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(progressDelay)
+		}
+		_, _ = fmt.Fprintln(w, `{"status":"success"}`)
+		flusher.Flush()
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"},
+	})
+	ex.pullProgressTimeout = idleTimeout
+
+	started := time.Now()
+	result, err := ex.PullModelStream(
+		context.Background(),
+		"fake",
+		"demo:1b",
+		json.RawMessage(`{"name":"demo:1b"}`),
+	)
+	if err != nil {
+		t.Fatalf("pull model: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed <= idleTimeout {
+		t.Fatalf("pull completed in %s, want longer than one %s idle interval", elapsed, idleTimeout)
+	}
+	if !strings.Contains(string(result), `"status":"success"`) {
+		t.Fatalf("pull result = %s, want terminal success", result)
+	}
+}
+
+func TestPullModelLlamaCPPAdvancingProgressRefreshesTimeout(t *testing.T) {
+	const (
+		model           = "owner/repo:Q4_K_M"
+		idleTimeout     = 400 * time.Millisecond
+		progressDelay   = 90 * time.Millisecond
+		progressUpdates = 6
+	)
+	started := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models/sse", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test response does not support flushing")
+			return
+		}
+		_, _ = fmt.Fprint(w, ": ready\n\n")
+		flusher.Flush()
+		select {
+		case <-started:
+		case <-r.Context().Done():
+			return
+		}
+		for completed := 1; completed <= progressUpdates; completed++ {
+			if _, err := fmt.Fprintf(
+				w,
+				"data: {\"model\":%q,\"event\":\"download_progress\",\"data\":{\"progress\":{\"model.gguf\":{\"done\":%d,\"total\":%d}}}}\n\n",
+				model,
+				completed,
+				progressUpdates,
+			); err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(progressDelay)
+		}
+		_, _ = fmt.Fprintf(w, "data: {\"model\":%q,\"event\":\"download_finished\",\"data\":{}}\n\n", model)
+		flusher.Flush()
+	})
+	mux.HandleFunc("/models", func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"success":true}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP:             &ActionHTTP{Method: http.MethodPost, Path: "/models"},
+		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+	})
+	ex.pullProgressTimeout = idleTimeout
+
+	startedAt := time.Now()
+	result, err := ex.PullModelStream(
+		context.Background(),
+		"fake",
+		model,
+		json.RawMessage(`{"model":"`+model+`"}`),
+	)
+	if err != nil {
+		t.Fatalf("pull model: %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed <= idleTimeout {
+		t.Fatalf("pull completed in %s, want longer than one %s idle interval", elapsed, idleTimeout)
+	}
+	if !strings.Contains(string(result), `"success":true`) {
+		t.Fatalf("pull result = %s, want accepted download response", result)
+	}
+}
+
+func TestPullModelDuplicateProgressDoesNotRefreshTimeout(t *testing.T) {
+	const idleTimeout = 150 * time.Millisecond
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test response does not support flushing")
+			return
+		}
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			_, err := fmt.Fprintln(w, `{"status":"pulling","digest":"sha256:model","total":100,"completed":1}`)
+			if err != nil {
+				return
+			}
+			flusher.Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"},
+	})
+	ex.pullProgressTimeout = idleTimeout
+
+	_, err := ex.PullModelStream(
+		context.Background(),
+		"fake",
+		"demo:1b",
+		json.RawMessage(`{"name":"demo:1b"}`),
+	)
+	if err == nil {
+		t.Fatal("pull model succeeded despite duplicate-only progress")
+	}
+	if want := "model download made no progress for 150ms"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("pull error = %q, want %q", err, want)
+	}
+}
+
+func TestPullProgressWatchdogPreservesParentCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	ctx, watchdog := newPullProgressWatchdog(parent, time.Hour)
+	defer watchdog.stop()
+
+	cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("watchdog context did not observe parent cancellation")
+	}
+	if cause := context.Cause(ctx); cause != context.Canceled {
+		t.Fatalf("watchdog cause = %v, want context canceled", cause)
 	}
 }
 

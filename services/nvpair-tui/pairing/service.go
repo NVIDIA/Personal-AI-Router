@@ -34,7 +34,7 @@ type EventKind string
 const (
 	// EventInviteSent — this node created an outbound invite. The event
 	// carries the PIN, which is why it goes only to in-process subscribers
-	// (the Cluster tab's status line) and never to a log.
+	// (the Nodes tab's status line) and never to a log.
 	EventInviteSent EventKind = "invite-sent"
 	// EventInviteRejected — the target refused to pair (already clustered).
 	EventInviteRejected EventKind = "invite-rejected"

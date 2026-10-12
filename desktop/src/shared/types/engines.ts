@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import {
+    EngineManagerNames,
     EngineOperationTypes,
     EngineProcessStatuses,
     EngineSources,
@@ -20,6 +21,14 @@ import {
  * must be narrowed via `isEngineType()` at the boundary.
  */
 export type EngineType = (typeof EngineTypes)[number]
+
+/**
+ * An engine identifier in `nvpair-engine-manager`'s spelling, as it appears in
+ * JSON-RPC params and notification payloads. Convert at the boundary with
+ * `engineManagerName()` / `engineTypeFromManagerName()`; keep `EngineType`
+ * everywhere inside PAIR.
+ */
+export type EngineManagerName = (typeof EngineManagerNames)[EngineType]
 
 export type EngineSource = (typeof EngineSources)[number]
 

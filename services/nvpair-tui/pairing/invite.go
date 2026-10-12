@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package pairing is the single implementation of node pairing inside
-// nvpair-tui. Both drivers — the interactive Cluster tab and the control
+// nvpair-tui. Both drivers — the interactive Nodes tab and the control
 // socket that backs the non-interactive subcommands — go through one
 // Service, so the two can never disagree about what an invite is or which
 // one is pending.

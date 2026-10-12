@@ -78,11 +78,39 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `getInitialState()` returns engine statuses, models, active progress, and available
   updates.
 - `toggle`, `install`, `uninstall`, and `update` manage engine lifecycle.
-- `setPorts` applies engine and proxy port changes.
 - `pullModel`, `loadModel`, `unloadModel`, `deleteModel`, and
   `setModelExpiry` manage models.
 - `searchHub(engineType)` returns the curated model catalog for an engine.
 - `onStateChanged`, `onProgress`, and `onProgressRemove` expose backend truth.
+- `getSettings(target)` reads the owning node's authoritative settings snapshot
+  (server port, proxy port, engine arguments) for one engine.
+- `previewSettings(request)` validates a draft against the owner without
+  persisting or touching a process, returning normalized settings, per-field
+  errors, any port conflict, and whether applying restarts or rebinds.
+- `applySettings(request)` commits a draft and waits for the owner's stop,
+  rebind, and restart/readiness operation before returning its receipt. This
+  can take minutes (Ollama permits ten minutes for readiness; the desktop call
+  allows fourteen minutes). The receipt identifies the accepted operation;
+  use `onSettingsChanged` for its authoritative applied or failed state. Once
+  durably accepted, the owner continues even if the caller disconnects or
+  loses the response; reload the snapshot before retrying.
+- `onSettingsChanged(callback)` reports a settings snapshot for any node — the
+  only source of applied settings state.
+- `onSettingsDisconnected(callback)` reports that a node's settings authority
+  became unreachable, so its cached snapshot is stale.
+
+`EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
+`searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
+live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
+query performs an explicit bounded search across public Hugging Face GGUF
+repositories; other calls return the populated engine catalog. llama.cpp pull
+IDs are exact `owner/repository:quantization` values; load, unload, and delete
+all use that same exact id.
+
+Port and launch changes work on a clustered peer as well as the local device,
+with one exception: **managed CORS origin settings** are local-only. The owning
+node rejects a change to browser access policy relayed from a peer. Other
+environment assignments pass through without an engine-option catalog.
 
 `EngineCommandPayload.command` supports:
 
@@ -91,7 +119,6 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `installAll`;
 - `uninstall`;
 - `update`;
-- `setPorts`;
 - `pullModel`;
 - `loadModel`;
 - `unloadModel`;
@@ -133,8 +160,11 @@ Commands return no state. Renderer stores update from
 | `cluster:cancel-invite`     | `{ inviteId }`               | `Invite`                  |
 | `cluster:abandon-if-solo`   | `void`                       | `null`                    |
 | `engines:get-initial`       | `void`                       | `EngineInitialState`      |
+| `engines:get-settings`      | `EngineSettingsTarget`       | `EngineSettingsSnapshot`  |
+| `engines:preview-settings`  | `EngineSettingsRequest`      | `EngineSettingsPreview`   |
+| `engines:apply-settings`    | `EngineSettingsRequest`      | `EngineSettingsReceipt`   |
 | `engine:command`            | `EngineCommandPayload`       | `null`                    |
-| `engine:search-hub`         | `{ engineType }`             | `EngineHubSearchResponse` |
+| `engine:search-hub`         | `{ engineType, query? }`     | `EngineHubSearchResponse` |
 | `errors:get-initial`        | `void`                       | `ServiceError[]`          |
 | `errors:clear`              | error ID                     | `null`                    |
 | `workloads:get-initial`     | `void`                       | workload map              |
@@ -147,6 +177,8 @@ Commands return no state. Renderer stores update from
 | `nodes:remove`                    | node ID                          |
 | `nodes:changed`                   | `ClusterNode[]`                  |
 | `engines:state-changed`           | `EngineStatePatch`               |
+| `engines:settings-changed`        | `EngineSettingsSnapshot`         |
+| `engines:settings-disconnected`   | `{ nodeId }`                     |
 | `engines:progress-changed`        | `EngineProgress`                 |
 | `engines:progress-cleared`        | `{ key }`                        |
 | `metrics:update`                  | `NodeItemMetrics`                |
@@ -172,8 +204,9 @@ Commands return no state. Renderer stores update from
 - update check, download, install, and status;
 - the node-local Inference Demo (`inferenceDemo.getState()` / `start()` / `stop()`
   and the `demo:state` push). `start()` rejects if a demo is already running on
-  this node or if no local engine exposed a text-generation model; callers show
-  that as an ordinary error banner. Demo state is not synchronized across nodes.
+  this node or if no Ollama, LM Studio, or llama.cpp proxy exposed a
+  text-generation model; callers show that as an ordinary error banner. Demo
+  state is not synchronized across nodes.
 
 `demo:state` is a main-to-renderer broadcast rather than a service push, so it is
 typed in `IpcPushChannelMap` (`shared/types/ipc-channels.ts`) instead of the

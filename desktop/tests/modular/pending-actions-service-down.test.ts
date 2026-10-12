@@ -20,7 +20,8 @@ function makeFakeWindow() {
         pairApi: {
             engines: {
                 onStateChanged: () => noopUnsub,
-                onProgress: () => noopUnsub
+                onProgress: () => noopUnsub,
+                onSettingsChanged: () => noopUnsub
             },
             errors: {
                 onUpdate: () => noopUnsub

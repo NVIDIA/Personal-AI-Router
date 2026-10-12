@@ -1,0 +1,52 @@
+---
+description: IPC handler patterns — Electron-native ops only, always use safeHandle, never throw
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# IPC Handler Patterns
+
+## IPC is for Electron-native operations only
+
+Most IPC handlers in `src/electron/ipc/` are thin wrappers for things that
+require Electron main process access. The modular service bridge is the one
+intentional data IPC envelope: preload exposes `window.pairApi`, then forwards
+logical service invokes/subscriptions over `service-bridge:*` IPC to Electron
+main, where handlers map to stdio JSON-RPC subprocesses or explicit empty
+responses.
+
+- **Window management**: `window:close`, `window:open-*`, `window:quit`, `window:maximize`, `window:minimize`, `window:is-maximized`, `window:copy-to-clipboard`, `window:copy-image-to-clipboard`, `window:save-debug-logs`
+- **Tray**: `tray:resize`, `tray:show-menu`
+- **Service lifecycle**: `service:get-status`, `service:start`, `service:stop`, `service:restart`, `service:get-log-level`, `service:set-log-level`, `service:open-log-file`, `service:open-log-dir`, `service:get-versions`, `service:open-license`, `service:open-third-party-licenses`
+- **Settings**: `settings:consume-first-run`
+
+## Handlers must never throw
+
+Every `ipcMain.handle` uses `safeHandle()` from `safe-handle.ts` which
+validates the sender and wraps responses in `IpcResult<T>`. IPC handlers
+must never throw — they return `{ success: false, error }` via the envelope.
+
+## Always use safeHandle
+
+```typescript
+// BAD
+ipcMain.handle('my-channel', async (event, payload) => { ... })
+
+// GOOD -- use a channel from IpcChannelMap so payload and return type are checked
+safeHandle('service:get-status', async (_event) => { ... })
+```
+
+## Typed channels
+
+- **Channel contract**: Request/response types for every IPC channel are in `src/shared/types/ipc-channels.ts` (`IpcChannelMap`). When adding a new channel, add its `request` and `response` types there first; then use `safeHandle('channel-name', ...)` so the handler's payload and return type are inferred and checked.
+- Preload APIs should use the same response types so renderer and main stay in sync.
+
+## Service methods drive state
+
+Service state now comes from the modular bridge. Modular subprocess
+notifications update `ModularBridgeState`, then Electron main emits
+`service-bridge:push` IPC messages that preload fans out to `window.pairApi`
+subscribers.

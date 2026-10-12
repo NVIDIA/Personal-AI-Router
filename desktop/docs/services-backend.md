@@ -21,8 +21,7 @@ broker supervises every worker and relays its control plane.
 | Binary                    | Runtime role                                              |
 | ------------------------- | --------------------------------------------------------- |
 | `nvpair-ui-broker`        | Worker supervision and relay                              |
-| `ollama-proxy`            | Ollama-compatible routing proxy with cluster-mTLS ingress |
-| `lmstudio-proxy`          | LM Studio routing proxy with cluster-mTLS ingress         |
+| `nvpair-proxy`            | Engine routing proxy with cluster-mTLS ingress; one process hosting a facade per enabled engine |
 | `nvpair-node-scanner`     | Discovery and node announcement                           |
 | `nvpair-node-info`        | Node metadata and telemetry                               |
 | `nvpair-manual-nodes`     | User-managed node entries                                 |
@@ -45,7 +44,7 @@ flowchart TB
     Broker["nvpair-ui-broker"]
     Scanner["nvpair-node-scanner"]
     NodeInfo["nvpair-node-info"]
-    Proxies["ollama-proxy / lmstudio-proxy"]
+    Proxies["nvpair-proxy (one process, a facade per engine)"]
     Engines["nvpair-engine-manager"]
     Cluster["nvpair-cluster-manager"]
     Settings["nvpair-node-settings"]
@@ -90,7 +89,7 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
+service connection, while per-engine proxy readiness remains an
 asynchronous capability signal. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
@@ -117,9 +116,10 @@ reserved for inference clients.
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `proxy:ready` / `lmstudio-proxy:ready`               | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `ollama-proxy:ready` / `lmstudio-proxy:ready` / `llamacpp-proxy:ready` | Record engine proxy port                                                                                          | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
+| `engine:settings-changed`                            | Validate and republish the owning node's settings snapshot                                                                      | `engines:settings-changed`                                |
 | `engine:install-progress` / `engine:remote-progress` | Update operation progress                                                                                                       | engine progress pushes                                    |
 | `errors:update`                                      | Replace the error snapshot                                                                                                      | `errors:update`                                           |
 | `cluster:invite-received`                            | Parse inbound invite                                                                                                            | `cluster:invite-received`                                 |
@@ -128,7 +128,7 @@ reserved for inference clients.
 | `nodes:changed`                                      | Replace membership snapshot                                                                                                     | `nodes:changed`                                           |
 | `workloads:upsert` / `workloads:remove`              | Update workload catalog                                                                                                         | workload pushes                                           |
 
-`nvpair-job-scheduler` combines queued and running work across both engines with
+`nvpair-job-scheduler` combines queued and running work across all engines with
 a smoothed 0–3 pressure from the busiest GPU. Invalid, missing, or
 older-than-10-second telemetry receives neutral pressure. It emits
 `schedule:priority` with order, pending count, and pressure; the broker applies
@@ -153,6 +153,31 @@ Local engine operations include install, start, stop, uninstall, update, port
 changes, and model actions. Remote cluster operations use the engine manager's
 remote control surface where supported.
 
+### Engine settings
+
+Ports and the engine arguments are one authoritative, revisioned record owned by
+the node running the engine. The broker exposes `engine:{get,preview,apply}-settings`
+and relays a request naming another node to that peer's engine manager, so a
+clustered device is edited like the local one. Preview validates without
+persisting or starting anything; apply journals the accepted revision, then
+stops, rebinds the proxy, and restarts as needed, and returns only an
+acknowledgement — the outcome arrives as an `engine:settings-changed`
+notification, which Personal AI Router republishes as `engines:settings-changed`.
+A revision mismatch is rejected rather than merged, and an operation interrupted
+by a crash is recovered from the journal at the next startup.
+
+`engine:configure-launch` is refused at the broker's client surface with
+`-32601`: reaching the engine manager directly would skip the journal, the port
+reservation, and the proxy rebind that apply owns. `engine:set-port` is the
+port-only entry point the TUI uses; the broker intercepts it and runs the same
+authoritative operation rather than forwarding it, so both callers validate,
+restart, and persist identically.
+
+Launch arguments and environment values pass through literally without an
+engine-option catalog. Only managed networking and CORS are semantically
+validated. Managed CORS origin-list and boolean-control changes must originate on the owning node; other
+environment assignments can also be changed by a pinned peer.
+
 `engine:stop` (and its cluster `ec` equivalent) reclaims an orphan a prior run
 left on the engine's own managed port, terminating it only when that PID is
 running the binary NVPAIR manages. A genuinely foreign listener on a different
@@ -160,19 +185,19 @@ port is declined with an actionable error, but the user's OFF intent is still
 persisted. Personal AI Router therefore treats the saved desired state as authoritative and
 surfaces a stop error as guidance, not as proof the OFF choice was lost.
 
-Stopping a managed engine sends one stop signal and then waits for the process
-to exit, with no timeout — there is no grace-then-force escalation. On Unix that
-signal is SIGTERM to the process group (graceful, never escalated to SIGKILL);
-on Windows it is `taskkill /T /F`, because the windowless engines NVPAIR spawns
-cannot receive a graceful (non-`/F`) close. A forced PID kill survives only in
-the orphan-reclaim path, for a process whose `exec.Cmd` handle was lost.
+Stopping a managed engine is bounded. On Unix, engine-manager sends SIGTERM to
+the owned process group, waits the manifest's `stop.grace_s` (five seconds by
+default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
+startup cleanup and orphan reclaim use the same stop policy. On Windows,
+windowless managed engines cannot receive a graceful (non-`/F`) close, so
+stopping uses immediate `taskkill /T /F`.
 
-Personal AI Router calls `engine:prepare-shutdown` before broker teardown so local processes
-stop without clearing their persisted desired state. The broker also
-self-initiates `engine:prepare-shutdown` before tearing down its workers and
-waits for each worker to exit without force-killing the worker, so engines are
-not orphaned even if Personal AI Router does not call it first. The broker restores enabled
-engines on the next startup.
+Shutdown ordering belongs to the broker. Personal AI Router sends the broker `shutdown` and
+does not stop the engines itself. The broker stops the proxy first, so no new
+inference arrives, then calls `engine:prepare-shutdown`, which stops local
+engine processes without clearing their persisted desired state, then waits for
+each worker to exit without force-killing it, so engines are not orphaned. The
+broker restores enabled engines on the next startup.
 
 ## Discovery and models
 
@@ -216,8 +241,8 @@ Two independent signals can vouch for a node inside that window and cancel the
 eviction:
 
 - a successful node-info enrichment in the last ten seconds;
-- inference response bytes from that node in the last minute. Both proxies raise
-  `node/activity` when a peer's engine streams a response back through them; the
+- inference response bytes from that node in the last minute. Every engine
+  facade raises `node/activity` when a peer's engine streams a response back through them; the
   broker relays it to the scanner as `discovery:node-activity`. This is the only
   liveness signal that gets stronger as a node gets busier, which is exactly when
   the probe-based signals fail.
@@ -228,9 +253,14 @@ result through the discovery snapshot and must not add a second, shorter
 reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
 good metrics and never marks a node offline.
 
-The renderer model hub is not a backend search service. Electron main obtains
-curated Ollama and LM Studio catalogs, then sends pull-ready model IDs through
-the engine manager.
+The model catalogue is backend-owned. `nvpair-engine-manager` serves the curated
+Ollama, LM Studio, and llama.cpp lists over `engine:catalog`, filtered for the
+operating system and CPU a model will install on; Electron relays the call and
+maps rows for the renderer, which then sends pull-ready model IDs back through
+the engine manager. llama.cpp's source is also searchable: the relay passes the
+model hub's query through, and the engine manager searches Hugging Face with it.
+The Ollama reply is a single multi-megabyte frame, so every hop on its path
+shares `jsonrpc.WorkerFrameBytes`.
 
 ## Pairing and security
 
@@ -262,8 +292,8 @@ resolved back to the hostname the entry was keyed by.
 ### Secure inference (backend-owned)
 
 An NVPAIR-launched engine binds to loopback only and is never directly
-LAN-reachable. Each node fronts its engine with its `ollama-proxy` /
-`lmstudio-proxy`, whose LAN ingress is gated by cluster mTLS: only a pinned
+LAN-reachable. Each node fronts all of its engines with one `nvpair-proxy`
+process, and every facade's LAN ingress is gated by cluster mTLS: only a pinned
 cluster member can send it work. Discovery advertises the promoted **proxy**
 port (never the engine port), and the broker hands the private loopback engine to
 the local proxy via `node/set-local-backend`. Every cluster-scoped worker derives
@@ -310,8 +340,10 @@ The build is cache-aware. CI passes `--force`. Packaging validates that
 
 2. Review component version changes, emitted notifications, handled requests,
    and new binary components, then regenerate `docs/services-api.md` with
-   `service-contracts:write`. Bump the affected components in
-   `services/versions.json` as `services/VERSIONING.md` describes. Do not
+   `service-contracts:write`. Declare bumps for the affected components in the
+   pull request's `pair-release-intent:v1` block as `services/VERSIONING.md`
+   describes; `services/versions.json` is written by automation and CI rejects
+   a hand edit. Do not
    hardcode product or component versions in this document or
    `docs/services-parity.md` — `service-contracts:check` fails if they appear.
 3. Read the changed backend `README.md` / `spec.md` and the Go implementation.
