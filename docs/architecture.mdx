@@ -186,24 +186,27 @@ PAIR on a network where that is unacceptable.
 
 ### Two Personalities on One Port
 
-The proxies and `nvpair-cluster-manager` serve two different things on a single
-port, chosen by the connection's first byte. A TLS handshake record starts with
+Each inference proxy serves plaintext HTTP and mutual TLS on the same port,
+distinguished by the connection's first byte. A TLS handshake record starts with
 `0x16`, and no HTTP method does:
 
-| First Byte | Proxies | `nvpair-cluster-manager` |
+| First Byte | Personality | Who Uses It |
 | --- | --- | --- |
-| Not `0x16` | Plaintext HTTP from loopback only, for your local applications | Plaintext pairing, open to the network and authenticated by the PIN |
-| `0x16` | Mutual TLS, for paired nodes in the cluster | Mutual TLS, for cluster membership after pairing |
+| Not `0x16` | Plaintext HTTP, loopback only | Your local applications |
+| `0x16` | Mutual TLS | Paired nodes in the cluster |
 
-On a proxy, this is why an endpoint is `http://127.0.0.1:11434` for an
-application on the machine itself while the same port serves authenticated TLS to
-the network. Local clients need no certificates, and routed inference between
-nodes is never plaintext.
+This is why an endpoint is `http://127.0.0.1:11434` for an application on the
+machine itself while the same port serves authenticated TLS to the network. Local
+clients need no certificates. Routed inference between paired nodes uses mutual
+TLS; explicitly added unpaired engines may use plaintext HTTP.
 
 The loopback restriction is enforced, not merely conventional. The listener binds
 all interfaces so the TLS personality can accept peers, but a plaintext request
 from any non-loopback address is refused with `403`. Without that check the port
 would be an open relay for anything on the network.
+
+The cluster manager uses the same protocol split, but its plaintext endpoint
+serves pairing requests from the LAN.
 
 Two consequences follow, and together they define how clients are expected to
 reach PAIR:
