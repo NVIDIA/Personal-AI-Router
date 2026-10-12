@@ -165,24 +165,49 @@ const notificationBuffer = 256
 // then to the UI, and records the broker's readiness on the way past.
 //
 // The pairing service is fed first and synchronously: it must observe an
-// invite even if the UI is between frames. The UI's copy is dropped rather
-// than blocked on, because a stalled UI must not stall pairing.
+// invite even if the UI is between frames. The UI's copy goes through
+// relayInOrder, so a UI that falls behind neither stalls pairing nor loses a
+// push — a lost workload update would leave a job showing as running forever.
 //
 // The stream closing means the broker is gone, so readiness is withdrawn on
 // the way out: a script that asks `ping` after the broker died has to be told
 // the truth, or it will go on to send an invite that can only time out.
 func fanOutNotifications(in <-chan *rpc.Message, pairs *pairing.Service, ready *atomic.Bool, out chan<- *rpc.Message) {
-	defer close(out)
+	toUI := make(chan *rpc.Message)
+	go relayInOrder(toUI, out)
+	defer close(toUI)
 	defer ready.Store(false)
 	for msg := range in {
 		if msg.Method == "app:ready" {
 			ready.Store(true)
 		}
 		pairs.HandleNotification(msg)
+		toUI <- msg
+	}
+}
+
+// relayInOrder forwards everything from in to out in order, holding what out
+// is not ready for, and closes out once in is closed and the backlog drained.
+// It is always ready to receive, so a sender never waits on out's reader.
+func relayInOrder(in <-chan *rpc.Message, out chan<- *rpc.Message) {
+	defer close(out)
+	var backlog []*rpc.Message
+	for in != nil || len(backlog) > 0 {
+		var send chan<- *rpc.Message
+		var next *rpc.Message
+		if len(backlog) > 0 {
+			send, next = out, backlog[0]
+		}
 		select {
-		case out <- msg:
-		default:
-			slog.Debug("dropped a broker notification for the UI", "method", msg.Method)
+		case msg, ok := <-in:
+			if !ok {
+				in = nil
+				continue
+			}
+			backlog = append(backlog, msg)
+		case send <- next:
+			backlog[0] = nil
+			backlog = backlog[1:]
 		}
 	}
 }

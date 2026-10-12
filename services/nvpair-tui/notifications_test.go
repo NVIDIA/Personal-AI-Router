@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,6 +44,45 @@ func TestTheFanOutFeedsPairingBeforeTheUI(t *testing.T) {
 
 	close(pushes)
 	<-done
+}
+
+// TestTheUIGetsEveryPushInOrderAfterFallingBehind: a UI that stops reading for
+// longer than any buffer still receives every push, in order, and then learns
+// the broker went away. A dropped workload update would leave a job card
+// showing as running.
+func TestTheUIGetsEveryPushInOrderAfterFallingBehind(t *testing.T) {
+	const total = 3 * notificationBuffer
+	pushes := make(chan *rpc.Message)
+	toUI := make(chan *rpc.Message, 1)
+	var ready atomic.Bool
+
+	go fanOutNotifications(pushes, pairing.NewService(nil), &ready, toUI)
+	for i := 0; i < total; i++ {
+		pushes <- &rpc.Message{JSONRPC: "2.0", Method: "workloads:upsert", Params: json.RawMessage(strconv.Itoa(i))}
+	}
+	close(pushes)
+
+	for i := 0; i < total; i++ {
+		select {
+		case msg, ok := <-toUI:
+			if !ok {
+				t.Fatalf("the UI stream closed after %d of %d pushes", i, total)
+			}
+			if got := string(msg.Params); got != strconv.Itoa(i) {
+				t.Fatalf("push %d carried %s, want them in order", i, got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("push %d never reached the UI", i)
+		}
+	}
+	select {
+	case _, ok := <-toUI:
+		if ok {
+			t.Fatal("the UI got more pushes than were sent")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the UI stream was never closed after the broker went away")
+	}
 }
 
 // TestReadinessIsWithdrawnWhenTheBrokerGoesAway guards the answer `ping` gives
