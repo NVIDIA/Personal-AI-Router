@@ -1,7 +1,7 @@
 ---
 name: pair-test-style
 description: >-
-  Write, refactor, or review tests in Personal AI Router using focused cases,
+  Write, refactor, or review tests in PAIR using focused cases,
   descriptive subtests, explicit error handling, and structured assertions.
   Use when adding or changing Go service or desktop tests; apply to the tests
   in scope rather than starting a repository-wide cleanup.
@@ -11,7 +11,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# PAIR test style
+# NVIDIA PAIR test style
 
 Keep each test's setup, action, and expected behavior easy to follow. These
 conventions apply to contributors and coding agents working on repository tests.
@@ -39,13 +39,10 @@ easier to read than a large table with mode-dependent branches.
 
 Use ordinary tables when they are clearer. Separate acceptance and rejection
 helpers when that removes branching and makes expected outcomes explicit.
+For example, use `accept := func(name, input, expected string)` and
+`reject := func(name, input, wantMessage string)` for distinct outcomes.
 Define and list acceptance cases before rejection cases for consistency. Keep
 mutable state fresh per case so cases do not depend on execution order.
-Avoid adding a `wantError` parameter to a helper shared by acceptance and
-rejection cases; it forces every case through a conditional assertion path.
-Rejection helpers should check the relevant error field or returned error and
-its expected message or type. A parameter for the expected error message is
-appropriate in a rejection-only helper.
 
 Mark Go assertion and setup helpers with `t.Helper()`. Pass the subtest's
 `*testing.T` to helpers that report failures so errors belong to the right case.
