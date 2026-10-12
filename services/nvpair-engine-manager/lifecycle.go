@@ -5,24 +5,30 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"nvpair-shared/httpcon"
 )
 
 const (
 	unavailableConfirmations  = 3
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
+	maxProbeJSONBytes         = 1 << 20
 )
 
 type listenerProbeResult uint8
@@ -55,8 +61,9 @@ func (e *Executor) waitDetect(engine string, want bool, timeout time.Duration) b
 // auto-assign a free loopback port); Bind "" => the manifest's
 // runtime.bind (which itself defaults to loopback).
 type startOpts struct {
-	Port int
-	Bind string
+	RequireOwned bool
+	Port         int
+	Bind         string
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -139,6 +146,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, true)
 	if presence.Identified {
+		if opts.RequireOwned {
+			return fmt.Errorf("cannot apply launch settings: another process already owns the server port")
+		}
 		slog.Info("adopting already-running external engine", "engine", engine, "port", port)
 		st.mu.Lock()
 		st.gen++
@@ -165,11 +175,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
-	vars := map[string]string{
-		"host":        effectiveBind(rt.Bind, opts.Bind),
-		"port":        strconv.Itoa(port),
-		"install_dir": st.installDir,
-	}
+	vars := st.pathVars()
+	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -195,6 +203,13 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	e.reporter.clear(unhealthyID(engine))
 	e.emitState(engine)
 
+	st.mu.Lock()
+	proc := st.proc
+	st.mu.Unlock()
+	if proc != nil {
+		e.watch(st, engine, proc)
+	}
+
 	if rt.Health != nil {
 		hctx, cancel := context.WithCancel(context.Background())
 		st.mu.Lock()
@@ -218,30 +233,23 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()
-	if binPath == "" {
-		b, err := resolvePlaceholders(rt.Bin, vars)
-		if err != nil {
-			return err
-		}
-		binPath = expandPath(b)
-	}
-	vars["bin"] = binPath
-
-	args, err := resolveArgs(rt.Args, vars)
+	launch, err := resolveProcessLaunch(rt, binPath, vars)
 	if err != nil {
 		return err
 	}
-	env := make(map[string]string, len(rt.Env))
-	for k, v := range rt.Env {
-		rv, err := resolvePlaceholders(v, vars)
-		if err != nil {
-			return err
-		}
-		env[k] = rv
+	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+		return err
 	}
 
-	proc, err := startManagedProc(binPath, args, env, func(stream, line string) {
-		st.logs.append(stream, line)
+	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
+	defer diagnostics.close()
+	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+		_, _ = diagnostics.Write([]byte(line + "\n"))
+		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
+		// out of exported engine logs; report exit/readiness failures separately.
+		if !rt.hasCustomLaunch() {
+			st.logs.append(stream, line)
+		}
 	})
 	if err != nil {
 		werr := fmt.Errorf("start %s: %w", engine, err)
@@ -251,19 +259,32 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.mu.Lock()
 	st.proc = proc
 	st.mu.Unlock()
-	e.watch(st, engine, proc)
 
-	if err := e.waitReady(ctx, rt.Ready, port); err != nil {
-		// Mark stopping so the watcher doesn't report the deliberate kill
-		// as an unexpected "exited" event.
+	readyCtx, readyCancel := context.WithCancel(ctx)
+	defer readyCancel()
+	go func() {
+		select {
+		case <-proc.done:
+			readyCancel()
+		case <-readyCtx.Done():
+		}
+	}()
+	readyErr := e.waitReady(readyCtx, rt.Ready, port)
+	select {
+	case <-proc.done:
+		readyErr = fmt.Errorf("process exited before readiness; check the launch options")
+	default:
+	}
+	if err := readyErr; err != nil {
+		// Clean up the failed start before returning its single readiness error.
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop()
+		proc.stop(stopGrace(rt))
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
-		werr := fmt.Errorf("engine %q did not become ready: %w", engine, err)
+		werr := fmt.Errorf("engine %q did not become ready: %w", engine, diagnostics.failure(err))
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return werr
@@ -293,16 +314,31 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		}
 		return startErr
 	}
-	for _, cmd := range rt.Start {
-		argv, err := resolveArgs(cmd, vars)
+	for index := range rt.Start {
+		launch, err := resolveRuntimeCommand(rt, index, vars)
 		if err != nil {
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 			return cleanup(err)
 		}
-		for i := range argv {
-			argv[i] = expandPath(argv[i])
+		if launch.Bin == "" {
+			continue
 		}
-		if err := e.runCommand(ctx, argv); err != nil {
+		if rt.EditableLaunch != nil && index == rt.EditableLaunch.StartIndex {
+			if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+				return cleanup(err)
+			}
+		}
+		argv := append([]string{launch.Bin}, launch.Args...)
+		run := e.runCommand
+		if rt.LaunchArgs != nil || rt.LaunchEnv != nil || len(launch.Env) > 0 {
+			run = func(ctx context.Context, argv []string) error {
+				return runPrivateLaunchCommand(ctx, argv, launch.Env, launchDiagnosticArgs(rt))
+			}
+			// A vendor command may spawn its daemon and then exit unsuccessfully.
+			// Attempt its official cleanup even if the first command failed.
+			started = true
+		}
+		if err := run(ctx, argv); err != nil {
 			werr := fmt.Errorf("start command failed: %w", err)
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 			return cleanup(werr)
@@ -317,6 +353,28 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return cleanup(werr)
+	}
+	return nil
+}
+
+// Capture vendor startup diagnostics without interpreting engine options.
+func runPrivateLaunchCommand(ctx context.Context, argv []string, environment map[string]string, privateArgs []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("launch executable is missing")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	diagnostics := newStartupOutput(privateArgs, environment)
+	defer diagnostics.close()
+	cmd.Stdout, cmd.Stderr = diagnostics, diagnostics
+	if len(environment) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range environment {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
+	configureSysProcAttr(cmd)
+	if err := cmd.Run(); err != nil {
+		return diagnostics.failure(fmt.Errorf("launch command failed: %w", err))
 	}
 	return nil
 }
@@ -441,7 +499,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop()
+		proc.stop(stopGrace(rt))
 	}
 
 	e.markStopped(st, engine)
@@ -456,7 +514,8 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	if sp == nil || len(sp.Cmd) == 0 {
 		return fmt.Errorf("cannot stop engine %q: no stop command is configured", engine)
 	}
-	vars := map[string]string{"port": strconv.Itoa(port), "install_dir": st.installDir}
+	vars := st.pathVars()
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -816,12 +875,31 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		if err != nil {
 			return false
 		}
-		resp.Body.Close()
+
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		statusMatches := resp.StatusCode == want
+		if p.JSONMatch == nil {
+			httpcon.DrainAndClose(resp.Body)
+			return statusMatches
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeJSONBytes+1))
+		httpcon.DrainAndClose(resp.Body)
+		if !statusMatches || err != nil || len(body) > maxProbeJSONBytes {
+			return false
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(body, &obj); err != nil {
+			return false
+		}
+		value, ok := resolveObjectPath(obj, p.JSONMatch.Field)
+		if !ok {
+			return false
+		}
+		var actual string
+		return json.Unmarshal(value, &actual) == nil && actual == p.JSONMatch.Value
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)
@@ -848,6 +926,9 @@ func (e *Executor) reportStartFailed(engine string, err error) {
 }
 
 func (e *Executor) reportStartFailedUnlessShuttingDown(ctx context.Context, engine string, err error) {
+	if ctx.Value(settingsApplyContextKey{}) != nil {
+		return
+	}
 	// CommandContext can surface an exit status instead of context.Canceled on
 	// Windows, so the canceled operation context is the authoritative signal.
 	if e.shuttingDown.Load() && ctx.Err() != nil {

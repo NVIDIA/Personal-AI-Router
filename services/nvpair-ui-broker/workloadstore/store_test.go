@@ -118,6 +118,38 @@ func TestApplyEqualRankReemit(t *testing.T) {
 	}
 }
 
+// TestApplyCancelledIsTerminal covers the two gates a new terminal state has
+// to pass, both of which fail silently and in opposite directions. Omitted from
+// rank() it sorts below queued, so applyLocked rejects the event outright and
+// the transition never reaches the scheduler or any client. Omitted from
+// isTerminal() it is accepted but treated as live forever, so it keeps counting
+// toward its node's pending total and stays exposed to the staleness sweeps.
+func TestApplyCancelledIsTerminal(t *testing.T) {
+	s := New()
+	if !s.Apply(mkIn("1", "a", "running", "node1", 100)) {
+		t.Fatal("initial running should be accepted")
+	}
+	// Ranks above running, so the transition is accepted rather than dropped.
+	if !s.Apply(mkIn("1", "a", "cancelled", "node1", 100)) {
+		t.Fatal("cancelled after running should be accepted (missing from rank(): sorts below queued and is rejected)")
+	}
+	// Terminal, so a late running cannot resurrect it.
+	if s.Apply(mkIn("1", "a", "running", "node1", 100)) {
+		t.Fatal("running after cancelled should be rejected as backwards")
+	}
+	// Terminal, so it drops out of the active set rather than counting as load.
+	r, ok := s.Get("a", "1")
+	if !ok {
+		t.Fatal("record should still be stored")
+	}
+	if !r.Terminal {
+		t.Fatal("cancelled must be terminal (missing from isTerminal(): counts as pending forever and stays exposed to the staleness sweeps)")
+	}
+	if got := len(s.ActiveSnapshot()); got != 0 {
+		t.Fatalf("active snapshot has %d entries, want 0 for a cancelled workload", got)
+	}
+}
+
 // TestApplyCrossNodeIsolation: the same numeric id from two origins is two
 // distinct workloads and must never merge against each other.
 func TestApplyCrossNodeIsolation(t *testing.T) {

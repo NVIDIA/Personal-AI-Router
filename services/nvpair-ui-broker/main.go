@@ -14,18 +14,20 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
+	"nvpair-shared/engines"
 )
 
 func main() {
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	scannerPath := flag.String("scanner-path", "", "path to nvpair-node-scanner binary (default: ./nvpair-node-scanner in the current working directory)")
 	nodeInfoPath := flag.String("node-info-path", "", "path to nvpair-node-info binary (default: ./nvpair-node-info in the current working directory)")
-	proxyPath := flag.String("proxy-path", "", "path to ollama-proxy binary (default: ./ollama-proxy in the current working directory)")
-	lmstudioProxyPath := flag.String("lmstudio-proxy-path", "", "path to lmstudio-proxy binary (default: ./lmstudio-proxy in the current working directory)")
+	proxyPath := flag.String("proxy-path", "", "path to nvpair-proxy binary (default: ./nvpair-proxy in the current working directory)")
+	proxyEngines := flag.String("proxy-engines", strings.Join(engines.Names(), ","), "comma-separated engines to front with a proxy; one nvpair-proxy process hosts a facade for each entry")
 	workloadMgrPath := flag.String("workload-manager-path", "", "path to nvpair-workload-manager binary (default: ./nvpair-workload-manager in the current working directory)")
 	errorsPath := flag.String("errors-path", "", "path to nvpair-errors binary (default: ./nvpair-errors in the current working directory)")
 	engineMgrPath := flag.String("engine-manager-path", "", "path to nvpair-engine-manager binary (default: ./nvpair-engine-manager in the current working directory)")
@@ -110,30 +112,25 @@ func main() {
 		resolvedNodeInfo = ""
 	}
 
-	// ollama-proxy is auxiliary too, resolved with the same rules: an
+	// nvpair-proxy is auxiliary too, resolved with the same rules: an
 	// explicit --proxy-path that doesn't exist is a loud operator mistake
 	// (fatal), but an absent default sibling just means the broker runs
-	// without a local Ollama reverse proxy.
+	// without local reverse proxies.
 	resolvedProxy, err := resolveProxyPath(*proxyPath)
 	if err != nil {
 		if *proxyPath != "" {
 			fatalf("proxy binary: %v", err)
 		}
-		slog.Warn("proxy binary not found; broker will run without local Ollama proxy", "err", err)
+		slog.Warn("proxy binary not found; broker will run without local engine proxies", "err", err)
 		resolvedProxy = ""
 	}
 
-	// lmstudio-proxy is auxiliary too, resolved with the same rules: an
-	// explicit --lmstudio-proxy-path that doesn't exist is a loud operator
-	// mistake (fatal), but an absent default sibling just means the broker
-	// runs without a local LM Studio reverse proxy.
-	resolvedLMStudioProxy, err := resolveLMStudioProxyPath(*lmstudioProxyPath)
+	// One process, a facade per selected engine. An unknown name is an operator
+	// mistake worth failing on rather than silently fronting fewer engines
+	// than asked for.
+	selectedEngines, err := parseProxyEngines(*proxyEngines)
 	if err != nil {
-		if *lmstudioProxyPath != "" {
-			fatalf("lmstudio-proxy binary: %v", err)
-		}
-		slog.Warn("lmstudio-proxy binary not found; broker will run without local LM Studio proxy", "err", err)
-		resolvedLMStudioProxy = ""
+		fatalf("proxy engines: %v", err)
 	}
 
 	// nvpair-workload-manager is auxiliary too, resolved with the same rules:
@@ -249,18 +246,18 @@ func main() {
 
 	codec := NewCodec(transport)
 	paths := workerPaths{
-		scanner:       resolvedScanner,
-		nodeInfo:      resolvedNodeInfo,
-		proxy:         resolvedProxy,
-		lmstudioProxy: resolvedLMStudioProxy,
-		workloadMgr:   resolvedWorkloadMgr,
-		errors:        resolvedErrors,
-		engineMgr:     resolvedEngineMgr,
-		manualNodes:   resolvedManualNodes,
-		settings:      resolvedSettings,
-		clusterMgr:    resolvedClusterMgr,
-		scheduler:     resolvedScheduler,
-		clusterDir:    clusterDir,
+		scanner:      resolvedScanner,
+		nodeInfo:     resolvedNodeInfo,
+		proxy:        resolvedProxy,
+		proxyEngines: selectedEngines,
+		workloadMgr:  resolvedWorkloadMgr,
+		errors:       resolvedErrors,
+		engineMgr:    resolvedEngineMgr,
+		manualNodes:  resolvedManualNodes,
+		settings:     resolvedSettings,
+		clusterMgr:   resolvedClusterMgr,
+		scheduler:    resolvedScheduler,
+		clusterDir:   clusterDir,
 	}
 	if err := NewBroker(codec, paths).Serve(ctx); err != nil && ctx.Err() == nil {
 		fatalf("broker error: %v", err)
@@ -304,20 +301,36 @@ func resolveNodeInfoPath(override string) (string, error) {
 	return resolveSiblingBinary(override, "nvpair-node-info", "--node-info-path")
 }
 
-// resolveProxyPath mirrors resolveNodeInfoPath for the ollama-proxy binary
-// the broker supervises. Like node-info its result is optional at the call
-// site: a not-found default sibling degrades to "no local Ollama proxy"
-// rather than aborting the broker.
+// resolveProxyPath mirrors resolveNodeInfoPath for the nvpair-proxy binary the
+// broker supervises. One process fronts every engine: it is spawned once and
+// then asked for a facade per enabled engine over facade/enable. Like node-info
+// its result is optional at the call site: a not-found default sibling degrades
+// to "no local engine proxies" rather than aborting the broker.
 func resolveProxyPath(override string) (string, error) {
-	return resolveSiblingBinary(override, "ollama-proxy", "--proxy-path")
+	return resolveSiblingBinary(override, "nvpair-proxy", "--proxy-path")
 }
 
-// resolveLMStudioProxyPath mirrors resolveProxyPath for the lmstudio-proxy
-// binary the broker supervises. Like the Ollama proxy its result is optional
-// at the call site: a not-found default sibling degrades to "no local LM
-// Studio proxy" rather than aborting the broker.
-func resolveLMStudioProxyPath(override string) (string, error) {
-	return resolveSiblingBinary(override, "lmstudio-proxy", "--lmstudio-proxy-path")
+// parseProxyEngines narrows the --proxy-engines list against the shared engine
+// table. An unknown name fails rather than being skipped: the operator asked
+// for an engine that does not exist, and quietly fronting the others would
+// look like the flag worked.
+func parseProxyEngines(csv string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range strings.Split(csv, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if _, ok := engines.ByName(name); !ok {
+			return nil, fmt.Errorf("unknown engine %q; known engines are %s", name, strings.Join(engines.Names(), ", "))
+		}
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out, nil
 }
 
 // resolveWorkloadManagerPath mirrors resolveProxyPath for the

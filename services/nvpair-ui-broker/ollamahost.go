@@ -27,8 +27,6 @@ const (
 	errorsHTTPPort         = 14319
 	workloadHTTPPort       = 14320
 	clusterManagerHTTPPort = 14321
-
-	lmstudioProxyPortFile = "lmstudio-proxy-port.json"
 )
 
 type ollamaHostAlias struct {
@@ -186,7 +184,7 @@ func (b *Broker) prepareOllamaHostAlias(enabled bool, backendPort int) {
 	if backendPort > 0 {
 		enginePorts[backendPort] = "ollama"
 	}
-	if reason := reservedOllamaHostAliasPort(alias.Port, enginePorts, configuredLMStudioProxyPort()); reason != "" {
+	if reason := reservedOllamaHostAliasPort(alias.Port, enginePorts, b.siblingEngineProxyPorts(ollamaProxyProfile)); reason != "" {
 		b.reportOllamaHostAliasBlocked(alias.displayAddress(), reason)
 		return
 	}
@@ -323,43 +321,79 @@ func (b *Broker) configuredEnginePorts() (map[int]string, error) {
 	return ports, nil
 }
 
-// configuredLMStudioProxyPort mirrors lmstudio-proxy's small persisted-port
-// contract so the Ollama alias cannot win its bind race. Invalid/missing state
-// means the proxy will use its default.
-func configuredLMStudioProxyPort() int {
-	path, err := appdir.Path(lmstudioProxyPortFile)
+// configuredEngineProxyPort mirrors a proxy's small persisted-port contract so
+// the Ollama alias cannot win its bind race. Invalid or missing state means
+// that proxy will come up on its facade port.
+func configuredEngineProxyPort(p engineProxyProfile) int {
+	path, err := appdir.Path(p.PortFile)
 	if err != nil {
-		return managedLMStudioFacadePort
+		return p.FacadePort
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return managedLMStudioFacadePort
+		return p.FacadePort
 	}
 	var stored struct {
 		Port int `json:"port"`
 	}
 	if json.Unmarshal(data, &stored) != nil || stored.Port < 1 || stored.Port > 65535 {
-		return managedLMStudioFacadePort
+		return p.FacadePort
 	}
 	return stored.Port
 }
 
-func reservedOllamaHostAliasPort(port int, enginePorts map[int]string, lmstudioProxy int) string {
+// siblingEngineProxyPorts is every port an engine other than self is going to
+// want, with the reason to show a user who collided with one: the facade it
+// claims, the backend base a managed engine gets relocated onto, and its
+// persisted port if it has one.
+//
+// Two callers need this set. The OLLAMA_HOST alias must not squat a sibling's
+// port, and neither must a proxy's own bind-failure fallback: a fallback that
+// lands on a stopped engine's configured port leaves that engine unable to
+// start on the next restore, with nothing pointing at the cause.
+//
+// Building this from the engine table rather than naming LM Studio is what
+// keeps a third engine from silently losing the check — its ports would
+// otherwise be invisible here and either caller could take one.
+//
+// Ports are reserved even for an engine deselected via --proxy-engines. The
+// engine's persisted configuration outlives this process, so handing its port
+// away is not made safe by the proxy being off right now; the reason text says
+// so rather than the set quietly shrinking.
+func (b *Broker) siblingEngineProxyPorts(self engineProxyProfile) map[int]string {
+	reserved := map[int]string{}
+	for _, p := range engineProxyProfiles {
+		if p.Name == self.Name {
+			continue
+		}
+		suffix := ""
+		if !b.proxyEnabled(p) {
+			suffix = " (its proxy is not enabled, but the port stays reserved)"
+		}
+		reserved[p.FacadePort] = fmt.Sprintf("the %s compatibility proxy uses port %d%s", p.DisplayName, p.FacadePort, suffix)
+		// Managed ownership is prepared after this check and moves a colliding
+		// backend here, so nothing else may be sitting on it.
+		reserved[p.EnginePortBase] = fmt.Sprintf("the managed %s backend uses port %d%s", p.DisplayName, p.EnginePortBase, suffix)
+		// Written last so a persisted port outranks the defaults it may equal,
+		// matching the precedence this check has always had.
+		if persisted := configuredEngineProxyPort(p); persisted > 0 {
+			reserved[persisted] = fmt.Sprintf("the %s proxy is configured on port %d%s", p.DisplayName, persisted, suffix)
+		}
+	}
+	return reserved
+}
+
+func reservedOllamaHostAliasPort(port int, enginePorts map[int]string, siblingProxyPorts map[int]string) string {
 	if engine, ok := enginePorts[port]; ok {
 		if engine == "" {
 			engine = "an engine"
 		}
 		return fmt.Sprintf("%s backend is configured on port %d", engine, port)
 	}
+	if reason, ok := siblingProxyPorts[port]; ok {
+		return reason
+	}
 	switch port {
-	case lmstudioProxy:
-		return fmt.Sprintf("the LM Studio proxy is configured on port %d", port)
-	case managedLMStudioFacadePort:
-		return fmt.Sprintf("the LM Studio compatibility proxy uses port %d", port)
-	case managedLMStudioBackendStart:
-		// Managed LM Studio ownership is prepared after this check and moves a
-		// colliding backend here, so the alias must not be sitting on it.
-		return fmt.Sprintf("the managed LM Studio backend uses port %d", port)
 	case nodeInfoHTTPPort:
 		return fmt.Sprintf("the node-info service uses port %d", port)
 	case errorsHTTPPort:

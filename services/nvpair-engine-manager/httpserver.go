@@ -113,23 +113,39 @@ func loopbackOnly(h http.Handler) http.HandlerFunc {
 	}
 }
 
-// requirePinnedPeer gates h on cluster-peer mTLS: the authenticated caller must
-// present a certificate this node currently pins. Membership and pins are
+// pinnedPeerHandler serves a request whose caller has already been verified,
+// receiving that caller's cluster UUID.
+type pinnedPeerHandler func(w http.ResponseWriter, r *http.Request, caller string)
+
+// requirePinnedCaller gates h on cluster-peer mTLS: the authenticated caller
+// must present a certificate this node currently pins. Membership and pins are
 // re-derived first, so a cluster joined or left, or a peer paired or removed,
 // after startup is reflected without a restart.
 //
 // Unconditional by design — not "if this node is clustered". VerifyClientPin is
 // already false for a node that belongs to no cluster, so wrapping it in a
 // membership test would be the one thing that could reopen the surface.
-func requirePinnedPeer(mesh *clustertrust.Mesh, h http.Handler) http.HandlerFunc {
+//
+// It hands the verified identity to h so that a route needing the caller
+// authorizes once, here, rather than re-verifying after reading a request body.
+func requirePinnedCaller(mesh *clustertrust.Mesh, h pinnedPeerHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mesh.Refresh()
-		if _, ok := mesh.VerifyClientPin(r); !ok {
+		caller, ok := mesh.VerifyClientPin(r)
+		if !ok {
 			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
 			return
 		}
-		h.ServeHTTP(w, r)
+		h(w, r, caller)
 	}
+}
+
+// requirePinnedPeer is requirePinnedCaller for routes that do not need the
+// caller's identity.
+func requirePinnedPeer(mesh *clustertrust.Mesh, h http.Handler) http.HandlerFunc {
+	return requirePinnedCaller(mesh, func(w http.ResponseWriter, r *http.Request, _ string) {
+		h.ServeHTTP(w, r)
+	})
 }
 
 // isLoopbackRemote reports whether an http.Request RemoteAddr is a loopback

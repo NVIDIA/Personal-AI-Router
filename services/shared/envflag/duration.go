@@ -3,7 +3,7 @@
 
 // Package envflag registers command-line flags whose default comes from an
 // NVPAIR_* environment variable, so a value can be set on a headless install
-// (pair-start.sh, a systemd unit) or on the desktop without a flag change.
+// (a systemd unit, a start script) or on the desktop without a flag change.
 package envflag
 
 import (

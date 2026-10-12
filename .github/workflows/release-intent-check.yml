@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Gates a pull request on a valid pair-release-intent:v1 block.
+#
+# Separate from ci.yml for one reason: `edited`. A pull request body can change
+# after checks go green, and the apply job reads the live body from the API at
+# merge time — so validating only on opened/synchronize/reopened (the defaults)
+# leaves a window where the declared bumps differ from the ones CI enforced.
+# Adding `edited` to ci.yml would re-run the whole gate, six installer builds
+# included, on every typo fix in a description. This check is cheap, so it gets
+# its own trigger.
+#
+# Needs no secret: the body arrives in the webhook payload, so this runs on
+# pull requests from forks like every other check.
+name: Release intent check
+
+# `develop` only, deliberately. release-intent-apply.yml runs on pushes to
+# `develop`, so gating pull requests into `main` would demand an intent block
+# and then discard it: a release cut is one push covering many pull requests,
+# and the Applies-PR trailer assumes one merge produces one apply.
+#
+# Leaving `main` out also keeps the cut itself mergeable. A develop -> main pull
+# request carries the bot's own edits to services/versions.json and
+# CHANGELOG.md, which are exactly the paths check_forbidden_paths rejects.
+on:
+    pull_request:
+        branches: [develop]
+        types: [opened, synchronize, reopened, edited]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release-intent-check-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    validate:
+        name: Validate
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+              with:
+                  # The bot-owned path check diffs against the merge base, which
+                  # a shallow clone does not contain.
+                  fetch-depth: 0
+            - name: Validate release intent
+              env:
+                  # Author-controlled, so it is passed through `env:` and never
+                  # interpolated into the command.
+                  PR_BODY: ${{ github.event.pull_request.body }}
+                  PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+                  PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+              run: |
+                  python3 scripts/release-intent/test_lib.py
+                  python3 scripts/release-intent/validate_pr.py

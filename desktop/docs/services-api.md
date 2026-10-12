@@ -7,7 +7,7 @@
 > capability status lives in `docs/services-parity.md`.
 
 - **Source tree**: `services/` in this monorepo
-- **Versions**: see `services/versions.json` (product, installer, and per-component)
+- **Versions**: see `services/versions.json` (services suite and per-component)
 - **Legend**: ✅ referenced by the bridge · ❌ MISSING (no consumer/caller) · ➖ ignored (see `docs/service-contract-exceptions.json`)
 
 ## Drift summary
@@ -16,12 +16,18 @@
 - none ✅
 
 ### Requests the backend handles but the bridge never calls (unused capability)
-- ⚠️ lmstudio-proxy → node/selected
-- ⚠️ lmstudio-proxy → node/set-local-backend
+- ⚠️ nvpair-engine-manager → engine:configure-launch
+- ⚠️ nvpair-engine-manager → engine:configured-ports
 - ⚠️ nvpair-engine-manager → engine:describe
 - ⚠️ nvpair-engine-manager → engine:errors
+- ⚠️ nvpair-engine-manager → engine:get-launch
 - ⚠️ nvpair-engine-manager → engine:logs
+- ⚠️ nvpair-engine-manager → engine:preview-launch
+- ⚠️ nvpair-engine-manager → engine:remote-apply-settings
+- ⚠️ nvpair-engine-manager → engine:remote-get-settings
+- ⚠️ nvpair-engine-manager → engine:remote-preview-settings
 - ⚠️ nvpair-engine-manager → engine:restart
+- ⚠️ nvpair-engine-manager → engine:set-port
 - ⚠️ nvpair-engine-manager → internal:set-reserved-port
 - ⚠️ nvpair-job-scheduler → scheduler:get-interval
 - ⚠️ nvpair-job-scheduler → scheduler:get-status
@@ -32,43 +38,19 @@
 - ⚠️ nvpair-node-settings → settings/get-force-ports
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/set-force-ports
+- ⚠️ nvpair-proxy → facade/enable
+- ⚠️ nvpair-proxy → node/selected
+- ⚠️ nvpair-proxy → node/set-local-backend
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
+- ⚠️ nvpair-ui-broker → engine:configure-launch
+- ⚠️ nvpair-ui-broker → engine:set-port
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
-- ⚠️ nvpair-ui-broker → proxy:get-status
-- ⚠️ nvpair-ui-broker → proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
-- ⚠️ ollama-proxy → node/selected
-- ⚠️ ollama-proxy → node/set-local-backend
 
 ### Backend binaries not listed in `modular-binaries.ts`
 - none ✅
-
-## lmstudio-proxy
-
-| Method | Direction | In bridge? |
-|---|---|---|
-| `error` | notification (we consume) | ✅ yes |
-| `errors:clear` | notification (we consume) | ✅ yes |
-| `errors:report` | notification (we consume) | ✅ yes |
-| `node/discovered` | notification (we consume) | ✅ yes |
-| `node/removed` | notification (we consume) | ✅ yes |
-| `node/selection-changed` | notification (we consume) | ➖ ignored |
-| `node/updated` | notification (we consume) | ✅ yes |
-| `proxy/request` | notification (we consume) | ✅ yes |
-| `proxy/request-started` | notification (we consume) | ➖ ignored |
-| `ready` | notification (we consume) | ✅ yes |
-| `node/add-manual` | request (we call) | ✅ yes |
-| `node/remove-manual` | request (we call) | ✅ yes |
-| `node/select` | request (we call) | ✅ yes |
-| `node/selected` | request (we call) | ⚠️ not called |
-| `node/set-local-backend` | request (we call) | ⚠️ not called |
-| `node/set-priority` | request (we call) | ✅ yes |
-| `nodes/list` | request (we call) | ✅ yes |
-
-**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (proxy.go)`
 
 ## nvpair-cluster-manager
 
@@ -103,31 +85,42 @@
 | `engine:pull-progress` | notification (we consume) | ✅ yes |
 | `engine:ready` | notification (we consume) | ✅ yes |
 | `engine:remote-progress` | notification (we consume) | ✅ yes |
+| `engine:settings-changed` | notification (we consume) | ✅ yes |
+| `engine:settings-disconnected` | notification (we consume) | ✅ yes |
 | `engine:state-changed` | notification (we consume) | ✅ yes |
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
+| `engine:catalog` | request (we call) | ✅ yes |
+| `engine:configure-launch` | request (we call) | ⚠️ not called |
+| `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
 | `engine:errors` | request (we call) | ⚠️ not called |
 | `engine:get-installed` | request (we call) | ✅ yes |
+| `engine:get-launch` | request (we call) | ⚠️ not called |
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
 | `engine:models` | request (we call) | ✅ yes |
-| `engine:prepare-shutdown` | request (we call) | ✅ yes |
+| `engine:prepare-shutdown` | request (we call) | ➖ ignored |
+| `engine:preview-launch` | request (we call) | ⚠️ not called |
+| `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
+| `engine:remote-get-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-install` | request (we call) | ✅ yes |
 | `engine:remote-load-model` | request (we call) | ✅ yes |
+| `engine:remote-preview-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-pull-model` | request (we call) | ✅ yes |
 | `engine:remote-start` | request (we call) | ✅ yes |
 | `engine:remote-stop` | request (we call) | ✅ yes |
 | `engine:remote-unload-model` | request (we call) | ✅ yes |
 | `engine:restart` | request (we call) | ⚠️ not called |
-| `engine:set-port` | request (we call) | ✅ yes |
+| `engine:set-port` | request (we call) | ⚠️ not called |
 | `engine:start` | request (we call) | ✅ yes |
 | `engine:status` | request (we call) | ✅ yes |
 | `engine:stop` | request (we call) | ✅ yes |
 | `engine:uninstall` | request (we call) | ✅ yes |
+| `engine:uninstall-managed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
 
@@ -203,79 +196,7 @@
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
 
-## nvpair-tui
-
-| Method | Direction | In bridge? |
-|---|---|---|
-| `cluster:identity-changed` | request (we call) | ✅ yes |
-| `cluster:invite-received` | request (we call) | ✅ yes |
-| `engine:install-progress` | request (we call) | ✅ yes |
-| `engine:pull-progress` | request (we call) | ✅ yes |
-| `engine:state-changed` | request (we call) | ✅ yes |
-| `error` | request (we call) | ✅ yes |
-| `nodes:changed` | request (we call) | ✅ yes |
-| `workloads:remove` | request (we call) | ✅ yes |
-| `workloads:upsert` | request (we call) | ✅ yes |
-
-## nvpair-ui-broker
-
-| Method | Direction | In bridge? |
-|---|---|---|
-| `app:ready` | notification (we consume) | ✅ yes |
-| `discovery:nodes-changed` | notification (we consume) | ✅ yes |
-| `engine:restore-enabled` | notification (we consume) | ➖ ignored |
-| `errors:clear` | notification (we consume) | ✅ yes |
-| `errors:report` | notification (we consume) | ✅ yes |
-| `errors:update` | notification (we consume) | ✅ yes |
-| `proxy:ready` | notification (we consume) | ✅ yes |
-| `workloads:upsert` | notification (we consume) | ✅ yes |
-| `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
-| `connection/cluster-identity` | request (we call) | ✅ yes |
-| `discovery:get-nodes` | request (we call) | ✅ yes |
-| `discovery:subscribe` | request (we call) | ✅ yes |
-| `discovery:unsubscribe` | request (we call) | ⚠️ not called |
-| `engine:install` | request (we call) | ✅ yes |
-| `engine:set-port` | request (we call) | ✅ yes |
-| `engine:set-reserved-port` | request (we call) | ⚠️ not called |
-| `engine:start` | request (we call) | ✅ yes |
-| `engine:subscribe` | request (we call) | ✅ yes |
-| `engine:unsubscribe` | request (we call) | ⚠️ not called |
-| `errors:get-initial` | request (we call) | ✅ yes |
-| `internal:set-reserved-port` | request (we call) | ⚠️ not called |
-| `node/add` | request (we call) | ✅ yes |
-| `node/discovered` | request (we call) | ✅ yes |
-| `node/remove` | request (we call) | ✅ yes |
-| `node/removed` | request (we call) | ✅ yes |
-| `node/updated` | request (we call) | ✅ yes |
-| `nodes/list` | request (we call) | ✅ yes |
-| `proxy:get-status` | request (we call) | ⚠️ not called |
-| `proxy:set-port` | request (we call) | ✅ yes |
-| `proxy:subscribe` | request (we call) | ✅ yes |
-| `proxy:unsubscribe` | request (we call) | ⚠️ not called |
-| `ready` | request (we call) | ✅ yes |
-| `workloads:get-initial` | request (we call) | ✅ yes |
-| `workloads:remove` | request (we call) | ✅ yes |
-| `workloads:subscribe` | request (we call) | ✅ yes |
-| `workloads:unsubscribe` | request (we call) | ⚠️ not called |
-
-**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (broker.go, 5 sites)`
-- `proxy:*  (broker.go)`
-- `method (var)  (clustermanager.go)`
-- `method (var)  (errors.go)`
-- `lmstudio-proxy:*  (lmstudioproxy.go)`
-- `method (var)  (proxy.go)`
-- `method (var)  (rpcworker.go, 2 sites)`
-
-## nvpair-workload-manager
-
-| Method | Direction | In bridge? |
-|---|---|---|
-| `ready` | notification (we consume) | ✅ yes |
-| `workloads:remove` | notification (we consume) | ✅ yes |
-| `workloads:upsert` | notification (we consume) | ✅ yes |
-
-## ollama-proxy
+## nvpair-proxy
 
 | Method | Direction | In bridge? |
 |---|---|---|
@@ -289,6 +210,7 @@
 | `proxy/request` | notification (we consume) | ✅ yes |
 | `proxy/request-started` | notification (we consume) | ➖ ignored |
 | `ready` | notification (we consume) | ✅ yes |
+| `facade/enable` | request (we call) | ⚠️ not called |
 | `node/add-manual` | request (we call) | ✅ yes |
 | `node/remove-manual` | request (we call) | ✅ yes |
 | `node/select` | request (we call) | ✅ yes |
@@ -299,4 +221,86 @@
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
 - `method (var)  (proxy.go)`
+
+## nvpair-tui
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `cluster:identity-changed` | request (we call) | ✅ yes |
+| `cluster:invite-canceled` | request (we call) | ✅ yes |
+| `cluster:invite-declined` | request (we call) | ✅ yes |
+| `cluster:invite-expired` | request (we call) | ✅ yes |
+| `cluster:invite-failed` | request (we call) | ✅ yes |
+| `cluster:invite-received` | request (we call) | ✅ yes |
+| `discovery:nodes-changed` | request (we call) | ✅ yes |
+| `engine:install-progress` | request (we call) | ✅ yes |
+| `engine:models-changed` | request (we call) | ✅ yes |
+| `engine:pull-progress` | request (we call) | ✅ yes |
+| `engine:remote-progress` | request (we call) | ✅ yes |
+| `engine:settings-changed` | request (we call) | ✅ yes |
+| `engine:settings-disconnected` | request (we call) | ✅ yes |
+| `engine:state-changed` | request (we call) | ✅ yes |
+| `error` | request (we call) | ✅ yes |
+| `errors:update` | request (we call) | ✅ yes |
+| `nodes:changed` | request (we call) | ✅ yes |
+| `workloads:remove` | request (we call) | ✅ yes |
+| `workloads:upsert` | request (we call) | ✅ yes |
+
+## nvpair-ui-broker
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `app:ready` | notification (we consume) | ✅ yes |
+| `discovery:nodes-changed` | notification (we consume) | ✅ yes |
+| `engine:restore-enabled` | notification (we consume) | ➖ ignored |
+| `engine:settings-changed` | notification (we consume) | ✅ yes |
+| `engine:settings-projection` | notification (we consume) | ➖ ignored |
+| `engine:settings-reply` | notification (we consume) | ➖ ignored |
+| `errors:clear` | notification (we consume) | ✅ yes |
+| `errors:report` | notification (we consume) | ✅ yes |
+| `errors:update` | notification (we consume) | ✅ yes |
+| `workloads:upsert` | notification (we consume) | ✅ yes |
+| `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
+| `connection/cluster-identity` | request (we call) | ✅ yes |
+| `discovery:get-nodes` | request (we call) | ✅ yes |
+| `discovery:subscribe` | request (we call) | ✅ yes |
+| `discovery:unsubscribe` | request (we call) | ⚠️ not called |
+| `engine:apply-settings` | request (we call) | ✅ yes |
+| `engine:configure-launch` | request (we call) | ⚠️ not called |
+| `engine:get-settings` | request (we call) | ✅ yes |
+| `engine:install` | request (we call) | ✅ yes |
+| `engine:preview-settings` | request (we call) | ✅ yes |
+| `engine:set-port` | request (we call) | ⚠️ not called |
+| `engine:set-reserved-port` | request (we call) | ⚠️ not called |
+| `engine:start` | request (we call) | ✅ yes |
+| `engine:subscribe` | request (we call) | ✅ yes |
+| `engine:unsubscribe` | request (we call) | ⚠️ not called |
+| `errors:get-initial` | request (we call) | ✅ yes |
+| `internal:set-reserved-port` | request (we call) | ⚠️ not called |
+| `node/add` | request (we call) | ✅ yes |
+| `node/discovered` | request (we call) | ✅ yes |
+| `node/remove` | request (we call) | ✅ yes |
+| `node/removed` | request (we call) | ✅ yes |
+| `node/updated` | request (we call) | ✅ yes |
+| `nodes/list` | request (we call) | ✅ yes |
+| `ready` | request (we call) | ✅ yes |
+| `workloads:get-initial` | request (we call) | ✅ yes |
+| `workloads:remove` | request (we call) | ✅ yes |
+| `workloads:subscribe` | request (we call) | ✅ yes |
+| `workloads:unsubscribe` | request (we call) | ⚠️ not called |
+
+**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
+- `method (var)  (broker.go, 5 sites)`
+- `method (var)  (clustermanager.go)`
+- `method (var)  (errors.go)`
+- `method (var)  (proxy.go, 2 sites)`
+- `method (var)  (rpcworker.go, 2 sites)`
+
+## nvpair-workload-manager
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `ready` | notification (we consume) | ✅ yes |
+| `workloads:remove` | notification (we consume) | ✅ yes |
+| `workloads:upsert` | notification (we consume) | ✅ yes |
 

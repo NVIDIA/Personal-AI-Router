@@ -1,0 +1,68 @@
+---
+description: Sign off every commit with git commit -s; the DCO trailer must match the commit author
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Sign off every commit
+
+`CONTRIBUTING.md` requires a `Signed-off-by` trailer on every commit, certifying
+the [Developer Certificate of Origin](https://developercertificate.org/). This
+project uses the DCO instead of a contributor license agreement, so a commit
+without the trailer cannot be accepted and has to be rewritten later.
+
+Always commit with `-s`:
+
+```bash
+git commit -s -m "..."
+```
+
+`-s` is idempotent — git will not add a second identical trailer — so use it
+even when amending: `git commit --amend --no-edit -s` adds the trailer to a
+commit that was made without one.
+
+Use the flag rather than writing the trailer into the message by hand, so the
+address always comes from the configured identity that also authors the commit.
+A trailer typed into the message is not accepted as a substitute.
+
+`.cursor/hooks/enforce-commit-signoff.js` denies a `git commit` that would
+produce an unsigned commit. It inspects `git commit` only, so cherry-pick,
+rebase, revert, and merge are untouched, and it fails open if the hook itself
+errors. It gates agent tool calls, not commands typed into a terminal, so it is
+a guardrail rather than a security control.
+
+## The trailer must match the commit author
+
+The standard DCO check compares each commit's `Signed-off-by` address against
+that commit's **author**, not its committer. A trailer naming anyone else fails
+the check.
+
+- `git commit --amend -s` fixes the most recent commit.
+- `git rebase --signoff <base>` fixes a whole branch of your own commits.
+- Both rewrite history, so the branch needs a force-push afterward.
+
+## Never sign off a commit you did not author
+
+`git cherry-pick -s` adds the **committer's** trailer while preserving the
+original **author**. That produces exactly the mismatch the check rejects, and
+it certifies work that is not yours.
+
+Cherry-pick without `-s` and keep whatever trailer the original author wrote.
+This matters most when replaying a contributor's commits — backporting a fix, or
+rebuilding a branch on a new base.
+
+## Exemptions
+
+- Merge commits are exempt from the DCO, so concluding a merge needs no `-s`.
+  Concluding a conflicted merge runs `git commit`, which the hook does inspect;
+  pass `--no-signoff` there to record the exemption deliberately.
+- A commit replayed by cherry-pick, rebase, or revert keeps the trailer its
+  author wrote. Do not add one.
+
+## Related
+
+- Contributor-facing policy and the full DCO text: `CONTRIBUTING.md`.
+- Branch and push workflow: `no-push-to-main.mdc`.

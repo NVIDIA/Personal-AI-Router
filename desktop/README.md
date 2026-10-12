@@ -52,7 +52,7 @@ npm test                         # unit tests
 npm run service-contracts:check  # this app still agrees with ../services
 ```
 
-Run all four before opening a merge request. `npm run format` applies formatting
+Run all four before opening a pull request. `npm run format` applies formatting
 rather than just reporting it.
 
 ### While you are editing

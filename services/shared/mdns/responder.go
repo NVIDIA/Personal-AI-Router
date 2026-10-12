@@ -16,9 +16,9 @@
 // invisible to LAN peers.
 //
 // We keep zeroconf's receive trick (join the group on each multicast interface,
-// which works fine on Windows) but send every reply/announcement from a
-// per-interface unicast-bound socket with SetMulticastInterface set explicitly.
-// That path is well-supported on Windows.
+// which works fine on Windows) but send every reply/announcement from UDP 5353
+// on a per-interface unicast-bound socket with SetMulticastInterface set
+// explicitly. That path is both RFC-compliant and well-supported on Windows.
 //
 // This is the single implementation consolidated (the mDNS dedup) from the five
 // near-identical copies that lived in nvpair-advertiser,
@@ -48,7 +48,6 @@ import (
 )
 
 const (
-	mdnsPort = 5353
 	// recordTTL matches what zeroconf advertises for non-A records (3200s)
 	// for service-level records, but RFC 6762 §10 says A records SHOULD use
 	// a TTL of 120s to account for IP address changes. We use the shorter
@@ -571,9 +570,8 @@ func (r *Responder) sendUnicast(buf []byte, ifIndex int, to net.Addr) {
 }
 
 // sendOnInterface is the core of the Windows send workaround: it transmits buf
-// from a fresh unicast-bound socket on the given interface (setting the
-// multicast interface + TTL for group targets), never from the multicast-bound
-// receive socket that Windows refuses to send from.
+// from a fresh UDP 5353 socket bound to the given interface address, never from
+// the multicast-bound receive socket that Windows refuses to send from.
 func (r *Responder) sendOnInterface(buf []byte, ifIndex int, target *net.UDPAddr) error {
 	addrs, ok := r.ifaces()[ifIndex]
 	if !ok || len(addrs) == 0 {
@@ -584,19 +582,8 @@ func (r *Responder) sendOnInterface(buf []byte, ifIndex int, target *net.UDPAddr
 	if err != nil {
 		return err
 	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: src, Port: 0})
-	if err != nil {
-		slog.Debug("mdns: bind failed", "iface", ifi.Name, "ip", src.String(), "err", err)
-		return err
-	}
-	defer conn.Close()
-	if target.IP.IsMulticast() {
-		pc := ipv4.NewPacketConn(conn)
-		_ = pc.SetMulticastInterface(ifi)
-		_ = pc.SetMulticastTTL(255)
-	}
-	if _, err := conn.WriteToUDP(buf, target); err != nil {
-		slog.Debug("mdns: write failed", "iface", ifi.Name, "ip", src.String(), "target", target.String(), "err", err)
+	if err := SendFromInterface(buf, ifi, src, target); err != nil {
+		slog.Debug("mdns: send failed", "iface", ifi.Name, "ip", src.String(), "target", target.String(), "err", err)
 		return err
 	}
 	return nil

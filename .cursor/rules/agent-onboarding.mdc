@@ -1,0 +1,27 @@
+---
+description: Read PAIR's rules and docs before changing desktop or services code
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Agent onboarding (PAIR monorepo)
+
+Before writing or changing code in this repo, read its rules and docs into
+context and follow them:
+
+- `.cursor/rules/*.mdc` — the always-on architecture and discipline rules,
+  especially `architecture.mdc` (boundaries, ownership, reactive state) and
+  `service-contracts.mdc` (desktop ↔ services contract checks).
+- `CONTRIBUTING.md` — workflow, build, and contribution conventions.
+- The relevant `docs/*` for the area you are touching (e.g.
+  `docs/building.md`, `desktop/docs/architecture.md`,
+  `desktop/docs/services-backend.md`, `desktop/docs/services-parity.md`).
+- `.agents/skills/*` when a matching skill exists (e.g. `kaizen-ui`,
+  `sync-backend`).
+
+`services/` is the backend source of truth in this monorepo; `desktop/` is the
+Electron UI. PAIR relays cluster/engine commands and renders backend state — it
+does not reimplement backend services in TypeScript.

@@ -36,8 +36,7 @@ enum Firewall {
     /// verifies this) and the manual uninstaller
     /// (scripts/build/macos/uninstall.sh).
     static let networkedBinaries = [
-        "ollama-proxy",
-        "lmstudio-proxy",
+        "nvpair-proxy",
         "nvpair-node-info",
         "nvpair-node-scanner",
         "nvpair-workload-manager",
@@ -46,16 +45,39 @@ enum Firewall {
         "nvpair-engine-manager"
     ]
 
+    /// Names an earlier version granted access to and this one no longer
+    /// ships. Removal-only: never added, only revoked, so an upgrade does not
+    /// leave allow entries behind for binaries that are gone. Deliberately not
+    /// part of `networkedBinaries`, which must keep matching the canonical
+    /// firewall metadata that `service-contracts:check` verifies.
+    static let legacyNetworkedBinaries = [
+        "ollama-proxy",
+        "lmstudio-proxy"
+    ]
+
     static func apply(cliBinDir: String, unblock: Bool) throws {
         guard FileManager.default.isExecutableFile(atPath: socketfilterfw) else {
             throw FirewallError.socketfilterfwMissing
         }
         let fm = FileManager.default
-        for name in networkedBinaries {
-            let binPath = (cliBinDir as NSString).appendingPathComponent(name)
-            guard fm.fileExists(atPath: binPath) else { continue }
 
-            if unblock {
+        if unblock {
+            // Revoke what an earlier version granted and this one no longer
+            // ships, BEFORE granting the current set.
+            //
+            // This has to happen here rather than on the removal path, because
+            // configure-firewall is the only firewall entry point the app ever
+            // invokes — nothing calls remove-firewall — and it is what runs
+            // after a stale-daemon re-register on upgrade. A removal-only
+            // legacy pass would never fire.
+            for name in legacyNetworkedBinaries {
+                revoke(cliBinDir: cliBinDir, name: name)
+            }
+
+            for name in networkedBinaries {
+                let binPath = (cliBinDir as NSString).appendingPathComponent(name)
+                guard fm.fileExists(atPath: binPath) else { continue }
+
                 // Granting network access — be certain this is exactly our
                 // binary. TOCTOU guard: re-check identity of this object
                 // immediately before socketfilterfw. Reject symlinks (so a
@@ -73,16 +95,43 @@ enum Firewall {
                 }
                 try runChecked(socketfilterfw, ["--add", binPath])
                 try runChecked(socketfilterfw, ["--unblockapp", binPath])
-            } else {
-                // Removal only revokes access, so it is best-effort: still reject
-                // a symlink (never touch a swapped target), but do NOT abort the
-                // whole cleanup if one rule was never added — `socketfilterfw
-                // --remove` of an absent entry returns non-zero, which must not
-                // strand the remaining removals (e.g. during uninstall).
-                do { try assertRealFile(binPath) } catch { continue }
-                _ = run(socketfilterfw, ["--remove", binPath])
             }
+            return
         }
+
+        for name in networkedBinaries + legacyNetworkedBinaries {
+            revoke(cliBinDir: cliBinDir, name: name)
+        }
+    }
+
+    /// Best-effort revoke of one binary's firewall entry.
+    ///
+    /// Never aborts the caller: `socketfilterfw --remove` of an entry that was
+    /// never added exits non-zero, which must not strand the remaining
+    /// removals during an uninstall.
+    ///
+    /// Revokes when the path holds a real regular file, or holds nothing at
+    /// all — an upgrade deletes the old binary before this runs, and that
+    /// stale rule is exactly what needs clearing. A symlink is never touched:
+    /// `assertRealFile` opens with `O_NOFOLLOW`, so it rejects a symlink and an
+    /// absent path alike, and absence is therefore established with `lstat`,
+    /// which (unlike `FileManager.fileExists`) does not follow the link.
+    static func revoke(cliBinDir: String, name: String) {
+        let binPath = (cliBinDir as NSString).appendingPathComponent(name)
+        do {
+            try assertRealFile(binPath)
+        } catch {
+            guard pathIsAbsent(binPath) else { return }
+        }
+        _ = run(socketfilterfw, ["--remove", binPath])
+    }
+
+    /// True when nothing exists at `path`. Uses `lstat`, so a symlink —
+    /// dangling or not — counts as present rather than being mistaken for an
+    /// empty path.
+    static func pathIsAbsent(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) != 0 && errno == ENOENT
     }
 
     /// Validate that `appPath` (already derived from the *verified* connecting
