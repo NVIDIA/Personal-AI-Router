@@ -101,10 +101,6 @@ Keep helpers local unless reuse across tests justifies a shared fixture.
   In loops without named subtests, include the case input when it helps locate
   the failure, for example `assert.True(t, isHostname(s), "hostname %q", s)`.
   Although such lack of named subtests should be considered for rewrite.
-- Keep refactors faithful: preserve cases, expected values, evaluation count,
-  and necessary fatal guards. Flag behavioral changes, added/removed tests, or
-  modified assertion helpers. A fatal-to-nonfatal change is acceptable when
-  continuation is safe. Format with `gofmt`/`goimports` after editing.
 
 ## Fit the existing test suite
 
