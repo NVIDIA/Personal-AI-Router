@@ -92,9 +92,11 @@ Tell it instead:
 
 `dark` forces the other way, and `auto` is the default.
 
-A terminal that never answers also makes PAIR wait for the reply before it
-starts, which is a pause of a few seconds on the way in. That wait comes from
-the terminal library and applies whether or not you pass `--appearance`.
+A terminal that never answers also makes PAIR wait up to five seconds for the
+reply before the interface appears. PAIR asks while its background services are
+starting, so much of that wait overlaps with startup. Passing
+`--appearance light` or `--appearance dark` skips the question, and the wait
+with it.
 
 Press `q` to quit. Quitting shuts the services down cleanly rather than leaving
 them running.
