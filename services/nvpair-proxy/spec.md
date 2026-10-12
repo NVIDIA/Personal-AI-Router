@@ -509,7 +509,7 @@ its address points:
 
 | Owner | Dialed as | Why |
 | --- | --- | --- |
-| This facade — its own listen port, or an alias address it bound | the local engine from `node/set-local-backend`, over loopback; dropped when none is set or it is unhealthy | this node advertises the facade under `ol` / `lm`, so dialing it would enter this node's own cluster ingress and recurse |
+| This facade — its own listen port, or an alias address it bound | the local engine from `node/set-local-backend`, over loopback; dropped when none is set or it is unhealthy | this node advertises the facade under the engine's own key (e.g. `ol`, `lm`, `lc`), so dialing it would enter this node's own cluster ingress and recurse |
 | A peer this node holds a pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | the relayed `trusted` flag is the scanner's answer from the peer's last record change, so it is stale for a peer discovered before this node's pins existed |
 | A manual node from `node/add-manual` | plain HTTP to the address the user supplied | a deliberate, separately labelled bypass |
 | Anything else — an unpinned peer, or any peer while this node is unclustered | dropped | a peer's facade refuses plaintext from the LAN, so it is not reachable |
@@ -526,7 +526,9 @@ last resort.
 The model-list routes are the one exception to forwarding a request to a single
 node. They resolve with no model, so no owner filter applies, and fan out
 concurrently to every resolved candidate, dialed as §5.9 describes, with
-redirects not followed.
+redirects not followed. Each candidate is queried at the request's own path,
+except on the llama.cpp facade, where `GET /models` and `GET /v1/models` both
+query the candidate's `/models`.
 
 A candidate's answer counts only if it is `200`, at most 16 MiB
 (`maxModelListBytes`), carries its dialect's array (`models` native, `data`
@@ -540,17 +542,20 @@ native list, normalized by the engine's naming rule so `llama3` and
 `llama3:latest` are one model. The first record for an identity wins; a later
 one whose `digest` differs is logged as a conflict and dropped.
 
-With no usable list the answer is `503` `{"error":"model inventory
-unavailable"}`; a candidate answering with an empty list is a success. The
-browser-origin rules in §5.8 apply on top. The aggregate is reported as one
-request with `target: "cluster"` and no node id.
+Without an `Origin` header, no usable list is a `503` `{"error":"model
+inventory unavailable"}`; a candidate answering with an empty list is a
+success. With one, the browser-origin gate in §5.8 runs first and answers `502`
+with the same body when no candidate answered — every candidate unreachable, or
+none resolved — so the `503` arises only for a request without `Origin`. The
+aggregate is reported as one request with `target: "cluster"` and no node id.
 
 ### 5.11 Discovery input
 
-Each facade subscribes to the broker's discovery relay for its engine's service
-key (`ol` or `lm`) and receives `discovery:nodes`, the full filtered set, on
-every change. Each snapshot **replaces** the facade's relay-fed overlay, so a
-departed node is simply absent from the next one and there is no state to drift.
+Each facade subscribes to the broker's discovery relay for its engine's own
+service key (e.g. `ol`, `lm`, `lc`) and receives `discovery:nodes`, the full
+filtered set, on every change. Each snapshot **replaces** the facade's relay-fed
+overlay, so a departed node is simply absent from the next one and there is no
+state to drift.
 
 A directory node becomes a routable node only if it advertises that key and has
 an address:
@@ -560,8 +565,8 @@ an address:
 - its port is the one it advertises under the key, which is that peer's facade;
 - its addresses are its whole ranked list, so routing can fail over past a
   direct-connect address this host cannot reach;
-- its models are its inventory for this engine alone, so a model a dual-engine
-  peer serves only through the other engine does not make it an owner here. A
+- its models are its inventory for this engine alone, so a model a multi-engine
+  peer serves only through another engine does not make it an owner here. A
   peer sending no per-engine attribution falls back to its flat list.
 
 The diff against the previous snapshot is emitted as `node/discovered`,
