@@ -23,6 +23,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,6 +32,8 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
 )
+
+const maxSyncBodyBytes = 1 << 20
 
 // newErrorsMux builds the HTTP routes backed by the manager. Split out
 // from the listener so tests can exercise the handlers via
@@ -76,7 +79,7 @@ func newErrorsMux(mgr *Manager, mesh *clustertrust.Mesh) *http.ServeMux {
 func handleIngest(w http.ResponseWriter, r *http.Request, mgr *Manager) {
 	defer r.Body.Close()
 	var env errors.SyncEnvelope
-	if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxSyncBodyBytes)).Decode(&env); err != nil {
 		slog.Warn("ingest: bad request body", "err", err)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
