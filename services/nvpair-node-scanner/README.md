@@ -12,6 +12,9 @@ Concretely, the daemon:
 - **Advertises** this node's one `_nvpair-node._tcp` record, built from a registry of the local services its parent (the broker) registers — `ni`/`ol`/`lm`/`er`/`wl`/`cl`/`em`/`ec` ports plus the node identity (`uuid=`, `cluster-uuid=` when clustered, `ip=`). One record per node covers every service.
 - **Browses** `_nvpair-node._tcp` for every node on the LAN (including itself) and maintains a queryable directory keyed by host UUID.
 - **Enriches** each discovered node: GPU/CPU/memory inventory from its `ni` (node-info) port over plain HTTP, and the model list from its `em` (engine-manager) port (`GET /v1/models`) over cluster mTLS — a peer's model inventory is cluster data, so it is fetched only when this node holds a pin for the principal that peer advertises, while this node's own list is read over loopback in plaintext — the flat union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of models loaded in memory (`loadedByEngine`), all carried onto the node's directory entry so remote cards can show loaded state. Each enrichment has a last-good cache so a transient fetch miss doesn't blank the node's card. Node-info enrichment can optionally be moved onto HTTPS (see the TLS flags below) — off by default and gated only on operator flags, never inferred per-node.
+  Node-info JSON decoding reads at most 1 MiB, and model inventory decoding reads
+  at most 16 MiB. A JSON value that extends past its limit fails enrichment and
+  leaves the last-good cache intact.
 - **Samples scheduling telemetry** from healthy nodes every two seconds with
   stable per-node jitter. Consecutive remote failures back off to 4, 8, 16, then
   30 seconds and reset on success; local loopback sampling stays at the healthy

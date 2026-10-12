@@ -133,7 +133,9 @@ directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
 relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
 `remote-install` / `remote-pull-model` — mints an `opId`, relays each streamed
 progress frame up as `engine:remote-progress`, and settles the request with the
-terminal result. They fail if this node isn't clustered or the target isn't a
+terminal result. Each NDJSON progress or terminal frame is limited to 1 MiB;
+the limit applies per frame so a long operation can report progress throughout
+its lifetime. They fail if this node isn't clustered or the target isn't a
 pinned cluster peer. See "Remote engine management" below.
 
 `engine:install`, `engine:start`, `engine:stop`, `engine:restart`,
