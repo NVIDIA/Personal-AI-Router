@@ -166,16 +166,16 @@ After systems are paired, you can view another machine's engines from
 **Overview** and, where supported, start or stop engines and pull models on that
 peer.
 
-Some actions stay **local only** on each machine: uninstalling, updating, and
-changing an engine's CORS settings. Perform those on the machine that owns the
+Some actions stay **local only** on each machine: uninstalling an engine and
+changing its CORS settings. Perform those on the machine that owns the
 engine, or connect to that machine's PAIR application or terminal interface.
 Ports and startup arguments can be edited from a paired machine, as described in
 [Engine Settings](engine-settings.mdx).
 
 Everything you change is scoped to one machine. A port you set on this node moves
 that node's engine and nothing else. The other nodes keep the ports they already
-had, and PAIR does not push the value across the cluster. Installing, updating,
-and uninstalling work the same way, because each is a decision about one machine.
+had, and PAIR does not push the value across the cluster. Installing and
+uninstalling work the same way, because each is a decision about one machine.
 This is why the endpoint to use is the one shown on the machine you are working
 at, rather than a port you remember from somewhere else.
 

@@ -70,13 +70,15 @@ keep the models you downloaded.
 1. If you also use the LM Studio desktop application, remove LM Studio through
    that application instead, since it shares the same `.lmstudio` folder.
 2. Quit PAIR, which stops the LM Studio server it started.
-3. Stop LM Studio and delete everything in `.lmstudio` except the `models`
-   folder.
+3. Stop LM Studio, including its background process, and delete everything in
+   `.lmstudio` except the `models` folder. Stopping the server alone leaves that
+   background process running, and it can keep files open while you delete them.
 
    On macOS or Linux:
 
    ```bash
    ~/.lmstudio/bin/lms server stop
+   pkill -x lms; pkill -x llmster; sleep 2
    find ~/.lmstudio -mindepth 1 -maxdepth 1 ! -name models -exec rm -rf {} +
    ```
 
@@ -84,6 +86,11 @@ keep the models you downloaded.
 
    ```powershell
    & "$env:USERPROFILE\.lmstudio\bin\lms.exe" server stop
+   $root = Join-Path $env:USERPROFILE '.lmstudio'
+   Get-CimInstance Win32_Process |
+     Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root) } |
+     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+   Start-Sleep -Seconds 3
    Get-ChildItem "$env:USERPROFILE\.lmstudio" -Force |
      Where-Object Name -ne 'models' |
      Remove-Item -Recurse -Force
@@ -104,20 +111,21 @@ and desktop applications are not affected.
 PAIR's local endpoints now use each engine's own browser access setting, known
 as CORS, rather than allowing every website. That means a web page can reach
 your models through PAIR only if you have allowed it in the engine. If a
-browser-based client stopped connecting after the update, add its address in
-the engine's launch options:
+browser-based client stopped connecting after the update, allow it in the
+engine's launch options. Ollama and llama.cpp take a list of allowed addresses;
+LM Studio has an on/off switch instead:
 
 | Engine | Setting |
 | --- | --- |
-| Ollama | `OLLAMA_ORIGINS`, for example `OLLAMA_ORIGINS="https://example.com"` |
-| LM Studio | The `--cors` switch |
-| llama.cpp | `--cors-origins` |
+| Ollama | Add the address to `OLLAMA_ORIGINS`, for example `OLLAMA_ORIGINS="https://example.com"` |
+| LM Studio | Add the `--cors` switch. It takes no address; LM Studio decides which origins it allows. |
+| llama.cpp | Add the address to `--cors-origins` |
 
-Make the change on the machine that runs the engine. Include the address's
-scheme, such as `https://`; a wildcard on its own (`*`) or a bare `localhost`
-is not accepted. If requests can be routed to other machines in your cluster,
-allow the address on each of them. [Engine Settings](engine-settings.mdx) has
-the details.
+Make the change on the machine that runs the engine. For Ollama and llama.cpp,
+include the address's scheme, such as `https://`; a wildcard on its own (`*`)
+or a bare `localhost` is not accepted. If requests can be routed to other
+machines in your cluster, make the change on each of them.
+[Engine Settings](engine-settings.mdx) has the details.
 
 ## Checking Everything Is Working
 

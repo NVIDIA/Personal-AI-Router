@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 */}
 
-# Inference dispatcher
+# Inference Dispatcher
 
 `scripts/inference-dispatcher` is a standalone HTTP client for exercising
 Ollama, LM Studio, and llama.cpp-compatible servers. It deliberately has no
@@ -38,7 +38,7 @@ both the desktop app and the terminal interface spawn once per request; see
 [architecture.mdx](architecture.mdx). The wrappers exist so the same tool can be
 driven by hand.
 
-## Model selection
+## Model Selection
 
 No model name is compiled into the program. When `--model` is omitted (or set to
 `auto`), the dispatcher queries the live model inventory, filters out models
@@ -68,6 +68,11 @@ non-model defaults.
 }
 ```
 
+This sends four generated prompts, two at a time. To send prompts of your own,
+list them in `prompts`, for example
+`"prompts": ["Explain unified memory in two sentences."]`. One request is sent
+per listed prompt, and `count` is ignored.
+
 Pass the file with `--config path/to/config.json` or
 `INFERENCE_DISPATCHER_CONFIG`. Every scalar option also has an
 `INFERENCE_DISPATCHER_*` environment equivalent.
@@ -77,7 +82,7 @@ Ollama, `1234` for LM Studio, and `8080` for llama.cpp. These are the ports the
 router's proxies claim, so requests enter the cluster router rather than a
 single engine. Use `--port` to select another local port.
 
-## API behavior
+## API Behavior
 
 - Ollama inventory: `GET /api/tags`
 - Ollama inference: `POST /api/generate`
@@ -98,7 +103,7 @@ process cancellation. Parallel dispatch uses a configurable concurrency bound.
 `--result-log` appends JSON Lines records, while `--debug-error-log` writes a
 compact tab-separated error trail.
 
-## What is never recorded
+## What is Never Recorded
 
 Neither log, nor stdout, ever contains prompt text or response bodies. Prompts
 are identified by a `sha256:<prefix> len=<n>` digest and responses by their byte

@@ -28,7 +28,9 @@ its public development and contribution workflow on GitHub.
   settings such as context size where the engine supports them. Refer to
   [Engine Settings](engine-settings.mdx).
 - **RTX Spark support.** PAIR's Windows on ARM build has been validated with
-  llama.cpp and CUDA on RTX Spark N1X hardware.
+  llama.cpp and CUDA on RTX Spark N1X hardware. Windows on ARM
+  remains experimental. Refer to
+  [What is supported](../README.md#what-is-supported).
 - **Improved terminal experience.** The terminal interface has a redesigned
   layout organized around each device, so you can manage engines, download
   models, and pair devices from one place. A new **Jobs** tab follows inference
@@ -48,7 +50,9 @@ its public development and contribution workflow on GitHub.
 - **LM Studio installed by an earlier PAIR.** It keeps working as before. PAIR
   now removes only engines it has a record of installing, and earlier versions
   kept no record, so uninstalling or resetting PAIR leaves that LM Studio in
-  place. You can remove it from `~/.lmstudio` yourself if you no longer want it.
+  place. To remove it while keeping your downloaded models, or to let PAIR
+  manage it from now on, follow the
+  [Upgrade Guide](upgrade-guide.mdx#if-an-earlier-pair-installed-lm-studio-for-you).
 
 The [Upgrade Guide](upgrade-guide.mdx) walks through each of these.
 
