@@ -31,6 +31,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/engines"
+	"nvpair-shared/ingressauth"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -361,6 +362,13 @@ type Proxy struct {
 	// nil = unclustered: the LAN TLS ingress accepts nothing and the node does
 	// only loopback-plaintext local routing. Read-only after startup.
 	mesh *clustertrust.Mesh
+
+	// lanAuth is the opt-in API-key gate for non-loopback plaintext callers
+	// (nvpair-shared/ingressauth). nil or disabled: plaintext is loopback-only.
+	// Set once at startup; the gate re-reads its own key file on demand. It
+	// lives on Proxy, not on a facade: the key is one credential for the node,
+	// so every enabled engine's facade enforces the same gate identically.
+	lanAuth *ingressauth.Gate
 
 	// activity coalesces the liveness reports raised when a peer's engine streams
 	// response bytes back through us (see reportActivity).

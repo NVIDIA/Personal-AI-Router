@@ -12,6 +12,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+
+	"nvpair-shared/ingressauth"
 )
 
 const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
@@ -71,18 +73,57 @@ func (f *facade) localBackendTarget() (*url.URL, bool) {
 	return &url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(b.Port))}, true
 }
 
-// handlePlain is the plaintext personality: it accepts requests only from
-// loopback and hands them to the full local router (handleHTTP). A non-loopback
-// caller — any LAN peer — is refused; peers must use the mTLS ingress. This is
-// what closes the former open-relay exposure (the listener still binds all
-// interfaces for the TLS personality, but plaintext is loopback-only).
+// handlePlain is the plaintext personality: it accepts requests from loopback
+// and hands them to the full local router (handleHTTP). A non-loopback caller —
+// any LAN peer — is refused unless the operator has enabled the API-key gate
+// (nvpair-shared/ingressauth) and the caller presents a configured key, in
+// which case it is routed exactly like a loopback client. Cluster peers still
+// use the mTLS ingress, and loopback is never asked for a key. This is what
+// closes the former open-relay exposure: the listener binds all interfaces for
+// the TLS personality, but plaintext is loopback-only unless authenticated.
 func (f *facade) handlePlain(w http.ResponseWriter, r *http.Request) {
 	if !isLoopbackRemote(r.RemoteAddr) {
-		slog.Warn("rejected non-loopback plaintext request; cluster peers must use mTLS",
-			"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
-		writeIngressError(w, http.StatusForbidden, "loopback-only",
-			"plaintext requests are accepted only from loopback; cluster peers must use the mTLS ingress")
-		return
+		// One Authorize call refreshes the key file and judges the request from
+		// that single view, so enablement and the key set cannot change between
+		// "is the gate on?" and "is this key good?".
+		var d ingressauth.Decision
+		if p := f.host.lanAuth; p != nil {
+			d = p.Authorize(r)
+		}
+		// A source outside the operator's allowlist gets nothing, and its key is
+		// never examined.
+		if d.Enabled && d.Code == ingressauth.CodeSourceNotAllowed {
+			slog.Warn("rejected non-loopback plaintext request", "remote", r.RemoteAddr,
+				"method", r.Method, "path", r.URL.Path, "code", d.Code)
+			writeIngressError(w, d.Status, d.Code, d.Message)
+			return
+		}
+		if !d.Enabled {
+			slog.Warn("rejected non-loopback plaintext request; cluster peers must use mTLS",
+				"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+			writeIngressError(w, http.StatusForbidden, "loopback-only",
+				"plaintext requests are accepted only from loopback; cluster peers must use the mTLS ingress")
+			return
+		}
+		// A preflight is judged like any other request. Answering a keyless one
+		// would hand it to handleHTTP, which buffers the body, fans the OPTIONS
+		// out to every cluster candidate, and relays an engine's raw reply: none
+		// of that is for a caller who has shown no key. A browser, which cannot
+		// send a key on a preflight, is therefore not a supported LAN client.
+		if !d.Allowed {
+			slog.Warn("rejected non-loopback plaintext request", "remote", r.RemoteAddr,
+				"method", r.Method, "path", r.URL.Path, "code", d.Code, "key_fp", d.KeyFingerprint)
+			if d.Challenge != "" {
+				w.Header().Set("WWW-Authenticate", d.Challenge)
+			}
+			writeIngressError(w, d.Status, d.Code, d.Message)
+			return
+		}
+		// The key is the proxy's credential, not the engine's: never forward it.
+		f.host.lanAuth.StripCredential(r.Header)
+		// At Info, not Debug: a production log must show who used a key.
+		slog.Info("authenticated non-loopback plaintext request", "remote", r.RemoteAddr,
+			"method", r.Method, "path", r.URL.Path, "key_fp", d.KeyFingerprint)
 	}
 	// Engine-manager marks its private identity/action requests so this
 	// compatibility facade can never be mistaken for the local Ollama backend.

@@ -125,7 +125,8 @@ and the cluster refuses a machine that is not a member.
 
 The PIN is a short convenience code for bootstrapping that exchange, not a strong
 authenticator, so pair only over networks and with machines you trust. Local
-applications reach the proxy over loopback.
+applications reach the proxy over loopback; an operator can also admit
+applications on other machines by API key.
 
 For the trust boundaries in detail, refer to
 [Architecture](architecture.mdx) and the [security policy](../SECURITY.md).
@@ -142,7 +143,8 @@ PAIR provides these capabilities:
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between machines: a request sent to another node travels over
   mutual TLS restricted to the nodes you have paired, and the cluster refuses a
-  machine that is not a member. Local applications reach the proxy over loopback.
+  machine that is not a member. Local applications reach the proxy over loopback,
+  and an operator can opt in to API-key access for applications on other machines.
 - A desktop application, plus a terminal interface for headless machines, driving
   the same services.
 - Visibility into nodes, engines, models, workloads, and service errors.
