@@ -183,3 +183,34 @@ func TestValidateTXTSize_RejectsOversizedEntries(t *testing.T) {
 	big := "x=" + strings.Repeat("m", 300)
 	assert.Error(t, ValidateTXTSize([]string{"v=1", big}), "oversized TXT entry not flagged")
 }
+
+func TestDirectoryNode_JSONRoundTripPreservesIdentityFields(t *testing.T) {
+	type nodeIdentityFields struct {
+		HostUUID             string `json:"hostUuid"`
+		DiscoveryRecordID    string `json:"discoveryRecordId"`
+		IdentityVerification string `json:"identityVerification"`
+	}
+
+	test := func(name, discoveryRecordID, verification string) {
+		t.Run(name, func(t *testing.T) {
+			identity := nodeIdentityFields{
+				HostUUID:             "host-a",
+				DiscoveryRecordID:    discoveryRecordID,
+				IdentityVerification: verification,
+			}
+			body, err := json.Marshal(identity)
+			require.NoError(t, err)
+			var node DirectoryNode
+			require.NoError(t, json.Unmarshal(body, &node))
+			body, err = json.Marshal(node)
+			require.NoError(t, err)
+			var got nodeIdentityFields
+			require.NoError(t, json.Unmarshal(body, &got))
+			assert.Equal(t, identity, got)
+		})
+	}
+
+	test("owned local record", "local:host-a", "local")
+	test("authenticated peer record", "peer:host-a", "pinned")
+	test("unverified discovery record", "observation:candidate-a", "unverified")
+}

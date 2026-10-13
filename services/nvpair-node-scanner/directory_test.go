@@ -140,3 +140,70 @@ func TestDirectory_UpdatesRemovesAndSnapshotsNodes(t *testing.T) {
 	require.Len(t, all, 1, "after remove, snapshot")
 	require.Equal(t, "b", all[0].HostUUID, "after remove, snapshot (%v)", all)
 }
+
+func observationFixture() RawNode {
+	return RawNode{
+		ID:        "workstation",
+		Host:      "workstation.local.",
+		Port:      noderec.SRVPort,
+		Addresses: []string{"192.0.2.20", "192.0.2.21"},
+		TXT:       []string{"v=1", "uuid=claimed-host", "cluster-uuid=claimed-principal", "ni=14318"},
+	}
+}
+
+func TestToDirectoryNode_AddressOrderAndClaimChangesPreserveDiscoveryRecordID(t *testing.T) {
+	test := func(name string, candidate RawNode) {
+		t.Run(name, func(t *testing.T) {
+			original, ok := toDirectoryNode(observationFixture(), false)
+			require.True(t, ok, "original observation must be projected")
+			next, ok := toDirectoryNode(candidate, false)
+			require.True(t, ok, "candidate observation must be projected")
+			require.NotEmpty(t, original.DiscoveryRecordID)
+			assert.Equal(t, original.DiscoveryRecordID, next.DiscoveryRecordID)
+		})
+	}
+
+	test("repeated observation", observationFixture())
+	reordered := observationFixture()
+	reordered.Addresses = []string{"192.0.2.21", "192.0.2.20"}
+	test("resolved address order changes", reordered)
+	claims := observationFixture()
+	claims.TXT = []string{"ni=14318", "uuid=another-claim", "v=1", "cluster-uuid=another-principal", "ol=11434"}
+	test("identity and other service claims change", claims)
+}
+
+func TestToDirectoryNode_DifferencesInDiscoveryFieldsYieldDifferentDiscoveryRecordIDs(t *testing.T) {
+	test := func(name string, candidate RawNode) {
+		t.Run(name, func(t *testing.T) {
+			original, ok := toDirectoryNode(observationFixture(), false)
+			require.True(t, ok, "original observation must be projected")
+			next, ok := toDirectoryNode(candidate, false)
+			require.True(t, ok, "candidate observation must be projected")
+			require.NotEmpty(t, original.DiscoveryRecordID)
+			require.NotEmpty(t, next.DiscoveryRecordID)
+			assert.NotEqual(t, original.DiscoveryRecordID, next.DiscoveryRecordID)
+		})
+	}
+
+	instance := observationFixture()
+	instance.ID = "another-instance"
+	test("different service instance", instance)
+	host := observationFixture()
+	host.Host = "another-host.local."
+	test("different resolved host", host)
+	address := observationFixture()
+	address.Addresses = []string{"192.0.2.30"}
+	test("copied UUID at another resolved address", address)
+	advertised := observationFixture()
+	advertised.TXT = append(advertised.TXT, "ip=192.0.2.30")
+	test("different advertised connection address", advertised)
+	port := observationFixture()
+	port.TXT = []string{"v=1", "uuid=claimed-host", "cluster-uuid=claimed-principal", "ni=14328"}
+	test("different node-info port", port)
+}
+
+func TestToDirectoryNode_TrustedFlagDoesNotVerifyIdentity(t *testing.T) {
+	node, ok := toDirectoryNode(observationFixture(), true)
+	require.True(t, ok, "observation must be projected")
+	assert.Equal(t, noderec.IdentityUnverified, node.IdentityVerification)
+}

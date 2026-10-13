@@ -35,7 +35,9 @@ type (
 )
 
 type EnrichedNode struct {
-	ID string `json:"id"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
 	// HostUUID is the node's stable per-host identity (the daemon's uuid= TXT).
 	// It's the discovery-store key, so a PC rename — which changes the hostname
 	// (ID) but not the UUID — updates the existing entry in place instead of
@@ -101,21 +103,23 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		port = ni.Port
 	}
 	return EnrichedNode{
-		ID:                 n.Name,
-		HostUUID:           n.HostUUID,
-		Host:               n.Name,
-		Port:               port,
-		Addresses:          addrs,
-		TXT:                txt,
-		GPUs:               n.GPUs,
-		CPU:                n.CPU,
-		Memory:             n.Memory,
-		Trusted:            n.Trusted,
-		Clustered:          n.Clustered(),
-		Models:             n.Models,
-		ModelsByEngine:     n.ModelsByEngine,
-		LoadedByEngine:     n.LoadedByEngine,
-		DownloadedByEngine: n.DownloadedByEngine,
+		DiscoveryRecordID:    n.DiscoveryRecordID,
+		IdentityVerification: n.IdentityVerification,
+		ID:                   n.Name,
+		HostUUID:             n.HostUUID,
+		Host:                 n.Name,
+		Port:                 port,
+		Addresses:            addrs,
+		TXT:                  txt,
+		GPUs:                 n.GPUs,
+		CPU:                  n.CPU,
+		Memory:               n.Memory,
+		Trusted:              n.Trusted,
+		Clustered:            n.Clustered(),
+		Models:               n.Models,
+		ModelsByEngine:       n.ModelsByEngine,
+		LoadedByEngine:       n.LoadedByEngine,
+		DownloadedByEngine:   n.DownloadedByEngine,
 	}
 }
 
@@ -320,19 +324,21 @@ func (sn storedNode) toAvailable() AvailableNode {
 		candidates = nil
 	}
 	return AvailableNode{
-		ID:                 n.ID,
-		Name:               n.ID,
-		HostUUID:           n.HostUUID,
-		IPAddress:          primary,
-		IPAddresses:        candidates,
-		Port:               n.Port,
-		LastSeen:           sn.lastSeen.Unix(),
-		Trusted:            n.Trusted,
-		Clustered:          n.Clustered,
-		Models:             n.Models,
-		ModelsByEngine:     n.ModelsByEngine,
-		LoadedByEngine:     n.LoadedByEngine,
-		DownloadedByEngine: n.DownloadedByEngine,
+		DiscoveryRecordID:    n.DiscoveryRecordID,
+		IdentityVerification: n.IdentityVerification,
+		ID:                   n.ID,
+		Name:                 n.ID,
+		HostUUID:             n.HostUUID,
+		IPAddress:            primary,
+		IPAddresses:          candidates,
+		Port:                 n.Port,
+		LastSeen:             sn.lastSeen.Unix(),
+		Trusted:              n.Trusted,
+		Clustered:            n.Clustered,
+		Models:               n.Models,
+		ModelsByEngine:       n.ModelsByEngine,
+		LoadedByEngine:       n.LoadedByEngine,
+		DownloadedByEngine:   n.DownloadedByEngine,
 	}
 }
 

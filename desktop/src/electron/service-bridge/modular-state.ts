@@ -15,7 +15,7 @@ import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
-import type { ClusterNode, Invite } from '@/shared/types/cluster'
+import type { ClusterNode, Invite, NodeIdentityVerification } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import {
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
@@ -102,6 +102,8 @@ function factsProcessStatus(facts: {
 }
 
 interface ModularNode {
+    discoveryRecordId?: string
+    identityVerification?: NodeIdentityVerification
     // Canonical cross-domain node key = the backend's stable per-host UUID
     // (`shared/nodeid`). The broker carries it on `AvailableNode.hostUuid`, the
     // proxies key `Node.ID` by it, and `/v1/node-info` reports it, so every
@@ -798,6 +800,12 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
     }
 }
 
+function identityVerificationValue(
+    value: JsonValue | undefined
+): NodeIdentityVerification | undefined {
+    return value === 'local' || value === 'pinned' || value === 'unverified' ? value : undefined
+}
+
 function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
@@ -814,8 +822,12 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     // when it published a single address (where it would only repeat ipAddress).
     const ipAddresses = stringArrayValue(obj.ipAddresses)
     const brokerAddresses = ipAddresses.length > 0 ? ipAddresses : ipAddress ? [ipAddress] : []
+    const discoveryRecordId = stringValue(obj.discoveryRecordId)
+    const identityVerification = identityVerificationValue(obj.identityVerification)
     return {
         id: hostUuid,
+        ...(discoveryRecordId ? { discoveryRecordId } : {}),
+        ...(identityVerification ? { identityVerification } : {}),
         sources: ['broker'],
         name: hostname,
         host: ipAddress,
@@ -886,6 +898,8 @@ function sameEngines(
 function sameNode(left: ModularNode, right: ModularNode): boolean {
     return (
         left.id === right.id &&
+        left.discoveryRecordId === right.discoveryRecordId &&
+        left.identityVerification === right.identityVerification &&
         sameStringList(left.sources, right.sources) &&
         left.name === right.name &&
         left.host === right.host &&
@@ -1200,6 +1214,10 @@ class ModularBridgeState {
             const addresses = nodeAddresses(node)
             return {
                 id: node.id,
+                ...(node.discoveryRecordId ? { discoveryRecordId: node.discoveryRecordId } : {}),
+                ...(node.identityVerification
+                    ? { identityVerification: node.identityVerification }
+                    : {}),
                 // Display label: hostname, else reachable address; never the raw UUID.
                 name: node.name || primaryNodeAddress(node) || node.id,
                 ipAddress: primaryNodeAddress(node),
@@ -2483,6 +2501,10 @@ class ModularBridgeState {
             memory: null,
             lastSeen: Date.now()
         }
+        // The spread copied broker-owned provenance. Remove it when the broker
+        // withdraws the record; surviving proxy presence cannot preserve verification.
+        delete next.discoveryRecordId
+        delete next.identityVerification
         this.nodes.set(next.id, next)
         this.emitNodeChanged(next)
     }
@@ -2675,6 +2697,12 @@ class ModularBridgeState {
             // broker-reported values rather than overwriting them with the proxy
             // node's empty name and default-false flags.
             name: existing.name || next.name,
+            ...(existing.discoveryRecordId
+                ? { discoveryRecordId: existing.discoveryRecordId }
+                : {}),
+            ...(existing.identityVerification
+                ? { identityVerification: existing.identityVerification }
+                : {}),
             trusted: existing.trusted,
             clustered: existing.clustered,
             // Symmetrically: this event is the proxy feed's whole list (carried by

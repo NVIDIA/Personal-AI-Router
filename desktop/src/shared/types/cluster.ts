@@ -10,7 +10,13 @@
  * interactive PIN-pairing invite handshake.
  */
 
+export type NodeIdentityVerification = 'local' | 'pinned' | 'unverified'
+
 export interface AvailableNode {
+    /** Discovery record identity, independent of a claimed host UUID. */
+    discoveryRecordId?: string
+    /** How the service established this record's identity. */
+    identityVerification?: NodeIdentityVerification
     /** Canonical node key = the backend's stable per-host UUID (matches `NodeItem.id`). */
     id: string
     /** Display hostname. */
