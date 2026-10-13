@@ -6,15 +6,16 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const llamaCPPPullTestModel = "owner/repo:Q4_K_M"
@@ -48,12 +49,11 @@ func newLlamaCPPPullFixture(t *testing.T) *llamaCPPPullFixture {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		if _, err := fmt.Fprint(w, ": ready\n\n"); err != nil {
-			t.Errorf("write SSE greeting: %v", err)
+		_, err := fmt.Fprint(w, ": ready\n\n")
+		if !assert.NoError(t, err, "write SSE greeting") {
 			return
 		}
-		if err := http.NewResponseController(w).Flush(); err != nil {
-			t.Errorf("flush SSE greeting: %v", err)
+		if !assert.NoError(t, http.NewResponseController(w).Flush(), "flush SSE greeting") {
 			return
 		}
 		select {
@@ -65,16 +65,14 @@ func newLlamaCPPPullFixture(t *testing.T) *llamaCPPPullFixture {
 		switch r.Method {
 		case http.MethodPost:
 			data, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Errorf("read start request: %v", err)
+			if !assert.NoError(t, err, "read start request") {
 				http.Error(w, "invalid body", http.StatusBadRequest)
 				return
 			}
 			var body struct {
 				Model string `json:"model"`
 			}
-			if err := json.Unmarshal(data, &body); err != nil || body.Model != llamaCPPPullTestModel {
-				t.Errorf("decode start request = %+v, error %v", body, err)
+			if !assert.NoError(t, json.Unmarshal(data, &body), "decode start request") || !assert.Equal(t, llamaCPPPullTestModel, body.Model) {
 				http.Error(w, "wrong model", http.StatusBadRequest)
 				return
 			}
@@ -84,18 +82,16 @@ func newLlamaCPPPullFixture(t *testing.T) *llamaCPPPullFixture {
 				return
 			}
 			f.downloading.Store(true)
-			if _, err := fmt.Fprint(w, `{"success":true}`); err != nil {
-				t.Errorf("write start response: %v", err)
-			}
+			_, err = fmt.Fprint(w, `{"success":true}`)
+			assert.NoError(t, err, "write start response")
 		case http.MethodGet:
 			f.inventories.Add(1)
 			if f.inventory != nil {
 				f.inventory(w, r)
 				return
 			}
-			if _, err := fmt.Fprintf(w, `{"data":[{"id":%q,"status":{"value":"downloading"}},{"id":"other/model","status":{"value":"downloading"}}]}`, llamaCPPPullTestModel); err != nil {
-				t.Errorf("write inventory: %v", err)
-			}
+			_, err := fmt.Fprintf(w, `{"data":[{"id":%q,"status":{"value":"downloading"}},{"id":"other/model","status":{"value":"downloading"}}]}`, llamaCPPPullTestModel)
+			assert.NoError(t, err, "write inventory")
 		default:
 			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
 		}
@@ -105,13 +101,11 @@ func newLlamaCPPPullFixture(t *testing.T) *llamaCPPPullFixture {
 		var body struct {
 			Model string `json:"model"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode stop request: %v", err)
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body), "decode stop request") {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
-		if r.Method != http.MethodPost || body.Model != llamaCPPPullTestModel {
-			t.Errorf("stop request = %s %+v, want POST for %s", r.Method, body, llamaCPPPullTestModel)
+		if !assert.Equal(t, http.MethodPost, r.Method) || !assert.Equal(t, llamaCPPPullTestModel, body.Model) {
 			http.Error(w, "wrong download", http.StatusBadRequest)
 			return
 		}
@@ -120,9 +114,8 @@ func newLlamaCPPPullFixture(t *testing.T) *llamaCPPPullFixture {
 			return
 		}
 		f.downloading.Store(false)
-		if _, err := fmt.Fprint(w, `{"success":true}`); err != nil {
-			t.Errorf("write stop response: %v", err)
-		}
+		_, err := fmt.Fprint(w, `{"success":true}`)
+		assert.NoError(t, err, "write stop response")
 	})
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
@@ -143,7 +136,7 @@ func waitLlamaCPPPullSignal(t *testing.T, signal <-chan struct{}) {
 	select {
 	case <-signal:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for pull request")
+		require.FailNow(t, "timed out waiting for pull request")
 	}
 }
 
@@ -155,23 +148,17 @@ func TestLlamaCPPPullCancellationStopsDownload(t *testing.T) {
 		<-f.started
 		cancel()
 	}()
-	if err := f.pull(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pull error = %v, want cancellation", err)
-	}
-	if f.downloading.Load() || f.unloads.Load() != 1 {
-		t.Fatalf("downloading=%t unloads=%d, want stopped with one unload", f.downloading.Load(), f.unloads.Load())
-	}
+	require.ErrorIs(t, f.pull(ctx), context.Canceled)
+	require.False(t, f.downloading.Load(), "download must stop")
+	require.Equal(t, int32(1), f.unloads.Load())
 }
 
 func TestLlamaCPPPullInactivityStopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	f.ex.pullProgressTimeout = 100 * time.Millisecond
-	if err := f.pull(context.Background()); !errors.Is(err, errPullProgressTimeout) {
-		t.Fatalf("pull error = %v, want inactivity timeout", err)
-	}
-	if f.downloading.Load() || f.unloads.Load() != 1 {
-		t.Fatalf("downloading=%t unloads=%d, want stopped with one unload", f.downloading.Load(), f.unloads.Load())
-	}
+	require.ErrorIs(t, f.pull(context.Background()), errPullProgressTimeout)
+	require.False(t, f.downloading.Load(), "download must stop")
+	require.Equal(t, int32(1), f.unloads.Load())
 }
 
 func TestLlamaCPPPullStreamEOFStopsDownload(t *testing.T) {
@@ -180,24 +167,20 @@ func TestLlamaCPPPullStreamEOFStopsDownload(t *testing.T) {
 		<-f.started
 		close(f.endStream)
 	}()
-	if err := f.pull(context.Background()); err == nil || !strings.Contains(err.Error(), "progress stream ended before completion") {
-		t.Fatalf("pull error = %v, want premature stream EOF", err)
-	}
-	if f.downloading.Load() || f.unloads.Load() != 1 {
-		t.Fatalf("downloading=%t unloads=%d, want stopped with one unload", f.downloading.Load(), f.unloads.Load())
-	}
+	require.ErrorContains(t, f.pull(context.Background()), "progress stream ended before completion")
+	require.False(t, f.downloading.Load(), "download must stop")
+	require.Equal(t, int32(1), f.unloads.Load())
 }
 
 func TestLlamaCPPPullStreamReadErrorStopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	f.stream = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1000")
-		if _, err := fmt.Fprint(w, ": ready\n\n"); err != nil {
-			t.Errorf("write SSE greeting: %v", err)
+		_, err := fmt.Fprint(w, ": ready\n\n")
+		if !assert.NoError(t, err, "write SSE greeting") {
 			return
 		}
-		if err := http.NewResponseController(w).Flush(); err != nil {
-			t.Errorf("flush SSE greeting: %v", err)
+		if !assert.NoError(t, http.NewResponseController(w).Flush(), "flush SSE greeting") {
 			return
 		}
 		select {
@@ -205,12 +188,9 @@ func TestLlamaCPPPullStreamReadErrorStopsDownload(t *testing.T) {
 		case <-r.Context().Done():
 		}
 	}
-	if err := f.pull(context.Background()); err == nil || !strings.Contains(err.Error(), "unexpected EOF") {
-		t.Fatalf("pull error = %v, want truncated SSE read", err)
-	}
-	if f.downloading.Load() || f.unloads.Load() != 1 {
-		t.Fatalf("downloading=%t unloads=%d, want stopped with one unload", f.downloading.Load(), f.unloads.Load())
-	}
+	require.ErrorContains(t, f.pull(context.Background()), "unexpected EOF")
+	require.False(t, f.downloading.Load(), "download must stop")
+	require.Equal(t, int32(1), f.unloads.Load())
 }
 
 func TestLlamaCPPPullCancellationWaitsForStartAcceptance(t *testing.T) {
@@ -221,13 +201,12 @@ func TestLlamaCPPPullCancellationWaitsForStartAcceptance(t *testing.T) {
 		select {
 		case <-releaseStart:
 		case <-r.Context().Done():
-			t.Error("start handshake was cancelled before acceptance")
+			assert.Fail(t, "start handshake was cancelled before acceptance")
 			return
 		}
 		f.downloading.Store(true)
-		if _, err := fmt.Fprint(w, `{"success":true}`); err != nil {
-			t.Errorf("write accepted response: %v", err)
-		}
+		_, err := fmt.Fprint(w, `{"success":true}`)
+		assert.NoError(t, err, "write accepted response")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -237,7 +216,7 @@ func TestLlamaCPPPullCancellationWaitsForStartAcceptance(t *testing.T) {
 	cancel()
 	select {
 	case err := <-result:
-		t.Fatalf("pull returned before start acceptance: %v", err)
+		require.FailNowf(t, "pull returned before start acceptance", "%v", err)
 	case <-time.After(30 * time.Millisecond):
 	}
 	// Send instead of closing so the deferred close also releases the handler if
@@ -245,11 +224,11 @@ func TestLlamaCPPPullCancellationWaitsForStartAcceptance(t *testing.T) {
 	releaseStart <- struct{}{}
 	select {
 	case err := <-result:
-		if !errors.Is(err, context.Canceled) || f.downloading.Load() || f.unloads.Load() != 1 {
-			t.Fatalf("error=%v downloading=%t unloads=%d", err, f.downloading.Load(), f.unloads.Load())
-		}
+		require.ErrorIs(t, err, context.Canceled)
+		require.False(t, f.downloading.Load())
+		require.Equal(t, int32(1), f.unloads.Load())
 	case <-time.After(5 * time.Second):
-		t.Fatal("pull did not return after acceptance and cleanup")
+		require.FailNow(t, "pull did not return after acceptance and cleanup")
 	}
 }
 
@@ -257,17 +236,14 @@ func TestLlamaCPPPullCancelledBeforeStartDoesNotDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := f.pull(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pull error = %v, want cancellation", err)
-	}
+	require.ErrorIs(t, f.pull(ctx), context.Canceled)
 	select {
 	case <-f.started:
-		t.Fatal("cancelled pull sent a start request")
+		require.FailNow(t, "cancelled pull sent a start request")
 	default:
 	}
-	if f.unloads.Load() != 0 || f.inventories.Load() != 0 {
-		t.Fatal("cancelled pull attempted cleanup without starting")
-	}
+	require.Zero(t, f.unloads.Load(), "cancelled pull attempted cleanup without starting")
+	require.Zero(t, f.inventories.Load(), "cancelled pull attempted cleanup without starting")
 }
 
 func TestLlamaCPPPullRejectsInvalidModelParamsBeforeStarting(t *testing.T) {
@@ -279,17 +255,14 @@ func TestLlamaCPPPullRejectsInvalidModelParamsBeforeStarting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
 			_, err := f.ex.PullModelStream(context.Background(), "fake", llamaCPPPullTestModel, json.RawMessage(tc.params))
-			if err == nil {
-				t.Fatal("invalid model params were accepted")
-			}
+			require.Error(t, err, "invalid model params were accepted")
 			select {
 			case <-f.started:
-				t.Fatal("invalid params sent a start request")
+				require.FailNow(t, "invalid params sent a start request")
 			default:
 			}
-			if f.inventories.Load() != 0 || f.unloads.Load() != 0 {
-				t.Fatal("invalid params triggered cleanup")
-			}
+			require.Zero(t, f.inventories.Load(), "invalid params triggered cleanup")
+			require.Zero(t, f.unloads.Load(), "invalid params triggered cleanup")
 		})
 	}
 }
@@ -301,16 +274,13 @@ func TestLlamaCPPPullRejectedStartPreservesOtherDownload(t *testing.T) {
 			f.downloading.Store(true)
 			f.start = func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
-				if _, err := fmt.Fprint(w, body); err != nil {
-					t.Errorf("write rejected start: %v", err)
-				}
+				_, err := fmt.Fprint(w, body)
+				assert.NoError(t, err, "write rejected start")
 			}
-			if err := f.pull(context.Background()); err == nil {
-				t.Fatal("rejected start returned success")
-			}
-			if !f.downloading.Load() || f.unloads.Load() != 0 || f.inventories.Load() != 0 {
-				t.Fatal("rejected start touched another download")
-			}
+			require.Error(t, f.pull(context.Background()), "rejected start returned success")
+			require.True(t, f.downloading.Load(), "rejected start touched another download")
+			require.Zero(t, f.unloads.Load(), "rejected start touched another download")
+			require.Zero(t, f.inventories.Load(), "rejected start touched another download")
 		})
 	}
 	test("HTTP rejection", http.StatusConflict, `{"error":"already exists"}`)
@@ -330,39 +300,33 @@ func TestLlamaCPPPullUnconfirmedStartDoesNotUnload(t *testing.T) {
 				respond(t, w, r)
 			}
 			err := f.pull(ctx)
-			if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "acceptance and cancellation could not be confirmed") {
-				t.Fatalf("pull error = %v, want unconfirmed acceptance preserving cancellation", err)
-			}
-			if !f.downloading.Load() || f.unloads.Load() != 0 || f.inventories.Load() != 0 {
-				t.Fatal("unconfirmed start unloaded an unowned download")
-			}
+			require.ErrorIs(t, err, context.Canceled)
+			require.ErrorContains(t, err, "acceptance and cancellation could not be confirmed")
+			require.True(t, f.downloading.Load(), "unconfirmed start unloaded an unowned download")
+			require.Zero(t, f.unloads.Load(), "unconfirmed start unloaded an unowned download")
+			require.Zero(t, f.inventories.Load(), "unconfirmed start unloaded an unowned download")
 		})
 	}
 	test("malformed acknowledgement", func(t *testing.T, w http.ResponseWriter, _ *http.Request) {
-		if _, err := fmt.Fprint(w, "not JSON"); err != nil {
-			t.Errorf("write malformed acknowledgement: %v", err)
-		}
+		_, err := fmt.Fprint(w, "not JSON")
+		assert.NoError(t, err, "write malformed acknowledgement")
 	})
 	test("missing success flag", func(t *testing.T, w http.ResponseWriter, _ *http.Request) {
-		if _, err := fmt.Fprint(w, `{}`); err != nil {
-			t.Errorf("write incomplete acknowledgement: %v", err)
-		}
+		_, err := fmt.Fprint(w, `{}`)
+		assert.NoError(t, err, "write incomplete acknowledgement")
 	})
 	test("null success flag", func(t *testing.T, w http.ResponseWriter, _ *http.Request) {
-		if _, err := fmt.Fprint(w, `{"success":null}`); err != nil {
-			t.Errorf("write null acknowledgement: %v", err)
-		}
+		_, err := fmt.Fprint(w, `{"success":null}`)
+		assert.NoError(t, err, "write null acknowledgement")
 	})
 	test("truncated acknowledgement", func(t *testing.T, w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", "1000")
-		if _, err := fmt.Fprint(w, `{"success":`); err != nil {
-			t.Errorf("write truncated acknowledgement: %v", err)
-		}
+		_, err := fmt.Fprint(w, `{"success":`)
+		assert.NoError(t, err, "write truncated acknowledgement")
 	})
 	test("start header timeout", func(_ *testing.T, _ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	test("start body timeout", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
-		if err := http.NewResponseController(w).Flush(); err != nil {
-			t.Errorf("flush start headers: %v", err)
+		if !assert.NoError(t, http.NewResponseController(w).Flush(), "flush start headers") {
 			return
 		}
 		<-r.Context().Done()
@@ -374,8 +338,7 @@ func TestLlamaCPPPullTerminalEventsSkipCleanup(t *testing.T) {
 		t.Run(event, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
 			f.stream = func(w http.ResponseWriter, r *http.Request) {
-				if err := http.NewResponseController(w).Flush(); err != nil {
-					t.Errorf("flush SSE headers: %v", err)
+				if !assert.NoError(t, http.NewResponseController(w).Flush(), "flush SSE headers") {
 					return
 				}
 				select {
@@ -383,17 +346,17 @@ func TestLlamaCPPPullTerminalEventsSkipCleanup(t *testing.T) {
 				case <-r.Context().Done():
 					return
 				}
-				if _, err := fmt.Fprintf(w, "data: {\"model\":%q,\"event\":%q}\n\n", llamaCPPPullTestModel, event); err != nil {
-					t.Errorf("write terminal event: %v", err)
-				}
+				_, err := fmt.Fprintf(w, "data: {\"model\":%q,\"event\":%q}\n\n", llamaCPPPullTestModel, event)
+				assert.NoError(t, err, "write terminal event")
 			}
 			err := f.pull(context.Background())
-			if (err == nil) != (event == "download_finished") {
-				t.Fatalf("terminal %s returned error %v", event, err)
+			if event == "download_finished" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
 			}
-			if f.unloads.Load() != 0 || f.inventories.Load() != 0 {
-				t.Fatal("terminal event triggered cleanup")
-			}
+			require.Zero(t, f.unloads.Load(), "terminal event triggered cleanup")
+			require.Zero(t, f.inventories.Load(), "terminal event triggered cleanup")
 		})
 	}
 }
@@ -409,17 +372,14 @@ func TestLlamaCPPPullCleanupPreservesCompletedModels(t *testing.T) {
 				if status != "missing" {
 					body = fmt.Sprintf(`{"data":[{"id":%q,"status":{"value":%q}}]}`, llamaCPPPullTestModel, status)
 				}
-				if _, err := fmt.Fprint(w, body); err != nil {
-					t.Errorf("write completed inventory: %v", err)
-				}
+				_, err := fmt.Fprint(w, body)
+				assert.NoError(t, err, "write completed inventory")
 			}
 			err := f.pull(context.Background())
-			if err == nil || !strings.Contains(err.Error(), "progress stream ended before completion") || strings.Contains(err.Error(), "could not confirm") {
-				t.Fatalf("pull error = %v, want only premature SSE termination", err)
-			}
-			if f.unloads.Load() != 0 || f.inventories.Load() != 1 {
-				t.Fatalf("inventories=%d unloads=%d, want completed model preserved", f.inventories.Load(), f.unloads.Load())
-			}
+			require.ErrorContains(t, err, "progress stream ended before completion")
+			require.NotContains(t, err.Error(), "could not confirm")
+			require.Zero(t, f.unloads.Load(), "completed model must be preserved")
+			require.Equal(t, int32(1), f.inventories.Load())
 		})
 	}
 }
@@ -433,23 +393,19 @@ func TestLlamaCPPPullCleanupFailurePreservesCancellation(t *testing.T) {
 			f.start = func(w http.ResponseWriter, _ *http.Request) {
 				f.downloading.Store(true)
 				cancel()
-				if _, err := fmt.Fprint(w, `{"success":true}`); err != nil {
-					t.Errorf("write start response: %v", err)
-				}
+				_, err := fmt.Fprint(w, `{"success":true}`)
+				assert.NoError(t, err, "write start response")
 			}
 			f.unload = func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
-				if _, err := fmt.Fprint(w, body); err != nil {
-					t.Errorf("write cleanup failure: %v", err)
-				}
+				_, err := fmt.Fprint(w, body)
+				assert.NoError(t, err, "write cleanup failure")
 			}
 			err := f.pull(ctx)
-			if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "could not confirm download stopped") {
-				t.Fatalf("pull error = %v, want cancellation and cleanup failure", err)
-			}
-			if !f.downloading.Load() || f.unloads.Load() != 1 {
-				t.Fatal("failed cleanup was treated as a confirmed stop or retried")
-			}
+			require.ErrorIs(t, err, context.Canceled)
+			require.ErrorContains(t, err, "could not confirm download stopped")
+			require.True(t, f.downloading.Load(), "failed cleanup was treated as a confirmed stop")
+			require.Equal(t, int32(1), f.unloads.Load(), "failed cleanup must not be retried")
 		})
 	}
 	test("HTTP rejection", http.StatusServiceUnavailable, "unavailable")
@@ -470,12 +426,10 @@ func TestLlamaCPPPullCleanupTimeoutPreservesWatchdogCause(t *testing.T) {
 				f.unload = hang
 			}
 			err := f.pull(context.Background())
-			if !errors.Is(err, errPullProgressTimeout) || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "could not confirm download stopped") {
-				t.Fatalf("pull error = %v, want watchdog and cleanup timeout", err)
-			}
-			if !f.downloading.Load() {
-				t.Fatal("cleanup timeout was treated as a confirmed stop")
-			}
+			require.ErrorIs(t, err, errPullProgressTimeout)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.ErrorContains(t, err, "could not confirm download stopped")
+			require.True(t, f.downloading.Load(), "cleanup timeout was treated as a confirmed stop")
 		})
 	}
 }
@@ -486,14 +440,12 @@ func TestLlamaCPPPullInvalidInventoryDoesNotConfirmStop(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
 			close(f.endStream)
 			f.inventory = func(w http.ResponseWriter, _ *http.Request) {
-				if _, err := fmt.Fprint(w, body); err != nil {
-					t.Errorf("write invalid inventory: %v", err)
-				}
+				_, err := fmt.Fprint(w, body)
+				assert.NoError(t, err, "write invalid inventory")
 			}
 			err := f.pull(context.Background())
-			if err == nil || !strings.Contains(err.Error(), "could not confirm download stopped") || f.unloads.Load() != 0 {
-				t.Fatalf("error=%v unloads=%d, want failed inventory validation", err, f.unloads.Load())
-			}
+			require.ErrorContains(t, err, "could not confirm download stopped")
+			require.Zero(t, f.unloads.Load(), "invalid inventory must not confirm a stop")
 		})
 	}
 }

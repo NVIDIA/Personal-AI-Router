@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Commit is the first byte of response body, not the response headers, because
@@ -94,15 +97,9 @@ func TestHandleHTTP_HeadersWithoutContentFailsOver(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200 (should have failed over past the stalled engine)", rec.Code)
-		}
-		if got := decodeJSONBody(t, rec.Body.String()); got["done"] != true {
-			t.Fatalf(`body has done = %v, want true: the response came from the wrong node`, got["done"])
-		}
-		if servedBody != tc.inferenceBody() {
-			t.Errorf("failover node got body %q, want the original request body", servedBody)
-		}
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		require.Equal(t, true, decodeJSONBody(t, rec.Body.String())["done"], "body has done")
+		assert.Equal(t, tc.inferenceBody(), servedBody, "failover node got body (%v)", servedBody)
 	})
 }
 
@@ -137,19 +134,12 @@ func TestHandleHTTP_NoContentOnFinalAttemptTerminates(t *testing.T) {
 		// guard catches the regression this test exists for, since a committed
 		// silent upstream blocks forever.
 		case <-time.After(5 * time.Second):
-			t.Fatal("handleHTTP never returned: a silent upstream committed and hung the request")
+			require.FailNow(t, "handleHTTP never returned: a silent upstream committed and hung the request")
 		}
 
-		if got := stalled.hits(); got != maxDispatchAttempts {
-			t.Errorf("upstream saw %d dispatches, want the full budget of %d spent on the only owner", got, maxDispatchAttempts)
-		}
-		if rec.Code != http.StatusGatewayTimeout {
-			t.Fatalf("status = %d, want 504 for an upstream that answered but produced no content", rec.Code)
-		}
-		want := "upstream error: " + errFirstBodyTimeout.Error()
-		if got := decodeJSONBody(t, rec.Body.String()); got["error"] != want {
-			t.Fatalf("body error = %v, want %q", got["error"], want)
-		}
+		assert.Equal(t, maxDispatchAttempts, stalled.hits(), "upstream should consume the full dispatch budget")
+		require.Equal(t, http.StatusGatewayTimeout, rec.Code, "status")
+		require.Equal(t, "upstream error: "+errFirstBodyTimeout.Error(), decodeJSONBody(t, rec.Body.String())["error"], "body error")
 	})
 }
 
@@ -174,12 +164,8 @@ func TestHandleHTTP_FirstBytePreservedOnCommit(t *testing.T) {
 		rec := httptest.NewRecorder()
 		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-		if got := rec.Body.String(); got != payload {
-			t.Fatalf("body = %q, want %q (the peeked first byte was dropped)", got, payload)
-		}
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		require.Equal(t, payload, rec.Body.String(), "the peeked first byte must be preserved")
 	})
 }
 
@@ -209,11 +195,9 @@ func TestHandleHTTP_EmptyBodyCommits(t *testing.T) {
 
 		select {
 		case code := <-done:
-			if code != http.StatusOK {
-				t.Fatalf("status = %d, want 200", code)
-			}
+			require.Equal(t, http.StatusOK, code, "status (%v)", code)
 		case <-time.After(5 * time.Second):
-			t.Fatal("an empty 200 body blocked on the first-byte wait instead of committing")
+			require.FailNow(t, "an empty 200 body blocked on the first-byte wait instead of committing")
 		}
 	})
 }
@@ -248,7 +232,7 @@ func TestHandleHTTP_NonInferenceCommitsOnHeaders(t *testing.T) {
 		time.Sleep(blocked)
 		select {
 		case <-done:
-			t.Fatalf("handler returned after %v with status %d: the first-content gate was applied to a non-inference route",
+			require.FailNowf(t, "the first-content gate was applied to a non-inference route", "handler returned after %v with status %d",
 				blocked, rec.Code)
 		default:
 		}
@@ -257,10 +241,8 @@ func TestHandleHTTP_NonInferenceCommitsOnHeaders(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			t.Fatal("a non-inference request did not complete after the upstream released")
+			require.FailNow(t, "a non-inference request did not complete after the upstream released")
 		}
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200: the request committed on headers and streamed normally", rec.Code)
-		}
+		require.Equal(t, http.StatusOK, rec.Code, "status")
 	})
 }

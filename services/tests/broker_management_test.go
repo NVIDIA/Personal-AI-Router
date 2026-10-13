@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/appdir"
 )
 
@@ -78,15 +80,9 @@ func persistLMStudioProxyPort(t *testing.T, port int) string {
 	t.Setenv("XDG_CONFIG_HOME", root)
 	t.Setenv("HOME", root)
 	path, err := appdir.Path("lmstudio-proxy-port.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"port":%d}`, port)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf(`{"port":%d}`, port)), 0o644))
 	return root
 }
 
@@ -159,9 +155,8 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 
 	const nodeName = "xproc-manual-proxy-bridge"
 	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":900,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
-	if _, err := stdin.Write([]byte(addReq)); err != nil {
-		t.Fatalf("write node/add: %v", err)
-	}
+	_, err := stdin.Write([]byte(addReq))
+	require.NoError(t, err, "write node/add")
 
 	// Poll the proxy's node set (via the broker's ollama-proxy: relay) until the
 	// bridged manual node appears. The first probe fires immediately on
@@ -174,9 +169,7 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before the manual node bridged into the proxy")
-			}
+			require.True(t, ok, "broker stream closed before the manual node bridged into the proxy")
 			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, nodeName) {
 				t.Logf("manual node %q bridged into proxy nodes/list", nodeName)
 				return
@@ -185,7 +178,7 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 			reqID++
 			sendReq(t, stdin, reqID, "ollama-proxy:nodes/list")
 		case <-deadline:
-			t.Fatalf("timed out waiting for manual node %q in ollama-proxy:nodes/list", nodeName)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for manual node %q in ollama-proxy:nodes/list", nodeName))
 		}
 	}
 }
@@ -215,9 +208,8 @@ func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 
 	const nodeName = "xproc-manual-learned-uuid"
 	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":940,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
-	if _, err := stdin.Write([]byte(addReq)); err != nil {
-		t.Fatalf("write node/add: %v", err)
-	}
+	_, err := stdin.Write([]byte(addReq))
+	require.NoError(t, err, "write node/add")
 
 	deadline := time.After(25 * time.Second)
 	ticker := time.NewTicker(1 * time.Second)
@@ -227,23 +219,19 @@ func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before the manual node bridged under its learned UUID")
-			}
+			require.True(t, ok, "broker stream closed before the manual node bridged under its learned UUID")
 			if msg.Method == "" && msg.ID != nil {
 				if proxyNodesHas(t, msg.Result, "learned-host-uuid") {
 					t.Logf("manual node bridged into proxy under learned hostUuid")
 					return
 				}
-				if proxyNodesHas(t, msg.Result, nodeName) {
-					t.Fatalf("proxy candidate keyed by manual name %q, not the learned hostUuid (scheduler would not match)", nodeName)
-				}
+				require.False(t, proxyNodesHas(t, msg.Result, nodeName), "proxy candidate keyed by manual name (%v)", nodeName)
 			}
 		case <-ticker.C:
 			reqID++
 			sendReq(t, stdin, reqID, "ollama-proxy:nodes/list")
 		case <-deadline:
-			t.Fatalf("timed out waiting for manual node under learned hostUuid in ollama-proxy:nodes/list")
+			require.FailNow(t, "timed out waiting for manual node under learned hostUuid in ollama-proxy:nodes/list")
 		}
 	}
 }
@@ -268,9 +256,8 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 
 	const nodeName = "xproc-manual-lmstudio-bridge"
 	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":920,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
-	if _, err := stdin.Write([]byte(addReq)); err != nil {
-		t.Fatalf("write node/add: %v", err)
-	}
+	_, err := stdin.Write([]byte(addReq))
+	require.NoError(t, err, "write node/add")
 
 	deadline := time.After(25 * time.Second)
 	ticker := time.NewTicker(1 * time.Second)
@@ -280,9 +267,7 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before the manual node bridged into lmstudio-proxy")
-			}
+			require.True(t, ok, "broker stream closed before the manual node bridged into lmstudio-proxy")
 			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, nodeName) {
 				t.Logf("manual node %q bridged into lmstudio-proxy nodes/list", nodeName)
 				return
@@ -291,7 +276,7 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 			reqID++
 			sendReq(t, stdin, reqID, "lmstudio-proxy:nodes/list")
 		case <-deadline:
-			t.Fatalf("timed out waiting for manual node %q in lmstudio-proxy:nodes/list", nodeName)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for manual node %q in lmstudio-proxy:nodes/list", nodeName))
 		}
 	}
 }
@@ -312,9 +297,8 @@ func TestBrokerAcceptsClientErrorsReport(t *testing.T) {
 
 	const id = "client:leg-b-notif"
 	report := fmt.Sprintf(`{"jsonrpc":"2.0","method":"errors:report","params":{"id":%q,"message":"client-synthesized","severity":"error"}}`, id) + "\n"
-	if _, err := stdin.Write([]byte(report)); err != nil {
-		t.Fatalf("write errors:report notification: %v", err)
-	}
+	_, err := stdin.Write([]byte(report))
+	require.NoError(t, err, "write errors:report notification")
 
 	// The broker forwards it into nvpair-errors, which stores it and pushes an
 	// errors:update the broker relays back unconditionally.
@@ -340,9 +324,8 @@ func TestBrokerAcceptsClientErrorsReportRequest(t *testing.T) {
 		id    = "client:leg-b-req"
 	)
 	report := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"errors:report","params":{"id":%q,"message":"client-synthesized","severity":"error"}}`, reqID, id) + "\n"
-	if _, err := stdin.Write([]byte(report)); err != nil {
-		t.Fatalf("write errors:report request: %v", err)
-	}
+	_, err := stdin.Write([]byte(report))
+	require.NoError(t, err, "write errors:report request")
 
 	// Expect both the ack (result for reqID, no error) and the errors:update.
 	gotAck := false
@@ -351,15 +334,11 @@ func TestBrokerAcceptsClientErrorsReportRequest(t *testing.T) {
 	for !(gotAck && gotUpdate) {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before the report was acked and reflected")
-			}
+			require.True(t, ok, "broker stream closed before the report was acked and reflected")
 			switch {
 			case msg.Method == "" && msg.ID != nil:
 				if string(*msg.ID) == fmt.Sprintf("%d", reqID) {
-					if msg.Error != nil {
-						t.Fatalf("errors:report request returned an error: %+v", msg.Error)
-					}
+					require.Nil(t, msg.Error, "errors:report request returned an error")
 					gotAck = true
 				}
 			case msg.Method == methodErrorsUpdate:
@@ -368,7 +347,7 @@ func TestBrokerAcceptsClientErrorsReportRequest(t *testing.T) {
 				}
 			}
 		case <-deadline:
-			t.Fatalf("timed out (ack=%v update=%v) for errors:report request %q", gotAck, gotUpdate, id)
+			require.FailNow(t, fmt.Sprintf("timed out (ack=%v update=%v) for errors:report request %q", gotAck, gotUpdate, id))
 		}
 	}
 }

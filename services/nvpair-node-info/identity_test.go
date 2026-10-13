@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/nodeid"
 )
 
@@ -20,9 +22,7 @@ func TestResolveHostUUIDFlagWins(t *testing.T) {
 	if seeded == "broker-uuid" {
 		t.Skip("astronomically unlikely uuid collision with the flag literal")
 	}
-	if got := resolveHostUUID("broker-uuid", filepath.Join(base, "cluster")); got != "broker-uuid" {
-		t.Fatalf("flag should win over any resolved identity: got %q, want broker-uuid", got)
-	}
+	require.Equal(t, "broker-uuid", resolveHostUUID("broker-uuid", filepath.Join(base, "cluster")), "flag should win over any resolved identity:")
 }
 
 // TestResolveHostUUIDFallsBackToClusterRoot: standalone (no --node-id) node-info
@@ -32,7 +32,5 @@ func TestResolveHostUUIDFlagWins(t *testing.T) {
 func TestResolveHostUUIDFallsBackToClusterRoot(t *testing.T) {
 	base := t.TempDir()
 	want := nodeid.Resolve(base)
-	if got := resolveHostUUID("", filepath.Join(base, "cluster")); got != want {
-		t.Fatalf("fallback resolve = %q, want %q (custom-root equality)", got, want)
-	}
+	require.Equal(t, want, resolveHostUUID("", filepath.Join(base, "cluster")), "fallback resolve")
 }

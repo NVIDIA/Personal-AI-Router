@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Response bytes arriving from a node's engine are the only liveness evidence
@@ -49,12 +51,8 @@ func TestStreamedBytesReportNodeActivity(t *testing.T) {
 			http.MethodPost, tc.inferencePath,
 			strings.NewReader(fmt.Sprintf(`{"model":%q}`, tc.requestedModel))))
 
-		if !waitFor(t, rec, `"method":"node/activity"`) {
-			t.Fatal("no node/activity was reported after the upstream streamed a response")
-		}
-		if !waitFor(t, rec, `"hostUuid":"serving-node"`) {
-			t.Fatal("node/activity did not name the node that served the request")
-		}
+		require.True(t, waitFor(t, rec, `"method":"node/activity"`), "no node/activity was reported after the upstream streamed a response")
+		require.True(t, waitFor(t, rec, `"hostUuid":"serving-node"`), "node/activity did not name the node that served the request")
 	})
 }
 
@@ -97,15 +95,13 @@ func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
 		select {
 		case <-received:
 		case <-time.After(5 * time.Second):
-			t.Fatal("upstream never received the forwarded request")
+			require.FailNow(t, "upstream never received the forwarded request")
 		}
 
 		// Give the proxy the same window the positive test uses, so a report
 		// would have landed by now if one were going to.
 		time.Sleep(200 * time.Millisecond)
-		if rec.has(`"method":"node/activity"`) {
-			t.Fatal("activity was reported for a node that had not sent a single response byte")
-		}
+		require.NotContains(t, rec.String(), `"method":"node/activity"`, "activity was reported for a node that had not sent a single response byte")
 
 		doRelease()
 		<-done
@@ -139,11 +135,7 @@ func TestRepeatedChunksAreCoalescedIntoOneReport(t *testing.T) {
 			http.MethodPost, tc.inferencePath,
 			strings.NewReader(fmt.Sprintf(`{"model":%q,"stream":true}`, tc.requestedModel))))
 
-		if !waitFor(t, rec, `"method":"node/activity"`) {
-			t.Fatal("a streamed response reported no activity at all")
-		}
-		if got := rec.count(`"method":"node/activity"`); got != 1 {
-			t.Fatalf("%d activity reports for %d chunks; want 1 within the throttle interval", got, chunks)
-		}
+		require.True(t, waitFor(t, rec, `"method":"node/activity"`), "a streamed response reported no activity at all")
+		require.Equal(t, 1, rec.count(`"method":"node/activity"`), "want one activity report for %d chunks within the throttle interval", chunks)
 	})
 }

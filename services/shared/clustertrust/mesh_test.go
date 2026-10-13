@@ -10,18 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // writeIdentity drops a node.crt/node.key keypair into dir so a Mesh opened on
 // it finds an identity there. (genLeaf + writePin come from clustertrust_test.go.)
 func writeIdentity(t *testing.T, dir string, certPEM, keyPEM []byte) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
 }
 
 func loadMeshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) *Mesh {
@@ -32,9 +31,7 @@ func loadMeshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) *
 		writePin(t, dir, uuid, pem)
 	}
 	m := Open(dir)
-	if !m.Clustered() {
-		t.Fatal("a populated cluster dir must read as clustered")
-	}
+	require.True(t, m.Clustered(), "a populated cluster dir must read as clustered")
 	return m
 }
 
@@ -44,16 +41,11 @@ func loadMeshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) *
 func TestMesh_Open_UnclusteredCases(t *testing.T) {
 	for name, dir := range map[string]string{"no cluster dir": "", "empty cluster dir": t.TempDir()} {
 		m := Open(dir)
-		if m == nil {
-			t.Fatalf("%s: Open must never return nil", name)
-		}
-		if m.Clustered() || m.hasIdentity() {
-			t.Fatalf("%s: must read as unclustered", name)
-		}
+		require.NotNil(t, m, "%s", name)
+		assert.False(t, m.Clustered(), "%s", name)
+		assert.False(t, m.hasIdentity(), "%s", name)
 		m.Refresh()
-		if m.Clustered() {
-			t.Fatalf("%s: refreshing must not manufacture a membership", name)
-		}
+		assert.False(t, m.Clustered(), "%s after refresh", name)
 	}
 }
 
@@ -74,18 +66,10 @@ func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
 	peerMesh := loadMeshDir(t, peerPEM, peerKey, map[string]string{"uuid-self": string(selfPEM)})
 	strangerMesh := loadMeshDir(t, strangerPEM, strangerKey, map[string]string{"uuid-self": string(selfPEM)})
 
-	if selfMesh.NodeUUID() != "uuid-self" {
-		t.Fatalf("NodeUUID=%q, want uuid-self", selfMesh.NodeUUID())
-	}
-	if !selfMesh.HasPin("uuid-peer") {
-		t.Fatal("peer must be a pin")
-	}
-	if !selfMesh.HasPin("uuid-self") {
-		t.Fatal("self must be trusted (self-trust)")
-	}
-	if selfMesh.HasPin("uuid-stranger") {
-		t.Fatal("stranger must not be a pin")
-	}
+	assert.Equal(t, "uuid-self", selfMesh.NodeUUID())
+	assert.True(t, selfMesh.HasPin("uuid-peer"), "peer must be a pin")
+	assert.True(t, selfMesh.HasPin("uuid-self"), "self must be trusted (self-trust)")
+	assert.False(t, selfMesh.HasPin("uuid-stranger"), "stranger must not be a pin")
 
 	// self is the mTLS server, gated by VerifyClientPin.
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,32 +95,28 @@ func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
 
 	mustConfig := func(cfg *tls.Config, ok bool) *tls.Config {
 		t.Helper()
-		if !ok {
-			t.Fatal("expected a client config")
-		}
+		require.True(t, ok, "expected a client config")
 		return cfg
 	}
 
 	// Pinned peer -> self, specific pin: accepted.
-	if code, err := do(mustConfig(peerMesh.ClientTLSConfig("uuid-self"))); err != nil || code != http.StatusOK {
-		t.Fatalf("peer->self (specific pin): code=%d err=%v, want 200", code, err)
-	}
+	code, err := do(mustConfig(peerMesh.ClientTLSConfig("uuid-self")))
+	require.NoError(t, err, "peer->self (specific pin)")
+	assert.Equal(t, http.StatusOK, code, "peer->self (specific pin)")
 	// Pinned peer -> self, any-pin (no UUID known up front): accepted.
-	if code, err := do(mustConfig(peerMesh.ClientTLSConfigAny())); err != nil || code != http.StatusOK {
-		t.Fatalf("peer->self (any-pin): code=%d err=%v, want 200", code, err)
-	}
+	code, err = do(mustConfig(peerMesh.ClientTLSConfigAny()))
+	require.NoError(t, err, "peer->self (any-pin)")
+	assert.Equal(t, http.StatusOK, code, "peer->self (any-pin)")
 	// self -> self over mTLS: accepted via self-trust (self isn't in trusted/).
-	if code, err := do(mustConfig(selfMesh.ClientTLSConfig("uuid-self"))); err != nil || code != http.StatusOK {
-		t.Fatalf("self->self: code=%d err=%v, want 200 (self-trust)", code, err)
-	}
+	code, err = do(mustConfig(selfMesh.ClientTLSConfig("uuid-self")))
+	require.NoError(t, err, "self->self")
+	assert.Equal(t, http.StatusOK, code, "self->self")
 	// Stranger completes the handshake (it pins self) but self doesn't pin it: 403.
-	if code, _ := do(mustConfig(strangerMesh.ClientTLSConfig("uuid-self"))); code != http.StatusForbidden {
-		t.Fatalf("stranger->self: code=%d, want 403", code)
-	}
+	code, _ = do(mustConfig(strangerMesh.ClientTLSConfig("uuid-self")))
+	assert.Equal(t, http.StatusForbidden, code, "stranger->self")
 	// self cannot even build a client to an unpinned stranger (client-side gate).
-	if _, ok := selfMesh.ClientTLSConfig("uuid-stranger"); ok {
-		t.Fatal("must not build a client for an unpinned peer")
-	}
+	_, ok := selfMesh.ClientTLSConfig("uuid-stranger")
+	require.False(t, ok, "must not build a client for an unpinned peer")
 }
 
 // TestMesh_ServerTLSConfig_FollowsMembershipOnOneListener is the server-side half
@@ -165,9 +145,7 @@ func TestMesh_ServerTLSConfig_FollowsMembershipOnOneListener(t *testing.T) {
 
 	get := func() (int, error) {
 		cfg, ok := peerMesh.ClientTLSConfig("uuid-self")
-		if !ok {
-			t.Fatal("peer must be able to build a client for self")
-		}
+		require.True(t, ok, "peer must be able to build a client for self")
 		client := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}
 		resp, err := client.Get(srv.URL)
 		if err != nil {
@@ -178,33 +156,24 @@ func TestMesh_ServerTLSConfig_FollowsMembershipOnOneListener(t *testing.T) {
 	}
 
 	// Not a member yet: the handshake is refused rather than served plaintext.
-	if code, err := get(); err == nil {
-		t.Fatalf("an unclustered listener must refuse the handshake, got code=%d", code)
-	}
+	code, err := get()
+	require.Error(t, err, "an unclustered listener must refuse the handshake, got code %d", code)
 
 	// The node joins: identity + admission + the peer's pin land on disk.
 	writeIdentity(t, selfDir, selfPEM, selfKey)
 	writeAdmission(t, selfDir, "cluster-abc", 1)
 	writePin(t, selfDir, "uuid-peer", string(peerPEM))
 	selfMesh.Refresh()
-	if !selfMesh.Clustered() {
-		t.Fatal("the mesh must be clustered once the dir is populated")
-	}
+	assert.True(t, selfMesh.Clustered(), "the mesh must be clustered once the dir is populated")
 
-	if code, err := get(); err != nil || code != http.StatusOK {
-		t.Fatalf("the same listener must serve the pinned peer after the join: code=%d err=%v", code, err)
-	}
+	code, err = get()
+	require.NoError(t, err, "the same listener must serve the pinned peer after the join")
+	assert.Equal(t, http.StatusOK, code, "the same listener must serve the pinned peer after the join")
 }
 
 // TestClusterUUIDFromTXT: reads cluster-uuid= and never node-info's host uuid=.
 func TestClusterUUIDFromTXT(t *testing.T) {
-	if got := ClusterUUIDFromTXT([]string{"http=0", "cluster-uuid=abc-123", "mtls=1"}); got != "abc-123" {
-		t.Fatalf("got %q, want abc-123", got)
-	}
-	if got := ClusterUUIDFromTXT([]string{"uuid=host-level-id"}); got != "" {
-		t.Fatalf("got %q, must not match the host uuid= key", got)
-	}
-	if got := ClusterUUIDFromTXT(nil); got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
+	assert.Equal(t, "abc-123", ClusterUUIDFromTXT([]string{"http=0", "cluster-uuid=abc-123", "mtls=1"}))
+	assert.Equal(t, "", ClusterUUIDFromTXT([]string{"uuid=host-level-id"}))
+	assert.Equal(t, "", ClusterUUIDFromTXT(nil))
 }

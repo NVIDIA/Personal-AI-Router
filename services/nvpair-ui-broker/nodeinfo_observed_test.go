@@ -6,9 +6,10 @@ package main
 import (
 	"encoding/json"
 	"net"
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
@@ -58,18 +59,12 @@ func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
 
 			select {
 			case msg := <-relayed:
-				if msg.Method != noderec.MethodSetObservedAddresses {
-					t.Fatalf("relayed method = %q, want %q", msg.Method, noderec.MethodSetObservedAddresses)
-				}
+				require.Equal(t, noderec.MethodSetObservedAddresses, msg.Method, "relayed method")
 				var got noderec.ObservedAddressesParams
-				if err := json.Unmarshal(msg.Params, &got); err != nil {
-					t.Fatalf("decode relayed params %s: %v", msg.Params, err)
-				}
-				if len(got.Addresses) != len(tc.addrs) || (len(tc.addrs) > 0 && !reflect.DeepEqual(got.Addresses, tc.addrs)) {
-					t.Fatalf("relayed addresses = %v, want %v", got.Addresses, tc.addrs)
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &got), "decode relayed params")
+				require.Equal(t, tc.addrs, append([]string{}, got.Addresses...), "relayed addresses")
 			case <-time.After(2 * time.Second):
-				t.Fatal("observed addresses never reached the scanner")
+				require.FailNow(t, "observed addresses never reached the scanner")
 			}
 		})
 	}

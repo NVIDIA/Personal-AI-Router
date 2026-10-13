@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/grandcat/zeroconf"
 
 	"nvpair-shared/jsonrpc"
@@ -66,13 +68,9 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 	defer nodeInfo.Close()
 
 	_, niPortStr, err := net.SplitHostPort(strings.TrimPrefix(nodeInfo.URL, "http://"))
-	if err != nil {
-		t.Fatalf("node-info addr: %v", err)
-	}
+	require.NoError(t, err, "node-info addr")
 	niPort, err := strconv.Atoi(niPortStr)
-	if err != nil {
-		t.Fatalf("node-info port: %v", err)
-	}
+	require.NoError(t, err, "node-info port")
 
 	// Publish the peer's _nvpair-node record pointing at that node-info.
 	txt := []string{
@@ -82,9 +80,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 		fmt.Sprintf("%s=%d", noderec.ServiceNodeInfo, niPort),
 	}
 	responder, err := zeroconf.Register(peerInstance, noderec.ServiceType, testDomain, noderec.SRVPort, txt, nil)
-	if err != nil {
-		t.Fatalf("register peer: %v", err)
-	}
+	require.NoError(t, err, "register peer")
 	responderDown := false
 	defer func() {
 		if !responderDown {
@@ -111,11 +107,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 	// inference load — so this deadline is generous by design. The identity probe
 	// runs on every scan from ~15s in, so the mismatch is detected long before the
 	// eviction it eventually authorizes.
-	if !awaitNodeEvent(events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute) {
-		t.Fatalf("scanner never evicted %s after its address began answering as %s; "+
-			"a record whose machine was re-identified must not be kept alive by a TCP probe",
-			originalUUID, wipedUUID)
-	}
+	require.True(t, awaitNodeEvent(events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute))
 }
 
 // startScannerForGhostTest runs the scanner binary on stdio and returns its
@@ -133,16 +125,10 @@ func startScannerForGhostTest(t *testing.T) <-chan jsonrpc.Message {
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("scanner stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "scanner stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("scanner stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start scanner: %v", err)
-	}
+	require.NoError(t, err, "scanner stdout pipe")
+	require.NoError(t, cmd.Start(), "start scanner")
 	t.Cleanup(func() {
 		_ = stdin.Close()
 		_ = cmd.Process.Kill()

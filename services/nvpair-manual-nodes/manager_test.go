@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/applog"
 )
 
@@ -141,17 +144,12 @@ func TestProbeLMStudioReportsModels(t *testing.T) {
 	configureHealthyLMStudio(rt, "node.local", []string{"qwen2.5-7b", "llama-3.1-8b"})
 
 	up, models := m.probeLMStudio("node.local", lmStudioPort)
-	if !up {
-		t.Fatal("expected lmstudio up")
-	}
-	if len(models) != 2 || models[0] != "qwen2.5-7b" || models[1] != "llama-3.1-8b" {
-		t.Fatalf("models = %#v", models)
-	}
+	require.True(t, up, "expected lmstudio up")
+	assert.Equal(t, []string{"qwen2.5-7b", "llama-3.1-8b"}, models, "models")
 
 	downUp, downModels := m.probeLMStudio("absent.local", lmStudioPort)
-	if downUp || downModels != nil {
-		t.Fatalf("expected absent lmstudio down, got up=%v models=%#v", downUp, downModels)
-	}
+	require.False(t, downUp, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
+	assert.Empty(t, downModels, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
 }
 
 func requestMessage(id int, method string, params any) *Message {
@@ -177,12 +175,10 @@ func readCaptureFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.frames:
 		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			t.Fatalf("decode frame %q: %v", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for frame")
+		require.FailNow(t, "timed out waiting for frame")
 		return Message{}
 	}
 }
@@ -194,14 +190,12 @@ func readCaptureUntil(t *testing.T, rw *captureRW, match func(Message) bool) Mes
 		select {
 		case data := <-rw.frames:
 			var msg Message
-			if err := json.Unmarshal(data, &msg); err != nil {
-				t.Fatalf("decode frame %q: %v", data, err)
-			}
+			require.NoError(t, json.Unmarshal(data, &msg), "decode frame %q", data)
 			if match(msg) {
 				return msg
 			}
 		case <-deadline:
-			t.Fatal("timed out waiting for matching frame")
+			require.FailNow(t, "timed out waiting for matching frame")
 			return Message{}
 		}
 	}
@@ -215,12 +209,8 @@ func assertNoCaptureMethod(t *testing.T, rw *captureRW, method string) {
 		select {
 		case data := <-rw.frames:
 			var msg Message
-			if err := json.Unmarshal(data, &msg); err != nil {
-				t.Fatalf("decode frame %q: %v", data, err)
-			}
-			if msg.Method == method {
-				t.Fatalf("unexpected %s notification: %+v", method, msg)
-			}
+			require.NoError(t, json.Unmarshal(data, &msg), "decode frame %q", data)
+			require.NotEqual(t, method, msg.Method, "unexpected (%v, %v)", method, msg)
 		case <-timer.C:
 			return
 		}
@@ -229,22 +219,16 @@ func assertNoCaptureMethod(t *testing.T, rw *captureRW, method string) {
 
 func decodeResult[T any](t *testing.T, msg Message) T {
 	t.Helper()
-	if msg.Error != nil {
-		t.Fatalf("unexpected RPC error: %+v", msg.Error)
-	}
+	require.Nil(t, msg.Error, "unexpected RPC error")
 	var result T
-	if err := json.Unmarshal(msg.Result, &result); err != nil {
-		t.Fatalf("decode result %q: %v", msg.Result, err)
-	}
+	require.NoError(t, json.Unmarshal(msg.Result, &result), "decode result")
 	return result
 }
 
 func decodeParams[T any](t *testing.T, msg Message) T {
 	t.Helper()
 	var result T
-	if err := json.Unmarshal(msg.Params, &result); err != nil {
-		t.Fatalf("decode params %q: %v", msg.Params, err)
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &result), "decode params")
 	return result
 }
 
@@ -278,12 +262,8 @@ func sampleInfo() NodeInfoResponse {
 }
 
 func TestNodeID(t *testing.T) {
-	if got := nodeID(ManualEntry{Name: "workstation", Address: "10.0.0.5"}); got != "workstation" {
-		t.Fatalf("named nodeID = %q", got)
-	}
-	if got := nodeID(ManualEntry{Address: "10.0.0.5"}); got != "manual:10.0.0.5" {
-		t.Fatalf("unnamed nodeID = %q", got)
-	}
+	assert.Equal(t, "workstation", nodeID(ManualEntry{Name: "workstation", Address: "10.0.0.5"}), "named nodeID")
+	assert.Equal(t, "manual:10.0.0.5", nodeID(ManualEntry{Address: "10.0.0.5"}), "unnamed nodeID")
 }
 
 func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) {
@@ -294,36 +274,26 @@ func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) 
 
 	resp := readCaptureUntil(t, rw, responseWithID(1))
 	initial := decodeResult[ManualNodeStatus](t, resp)
-	if initial.ID != "lab" || initial.Address != "node.local" {
-		t.Fatalf("initial status = %+v", initial)
-	}
-	if initial.OllamaPort != 11434 || initial.NodeInfoPort != 14318 {
-		t.Fatalf("default ports not set: %+v", initial)
-	}
-	if initial.OllamaUp || initial.NodeInfoUp {
-		t.Fatalf("initial status should be unprobed: %+v", initial)
-	}
+	assert.Equal(t, "lab", initial.ID, "initial status (%v)", initial)
+	assert.Equal(t, "node.local", initial.Address, "initial status (%v)", initial)
+	assert.Equal(t, 11434, initial.OllamaPort, "default ports not set (%v)", initial)
+	assert.Equal(t, 14318, initial.NodeInfoPort, "default ports not set (%v)", initial)
+	assert.False(t, initial.OllamaUp, "initial status should be unprobed (%v)", initial)
+	assert.False(t, initial.NodeInfoUp, "initial status should be unprobed (%v)", initial)
 
 	discovered := readCaptureUntil(t, rw, methodIs("node/discovered"))
 	status := decodeParams[ManualNodeStatus](t, discovered)
-	if !status.OllamaUp || !status.NodeInfoUp {
-		t.Fatalf("discovered status did not include healthy services: %+v", status)
-	}
-	if len(status.OllamaModels) != 2 || status.OllamaModels[0] != "llama3" || status.OllamaModels[1] != "mistral" {
-		t.Fatalf("models = %#v", status.OllamaModels)
-	}
-	if len(status.GPUs) != 1 || status.GPUs[0].Name != "RTX 6000" {
-		t.Fatalf("gpus = %#v", status.GPUs)
-	}
-	if status.CPU == nil || status.CPU.Cores != 64 {
-		t.Fatalf("cpu = %#v", status.CPU)
-	}
-	if status.Memory == nil || status.Memory.UsedBytes != 32<<30 {
-		t.Fatalf("memory = %#v", status.Memory)
-	}
-	if !status.TelemetryValid || status.MSSince != 137 {
-		t.Fatalf("telemetry = valid:%v age:%d, want true/137", status.TelemetryValid, status.MSSince)
-	}
+	assert.True(t, status.OllamaUp, "discovered status did not include healthy services (%v)", status)
+	assert.True(t, status.NodeInfoUp, "discovered status did not include healthy services (%v)", status)
+	assert.Equal(t, []string{"llama3", "mistral"}, status.OllamaModels)
+	require.Len(t, status.GPUs, 1)
+	assert.Equal(t, "RTX 6000", status.GPUs[0].Name)
+	require.NotNil(t, status.CPU)
+	assert.Equal(t, uint32(64), status.CPU.Cores)
+	require.NotNil(t, status.Memory)
+	assert.Equal(t, uint64(32<<30), status.Memory.UsedBytes)
+	assert.True(t, status.TelemetryValid, "telemetry = valid")
+	assert.Equal(t, int64(137), status.MSSince, "telemetry = valid")
 }
 
 func TestNodeAddValidationErrors(t *testing.T) {
@@ -331,19 +301,15 @@ func TestNodeAddValidationErrors(t *testing.T) {
 
 	m.handleMessage(requestMessageRaw(1, "node/add", json.RawMessage(`"bad"`)))
 	resp := readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("malformed params error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "malformed params error")
+	assert.Equal(t, -32602, resp.Error.Code, "malformed params error")
 
 	m.handleMessage(requestMessage(2, "node/add", ManualEntry{}))
 	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("missing address error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "missing address error")
+	assert.Equal(t, -32602, resp.Error.Code, "missing address error")
 
-	if got := m.listNodes(); len(got) != 0 {
-		t.Fatalf("validation errors added nodes: %#v", got)
-	}
+	require.Empty(t, m.listNodes(), "validation errors added nodes")
 }
 
 func TestNodesListReturnsCurrentStatuses(t *testing.T) {
@@ -358,15 +324,10 @@ func TestNodesListReturnsCurrentStatuses(t *testing.T) {
 	var result struct {
 		Nodes []ManualNodeStatus `json:"nodes"`
 	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		t.Fatalf("decode nodes/list: %v", err)
-	}
-	if len(result.Nodes) != 1 {
-		t.Fatalf("nodes/list length = %d", len(result.Nodes))
-	}
-	if !result.Nodes[0].OllamaUp || !result.Nodes[0].NodeInfoUp {
-		t.Fatalf("nodes/list status = %+v", result.Nodes[0])
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &result), "decode nodes/list")
+	require.Len(t, result.Nodes, 1, "nodes/list length")
+	assert.True(t, result.Nodes[0].OllamaUp, "nodes/list status")
+	assert.True(t, result.Nodes[0].NodeInfoUp, "nodes/list status")
 }
 
 func TestNodeRemoveReturnsRemovedAndNotifies(t *testing.T) {
@@ -378,28 +339,18 @@ func TestNodeRemoveReturnsRemovedAndNotifies(t *testing.T) {
 
 	m.handleMessage(requestMessage(1, "node/remove", map[string]string{"id": "lab"}))
 	removed := readCaptureFrame(t, rw)
-	if removed.Method != "node/removed" {
-		t.Fatalf("first remove frame = %+v", removed)
-	}
+	assert.Equal(t, "node/removed", removed.Method, "first remove frame (%v)", removed)
 	status := decodeParams[ManualNodeStatus](t, removed)
-	if status.ID != "lab" {
-		t.Fatalf("removed params = %+v", status)
-	}
+	assert.Equal(t, "lab", status.ID, "removed params (%v)", status)
 	resp := readCaptureUntil(t, rw, responseWithID(1))
 	result := decodeResult[map[string]bool](t, resp)
-	if !result["removed"] {
-		t.Fatalf("removed result = %#v", result)
-	}
-	if got := m.listNodes(); len(got) != 0 {
-		t.Fatalf("node still listed after removal: %#v", got)
-	}
+	assert.True(t, result["removed"], "removed result (%v)", result)
+	require.Empty(t, m.listNodes(), "node still listed after removal")
 
 	m.handleMessage(requestMessage(2, "node/remove", map[string]string{"id": "lab"}))
 	resp = readCaptureUntil(t, rw, responseWithID(2))
 	result = decodeResult[map[string]bool](t, resp)
-	if result["removed"] {
-		t.Fatalf("second removal result = %#v", result)
-	}
+	assert.False(t, result["removed"], "second removal result (%v)", result)
 	assertNoCaptureMethod(t, rw, "node/removed")
 }
 
@@ -420,26 +371,20 @@ func TestAddThenRemoveBeforeInitialProbeDoesNotRediscover(t *testing.T) {
 	})
 
 	status := m.addNode(ManualEntry{Address: "node.local", Name: "lab"})
-	if status.ID != "lab" {
-		t.Fatalf("add status = %+v", status)
-	}
+	assert.Equal(t, "lab", status.ID, "add status (%v)", status)
 
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):
-		t.Fatal("initial probe did not start")
+		require.FailNow(t, "initial probe did not start")
 	}
 
-	if !m.removeNode("lab") {
-		t.Fatal("removeNode returned false")
-	}
+	assert.True(t, m.removeNode("lab"), "removeNode returned false")
 	_ = readCaptureUntil(t, rw, methodIs("node/removed"))
 	close(release)
 
 	assertNoCaptureMethod(t, rw, "node/discovered")
-	if got := m.listNodes(); len(got) != 0 {
-		t.Fatalf("node rediscovered in state: %#v", got)
-	}
+	require.Empty(t, m.listNodes(), "node rediscovered in state")
 }
 
 func TestProbeNodeEmitsUpdatedOnStateChange(t *testing.T) {
@@ -449,16 +394,12 @@ func TestProbeNodeEmitsUpdatedOnStateChange(t *testing.T) {
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
 	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
 	first := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
-	if len(first.OllamaModels) != 1 || first.OllamaModels[0] != "llama3" {
-		t.Fatalf("first update models = %#v", first.OllamaModels)
-	}
+	assert.Equal(t, []string{"llama3"}, first.OllamaModels, "first update models")
 
 	configureHealthyNode(rt, "node.local", []string{"mistral"}, sampleInfo())
 	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
 	second := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
-	if len(second.OllamaModels) != 1 || second.OllamaModels[0] != "mistral" {
-		t.Fatalf("second update models = %#v", second.OllamaModels)
-	}
+	assert.Equal(t, []string{"mistral"}, second.OllamaModels, "second update models")
 }
 
 func TestProbeNodeNoUpdateWhenStable(t *testing.T) {
@@ -501,12 +442,12 @@ func TestProbeFailuresClearAvailability(t *testing.T) {
 
 	m.probeNode(entry)
 	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
-	if updated.OllamaUp || updated.NodeInfoUp {
-		t.Fatalf("services should be down: %+v", updated)
-	}
-	if len(updated.OllamaModels) != 0 || len(updated.GPUs) != 0 || updated.CPU != nil || updated.Memory != nil {
-		t.Fatalf("failed probe retained stale fields: %+v", updated)
-	}
+	assert.False(t, updated.OllamaUp, "services should be down (%v)", updated)
+	assert.False(t, updated.NodeInfoUp, "services should be down (%v)", updated)
+	require.Empty(t, updated.OllamaModels, "failed probe retained stale fields (%v)", updated)
+	require.Empty(t, updated.GPUs, "failed probe retained stale fields (%v)", updated)
+	require.Nil(t, updated.CPU, "failed probe retained stale fields (%v)", updated)
+	require.Nil(t, updated.Memory, "failed probe retained stale fields (%v)", updated)
 }
 
 // TestProbeFailurePreservesHostUUID: a node-info blip
@@ -524,9 +465,7 @@ func TestProbeFailurePreservesHostUUID(t *testing.T) {
 	// First probe learns the UUID.
 	m.probeNode(entry)
 	first := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
-	if first.HostUUID != "node-uuid" {
-		t.Fatalf("first probe HostUUID = %q, want node-uuid", first.HostUUID)
-	}
+	assert.Equal(t, "node-uuid", first.HostUUID, "first probe HostUUID")
 
 	// node-info goes down while Ollama stays up: the UUID must be preserved.
 	rt.set(http.MethodGet, net.JoinHostPort("node.local", "14318"), "/v1/node-info", func(*http.Request) (*http.Response, error) {
@@ -534,50 +473,33 @@ func TestProbeFailurePreservesHostUUID(t *testing.T) {
 	})
 	m.probeNode(entry)
 	down := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
-	if down.NodeInfoUp {
-		t.Fatal("node-info should be down")
-	}
-	if down.HostUUID != "node-uuid" {
-		t.Fatalf("HostUUID dropped on node-info failure: %q", down.HostUUID)
-	}
+	assert.False(t, down.NodeInfoUp, "node-info should be down")
+	assert.Equal(t, "node-uuid", down.HostUUID, "HostUUID dropped on node-info failure")
 
 	// node-info recovers: still the same UUID (no flap).
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
 	m.probeNode(entry)
 	up := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
-	if up.HostUUID != "node-uuid" {
-		t.Fatalf("HostUUID after recovery = %q, want node-uuid", up.HostUUID)
-	}
+	assert.Equal(t, "node-uuid", up.HostUUID, "HostUUID after recovery")
 }
 
 func TestCPUAndMemoryNilAwareEquality(t *testing.T) {
-	if !cpuEqual(nil, nil) || !memoryEqual(nil, nil) {
-		t.Fatal("nil values should compare equal")
-	}
-	if cpuEqual(nil, &CPUInfo{}) || memoryEqual(nil, &MemoryInfo{}) {
-		t.Fatal("nil and non-nil values should differ")
-	}
-	if !cpuEqual(&CPUInfo{Name: "cpu", Cores: 8}, &CPUInfo{Name: "cpu", Cores: 8}) {
-		t.Fatal("equal CPU values differed")
-	}
-	if cpuEqual(&CPUInfo{Name: "cpu", Cores: 8}, &CPUInfo{Name: "cpu", Cores: 16}) {
-		t.Fatal("different CPU values compared equal")
-	}
-	if !memoryEqual(&MemoryInfo{TotalBytes: 10, UsedBytes: 5}, &MemoryInfo{TotalBytes: 10, UsedBytes: 5}) {
-		t.Fatal("equal memory values differed")
-	}
-	if memoryEqual(&MemoryInfo{TotalBytes: 10, UsedBytes: 5}, &MemoryInfo{TotalBytes: 10, UsedBytes: 6}) {
-		t.Fatal("different memory values compared equal")
-	}
+	assert.True(t, cpuEqual(nil, nil), "nil values should compare equal")
+	assert.True(t, memoryEqual(nil, nil), "nil values should compare equal")
+	assert.False(t, cpuEqual(nil, &CPUInfo{}), "nil and non-nil values should differ")
+	assert.False(t, memoryEqual(nil, &MemoryInfo{}), "nil and non-nil values should differ")
+	assert.True(t, cpuEqual(&CPUInfo{Name: "cpu", Cores: 8}, &CPUInfo{Name: "cpu", Cores: 8}), "equal CPU values differed")
+	assert.False(t, cpuEqual(&CPUInfo{Name: "cpu", Cores: 8}, &CPUInfo{Name: "cpu", Cores: 16}), "different CPU values compared equal")
+	assert.True(t, memoryEqual(&MemoryInfo{TotalBytes: 10, UsedBytes: 5}, &MemoryInfo{TotalBytes: 10, UsedBytes: 5}), "equal memory values differed")
+	assert.False(t, memoryEqual(&MemoryInfo{TotalBytes: 10, UsedBytes: 5}, &MemoryInfo{TotalBytes: 10, UsedBytes: 6}), "different memory values compared equal")
 }
 
 func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {
 	m, rw, _ := newTestManager()
 	m.handleMessage(requestMessage(1, "bogus", nil))
 	resp := readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32601 {
-		t.Fatalf("unknown method error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "unknown method error")
+	assert.Equal(t, -32601, resp.Error.Code, "unknown method error")
 }
 
 func TestLogSetLevelRequest(t *testing.T) {
@@ -585,15 +507,12 @@ func TestLogSetLevelRequest(t *testing.T) {
 	m.handleMessage(requestMessage(1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
 	resp := readCaptureFrame(t, rw)
 	result := decodeResult[map[string]string](t, resp)
-	if result["level"] != "debug" {
-		t.Fatalf("log/set-level result = %#v", result)
-	}
+	assert.Equal(t, "debug", result["level"], "log/set-level result (%v)", result)
 
 	m.handleMessage(requestMessage(2, applog.SetLevelMethod, applog.SetLevelParams{Level: "not-a-level"}))
 	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("invalid log/set-level error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "invalid log/set-level error")
+	assert.Equal(t, -32602, resp.Error.Code, "invalid log/set-level error")
 }
 
 func TestShutdownRequestCancelsRun(t *testing.T) {
@@ -602,9 +521,7 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 	defer client.Close()
 
 	mgr, err := NewManager(NewCodec(server), tlsClientOptions{}, nil)
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	require.NoError(t, err, "NewManager")
 	done := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -614,48 +531,35 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 
 	reader := bufio.NewReader(client)
 	ready := readPipeFrame(t, client, reader)
-	if ready.Method != "ready" {
-		t.Fatalf("first frame = %+v", ready)
-	}
+	assert.Equal(t, "ready", ready.Method, "first frame (%v)", ready)
 
 	writePipeRequest(t, client, 7, "shutdown", nil)
 	resp := readPipeFrame(t, client, reader)
-	if !responseWithID(7)(resp) || resp.Error != nil {
-		t.Fatalf("shutdown response = %+v", resp)
-	}
+	assert.True(t, responseWithID(7)(resp), "shutdown response (%v)", resp)
+	require.Nil(t, resp.Error, "shutdown response (%v)", resp)
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run returned error: %v", err)
-		}
+		require.NoError(t, err, "Run returned error")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after shutdown")
+		require.FailNow(t, "Run did not return after shutdown")
 	}
 }
 
 func TestNotificationIsIgnored(t *testing.T) {
 	m, rw, _ := newTestManager()
 	m.handleMessage(notificationMessage("node/add", ManualEntry{Address: "node.local"}))
-	if got := m.listNodes(); len(got) != 0 {
-		t.Fatalf("notification mutated state: %#v", got)
-	}
+	require.Empty(t, m.listNodes(), "notification mutated state")
 	assertNoCaptureMethod(t, rw, "")
 }
 
 func readPipeFrame(t *testing.T, conn net.Conn, reader *bufio.Reader) Message {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		t.Fatalf("read pipe frame: %v", err)
-	}
+	require.NoError(t, err, "read pipe frame")
 	var msg Message
-	if err := json.Unmarshal(line, &msg); err != nil {
-		t.Fatalf("decode pipe frame %q: %v", line, err)
-	}
+	require.NoError(t, json.Unmarshal(line, &msg), "decode pipe frame %q", line)
 	return msg
 }
 
@@ -665,9 +569,7 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 	if params != nil {
 		var err error
 		raw, err = json.Marshal(params)
-		if err != nil {
-			t.Fatalf("marshal params: %v", err)
-		}
+		require.NoError(t, err, "marshal params")
 	}
 	msg := struct {
 		JSONRPC string          `json:"jsonrpc"`
@@ -681,11 +583,8 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 		Params:  raw,
 	}
 	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
+	require.NoError(t, err, "marshal request")
 	data = append(data, '\n')
-	if _, err := conn.Write(data); err != nil {
-		t.Fatalf("write request: %v", err)
-	}
+	_, err = conn.Write(data)
+	require.NoError(t, err, "write request")
 }

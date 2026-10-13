@@ -18,6 +18,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newSplitter binds a loopback listener, wraps it in a Splitter, and runs a
@@ -27,9 +30,7 @@ import (
 func newSplitter(t *testing.T) (addr string, cleanup func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	s := New(ln)
 
 	plainSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -39,8 +40,9 @@ func newSplitter(t *testing.T) (addr string, cleanup func()) {
 		io.WriteString(w, "tls")
 	})}
 
+	tlsConfig := testServerTLSConfig(t)
 	go func() { _ = plainSrv.Serve(s.Plain()) }()
-	go func() { _ = tlsSrv.Serve(tls.NewListener(s.TLS(), testServerTLSConfig(t))) }()
+	go func() { _ = tlsSrv.Serve(tls.NewListener(s.TLS(), tlsConfig)) }()
 
 	return s.Addr().String(), func() {
 		_ = plainSrv.Close()
@@ -53,20 +55,14 @@ func TestPlainConnectionRoutesToPlainServer(t *testing.T) {
 	addr, cleanup := newSplitter(t)
 	defer cleanup()
 
-	body := httpGet(t, "http://"+addr+"/", nil)
-	if body != "plain" {
-		t.Fatalf("plain request served by %q, want %q", body, "plain")
-	}
+	assert.Equal(t, "plain", httpGet(t, "http://"+addr+"/", nil))
 }
 
 func TestTLSConnectionRoutesToTLSServer(t *testing.T) {
 	addr, cleanup := newSplitter(t)
 	defer cleanup()
 
-	body := httpGet(t, "https://"+addr+"/", &tls.Config{InsecureSkipVerify: true})
-	if body != "tls" {
-		t.Fatalf("TLS request served by %q, want %q", body, "tls")
-	}
+	assert.Equal(t, "tls", httpGet(t, "https://"+addr+"/", &tls.Config{InsecureSkipVerify: true}))
 }
 
 // TestMalformedConnectionDoesNotWedgeDispatch opens connections that never
@@ -83,34 +79,24 @@ func TestMalformedConnectionDoesNotWedgeDispatch(t *testing.T) {
 
 	// Silent client: connect, send nothing, let the peek deadline fire.
 	silent, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("dial silent: %v", err)
-	}
+	require.NoError(t, err, "dial silent")
 	// Immediate-close client: connect and close before sending a byte.
 	closer, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("dial closer: %v", err)
-	}
+	require.NoError(t, err, "dial closer")
 	_ = closer.Close()
 
 	// A good request must still be served while the silent conn is pending and
 	// after the closed one was dropped.
-	if body := httpGet(t, "http://"+addr+"/", nil); body != "plain" {
-		t.Fatalf("plain request after malformed conns served %q, want %q", body, "plain")
-	}
+	assert.Equal(t, "plain", httpGet(t, "http://"+addr+"/", nil), "plain request after malformed conns served")
 	_ = silent.Close()
 }
 
 func TestCloseStopsAccepting(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	s := New(ln)
 	addr := s.Addr().String()
-	if err := s.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	require.NoError(t, s.Close(), "close")
 
 	// Sub-listener Accept must report closed rather than block forever.
 	done := make(chan error, 1)
@@ -120,17 +106,15 @@ func TestCloseStopsAccepting(t *testing.T) {
 	}()
 	select {
 	case aerr := <-done:
-		if aerr == nil {
-			t.Fatal("Accept returned nil error after Close, want an error")
-		}
+		require.Error(t, aerr, "Accept returned nil error after Close, want an error")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Accept did not return after Close")
+		require.FailNow(t, "Accept did not return after Close")
 	}
 
 	// The base port is released, so a fresh dial fails.
 	if c, derr := net.DialTimeout("tcp", addr, 200*time.Millisecond); derr == nil {
 		_ = c.Close()
-		t.Fatal("dial succeeded after Close, want connection refused")
+		require.FailNow(t, "dial succeeded after Close, want connection refused")
 	}
 }
 
@@ -152,28 +136,24 @@ func TestChanListenerCloseUnblocksInFlightPush(t *testing.T) {
 	// Give push time to block on the unbuffered send (no Accept running).
 	time.Sleep(50 * time.Millisecond)
 
-	if err := l.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	require.NoError(t, l.Close(), "close")
 	select {
 	case <-pushed:
 	case <-time.After(2 * time.Second):
-		t.Fatal("push did not return after Close")
+		require.FailNow(t, "push did not return after Close")
 	}
 
 	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := peer.Read(make([]byte, 1)); err != io.EOF {
-		t.Fatalf("in-flight connection read error = %v, want EOF", err)
-	}
+	_, err := peer.Read(make([]byte, 1))
+	assert.ErrorIs(t, err, io.EOF, "in-flight connection read error")
 
 	// A push that starts after Close must be closed rather than handed off.
 	peer2, queued2 := net.Pipe()
 	defer peer2.Close()
 	l.push(queued2)
 	_ = peer2.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := peer2.Read(make([]byte, 1)); err != io.EOF {
-		t.Fatalf("post-Close connection read error = %v, want EOF", err)
-	}
+	_, err = peer2.Read(make([]byte, 1))
+	assert.ErrorIs(t, err, io.EOF, "post-Close connection read error")
 }
 
 // httpGet issues a GET and returns the response body. A nil tlsCfg uses plain
@@ -197,7 +177,7 @@ func httpGet(t *testing.T, url string, tlsCfg *tls.Config) string {
 		b, _ := io.ReadAll(resp.Body)
 		return string(b)
 	}
-	t.Fatalf("GET %s: %v", url, lastErr)
+	require.NoError(t, lastErr, "GET %s", url)
 	return ""
 }
 
@@ -206,9 +186,7 @@ func httpGet(t *testing.T, url string, tlsCfg *tls.Config) string {
 func testServerTLSConfig(t *testing.T) *tls.Config {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
+	require.NoError(t, err, "gen key")
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "splitlisten-test"},
@@ -219,29 +197,23 @@ func testServerTLSConfig(t *testing.T) *tls.Config {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("create cert: %v", err)
-	}
+	require.NoError(t, err, "create cert")
 	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
+	require.NoError(t, err, "marshal key")
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		t.Fatalf("keypair: %v", err)
-	}
+	require.NoError(t, err, "keypair")
 	return &tls.Config{Certificates: []tls.Certificate{cert}}
 }
 
 // scriptedListener is a net.Listener whose Accept behavior is driven by acceptFn.
 type scriptedListener struct {
-	addr     net.Addr
-	acceptFn func(call int) (net.Conn, error)
-	mu       sync.Mutex
-	calls    int
-	closed   chan struct{}
+	addr      net.Addr
+	acceptFn  func(call int) (net.Conn, error)
+	mu        sync.Mutex
+	calls     int
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 
@@ -306,7 +278,7 @@ func TestFatalAcceptClosesBase(t *testing.T) {
 	for !base.isClosed() {
 		select {
 		case <-deadline:
-			t.Fatal("base listener was not closed after fatal Accept")
+			require.FailNow(t, "base listener was not closed after fatal Accept")
 		default:
 			time.Sleep(5 * time.Millisecond)
 		}
@@ -319,11 +291,9 @@ func TestFatalAcceptClosesBase(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("Plain Accept returned nil after fatal Accept, want error")
-		}
+		require.Error(t, err, "Plain Accept returned nil after fatal Accept, want error")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Plain Accept did not return after fatal Accept")
+		require.FailNow(t, "Plain Accept did not return after fatal Accept")
 	}
 }
 
@@ -366,11 +336,9 @@ func TestTemporaryAcceptRetries(t *testing.T) {
 	case c := <-accepted:
 		_ = c.Close()
 	case <-time.After(2 * time.Second):
-		t.Fatal("plain Accept did not receive connection after temporary Accept error")
+		require.FailNow(t, "plain Accept did not receive connection after temporary Accept error")
 	}
-	if base.isClosed() {
-		t.Fatal("base listener closed after temporary Accept error")
-	}
+	assert.False(t, base.isClosed(), "base listener closed after temporary Accept error")
 }
 
 // TestPushTimeoutClosesConnWhenAcceptStops confirms that if a sub-listener is
@@ -382,9 +350,7 @@ func TestPushTimeoutClosesConnWhenAcceptStops(t *testing.T) {
 	defer func() { pushTimeout = old }()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	s := New(ln)
 	defer s.Close()
 	// Deliberately do not Accept on Plain() or TLS().
@@ -394,8 +360,7 @@ func TestPushTimeoutClosesConnWhenAcceptStops(t *testing.T) {
 	closed := make(chan struct{})
 	go func() {
 		c, derr := net.Dial("tcp", addr)
-		if derr != nil {
-			t.Errorf("dial: %v", derr)
+		if !assert.NoError(t, derr, "dial") {
 			return
 		}
 		_, _ = c.Write([]byte("G"))
@@ -403,32 +368,26 @@ func TestPushTimeoutClosesConnWhenAcceptStops(t *testing.T) {
 		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, rerr := c.Read(buf)
 		_ = c.Close()
-		if rerr == nil {
-			t.Error("expected peer close after push timeout, got successful read")
-		}
+		assert.Error(t, rerr, "expected peer close after push timeout, got successful read")
 		close(closed)
 	}()
 
 	select {
 	case <-closed:
 	case <-time.After(3 * time.Second):
-		t.Fatal("dispatch did not release connection after push timeout")
+		require.FailNow(t, "dispatch did not release connection after push timeout")
 	}
 
 	// Base Accept is still running: another dial should still complete TCP
 	// handshake (not refuse), then be closed by the same timeout path.
 	c2, err := net.DialTimeout("tcp", addr, time.Second)
-	if err != nil {
-		t.Fatalf("dial after push timeout: %v", err)
-	}
+	require.NoError(t, err, "dial after push timeout")
 	_, _ = c2.Write([]byte("G"))
 	_ = c2.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 1)
 	_, rerr := c2.Read(buf)
 	_ = c2.Close()
-	if rerr == nil {
-		t.Fatal("expected connection closed after push timeout")
-	}
+	require.Error(t, rerr, "expected connection closed after push timeout")
 }
 
 // TestChanListenerPushTimeoutWithoutAccept is the direct unit form of the
@@ -453,15 +412,12 @@ func TestChanListenerPushTimeoutWithoutAccept(t *testing.T) {
 	}()
 
 	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := peer.Read(make([]byte, 1)); err != io.EOF {
-		t.Fatalf("read error = %v, want EOF after push timeout", err)
-	}
+	_, err := peer.Read(make([]byte, 1))
+	assert.ErrorIs(t, err, io.EOF, "read error")
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("push did not return after timeout")
+		require.FailNow(t, "push did not return after timeout")
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("push took %v, want roughly pushTimeout (%v)", elapsed, pushTimeout)
-	}
+	assert.LessOrEqual(t, time.Since(start), time.Second, "push took")
 }

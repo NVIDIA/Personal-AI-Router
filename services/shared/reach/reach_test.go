@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeNet describes which addresses accept, and records every attempt, so tests
@@ -80,9 +83,7 @@ func preferred(t *testing.T, c *Chooser, key string, candidates []string) string
 		if !running {
 			return address
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the background confirmation never finished")
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "the background confirmation never finished")
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -104,14 +105,8 @@ func (c *Chooser) expireCooldown(key string) {
 func TestChooseFailsOverToASecondAddress(t *testing.T) {
 	f := newFakeNet("10.172.55.129:14321")
 	c := newTestChooser(f)
-	got := choose(c, "peer", []string{"192.168.240.1:14321", "10.172.55.129:14321"})
-	if got != "10.172.55.129:14321" {
-		t.Fatalf("Choose = %q, want the address that accepted", got)
-	}
-	attempts := f.attemptedAddresses()
-	if len(attempts) != 2 {
-		t.Fatalf("attempts = %v, want both published addresses probed", attempts)
-	}
+	assert.Equal(t, "10.172.55.129:14321", choose(c, "peer", []string{"192.168.240.1:14321", "10.172.55.129:14321"}))
+	require.Len(t, f.attemptedAddresses(), 2)
 }
 
 // TestChoosePrefersTheBestRankedAcceptingAddress: with the candidates probed
@@ -121,9 +116,7 @@ func TestChooseFailsOverToASecondAddress(t *testing.T) {
 func TestChoosePrefersTheBestRankedAcceptingAddress(t *testing.T) {
 	f := newFakeNet("10.0.0.1:14321", "10.0.0.2:14321")
 	c := newTestChooser(f)
-	if got := choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}); got != "10.0.0.1:14321" {
-		t.Fatalf("Choose = %q, want the best-ranked accepting address", got)
-	}
+	assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}))
 }
 
 // TestFirstPrefersRankOverArrivalOrder states that directly: the better-ranked
@@ -138,9 +131,8 @@ func TestFirstPrefersRankOverArrivalOrder(t *testing.T) {
 		return local, nil
 	}
 	got, ok := first(dial, []string{"10.0.0.1:1", "10.0.0.2:1"}, time.Second, time.Time{})
-	if !ok || got != "10.0.0.1:1" {
-		t.Fatalf("first = %q,%v, want the top-ranked address despite answering later", got, ok)
-	}
+	require.True(t, ok, "first")
+	assert.Equal(t, "10.0.0.1:1", got, "first")
 }
 
 // TestFirstPaysOneTimeoutForTheWholeList: the failure that costs real time is an
@@ -165,15 +157,11 @@ func TestFirstPaysOneTimeoutForTheWholeList(t *testing.T) {
 	got, ok := first(dial, candidates, timeout, time.Time{})
 	elapsed := time.Since(start)
 
-	if !ok || got != "10.0.0.4:1" {
-		t.Fatalf("first = %q,%v, want the address that accepted", got, ok)
-	}
+	require.True(t, ok, "first")
+	assert.Equal(t, "10.0.0.4:1", got, "first")
 	// Sequentially this would be three timeouts before the fourth address was even
 	// attempted.
-	if elapsed > 2*timeout {
-		t.Errorf("probing four addresses took %v with a %v timeout; they are not being probed together",
-			elapsed, timeout)
-	}
+	assert.LessOrEqual(t, elapsed, 2*timeout, "probing four addresses took")
 }
 
 // TestChooseCachesTheConfirmedAddress: a repeated dial must cost nothing. Without
@@ -185,13 +173,9 @@ func TestChooseCachesTheConfirmedAddress(t *testing.T) {
 	first := choose(c, "peer", candidates)
 	before := f.dials.Load()
 	for range 5 {
-		if got := choose(c, "peer", candidates); got != first {
-			t.Fatalf("Choose = %q, want the cached %q", got, first)
-		}
+		assert.Equal(t, first, choose(c, "peer", candidates))
 	}
-	if got := f.dials.Load(); got != before {
-		t.Fatalf("cached lookups made %d extra attempts, want 0", got-before)
-	}
+	assert.Equal(t, before, f.dials.Load(), "cached lookups made new dials")
 }
 
 // TestForgetReprobes: a caller reporting a failure is what retires an answer.
@@ -204,9 +188,7 @@ func TestForgetReprobes(t *testing.T) {
 	before := f.dials.Load()
 	c.Forget("peer")
 	choose(c, "peer", candidates)
-	if f.dials.Load() <= before {
-		t.Fatal("Choose after Forget reused the cache, want a fresh confirmation")
-	}
+	assert.Greater(t, f.dials.Load(), before, "Choose after Forget reused the cache, want a fresh confirmation")
 }
 
 // TestForgetDiscardsAnInFlightConfirmation is the same rule on the request path,
@@ -253,9 +235,7 @@ func TestForgetDiscardsAnInFlightConfirmation(t *testing.T) {
 		generation: make(map[string]uint64),
 	}
 
-	if got := c.Prefer("peer", candidates); got != wrong {
-		t.Fatalf("Prefer = %q, want the top-ranked address on first sight", got)
-	}
+	assert.Equal(t, wrong, c.Prefer("peer", candidates))
 	for range candidates {
 		<-dialing
 	}
@@ -268,9 +248,7 @@ func TestForgetDiscardsAnInFlightConfirmation(t *testing.T) {
 	// probe — which only starts because Forget cleared the registration too — is
 	// what gets to say so.
 	answering.Store(working)
-	if got := c.Prefer("peer", candidates); got != wrong {
-		t.Fatalf("Prefer = %q, want the top-ranked address while nothing is confirmed", got)
-	}
+	assert.Equal(t, wrong, c.Prefer("peer", candidates))
 	waitFor(t, func() bool { return c.Prefer("peer", candidates) == working },
 		"a replacement confirmation to settle on the address that answers")
 
@@ -281,10 +259,7 @@ func TestForgetDiscardsAnInFlightConfirmation(t *testing.T) {
 		<-returned
 	}
 	time.Sleep(20 * time.Millisecond)
-	if got := c.Prefer("peer", candidates); got != working {
-		t.Fatalf("Prefer = %q, want %q — a retired probe's verdict was recorded after the Forget",
-			got, working)
-	}
+	assert.Equal(t, working, c.Prefer("peer", candidates))
 }
 
 // TestChooseReprobesWhenTheNodeStopsPublishingTheAddress: an address the node no
@@ -293,10 +268,7 @@ func TestChooseReprobesWhenTheNodeStopsPublishingTheAddress(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321", "10.0.9.9:14321")
 	c := newTestChooser(f)
 	choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"})
-	got := choose(c, "peer", []string{"10.0.9.9:14321", "10.0.0.1:14321"})
-	if got != "10.0.9.9:14321" {
-		t.Fatalf("Choose = %q, want a fresh answer from the new list", got)
-	}
+	assert.Equal(t, "10.0.9.9:14321", choose(c, "peer", []string{"10.0.9.9:14321", "10.0.0.1:14321"}))
 }
 
 // TestChooseKeepsAWorkingAddressAcrossARerank is the other half: a node re-ranks
@@ -307,26 +279,16 @@ func TestChooseReprobesWhenTheNodeStopsPublishingTheAddress(t *testing.T) {
 func TestChooseKeepsAWorkingAddressAcrossARerank(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321", "10.0.9.9:14321")
 	c := newTestChooser(f)
-	if got := choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}); got != "10.0.0.2:14321" {
-		t.Fatalf("Choose = %q, want the address that accepted", got)
-	}
+	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}))
 	before := f.dials.Load()
 
 	// The node republishes, promoting an address that also works.
 	candidates := []string{"10.0.9.9:14321", "10.0.0.2:14321"}
-	if got := choose(c, "peer", candidates); got != "10.0.0.2:14321" {
-		t.Fatalf("Choose = %q after a re-rank, want the address already known to work", got)
-	}
-	if got := f.dials.Load(); got != before {
-		t.Errorf("a re-rank re-probed %d times, want the confirmed address kept as-is", got-before)
-	}
+	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", candidates))
+	assert.Equal(t, before, f.dials.Load(), "a re-rank re-probed")
 	// And the new list is what is remembered, so this does not re-scan every call.
-	if got := choose(c, "peer", candidates); got != "10.0.0.2:14321" {
-		t.Fatalf("Choose = %q, want the kept address", got)
-	}
-	if got := f.dials.Load(); got != before {
-		t.Errorf("made %d further attempts, want none", got-before)
-	}
+	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", candidates))
+	assert.Equal(t, before, f.dials.Load())
 }
 
 // TestPreferNeverBlocksARequest is the request-path guarantee: a proxy resolves
@@ -356,22 +318,16 @@ func TestPreferNeverBlocksARequest(t *testing.T) {
 
 	start := time.Now()
 	for range 50 {
-		if got := c.Prefer("peer", candidates); got != "10.0.0.1:14321" {
-			t.Fatalf("Prefer = %q, want the top-ranked address without waiting", got)
-		}
+		assert.Equal(t, "10.0.0.1:14321", c.Prefer("peer", candidates))
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("50 Prefer calls took %v against a network that never answers", elapsed)
-	}
+	assert.LessOrEqual(t, time.Since(start), time.Second, "50 Prefer calls took")
 
 	// One confirmation for the burst, not one per call. The probe is still in
 	// flight — nothing answers — so its connects are all there will be.
 	waitFor(t, func() bool { return dials.Load() == int64(len(candidates)) },
 		"the background confirmation to start")
 	time.Sleep(20 * time.Millisecond)
-	if n := dials.Load(); n != int64(len(candidates)) {
-		t.Errorf("started %d connects, want %d — the burst is probing per call", n, len(candidates))
-	}
+	assert.Equal(t, int64(len(candidates)), dials.Load(), "background confirmation dials")
 }
 
 // waitFor polls until done reports true, so a test can observe a background probe
@@ -380,9 +336,7 @@ func waitFor(t *testing.T, done func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "timed out waiting for %s", what)
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -395,18 +349,12 @@ func TestPreferUsesTheConfirmedAddressOnceItIsKnown(t *testing.T) {
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}
 
-	if got := preferred(t, c, "peer", candidates); got != "10.0.0.1:14321" {
-		t.Fatalf("Prefer = %q, want the top-ranked address on first sight", got)
-	}
+	assert.Equal(t, "10.0.0.1:14321", preferred(t, c, "peer", candidates))
 	before := f.dials.Load()
 	for range 5 {
-		if got := c.Prefer("peer", candidates); got != "10.0.0.2:14321" {
-			t.Fatalf("Prefer = %q, want the confirmed address", got)
-		}
+		assert.Equal(t, "10.0.0.2:14321", c.Prefer("peer", candidates))
 	}
-	if got := f.dials.Load(); got != before {
-		t.Errorf("a confirmed address cost %d further connects, want 0", got-before)
-	}
+	assert.Equal(t, before, f.dials.Load(), "a confirmed address cost new dials")
 }
 
 // TestPreferStopsProbingAnUnreachableNode: with nothing answering, requests must
@@ -418,14 +366,9 @@ func TestPreferStopsProbingAnUnreachableNode(t *testing.T) {
 
 	preferred(t, c, "peer", candidates)
 	for range 20 {
-		if got := c.Prefer("peer", candidates); got != "10.0.0.1:14321" {
-			t.Fatalf("Prefer = %q, want the top-ranked address", got)
-		}
+		assert.Equal(t, "10.0.0.1:14321", c.Prefer("peer", candidates))
 	}
-	if got := f.dials.Load(); got != int64(len(candidates)) {
-		t.Errorf("made %d connects across 21 calls, want %d — the cooldown is not holding",
-			got, len(candidates))
-	}
+	assert.Equal(t, int64(len(candidates)), f.dials.Load())
 }
 
 // TestChooseFallsBackWhenNothingAccepts: a transient blip must not become a hard
@@ -433,10 +376,7 @@ func TestPreferStopsProbingAnUnreachableNode(t *testing.T) {
 func TestChooseFallsBackWhenNothingAccepts(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
-	got := choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"})
-	if got != "10.0.0.1:14321" {
-		t.Fatalf("Choose = %q, want the top-ranked candidate as a fallback", got)
-	}
+	assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}))
 }
 
 // TestChooseSingleCandidateSkipsTheHandshake: with one address there is nothing to
@@ -445,19 +385,13 @@ func TestChooseFallsBackWhenNothingAccepts(t *testing.T) {
 func TestChooseSingleCandidateSkipsTheHandshake(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
-	if got := choose(c, "peer", []string{"10.0.0.1:14321"}); got != "10.0.0.1:14321" {
-		t.Fatalf("Choose = %q, want the only candidate", got)
-	}
-	if n := f.dials.Load(); n != 0 {
-		t.Fatalf("made %d attempts for a single candidate, want 0", n)
-	}
+	assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", []string{"10.0.0.1:14321"}))
+	assert.Equal(t, int64(0), f.dials.Load())
 }
 
 func TestChooseNoCandidates(t *testing.T) {
 	c := newTestChooser(newFakeNet())
-	if got := choose(c, "peer", nil); got != "" {
-		t.Fatalf("Choose(nil) = %q, want empty", got)
-	}
+	assert.Equal(t, "", choose(c, "peer", nil))
 }
 
 // TestChooseRecoversFromAnUnconfirmedFallbackWithoutForget: with nothing accepting
@@ -468,9 +402,7 @@ func TestChooseRecoversFromAnUnconfirmedFallbackWithoutForget(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
 	candidates := []string{"192.168.240.1:14321", "10.0.0.9:14321"}
-	if got := choose(c, "peer", candidates); got != "192.168.240.1:14321" {
-		t.Fatalf("Choose = %q, want the top-ranked address as a last resort", got)
-	}
+	assert.Equal(t, "192.168.240.1:14321", choose(c, "peer", candidates))
 
 	// The second address comes back. Without a Forget, and without any change to
 	// the published list, the next Choose past the cooldown must find it.
@@ -478,9 +410,7 @@ func TestChooseRecoversFromAnUnconfirmedFallbackWithoutForget(t *testing.T) {
 	f.accept["10.0.0.9:14321"] = true
 	f.mu.Unlock()
 	c.expireCooldown("peer")
-	if got := choose(c, "peer", candidates); got != "10.0.0.9:14321" {
-		t.Fatalf("Choose = %q after recovery, want the address that now accepts", got)
-	}
+	assert.Equal(t, "10.0.0.9:14321", choose(c, "peer", candidates))
 }
 
 // TestChooseDoesNotRewalkADeadListEveryCall is the efficiency half of the same
@@ -493,24 +423,15 @@ func TestChooseDoesNotRewalkADeadListEveryCall(t *testing.T) {
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321", "10.0.0.3:14321"}
 
 	for range 20 {
-		if got := choose(c, "peer", candidates); got != "10.0.0.1:14321" {
-			t.Fatalf("Choose = %q, want the top-ranked address", got)
-		}
+		assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", candidates))
 	}
-	if got := f.dials.Load(); got != int64(len(candidates)) {
-		t.Fatalf("made %d connect attempts across 20 calls, want %d — the walk is repeating",
-			got, len(candidates))
-	}
+	assert.Equal(t, int64(len(candidates)), f.dials.Load())
 
 	// Once the cooldown lapses the list is walked again, so recovery is noticed
 	// without anything having to report a failure.
 	c.expireCooldown("peer")
-	if got := choose(c, "peer", candidates); got != "10.0.0.1:14321" {
-		t.Fatalf("Choose = %q after the cooldown, want the top-ranked address", got)
-	}
-	if got := f.dials.Load(); got != int64(2*len(candidates)) {
-		t.Fatalf("made %d connect attempts, want %d — the cooldown never expires", got, 2*len(candidates))
-	}
+	assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", candidates))
+	assert.Equal(t, int64(2*len(candidates)), f.dials.Load())
 }
 
 // TestChooseKeepsAConfirmedAddressIndefinitely: the cooldown is only for a walk
@@ -521,17 +442,11 @@ func TestChooseKeepsAConfirmedAddressIndefinitely(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321")
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}
-	if got := choose(c, "peer", candidates); got != "10.0.0.2:14321" {
-		t.Fatalf("Choose = %q, want the address that accepted", got)
-	}
+	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", candidates))
 	before := f.dials.Load()
 	c.expireCooldown("peer")
-	if got := choose(c, "peer", candidates); got != "10.0.0.2:14321" {
-		t.Fatalf("Choose = %q, want the remembered address", got)
-	}
-	if got := f.dials.Load(); got != before {
-		t.Errorf("a confirmed address was re-probed after %v", UnconfirmedCooldown)
-	}
+	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", candidates))
+	assert.Equal(t, before, f.dials.Load(), "a confirmed address was re-probed after cooldown")
 }
 
 // TestFirstReportsWhenNothingIsReachable: the distinction matters for one-shot,
@@ -539,18 +454,14 @@ func TestChooseKeepsAConfirmedAddressIndefinitely(t *testing.T) {
 // and a caller's expiring timeout is not.
 func TestFirstReportsWhenNothingIsReachable(t *testing.T) {
 	f := newFakeNet()
-	if _, ok := first(f.dial, []string{"10.0.0.1:1", "10.0.0.2:1"}, time.Millisecond, time.Time{}); ok {
-		t.Fatal("first reported success with nothing accepting")
-	}
-	if n := f.dials.Load(); n != 2 {
-		t.Errorf("attempted %d addresses, want both tried before giving up", n)
-	}
+	_, ok := first(f.dial, []string{"10.0.0.1:1", "10.0.0.2:1"}, time.Millisecond, time.Time{})
+	require.False(t, ok, "first reported success with nothing accepting")
+	assert.Equal(t, int64(2), f.dials.Load())
 
 	f = newFakeNet("10.0.0.2:1")
 	got, ok := first(f.dial, []string{"", "10.0.0.1:1", "10.0.0.2:1"}, time.Millisecond, time.Time{})
-	if !ok || got != "10.0.0.2:1" {
-		t.Fatalf("first = %q,%v, want 10.0.0.2:1,true (blank entries skipped)", got, ok)
-	}
+	require.True(t, ok, "first")
+	assert.Equal(t, "10.0.0.2:1", got, "first")
 }
 
 // TestChooseWithinStopsWhenTheCallersBudgetIsSpent: a caller that caps a whole
@@ -580,19 +491,11 @@ func TestChooseWithinStopsWhenTheCallersBudgetIsSpent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	got := c.ChooseWithin(ctx, "peer", []string{"10.0.0.1:1", "10.0.0.2:1", "10.0.0.3:1"})
-
-	if got != "10.0.0.1:1" {
-		t.Fatalf("ChooseWithin = %q, want the top candidate once the budget is spent", got)
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("the walk took %v, want it capped near the 80ms budget", elapsed)
-	}
+	assert.Equal(t, "10.0.0.1:1", c.ChooseWithin(ctx, "peer", []string{"10.0.0.1:1", "10.0.0.2:1", "10.0.0.3:1"}))
+	assert.LessOrEqual(t, time.Since(start), 500*time.Millisecond, "the walk took")
 	// All three were probed — within one budget, which is the point — rather than
 	// the budget being spent on the first address alone.
-	if n := dials.Load(); n != 3 {
-		t.Errorf("attempted %d addresses, want all three inside the one budget", n)
-	}
+	assert.Equal(t, int64(3), dials.Load())
 }
 
 func TestChooseIsConcurrencySafe(t *testing.T) {
@@ -611,7 +514,5 @@ func TestChooseIsConcurrencySafe(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	if got := choose(c, "peer", candidates); got != "10.0.0.2:14321" {
-		t.Fatalf("Choose = %q, want the accepting address", got)
-	}
+	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", candidates))
 }

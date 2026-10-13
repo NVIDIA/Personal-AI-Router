@@ -10,6 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // junction creates link as a directory junction to dir. Unlike a symlink, a
@@ -17,22 +20,17 @@ import (
 // would aim the elevated uninstaller somewhere else.
 func junction(t *testing.T, link, dir string) {
 	t.Helper()
-	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, dir).CombinedOutput(); err != nil {
-		t.Fatalf("mklink /J %s %s: %v: %s", link, dir, err, out)
-	}
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, dir).CombinedOutput()
+	require.NoError(t, err, "mklink /J %s %s: %s", link, dir, out)
 }
 
 // victimDir makes a directory with one file in it and returns the file, which
 // must survive whatever removal a junction pointed at the directory took part in.
 func victimDir(t *testing.T, dir string) string {
 	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o755))
 	keep := filepath.Join(dir, "keep-me.txt")
-	if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(keep, []byte("x"), 0o644))
 	return keep
 }
 
@@ -46,16 +44,11 @@ func TestRemoveTreePreservingUnlinksJunctionedTarget(t *testing.T) {
 	link := filepath.Join(root, ".lmstudio")
 	junction(t, link, filepath.Dir(keep))
 
-	if err := removeTreePreserving(link, filepath.Join(link, "models")); err != nil {
-		t.Fatalf("removeTreePreserving: %v", err)
-	}
+	require.NoError(t, removeTreePreserving(link, filepath.Join(link, "models")), "removeTreePreserving")
 
-	if _, err := os.Lstat(link); !os.IsNotExist(err) {
-		t.Errorf("the junction survived (err=%v)", err)
-	}
-	if _, err := os.Stat(keep); err != nil {
-		t.Errorf("followed the junction and deleted %s: %v", keep, err)
-	}
+	_, err := os.Lstat(link)
+	assert.ErrorIs(t, err, os.ErrNotExist, "the junction survived")
+	assert.FileExists(t, keep, "followed the junction and deleted the target")
 }
 
 // TestRemoveTreePreservingUnlinksJunctionOnTheWayToTheStore checks the same for
@@ -65,20 +58,13 @@ func TestRemoveTreePreservingUnlinksJunctionOnTheWayToTheStore(t *testing.T) {
 	root := t.TempDir()
 	keep := victimDir(t, filepath.Join(root, "elsewhere"))
 	engineRoot := filepath.Join(root, ".lmstudio")
-	if err := os.MkdirAll(engineRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(engineRoot, 0o755))
 	link := filepath.Join(engineRoot, "data")
 	junction(t, link, filepath.Dir(keep))
 
-	if err := removeTreePreserving(engineRoot, filepath.Join(link, "models")); err != nil {
-		t.Fatalf("removeTreePreserving: %v", err)
-	}
+	require.NoError(t, removeTreePreserving(engineRoot, filepath.Join(link, "models")), "removeTreePreserving")
 
-	if _, err := os.Lstat(link); !os.IsNotExist(err) {
-		t.Errorf("the junction survived (err=%v)", err)
-	}
-	if _, err := os.Stat(keep); err != nil {
-		t.Errorf("followed the junction and deleted %s: %v", keep, err)
-	}
+	_, err := os.Lstat(link)
+	assert.ErrorIs(t, err, os.ErrNotExist, "the junction survived")
+	assert.FileExists(t, keep, "followed the junction and deleted the target")
 }

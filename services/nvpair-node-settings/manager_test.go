@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/applog"
 )
 
@@ -74,9 +77,7 @@ func newTestManager(t *testing.T) (*Manager, *captureRW, string) {
 	path := filepath.Join(dir, "settings.json")
 	rw := newCaptureRW()
 	m, err := NewManager(NewCodec(rw), path)
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	require.NoError(t, err, "NewManager")
 	return m, rw, path
 }
 
@@ -109,12 +110,10 @@ func readCaptureFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.responses:
 		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			t.Fatalf("decode response frame %q: %v", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode response frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for response frame")
+		require.FailNow(t, "timed out waiting for response frame")
 		return Message{}
 	}
 }
@@ -129,12 +128,10 @@ func readNotificationFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.notifications:
 		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			t.Fatalf("decode notification frame %q: %v", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode notification frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for notification frame")
+		require.FailNow(t, "timed out waiting for notification frame")
 		return Message{}
 	}
 }
@@ -145,9 +142,7 @@ func readNotificationFrame(t *testing.T, rw *captureRW) Message {
 func expectNotification(t *testing.T, rw *captureRW, method string) Message {
 	t.Helper()
 	msg := readNotificationFrame(t, rw)
-	if msg.Method != method {
-		t.Fatalf("notification method = %q, want %q", msg.Method, method)
-	}
+	require.Equal(t, method, msg.Method, "notification method")
 	return msg
 }
 
@@ -159,20 +154,16 @@ func assertNoNotification(t *testing.T, rw *captureRW) {
 	t.Helper()
 	select {
 	case data := <-rw.notifications:
-		t.Fatalf("unexpected notification: %s", data)
+		require.FailNow(t, fmt.Sprintf("unexpected notification (%v)", data))
 	case <-time.After(50 * time.Millisecond):
 	}
 }
 
 func decodeResult[T any](t *testing.T, msg Message) T {
 	t.Helper()
-	if msg.Error != nil {
-		t.Fatalf("unexpected RPC error: %+v", msg.Error)
-	}
+	require.Nil(t, msg.Error, "unexpected RPC error")
 	var result T
-	if err := json.Unmarshal(msg.Result, &result); err != nil {
-		t.Fatalf("decode result %q: %v", msg.Result, err)
-	}
+	require.NoError(t, json.Unmarshal(msg.Result, &result), "decode result")
 	return result
 }
 
@@ -194,9 +185,7 @@ func callAndDecode[T any](t *testing.T, m *Manager, rw *captureRW, id int, metho
 	t.Helper()
 	m.handleMessage(requestMessage(id, method, params))
 	resp := readCaptureFrame(t, rw)
-	if !responseWithID(id)(resp) {
-		t.Fatalf("response id mismatch: got %+v want id=%d", resp, id)
-	}
+	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
 	return decodeResult[T](t, resp)
 }
 
@@ -204,15 +193,9 @@ func callExpectError(t *testing.T, m *Manager, rw *captureRW, id int, method str
 	t.Helper()
 	m.handleMessage(requestMessage(id, method, params))
 	resp := readCaptureFrame(t, rw)
-	if !responseWithID(id)(resp) {
-		t.Fatalf("response id mismatch: got %+v want id=%d", resp, id)
-	}
-	if resp.Error == nil {
-		t.Fatalf("expected error %d, got result: %s", wantCode, string(resp.Result))
-	}
-	if resp.Error.Code != wantCode {
-		t.Fatalf("error code = %d, want %d (message=%q)", resp.Error.Code, wantCode, resp.Error.Message)
-	}
+	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
+	require.NotNil(t, resp.Error, "expected error (%v)", wantCode)
+	require.Equal(t, wantCode, resp.Error.Code, "error code")
 	return resp.Error
 }
 
@@ -220,15 +203,11 @@ func TestClusterAutoSyncRoundTrip(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	got := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-cluster-auto-sync", nil)
-	if got["value"] != false {
-		t.Fatalf("default cluster-auto-sync = %v, want false", got["value"])
-	}
+	assert.False(t, got["value"], "default cluster-auto-sync")
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-auto-sync", map[string]bool{"value": true})
 	got = callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-cluster-auto-sync", nil)
-	if got["value"] != true {
-		t.Fatalf("after set, value = %v, want true", got["value"])
-	}
+	assert.True(t, got["value"], "after set, value")
 }
 
 // TestClusterIDRoundTrip locks down the basic get/set contract for
@@ -240,22 +219,16 @@ func TestClusterIDRoundTrip(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	got := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-id", nil)
-	if got["value"] != "" {
-		t.Fatalf("default cluster-id = %q, want empty string", got["value"])
-	}
+	assert.Equal(t, "", got["value"], "default cluster-id")
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-id", map[string]string{"value": "cluster-abc-123"})
 	got = callAndDecode[map[string]string](t, m, rw, 3, "settings/get-cluster-id", nil)
-	if got["value"] != "cluster-abc-123" {
-		t.Fatalf("after set, cluster-id = %q, want %q", got["value"], "cluster-abc-123")
-	}
+	assert.Equal(t, "cluster-abc-123", got["value"], "after set, cluster-id")
 
 	// Setting back to empty returns to the unset state.
 	_ = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-cluster-id", map[string]string{"value": ""})
 	got = callAndDecode[map[string]string](t, m, rw, 5, "settings/get-cluster-id", nil)
-	if got["value"] != "" {
-		t.Fatalf("after clear, cluster-id = %q, want empty string", got["value"])
-	}
+	assert.Equal(t, "", got["value"], "after clear, cluster-id")
 }
 
 // TestClusterFriendlyNameRoundTrip covers the display-only label.
@@ -265,15 +238,11 @@ func TestClusterFriendlyNameRoundTrip(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	got := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-friendly-name", nil)
-	if got["value"] != "" {
-		t.Fatalf("default cluster-friendly-name = %q, want empty string", got["value"])
-	}
+	assert.Equal(t, "", got["value"], "default cluster-friendly-name")
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-friendly-name", map[string]string{"value": "Lab 3 desks"})
 	got = callAndDecode[map[string]string](t, m, rw, 3, "settings/get-cluster-friendly-name", nil)
-	if got["value"] != "Lab 3 desks" {
-		t.Fatalf("after set, cluster-friendly-name = %q, want %q", got["value"], "Lab 3 desks")
-	}
+	assert.Equal(t, "Lab 3 desks", got["value"], "after set, cluster-friendly-name")
 }
 
 // TestConnectionEndpointsAreNotRequestMethods locks down the
@@ -326,23 +295,15 @@ func TestSetClusterIDEmitsConnectionIdentityNotification(t *testing.T) {
 	_ = callAndDecode[map[string]bool](t, m, rw, 1, "settings/set-cluster-id", map[string]string{"value": "cluster-xyz"})
 	n := expectNotification(t, rw, "connection/cluster-identity")
 	var p ClusterIdentityParams
-	if err := json.Unmarshal(n.Params, &p); err != nil {
-		t.Fatalf("decode params: %v", err)
-	}
-	if p.ID != "cluster-xyz" {
-		t.Errorf("id = %q, want %q", p.ID, "cluster-xyz")
-	}
+	require.NoError(t, json.Unmarshal(n.Params, &p), "decode params")
+	assert.Equal(t, "cluster-xyz", p.ID)
 
 	// Clearing the id must produce another push with the empty
 	// value so the UI flips any "in a cluster" affordance off.
 	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-id", map[string]string{"value": ""})
 	n = expectNotification(t, rw, "connection/cluster-identity")
-	if err := json.Unmarshal(n.Params, &p); err != nil {
-		t.Fatalf("decode params: %v", err)
-	}
-	if p.ID != "" {
-		t.Errorf("post-clear id = %q, want empty", p.ID)
-	}
+	require.NoError(t, json.Unmarshal(n.Params, &p), "decode params")
+	assert.Equal(t, "", p.ID, "post-clear id")
 }
 
 // TestSetClusterAutoSyncEmitsConnectionAutoSyncNotification verifies
@@ -354,21 +315,13 @@ func TestSetClusterAutoSyncEmitsConnectionAutoSyncNotification(t *testing.T) {
 	_ = callAndDecode[map[string]bool](t, m, rw, 1, "settings/set-cluster-auto-sync", map[string]bool{"value": true})
 	n := expectNotification(t, rw, "connection/cluster-auto-sync")
 	var p ClusterAutoSyncParams
-	if err := json.Unmarshal(n.Params, &p); err != nil {
-		t.Fatalf("decode params: %v", err)
-	}
-	if p.Value != true {
-		t.Errorf("value = %v, want true", p.Value)
-	}
+	require.NoError(t, json.Unmarshal(n.Params, &p), "decode params")
+	assert.True(t, p.Value, "value")
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-auto-sync", map[string]bool{"value": false})
 	n = expectNotification(t, rw, "connection/cluster-auto-sync")
-	if err := json.Unmarshal(n.Params, &p); err != nil {
-		t.Fatalf("decode params: %v", err)
-	}
-	if p.Value != false {
-		t.Errorf("value = %v, want false", p.Value)
-	}
+	require.NoError(t, json.Unmarshal(n.Params, &p), "decode params")
+	assert.False(t, p.Value, "value")
 }
 
 // TestNoPushSettersDoNotEmit pins down the scoping of the
@@ -396,14 +349,10 @@ func TestRunEmitsOnlyReadyOnStartup(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	seed := `{"cluster_id":"cluster-xyz","cluster_friendly_name":"Lab 3","cluster_auto_sync":true}`
-	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
-		t.Fatalf("seed write: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(seed), 0o644), "seed write")
 	rw := newCaptureRW()
 	m, err := NewManager(NewCodec(rw), path)
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	require.NoError(t, err, "NewManager")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -415,12 +364,8 @@ func TestRunEmitsOnlyReadyOnStartup(t *testing.T) {
 
 	ready := expectNotification(t, rw, "ready")
 	var rp ReadyParams
-	if err := json.Unmarshal(ready.Params, &rp); err != nil {
-		t.Fatalf("decode ready: %v", err)
-	}
-	if rp.Version == "" {
-		t.Errorf("ready.version is empty")
-	}
+	require.NoError(t, json.Unmarshal(ready.Params, &rp), "decode ready")
+	assert.NotEqual(t, "", rp.Version, "ready.version is empty")
 
 	assertNoNotification(t, rw)
 
@@ -428,7 +373,7 @@ func TestRunEmitsOnlyReadyOnStartup(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after cancel")
+		require.FailNow(t, "Run did not return after cancel")
 	}
 }
 
@@ -439,19 +384,13 @@ func TestForcePortsRoundTrip(t *testing.T) {
 	m, rw, path := newTestManager(t)
 
 	got := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-force-ports", nil)
-	if got["value"] != true {
-		t.Fatalf("default force-ports = %v, want true", got["value"])
-	}
+	assert.True(t, got["value"], "default force-ports")
 
 	ok := callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-force-ports", map[string]bool{"value": true})
-	if !ok["ok"] {
-		t.Fatalf("set result = %+v", ok)
-	}
+	assert.True(t, ok["ok"], "set result (%v)", ok)
 
 	got = callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-force-ports", nil)
-	if got["value"] != true {
-		t.Fatalf("after set, value = %v, want true", got["value"])
-	}
+	assert.True(t, got["value"], "after set, value")
 
 	// And flipping back to false must persist too — it's the
 	// difference between the default and an explicitly-set "off",
@@ -459,20 +398,14 @@ func TestForcePortsRoundTrip(t *testing.T) {
 	// save path either way.
 	_ = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-force-ports", map[string]bool{"value": false})
 	got = callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-force-ports", nil)
-	if got["value"] != false {
-		t.Fatalf("after clear, value = %v, want false", got["value"])
-	}
+	assert.False(t, got["value"], "after clear, value")
 
 	// A saved opt-out must beat the default-on policy after restart.
 	rw2 := newCaptureRW()
 	m2, err := NewManager(NewCodec(rw2), path)
-	if err != nil {
-		t.Fatalf("reload manager: %v", err)
-	}
+	require.NoError(t, err, "reload manager")
 	got = callAndDecode[map[string]bool](t, m2, rw2, 6, "settings/get-force-ports", nil)
-	if got["value"] != false {
-		t.Fatalf("reloaded force-ports = %v, want explicit false", got["value"])
-	}
+	assert.False(t, got["value"], "reloaded force-ports")
 }
 
 // TestSaveFailureRejectsValueAndDoesNotPersist locks down the
@@ -495,15 +428,11 @@ func TestSaveFailureRejectsValueAndDoesNotPersist(t *testing.T) {
 	// 0o700 work here; the dir's mode doesn't matter, only its
 	// existence-as-a-directory at exactly the path WriteFile is
 	// about to use.
-	if err := os.MkdirAll(path+".tmp", 0o700); err != nil {
-		t.Fatalf("seed blocker dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(path+".tmp", 0o700), "seed blocker dir")
 
 	rw := newCaptureRW()
 	m, err := NewManager(NewCodec(rw), path)
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	require.NoError(t, err, "NewManager")
 
 	// Set must be rejected: handleMessage returns -32603 when
 	// save() errors out, BEFORE the in-memory state is touched.
@@ -514,34 +443,22 @@ func TestSaveFailureRejectsValueAndDoesNotPersist(t *testing.T) {
 	// value must not be visible to a subsequent getter, even on the
 	// same manager instance.
 	got := callAndDecode[map[string]string](t, m, rw, 2, "settings/get-cluster-id", nil)
-	if got["value"] != "" {
-		t.Errorf("rejected cluster-id leaked into in-memory state: got %q, want \"\"", got["value"])
-	}
+	assert.Equal(t, "", got["value"], "rejected cluster-id leaked into in-memory state:")
 
 	// Remove the blocker so the next save() can succeed. We use a
 	// different setter (force-ports) so the persisted file proves
 	// "cluster_id was never written" rather than "the file happens
 	// to record cluster_id: \"\" (the default)".
-	if err := os.RemoveAll(path + ".tmp"); err != nil {
-		t.Fatalf("clear blocker: %v", err)
-	}
+	require.NoError(t, os.RemoveAll(path+".tmp"), "clear blocker")
 	_ = callAndDecode[map[string]bool](t, m, rw, 3, "settings/set-force-ports",
 		map[string]bool{"value": true})
 
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read settings: %v", err)
-	}
+	require.NoError(t, err, "read settings")
 	var onDisk Settings
-	if err := json.Unmarshal(data, &onDisk); err != nil {
-		t.Fatalf("decode settings: %v\nraw: %s", err, data)
-	}
-	if onDisk.ClusterID != "" {
-		t.Errorf("rejected cluster_id was persisted to disk: %+v", onDisk)
-	}
-	if !onDisk.ForcePorts {
-		t.Errorf("subsequent successful set was not persisted: %+v", onDisk)
-	}
+	require.NoError(t, json.Unmarshal(data, &onDisk), "decode settings, raw: %s", data)
+	assert.Equal(t, "", onDisk.ClusterID, "rejected cluster_id was persisted to disk (%v)", onDisk)
+	assert.True(t, onDisk.ForcePorts, "subsequent successful set was not persisted (%v)", onDisk)
 }
 
 func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
@@ -550,9 +467,7 @@ func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
 
 	rw1 := newCaptureRW()
 	m1, err := NewManager(NewCodec(rw1), path)
-	if err != nil {
-		t.Fatalf("NewManager (first): %v", err)
-	}
+	require.NoError(t, err, "NewManager (first)")
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 1, "settings/set-cluster-auto-sync", map[string]bool{"value": true})
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 2, "settings/set-cluster-id", map[string]string{"value": "cluster-abc"})
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 3, "settings/set-cluster-friendly-name", map[string]string{"value": "Lab 3 desks"})
@@ -562,26 +477,16 @@ func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
 	// the first one wrote — proves load() correctly hydrates settings.
 	rw2 := newCaptureRW()
 	m2, err := NewManager(NewCodec(rw2), path)
-	if err != nil {
-		t.Fatalf("NewManager (second): %v", err)
-	}
+	require.NoError(t, err, "NewManager (second)")
 
 	sync := callAndDecode[map[string]bool](t, m2, rw2, 1, "settings/get-cluster-auto-sync", nil)
-	if sync["value"] != true {
-		t.Fatalf("cluster-auto-sync lost: %v", sync)
-	}
+	assert.True(t, sync["value"], "cluster-auto-sync lost (%v)", sync)
 	id := callAndDecode[map[string]string](t, m2, rw2, 2, "settings/get-cluster-id", nil)
-	if id["value"] != "cluster-abc" {
-		t.Fatalf("cluster-id lost or mangled: %q", id["value"])
-	}
+	assert.Equal(t, "cluster-abc", id["value"], "cluster-id lost or mangled")
 	name := callAndDecode[map[string]string](t, m2, rw2, 3, "settings/get-cluster-friendly-name", nil)
-	if name["value"] != "Lab 3 desks" {
-		t.Fatalf("cluster-friendly-name lost or mangled: %q", name["value"])
-	}
+	assert.Equal(t, "Lab 3 desks", name["value"], "cluster-friendly-name lost or mangled")
 	ports := callAndDecode[map[string]bool](t, m2, rw2, 4, "settings/get-force-ports", nil)
-	if ports["value"] != true {
-		t.Fatalf("force-ports lost: %v", ports["value"])
-	}
+	assert.True(t, ports["value"], "force-ports lost")
 }
 
 // TestSchemaEvolutionIgnoresUnknownKeysIncludingRemovedSettings
@@ -609,43 +514,30 @@ func TestSchemaEvolutionIgnoresUnknownKeysIncludingRemovedSettings(t *testing.T)
   "cluster_id": "kept",
   "cluster_friendly_name": "also kept"
 }`)
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		t.Fatalf("seed write: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, raw, 0o644), "seed write")
 
 	rw := newCaptureRW()
 	m, err := NewManager(NewCodec(rw), path)
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	require.NoError(t, err, "NewManager")
 
 	// Known fields survived.
 	id := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-id", nil)
-	if id["value"] != "kept" {
-		t.Fatalf("cluster-id = %q, want %q", id["value"], "kept")
-	}
+	assert.Equal(t, "kept", id["value"])
 	name := callAndDecode[map[string]string](t, m, rw, 2, "settings/get-cluster-friendly-name", nil)
-	if name["value"] != "also kept" {
-		t.Fatalf("cluster-friendly-name = %q, want %q", name["value"], "also kept")
-	}
+	assert.Equal(t, "also kept", name["value"])
 
 	// Force a save by toggling something unrelated, then assert the
 	// re-serialized file no longer contains any of the unknown keys.
 	_ = callAndDecode[map[string]bool](t, m, rw, 3, "settings/set-cluster-auto-sync", map[string]bool{"value": false})
 
 	saved, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("re-read file: %v", err)
-	}
+	require.NoError(t, err, "re-read file")
 	var asMap map[string]any
-	if err := json.Unmarshal(saved, &asMap); err != nil {
-		t.Fatalf("re-decode: %v", err)
-	}
-	for _, removed := range []string{"auto_join_invites", "cluster_secret", "cluster_identity", "future_setting"} {
-		if _, ok := asMap[removed]; ok {
-			t.Errorf("removed/unknown key %q survived save(): %s", removed, saved)
-		}
-	}
+	require.NoError(t, json.Unmarshal(saved, &asMap), "re-decode")
+	assert.NotContains(t, asMap, "auto_join_invites", "removed/unknown key must not be saved")
+	assert.NotContains(t, asMap, "cluster_secret", "removed/unknown key must not be saved")
+	assert.NotContains(t, asMap, "cluster_identity", "removed/unknown key must not be saved")
+	assert.NotContains(t, asMap, "future_setting", "removed/unknown key must not be saved")
 }
 
 // TestLoadMalformedFileRenamesAsideAndStartsWithDefaults locks down
@@ -658,34 +550,24 @@ func TestSchemaEvolutionIgnoresUnknownKeysIncludingRemovedSettings(t *testing.T)
 func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte("not valid json {{{"), 0o644); err != nil {
-		t.Fatalf("seed write: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("not valid json {{{"), 0o644), "seed write")
 
 	rw := newCaptureRW()
 	m, err := NewManager(NewCodec(rw), path)
-	if err != nil {
-		t.Fatalf("NewManager must not error on malformed file, got %v", err)
-	}
+	require.NoError(t, err, "NewManager must not error on malformed file")
 
 	// In-memory state is the zero-value defaults, not whatever was
 	// in the bad file.
 	id := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-id", nil)
-	if id["value"] != "" {
-		t.Errorf("expected default cluster-id to be empty, got %q", id["value"])
-	}
+	assert.Equal(t, "", id["value"], "expected default cluster-id to be empty")
 	fp := callAndDecode[map[string]bool](t, m, rw, 2, "settings/get-force-ports", nil)
-	if fp["value"] != true {
-		t.Errorf("expected default force-ports to be true, got %v", fp["value"])
-	}
+	assert.True(t, fp["value"], "expected default force-ports to be true")
 
 	// The corrupt file got renamed aside with a .corrupt-<ts>
 	// suffix. The original path is gone (the next save will
 	// recreate it from defaults).
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
+	require.NoError(t, err, "read dir")
 	foundBackup := false
 	foundOriginal := false
 	for _, e := range entries {
@@ -696,28 +578,18 @@ func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
 			foundBackup = true
 		}
 	}
-	if !foundBackup {
-		t.Errorf("expected a settings.json.corrupt-* backup in %s, got %v", dir, entries)
-	}
-	if foundOriginal {
-		t.Errorf("expected the bad settings.json to have been renamed away, but it's still present")
-	}
+	assert.True(t, foundBackup, "expected a settings.json.corrupt-* backup in (%v, %v)", dir, entries)
+	assert.False(t, foundOriginal, "expected the bad settings.json to have been renamed away, but it's still present")
 
 	// A subsequent save MUST succeed and re-create the file with
 	// valid JSON — proving the degraded path is genuinely
 	// recoverable, not just non-fatal-on-load.
 	_ = callAndDecode[map[string]bool](t, m, rw, 3, "settings/set-cluster-id", map[string]string{"value": "cluster-zzz"})
 	saved, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("re-read recovered file: %v", err)
-	}
+	require.NoError(t, err, "re-read recovered file")
 	var asMap map[string]any
-	if err := json.Unmarshal(saved, &asMap); err != nil {
-		t.Fatalf("recovered file is not valid JSON: %v\nraw: %s", err, saved)
-	}
-	if asMap["cluster_id"] != "cluster-zzz" {
-		t.Errorf("recovered file missing the new setting: %s", saved)
-	}
+	require.NoError(t, json.Unmarshal(saved, &asMap), "recovered file is not valid JSON, raw: %s", saved)
+	assert.Equal(t, "cluster-zzz", asMap["cluster_id"], "recovered file missing the new setting (%v)", saved)
 }
 
 func TestTypeValidationRejectsWrongTypeAndMissingValue(t *testing.T) {
@@ -727,41 +599,36 @@ func TestTypeValidationRejectsWrongTypeAndMissingValue(t *testing.T) {
 	m.handleMessage(requestMessageRaw(1, "settings/set-cluster-auto-sync",
 		json.RawMessage(`{"value":"not-a-bool"}`)))
 	resp := readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("wrong-type bool error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "wrong-type bool error")
+	assert.Equal(t, -32602, resp.Error.Code, "wrong-type bool error")
 
 	// Missing `value` field.
 	m.handleMessage(requestMessageRaw(2, "settings/set-cluster-auto-sync",
 		json.RawMessage(`{}`)))
 	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("missing-value error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "missing-value error")
+	assert.Equal(t, -32602, resp.Error.Code, "missing-value error")
 
 	// Wrong type for cluster-id (number where string expected).
 	m.handleMessage(requestMessageRaw(3, "settings/set-cluster-id",
 		json.RawMessage(`{"value":123}`)))
 	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("wrong-type cluster-id error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "wrong-type cluster-id error")
+	assert.Equal(t, -32602, resp.Error.Code, "wrong-type cluster-id error")
 
 	// Wrong type for cluster-friendly-name (bool where string expected).
 	m.handleMessage(requestMessageRaw(4, "settings/set-cluster-friendly-name",
 		json.RawMessage(`{"value":true}`)))
 	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("wrong-type cluster-friendly-name error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "wrong-type cluster-friendly-name error")
+	assert.Equal(t, -32602, resp.Error.Code, "wrong-type cluster-friendly-name error")
 
 	// Wrong type for the force-ports bool (a string).
 	m.handleMessage(requestMessageRaw(5, "settings/set-force-ports",
 		json.RawMessage(`{"value":"on"}`)))
 	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("wrong-type force-ports error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "wrong-type force-ports error")
+	assert.Equal(t, -32602, resp.Error.Code, "wrong-type force-ports error")
 }
 
 func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {
@@ -776,22 +643,19 @@ func TestLogSetLevelRequestAndNotification(t *testing.T) {
 	m.handleMessage(requestMessage(1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
 	resp := readCaptureFrame(t, rw)
 	result := decodeResult[map[string]string](t, resp)
-	if result["level"] != "debug" {
-		t.Fatalf("log/set-level result = %#v", result)
-	}
+	assert.Equal(t, "debug", result["level"], "log/set-level result (%v)", result)
 
 	// Invalid level: -32602 in request form.
 	m.handleMessage(requestMessage(2, applog.SetLevelMethod, applog.SetLevelParams{Level: "shouty"}))
 	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("invalid log/set-level error = %+v", resp.Error)
-	}
+	require.NotNil(t, resp.Error, "invalid log/set-level error")
+	assert.Equal(t, -32602, resp.Error.Code, "invalid log/set-level error")
 
 	// Notification form (no id) — applied silently, no response frame.
 	m.handleMessage(notificationMessage(applog.SetLevelMethod, applog.SetLevelParams{Level: "info"}))
 	select {
 	case f := <-rw.responses:
-		t.Fatalf("log/set-level notification should not respond, got: %s", f)
+		require.FailNow(t, fmt.Sprintf("log/set-level notification should not respond (%v)", f))
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -803,9 +667,7 @@ func TestNotificationIsIgnored(t *testing.T) {
 
 	// State should be unchanged (no response, and a get returns the default).
 	got := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-id", nil)
-	if got["value"] != "" {
-		t.Fatalf("notification mutated state: %v", got)
-	}
+	assert.Equal(t, "", got["value"], "notification mutated state (%v)", got)
 }
 
 func TestShutdownRequestCancelsRun(t *testing.T) {
@@ -817,9 +679,7 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 	defer client.Close()
 
 	mgr, err := NewManager(NewCodec(server), path)
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	require.NoError(t, err, "NewManager")
 	done := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -829,39 +689,28 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 
 	reader := bufio.NewReader(client)
 	ready := readPipeFrame(t, client, reader)
-	if ready.Method != "ready" {
-		t.Fatalf("first frame = %+v", ready)
-	}
+	assert.Equal(t, "ready", ready.Method, "first frame (%v)", ready)
 
 	writePipeRequest(t, client, 7, "shutdown", nil)
 	resp := readPipeFrame(t, client, reader)
-	if !responseWithID(7)(resp) || resp.Error != nil {
-		t.Fatalf("shutdown response = %+v", resp)
-	}
+	assert.True(t, responseWithID(7)(resp), "shutdown response (%v)", resp)
+	require.Nil(t, resp.Error, "shutdown response (%v)", resp)
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run returned error: %v", err)
-		}
+		require.NoError(t, err, "Run returned error")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after shutdown")
+		require.FailNow(t, "Run did not return after shutdown")
 	}
 }
 
 func readPipeFrame(t *testing.T, conn net.Conn, reader *bufio.Reader) Message {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		t.Fatalf("read pipe frame: %v", err)
-	}
+	require.NoError(t, err, "read pipe frame")
 	var msg Message
-	if err := json.Unmarshal(line, &msg); err != nil {
-		t.Fatalf("decode pipe frame %q: %v", line, err)
-	}
+	require.NoError(t, json.Unmarshal(line, &msg), "decode pipe frame %q", line)
 	return msg
 }
 
@@ -871,9 +720,7 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 	if params != nil {
 		var err error
 		raw, err = json.Marshal(params)
-		if err != nil {
-			t.Fatalf("marshal params: %v", err)
-		}
+		require.NoError(t, err, "marshal params")
 	}
 	msg := struct {
 		JSONRPC string          `json:"jsonrpc"`
@@ -887,11 +734,8 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 		Params:  raw,
 	}
 	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
+	require.NoError(t, err, "marshal request")
 	data = append(data, '\n')
-	if _, err := conn.Write(data); err != nil {
-		t.Fatalf("write request: %v", err)
-	}
+	_, err = conn.Write(data)
+	require.NoError(t, err, "write request")
 }

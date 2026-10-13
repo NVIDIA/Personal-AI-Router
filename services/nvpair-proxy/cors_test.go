@@ -9,6 +9,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 	"os"
@@ -51,18 +55,16 @@ func corsEngine(t *testing.T, tc engineCase, allowed string, status int) *httpte
 		w.Header().Set("Content-Type", "application/json")
 		if status != 200 {
 			w.WriteHeader(status)
-			if _, err := io.WriteString(w, "engine refused"); err != nil {
-				t.Error(err)
-			}
+			_, err := io.WriteString(w, "engine refused")
+			assert.NoError(t, err)
 			return
 		}
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)
 			return
 		}
-		if _, err := io.WriteString(w, corsModels(tc)); err != nil {
-			t.Error(err)
-		}
+		_, err := io.WriteString(w, corsModels(tc))
+		assert.NoError(t, err)
 	}))
 }
 func proxyForCORSTargets(t *testing.T, tc engineCase, servers ...*httptest.Server) *facade {
@@ -86,11 +88,10 @@ func TestCORSOriginDenialIsNotRewritten(t *testing.T) {
 					if method == "OPTIONS" && status == 200 {
 						want = 204
 					}
-					if rec.Code != want || rec.Header().Get("Access-Control-Allow-Origin") != "" {
-						t.Fatalf("%s: %d %v", method, rec.Code, rec.Header())
-					}
-					if status != 200 && rec.Body.String() != "engine refused" {
-						t.Fatal("upstream error body changed")
+					require.Equal(t, want, rec.Code, " (%v)", method)
+					require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), " (%v)", method)
+					if status != 200 {
+						require.Equal(t, "engine refused", rec.Body.String(), "upstream error body changed")
 					}
 				}
 			})
@@ -118,14 +119,12 @@ func TestCORSClusterRequiresEveryRespondingTarget(t *testing.T) {
 				p := proxyForCORSTargets(t, tc, a, b)
 				rec := httptest.NewRecorder()
 				p.handlePlain(rec, corsRequest("OPTIONS", tc.inferencePath, "http://app.test"))
-				if rec.Code != policy.want {
-					t.Fatalf("status=%d want=%d", rec.Code, policy.want)
-				}
-				if policy.want != 204 && rec.Header().Get("Access-Control-Allow-Origin") != "" {
-					t.Fatal("granted denied origin")
-				}
-				if policy.want == 204 && (rec.Header().Get("Access-Control-Max-Age") == "" || rec.Header().Get("Access-Control-Allow-Credentials") != "true") {
-					t.Fatal("invalid agreement")
+				require.Equal(t, policy.want, rec.Code, "status")
+				if policy.want == 204 {
+					require.NotEmpty(t, rec.Header().Get("Access-Control-Max-Age"), "invalid agreement")
+					require.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "invalid agreement")
+				} else {
+					require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"), "granted denied origin")
 				}
 			})
 		}
@@ -153,15 +152,13 @@ func TestCORSModelListRequiresEveryRespondingTarget(t *testing.T) {
 				p := proxyForCORSTargets(t, tc, a, b)
 				rec := httptest.NewRecorder()
 				p.handlePlain(rec, corsRequest("GET", tc.modelListPath, "http://app.test"))
-				if rec.Code != policy.want {
-					t.Fatalf("status=%d want=%d body=%s", rec.Code, policy.want, rec.Body)
-				}
+				require.Equal(t, policy.want, rec.Code, "status")
 				if policy.want != 200 {
-					if strings.Contains(rec.Body.String(), "private-model") || rec.Header().Get("Access-Control-Allow-Origin") != "" {
-						t.Fatal("partial inventory exposed")
-					}
-				} else if rec.Header().Get("Access-Control-Allow-Origin") != "http://app.test" || rec.Header().Get("Access-Control-Allow-Credentials") != "true" {
-					t.Fatal("shared permissions missing")
+					require.NotContains(t, rec.Body.String(), "private-model", "partial inventory exposed")
+					require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "partial inventory exposed")
+				} else {
+					require.Equal(t, "http://app.test", rec.Header().Get("Access-Control-Allow-Origin"), "shared permissions missing")
+					require.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "shared permissions missing")
 				}
 			})
 		}
@@ -180,21 +177,17 @@ func TestCORSModelListSeparatesSilenceFromDenial(t *testing.T) {
 		rec := httptest.NewRecorder()
 		proxyForCORSTargets(t, tc, allowing, offline).
 			handlePlain(rec, corsRequest("GET", tc.modelListPath, "http://app.test"))
-		if rec.Code != 200 || rec.Header().Get("Access-Control-Allow-Origin") != "http://app.test" {
-			t.Fatalf("an offline engine denied the browser: status=%d body=%s", rec.Code, rec.Body)
-		}
-		if !strings.Contains(rec.Body.String(), "private-model") {
-			t.Fatal("the reachable engine's inventory was dropped")
-		}
+		require.Equal(t, 200, rec.Code, "an offline engine denied the browser: status")
+		require.Equal(t, "http://app.test", rec.Header().Get("Access-Control-Allow-Origin"), "an offline engine denied the browser: status")
+		require.Contains(t, rec.Body.String(), "private-model", "the reachable engine's inventory was dropped")
 
 		refusing := corsEngine(t, tc, "http://other.test", 200)
 		defer refusing.Close()
 		rec = httptest.NewRecorder()
 		proxyForCORSTargets(t, tc, allowing, refusing).
 			handlePlain(rec, corsRequest("GET", tc.modelListPath, "http://app.test"))
-		if rec.Code != 403 || strings.Contains(rec.Body.String(), "private-model") {
-			t.Fatalf("a live refusal was overridden: status=%d body=%s", rec.Code, rec.Body)
-		}
+		require.Equal(t, 403, rec.Code, "a live refusal was overridden: status")
+		require.NotContains(t, rec.Body.String(), "private-model", "a live refusal was overridden: status")
 	})
 }
 func TestCORSNoRetryOnPermissionDenial(t *testing.T) {
@@ -206,9 +199,8 @@ func TestCORSNoRetryOnPermissionDenial(t *testing.T) {
 			p := proxyForCORSTargets(t, tc, a, b)
 			rec := httptest.NewRecorder()
 			p.handlePlain(rec, corsRequest("GET", "/policy", "http://app.test"))
-			if rec.Code != status || calls.Load() != 0 {
-				t.Fatal("retried a permission denial")
-			}
+			require.Equal(t, status, rec.Code, "retried a permission denial")
+			require.Equal(t, int32(0), calls.Load(), "retried a permission denial")
 			a.Close()
 			b.Close()
 		}
@@ -238,20 +230,15 @@ func TestCORSOrdinaryOptionsAndPolicyChanges(t *testing.T) {
 		req := httptest.NewRequest("OPTIONS", "/policy", nil)
 		rec := httptest.NewRecorder()
 		p.handleHTTP(rec, req)
-		if rec.Code != 200 || calls.Load() != 0 {
-			t.Fatal("ordinary OPTIONS was synthesized or fanned out")
-		}
+		require.Equal(t, 200, rec.Code, "ordinary OPTIONS was synthesized or fanned out")
+		require.Equal(t, int32(0), calls.Load(), "ordinary OPTIONS was synthesized or fanned out")
 		rec = httptest.NewRecorder()
 		p.handleHTTP(rec, corsRequest("OPTIONS", "/policy", "http://app.test"))
-		if rec.Code != 204 {
-			t.Fatal("initial agreement failed")
-		}
+		require.Equal(t, 204, rec.Code, "initial agreement failed")
 		origin.Store("http://other.test")
 		rec = httptest.NewRecorder()
 		p.handleHTTP(rec, corsRequest("OPTIONS", "/policy", "http://app.test"))
-		if rec.Code != 403 {
-			t.Fatal("cached obsolete permission")
-		}
+		require.Equal(t, 403, rec.Code, "cached obsolete permission")
 	})
 }
 func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
@@ -261,24 +248,19 @@ func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
 		defer sink.Close()
 		for _, redirect := range []bool{false, true} {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Origin") != "http://app.test" || r.Header.Get("X-Test") != "end-to-end" {
-					t.Error("CORS inputs lost")
-				}
-				if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
-					t.Error("caller credentials forwarded to model-list candidate")
-				}
-				if r.Header.Get("X-Hop") != "" {
-					t.Error("hop header forwarded")
-				}
+				assert.Equal(t, "http://app.test", r.Header.Get("Origin"), "CORS inputs lost")
+				assert.Equal(t, "end-to-end", r.Header.Get("X-Test"), "CORS inputs lost")
+				assert.Empty(t, r.Header.Get("Authorization"), "caller credentials forwarded to model-list candidate")
+				assert.Empty(t, r.Header.Get("Cookie"), "caller credentials forwarded to model-list candidate")
+				assert.Equal(t, "", r.Header.Get("X-Hop"), "hop header forwarded")
 				w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
 				w.Header().Set("Vary", "X-Test")
 				if redirect {
 					http.Redirect(w, r, sink.URL, 307)
 					return
 				}
-				if _, err := io.WriteString(w, corsModels(tc)); err != nil {
-					t.Error(err)
-				}
+				_, err := io.WriteString(w, corsModels(tc))
+				assert.NoError(t, err)
 			}))
 			p := proxyForCORSTargets(t, tc, upstream, upstream)
 			req := corsRequest("GET", tc.modelListPath, "http://app.test")
@@ -293,17 +275,13 @@ func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
 			if redirect {
 				want = 502
 			}
-			if rec.Code != want {
-				t.Fatalf("status %d", rec.Code)
-			}
-			if !redirect && !strings.Contains(strings.Join(rec.Header().Values("Vary"), ","), "X-Test") {
-				t.Fatal("Vary lost")
+			require.Equal(t, want, rec.Code, "status")
+			if !redirect {
+				require.Contains(t, strings.Join(rec.Header().Values("Vary"), ","), "X-Test", "Vary lost")
 			}
 			upstream.Close()
 		}
-		if leaked.Load() != 0 {
-			t.Fatal("followed aggregate redirect")
-		}
+		require.Equal(t, int32(0), leaked.Load(), "followed aggregate redirect")
 	})
 }
 func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
@@ -313,16 +291,10 @@ func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
 		clustertrusttest.Join(t, bDir, "cluster", "b")
 		pin := func(dst, src, id string) {
 			pem, err := os.ReadFile(filepath.Join(src, "node.crt"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			body, _ := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(pem)})
-			if err = os.MkdirAll(filepath.Join(dst, "trusted"), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err = os.WriteFile(filepath.Join(dst, "trusted", id+".json"), body, 0600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(filepath.Join(dst, "trusted"), 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(dst, "trusted", id+".json"), body, 0600))
 		}
 		pin(aDir, bDir, "b")
 		pin(bDir, aDir, "a")
@@ -334,9 +306,7 @@ func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
 		peer := proxyForCORSTargets(t, tc, other)
 		peer.host.mesh = clustertrust.Open(bDir)
 		backend := nodeFor(t, "local", local.URL)
-		if err := peer.setLocalBackend(localBackend{Host: backend.Addresses[0], Port: backend.Port, Healthy: true}); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, peer.setLocalBackend(localBackend{Host: backend.Addresses[0], Port: backend.Port, Healthy: true}))
 		ingress := httptest.NewUnstartedServer(http.HandlerFunc(peer.handleClusterIngress))
 		ingress.TLS = peer.host.mesh.ServerTLSConfig()
 		ingress.StartTLS()
@@ -354,17 +324,11 @@ func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
 				if origin == "http://app.test" {
 					expected = origin
 				}
-				if rec.Header().Get("Access-Control-Allow-Origin") != expected {
-					t.Fatalf("paired policy lost: %d %v", rec.Code, rec.Header())
-				}
-				if rec.Code != 200 && rec.Code != 204 {
-					t.Fatalf("paired status %d: %s", rec.Code, rec.Body)
-				}
+				require.Equal(t, expected, rec.Header().Get("Access-Control-Allow-Origin"), "paired policy lost")
+				require.Contains(t, []int{http.StatusOK, http.StatusNoContent}, rec.Code, "paired status")
 			}
 		}
-		if unexpected.Load() != 0 {
-			t.Fatal("paired ingress routed onward")
-		}
+		require.Equal(t, int32(0), unexpected.Load(), "paired ingress routed onward")
 	})
 }
 
@@ -377,9 +341,8 @@ func TestCORSBrowserFixture(t *testing.T) {
 		}
 		page := func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
-			if _, err := io.WriteString(w, "<!doctype html><title>CORS test</title>"); err != nil {
-				t.Error(err)
-			}
+			_, err := io.WriteString(w, "<!doctype html><title>CORS test</title>")
+			assert.NoError(t, err)
 		}
 		allowed := httptest.NewServer(http.HandlerFunc(page))
 		defer allowed.Close()
@@ -396,21 +359,17 @@ func TestCORSBrowserFixture(t *testing.T) {
 		unavailable := httptest.NewServer(http.HandlerFunc(none.handlePlain))
 		defer unavailable.Close()
 		data, _ := json.Marshal(map[string]string{"allowed": allowed.URL, "denied": denied.URL, "proxy": proxy.URL, "engine": engine.URL, "unavailable": unavailable.URL, "models": tc.modelListPath})
-		if err := os.WriteFile(file, data, 0600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(file, data, 0600))
 		deadline := time.After(60 * time.Second)
 		tick := time.NewTicker(100 * time.Millisecond)
 		defer tick.Stop()
 		for {
 			select {
 			case <-deadline:
-				t.Fatal("browser fixture timed out")
+				require.FailNow(t, "browser fixture timed out")
 			case <-tick.C:
 				if _, err := os.Stat(file + ".done"); err == nil {
-					if err := os.Remove(file + ".done"); err != nil {
-						t.Fatal(err)
-					}
+					require.NoError(t, os.Remove(file+".done"))
 					return
 				}
 			}
@@ -425,20 +384,16 @@ func TestCORSExternalEngineParity(t *testing.T) {
 	base := os.Getenv("PAIR_CORS_PARITY_URL")
 	if executable := os.Getenv("PAIR_CORS_OLLAMA_EXECUTABLE"); base == "" && executable != "" {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		address := ln.Addr().String()
-		if err := ln.Close(); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, ln.Close())
 		base = "http://" + address
 		ctx, cancel := context.WithCancel(context.Background())
 		command := exec.CommandContext(ctx, executable, "serve")
 		command.Env = append(os.Environ(), "OLLAMA_HOST="+address, "OLLAMA_ORIGINS=http://wrong.com", "OLLAMA_MODELS="+t.TempDir())
 		if err := command.Start(); err != nil {
 			cancel()
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 		t.Cleanup(func() { cancel(); _ = command.Wait() })
 		ready := false
@@ -446,9 +401,7 @@ func TestCORSExternalEngineParity(t *testing.T) {
 		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
 			resp, err := client.Get(base + "/api/version")
 			if err == nil {
-				if err := resp.Body.Close(); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, resp.Body.Close())
 				if resp.StatusCode == 200 {
 					ready = true
 					break
@@ -456,9 +409,7 @@ func TestCORSExternalEngineParity(t *testing.T) {
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		if !ready {
-			t.Fatal("isolated Ollama did not become ready")
-		}
+		require.True(t, ready, "isolated Ollama did not become ready")
 	}
 	if base == "" {
 		t.Skip("external engine parity is opt-in")
@@ -473,38 +424,31 @@ func TestCORSExternalEngineParity(t *testing.T) {
 		for _, method := range []string{"OPTIONS", "GET"} {
 			fetch := func(target string) (*http.Response, string) {
 				req, err := http.NewRequest(method, target+"/", nil)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				req.Header.Set("Origin", origin)
 				if method == "OPTIONS" {
 					req.Header.Set("Access-Control-Request-Method", "GET")
 				}
 				resp, err := client.Do(req)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				defer func() {
-					if err := resp.Body.Close(); err != nil {
-						t.Error(err)
-					}
+					assert.NoError(t, resp.Body.Close())
 				}()
 				body, err := io.ReadAll(resp.Body)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				return resp, string(body)
 			}
 			direct, directBody := fetch(base)
 			forwarded, body := fetch(proxy.URL)
-			if direct.StatusCode != forwarded.StatusCode || directBody != body {
-				t.Fatalf("%s %s: direct=%d proxy=%d body mismatch=%v", method, origin, direct.StatusCode, forwarded.StatusCode, directBody != body)
-			}
-			for _, name := range []string{"Access-Control-Allow-Origin", "Access-Control-Allow-Headers", "Access-Control-Allow-Methods", "Access-Control-Allow-Credentials", "Access-Control-Max-Age", "Access-Control-Expose-Headers", "Vary"} {
-				if strings.Join(direct.Header.Values(name), ",") != strings.Join(forwarded.Header.Values(name), ",") {
-					t.Fatalf("header %s changed", name)
-				}
-			}
+			require.Equal(t, direct.StatusCode, forwarded.StatusCode, " (%v, %v)", method, origin)
+			require.Equal(t, directBody, body, " (%v, %v)", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Origin"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Origin"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Headers"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Headers"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Methods"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Methods"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Allow-Credentials"), ","), strings.Join(forwarded.Header.Values("Access-Control-Allow-Credentials"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Max-Age"), ","), strings.Join(forwarded.Header.Values("Access-Control-Max-Age"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Access-Control-Expose-Headers"), ","), strings.Join(forwarded.Header.Values("Access-Control-Expose-Headers"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
+			require.Equal(t, strings.Join(direct.Header.Values("Vary"), ","), strings.Join(forwarded.Header.Values("Vary"), ","), "%s origin=%s: CORS header must match engine response", method, origin)
 			t.Logf("%s origin=%s direct=%d proxy=%d allow-origin=%q", method, origin, direct.StatusCode, forwarded.StatusCode, forwarded.Header.Get("Access-Control-Allow-Origin"))
 		}
 	}
@@ -517,16 +461,15 @@ func TestCORSInvalidModelListIsNotPartiallyExposed(t *testing.T) {
 		for _, invalid := range []string{"not json", "{}", "null"} {
 			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
-				if _, err := io.WriteString(w, invalid); err != nil {
-					t.Error(err)
-				}
+				_, err := io.WriteString(w, invalid)
+				assert.NoError(t, err)
 			}))
 			p := proxyForCORSTargets(t, tc, good, bad)
 			rec := httptest.NewRecorder()
 			p.handlePlain(rec, corsRequest("GET", tc.modelListPath, "http://app.test"))
-			if rec.Code != http.StatusBadGateway || rec.Header().Get("Access-Control-Allow-Origin") != "http://app.test" || strings.Contains(rec.Body.String(), "private-model") {
-				t.Fatalf("invalid inventory exposed: %d %s", rec.Code, rec.Body)
-			}
+			require.Equal(t, http.StatusBadGateway, rec.Code, "invalid inventory exposed")
+			require.Equal(t, "http://app.test", rec.Header().Get("Access-Control-Allow-Origin"), "invalid inventory exposed")
+			require.NotContains(t, rec.Body.String(), "private-model", "invalid inventory exposed")
 			bad.Close()
 		}
 	})
@@ -535,21 +478,17 @@ func TestCORSStreamingResponseIsPreserved(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		release := make(chan struct{})
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Origin") != "http://app.test" {
-				t.Error("lost stream origin")
-			}
+			assert.Equal(t, "http://app.test", r.Header.Get("Origin"), "lost stream origin")
 			w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
 			w.Header().Set("Access-Control-Expose-Headers", "X-Engine")
 			w.Header().Set("X-Engine", "metadata")
-			if _, err := io.WriteString(w, "first"); err != nil {
-				t.Error(err)
-			}
+			_, err := io.WriteString(w, "first")
+			assert.NoError(t, err)
 			w.(http.Flusher).Flush()
 			select {
 			case <-release:
-				if _, err := io.WriteString(w, "last"); err != nil {
-					t.Error(err)
-				}
+				_, err := io.WriteString(w, "last")
+				assert.NoError(t, err)
 			case <-r.Context().Done():
 			}
 		}))
@@ -565,31 +504,23 @@ func TestCORSStreamingResponseIsPreserved(t *testing.T) {
 			}
 		}()
 		req, err := http.NewRequest("GET", proxy.URL+"/stream", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		req.Header.Set("Origin", "http://app.test")
 		client := &http.Client{Timeout: 3 * time.Second}
 		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, resp.Body.Close())
 		}()
 		first := make([]byte, 5)
-		if _, err = io.ReadFull(resp.Body, first); err != nil {
-			t.Fatal(err)
-		}
-		if string(first) != "first" || resp.Header.Get("Access-Control-Allow-Origin") != "http://app.test" || resp.Header.Get("Access-Control-Expose-Headers") != "X-Engine" {
-			t.Fatal("stream changed")
-		}
+		_, err = io.ReadFull(resp.Body, first)
+		require.NoError(t, err)
+		require.Equal(t, "first", string(first), "stream changed")
+		require.Equal(t, "http://app.test", resp.Header.Get("Access-Control-Allow-Origin"), "stream changed")
+		require.Equal(t, "X-Engine", resp.Header.Get("Access-Control-Expose-Headers"), "stream changed")
 		close(release)
 		rest, err := io.ReadAll(resp.Body)
-		if err != nil || string(rest) != "last" {
-			t.Fatal("stream incomplete", err)
-		}
+		require.NoError(t, err, "stream incomplete")
+		require.Equal(t, "last", string(rest), "stream incomplete")
 	})
 }

@@ -1,7 +1,7 @@
 ---
 name: pair-test-style
 description: >-
-  Write, refactor, or review tests in Personal AI Router using focused cases,
+  Write, refactor, or review tests in PAIR using focused cases,
   descriptive subtests, explicit error handling, and structured assertions.
   Use when adding or changing Go service or desktop tests; apply to the tests
   in scope rather than starting a repository-wide cleanup.
@@ -11,7 +11,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# PAIR test style
+# NVIDIA PAIR test style
 
 Keep each test's setup, action, and expected behavior easy to follow. These
 conventions apply to contributors and coding agents working on repository tests.
@@ -39,13 +39,10 @@ easier to read than a large table with mode-dependent branches.
 
 Use ordinary tables when they are clearer. Separate acceptance and rejection
 helpers when that removes branching and makes expected outcomes explicit.
+For example, use `accept := func(name, input, expected string)` and
+`reject := func(name, input, wantMessage string)` for distinct outcomes.
 Define and list acceptance cases before rejection cases for consistency. Keep
 mutable state fresh per case so cases do not depend on execution order.
-Avoid adding a `wantError` parameter to a helper shared by acceptance and
-rejection cases; it forces every case through a conditional assertion path.
-Rejection helpers should check the relevant error field or returned error and
-its expected message or type. A parameter for the expected error message is
-appropriate in a rejection-only helper.
 
 Mark Go assertion and setup helpers with `t.Helper()`. Pass the subtest's
 `*testing.T` to helpers that report failures so errors belong to the right case.
@@ -56,9 +53,10 @@ Keep helpers local unless reuse across tests justifies a shared fixture.
 - Check setup, file I/O, encoding, decoding, and operation errors. Do not discard
   an error just because the fixture is expected to be valid. Fail at the operation
   that failed, with enough context to diagnose it.
-- Prefer explicit `t.Fatalf` checks or a small test-only must-succeed helper that
-  fails immediately. A `Must` helper is optional; avoid adding an abstraction
-  when an explicit check is clearer.
+- Use `require.NoError` for setup or decoding that must succeed before the test
+  can proceed. Use `assert.NoError` for other errors, including previously
+  discarded JSON encoding/decoding errors, when continuation is safe. Keep added
+  error checks separate from a pure assertion migration when requested.
 - Decode JSON and other structured output, then assert the relevant fields.
   Avoid `strings.Contains` as evidence that a serialized response or persisted
   configuration has the correct values. Check parsing errors before fields.
@@ -67,6 +65,39 @@ Keep helpers local unless reuse across tests justifies a shared fixture.
 - Use named constants such as `http.StatusBadGateway` and `http.MethodPut` instead
   of magic protocol values. Format multiline fixtures and header maps readably;
   run `gofmt` on changed Go tests.
+
+## Use Testify concisely
+
+- Prefer `assert` for independent expectations so a failure can report alongside
+  later failures. Use `require` for prerequisites such as a non-nil pointer or
+  sufficient slice length before dereferencing or indexing. When unsure whether
+  continuation is safe, use `require`; preserving a fatal assertion is fine.
+- Prefer `assert.Equal` and `require.Equal` with expected values first. Avoid
+  `EqualValues` when both arguments already have the same type. For numeric
+  literals compared with typed values, use an explicitly typed expectation,
+  for example `assert.Equal(t, int64(0), counter.Load())`. Reserve `EqualValues`
+  for cases where comparison across types is part of the intended behavior.
+- Inline values used only once: `assert.Equal(t, "v8-version", versions["v8"])`
+  and `require.NoError(t, json.Unmarshal(data, &result))`. Avoid a temporary
+  `got` or `err` and a surrounding block just to make one assertion. Retain a
+  variable when it is reused or makes a complicated operation easier to read.
+- Prefer direct comparisons of complete values over `assert.True` with
+  `bytes.Equal` or `reflect.DeepEqual`. Compare slices directly with `Equal`
+  where possible; avoid branching on an empty expected slice just to change
+  assertion methods. Use `Empty` for an emptiness expectation instead of `Nil`
+  unless the nil distinction is an explicit contract. If direct equality would
+  distinguish nil from empty against the intended contract, normalize concisely
+  or use `Empty` for that case.
+- Use `Same`/`NotSame` only when pointer identity is the behavior under test.
+  Otherwise compare the contents or relevant fields; investigate an existing
+  identity comparison before carrying it over mechanically.
+- Let Testify print the compared values. Add assertion messages only for useful
+  context; avoid repeating actual/expected values in diagnostic arguments but you
+  can explain the intended contract.
+  Omit labels such as `"got"` when the comparison is self-explanatory.
+  In loops without named subtests, include the case input when it helps locate
+  the failure, for example `assert.True(t, isHostname(s), "hostname %q", s)`.
+  Although such lack of named subtests should be considered for rewrite.
 
 ## Fit the existing test suite
 

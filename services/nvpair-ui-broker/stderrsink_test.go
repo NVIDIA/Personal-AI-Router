@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // blockingWriter models the parent that has stopped reading its end of the
@@ -51,7 +54,7 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 		defer close(done)
 		for i := 0; i < writes; i++ {
 			if _, err := sink.Write(chunk); err != nil {
-				t.Errorf("Write returned an error: %v", err)
+				assert.NoError(t, err, "Write returned an error")
 				return
 			}
 		}
@@ -60,24 +63,16 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Write blocked while the reader was stalled; a worker in this state can never exit")
+		require.FailNow(t, "Write blocked while the reader was stalled; a worker in this state can never exit")
 	}
 
 	sink.Close()
 
 	data, err := os.ReadFile(spill)
-	if err != nil {
-		t.Fatalf("overflow was not preserved: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("spill file is empty; overflow was discarded rather than kept")
-	}
-	if spilled := sink.spilledChunks.Load(); spilled == 0 {
-		t.Fatal("no chunks recorded as spilled")
-	}
-	if lost := sink.lostChunks.Load(); lost != 0 {
-		t.Fatalf("lost %d chunk(s) with a writable spill path", lost)
-	}
+	require.NoError(t, err, "overflow was not preserved")
+	require.NotEmpty(t, data, "spill file is empty; overflow was discarded rather than kept")
+	require.NotEqual(t, int64(0), sink.spilledChunks.Load(), "no chunks recorded as spilled")
+	require.Equal(t, int64(0), sink.lostChunks.Load(), "no chunks should be lost with a writable spill path")
 }
 
 // TestStderrSinkPassesThroughWhenDrained checks the ordinary path is unchanged:
@@ -92,20 +87,15 @@ func TestStderrSinkPassesThroughWhenDrained(t *testing.T) {
 
 	want := []byte("broker line\n")
 	for i := 0; i < 100; i++ {
-		if _, err := sink.Write(want); err != nil {
-			t.Fatalf("Write returned an error: %v", err)
-		}
+		_, err := sink.Write(want)
+		require.NoError(t, err, "Write returned an error")
 	}
 	sink.Close()
 
 	open.mu.Lock()
-	got := len(open.sunk)
+	assert.Len(t, open.sunk, len(want)*100, "forwarded")
 	open.mu.Unlock()
-	if got != len(want)*100 {
-		t.Fatalf("forwarded %d bytes, want %d", got, len(want)*100)
-	}
 
-	if _, err := os.Stat(spill); !os.IsNotExist(err) {
-		t.Fatalf("spill file was created for a reader that kept up (stat err: %v)", err)
-	}
+	_, err := os.Stat(spill)
+	require.ErrorIs(t, err, os.ErrNotExist, "spill file was created for a reader that kept up")
 }

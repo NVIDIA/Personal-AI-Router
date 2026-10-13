@@ -30,6 +30,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/appdir"
 )
 
 // TestLiveOllamaCleanRoom installs NVPAIR's own standalone Ollama — the
@@ -125,17 +130,11 @@ func TestLiveOllamaCleanRoom(t *testing.T) {
 	defer stop()
 
 	send(t, stdin, 1, "engine:get-installed", nil)
-	if r := waitResult(t, frames, "1", 5*time.Second); !strings.Contains(string(r), `"engine":"ollama"`) {
-		t.Fatalf("ollama not listed: %s", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 5*time.Second)), `"engine":"ollama"`, "ollama not listed")
 	send(t, stdin, 2, "engine:install", map[string]string{"engine": "ollama"})
-	if r := waitResult(t, frames, "2", 600*time.Second); !strings.Contains(string(r), `"installed":true`) {
-		t.Errorf("expected installed:true after install, got %s", r)
-	}
+	assert.Contains(t, string(waitResult(t, frames, "2", 600*time.Second)), `"installed":true`, "expected installed:true after install")
 	send(t, stdin, 3, "engine:start", map[string]string{"engine": "ollama"})
-	if r := waitResult(t, frames, "3", 90*time.Second); !strings.Contains(string(r), `"running":true`) {
-		t.Errorf("expected running:true after start, got %s", r)
-	}
+	assert.Contains(t, string(waitResult(t, frames, "3", 90*time.Second)), `"running":true`, "expected running:true after start")
 	send(t, stdin, 4, "engine:action", map[string]any{"engine": "ollama", "action": "list_models"})
 	pre := waitResult(t, frames, "4", 30*time.Second)
 
@@ -152,22 +151,16 @@ func TestLiveOllamaCleanRoom(t *testing.T) {
 		send(t, stdin, 41, "engine:action", map[string]any{"engine": "ollama", "action": "pull_model", "params": map[string]string{"name": model}})
 		waitResult(t, frames, "41", 1200*time.Second)
 		send(t, stdin, 42, "engine:action", map[string]any{"engine": "ollama", "action": "list_models"})
-		if r := waitResult(t, frames, "42", 30*time.Second); !strings.Contains(string(r), model) {
-			t.Errorf("model %q not listed after pull: %s", model, r)
-		}
+		assert.Contains(t, string(waitResult(t, frames, "42", 30*time.Second)), model, "pulled model must appear in list_models")
 		send(t, stdin, 43, "engine:action", map[string]any{"engine": "ollama", "action": "run_model", "params": map[string]any{"model": model, "prompt": "Say OK.", "stream": false}})
-		if r := waitResult(t, frames, "43", 180*time.Second); !strings.Contains(string(r), `"response"`) {
-			t.Errorf("no response from run_model: %s", r)
-		}
+		assert.Contains(t, string(waitResult(t, frames, "43", 180*time.Second)), `"response"`, "no response from run_model")
 		if preexisting {
 			t.Logf("model %q pre-existed in the shared store; leaving it (only deleting models we pull)", model)
 		} else {
 			send(t, stdin, 44, "engine:action", map[string]any{"engine": "ollama", "action": "delete_model", "params": map[string]string{"name": model}})
 			waitResult(t, frames, "44", 60*time.Second)
 			send(t, stdin, 45, "engine:action", map[string]any{"engine": "ollama", "action": "list_models"})
-			if r := waitResult(t, frames, "45", 30*time.Second); strings.Contains(string(r), model) {
-				t.Errorf("model %q still listed after delete: %s", model, r)
-			}
+			assert.NotContains(t, string(waitResult(t, frames, "45", 30*time.Second)), model, "deleted model must not appear in list_models")
 		}
 	}
 	send(t, stdin, 5, "engine:stop", map[string]string{"engine": "ollama"})
@@ -202,13 +195,9 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 	defer stop()
 
 	send(t, stdin, 1, "engine:get-installed", nil)
-	if r := waitResult(t, frames, "1", 5*time.Second); !strings.Contains(string(r), `"engine":"lmstudio"`) {
-		t.Fatalf("lmstudio not listed: %s", r)
-	}
+	require.Contains(t, string(waitResult(t, frames, "1", 5*time.Second)), `"engine":"lmstudio"`, "lmstudio not listed")
 	send(t, stdin, 2, "engine:install", map[string]string{"engine": "lmstudio"})
-	if r := waitResult(t, frames, "2", 600*time.Second); !strings.Contains(string(r), `"installed":true`) {
-		t.Errorf("expected installed:true after install, got %s", r)
-	}
+	assert.Contains(t, string(waitResult(t, frames, "2", 600*time.Second)), `"installed":true`, "expected installed:true after install")
 	send(t, stdin, 3, "engine:start", map[string]string{"engine": "lmstudio"})
 	waitResult(t, frames, "3", 120*time.Second)
 	send(t, stdin, 4, "engine:action", map[string]any{"engine": "lmstudio", "action": "list_models"})
@@ -228,17 +217,11 @@ func startManager(t *testing.T, env map[string]string) (chan frame, io.WriteClos
 	cmd := exec.Command(managerBin)
 	cmd.Env = overrideEnv(env)
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cmd.Start())
 	start := time.Now()
 	frames := make(chan frame, 256)
 	go func() {
@@ -275,48 +258,40 @@ func startManager(t *testing.T, env map[string]string) (chan frame, io.WriteClos
 func startManagerWithManifest(t *testing.T, m Manifest) (chan frame, io.WriteCloser, func()) {
 	t.Helper()
 	cfg := t.TempDir()
-	engdir := filepath.Join(cfg, configSubdir, "engines")
-	if err := os.MkdirAll(engdir, 0o755); err != nil {
-		t.Fatal(err)
+	env := map[string]string{"LOCALAPPDATA": cfg, "APPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": cfg}
+	for key, value := range env {
+		t.Setenv(key, value)
 	}
-	data, _ := json.MarshalIndent(m, "", "  ")
-	if err := os.WriteFile(filepath.Join(engdir, m.Engine+".json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	engdir, err := appdir.Path("engines")
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(engdir, 0o755))
+	data, err := json.MarshalIndent(m, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(engdir, m.Engine+".json"), data, 0o644))
+	return startManager(t, env)
 }
 
 func sha256File(t *testing.T, path string) string {
 	t.Helper()
 	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		t.Fatal(err)
-	}
+	_, err = io.Copy(h, f)
+	require.NoError(t, err)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
 func downloadTo(t *testing.T, url string) string {
 	t.Helper()
 	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("download %s: HTTP %d", url, resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode, "download (%v)", url)
 	f, err := os.CreateTemp(t.TempDir(), "engine-dl-*")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		t.Fatal(err)
-	}
+	_, err = io.Copy(f, resp.Body)
+	require.NoError(t, err)
 	return f.Name()
 }

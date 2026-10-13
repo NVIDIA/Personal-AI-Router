@@ -5,9 +5,11 @@ package main
 
 import (
 	"encoding/json"
-	"math"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 	"nvpair-shared/schedulerwire"
@@ -28,9 +30,7 @@ func TestPressureBandsAndDownwardHysteresis(t *testing.T) {
 		{100, 3},
 	}
 	for _, test := range bands {
-		if got := pressureBand(test.utilization); got != test.want {
-			t.Errorf("pressureBand(%v) = %d, want %d", test.utilization, got, test.want)
-		}
+		assert.Equal(t, test.want, pressureBand(test.utilization), "pressureBand(%v)", test.utilization)
 	}
 
 	hysteresis := []struct {
@@ -51,10 +51,7 @@ func TestPressureBandsAndDownwardHysteresis(t *testing.T) {
 	}
 	for _, test := range hysteresis {
 		t.Run(test.name, func(t *testing.T) {
-			if got := pressureWithHysteresis(test.utilization, test.previous); got != test.want {
-				t.Fatalf("pressureWithHysteresis(%v, %d) = %d, want %d",
-					test.utilization, test.previous, got, test.want)
-			}
+			assert.Equal(t, test.want, pressureWithHysteresis(test.utilization, test.previous), "pressureWithHysteresis")
 		})
 	}
 }
@@ -67,32 +64,20 @@ func TestApplyTelemetrySmoothsUtilizationBeforeChangingPressure(t *testing.T) {
 		TelemetryValid: true,
 	}
 
-	if !manager.applyTelemetryAt(sample, now) {
-		t.Fatal("first idle sample should move unknown pressure 1 to idle pressure 0")
-	}
+	assert.True(t, manager.applyTelemetryAt(sample, now), "first idle sample should move unknown pressure 1 to idle pressure 0")
 	sample.GPUUtilizationPct = 100
-	if manager.applyTelemetryAt(sample, now.Add(time.Second)) {
-		t.Fatal("one hot sample should not move the EWMA across 40%")
-	}
+	assert.False(t, manager.applyTelemetryAt(sample, now.Add(time.Second)), "one hot sample should not move the EWMA across 40%")
 	manager.mu.Lock()
 	firstEWMA := manager.telemetry["node-a"].ewma
 	manager.mu.Unlock()
-	if math.Abs(firstEWMA-35) > 0.001 {
-		t.Fatalf("EWMA after first hot sample = %.3f, want 35", firstEWMA)
-	}
+	assert.InDelta(t, 35, firstEWMA, 0.001, "EWMA after first hot sample")
 
-	if !manager.applyTelemetryAt(sample, now.Add(2*time.Second)) {
-		t.Fatal("second hot sample should move pressure from 0 to 1")
-	}
+	assert.True(t, manager.applyTelemetryAt(sample, now.Add(2*time.Second)), "second hot sample should move pressure from 0 to 1")
 	manager.mu.Lock()
 	secondEWMA := manager.telemetry["node-a"].ewma
 	manager.mu.Unlock()
-	if math.Abs(secondEWMA-57.75) > 0.001 {
-		t.Fatalf("EWMA after second hot sample = %.3f, want 57.75", secondEWMA)
-	}
-	if got := manager.gpuPressureAt("node-a", now.Add(2*time.Second)); got != 1 {
-		t.Fatalf("pressure after smoothed hot samples = %d, want 1", got)
-	}
+	assert.InDelta(t, 57.75, secondEWMA, 0.001, "EWMA after second hot sample")
+	assert.Equal(t, 1, manager.gpuPressureAt("node-a", now.Add(2*time.Second)), "pressure after smoothed hot samples")
 }
 
 func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
@@ -104,15 +89,9 @@ func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
 		TelemetryValid:    true,
 		MSSince:           9_999,
 	}
-	if !manager.applyTelemetryAt(hot, now) {
-		t.Fatal("fresh hot sample should move unknown pressure to 3")
-	}
-	if got := manager.gpuPressureAt("node-a", now.Add(time.Millisecond)); got != 3 {
-		t.Fatalf("pressure at exactly 10s effective age = %d, want 3", got)
-	}
-	if got := manager.gpuPressureAt("node-a", now.Add(2*time.Millisecond)); got != unknownGPUPressure {
-		t.Fatalf("stale pressure = %d, want unknown %d", got, unknownGPUPressure)
-	}
+	assert.True(t, manager.applyTelemetryAt(hot, now), "fresh hot sample should move unknown pressure to 3")
+	assert.Equal(t, 3, manager.gpuPressureAt("node-a", now.Add(time.Millisecond)), "pressure at exactly 10s effective age")
+	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", now.Add(2*time.Millisecond)), "stale pressure")
 
 	cool := noderec.NodeTelemetry{
 		HostUUID:          "node-a",
@@ -120,24 +99,17 @@ func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
 		TelemetryValid:    true,
 	}
 	recoveredAt := now.Add(2 * time.Millisecond)
-	if !manager.applyTelemetryAt(cool, recoveredAt) {
-		t.Fatal("fresh recovery should move unknown pressure to 0")
-	}
+	assert.True(t, manager.applyTelemetryAt(cool, recoveredAt), "fresh recovery should move unknown pressure to 0")
 	manager.mu.Lock()
 	recovered := manager.telemetry["node-a"]
 	manager.mu.Unlock()
-	if recovered.ewma != 20 || recovered.pressure != 0 {
-		t.Fatalf("recovered state = %+v, want reset EWMA 20 and pressure 0", recovered)
-	}
+	assert.Equal(t, 20.0, recovered.ewma, "recovered EWMA")
+	assert.Equal(t, 0, recovered.pressure, "recovered state (%v)", recovered)
 
 	invalid := cool
 	invalid.TelemetryValid = false
-	if !manager.applyTelemetryAt(invalid, recoveredAt.Add(time.Second)) {
-		t.Fatal("invalid telemetry should move pressure from 0 to unknown")
-	}
-	if got := manager.gpuPressureAt("node-a", recoveredAt.Add(time.Second)); got != unknownGPUPressure {
-		t.Fatalf("invalid pressure = %d, want %d", got, unknownGPUPressure)
-	}
+	assert.True(t, manager.applyTelemetryAt(invalid, recoveredAt.Add(time.Second)), "invalid telemetry should move pressure from 0 to unknown")
+	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", recoveredAt.Add(time.Second)), "invalid pressure")
 }
 
 func TestTelemetryOlderThanFreshnessStartsUnknown(t *testing.T) {
@@ -149,12 +121,8 @@ func TestTelemetryOlderThanFreshnessStartsUnknown(t *testing.T) {
 		TelemetryValid:    true,
 		MSSince:           10_001,
 	}, now)
-	if changed {
-		t.Fatal("stale first sample should remain at unknown pressure")
-	}
-	if got := manager.gpuPressureAt("node-a", now); got != unknownGPUPressure {
-		t.Fatalf("stale first pressure = %d, want %d", got, unknownGPUPressure)
-	}
+	require.False(t, changed, "stale first sample should remain at unknown pressure")
+	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", now), "stale first pressure")
 }
 
 func TestNodeRemovalDropsTelemetryState(t *testing.T) {
@@ -165,11 +133,8 @@ func TestNodeRemovalDropsTelemetryState(t *testing.T) {
 	}, time.Now())
 	manager.applyNodesChanged(json.RawMessage(`[{"hostUuid":"node-b"}]`))
 	manager.mu.Lock()
-	_, retained := manager.telemetry["node-a"]
+	assert.NotContains(t, manager.telemetry, "node-a", "removed node retained telemetry state")
 	manager.mu.Unlock()
-	if retained {
-		t.Fatal("removed node retained telemetry state")
-	}
 }
 
 func TestHandleMessageAppliesTelemetryNotification(t *testing.T) {
@@ -179,9 +144,7 @@ func TestHandleMessageAppliesTelemetryNotification(t *testing.T) {
 		GPUUtilizationPct: 90,
 		TelemetryValid:    true,
 	})
-	if err != nil {
-		t.Fatalf("marshal telemetry: %v", err)
-	}
+	require.NoError(t, err, "marshal telemetry")
 	manager.handleMessage(&Message{
 		JSONRPC: "2.0",
 		Method:  schedulerwire.MethodTelemetry,
@@ -191,9 +154,9 @@ func TestHandleMessageAppliesTelemetryNotification(t *testing.T) {
 	manager.mu.Lock()
 	state, ok := manager.telemetry["node-a"]
 	manager.mu.Unlock()
-	if !ok || state.pressure != 3 || !state.valid {
-		t.Fatalf("handled telemetry state = %+v, present=%t", state, ok)
-	}
+	require.True(t, ok, "handled telemetry state (%v, %v)", state, ok)
+	assert.Equal(t, 3, state.pressure, "handled telemetry state (%v, %v)", state, ok)
+	assert.True(t, state.valid, "handled telemetry state (%v, %v)", state, ok)
 }
 
 func TestTelemetryNotificationEmitsOnlyOnPressureChange(t *testing.T) {
@@ -212,9 +175,7 @@ func TestTelemetryNotificationEmitsOnlyOnPressureChange(t *testing.T) {
 			GPUUtilizationPct: utilization,
 			TelemetryValid:    true,
 		})
-		if err != nil {
-			t.Fatalf("marshal telemetry: %v", err)
-		}
+		require.NoError(t, err, "marshal telemetry")
 		manager.handleMessage(&Message{
 			JSONRPC: "2.0",
 			Method:  schedulerwire.MethodTelemetry,
@@ -228,12 +189,9 @@ func TestTelemetryNotificationEmitsOnlyOnPressureChange(t *testing.T) {
 
 	for _, engine := range schedulerEngines {
 		got := recorder.priorities(engine)
-		if len(got) != 2 {
-			t.Fatalf("%s emissions = %d, want discovery plus one pressure change", engine, len(got))
-		}
+		require.Len(t, got, 2, " (%v)", engine)
 		assertStrs(t, got[1].Nodes, []string{"b", "a"})
-		if pressureOf(got[1].Ranks, "b") != 0 || pressureOf(got[1].Ranks, "a") != 1 {
-			t.Fatalf("%s pressure snapshot = %+v", engine, got[1].Ranks)
-		}
+		assert.Equal(t, 0, pressureOf(got[1].Ranks, "b"), " (%v)", engine)
+		assert.Equal(t, 1, pressureOf(got[1].Ranks, "a"), " (%v)", engine)
 	}
 }

@@ -5,9 +5,12 @@ package main
 
 import (
 	"encoding/json"
-	"reflect"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestParseEngineInstance pins the PDH "GPU Engine" instance-name format.
@@ -56,10 +59,9 @@ func TestParseEngineInstance(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			luid, et, ok := parseEngineInstance(c.in)
-			if ok != c.wantOK || luid != c.wantLuid || et != c.wantType {
-				t.Fatalf("parseEngineInstance(%q) = %q,%q,%v; want %q,%q,%v",
-					c.in, luid, et, ok, c.wantLuid, c.wantType, c.wantOK)
-			}
+			require.Equal(t, c.wantOK, ok, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
+			require.Equal(t, c.wantLuid, luid, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
+			require.Equal(t, c.wantType, et, "parseEngineInstance (%v, %v, %v)", luid, et, ok)
 		})
 	}
 }
@@ -144,10 +146,7 @@ func TestAggregateUtilization(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := aggregateUtilization(c.in)
-			if !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("aggregateUtilization(%v) = %v; want %v", c.in, got, c.want)
-			}
+			require.Equal(t, c.want, aggregateUtilization(c.in), "aggregateUtilization")
 		})
 	}
 }
@@ -166,29 +165,23 @@ func TestApplyGPUStatsRetainsLastUsableSample(t *testing.T) {
 		"gpu-a": {VRAMUsed: 5 << 30},
 	}, time.Time{})
 
-	if !reflect.DeepEqual(next.GPU, previous.GPU) {
-		t.Fatalf("failed collection replaced last usable GPU sample: got %v want %v", next.GPU, previous.GPU)
-	}
-	if !next.GPUSampledAt.Equal(sampledAt) {
-		t.Fatalf("failed collection moved sample time to %v, want %v", next.GPUSampledAt, sampledAt)
-	}
+	require.Equal(t, previous.GPU, next.GPU, "failed collection replaced last usable GPU sample:")
+	require.WithinDuration(t, sampledAt, next.GPUSampledAt, 0, "failed collection moved sample time")
 }
 
 func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
 	partial := map[string]gpuStat{"gpu-a": {VRAMUsed: 2 << 30}}
 	beforeFirstSample := &statsSnapshot{}
 	applyGPUStats(statsSnapshot{}, beforeFirstSample, partial, time.Time{})
-	if !reflect.DeepEqual(beforeFirstSample.GPU, partial) || !beforeFirstSample.GPUSampledAt.IsZero() {
-		t.Fatalf("pre-sample fields = %+v, want partial GPU data with no sample time", beforeFirstSample)
-	}
+	require.Equal(t, partial, beforeFirstSample.GPU, "pre-sample fields (%v)", beforeFirstSample)
+	require.True(t, beforeFirstSample.GPUSampledAt.IsZero(), "pre-sample fields (%v)", beforeFirstSample)
 
 	sampledAt := time.Unix(1_700_000_000, 123)
 	idle := map[string]gpuStat{"gpu-a": {UtilizationPct: 0}}
 	usable := &statsSnapshot{}
 	applyGPUStats(statsSnapshot{}, usable, idle, sampledAt)
-	if !reflect.DeepEqual(usable.GPU, idle) || !usable.GPUSampledAt.Equal(sampledAt) {
-		t.Fatalf("idle sample = %+v, want valid zero-utilization sample at %v", usable, sampledAt)
-	}
+	require.Equal(t, idle, usable.GPU, "idle sample (%v, %v)", usable, sampledAt)
+	require.WithinDuration(t, sampledAt, usable.GPUSampledAt, 0, "idle sample (%v)", usable)
 }
 
 func TestBuildResponseTelemetryFreshness(t *testing.T) {
@@ -218,24 +211,14 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 				now,
 			)
 			var typed NodeInfoResponse
-			if err := json.Unmarshal(body, &typed); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if typed.TelemetryValid != c.wantValid || typed.MSSince != c.wantAge {
-				t.Fatalf("telemetry = valid:%v age:%d, want valid:%v age:%d",
-					typed.TelemetryValid, typed.MSSince, c.wantValid, c.wantAge)
-			}
+			require.NoError(t, json.Unmarshal(body, &typed), "decode response")
+			require.Equal(t, c.wantValid, typed.TelemetryValid, "telemetry = valid")
+			require.Equal(t, c.wantAge, typed.MSSince, "telemetry = valid")
 
 			var raw map[string]any
-			if err := json.Unmarshal(body, &raw); err != nil {
-				t.Fatalf("decode raw response: %v", err)
-			}
-			if _, ok := raw["telemetryValid"]; !ok {
-				t.Fatal("telemetryValid missing from response")
-			}
-			if _, ok := raw["msSince"]; !ok {
-				t.Fatal("msSince missing from response")
-			}
+			require.NoError(t, json.Unmarshal(body, &raw), "decode raw response")
+			require.Contains(t, raw, "telemetryValid", "telemetryValid missing from response")
+			require.Contains(t, raw, "msSince", "msSince missing from response")
 		})
 	}
 }
@@ -249,13 +232,9 @@ func buildResponseDecode(t *testing.T, static []GPUInfo, cpu *CPUInfo, memTotal 
 	t.Helper()
 	body := buildResponse(static, cpu, memTotal, snap, "", nil)
 	var typed NodeInfoResponse
-	if err := json.Unmarshal(body, &typed); err != nil {
-		t.Fatalf("typed decode: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(body, &typed), "typed decode")
 	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("raw decode: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(body, &raw), "raw decode")
 	return typed, raw
 }
 
@@ -274,21 +253,11 @@ func TestBuildResponseMerge(t *testing.T) {
 	}
 	typed, _ := buildResponseDecode(t, static, nil, 0, snap)
 
-	if len(typed.GPUs) != 2 {
-		t.Fatalf("got %d GPUs, want 2", len(typed.GPUs))
-	}
-	if got := typed.GPUs[0].VramUsedBytes; got != 4<<30 {
-		t.Errorf("gpu 0 VramUsedBytes = %d, want %d", got, 4<<30)
-	}
-	if got := typed.GPUs[0].UtilizationPercent; got != 27 {
-		t.Errorf("gpu 0 UtilizationPercent = %d, want 27", got)
-	}
-	if got := typed.GPUs[1].VramUsedBytes; got != 0 {
-		t.Errorf("gpu 1 VramUsedBytes = %d, want 0 (unmatched LUID)", got)
-	}
-	if got := typed.GPUs[1].UtilizationPercent; got != 0 {
-		t.Errorf("gpu 1 UtilizationPercent = %d, want 0 (unmatched LUID)", got)
-	}
+	require.Len(t, typed.GPUs, 2)
+	assert.Equal(t, uint64(4<<30), typed.GPUs[0].VramUsedBytes, "gpu 0 VramUsedBytes")
+	assert.Equal(t, uint32(27), typed.GPUs[0].UtilizationPercent, "gpu 0 UtilizationPercent")
+	assert.Equal(t, uint64(0), typed.GPUs[1].VramUsedBytes, "gpu 1 VramUsedBytes")
+	assert.Equal(t, uint32(0), typed.GPUs[1].UtilizationPercent, "gpu 1 UtilizationPercent")
 }
 
 // TestBuildResponseUnifiedMemoryUsesSystemSnapshot verifies that UMA memory
@@ -326,24 +295,15 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			snap := statsSnapshot{GPU: c.gpuStats, MemUsedBytes: sysMemUsed}
 			typed, raw := buildResponseDecode(t, static, nil, 0, snap)
-			if got := typed.GPUs[0].VramUsedBytes; got != sysMemUsed {
-				t.Errorf("VramUsedBytes = %d, want system memory %d", got, sysMemUsed)
-			}
-			if got := typed.GPUs[0].UtilizationPercent; got != c.wantUtil {
-				t.Errorf("UtilizationPercent = %d, want %d", got, c.wantUtil)
-			}
+			assert.Equal(t, sysMemUsed, typed.GPUs[0].VramUsedBytes, "VramUsedBytes")
+			assert.Equal(t, c.wantUtil, typed.GPUs[0].UtilizationPercent, "UtilizationPercent")
 
 			gpus, ok := raw["GPUs"].([]any)
-			if !ok || len(gpus) != 1 {
-				t.Fatalf("unexpected GPUs payload: %v", raw["GPUs"])
-			}
+			require.True(t, ok, "unexpected GPUs payload")
+			require.Len(t, gpus, 1, "unexpected GPUs payload")
 			obj, ok := gpus[0].(map[string]any)
-			if !ok {
-				t.Fatalf("gpu 0 not an object: %T", gpus[0])
-			}
-			if _, present := obj["vram_used_bytes"]; !present {
-				t.Errorf("vram_used_bytes should be present for unified memory: %v", obj)
-			}
+			require.True(t, ok, "gpu 0 not an object")
+			assert.Contains(t, obj, "vram_used_bytes", "vram_used_bytes should be present for unified memory")
 		})
 	}
 }
@@ -365,9 +325,8 @@ func TestBuildResponseAppleUnifiedMemoryUsesGPUAllocation(t *testing.T) {
 	}
 	typed, _ := buildResponseDecode(t, static, nil, 0, snap)
 	gpu := typed.GPUs[0]
-	if gpu.VramUsedBytes != 8<<30 || gpu.UtilizationPercent != 73 {
-		t.Fatalf("unexpected Apple GPU metrics: %+v", gpu)
-	}
+	require.Equal(t, uint64(8<<30), gpu.VramUsedBytes, "unexpected Apple GPU metrics (%v)", gpu)
+	require.Equal(t, uint32(73), gpu.UtilizationPercent, "unexpected Apple GPU metrics (%v)", gpu)
 }
 
 func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
@@ -382,20 +341,17 @@ func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
 		}},
 	}
 	typed, _ := buildResponseDecode(t, nil, nil, 0, snap)
-	if len(typed.GPUs) != 1 {
-		t.Fatalf("recovered GPU count = %d, want 1", len(typed.GPUs))
-	}
+	require.Len(t, typed.GPUs, 1, "recovered GPU count")
 	gpu := typed.GPUs[0]
-	if gpu.Name != "Apple M3 Max" || gpu.VramBytes != 36<<30 ||
-		gpu.VramUsedBytes != 8<<30 || gpu.UtilizationPercent != 73 {
-		t.Fatalf("unexpected recovered GPU: %+v", gpu)
-	}
+	require.Equal(t, "Apple M3 Max", gpu.Name, "unexpected recovered GPU (%v)", gpu)
+	require.Equal(t, uint64(36<<30), gpu.VramBytes, "unexpected recovered GPU (%v)", gpu)
+	require.Equal(t, uint64(8<<30), gpu.VramUsedBytes, "unexpected recovered GPU (%v)", gpu)
+	require.Equal(t, uint32(73), gpu.UtilizationPercent, "unexpected recovered GPU (%v)", gpu)
 
 	static := []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}}
-	if merged := mergeGPUInventory(static, snap.GPUInventory); len(merged) != 1 ||
-		merged[0].VramBytes != 36<<30 {
-		t.Fatalf("matching recovered GPU did not enrich in place: %+v", merged)
-	}
+	merged := mergeGPUInventory(static, snap.GPUInventory)
+	require.Len(t, merged, 1, "matching recovered GPU did not enrich in place")
+	require.Equal(t, uint64(36<<30), merged[0].VramBytes, "matching recovered GPU did not enrich in place (%v)", merged)
 }
 
 // TestBuildResponseOmitsZero confirms that a GPU with no stats match
@@ -407,19 +363,12 @@ func TestBuildResponseOmitsZero(t *testing.T) {
 	_, raw := buildResponseDecode(t, static, nil, 0, statsSnapshot{})
 
 	gpus, ok := raw["GPUs"].([]any)
-	if !ok || len(gpus) != 1 {
-		t.Fatalf("unexpected GPUs payload: %v", raw["GPUs"])
-	}
+	require.True(t, ok, "unexpected GPUs payload")
+	require.Len(t, gpus, 1, "unexpected GPUs payload")
 	obj, ok := gpus[0].(map[string]any)
-	if !ok {
-		t.Fatalf("gpu 0 not an object: %T", gpus[0])
-	}
-	if _, present := obj["vram_used_bytes"]; present {
-		t.Errorf("vram_used_bytes should be absent when unknown, got: %v", obj)
-	}
-	if _, present := obj["utilization_percent"]; present {
-		t.Errorf("utilization_percent should be absent when unknown, got: %v", obj)
-	}
+	require.True(t, ok, "gpu 0 not an object")
+	assert.NotContains(t, obj, "vram_used_bytes", "vram_used_bytes should be absent when unknown")
+	assert.NotContains(t, obj, "utilization_percent", "utilization_percent should be absent when unknown")
 }
 
 // TestBuildResponseCPUMemoryMatrix exercises the four combinations of
@@ -498,45 +447,25 @@ func TestBuildResponseCPUMemoryMatrix(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			typed, raw := buildResponseDecode(t, nil, c.cpu, c.memTotal, c.snap)
 
-			_, cpuPresent := raw["cpu"]
-			if cpuPresent != c.wantCPUKey {
-				t.Errorf("cpu key present = %v, want %v (raw=%v)", cpuPresent, c.wantCPUKey, raw)
-			}
-			_, memPresent := raw["memory"]
-			if memPresent != c.wantMemKey {
-				t.Errorf("memory key present = %v, want %v (raw=%v)", memPresent, c.wantMemKey, raw)
-			}
-
 			if c.wantCPUKey {
-				if typed.CPU == nil {
-					t.Fatalf("typed.CPU is nil but cpu key was present in raw JSON")
-				}
-				if typed.CPU.Name != c.wantCPUName {
-					t.Errorf("cpu.Name = %q, want %q", typed.CPU.Name, c.wantCPUName)
-				}
-				if typed.CPU.Cores != c.wantCPUCores {
-					t.Errorf("cpu.Cores = %d, want %d", typed.CPU.Cores, c.wantCPUCores)
-				}
-				if typed.CPU.UtilizationPercent != c.wantCPUUtil {
-					t.Errorf("cpu.UtilizationPercent = %d, want %d",
-						typed.CPU.UtilizationPercent, c.wantCPUUtil)
-				}
-			} else if typed.CPU != nil {
-				t.Errorf("typed.CPU = %+v, want nil", typed.CPU)
+				assert.Contains(t, raw, "cpu")
+				require.NotNil(t, typed.CPU, "typed.CPU is nil but cpu key was present in raw JSON")
+				assert.Equal(t, c.wantCPUName, typed.CPU.Name, "cpu.Name")
+				assert.Equal(t, c.wantCPUCores, typed.CPU.Cores, "cpu.Cores")
+				assert.Equal(t, c.wantCPUUtil, typed.CPU.UtilizationPercent, "cpu.UtilizationPercent")
+			} else {
+				assert.NotContains(t, raw, "cpu")
+				assert.Nil(t, typed.CPU)
 			}
 
 			if c.wantMemKey {
-				if typed.Memory == nil {
-					t.Fatalf("typed.Memory is nil but memory key was present in raw JSON")
-				}
-				if typed.Memory.TotalBytes != c.wantMemTotal {
-					t.Errorf("memory.TotalBytes = %d, want %d", typed.Memory.TotalBytes, c.wantMemTotal)
-				}
-				if typed.Memory.UsedBytes != c.wantMemUsed {
-					t.Errorf("memory.UsedBytes = %d, want %d", typed.Memory.UsedBytes, c.wantMemUsed)
-				}
-			} else if typed.Memory != nil {
-				t.Errorf("typed.Memory = %+v, want nil", typed.Memory)
+				assert.Contains(t, raw, "memory")
+				require.NotNil(t, typed.Memory, "typed.Memory is nil but memory key was present in raw JSON")
+				assert.Equal(t, c.wantMemTotal, typed.Memory.TotalBytes, "memory.TotalBytes")
+				assert.Equal(t, c.wantMemUsed, typed.Memory.UsedBytes, "memory.UsedBytes")
+			} else {
+				assert.NotContains(t, raw, "memory")
+				assert.Nil(t, typed.Memory)
 			}
 		})
 	}

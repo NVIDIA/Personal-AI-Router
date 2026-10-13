@@ -8,19 +8,19 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestStaleEndorserAdmissionCannotIntroduceMember(t *testing.T) {
 	m := newTestManagerPort(t, 15126)
 	endorser := newTestManagerPort(t, 15127)
 	pinTrusted(t, m, endorser.identity.NodeUUID, string(endorser.identity.CertPEM), endorser.identity.CertFingerprint)
-	if err := m.trust.Pin(&TrustedPin{
+	require.NoError(t, m.trust.Pin(&TrustedPin{
 		NodeUUID: endorser.identity.NodeUUID, NodeID: "endorser", ClusterID: "cluster-1",
 		AdmissionEpoch: 2, CertPem: string(endorser.identity.CertPEM),
 		CertFingerprint: endorser.identity.CertFingerprint,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	targetUUID, targetCert, targetFP, _ := makeNode(t, "target")
 	stale := signEndorsement(endorser.identity.Signer, endorser.identity.NodeUUID,
 		targetUUID, targetFP, "cluster-1", time.Now().UnixMilli(), 1, 1)
@@ -28,9 +28,7 @@ func TestStaleEndorserAdmissionCannotIntroduceMember(t *testing.T) {
 		NodeUUID: targetUUID, NodeID: "target", AdmissionEpoch: 1,
 		CertPem: targetCert, CertFingerprint: targetFP, Endorsements: []Endorsement{stale},
 	}
-	if m.applyMembers([]RosterEntry{entry}, "cluster-1", endorser.identity.NodeUUID) {
-		t.Fatal("stale endorser admission introduced a member")
-	}
+	require.False(t, m.applyMembers([]RosterEntry{entry}, "cluster-1", endorser.identity.NodeUUID), "stale endorser admission introduced a member")
 }
 
 func TestLegacyTombstoneCannotEvictAdmissionAwareMember(t *testing.T) {
@@ -46,9 +44,8 @@ func TestLegacyTombstoneCannotEvictAdmissionAwareMember(t *testing.T) {
 	legacy := signTombstone(remover.identity.Signer, remover.identity.NodeUUID,
 		target.identity.NodeUUID, "cluster-1", time.Now().UnixMilli())
 	m.applyTombstones([]Tombstone{legacy}, "cluster-1")
-	if _, ok := m.trust.Get(target.identity.NodeUUID); !ok {
-		t.Fatal("legacy downgrade de-pinned an admission-aware member")
-	}
+	_, ok := m.trust.Get(target.identity.NodeUUID)
+	require.True(t, ok, "legacy downgrade de-pinned an admission-aware member")
 }
 
 func TestRemovalRevalidatesTargetAdmissionBeforeDepin(t *testing.T) {
@@ -71,13 +68,11 @@ func TestRemovalRevalidatesTargetAdmissionBeforeDepin(t *testing.T) {
 	}()
 	<-m.testRemovalPrepared
 	m.rosterMu.Lock()
-	if err := m.trust.Pin(&TrustedPin{
+	require.NoError(t, m.trust.Pin(&TrustedPin{
 		NodeUUID: target.identity.NodeUUID, NodeID: "target", ClusterID: "cluster-1",
 		AdmissionEpoch: 2, CertPem: string(target.identity.CertPEM),
 		CertFingerprint: target.identity.CertFingerprint,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	m.upsertMember(&ClusterNode{
 		NodeUUID: target.identity.NodeUUID, ID: "target", ClusterID: "cluster-1",
 		AdmissionEpoch: 2, State: stateMember,
@@ -86,9 +81,8 @@ func TestRemovalRevalidatesTargetAdmissionBeforeDepin(t *testing.T) {
 	close(m.testRemovalContinue)
 	<-done
 	pin, ok := m.trust.Get(target.identity.NodeUUID)
-	if !ok || pin.AdmissionEpoch != 2 {
-		t.Fatalf("newer target admission was removed: %+v", pin)
-	}
+	require.True(t, ok, "newer target admission was removed (%v)", pin)
+	require.Equal(t, uint64(2), pin.AdmissionEpoch, "newer target admission was removed (%v)", pin)
 }
 
 func TestTrustAndMembershipSnapshotsAreDeepCopies(t *testing.T) {
@@ -108,9 +102,9 @@ func TestTrustAndMembershipSnapshotsAreDeepCopies(t *testing.T) {
 	*member.JoinedAt = 0
 	pinAgain, _ := m.trust.Get(peer.identity.NodeUUID)
 	memberAgain, _ := m.memberByNodeID(peer.identity.NodeUUID)
-	if pinAgain.AdmissionEpoch != 1 || memberAgain.AdmissionEpoch != 1 || *memberAgain.JoinedAt != joined {
-		t.Fatal("snapshot mutation escaped into internal state")
-	}
+	require.Equal(t, uint64(1), pinAgain.AdmissionEpoch, "snapshot mutation escaped into internal state")
+	require.Equal(t, uint64(1), memberAgain.AdmissionEpoch, "snapshot mutation escaped into internal state")
+	require.Equal(t, joined, *memberAgain.JoinedAt, "snapshot mutation escaped into internal state")
 
 	to, code := "peer", "123456"
 	inv := &Invite{InviteID: "inv-copy", ToNodeID: &to, Pin: &code, State: inviteStatePending}
@@ -120,31 +114,22 @@ func TestTrustAndMembershipSnapshotsAreDeepCopies(t *testing.T) {
 	*got.ToNodeID = "changed"
 	*got.Pin = "changed"
 	again, _ := m.getInvite(inv.InviteID)
-	if *again.ToNodeID != "peer" || *again.Pin != "123456" {
-		t.Fatal("invite snapshot mutation escaped into internal state")
-	}
+	require.Equal(t, "peer", *again.ToNodeID, "invite snapshot mutation escaped into internal state")
+	require.Equal(t, "123456", *again.Pin, "invite snapshot mutation escaped into internal state")
 
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
 	m.trust.dir = blocker
-	if _, err := m.trust.UpdateIdentity(peer.identity.NodeUUID, "new-id", "new-name"); err == nil {
-		t.Fatal("trust identity update unexpectedly persisted")
-	}
+	_, err := m.trust.UpdateIdentity(peer.identity.NodeUUID, "new-id", "new-name")
+	require.Error(t, err, "trust identity update unexpectedly persisted")
 	unchanged, _ := m.trust.Get(peer.identity.NodeUUID)
-	if unchanged.NodeID == "new-id" || unchanged.Name == "new-name" {
-		t.Fatal("failed trust write mutated live identity")
-	}
+	require.NotEqual(t, "new-id", unchanged.NodeID, "failed trust write mutated live identity")
+	require.NotEqual(t, "new-name", unchanged.Name, "failed trust write mutated live identity")
 	end := m.endorsePeer(peer.identity.NodeUUID, peer.identity.CertFingerprint, 1)
 	before := len(unchanged.Endorsements)
-	if err := m.trust.AddEndorsements(peer.identity.NodeUUID, []Endorsement{end}); err == nil {
-		t.Fatal("endorsement update unexpectedly persisted")
-	}
+	require.Error(t, m.trust.AddEndorsements(peer.identity.NodeUUID, []Endorsement{end}), "endorsement update unexpectedly persisted")
 	unchanged, _ = m.trust.Get(peer.identity.NodeUUID)
-	if len(unchanged.Endorsements) != before {
-		t.Fatal("failed trust write mutated live endorsements")
-	}
+	require.Len(t, unchanged.Endorsements, before, "failed trust write mutated live endorsements")
 }
 
 func TestRestartFinishesInterruptedTeardownAndRejectsStaleRestore(t *testing.T) {
@@ -157,28 +142,18 @@ func TestRestartFinishesInterruptedTeardownAndRejectsStaleRestore(t *testing.T) 
 		NodeUUID: peer.identity.NodeUUID, ID: "peer", ClusterID: "cluster-1",
 		AdmissionEpoch: 1, State: stateMember,
 	})
-	if err := m.persistMembersErr(); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.beginDurableTeardown(); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.clearAdmission(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, m.persistMembersErr())
+	require.NoError(t, m.beginDurableTeardown())
+	require.NoError(t, m.clearAdmission())
 
 	restarted := testManagerAt(t, dir, 15135)
-	if _, ok := restarted.trust.Get(peer.identity.NodeUUID); ok {
-		t.Fatal("restart left a pin from interrupted teardown")
-	}
-	if len(restarted.snapshotNodes()) != 0 {
-		t.Fatal("restart left membership from interrupted teardown")
-	}
+	_, ok := restarted.trust.Get(peer.identity.NodeUUID)
+	require.False(t, ok, "restart left a pin from interrupted teardown")
+	require.Empty(t, restarted.snapshotNodes(), "restart left membership from interrupted teardown")
 	staleID := "cluster-1"
 	restarted.handleSetIdentity(&Message{Params: mustJSON(t, setIdentityParams{ClusterID: &staleID})})
-	if cid, _ := restarted.clusterIdentity(); cid != "" {
-		t.Fatalf("stale settings resurrected cluster %q", cid)
-	}
+	cid, _ := restarted.clusterIdentity()
+	require.Equal(t, "", cid, "stale settings resurrected cluster")
 }
 
 func TestRemovalReplayFailsClosedOnPersistenceError(t *testing.T) {
@@ -190,18 +165,11 @@ func TestRemovalReplayFailsClosedOnPersistenceError(t *testing.T) {
 		AdmissionEpoch: 1, State: stateMember,
 	})
 	proof, err := m.newRemovalProof(target.identity.NodeUUID, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.putRemovalProof(proof); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	_, err = m.putRemovalProof(proof)
+	require.NoError(t, err)
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
 	m.clusterDir = blocker
-	if err := m.replayRemovalProofs(); err == nil {
-		t.Fatal("removal replay ignored durable member cleanup failure")
-	}
+	require.Error(t, m.replayRemovalProofs(), "removal replay ignored durable member cleanup failure")
 }

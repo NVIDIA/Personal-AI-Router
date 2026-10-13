@@ -18,6 +18,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // genLeaf mints an Ed25519 self-signed leaf carrying the node UUID in both the
@@ -26,9 +29,7 @@ import (
 func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM, der []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("genkey: %v", err)
-	}
+	require.NoError(t, err, "genkey")
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	uri, _ := url.Parse(nodeURISANPrefix + uuid)
 	tmpl := &x509.Certificate{
@@ -42,9 +43,7 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM, der []byte) {
 		URIs:                  []*url.URL{uri},
 	}
 	der, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
-	if err != nil {
-		t.Fatalf("create cert: %v", err)
-	}
+	require.NoError(t, err, "create cert")
 	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
@@ -54,40 +53,25 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM, der []byte) {
 func writePin(t *testing.T, clusterDir, uuid, certPEM string) {
 	t.Helper()
 	dir := filepath.Join(clusterDir, "trusted")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("mkdir trusted: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o700), "mkdir trusted")
 	body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": certPEM})
-	if err := os.WriteFile(filepath.Join(dir, uuid+".json"), body, 0o600); err != nil {
-		t.Fatalf("write pin: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, uuid+".json"), body, 0o600), "write pin")
 }
 
 func TestLoadIdentityAndUUID(t *testing.T) {
 	dir := t.TempDir()
 	certPEM, keyPEM, _ := genLeaf(t, "uuid-self")
-	if err := os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
 
 	id, err := LoadIdentity(dir)
-	if err != nil {
-		t.Fatalf("LoadIdentity: %v", err)
-	}
-	if id.NodeUUID != "uuid-self" {
-		t.Fatalf("NodeUUID = %q, want uuid-self", id.NodeUUID)
-	}
-	if len(id.Cert.Certificate) == 0 {
-		t.Fatal("identity cert not loaded")
-	}
+	require.NoError(t, err, "LoadIdentity")
+	assert.Equal(t, "uuid-self", id.NodeUUID)
+	assert.NotEmpty(t, id.Cert.Certificate, "identity cert not loaded")
 
 	// Missing keypair is an error (caller falls back to plain HTTP).
-	if _, err := LoadIdentity(t.TempDir()); err == nil {
-		t.Fatal("expected error loading identity from an empty dir")
-	}
+	_, err = LoadIdentity(t.TempDir())
+	require.Error(t, err, "expected error loading identity from an empty dir")
 }
 
 func TestTrustPinMatchAndGate(t *testing.T) {
@@ -96,46 +80,32 @@ func TestTrustPinMatchAndGate(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "node.crt"), selfCert, 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "node.key"), selfKey, 0o600)
 	id, err := LoadIdentity(dir)
-	if err != nil {
-		t.Fatalf("LoadIdentity: %v", err)
-	}
+	require.NoError(t, err, "LoadIdentity")
 
 	peerCertPEM, _, peerDER := genLeaf(t, "uuid-peer")
 	writePin(t, dir, "uuid-peer", string(peerCertPEM))
 
 	tr := newTrust(dir)
 	tr.Reload()
-	if tr.Count() != 1 {
-		t.Fatalf("trust count = %d, want 1", tr.Count())
-	}
-	if !tr.MatchDER("uuid-peer", peerDER) {
-		t.Fatal("pinned peer DER should match")
-	}
-	if tr.MatchDER("uuid-peer", []byte("nope")) {
-		t.Fatal("wrong DER must not match")
-	}
-	if tr.MatchDER("uuid-unknown", peerDER) {
-		t.Fatal("unknown uuid must not match")
-	}
+	assert.Equal(t, 1, tr.Count(), "trust count")
+	assert.True(t, tr.MatchDER("uuid-peer", peerDER), "pinned peer DER should match")
+	assert.False(t, tr.MatchDER("uuid-peer", []byte("nope")), "wrong DER must not match")
+	assert.False(t, tr.MatchDER("uuid-unknown", peerDER), "unknown uuid must not match")
 
 	// The cluster gate is the pin lookup: a pinned peer resolves a DER (so the
 	// caller can build a pinned client), an unknown peer does not.
 	der, okDER := tr.DER("uuid-peer")
-	if !okDER {
-		t.Fatal("pinned peer DER should resolve")
-	}
-	if cfg := ClientTLSConfig(id.Cert, der); cfg == nil || len(cfg.Certificates) != 1 {
-		t.Fatal("ClientTLSConfig should present our leaf")
-	}
-	if _, ok := tr.DER("uuid-unknown"); ok {
-		t.Fatal("an unpinned peer must not resolve a DER (cluster gate)")
-	}
+	require.True(t, okDER, "pinned peer DER should resolve")
+	cfg := ClientTLSConfig(id.Cert, der)
+	require.NotNil(t, cfg, "ClientTLSConfig should present our leaf")
+	require.Len(t, cfg.Certificates, 1, "ClientTLSConfig should present our leaf")
+	_, ok := tr.DER("uuid-unknown")
+	require.False(t, ok, "an unpinned peer must not resolve a DER (cluster gate)")
 
 	// Server config presents our leaf and requires a client cert.
 	sc := ServerTLSConfig(id.Cert)
-	if sc.ClientAuth != tls.RequireAnyClientCert || len(sc.Certificates) != 1 {
-		t.Fatalf("server config: ClientAuth=%v certs=%d", sc.ClientAuth, len(sc.Certificates))
-	}
+	assert.Equal(t, tls.RequireAnyClientCert, sc.ClientAuth, "server config: ClientAuth")
+	require.Len(t, sc.Certificates, 1, "server config: ClientAuth")
 }
 
 func TestVerifyClientPin(t *testing.T) {
@@ -149,9 +119,7 @@ func TestVerifyClientPin(t *testing.T) {
 	parse := func(pemBytes []byte) *x509.Certificate {
 		block, _ := pem.Decode(pemBytes)
 		c, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
+		require.NoError(t, err, "parse")
 		return c
 	}
 	reqWith := func(cert *x509.Certificate) *http.Request {
@@ -162,15 +130,13 @@ func TestVerifyClientPin(t *testing.T) {
 		return r
 	}
 
-	if uuid, ok := VerifyClientPin(reqWith(parse(peerCertPEM)), tr.MatchDER); !ok || uuid != "uuid-peer" {
-		t.Fatalf("pinned client should verify, got (%q,%v)", uuid, ok)
-	}
-	if _, ok := VerifyClientPin(reqWith(parse(otherCertPEM)), tr.MatchDER); ok {
-		t.Fatal("an unpinned client must be rejected")
-	}
-	if _, ok := VerifyClientPin(reqWith(nil), tr.MatchDER); ok {
-		t.Fatal("a request with no client cert must be rejected")
-	}
+	uuid, ok := VerifyClientPin(reqWith(parse(peerCertPEM)), tr.MatchDER)
+	require.True(t, ok, "pinned client should verify")
+	assert.Equal(t, "uuid-peer", uuid, "pinned client should verify")
+	_, ok = VerifyClientPin(reqWith(parse(otherCertPEM)), tr.MatchDER)
+	require.False(t, ok, "an unpinned client must be rejected")
+	_, ok = VerifyClientPin(reqWith(nil), tr.MatchDER)
+	require.False(t, ok, "a request with no client cert must be rejected")
 }
 
 // TestMeshClusterOfOneTrustsOnlyItself covers the "identity, zero peers" state
@@ -186,27 +152,17 @@ func TestMeshClusterOfOneTrustsOnlyItself(t *testing.T) {
 	writeAdmission(t, dir, "cluster-abc", 1)
 
 	m := Open(dir)
-	if !m.Clustered() {
-		t.Fatal("an active admission must make the node clustered")
-	}
-	if m.PeerCount() != 0 {
-		t.Fatalf("PeerCount = %d, want 0 (no pins)", m.PeerCount())
-	}
-	if m.HasPin("some-browsed-peer") {
-		t.Error("a node with an identity but no pins must not trust a browsed peer")
-	}
-	if !m.HasPin("self-uuid") {
-		t.Error("self-trust: the node must trust its own principal")
-	}
+	assert.True(t, m.Clustered(), "an active admission must make the node clustered")
+	assert.Equal(t, 0, m.PeerCount())
+	assert.False(t, m.HasPin("some-browsed-peer"), "a node with an identity but no pins must not trust a browsed peer")
+	assert.True(t, m.HasPin("self-uuid"), "self-trust: the node must trust its own principal")
 
 	// Membership is what opens the gate, not the keypair: with the admission torn
 	// down the same loaded identity trusts nobody, including itself, so no
 	// cluster-scoped surface can be served or dialed.
 	writeAdmission(t, dir, "", 0)
 	m.Refresh()
-	if m.HasPin("self-uuid") {
-		t.Error("a non-member must not resolve any principal, including its own")
-	}
+	assert.False(t, m.HasPin("self-uuid"), "a non-member must not resolve any principal, including its own")
 }
 
 func TestTrustReloadAndTamperSkip(t *testing.T) {
@@ -215,24 +171,18 @@ func TestTrustReloadAndTamperSkip(t *testing.T) {
 	writePin(t, dir, "uuid-a", string(aPEM))
 	tr := newTrust(dir)
 	tr.Reload()
-	if tr.Count() != 1 {
-		t.Fatalf("count = %d, want 1", tr.Count())
-	}
+	assert.Equal(t, 1, tr.Count())
 
 	// A newly-paired peer appears; Reload picks it up.
 	bPEM, _, _ := genLeaf(t, "uuid-b")
 	writePin(t, dir, "uuid-b", string(bPEM))
 	tr.Reload()
-	if tr.Count() != 2 {
-		t.Fatalf("after reload count = %d, want 2", tr.Count())
-	}
+	assert.Equal(t, 2, tr.Count(), "after reload count")
 
 	// A tampered file (filename UUID != cert principal) is skipped.
 	cPEM, _, _ := genLeaf(t, "uuid-c")
 	body, _ := json.Marshal(map[string]string{"nodeUuid": "uuid-wrong", "certPem": string(cPEM)})
 	_ = os.WriteFile(filepath.Join(dir, "trusted", "uuid-wrong.json"), body, 0o600)
 	tr.Reload()
-	if tr.Count() != 2 {
-		t.Fatalf("tampered pin must be skipped, count = %d, want 2", tr.Count())
-	}
+	assert.Equal(t, 2, tr.Count(), "tampered pin must be skipped, count")
 }

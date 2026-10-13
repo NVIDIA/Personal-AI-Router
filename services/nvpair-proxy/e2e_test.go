@@ -21,6 +21,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 )
 
@@ -54,9 +57,7 @@ func proxyBinary(t *testing.T) string {
 			proxyBinErr = fmt.Errorf("build nvpair-proxy: %w\n%s", err, out)
 		}
 	})
-	if proxyBinErr != nil {
-		t.Fatal(proxyBinErr)
-	}
+	require.NoError(t, proxyBinErr)
 	return proxyBinPath
 }
 
@@ -88,9 +89,8 @@ func e2eSend(t *testing.T, w io.Writer, id int, method string, params any) {
 		msg["params"] = params
 	}
 	data, _ := json.Marshal(msg)
-	if _, err := w.Write(append(data, '\n')); err != nil {
-		t.Fatalf("send %s: %v", method, err)
-	}
+	_, err := w.Write(append(data, '\n'))
+	require.NoError(t, err, "send (%v, %v)", method, err)
 }
 
 // e2eInbox retains interleaved replies and notifications for later waits.
@@ -113,15 +113,13 @@ func (in *e2eInbox) wait(t *testing.T, match func(e2eFrame) bool, description st
 	for {
 		select {
 		case f, ok := <-in.frames:
-			if !ok {
-				t.Fatalf("stream closed waiting for %s", description)
-			}
+			require.True(t, ok, "stream closed waiting for (%v)", description)
 			if match(f) {
 				return f
 			}
 			in.pending = append(in.pending, f)
 		case <-timer.C:
-			t.Fatalf("timed out waiting for %s", description)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for %s", description))
 		}
 	}
 }
@@ -129,9 +127,7 @@ func (in *e2eInbox) wait(t *testing.T, match func(e2eFrame) bool, description st
 func e2eWaitResult(t *testing.T, frames *e2eInbox, id string, timeout time.Duration) {
 	t.Helper()
 	f := frames.wait(t, func(f e2eFrame) bool { return string(f.ID) == id }, "response id "+id, timeout)
-	if len(f.Error) > 0 && string(f.Error) != "null" {
-		t.Fatalf("rpc id %s returned error: %s", id, f.Error)
-	}
+	require.False(t, len(f.Error) > 0 && string(f.Error) != "null", "rpc id (%v)", id)
 }
 
 // e2eEnableWithRetry enables a facade, trying a fresh port whenever the child
@@ -150,12 +146,10 @@ func e2eEnableWithRetry(t *testing.T, stdin io.Writer, frames *e2eInbox, engine 
 			port = e2eFreePort(t)
 			continue
 		}
-		if bound != port {
-			t.Fatalf("enabled port = %d, want %d", bound, port)
-		}
+		require.Equal(t, port, bound, "enabled port (%v, %v)", bound, port)
 		return port
 	}
-	t.Fatalf("enable %s: every probed port was taken before the child could bind", engine)
+	require.FailNow(t, fmt.Sprintf("enable %s: every probed port was taken before the child could bind", engine))
 	return 0
 }
 
@@ -172,14 +166,12 @@ func e2eEnabledPort(t *testing.T, frames *e2eInbox, id string, timeout time.Dura
 		if json.Unmarshal(f.Error, &rpcErr) == nil && rpcErr.Code == codeFacadeBindFailed {
 			return 0, true
 		}
-		t.Fatalf("facade/enable returned error: %s", f.Error)
+		require.FailNow(t, fmt.Sprintf("facade/enable returned error: %s", f.Error))
 	}
 	var res struct {
 		Port int `json:"port"`
 	}
-	if err := json.Unmarshal(f.Result, &res); err != nil {
-		t.Fatalf("parse facade/enable result: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(f.Result, &res), "parse facade/enable result")
 	return res.Port, false
 }
 
@@ -189,9 +181,7 @@ func e2eWaitReadyPort(t *testing.T, frames *e2eInbox, timeout time.Duration) int
 	var p struct {
 		Port int `json:"port"`
 	}
-	if err := json.Unmarshal(f.Params, &p); err != nil {
-		t.Fatalf("parse ready params: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(f.Params, &p), "parse ready params")
 	return p.Port
 }
 
@@ -214,26 +204,18 @@ func TestE2EInboxPreservesInterleavedFrames(t *testing.T) {
 			frames := &e2eInbox{frames: source}
 			if readyFirst {
 				port, retry := e2eEnabledPort(t, frames, "100", time.Second)
-				if retry || port != 12345 {
-					t.Fatalf("enabled port=%d retry=%v", port, retry)
-				}
-				if port := e2eWaitReadyPort(t, frames, time.Second); port != 12345 {
-					t.Fatalf("ready port=%d", port)
-				}
+				require.False(t, retry, "enabled port (%v, %v)", port, retry)
+				require.Equal(t, 12345, port, "enabled port (%v, %v)", port, retry)
+				require.Equal(t, 12345, e2eWaitReadyPort(t, frames, time.Second), "ready port")
 			} else {
-				if port := e2eWaitReadyPort(t, frames, time.Second); port != 12345 {
-					t.Fatalf("ready port=%d", port)
-				}
+				require.Equal(t, 12345, e2eWaitReadyPort(t, frames, time.Second), "ready port")
 				port, retry := e2eEnabledPort(t, frames, "100", time.Second)
-				if retry || port != 12345 {
-					t.Fatalf("enabled port=%d retry=%v", port, retry)
-				}
+				require.False(t, retry, "enabled port (%v, %v)", port, retry)
+				require.Equal(t, 12345, port, "enabled port (%v, %v)", port, retry)
 			}
 			e2eWaitResult(t, frames, "1", time.Second)
 			e2eWaitResult(t, frames, "2", time.Second)
-			if len(frames.pending) != 0 {
-				t.Fatalf("unconsumed frames: %+v", frames.pending)
-			}
+			require.Empty(t, frames.pending, "unconsumed frames")
 		})
 	}
 }
@@ -244,9 +226,7 @@ func TestE2EInboxPreservesInterleavedFrames(t *testing.T) {
 func e2eFreePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
 }
@@ -254,13 +234,9 @@ func e2eFreePort(t *testing.T) int {
 func e2eSplitHostPort(t *testing.T, serverURL string) (string, int) {
 	t.Helper()
 	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(serverURL, "http://"))
-	if err != nil {
-		t.Fatalf("split %q: %v", serverURL, err)
-	}
+	require.NoError(t, err, "split (%v, %v)", serverURL, err)
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("port %q: %v", portStr, err)
-	}
+	require.NoError(t, err, "port (%v, %v)", portStr, err)
 	return host, port
 }
 
@@ -304,16 +280,10 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 		// bring-up sequence exercised end to end.
 		cmd := exec.Command(bin)
 		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+		require.NoError(t, cmd.Start())
 		defer func() {
 			_ = stdin.Close()
 			_ = cmd.Process.Kill()
@@ -356,19 +326,11 @@ func TestE2EFailoverOverRealBinary(t *testing.T) {
 		resp, err := http.Post(
 			fmt.Sprintf("http://127.0.0.1:%d%s", port, tc.inferencePath),
 			"application/json", strings.NewReader(body))
-		if err != nil {
-			t.Fatalf("inference POST: %v", err)
-		}
+		require.NoError(t, err, "inference POST")
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want 200 (should fail over from the 503 node)", resp.StatusCode)
-		}
-		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header", got)
-		}
-		if gotBody != body {
-			t.Errorf("healthy upstream got body %q, want the original request body %q", gotBody, body)
-		}
+		require.Equal(t, http.StatusOK, resp.StatusCode, "status")
+		assert.Equal(t, "", resp.Header.Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+		assert.Equal(t, body, gotBody, "healthy upstream got body (%v, %v)", gotBody, body)
 
 		e2eSend(t, stdin, 9, "shutdown", nil)
 		e2eWaitResult(t, frames, "9", 5*time.Second)

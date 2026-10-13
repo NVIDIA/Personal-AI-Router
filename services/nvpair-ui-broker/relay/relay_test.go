@@ -4,49 +4,32 @@
 package relay
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
 
 func TestRegistrationCache(t *testing.T) {
 	c := NewRegistrationCache()
-	if !c.Register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}) {
-		t.Fatal("first register should change")
-	}
-	if c.Register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}) {
-		t.Error("identical re-register should not change")
-	}
+	require.True(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}), "first register should change")
+	assert.False(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}), "identical re-register should not change")
 	// A new TXT (update-txt) is a change.
-	if !c.Register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 11434, TXT: []string{"models=a"}}) {
-		t.Fatal("new service should change")
-	}
-	if !c.Register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 11434, TXT: []string{"models=a;b"}}) {
-		t.Error("changed TXT should change")
-	}
-	if c.Register(noderec.RegisterParams{Service: noderec.ServiceErrors, Port: 0}) {
-		t.Error("port 0 should be ignored")
-	}
+	require.True(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 11434, TXT: []string{"models=a"}}), "new service should change")
+	assert.True(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 11434, TXT: []string{"models=a;b"}}), "changed TXT should change")
+	assert.False(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceErrors, Port: 0}), "port 0 should be ignored")
 
 	snap := c.Snapshot()
-	if len(snap) != 2 {
-		t.Fatalf("snapshot len = %d, want 2", len(snap))
-	}
+	require.Len(t, snap, 2, "snapshot len")
 	// Sorted by service key: ni before ol.
-	if snap[0].Service != noderec.ServiceNodeInfo || snap[1].Service != noderec.ServiceOllama {
-		t.Errorf("snapshot not sorted by service: %+v", snap)
-	}
+	assert.Equal(t, noderec.ServiceNodeInfo, snap[0].Service, "snapshot not sorted by service (%v)", snap)
+	assert.Equal(t, noderec.ServiceOllama, snap[1].Service, "snapshot not sorted by service (%v)", snap)
 
-	if !c.Unregister(noderec.ServiceNodeInfo) {
-		t.Error("unregister existing should be true")
-	}
-	if c.Unregister(noderec.ServiceNodeInfo) {
-		t.Error("unregister absent should be false")
-	}
-	if len(c.Snapshot()) != 1 {
-		t.Error("snapshot should have 1 after unregister")
-	}
+	assert.True(t, c.Unregister(noderec.ServiceNodeInfo), "unregister existing should be true")
+	assert.False(t, c.Unregister(noderec.ServiceNodeInfo), "unregister absent should be false")
+	assert.Len(t, c.Snapshot(), 1, "snapshot should have 1 after unregister")
 }
 
 // recordingSub captures the snapshots a subscriber receives. Each Send is one
@@ -96,9 +79,7 @@ func TestDirectorySubscribeInitialSnapshot(t *testing.T) {
 	}
 	d.Subscribe(sub)
 	d.Deliver(sub)
-	if got := ids(rec.last()); !reflect.DeepEqual(got, []string{"a"}) {
-		t.Fatalf("initial delivery = %v, want [a]", got)
-	}
+	require.Equal(t, []string{"a"}, ids(rec.last()), "initial delivery")
 }
 
 // TestDeliverCapturesAtSendTime guards the subscribe race fix: a change that
@@ -112,9 +93,7 @@ func TestDeliverCapturesAtSendTime(t *testing.T) {
 	d.Subscribe(sub)
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
 	d.Deliver(sub)
-	if got := ids(rec.last()); !reflect.DeepEqual(got, []string{"a"}) {
-		t.Fatalf("delivery after a post-subscribe change = %v, want [a]", got)
-	}
+	require.Equal(t, []string{"a"}, ids(rec.last()), "delivery after a post-subscribe change")
 }
 
 func TestDirectoryFanoutRespectsFilter(t *testing.T) {
@@ -129,12 +108,8 @@ func TestDirectoryFanoutRespectsFilter(t *testing.T) {
 
 	// Every change re-pushes each subscriber its full filtered snapshot, so the
 	// latest snapshot is the authoritative filtered set.
-	if got := ids(olSub.last()); !reflect.DeepEqual(got, []string{"a"}) {
-		t.Errorf("ol subscriber last snapshot = %v, want [a]", got)
-	}
-	if got := ids(allSub.last()); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Errorf("all subscriber last snapshot = %v, want [a b]", got)
-	}
+	assert.Equal(t, []string{"a"}, ids(olSub.last()), "ol subscriber last snapshot")
+	assert.Equal(t, []string{"a", "b"}, ids(allSub.last()), "all subscriber last snapshot")
 }
 
 func TestDirectoryRemoveAndUnsubscribe(t *testing.T) {
@@ -144,21 +119,15 @@ func TestDirectoryRemoveAndUnsubscribe(t *testing.T) {
 
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
 	d.Apply(noderec.NotifyNodeRemoved, olNode("a"))
-	if len(d.Snapshot("")) != 0 {
-		t.Error("node should be gone after removed")
-	}
+	assert.Empty(t, d.Snapshot(""), "node should be gone after removed")
 	// The removal re-pushes an empty snapshot (the node is simply absent).
-	if got := sub.last(); len(got) != 0 {
-		t.Errorf("subscriber last snapshot = %v, want empty after removal", ids(got))
-	}
+	assert.Empty(t, sub.last(), "subscriber last snapshot")
 
 	// After unsubscribe, no more pushes.
 	before := len(sub.snaps)
 	d.Unsubscribe(id)
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("c"))
-	if len(sub.snaps) != before {
-		t.Errorf("unsubscribed sub still received %d pushes", len(sub.snaps)-before)
-	}
+	assert.Len(t, sub.snaps, before, "unsubscribed sub still received")
 }
 
 func TestDirectorySnapshotFilterAndSort(t *testing.T) {
@@ -168,11 +137,8 @@ func TestDirectorySnapshotFilterAndSort(t *testing.T) {
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("m"))
 
 	all := d.Snapshot("")
-	if len(all) != 3 || all[0].HostUUID != "a" || all[2].HostUUID != "z" {
-		t.Fatalf("snapshot(all) not sorted: %+v", all)
-	}
-	ol := d.Snapshot(noderec.ServiceOllama)
-	if len(ol) != 2 {
-		t.Fatalf("snapshot(ol) = %d, want 2", len(ol))
-	}
+	require.Len(t, all, 3, "snapshot(all) not sorted")
+	require.Equal(t, "a", all[0].HostUUID, "snapshot(all) not sorted (%v)", all)
+	require.Equal(t, "z", all[2].HostUUID, "snapshot(all) not sorted (%v)", all)
+	require.Len(t, d.Snapshot(noderec.ServiceOllama), 2, "snapshot(ol)")
 }

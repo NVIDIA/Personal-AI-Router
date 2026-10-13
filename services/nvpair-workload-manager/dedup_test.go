@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // emitDedupKey exercises the production dedup path with a successful broker
@@ -15,9 +18,7 @@ import (
 func emitDedupKey(t *testing.T, d *dedupIndex, key string) bool {
 	t.Helper()
 	duplicate, err := d.emitOnce(key, func() error { return nil })
-	if err != nil {
-		t.Fatalf("emit dedup key: %v", err)
-	}
+	require.NoError(t, err, "emit dedup key")
 	return duplicate
 }
 
@@ -56,7 +57,7 @@ func TestDedupIndex_EmitOnceSerializesOnlyMatchingKeys(t *testing.T) {
 	select {
 	case <-firstEntered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("first key did not begin emitting")
+		require.FailNow(t, "first key did not begin emitting")
 	}
 
 	type result struct {
@@ -70,20 +71,17 @@ func TestDedupIndex_EmitOnceSerializesOnlyMatchingKeys(t *testing.T) {
 	}()
 	select {
 	case got := <-secondDone:
-		if got.err != nil || got.duplicate {
-			t.Fatalf("different key result = (%t, %v), want (false, nil)", got.duplicate, got.err)
-		}
+		require.NoError(t, got.err, "different key emit")
+		assert.False(t, got.duplicate, "different key must be new")
 	case <-time.After(2 * time.Second):
-		t.Fatal("different key blocked behind the first emit")
+		require.FailNow(t, "different key blocked behind the first emit")
 	}
 	close(releaseFirst)
 	select {
 	case err := <-firstDone:
-		if err != nil {
-			t.Fatalf("first key emit: %v", err)
-		}
+		require.NoError(t, err, "first key emit")
 	case <-time.After(2 * time.Second):
-		t.Fatal("first key did not finish")
+		require.FailNow(t, "first key did not finish")
 	}
 }
 
@@ -125,7 +123,7 @@ func TestDedupIndex_WaiterRetriesAfterFailedEmit(t *testing.T) {
 	select {
 	case <-firstEntered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("first request did not begin emitting")
+		require.FailNow(t, "first request did not begin emitting")
 	}
 
 	var retries atomic.Int32
@@ -143,43 +141,31 @@ func TestDedupIndex_WaiterRetriesAfterFailedEmit(t *testing.T) {
 	}()
 	select {
 	case err := <-secondDone:
-		t.Fatalf("waiting request completed before first emit: %v", err)
+		require.FailNow(t, "waiting request completed before first emit", "%v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	close(releaseFirst)
 	select {
 	case err := <-firstDone:
-		if !errors.Is(err, wantErr) {
-			t.Fatalf("first emit error = %v, want %v", err, wantErr)
-		}
+		require.ErrorIs(t, err, wantErr)
 	case <-time.After(2 * time.Second):
-		t.Fatal("first request did not finish")
+		require.FailNow(t, "first request did not finish")
 	}
 	select {
 	case err := <-secondDone:
-		if err != nil {
-			t.Fatalf("waiting retry: %v", err)
-		}
+		require.NoError(t, err, "waiting retry")
 	case <-time.After(2 * time.Second):
-		t.Fatal("waiting retry did not finish")
+		require.FailNow(t, "waiting retry did not finish")
 	}
-	if got := retries.Load(); got != 1 {
-		t.Fatalf("retry emits = %d, want 1", got)
-	}
+	assert.Equal(t, int32(1), retries.Load(), "retry emits")
 }
 
 func TestDedupEmitOnce(t *testing.T) {
 	d := newDedupIndex(8)
 
-	if emitDedupKey(t, d, "a") {
-		t.Fatal("first sighting of a should be new")
-	}
-	if !emitDedupKey(t, d, "a") {
-		t.Fatal("second sighting of a should be a duplicate")
-	}
-	if emitDedupKey(t, d, "b") {
-		t.Fatal("first sighting of b should be new")
-	}
+	assert.False(t, emitDedupKey(t, d, "a"), "first sighting of a should be new")
+	assert.True(t, emitDedupKey(t, d, "a"), "second sighting of a should be a duplicate")
+	assert.False(t, emitDedupKey(t, d, "b"), "first sighting of b should be new")
 }
 
 func TestDedupEviction(t *testing.T) {
@@ -189,9 +175,7 @@ func TestDedupEviction(t *testing.T) {
 	emitDedupKey(t, d, "b") // {a,b}
 	emitDedupKey(t, d, "c") // evicts a -> {b,c}
 
-	if emitDedupKey(t, d, "a") {
-		t.Fatal("a should have been evicted and read as new")
-	}
+	assert.False(t, emitDedupKey(t, d, "a"), "a should have been evicted and read as new")
 }
 
 func TestDedupKeysDistinguishStateAndKind(t *testing.T) {
@@ -200,19 +184,11 @@ func TestDedupKeysDistinguishStateAndKind(t *testing.T) {
 	w := &Workload{ID: "wl-1", OriginatedFrom: "node-A", State: StateQueued}
 	wRunning := &Workload{ID: "wl-1", OriginatedFrom: "node-A", State: StateRunning}
 
-	if emitDedupKey(t, d, keyLifecycle(w)) {
-		t.Fatal("queued should be new")
-	}
-	if emitDedupKey(t, d, keyLifecycle(wRunning)) {
-		t.Fatal("running for same id is a different key, should be new")
-	}
-	if !emitDedupKey(t, d, keyLifecycle(w)) {
-		t.Fatal("repeat queued should dedup")
-	}
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(w)), "queued should be new")
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(wRunning)), "running for same id is a different key, should be new")
+	assert.True(t, emitDedupKey(t, d, keyLifecycle(w)), "repeat queued should dedup")
 	// A removal keyed on the same id must not collide with a lifecycle key.
-	if emitDedupKey(t, d, keyRemove("node-A", "wl-1")) {
-		t.Fatal("removal of wl-1 must not collide with lifecycle keys")
-	}
+	assert.False(t, emitDedupKey(t, d, keyRemove("node-A", "wl-1")), "removal of wl-1 must not collide with lifecycle keys")
 }
 
 // TestDedupDistinguishesNodes guards the cross-node collision: Workload.id is
@@ -225,15 +201,9 @@ func TestDedupDistinguishesNodes(t *testing.T) {
 	nodeA := &Workload{ID: "wl-1", OriginatedFrom: "node-A", State: StateQueued}
 	nodeB := &Workload{ID: "wl-1", OriginatedFrom: "node-B", State: StateQueued}
 
-	if emitDedupKey(t, d, keyLifecycle(nodeA)) {
-		t.Fatal("node-A wl-1 should be new")
-	}
-	if emitDedupKey(t, d, keyLifecycle(nodeB)) {
-		t.Fatal("node-B wl-1 has the same id but a different node, must not dedup against node-A")
-	}
-	if !emitDedupKey(t, d, keyLifecycle(nodeA)) {
-		t.Fatal("repeat of node-A wl-1 should dedup")
-	}
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(nodeA)), "node-A wl-1 should be new")
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(nodeB)), "node-B wl-1 has the same id but a different node, must not dedup against node-A")
+	assert.True(t, emitDedupKey(t, d, keyLifecycle(nodeA)), "repeat of node-A wl-1 should dedup")
 }
 
 // TestDedupDistinguishesEngineAndRun guards the identity fix: id "1" is reused
@@ -245,18 +215,10 @@ func TestDedupDistinguishesEngineAndRun(t *testing.T) {
 	lmstudio := &Workload{ID: "1", OriginatedFrom: "host", Engine: "lmstudio", RunID: "r2", State: StateRunning}
 	restarted := &Workload{ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r3", State: StateRunning}
 
-	if emitDedupKey(t, d, keyLifecycle(ollama)) {
-		t.Fatal("ollama host/1 should be new")
-	}
-	if emitDedupKey(t, d, keyLifecycle(lmstudio)) {
-		t.Fatal("lmstudio host/1 shares the id but a different engine; must not dedup")
-	}
-	if emitDedupKey(t, d, keyLifecycle(restarted)) {
-		t.Fatal("a reused id from a new run must not dedup against the old run")
-	}
-	if !emitDedupKey(t, d, keyLifecycle(ollama)) {
-		t.Fatal("repeat of ollama host/1 should dedup")
-	}
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(ollama)), "ollama host/1 should be new")
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(lmstudio)), "lmstudio host/1 shares the id but a different engine; must not dedup")
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(restarted)), "a reused id from a new run must not dedup against the old run")
+	assert.True(t, emitDedupKey(t, d, keyLifecycle(ollama)), "repeat of ollama host/1 should dedup")
 }
 
 // TestDedupDistinguishesPlacement guards the re-point: a failover or a retry
@@ -272,15 +234,9 @@ func TestDedupDistinguishesPlacement(t *testing.T) {
 	first := &Workload{ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r1", State: StateRunning, ScheduledOn: "node-A"}
 	repointed := &Workload{ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r1", State: StateRunning, ScheduledOn: "node-B"}
 
-	if emitDedupKey(t, d, keyLifecycle(first)) {
-		t.Fatal("first placement on node-A should be new")
-	}
-	if emitDedupKey(t, d, keyLifecycle(repointed)) {
-		t.Fatal("a re-point to node-B differs only in scheduledOn and must not dedup against node-A")
-	}
-	if !emitDedupKey(t, d, keyLifecycle(first)) {
-		t.Fatal("a resent frame for the node-A placement should still dedup")
-	}
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(first)), "first placement on node-A should be new")
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(repointed)), "a re-point to node-B differs only in scheduledOn and must not dedup against node-A")
+	assert.True(t, emitDedupKey(t, d, keyLifecycle(first)), "a resent frame for the node-A placement should still dedup")
 }
 
 // TestDedupDistinguishesRepeatedPlacements is the reason the key carries the
@@ -309,23 +265,13 @@ func TestDedupDistinguishesRepeatedPlacements(t *testing.T) {
 	cleared := base(2, "")
 	backOnA := base(3, "node-A")
 
-	if emitDedupKey(t, d, keyLifecycle(onA)) {
-		t.Fatal("first placement on node-A should be new")
-	}
-	if emitDedupKey(t, d, keyLifecycle(cleared)) {
-		t.Fatal("clearing the placement between attempts should be new")
-	}
-	if emitDedupKey(t, d, keyLifecycle(backOnA)) {
-		t.Fatal("re-dispatching to node-A repeats an earlier shape and must NOT dedup against it")
-	}
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(onA)), "first placement on node-A should be new")
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(cleared)), "clearing the placement between attempts should be new")
+	assert.False(t, emitDedupKey(t, d, keyLifecycle(backOnA)), "re-dispatching to node-A repeats an earlier shape and must NOT dedup against it")
 	// A redelivery of any of those frames carries its original sequence, so it
 	// is still recognised as one.
-	if !emitDedupKey(t, d, keyLifecycle(base(1, "node-A"))) {
-		t.Fatal("a resent frame for the first placement should still dedup")
-	}
-	if !emitDedupKey(t, d, keyLifecycle(base(3, "node-A"))) {
-		t.Fatal("a resent frame for the third event should still dedup")
-	}
+	assert.True(t, emitDedupKey(t, d, keyLifecycle(base(1, "node-A"))), "a resent frame for the first placement should still dedup")
+	assert.True(t, emitDedupKey(t, d, keyLifecycle(base(3, "node-A"))), "a resent frame for the third event should still dedup")
 }
 
 // TestDedupRemovalDistinguishesNodes mirrors TestDedupDistinguishesNodes for
@@ -334,13 +280,7 @@ func TestDedupDistinguishesRepeatedPlacements(t *testing.T) {
 func TestDedupRemovalDistinguishesNodes(t *testing.T) {
 	d := newDedupIndex(8)
 
-	if emitDedupKey(t, d, keyRemove("node-A", "wl-1")) {
-		t.Fatal("removal of node-A wl-1 should be new")
-	}
-	if emitDedupKey(t, d, keyRemove("node-B", "wl-1")) {
-		t.Fatal("removal of node-B wl-1 must not dedup against node-A")
-	}
-	if !emitDedupKey(t, d, keyRemove("node-A", "wl-1")) {
-		t.Fatal("repeat removal of node-A wl-1 should dedup")
-	}
+	assert.False(t, emitDedupKey(t, d, keyRemove("node-A", "wl-1")), "removal of node-A wl-1 should be new")
+	assert.False(t, emitDedupKey(t, d, keyRemove("node-B", "wl-1")), "removal of node-B wl-1 must not dedup against node-A")
+	assert.True(t, emitDedupKey(t, d, keyRemove("node-A", "wl-1")), "repeat removal of node-A wl-1 should dedup")
 }

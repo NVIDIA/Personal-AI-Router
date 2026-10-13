@@ -18,6 +18,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	"nvpair-shared/schedulerwire"
 )
@@ -69,12 +72,10 @@ func enableOnFreePort(t *testing.T, p *Proxy, engine string) int {
 		if err == nil {
 			return port
 		}
-		if !stderrors.Is(err, errFacadeBindFailed) {
-			t.Fatalf("enable %s facade on :%d: %v", engine, port, err)
-		}
+		require.ErrorIs(t, err, errFacadeBindFailed, "enable (%v, %v)", engine, port)
 		lastErr = err
 	}
-	t.Fatalf("enable %s facade: every probed port was taken before the bind: %v", engine, lastErr)
+	require.FailNowf(t, "every probed facade port was taken before the bind", "engine %s: %v", engine, lastErr)
 	return 0
 }
 
@@ -91,9 +92,7 @@ func twoFacadeProxy(t *testing.T) *Proxy {
 	}
 	t.Cleanup(func() { p.shutdown(t.Context()) })
 
-	if got := len(p.enabledFacades()); got != len(engines.All()) {
-		t.Fatalf("enabled %d facades, want %d", got, len(engines.All()))
-	}
+	require.Len(t, p.enabledFacades(), len(engines.All()), "enabled facades")
 	return p
 }
 
@@ -106,15 +105,9 @@ func TestTwoFacadesKeepSeparatePortsAndProfiles(t *testing.T) {
 	ports := map[int]string{}
 	for _, e := range engines.All() {
 		f := p.facadeFor(e.Name)
-		if f == nil {
-			t.Fatalf("no facade enabled for %s", e.Name)
-		}
-		if f.profile.Name != e.Name {
-			t.Errorf("facade for %s carries profile %q", e.Name, f.profile.Name)
-		}
-		if owner, clash := ports[f.port]; clash {
-			t.Errorf("facades for %s and %s both bound port %d", e.Name, owner, f.port)
-		}
+		require.NotNil(t, f, "no facade enabled for")
+		assert.Equal(t, e.Name, f.profile.Name, "facade for")
+		assert.NotContains(t, ports, f.port, "facade %s must use a distinct port", e.Name)
 		ports[f.port] = e.Name
 	}
 }
@@ -132,18 +125,10 @@ func TestReEnablingOneFacadeLeavesBothIntact(t *testing.T) {
 		Engine: first.Name,
 		Port:   before.port,
 	})
-	if err != nil {
-		t.Fatalf("re-enable %s: %v", first.Name, err)
-	}
-	if result.Port != before.port {
-		t.Errorf("re-enable reported port %d, want the bound %d", result.Port, before.port)
-	}
-	if p.facadeFor(first.Name) != before {
-		t.Error("re-enable replaced the running facade")
-	}
-	if got := len(p.enabledFacades()); got != len(engines.All()) {
-		t.Errorf("after re-enable there are %d facades, want %d", got, len(engines.All()))
-	}
+	require.NoError(t, err, "re-enable")
+	assert.Equal(t, before.port, result.Port, "re-enable reported port")
+	assert.Same(t, before, p.facadeFor(first.Name), "re-enable replaced the running facade")
+	assert.Len(t, p.enabledFacades(), len(engines.All()), "enabled facades after re-enable")
 }
 
 // An enable that loses a bind race withdraws only its own engine. This is the
@@ -166,31 +151,19 @@ func TestOneFacadeFailingToBindLeavesTheOthersServing(t *testing.T) {
 
 	// Hold a port so the second facade cannot have it.
 	squatter, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	defer squatter.Close()
 	taken := squatter.Addr().(*net.TCPAddr).Port
 
 	_, err = p.enableFacade(enableFacadeParams{
 		Engine: failing.Name, Port: taken, IgnorePersistedPort: true,
 	})
-	if err == nil {
-		t.Fatalf("enabling %s on the occupied port %d succeeded", failing.Name, taken)
-	}
-	if !stderrors.Is(err, errFacadeBindFailed) {
-		t.Errorf("bind failure was not tagged retryable: %v", err)
-	}
+	require.Error(t, err, "enabling (%v)", taken)
+	assert.ErrorIs(t, err, errFacadeBindFailed, "bind failure was not tagged retryable")
 
-	if p.facadeFor(failing.Name) != nil {
-		t.Errorf("%s facade was published despite failing to bind", failing.Name)
-	}
-	if p.facadeFor(surviving.Name) == nil {
-		t.Errorf("%s facade was taken down by %s's bind failure", surviving.Name, failing.Name)
-	}
-	if got := len(p.enabledFacades()); got != 1 {
-		t.Errorf("enabled facades = %d, want just the surviving one", got)
-	}
+	assert.Nil(t, p.facadeFor(failing.Name))
+	assert.NotNil(t, p.facadeFor(surviving.Name))
+	assert.Len(t, p.enabledFacades(), 1, "enabled facades")
 }
 
 // A facade-scoped request reaches only the engine it names, and an engine with
@@ -215,21 +188,13 @@ func TestAddressedRequestReachesOnlyItsOwnFacade(t *testing.T) {
 	for _, e := range []engines.Engine{first, second} {
 		f := p.facadeFor(e.Name)
 		nodes := f.discovery.Nodes()
-		if len(nodes) != 1 {
-			t.Fatalf("%s facade sees %d nodes, want 1: %+v", e.Name, len(nodes), nodes)
-		}
-		if want := e.Name + "-node"; nodes[0].ID != want {
-			t.Errorf("%s facade sees node %q, want %q", e.Name, nodes[0].ID, want)
-		}
+		require.Len(t, nodes, 1)
+		assert.Equal(t, e.Name+"-node", nodes[0].ID)
 	}
 
 	// An engine with no facade resolves to nothing rather than to a sibling.
-	if f := p.facadeFor("vllm"); f != nil {
-		t.Errorf("unknown engine resolved to the %s facade", f.profile.Name)
-	}
-	if f := p.facadeFor(""); f != nil {
-		t.Errorf("an unaddressed message resolved to the %s facade", f.profile.Name)
-	}
+	assert.Nil(t, p.facadeFor("vllm"), "unknown engine resolved to the")
+	assert.Nil(t, p.facadeFor(""), "an unaddressed message resolved to the")
 }
 
 // The scheduler baseline and the reservation map are process-wide, so a
@@ -253,20 +218,13 @@ func TestFacadesShareSchedulerStateAndReservations(t *testing.T) {
 	_, firstRes := p.reserveCandidate(p.facadeFor(first.Name), reservationCandidates("x", "y"))
 	_, secondRes := p.reserveCandidate(p.facadeFor(second.Name), reservationCandidates("x", "y"))
 
-	if !firstRes.held || !secondRes.held {
-		t.Fatal("a facade failed to take a reservation from the shared snapshot")
-	}
-	if firstRes.nodeID == secondRes.nodeID {
-		t.Fatalf("both facades dispatched to %q: the reservation map is not shared",
-			firstRes.nodeID)
-	}
+	require.True(t, firstRes.held, "a facade failed to take a reservation from the shared snapshot")
+	require.True(t, secondRes.held, "a facade failed to take a reservation from the shared snapshot")
+	require.NotEqual(t, secondRes.nodeID, firstRes.nodeID, "both facades dispatched to")
 
 	// Releasing through one facade's request does not disturb the other's.
 	p.releaseReservation(firstRes)
-	if got := reservationCount(p, secondRes.nodeID); got != 1 {
-		t.Errorf("%s's reservation on %q = %d after the other facade released, want 1",
-			second.Name, secondRes.nodeID, got)
-	}
+	assert.Equal(t, 1, reservationCount(p, secondRes.nodeID), "")
 }
 
 // A panic while handling one engine's request must not end the process, because
@@ -287,9 +245,7 @@ func TestPanicHandlingOneEngineLeavesTheOtherServing(t *testing.T) {
 	p.facadeFor(victim.Name).discovery = nil
 
 	params, err := json.Marshal(map[string]string{"id": "some-node"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	id := json.RawMessage(`7`)
 	msg := &Message{
 		Method: engines.AddressMethod(victim.Name, "node/select"),
@@ -302,18 +258,14 @@ func TestPanicHandlingOneEngineLeavesTheOtherServing(t *testing.T) {
 	p.handleMessage(msg)
 
 	// The bystander facade is untouched and still answers.
-	if f := p.facadeFor(bystander.Name); f == nil {
-		t.Fatalf("%s facade disappeared after %s panicked", bystander.Name, victim.Name)
-	}
+	require.NotNil(t, p.facadeFor(bystander.Name))
 	bystanderMsg := &Message{
 		Method: engines.AddressMethod(bystander.Name, "nodes/list"),
 		ID:     &id,
 	}
 	p.handleMessage(bystanderMsg)
 
-	if got := len(p.enabledFacades()); got != len(all) {
-		t.Errorf("enabled facades = %d after a panic, want %d", got, len(all))
-	}
+	assert.Len(t, p.enabledFacades(), len(all), "enabled facades")
 }
 
 // A panic during bring-up withdraws that facade and releases its port, while
@@ -343,24 +295,15 @@ func TestPanicDuringEnableWithdrawsOnlyThatFacade(t *testing.T) {
 	port := freeTCPPort(t)
 	codec := p.codec
 	p.codec = nil
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("enable did not panic, so the rollback path was not exercised")
-			}
-			p.codec = codec
-		}()
+	assert.Panics(t, func() {
 		_, _ = p.enableFacade(enableFacadeParams{
 			Engine: panicking.Name, Port: port, IgnorePersistedPort: true,
 		})
-	}()
+	}, "enable did not panic, so the rollback path was not exercised")
+	p.codec = codec
 
-	if f := p.facadeFor(panicking.Name); f != nil {
-		t.Errorf("%s facade survived a panic during its bring-up", panicking.Name)
-	}
-	if p.facadeFor(surviving.Name) == nil {
-		t.Errorf("%s facade was taken down by %s's panic", surviving.Name, panicking.Name)
-	}
+	assert.Nil(t, p.facadeFor(panicking.Name))
+	assert.NotNil(t, p.facadeFor(surviving.Name))
 
 	// The port is bindable again, which is the part the deferred rollback is
 	// for: a listener left holding it would make the next enable read as a lost
@@ -377,11 +320,9 @@ func TestPanicDuringEnableWithdrawsOnlyThatFacade(t *testing.T) {
 		if stderrors.Is(err, errFacadeBindFailed) {
 			t.Skipf("port %d was taken by something else between the rollback and the re-enable: %v", port, err)
 		}
-		t.Fatalf("re-enable after the rollback failed for a non-bind reason: %v", err)
+		require.FailNowf(t, "re-enable after the rollback failed for a non-bind reason", "%v", err)
 	}
-	if p.facadeFor(panicking.Name) == nil {
-		t.Errorf("%s did not come back up on the released port %d", panicking.Name, port)
-	}
+	assert.NotNil(t, p.facadeFor(panicking.Name), " (%v)", port)
 }
 
 // Alias validation runs on the surface the broker actually uses. The addresses
@@ -394,9 +335,7 @@ func TestEnableFacadeRejectsUnsafeAliasAddresses(t *testing.T) {
 	var aliasEngine, plainEngine engines.Engine
 	for _, e := range engines.All() {
 		p, ok := profileFor(e.Name)
-		if !ok {
-			t.Fatalf("no profile for %s", e.Name)
-		}
+		require.True(t, ok, "no profile for")
 		if p.SupportsHostAlias {
 			aliasEngine = e
 		} else {
@@ -421,18 +360,15 @@ func TestEnableFacadeRejectsUnsafeAliasAddresses(t *testing.T) {
 			p.serveCtx = t.Context()
 			t.Cleanup(func() { p.shutdown(t.Context()) })
 
-			if _, err := p.enableFacade(enableFacadeParams{
+			_, err := p.enableFacade(enableFacadeParams{
 				Engine:              tc.engine,
 				Port:                freeTCPPort(t),
 				AliasAddresses:      []string{tc.alias},
 				IgnorePersistedPort: true,
-			}); err == nil {
-				t.Fatalf("enable accepted alias %q for %s", tc.alias, tc.engine)
-			}
+			})
+			require.Error(t, err, "enable accepted alias")
 			// Rejected outright, not enabled-then-partially-configured.
-			if f := p.facadeFor(tc.engine); f != nil {
-				t.Errorf("a rejected alias still left a %s facade enabled", tc.engine)
-			}
+			assert.Nil(t, p.facadeFor(tc.engine), "a rejected alias still left a")
 		})
 	}
 }
@@ -465,15 +401,13 @@ func TestBothFacadesAddressTheirNotifications(t *testing.T) {
 			continue
 		}
 		if engine == "" {
-			t.Errorf("a facade announced an unaddressed %q", msg.Method)
+			assert.Failf(t, "facade notification was not addressed", "method %q", msg.Method)
 			continue
 		}
 		readyFor[engine] = true
 	}
 
 	for _, e := range engines.All() {
-		if !readyFor[e.Name] {
-			t.Errorf("no addressed ready notification for %s; saw %v", e.Name, readyFor)
-		}
+		assert.Contains(t, readyFor, e.Name, "no addressed ready notification")
 	}
 }

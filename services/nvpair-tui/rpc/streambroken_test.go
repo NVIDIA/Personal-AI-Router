@@ -5,10 +5,12 @@ package rpc
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // discardWriter drops writes; these tests only exercise the read side.
@@ -37,21 +39,17 @@ func TestRunReturnsOnBrokenStream(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, ErrStreamBroken) {
-			t.Errorf("Run returned %v, want ErrStreamBroken", err)
-		}
+		assert.ErrorIs(t, err, ErrStreamBroken)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return on a broken stream; it is spinning")
+		require.FailNow(t, "Run did not return on a broken stream; it is spinning")
 	}
 
 	// Consumers must observe the disconnect.
 	select {
 	case _, open := <-c.Notifications():
-		if open {
-			t.Error("notifications channel delivered after the stream broke")
-		}
+		assert.False(t, open, "notifications channel delivered after the stream broke")
 	case <-time.After(time.Second):
-		t.Error("notifications channel was never closed, so the UI never learns it is disconnected")
+		assert.Fail(t, "notifications channel was never closed, so the UI never learns it is disconnected")
 	}
 }
 
@@ -67,13 +65,9 @@ func TestRunSkipsUnparseableFrame(t *testing.T) {
 
 	select {
 	case msg, ok := <-c.Notifications():
-		if !ok {
-			t.Fatal("session ended on a malformed frame instead of skipping it")
-		}
-		if msg.Method != "app:ready" {
-			t.Errorf("first delivered notification = %q, want app:ready", msg.Method)
-		}
+		require.True(t, ok, "session ended on a malformed frame instead of skipping it")
+		assert.Equal(t, "app:ready", msg.Method)
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out; a malformed frame stalled the loop")
+		require.FailNow(t, "timed out; a malformed frame stalled the loop")
 	}
 }

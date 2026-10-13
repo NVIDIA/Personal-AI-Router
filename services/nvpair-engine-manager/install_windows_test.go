@@ -15,6 +15,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLlamaCPPInstallPreservesDestinationPathWithSpaces(t *testing.T) {
@@ -36,41 +39,30 @@ func TestLlamaCPPInstallPreservesDestinationPathWithSpaces(t *testing.T) {
 
 	registry := loadWithOverrides(t, t.TempDir())
 	manifest, ok := registry.Get("llamacpp")
-	if !ok {
-		t.Fatal("llamacpp manifest not loaded")
-	}
+	require.True(t, ok, "llamacpp manifest not loaded")
 	platform, ok := manifest.Platforms[hostKey()]
-	if !ok || platform.Install == nil {
-		t.Fatalf("llamacpp install is unavailable for %s", hostKey())
-	}
+	require.True(t, ok, "llamacpp install is unavailable for %s", hostKey())
+	require.NotNil(t, platform.Install, "llamacpp install is unavailable for %s", hostKey())
 	platform.Install.Artifacts = []InstallArtifact{
 		pinnedArtifact("server", server.URL+"/server.zip", serverArchive),
 		pinnedArtifact("cudart", server.URL+"/cudart.zip", cudartArchive),
 	}
 	platform.Runtime.Port = 0
 	manifest.Platforms[hostKey()] = platform
-	if err := manifest.Validate(); err != nil {
-		t.Fatalf("validate llama.cpp test manifest: %v", err)
-	}
+	require.NoError(t, manifest.Validate(), "validate llama.cpp test manifest")
 
 	baseDir := filepath.Join(t.TempDir(), "Nvidia Corporation", "Personal AI Router", "engine-bin")
 	executor := NewExecutor(registry, NewReporter(nil), nil, baseDir)
 	executor.detectTimeout = 2 * time.Second
-	if err := executor.Install(context.Background(), "llamacpp"); err != nil {
-		t.Fatalf("install llama.cpp into a spaced path: %v", err)
-	}
+	require.NoError(t, executor.Install(context.Background(), "llamacpp"), "install llama.cpp into a spaced path")
 
 	for name, want := range map[string]string{
 		"llama-server.exe": "server",
 		"cudart64_12.dll":  "runtime",
 	} {
 		data, err := os.ReadFile(filepath.Join(baseDir, "llamacpp", name))
-		if err != nil {
-			t.Fatalf("read extracted %s: %v", name, err)
-		}
-		if string(data) != want {
-			t.Errorf("%s contents = %q, want %q", name, data, want)
-		}
+		require.NoError(t, err, "read extracted %s", name)
+		assert.Equal(t, want, string(data), "%s contents", name)
 	}
 }
 
@@ -79,14 +71,9 @@ func testZIP(t *testing.T, name, contents string) []byte {
 	var buffer bytes.Buffer
 	archive := zip.NewWriter(&buffer)
 	file, err := archive.Create(name)
-	if err != nil {
-		t.Fatalf("create zip entry %s: %v", name, err)
-	}
-	if _, err := file.Write([]byte(contents)); err != nil {
-		t.Fatalf("write zip entry %s: %v", name, err)
-	}
-	if err := archive.Close(); err != nil {
-		t.Fatalf("close zip archive: %v", err)
-	}
+	require.NoError(t, err, "create zip entry %s", name)
+	_, err = file.Write([]byte(contents))
+	require.NoError(t, err, "write zip entry %s", name)
+	require.NoError(t, archive.Close(), "close zip archive")
 	return buffer.Bytes()
 }

@@ -4,8 +4,10 @@
 package main
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNodeCandidates covers the deterministic, loopback-first ordering and
@@ -46,20 +48,14 @@ func TestNodeCandidates(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nodeCandidates(tc.node); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("nodeCandidates = %v, want %v", got, tc.want)
-			}
+			assert.Equal(t, tc.want, nodeCandidates(tc.node), "nodeCandidates")
 		})
 	}
 }
 
 func TestUUIDFromTXT(t *testing.T) {
-	if got := uuidFromTXT([]string{"models=a;b", "uuid=abc-123"}); got != "abc-123" {
-		t.Errorf("got %q, want abc-123", got)
-	}
-	if got := uuidFromTXT([]string{"models=a;b"}); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
+	assert.Equal(t, "abc-123", uuidFromTXT([]string{"models=a;b", "uuid=abc-123"}))
+	assert.Equal(t, "", uuidFromTXT([]string{"models=a;b"}))
 }
 
 // TestNodeURL covers the URL-construction part of nodeURL — specifically
@@ -106,15 +102,9 @@ func TestNodeURL(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			u := nodeURL(tc.node)
-			if u == nil {
-				t.Fatalf("nodeURL returned nil")
-			}
-			if u.Host != tc.wantHost {
-				t.Errorf("Host = %q, want %q", u.Host, tc.wantHost)
-			}
-			if got := u.String(); got != tc.wantURL {
-				t.Errorf("String() = %q, want %q", got, tc.wantURL)
-			}
+			require.NotNil(t, u, "nodeURL returned nil")
+			assert.Equal(t, tc.wantHost, u.Host, "Host")
+			assert.Equal(t, tc.wantURL, u.String())
 		})
 	}
 }

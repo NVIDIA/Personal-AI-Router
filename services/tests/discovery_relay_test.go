@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestBrokerAdvertisesNodeRecord exercises the register->advertise path
@@ -31,9 +34,7 @@ func TestBrokerAdvertisesNodeRecord(t *testing.T) {
 	}()
 
 	host, err := os.Hostname()
-	if err != nil {
-		t.Fatalf("hostname: %v", err)
-	}
+	require.NoError(t, err, "hostname")
 	instance := strings.Trim(host, ".")
 
 	// The scanner first announces the base node record, then re-announces after
@@ -53,14 +54,8 @@ func TestBrokerAdvertisesNodeRecord(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	entry := entryText
-	if entry == nil {
-		t.Fatal("did not discover this node's _nvpair-node record within timeout")
-	}
+	require.NotNil(t, entry, "did not discover this node's _nvpair-node record within timeout")
 	txt := strings.Join(entry, ";")
-	if !strings.Contains(txt, "ni=14318") {
-		t.Errorf("_nvpair-node TXT missing ni=14318 (register->advertise path): %v", entry)
-	}
-	if !strings.Contains(txt, "v=1") {
-		t.Errorf("_nvpair-node TXT missing schema v=1: %v", entry)
-	}
+	assert.Contains(t, txt, "ni=14318", "_nvpair-node TXT missing ni=14318 (register->advertise path) (%v)", entry)
+	assert.Contains(t, txt, "v=1", "_nvpair-node TXT missing schema v=1 (%v)", entry)
 }

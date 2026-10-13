@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
+
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResolveCandidatesUnclusteredDropsRelayPeers is the core isolation
@@ -31,12 +34,10 @@ func TestResolveCandidatesUnclusteredDropsRelayPeers(t *testing.T) {
 	p := testProxy(anyProfile(t), disc, 11435) // mesh nil => unclustered
 
 	cands := p.soleFacade().resolveCandidates("")
-	if len(cands) != 1 {
-		t.Fatalf("unclustered candidate set = %+v, want exactly the manual node", cands)
-	}
-	if cands[0].id != "manual-x" || cands[0].peerUUID != "" || cands[0].url.Scheme != "http" {
-		t.Fatalf("unclustered candidate = %+v, want plaintext manual-x with no peerUUID", cands[0])
-	}
+	require.Len(t, cands, 1, "unclustered candidate set")
+	require.Equal(t, "manual-x", cands[0].id, "unclustered candidate")
+	require.Equal(t, "", cands[0].peerUUID, "unclustered candidate")
+	require.Equal(t, "http", cands[0].url.Scheme, "unclustered candidate")
 }
 
 // TestHandlePlainRejectsNonLoopback proves the plaintext personality is
@@ -49,12 +50,8 @@ func TestHandlePlainRejectsNonLoopback(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	p.soleFacade().handlePlain(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("non-loopback plaintext status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header on the refusal", got)
-	}
+	require.Equal(t, http.StatusForbidden, rec.Code, "non-loopback plaintext status")
+	assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 }
 
 // Preflight is subject to the same ingress gate as ordinary requests.
@@ -65,12 +62,8 @@ func TestHandlePlainRejectsPreflightAtLoopbackGate(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	p.soleFacade().handlePlain(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("preflight status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want no CORS header", got)
-	}
+	require.Equal(t, http.StatusForbidden, rec.Code, "preflight status")
+	assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
 }
 
 // engine-manager marks its own identity probes so the compatibility facade can
@@ -86,12 +79,8 @@ func TestHandlePlainRejectsEngineIdentityProbe(t *testing.T) {
 		rec := httptest.NewRecorder()
 
 		p.soleFacade().handlePlain(rec, req)
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("identity probe status = %d, want %d", rec.Code, http.StatusConflict)
-		}
-		if body := rec.Body.String(); !strings.Contains(body, tc.profile.DisplayName) {
-			t.Fatalf("rejection does not name %s: %s", tc.profile.DisplayName, body)
-		}
+		require.Equal(t, http.StatusConflict, rec.Code, "identity probe status")
+		require.Contains(t, rec.Body.String(), tc.profile.DisplayName, "rejection does not name")
 	})
 }
 
@@ -104,9 +93,7 @@ func TestHandleClusterIngressUnclusteredForbids(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	p.soleFacade().handleClusterIngress(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("unclustered ingress status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
+	require.Equal(t, http.StatusForbidden, rec.Code, "unclustered ingress status")
 }
 
 func TestIsLoopbackRemote(t *testing.T) {
@@ -121,9 +108,7 @@ func TestIsLoopbackRemote(t *testing.T) {
 		{"", false},
 		{"garbage", false},
 	} {
-		if got := isLoopbackRemote(c.addr); got != c.want {
-			t.Errorf("isLoopbackRemote(%q) = %v, want %v", c.addr, got, c.want)
-		}
+		assert.Equal(t, c.want, isLoopbackRemote(c.addr), "isLoopbackRemote(%q)", c.addr)
 	}
 }
 
@@ -133,10 +118,6 @@ func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {
 	target := &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
 	rp := p.soleFacade().newLocalReverseProxy(target)
 	tr, ok := rp.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("Transport type = %T, want *http.Transport", rp.Transport)
-	}
-	if tr != shared {
-		t.Fatal("ingress reverse proxy did not use the shared plain Transport")
-	}
+	require.True(t, ok, "Transport type")
+	require.Same(t, shared, tr, "ingress reverse proxy did not use the shared plain Transport")
 }

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
 )
@@ -37,16 +39,10 @@ import (
 func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	cmd := exec.Command(errorsBin)
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start nvpair-errors: %v", err)
-	}
+	require.NoError(t, err, "stdout pipe")
+	require.NoError(t, cmd.Start(), "start nvpair-errors")
 	// Defer-close stdin so that even on t.Fatal mid-test the
 	// subprocess sees EOF and exits cleanly rather than orphaning.
 	defer func() {
@@ -78,13 +74,11 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	}
 	writeRequest(t, stdin, 1, "errors:report", first)
 	resp1 := waitForResponseOrTimeout(t, out, 5*time.Second)
-	if string(*resp1.ID) != "1" {
-		t.Fatalf("expected response id=1, got %s", string(*resp1.ID))
-	}
+	require.Equal(t, "1", string(*resp1.ID), "expected response id=1")
 	got1 := waitForUpdate(t, out, 5*time.Second)
-	if len(got1) != 1 || got1[0].ID != upstreamID || got1[0].Message != "first emit" {
-		t.Fatalf("first update payload = %+v, want single entry matching first emit", got1)
-	}
+	require.Len(t, got1, 1, "first update payload")
+	require.Equal(t, upstreamID, got1[0].ID, "first update payload (%v)", got1)
+	require.Equal(t, "first emit", got1[0].Message, "first update payload (%v)", got1)
 
 	// 2. errors:report (NOTIFICATION form) with an OLDER timestamp.
 	//    Must be dropped — no errors:update push.
@@ -99,23 +93,18 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 		ID: upstreamID, Message: "second emit", Timestamp: 2000, NodeID: localNode,
 	})
 	got3 := waitForUpdate(t, out, 5*time.Second)
-	if len(got3) != 1 || got3[0].Message != "second emit" {
-		t.Fatalf("second update payload = %+v, want second emit", got3)
-	}
+	require.Len(t, got3, 1, "second update payload")
+	require.Equal(t, "second emit", got3[0].Message, "second update payload (%v)", got3)
 
 	// 4. errors:get-initial round-trip. Returns the current full list.
 	writeRequest(t, stdin, 2, "errors:get-initial", nil)
 	resp4 := waitForResponseOrTimeout(t, out, 5*time.Second)
-	if string(*resp4.ID) != "2" {
-		t.Fatalf("expected response id=2, got %s", string(*resp4.ID))
-	}
+	require.Equal(t, "2", string(*resp4.ID), "expected response id=2")
 	var initial []errors.ServiceError
-	if err := json.Unmarshal(resp4.Result, &initial); err != nil {
-		t.Fatalf("decode get-initial result: %v", err)
-	}
-	if len(initial) != 1 || initial[0].ID != upstreamID || initial[0].Message != "second emit" {
-		t.Fatalf("get-initial = %+v, want single entry matching second emit", initial)
-	}
+	require.NoError(t, json.Unmarshal(resp4.Result, &initial), "decode get-initial result")
+	require.Len(t, initial, 1, "get-initial")
+	require.Equal(t, upstreamID, initial[0].ID, "get-initial (%v)", initial)
+	require.Equal(t, "second emit", initial[0].Message, "get-initial (%v)", initial)
 
 	// 5. errors:clear (REQUEST form). Response + update with empty list.
 	//    ClearedBy is the broker-stamped field — nvpair-errors stores
@@ -125,13 +114,9 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 		ID: upstreamID, ClearedBy: localNode,
 	})
 	resp5 := waitForResponseOrTimeout(t, out, 5*time.Second)
-	if string(*resp5.ID) != "3" {
-		t.Fatalf("expected response id=3, got %s", string(*resp5.ID))
-	}
+	require.Equal(t, "3", string(*resp5.ID), "expected response id=3")
 	got5 := waitForUpdate(t, out, 5*time.Second)
-	if len(got5) != 0 {
-		t.Fatalf("post-clear update = %+v, want empty list", got5)
-	}
+	require.Empty(t, got5, "post-clear update")
 
 	// 6. Re-emit the same id with a NEWER timestamp than the cleared
 	//    one. Ack-until-reemit: the user's clear is in-memory only,
@@ -140,9 +125,8 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 		ID: upstreamID, Message: "resurrected", Timestamp: 3000, NodeID: localNode,
 	})
 	got6 := waitForUpdate(t, out, 5*time.Second)
-	if len(got6) != 1 || got6[0].Message != "resurrected" {
-		t.Fatalf("post-reemit update = %+v, want resurrected entry", got6)
-	}
+	require.Len(t, got6, 1, "post-reemit update")
+	require.Equal(t, "resurrected", got6[0].Message, "post-reemit update (%v)", got6)
 
 	// 7. Add a SECOND id to confirm the update payload is always the
 	//    full list, sorted by id. Multi-id ordering is a unit-test
@@ -153,12 +137,8 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 		ID: probeID, Message: "manual node down", Timestamp: 4000, NodeID: localNode,
 	})
 	got7 := waitForUpdate(t, out, 5*time.Second)
-	if len(got7) != 2 {
-		t.Fatalf("two-id update len = %d, want 2", len(got7))
-	}
-	if !sort.SliceIsSorted(got7, func(i, j int) bool { return got7[i].ID < got7[j].ID }) {
-		t.Fatalf("update payload not sorted by id: %+v", got7)
-	}
+	require.Len(t, got7, 2, "two-id update len")
+	require.True(t, sort.SliceIsSorted(got7, func(i, j int) bool { return got7[i].ID < got7[j].ID }), "update payload not sorted by id (%v)", got7)
 }
 
 // --- helpers, scoped to this test file ---
@@ -214,14 +194,11 @@ func writeNotification(t *testing.T, w io.Writer, method string, params any) {
 func writeFrame(t *testing.T, w io.Writer, msg jsonrpc.Message) {
 	t.Helper()
 	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal frame: %v", err)
-	}
+	require.NoError(t, err, "marshal frame")
 	writeMu.Lock()
 	defer writeMu.Unlock()
-	if _, err := w.Write(append(data, '\n')); err != nil {
-		t.Fatalf("write frame: %v", err)
-	}
+	_, err = w.Write(append(data, '\n'))
+	require.NoError(t, err, "write frame")
 }
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
@@ -230,9 +207,7 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 		return nil
 	}
 	data, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
-	}
+	require.NoError(t, err, "marshal params")
 	return data
 }
 
@@ -245,14 +220,12 @@ func waitForMethodOrTimeout(t *testing.T, ch <-chan jsonrpc.Message, method stri
 	for {
 		select {
 		case msg, ok := <-ch:
-			if !ok {
-				t.Fatalf("stream closed before receiving %q", method)
-			}
+			require.True(t, ok, "stream closed before receiving (%v)", method)
 			if msg.Method == method {
 				return msg
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for method %q", timeout, method)
+			require.FailNowf(t, "timed out waiting for method", "%q after %s", method, timeout)
 		}
 	}
 }
@@ -267,17 +240,13 @@ func waitForResponseOrTimeout(t *testing.T, ch <-chan jsonrpc.Message, timeout t
 	for {
 		select {
 		case msg, ok := <-ch:
-			if !ok {
-				t.Fatal("stream closed before receiving response")
-			}
+			require.True(t, ok, "stream closed before receiving response")
 			if msg.ID != nil && msg.Method == "" {
-				if msg.Error != nil {
-					t.Fatalf("unexpected RPC error response: code=%d msg=%q", msg.Error.Code, msg.Error.Message)
-				}
+				require.Nil(t, msg.Error, "unexpected RPC error response: code")
 				return msg
 			}
 		case <-timer.C:
-			t.Fatal("timed out waiting for JSON-RPC response")
+			require.FailNow(t, "timed out waiting for JSON-RPC response")
 		}
 	}
 }
@@ -293,9 +262,7 @@ func waitForUpdate(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Duratio
 		return nil
 	}
 	var list []errors.ServiceError
-	if err := json.Unmarshal(msg.Params, &list); err != nil {
-		t.Fatalf("decode errors:update payload: %v (raw=%s)", err, msg.Params)
-	}
+	require.NoError(t, json.Unmarshal(msg.Params, &list), "decode errors:update payload")
 	return list
 }
 
@@ -313,9 +280,7 @@ func assertNoUpdate(t *testing.T, ch <-chan jsonrpc.Message, window time.Duratio
 			if !ok {
 				return
 			}
-			if msg.Method == "errors:update" {
-				t.Fatalf("unexpected errors:update during quiet window: %s", msg.Params)
-			}
+			require.NotEqual(t, "errors:update", msg.Method, "unexpected errors:update during quiet window")
 		case <-timer.C:
 			return
 		}

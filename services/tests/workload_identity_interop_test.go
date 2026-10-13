@@ -35,6 +35,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 )
 
@@ -77,9 +79,8 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	ack := waitForResponse(t, msgs, 5*time.Second)
 	var sr subscriptionResult
-	if err := json.Unmarshal(ack.Result, &sr); err != nil || !sr.Subscribed {
-		t.Fatalf("workloads:subscribe ack = %s (err %v), want subscribed:true", ack.Result, err)
-	}
+	require.NoError(t, json.Unmarshal(ack.Result, &sr), "workloads:subscribe ack")
+	require.True(t, sr.Subscribed, "workloads:subscribe ack")
 
 	ollamaProxyPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	lmstudioProxyPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
@@ -121,9 +122,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	for len(engineIDs) < 2 {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before both engine workloads seen")
-			}
+			require.True(t, ok, "broker stream closed before both engine workloads seen")
 			if msg.Method != "workloads:upsert" {
 				continue
 			}
@@ -139,13 +138,11 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 				}
 			}
 		case <-deadline:
-			t.Fatalf("timed out: only saw engine workloads %v, want both ollama and lmstudio (cross-engine records collapsed?)", engineIDs)
+			require.FailNow(t, fmt.Sprintf("timed out: only saw engine workloads %v, want both ollama and lmstudio (cross-engine records collapsed?)", engineIDs))
 		}
 	}
 
-	if engineIDs["ollama"] != engineIDs["lmstudio"] {
-		t.Fatalf("expected the two proxies to collide on one workload id (both counters start at 1); got ollama=%q lmstudio=%q — determinism assumption broke", engineIDs["ollama"], engineIDs["lmstudio"])
-	}
+	require.Equal(t, engineIDs["lmstudio"], engineIDs["ollama"], "expected the two proxies to collide on one workload id (both counters start at 1)")
 	t.Logf("cross-engine OK: ollama and lmstudio both tracked distinct workloads sharing id %q", engineIDs["ollama"])
 }
 
@@ -264,9 +261,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	}
 
 	pid2 := awaitInt(t, wmPids, 30*time.Second, "workload-manager respawn")
-	if pid2 == pid1 {
-		t.Fatalf("respawned workload-manager reused pid %d; expected a fresh process", pid1)
-	}
+	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid")
 	t.Logf("workload-manager respawned pid=%d", pid2)
 
 	// The rehydrated manager must re-assert the still-active workload to the
@@ -355,9 +350,7 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	}
 
 	pid2 := awaitInt(t, wmPids, 30*time.Second, "workload-manager respawn")
-	if pid2 == pid1 {
-		t.Fatalf("respawned workload-manager reused pid %d; expected a fresh process", pid1)
-	}
+	require.NotEqual(t, pid1, pid2, "respawned workload-manager reused pid")
 	t.Logf("workload-manager respawned pid=%d", pid2)
 
 	// The rehydrated manager must re-assert the recent terminal. If the broker
@@ -379,9 +372,7 @@ func waitStubPeerWorkload(t *testing.T, received <-chan jsonrpc.Message, model, 
 	for {
 		select {
 		case msg, ok := <-received:
-			if !ok {
-				t.Fatalf("stub peer channel closed before %q workload %s", model, state)
-			}
+			require.True(t, ok, "stub peer channel closed before (%v, %v)", model, state)
 			if !strings.HasPrefix(msg.Method, "workload:") {
 				continue
 			}
@@ -393,7 +384,7 @@ func waitStubPeerWorkload(t *testing.T, received <-chan jsonrpc.Message, model, 
 				return
 			}
 		case <-deadline:
-			t.Fatalf("timed out (%s) waiting for stub peer to receive %q workload in state %q", timeout, model, state)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for stub peer to receive %q workload in state %q", timeout, model, state))
 		}
 	}
 }
@@ -416,7 +407,7 @@ func awaitInt(t *testing.T, ch <-chan int, timeout time.Duration, what string) i
 	case v := <-ch:
 		return v
 	case <-time.After(timeout):
-		t.Fatalf("timed out (%s) waiting for %s", timeout, what)
+		require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for %s", timeout, what))
 		return 0
 	}
 }
@@ -425,16 +416,10 @@ func awaitInt(t *testing.T, ch <-chan int, timeout time.Duration, what string) i
 func portOfURL(t *testing.T, raw string) int {
 	t.Helper()
 	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse url %q: %v", raw, err)
-	}
+	require.NoError(t, err, "parse url (%v)", raw)
 	_, portStr, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		t.Fatalf("split host:port %q: %v", u.Host, err)
-	}
+	require.NoError(t, err, "split host:port")
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("atoi port %q: %v", portStr, err)
-	}
+	require.NoError(t, err, "atoi port (%v)", portStr)
 	return port
 }

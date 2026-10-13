@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/nodeid"
 )
 
@@ -21,30 +23,20 @@ func TestFirstMintAdoptsExistingNodeUUID(t *testing.T) {
 
 	// A worker resolves the per-host UUID first (mints <base>/node-id.json).
 	a := nodeid.Resolve(base)
-	if a == "" {
-		t.Fatal("nodeid.Resolve returned empty")
-	}
+	require.NotEqual(t, "", a, "nodeid.Resolve returned empty")
 
 	// cluster-manager then mints identity.json on first launch.
 	clusterDir := filepath.Join(base, "cluster")
-	if err := os.MkdirAll(clusterDir, 0o700); err != nil {
-		t.Fatalf("mkdir cluster dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(clusterDir, 0o700), "mkdir cluster dir")
 	id, err := loadOrMintIdentity(clusterDir)
-	if err != nil {
-		t.Fatalf("loadOrMintIdentity: %v", err)
-	}
+	require.NoError(t, err, "loadOrMintIdentity")
 
 	// It must have adopted the already-minted UUID, not minted a fresh one.
-	if id.NodeUUID != a {
-		t.Fatalf("cluster-manager minted a divergent UUID: identity=%q, node-id.json=%q", id.NodeUUID, a)
-	}
+	require.Equal(t, a, id.NodeUUID, "cluster-manager minted a divergent UUID")
 
 	// And every subsequent resolution (now preferring identity.json) agrees:
 	// this is the empty-config equality invariant the whole fleet relies on.
-	if got := nodeid.Resolve(base); got != a {
-		t.Fatalf("post-mint nodeid.Resolve = %q, want %q (no A/B divergence)", got, a)
-	}
+	require.Equal(t, a, nodeid.Resolve(base), "post-mint nodeid.Resolve")
 }
 
 // TestFirstMintWhenClusterManagerIsFirst verifies the other ordering: when
@@ -53,17 +45,9 @@ func TestFirstMintAdoptsExistingNodeUUID(t *testing.T) {
 func TestFirstMintWhenClusterManagerIsFirst(t *testing.T) {
 	base := t.TempDir()
 	clusterDir := filepath.Join(base, "cluster")
-	if err := os.MkdirAll(clusterDir, 0o700); err != nil {
-		t.Fatalf("mkdir cluster dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(clusterDir, 0o700), "mkdir cluster dir")
 	id, err := loadOrMintIdentity(clusterDir)
-	if err != nil {
-		t.Fatalf("loadOrMintIdentity: %v", err)
-	}
-	if id.NodeUUID == "" {
-		t.Fatal("minted empty UUID")
-	}
-	if got := nodeid.Resolve(base); got != id.NodeUUID {
-		t.Fatalf("nodeid.Resolve = %q, want the minted identity %q", got, id.NodeUUID)
-	}
+	require.NoError(t, err, "loadOrMintIdentity")
+	require.NotEqual(t, "", id.NodeUUID, "minted empty UUID")
+	require.Equal(t, id.NodeUUID, nodeid.Resolve(base), "nodeid.Resolve")
 }

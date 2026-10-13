@@ -4,24 +4,24 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
+
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newAnnouncingStore returns a trust store wired to count change announcements.
 func newAnnouncingStore(t *testing.T) (*TrustStore, func() int) {
 	t.Helper()
 	ts, err := newTrustStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("new trust store: %v", err)
-	}
+	require.NoError(t, err, "new trust store")
 	var count int
 	ts.SetOnChange(func() { count++ })
 	return ts, func() int { return count }
@@ -30,9 +30,7 @@ func newAnnouncingStore(t *testing.T) (*TrustStore, func() int) {
 func testPin(t *testing.T, uuid string) *TrustedPin {
 	t.Helper()
 	certPEM, _, err := generateLeaf(uuid, uuid)
-	if err != nil {
-		t.Fatalf("generate leaf: %v", err)
-	}
+	require.NoError(t, err, "generate leaf")
 	return &TrustedPin{
 		NodeUUID:  uuid,
 		NodeID:    uuid,
@@ -57,53 +55,48 @@ func TestTrustStoreAnnouncesEveryMutation(t *testing.T) {
 	ts, count := newAnnouncingStore(t)
 	const uuid = "principal-peer"
 
-	if err := ts.Pin(testPin(t, uuid)); err != nil {
-		t.Fatalf("pin: %v", err)
-	}
-	if count() != 1 {
-		t.Fatalf("announcements after pin = %d, want 1", count())
-	}
+	require.NoError(t, ts.Pin(testPin(t, uuid)), "pin")
+	require.Equal(t, 1, count(), "announcements after pin")
 
-	if ok, err := ts.UpdateIdentity(uuid, "renamed-host", "Renamed"); err != nil || !ok {
-		t.Fatalf("update identity: ok=%v err=%v", ok, err)
-	}
-	if count() != 2 {
-		t.Fatalf("announcements after rename = %d, want 2", count())
-	}
+	ok, err := ts.UpdateIdentity(uuid, "renamed-host", "Renamed")
+	require.NoError(t, err, "update identity: ok (%v, %v)", ok, err)
+	require.True(t, ok, "update identity: ok (%v, %v)", ok, err)
+	require.Equal(t, 2, count(), "announcements after rename")
 
-	if err := ts.Remove(uuid); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	if count() != 3 {
-		t.Fatalf("announcements after remove = %d, want 3", count())
-	}
+	require.NoError(t, ts.Remove(uuid), "remove")
+	require.Equal(t, 3, count(), "announcements after remove")
 
-	if err := ts.Pin(testPin(t, uuid)); err != nil {
-		t.Fatalf("re-pin: %v", err)
-	}
+	require.NoError(t, ts.Pin(testPin(t, uuid)), "re-pin")
 	ts.Forget(uuid)
-	if count() != 5 {
-		t.Fatalf("announcements after re-pin + forget = %d, want 5", count())
-	}
+	require.Equal(t, 5, count(), "announcements after re-pin + forget")
 }
 
-// assertStoredEndorsements checks the live snapshot and a separately loaded
-// store. It is also safe to call from an onChange callback in a joined worker.
-func assertStoredEndorsements(t *testing.T, ts *TrustStore, uuid string, want []Endorsement) {
-	t.Helper()
-	pin, ok := ts.Get(uuid)
-	if !ok || !reflect.DeepEqual(pin.Endorsements, want) {
-		t.Errorf("live endorsements = %+v, want %+v", pin, want)
-	}
+type storedEndorsementsSnapshot struct {
+	live, persisted *TrustedPin
+	reloadErr       error
+}
+
+// snapshotStoredEndorsements observes memory and disk at announcement time,
+// including when the callback runs in a worker goroutine.
+func snapshotStoredEndorsements(ts *TrustStore, uuid string) storedEndorsementsSnapshot {
+	var snapshot storedEndorsementsSnapshot
+	snapshot.live, _ = ts.Get(uuid)
 	reloaded, err := newTrustStore(filepath.Dir(ts.dir))
-	if err != nil {
-		t.Errorf("reload trust store: %v", err)
-		return
+	snapshot.reloadErr = err
+	if err == nil {
+		snapshot.persisted, _ = reloaded.Get(uuid)
 	}
-	pin, ok = reloaded.Get(uuid)
-	if !ok || !reflect.DeepEqual(pin.Endorsements, want) {
-		t.Errorf("reloaded endorsements = %+v, want %+v", pin, want)
-	}
+	return snapshot
+}
+
+// assertStoredEndorsements checks a captured snapshot in the test goroutine.
+func assertStoredEndorsements(t *testing.T, snapshot storedEndorsementsSnapshot, want []Endorsement) {
+	t.Helper()
+	require.NotNil(t, snapshot.live, "live endorsements (%v)", want)
+	assert.Equal(t, want, snapshot.live.Endorsements, "live endorsements")
+	require.NoError(t, snapshot.reloadErr, "reload trust store")
+	require.NotNil(t, snapshot.persisted, "reloaded endorsements (%v)", want)
+	assert.Equal(t, want, snapshot.persisted.Endorsements, "reloaded endorsements")
 }
 
 type endorsementMerge func(*TrustStore, *TrustedPin, []Endorsement) error
@@ -126,51 +119,31 @@ func TestTrustStoreAnnouncesNewEndorsementsAfterPersistence(t *testing.T) {
 			first := Endorsement{By: "trusted-peer", Sig: "signature-1"}
 			second := Endorsement{By: "trusted-peer", SigV2: "signature-2"}
 			pin.Endorsements = []Endorsement{first}
-			if err := ts.Pin(pin); err != nil {
-				t.Fatalf("pin: %v", err)
-			}
+			require.NoError(t, ts.Pin(pin), "pin")
 			want := []Endorsement{first, second}
 			calls := 0
 			ts.SetOnChange(func() {
 				calls++
 				// Acquiring Get's read lock here also witnesses that the
 				// mutation lock was released before announcing the change.
-				assertStoredEndorsements(t, ts, pin.NodeUUID, want)
+				assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), want)
 			})
 			// Mix an existing endorsement, a new endorsement, and an
 			// in-batch duplicate. One operation causes one announcement.
 			batch := []Endorsement{first, second, second}
-			if err := merge(ts, pin, batch); err != nil {
-				t.Fatalf("merge: %v", err)
-			}
-			if calls != 1 {
-				t.Fatalf("announcements after merge = %d, want 1", calls)
-			}
-			assertStoredEndorsements(t, ts, pin.NodeUUID, want)
+			require.NoError(t, merge(ts, pin, batch), "merge")
+			require.Equal(t, 1, calls, "announcements after merge")
+			assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), want)
 			before, err := os.ReadFile(ts.pinPath(pin.NodeUUID))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := merge(ts, pin, batch); err != nil {
-				t.Fatalf("duplicate merge: %v", err)
-			}
-			if calls != 1 {
-				t.Fatalf("announcements after duplicate merge = %d, want 1", calls)
-			}
-			if err := merge(ts, pin, nil); err != nil {
-				t.Fatalf("empty merge: %v", err)
-			}
-			if calls != 1 {
-				t.Fatalf("announcements after empty merge = %d, want 1", calls)
-			}
+			require.NoError(t, err)
+			require.NoError(t, merge(ts, pin, batch), "duplicate merge")
+			require.Equal(t, 1, calls, "announcements after duplicate merge")
+			require.NoError(t, merge(ts, pin, nil), "empty merge")
+			require.Equal(t, 1, calls, "announcements after empty merge")
 			after, err := os.ReadFile(ts.pinPath(pin.NodeUUID))
-			if err != nil {
-				t.Fatalf("read pin after no-op merges: %v", err)
-			}
-			if !bytes.Equal(before, after) {
-				t.Fatal("no-op merges changed disk contents")
-			}
-			assertStoredEndorsements(t, ts, pin.NodeUUID, want)
+			require.NoError(t, err, "read pin after no-op merges")
+			assert.Equal(t, before, after, "no-op merges changed disk contents")
+			assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), want)
 		})
 	}
 	test("AddEndorsements", addEndorsements)
@@ -185,13 +158,9 @@ func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 			first := Endorsement{By: "trusted-peer", Sig: "signature-1"}
 			second := Endorsement{By: "trusted-peer", SigV2: "signature-2"}
 			pin.Endorsements = []Endorsement{first}
-			if err := ts.Pin(pin); err != nil {
-				t.Fatalf("pin: %v", err)
-			}
+			require.NoError(t, ts.Pin(pin), "pin")
 			before, err := os.ReadFile(ts.pinPath(pin.NodeUUID))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			beforeCount := count()
 			// Fail the final replace, after the temporary file was written.
 			// The existing pin must remain intact on disk and in memory.
@@ -199,35 +168,20 @@ func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 			writeErr := errors.New("injected endorsement replace failure")
 			renameFile = func(_, _ string) error { return writeErr }
 			t.Cleanup(func() { renameFile = originalRename })
-			if err := merge(ts, pin, []Endorsement{second}); !errors.Is(err, writeErr) {
-				t.Fatalf("merge error = %v, want injected replace failure", err)
-			}
-			if count() != beforeCount {
-				t.Fatalf("announcements after failed write = %d, want %d", count(), beforeCount)
-			}
+			require.ErrorIs(t, merge(ts, pin, []Endorsement{second}), writeErr, "merge error")
+			require.Equal(t, beforeCount, count(), "announcements after failed write")
 			after, err := os.ReadFile(ts.pinPath(pin.NodeUUID))
-			if err != nil {
-				t.Fatalf("read pin after failed write: %v", err)
-			}
-			if !bytes.Equal(before, after) {
-				t.Fatal("failed write changed disk contents")
-			}
-			assertStoredEndorsements(t, ts, pin.NodeUUID, []Endorsement{first})
+			require.NoError(t, err, "read pin after failed write")
+			assert.Equal(t, before, after, "failed write changed disk contents")
+			assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), []Endorsement{first})
 			entries, err := os.ReadDir(ts.dir)
-			if err != nil {
-				t.Fatalf("list trusted directory after failed write: %v", err)
-			}
-			if len(entries) != 1 || entries[0].Name() != pin.NodeUUID+".json" {
-				t.Fatalf("failed write left temporary residue: entries=%v", entries)
-			}
+			require.NoError(t, err, "list trusted directory after failed write")
+			require.Len(t, entries, 1, "failed write left temporary residue: entries")
+			require.Equal(t, pin.NodeUUID+".json", entries[0].Name(), "failed write left temporary residue: entries (%v)", entries)
 			renameFile = originalRename
-			if err := merge(ts, pin, []Endorsement{second}); err != nil {
-				t.Fatalf("retry after storage recovery: %v", err)
-			}
-			if count() != beforeCount+1 {
-				t.Fatalf("announcements after retry = %d, want %d", count(), beforeCount+1)
-			}
-			assertStoredEndorsements(t, ts, pin.NodeUUID, []Endorsement{first, second})
+			require.NoError(t, merge(ts, pin, []Endorsement{second}), "retry after storage recovery")
+			require.Equal(t, beforeCount+1, count(), "announcements after retry")
+			assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), []Endorsement{first, second})
 		})
 	}
 	test("AddEndorsements", addEndorsements)
@@ -236,19 +190,20 @@ func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 
 func TestTrustStoreConcurrentDuplicateEndorsementsAnnounceOnce(t *testing.T) {
 	ts, err := newTrustStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	pin := testPin(t, "principal-peer")
-	if err := ts.Pin(pin); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ts.Pin(pin))
 	endorsement := Endorsement{By: "trusted-peer", SigV2: "signature-1"}
 	want := []Endorsement{endorsement}
 	var calls atomic.Int32
+	var snapshotsMu sync.Mutex
+	var snapshots []storedEndorsementsSnapshot
 	ts.SetOnChange(func() {
 		calls.Add(1)
-		assertStoredEndorsements(t, ts, pin.NodeUUID, want)
+		snapshot := snapshotStoredEndorsements(ts, pin.NodeUUID)
+		snapshotsMu.Lock()
+		snapshots = append(snapshots, snapshot)
+		snapshotsMu.Unlock()
 	})
 	const workers = 16
 	start := make(chan struct{})
@@ -272,28 +227,23 @@ func TestTrustStoreConcurrentDuplicateEndorsementsAnnounceOnce(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		if err != nil {
-			t.Errorf("concurrent merge: %v", err)
-		}
+		assert.NoError(t, err, "concurrent merge")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("announcements for concurrent identical submissions = %d, want 1", got)
+	for _, snapshot := range snapshots {
+		assertStoredEndorsements(t, snapshot, want)
 	}
-	assertStoredEndorsements(t, ts, pin.NodeUUID, want)
+	assert.Equal(t, int32(1), calls.Load(), "announcements for concurrent identical submissions")
+	assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), want)
 }
 
 func TestTrustStoreMissingEndorsementTargetStaysSilent(t *testing.T) {
 	ts, count := newAnnouncingStore(t)
-	if err := ts.AddEndorsements("principal-stranger", []Endorsement{{By: "trusted-peer", SigV2: "signature-1"}}); err != nil {
-		t.Fatal(err)
-	}
-	if count() != 0 || len(ts.List()) != 0 {
-		t.Fatalf("missing-target merge changed live state: announcements=%d pins=%v", count(), ts.List())
-	}
+	require.NoError(t, ts.AddEndorsements("principal-stranger", []Endorsement{{By: "trusted-peer", SigV2: "signature-1"}}))
+	require.Equal(t, 0, count(), "missing-target merge changed live state: announcements")
+	require.Empty(t, ts.List(), "missing-target merge changed live state: announcements")
 	entries, err := os.ReadDir(ts.dir)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("missing-target merge changed disk state: entries=%v err=%v", entries, err)
-	}
+	require.NoError(t, err, "missing-target merge changed disk state: entries (%v, %v)", entries, err)
+	require.Empty(t, entries, "missing-target merge changed disk state: entries (%v, %v)", entries, err)
 }
 
 // TestTrustStoreStaysSilentWhenNothingChanged keeps the announcement meaningful.
@@ -306,32 +256,22 @@ func TestTrustStoreStaysSilentWhenNothingChanged(t *testing.T) {
 	const uuid = "principal-peer"
 	pin := testPin(t, uuid)
 
-	if err := ts.Pin(pin); err != nil {
-		t.Fatalf("pin: %v", err)
-	}
+	require.NoError(t, ts.Pin(pin), "pin")
 	before := count()
 
 	// An identical re-pin folds in no new endorsements and rewrites nothing.
 	// Reuse the exact pin: generating another fixture would mint a different
 	// certificate and exercise the key-rotation rejection path instead.
-	if err := ts.Pin(pin); err != nil {
-		t.Fatalf("identical re-pin: %v", err)
-	}
+	require.NoError(t, ts.Pin(pin), "identical re-pin")
 	// An empty endorsement merge is also a no-op and must stay silent.
-	if err := ts.AddEndorsements(uuid, nil); err != nil {
-		t.Fatalf("empty endorsement merge: %v", err)
-	}
+	require.NoError(t, ts.AddEndorsements(uuid, nil), "empty endorsement merge")
 	// A rename to the values already stored changes nothing.
-	if ok, err := ts.UpdateIdentity(uuid, uuid, uuid); err != nil || ok {
-		t.Fatalf("no-op rename: ok=%v err=%v, want false/nil", ok, err)
-	}
+	ok, err := ts.UpdateIdentity(uuid, uuid, uuid)
+	require.NoError(t, err, "no-op rename: ok (%v, %v)", ok, err)
+	require.False(t, ok, "no-op rename: ok (%v, %v)", ok, err)
 	// Removing a peer we do not hold is not a change.
-	if err := ts.Remove("principal-stranger"); err != nil {
-		t.Fatalf("remove unknown: %v", err)
-	}
+	require.NoError(t, ts.Remove("principal-stranger"), "remove unknown")
 	ts.Forget("principal-stranger")
 
-	if count() != before {
-		t.Fatalf("announcements = %d, want %d — a no-op must stay silent", count(), before)
-	}
+	require.Equal(t, before, count(), "announcements")
 }

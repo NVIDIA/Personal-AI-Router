@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSettingsOverrideRestrictsExistingPermissions(t *testing.T) {
@@ -15,24 +17,14 @@ func TestSettingsOverrideRestrictsExistingPermissions(t *testing.T) {
 		t.Skip("POSIX permission bits are not enforced on Windows")
 	}
 	e := settingsExecutor(t, false)
-	if err := os.Chmod(e.overrideDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(e.overrideDir, 0755))
 	path := filepath.Join(e.overrideDir, "fake.json")
-	if err := os.WriteFile(path, []byte(`{"engine":"fake"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(`{"engine":"fake"}`), 0644))
 	environment := []string{"PAIR_TEST=private"}
-	if err := e.persistRuntimeConfig("fake", 54321, nil, &environment); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, e.persistRuntimeConfig("fake", 54321, nil, &environment))
 	for path, want := range map[string]os.FileMode{e.overrideDir: 0700, path: 0600} {
 		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != want {
-			t.Fatalf("%s permissions=%o, want %o", path, got, want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, info.Mode().Perm(), "permissions for %s", path)
 	}
 }

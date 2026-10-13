@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 )
 
@@ -41,17 +43,11 @@ func startCMEnv(t *testing.T, configDir string, port int, extraEnv []string) *cm
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
+	require.NoError(t, err, "stdout pipe")
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start cluster-manager: %v", err)
-	}
+	require.NoError(t, cmd.Start(), "start cluster-manager")
 	return &cmProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1}
 }
 
@@ -79,15 +75,13 @@ func (p *cmProc) pump(want func(jsonrpc.Message) bool, timeout time.Duration) js
 	for {
 		select {
 		case m, ok := <-p.msgs:
-			if !ok {
-				p.t.Fatal("cluster-manager stdout closed unexpectedly")
-			}
+			require.True(p.t, ok, "cluster-manager stdout closed unexpectedly")
 			if want(m) {
 				return m
 			}
 			p.buf = append(p.buf, m)
 		case <-timer.C:
-			p.t.Fatal("timed out waiting on cluster-manager message")
+			require.FailNow(p.t, "timed out waiting on cluster-manager message")
 		}
 	}
 }
@@ -110,13 +104,10 @@ func (p *cmProc) call(method string, params any) jsonrpc.Message {
 	}
 	b, _ := json.Marshal(req)
 	b = append(b, '\n')
-	if _, err := p.stdin.Write(b); err != nil {
-		p.t.Fatalf("write %s: %v", method, err)
-	}
+	_, err := p.stdin.Write(b)
+	require.NoError(p.t, err, "write %s", method)
 	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
-	if resp.Error != nil {
-		p.t.Fatalf("%s returned error %d: %s", method, resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(p.t, resp.Error, "%s returned a JSON-RPC error", method)
 	return resp
 }
 
@@ -132,9 +123,8 @@ func (p *cmProc) callExpectError(method string, params any) jsonrpc.Message {
 	}
 	b, _ := json.Marshal(req)
 	b = append(b, '\n')
-	if _, err := p.stdin.Write(b); err != nil {
-		p.t.Fatalf("write %s: %v", method, err)
-	}
+	_, err := p.stdin.Write(b)
+	require.NoError(p.t, err, "write %s", method)
 	return p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
 }
 
@@ -146,9 +136,7 @@ func (p *cmProc) waitNotify(method string) jsonrpc.Message {
 func decodeResult[T any](t *testing.T, msg jsonrpc.Message) T {
 	t.Helper()
 	var v T
-	if err := json.Unmarshal(msg.Result, &v); err != nil {
-		t.Fatalf("decode result: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(msg.Result, &v), "decode result")
 	return v
 }
 
@@ -167,12 +155,9 @@ func TestClusterManagerPairing(t *testing.T) {
 	}
 	aInfo := decodeResult[nodeID](t, a.call("cluster:get-node-id", nil))
 	bInfo := decodeResult[nodeID](t, b.call("cluster:get-node-id", nil))
-	if aInfo.NodeUUID == "" || bInfo.NodeUUID == "" {
-		t.Fatal("expected non-empty node UUIDs")
-	}
-	if bInfo.ClusterID != "" {
-		t.Fatalf("node B should start unclustered, got %q", bInfo.ClusterID)
-	}
+	require.NotEqual(t, "", aInfo.NodeUUID, "expected non-empty node UUIDs")
+	require.NotEqual(t, "", bInfo.NodeUUID, "expected non-empty node UUIDs")
+	require.Equal(t, "", bInfo.ClusterID, "node B should start unclustered")
 
 	// Give both inter-node listeners a moment to bind.
 	time.Sleep(time.Second)
@@ -188,24 +173,16 @@ func TestClusterManagerPairing(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14822, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" {
-		t.Fatalf("invite-node state = %q, want pending", inv.State)
-	}
-	if len(inv.Pin) != 6 {
-		t.Fatalf("expected a six-digit PIN, got %q", inv.Pin)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node state")
+	require.Len(t, inv.Pin, 6, "expected a six-digit PIN")
 
 	// B is prompted.
 	rcv := b.waitNotify("cluster:invite-received")
 	var rcvInvite struct {
 		InviteID string `json:"inviteId"`
 	}
-	if err := json.Unmarshal(rcv.Params, &rcvInvite); err != nil {
-		t.Fatalf("decode invite-received: %v", err)
-	}
-	if rcvInvite.InviteID != inv.InviteID {
-		t.Fatalf("invite-received id %q != %q", rcvInvite.InviteID, inv.InviteID)
-	}
+	require.NoError(t, json.Unmarshal(rcv.Params, &rcvInvite), "decode invite-received")
+	require.Equal(t, inv.InviteID, rcvInvite.InviteID, "invite-received id")
 
 	// B accepts with the PIN -> paired, adopts A's cluster.
 	type invite struct {
@@ -214,43 +191,29 @@ func TestClusterManagerPairing(t *testing.T) {
 	resp := decodeResult[invite](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": true, "pin": inv.Pin,
 	}))
-	if resp.State != "paired" {
-		t.Fatalf("respond-to-invite state = %q, want paired", resp.State)
-	}
+	require.Equal(t, "paired", resp.State, "respond-to-invite state")
 
 	bAdopted := decodeResult[nodeID](t, b.call("cluster:get-node-id", nil))
-	if bAdopted.ClusterID != aInfo.ClusterID && bAdopted.ClusterID == "" {
-		t.Fatalf("node B did not adopt a cluster: %q", bAdopted.ClusterID)
-	}
+	require.False(t, bAdopted.ClusterID != aInfo.ClusterID && bAdopted.ClusterID == "", "node B did not adopt a cluster")
 
 	// A's invite flips to paired (completion is served async on A).
 	waitInviteState(t, a, inv.InviteID, "paired")
 
 	// Both sides now list two members.
-	if got := memberCount(t, a); got != 2 {
-		t.Fatalf("node A members = %d, want 2", got)
-	}
-	if got := memberCount(t, b); got != 2 {
-		t.Fatalf("node B members = %d, want 2", got)
-	}
+	require.Equal(t, 2, memberCount(t, a), "node A members")
+	require.Equal(t, 2, memberCount(t, b), "node B members")
 
 	// A removes B.
 	type removeResult struct {
 		Removed bool `json:"removed"`
 	}
 	rm := decodeResult[removeResult](t, a.call("nodes:remove", map[string]any{"nodeUuid": bInfo.NodeUUID}))
-	if !rm.Removed {
-		t.Fatal("nodes:remove removed = false, want true")
-	}
-	if got := memberCount(t, a); got != 1 {
-		t.Fatalf("after removal node A members = %d, want 1", got)
-	}
+	require.True(t, rm.Removed, "nodes:remove removed = false, want true")
+	require.Equal(t, 1, memberCount(t, a), "after removal node A members")
 	// B must become unclustered, not a zombie that still shows "Joined".
 	waitMembers(t, b, 0)
 	bAfter := decodeResult[nodeID](t, b.call("cluster:get-node-id", nil))
-	if bAfter.ClusterID != "" {
-		t.Fatalf("node B still clustered after being removed: %q", bAfter.ClusterID)
-	}
+	require.Equal(t, "", bAfter.ClusterID, "node B still clustered after being removed")
 }
 
 // TestInviteAutoFoundsClusterWhenUnclustered verifies that a node that is
@@ -266,9 +229,7 @@ func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
 
 	// A starts unclustered — there is no cluster:create call anywhere below.
 	aInfo := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if aInfo.ClusterID != "" {
-		t.Fatalf("node A should start unclustered, got %q", aInfo.ClusterID)
-	}
+	require.Equal(t, "", aInfo.ClusterID, "node A should start unclustered")
 
 	// Let both inter-node listeners bind.
 	time.Sleep(time.Second)
@@ -281,9 +242,8 @@ func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14832, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" || len(inv.Pin) != 6 {
-		t.Fatalf("invite-node = %+v, want pending + six-digit pin (invite must proceed after auto-found)", inv)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node (%v)", inv)
+	require.Len(t, inv.Pin, 6, "invite-node (%v)", inv)
 
 	// The auto-found emitted cluster:identity-changed with a fresh clusterId so
 	// the Broker persists it, exactly like an explicit cluster:create would.
@@ -291,33 +251,22 @@ func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
 	var id struct {
 		ClusterID string `json:"clusterId"`
 	}
-	if err := json.Unmarshal(changed.Params, &id); err != nil {
-		t.Fatalf("decode cluster:identity-changed: %v", err)
-	}
-	if id.ClusterID == "" {
-		t.Fatal("cluster:identity-changed carried an empty clusterId; auto-found did not mint one")
-	}
+	require.NoError(t, json.Unmarshal(changed.Params, &id), "decode cluster:identity-changed")
+	require.NotEqual(t, "", id.ClusterID, "cluster:identity-changed carried an empty clusterId; auto-found did not mint one")
 
 	// A is now clustered (reporting the founded id) and is its own sole member.
 	aAfter := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if aAfter.ClusterID != id.ClusterID {
-		t.Fatalf("get-node-id clusterId = %q, want the founded %q", aAfter.ClusterID, id.ClusterID)
-	}
-	if got := memberCount(t, a); got != 1 {
-		t.Fatalf("after auto-found node A members = %d, want 1 (self)", got)
-	}
+	require.Equal(t, id.ClusterID, aAfter.ClusterID, "get-node-id clusterId")
+	require.Equal(t, 1, memberCount(t, a), "after auto-found node A members")
 
 	// Idempotency: a second invite reuses the existing cluster, never re-founds.
 	inv2 := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14832, "nodeId": "node-b",
 	}))
-	if inv2.State != "pending" || len(inv2.Pin) != 6 {
-		t.Fatalf("second invite-node = %+v, want pending + six-digit pin", inv2)
-	}
+	require.Equal(t, "pending", inv2.State, "second invite-node (%v)", inv2)
+	require.Len(t, inv2.Pin, 6, "second invite-node (%v)", inv2)
 	aFinal := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if aFinal.ClusterID != id.ClusterID {
-		t.Fatalf("clusterId changed on a second invite: %q != %q (re-founded?)", aFinal.ClusterID, id.ClusterID)
-	}
+	require.Equal(t, id.ClusterID, aFinal.ClusterID, "clusterId changed on a second invite")
 }
 
 // TestRepeatedInviteSameSenderSupersedesPrior verifies that re-inviting the same
@@ -344,48 +293,36 @@ func TestRepeatedInviteSameSenderSupersedesPrior(t *testing.T) {
 	}
 
 	first := invite()
-	if first.State != "pending" || len(first.Pin) != 6 {
-		t.Fatalf("first invite = %+v, want pending + six-digit PIN", first)
-	}
+	require.Equal(t, "pending", first.State, "first invite (%v)", first)
+	require.Len(t, first.Pin, 6, "first invite (%v)", first)
 	b.waitNotify("cluster:invite-received")
 
 	second := invite()
-	if second.State != "pending" || len(second.Pin) != 6 || second.InviteID == first.InviteID {
-		t.Fatalf("second invite = %+v, want a new pending invite + six-digit PIN", second)
-	}
+	require.Equal(t, "pending", second.State, "second invite (%v)", second)
+	require.Len(t, second.Pin, 6, "second invite (%v)", second)
+	require.NotEqual(t, first.InviteID, second.InviteID, "second invite (%v)", second)
 
 	canceledMsg := b.waitNotify("cluster:invite-canceled")
 	var canceled inviteResult
-	if err := json.Unmarshal(canceledMsg.Params, &canceled); err != nil {
-		t.Fatalf("decode cluster:invite-canceled: %v", err)
-	}
-	if canceled.InviteID != first.InviteID || canceled.State != "canceled" {
-		t.Fatalf("canceled invite = %+v, want first invite %s canceled", canceled, first.InviteID)
-	}
+	require.NoError(t, json.Unmarshal(canceledMsg.Params, &canceled), "decode cluster:invite-canceled")
+	require.Equal(t, first.InviteID, canceled.InviteID, "canceled invite (%v)", canceled)
+	require.Equal(t, "canceled", canceled.State, "canceled invite (%v)", canceled)
 	receivedMsg := b.waitNotify("cluster:invite-received")
 	var received inviteResult
-	if err := json.Unmarshal(receivedMsg.Params, &received); err != nil {
-		t.Fatalf("decode second cluster:invite-received: %v", err)
-	}
-	if received.InviteID != second.InviteID {
-		t.Fatalf("received inviteId = %q, want newest %q", received.InviteID, second.InviteID)
-	}
+	require.NoError(t, json.Unmarshal(receivedMsg.Params, &received), "decode second cluster:invite-received")
+	require.Equal(t, second.InviteID, received.InviteID, "received inviteId")
 
 	waitInviteState(t, a, first.InviteID, "declined")
 	waitInviteState(t, b, first.InviteID, "canceled")
 	stale := b.callExpectError("cluster:respond-to-invite", map[string]any{
 		"inviteId": first.InviteID, "accept": true, "pin": first.Pin,
 	})
-	if stale.Error == nil {
-		t.Fatal("accepting superseded invite succeeded, want invalid-state error")
-	}
+	require.NotNil(t, stale.Error, "accepting superseded invite succeeded, want invalid-state error")
 
 	paired := decodeResult[inviteResult](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": second.InviteID, "accept": true, "pin": second.Pin,
 	}))
-	if paired.State != "paired" {
-		t.Fatalf("accept newest invite state = %q, want paired", paired.State)
-	}
+	require.Equal(t, "paired", paired.State, "accept newest invite state")
 	waitInviteState(t, a, second.InviteID, "paired")
 }
 
@@ -406,18 +343,15 @@ func pairNodes(t *testing.T, inviter, joiner *cmProc, joinerPort int, joinerNode
 	inv := decodeResult[inviteResult](t, inviter.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": joinerPort, "nodeId": joinerNodeID,
 	}))
-	if inv.State != "pending" || len(inv.Pin) != 6 {
-		t.Fatalf("invite-node = %+v, want pending + six-digit pin", inv)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node (%v)", inv)
+	require.Len(t, inv.Pin, 6, "invite-node (%v)", inv)
 	joiner.waitNotify("cluster:invite-received")
 	resp := decodeResult[struct {
 		State string `json:"state"`
 	}](t, joiner.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": true, "pin": inv.Pin,
 	}))
-	if resp.State != "paired" {
-		t.Fatalf("respond-to-invite state = %q, want paired", resp.State)
-	}
+	require.Equal(t, "paired", resp.State, "respond-to-invite state")
 	waitInviteState(t, inviter, inv.InviteID, "paired")
 }
 
@@ -446,7 +380,7 @@ func waitMembers(t *testing.T, p *cmProc, want int) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Fatalf("node did not reach %d members (have %d)", want, memberCount(t, p))
+	require.FailNow(t, fmt.Sprintf("node did not reach %d members (have %d)", want, memberCount(t, p)))
 }
 
 // TestClusterFanout verifies transitive trust: A founds a cluster and invites B
@@ -476,29 +410,21 @@ func TestClusterFanout(t *testing.T) {
 	waitMembers(t, c, 3)
 
 	// The key property: B and C trust each other despite never pairing directly.
-	if !memberUUIDs(t, b)[cInfo.NodeUUID] {
-		t.Fatal("B did not transitively learn C")
-	}
-	if !memberUUIDs(t, c)[bInfo.NodeUUID] {
-		t.Fatal("C did not transitively learn B")
-	}
+	require.Contains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B did not transitively learn C")
+	require.Contains(t, memberUUIDs(t, c), bInfo.NodeUUID, "C did not transitively learn B")
 
 	// Removal fans out: A removes C, and B drops C too (not just A).
 	a.call("nodes:remove", map[string]any{"nodeUuid": cInfo.NodeUUID})
 	waitMembers(t, a, 2)
 	waitMembers(t, b, 2)
-	if memberUUIDs(t, b)[cInfo.NodeUUID] {
-		t.Fatal("B still trusts C after a cluster-wide removal")
-	}
+	require.NotContains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B still trusts C after a cluster-wide removal")
 
 	// The removed node itself must become unclustered (not merely drop the
 	// remover while keeping clusterId + remaining peers — the online-remove
 	// zombie that left Settings showing "Joined").
 	waitMembers(t, c, 0)
 	cAfter := decodeResult[cmNodeID](t, c.call("cluster:get-node-id", nil))
-	if cAfter.ClusterID != "" {
-		t.Fatalf("C still clustered after being removed: %q", cAfter.ClusterID)
-	}
+	require.Equal(t, "", cAfter.ClusterID, "C still clustered after being removed")
 }
 
 // TestClusterLeave verifies a node can cleanly unjoin itself: after C leaves a
@@ -525,34 +451,24 @@ func TestClusterLeave(t *testing.T) {
 
 	// nodes:remove must refuse to remove self.
 	selfRm := c.callExpectError("nodes:remove", map[string]any{"nodeUuid": cInfo.NodeUUID})
-	if selfRm.Error == nil {
-		t.Fatal("nodes:remove on self should be rejected")
-	}
+	require.NotNil(t, selfRm.Error, "nodes:remove on self should be rejected")
 
 	// C leaves the cluster.
 	left := decodeResult[struct {
 		Left bool `json:"left"`
 	}](t, c.call("cluster:leave", nil))
-	if !left.Left {
-		t.Fatal("cluster:leave left = false, want true")
-	}
+	require.True(t, left.Left, "cluster:leave left = false, want true")
 
 	// C is now unclustered with no members.
 	cAfter := decodeResult[cmNodeID](t, c.call("cluster:get-node-id", nil))
-	if cAfter.ClusterID != "" {
-		t.Fatalf("C still clustered after leave: %q", cAfter.ClusterID)
-	}
+	require.Equal(t, "", cAfter.ClusterID, "C still clustered after leave")
 	waitMembers(t, c, 0)
 
 	// A and B drop C and converge back to 2 members.
 	waitMembers(t, a, 2)
 	waitMembers(t, b, 2)
-	if memberUUIDs(t, a)[cInfo.NodeUUID] {
-		t.Fatal("A still lists C after C left")
-	}
-	if memberUUIDs(t, b)[cInfo.NodeUUID] {
-		t.Fatal("B still lists C after C left")
-	}
+	require.NotContains(t, memberUUIDs(t, a), cInfo.NodeUUID, "A still lists C after C left")
+	require.NotContains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B still lists C after C left")
 }
 
 // TestClusterCancelInvite verifies the inviter can abort a pending invite: after
@@ -580,9 +496,8 @@ func TestClusterCancelInvite(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14862, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" || len(inv.Pin) != 6 {
-		t.Fatalf("invite-node = %+v, want pending + six-digit pin", inv)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node (%v)", inv)
+	require.Len(t, inv.Pin, 6, "invite-node (%v)", inv)
 
 	// B is prompted and briefly holds a pending-inbound member for A.
 	b.waitNotify("cluster:invite-received")
@@ -592,9 +507,7 @@ func TestClusterCancelInvite(t *testing.T) {
 	canceled := decodeResult[struct {
 		State string `json:"state"`
 	}](t, a.call("cluster:cancel-invite", map[string]any{"inviteId": inv.InviteID}))
-	if canceled.State != "canceled" {
-		t.Fatalf("cancel-invite state = %q, want canceled", canceled.State)
-	}
+	require.Equal(t, "canceled", canceled.State, "cancel-invite state")
 
 	// B is told to drop its prompt and clears the pending-inbound member.
 	b.waitNotify("cluster:invite-canceled")
@@ -605,30 +518,21 @@ func TestClusterCancelInvite(t *testing.T) {
 	resp := b.callExpectError("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": true, "pin": inv.Pin,
 	})
-	if resp.Error == nil {
-		t.Fatal("respond-to-invite after cancel should be rejected, but succeeded")
-	}
+	require.NotNil(t, resp.Error, "respond-to-invite after cancel should be rejected, but succeeded")
 
 	// Neither side ended up paired.
-	if memberUUIDs(t, a)[bInfo.NodeUUID] {
-		t.Fatal("A paired with B despite canceling the invite")
-	}
+	require.NotContains(t, memberUUIDs(t, a), bInfo.NodeUUID, "A paired with B despite canceling the invite")
 	bAfter := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bAfter.ClusterID != "" {
-		t.Fatalf("B joined a cluster despite the cancel: %q", bAfter.ClusterID)
-	}
-	if got := memberCount(t, a); got != 1 {
-		t.Fatalf("A members = %d, want 1 (itself only)", got)
-	}
+	require.Equal(t, "", bAfter.ClusterID, "B joined a cluster despite the cancel")
+	require.Equal(t, 1, memberCount(t, a), "A members")
 
 	// A's invite reads canceled.
 	waitInviteState(t, a, inv.InviteID, "canceled")
 
 	// cancel-invite on an unknown invite → -32001.
 	unk := a.callExpectError("cluster:cancel-invite", map[string]any{"inviteId": "inv-does-not-exist"})
-	if unk.Error == nil || unk.Error.Code != -32001 {
-		t.Fatalf("cancel unknown invite: got %+v, want error code -32001", unk.Error)
-	}
+	require.NotNil(t, unk.Error, "cancel unknown invite:")
+	require.Equal(t, -32001, unk.Error.Code, "cancel unknown invite:")
 }
 
 // TestClusterCancelInviteRace drives the cancel-vs-Completion race directly at
@@ -675,7 +579,7 @@ func TestClusterCancelInviteRace(t *testing.T) {
 		}))
 		if inv.State != "pending" || len(inv.Pin) != 6 {
 			b.stop()
-			t.Fatalf("iter %d: invite-node = %+v, want pending + six-digit pin", i, inv)
+			require.FailNow(t, fmt.Sprintf("iter %d: invite-node = %+v, want pending + six-digit pin", i, inv))
 		}
 		b.waitNotify("cluster:invite-received")
 
@@ -705,7 +609,7 @@ func TestClusterCancelInviteRace(t *testing.T) {
 		acceptPaired := respMsg.Error == nil && decodeResult[inviteState](t, respMsg).State == "paired"
 		if cancelSucceeded && acceptPaired {
 			b.stop()
-			t.Fatalf("iter %d: both cancel and accept reported success (torn)", i)
+			require.FailNow(t, fmt.Sprintf("iter %d: both cancel and accept reported success (torn)", i))
 		}
 
 		finalState := decodeResult[inviteState](t, a.call("cluster:invite-status",
@@ -717,28 +621,28 @@ func TestClusterCancelInviteRace(t *testing.T) {
 		case "paired":
 			if cancelSucceeded {
 				b.stop()
-				t.Fatalf("iter %d: invite is paired but cancel returned canceled (torn)", i)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is paired but cancel returned canceled (torn)", i))
 			}
 			if !aHasB {
 				b.stop()
-				t.Fatalf("iter %d: invite is paired but inviter does not list the joiner (torn)", i)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is paired but inviter does not list the joiner (torn)", i))
 			}
 			if bCluster == "" {
 				b.stop()
-				t.Fatalf("iter %d: invite is paired but joiner did not join a cluster (torn)", i)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is paired but joiner did not join a cluster (torn)", i))
 			}
 		case "canceled", "failed":
 			if aHasB {
 				b.stop()
-				t.Fatalf("iter %d: invite is %s but inviter still lists the joiner as a member (torn)", i, finalState)
+				require.FailNow(t, fmt.Sprintf("iter %d: invite is %s but inviter still lists the joiner as a member (torn)", i, finalState))
 			}
 			if cancelSucceeded && bCluster != "" {
 				b.stop()
-				t.Fatalf("iter %d: cancel returned canceled but joiner joined cluster %q (torn)", i, bCluster)
+				require.FailNow(t, fmt.Sprintf("iter %d: cancel returned canceled but joiner joined cluster %q (torn)", i, bCluster))
 			}
 		default:
 			b.stop()
-			t.Fatalf("iter %d: unexpected final invite state %q", i, finalState)
+			require.FailNow(t, fmt.Sprintf("iter %d: unexpected final invite state %q", i, finalState))
 		}
 		b.stop()
 	}
@@ -767,9 +671,8 @@ func TestClusterDeclineInvite(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14872, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" || len(inv.Pin) != 6 {
-		t.Fatalf("invite-node = %+v, want pending + six-digit pin", inv)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node (%v)", inv)
+	require.Len(t, inv.Pin, 6, "invite-node (%v)", inv)
 
 	// B is prompted and briefly holds a pending-inbound member for A.
 	b.waitNotify("cluster:invite-received")
@@ -781,16 +684,12 @@ func TestClusterDeclineInvite(t *testing.T) {
 	}](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": false,
 	}))
-	if declined.State != "declined" {
-		t.Fatalf("respond-to-invite decline state = %q, want declined", declined.State)
-	}
+	require.Equal(t, "declined", declined.State, "respond-to-invite decline state")
 
 	// Joiner clears the pending-inbound member and stays unclustered.
 	waitMembers(t, b, 0)
 	bAfter := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bAfter.ClusterID != "" {
-		t.Fatalf("B clustered after decline: %q", bAfter.ClusterID)
-	}
+	require.Equal(t, "", bAfter.ClusterID, "B clustered after decline")
 
 	// Inviter learns about the decline, then leaves the invite-created solo cluster.
 	a.waitNotify("cluster:invite-declined")
@@ -802,12 +701,8 @@ func TestClusterDeclineInvite(t *testing.T) {
 	resp := b.callExpectError("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": true, "pin": inv.Pin,
 	})
-	if resp.Error == nil {
-		t.Fatal("respond-to-invite after decline should be rejected, but succeeded")
-	}
-	if memberUUIDs(t, a)[bInfo.NodeUUID] {
-		t.Fatal("A paired with B despite the decline")
-	}
+	require.NotNil(t, resp.Error, "respond-to-invite after decline should be rejected, but succeeded")
+	require.NotContains(t, memberUUIDs(t, a), bInfo.NodeUUID, "A paired with B despite the decline")
 }
 
 // TestClusterInviteExpiresBothSides verifies that when the receiving node never
@@ -839,9 +734,8 @@ func TestClusterInviteExpiresBothSides(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14912, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" || len(inv.Pin) != 6 {
-		t.Fatalf("invite-node = %+v, want pending + six-digit pin", inv)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node (%v)", inv)
+	require.Len(t, inv.Pin, 6, "invite-node (%v)", inv)
 
 	// B is prompted and briefly holds a pending-inbound member for A.
 	b.waitNotify("cluster:invite-received")
@@ -867,12 +761,9 @@ func TestClusterInviteExpiresBothSides(t *testing.T) {
 	inv2 := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14912, "nodeId": "node-b",
 	}))
-	if inv2.State != "pending" || len(inv2.Pin) != 6 {
-		t.Fatalf("retry invite-node = %+v, want pending + six-digit pin", inv2)
-	}
-	if inv2.InviteID == inv.InviteID {
-		t.Fatal("retry must mint a fresh inviteId")
-	}
+	require.Equal(t, "pending", inv2.State, "retry invite-node (%v)", inv2)
+	require.Len(t, inv2.Pin, 6, "retry invite-node (%v)", inv2)
+	require.NotEqual(t, inv.InviteID, inv2.InviteID, "retry must mint a fresh inviteId")
 	b.waitNotify("cluster:invite-received")
 }
 
@@ -888,9 +779,7 @@ func TestClusterDeclinePreservesIntentionalSolo(t *testing.T) {
 
 	a.call("cluster:create", map[string]any{"clusterFriendlyName": "Intentional Lab"})
 	before := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if before.ClusterID == "" {
-		t.Fatal("A should be clustered after create")
-	}
+	require.NotEqual(t, "", before.ClusterID, "A should be clustered after create")
 
 	inv := decodeResult[struct {
 		InviteID string `json:"inviteId"`
@@ -899,9 +788,7 @@ func TestClusterDeclinePreservesIntentionalSolo(t *testing.T) {
 	}](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14882, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" {
-		t.Fatalf("invite-node state = %q, want pending", inv.State)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node state")
 	b.waitNotify("cluster:invite-received")
 
 	declined := decodeResult[struct {
@@ -909,20 +796,14 @@ func TestClusterDeclinePreservesIntentionalSolo(t *testing.T) {
 	}](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": false,
 	}))
-	if declined.State != "declined" {
-		t.Fatalf("decline state = %q, want declined", declined.State)
-	}
+	require.Equal(t, "declined", declined.State, "decline state")
 
 	a.waitNotify("cluster:invite-declined")
 	waitInviteState(t, a, inv.InviteID, "declined")
 
 	after := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if after.ClusterID != before.ClusterID {
-		t.Fatalf("intentional solo cluster changed: before=%q after=%q", before.ClusterID, after.ClusterID)
-	}
-	if got := memberCount(t, a); got != 1 {
-		t.Fatalf("A members = %d, want 1 (itself)", got)
-	}
+	require.Equal(t, before.ClusterID, after.ClusterID, "intentional solo cluster changed: before")
+	require.Equal(t, 1, memberCount(t, a), "A members")
 }
 
 // TestClusterDeclineKeepsSiblingPendingInvite verifies that with two pending
@@ -948,15 +829,12 @@ func TestClusterDeclineKeepsSiblingPendingInvite(t *testing.T) {
 	}))
 	// The first invite auto-founds A's provenance-tracked invite-created cluster.
 	before := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if before.ClusterID == "" {
-		t.Fatal("first invite did not auto-found A's cluster")
-	}
+	require.NotEqual(t, "", before.ClusterID, "first invite did not auto-found A's cluster")
 	invC := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14893, "nodeId": "node-c",
 	}))
-	if invB.State != "pending" || invC.State != "pending" {
-		t.Fatalf("want both pending, got B=%+v C=%+v", invB, invC)
-	}
+	require.Equal(t, "pending", invB.State, "want both pending, got B (%v, %v)", invB, invC)
+	require.Equal(t, "pending", invC.State, "want both pending, got B (%v, %v)", invB, invC)
 	b.waitNotify("cluster:invite-received")
 	c.waitNotify("cluster:invite-received")
 
@@ -970,9 +848,7 @@ func TestClusterDeclineKeepsSiblingPendingInvite(t *testing.T) {
 	waitInviteState(t, a, invB.InviteID, "declined")
 
 	mid := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if mid.ClusterID != before.ClusterID {
-		t.Fatalf("A left while sibling invite still pending: before=%q mid=%q", before.ClusterID, mid.ClusterID)
-	}
+	require.Equal(t, before.ClusterID, mid.ClusterID, "A left while sibling invite still pending: before")
 	waitInviteState(t, a, invC.InviteID, "pending")
 
 	// C declines — now no pending outbound remains, so the invite-created cluster leaves.
@@ -1014,9 +890,8 @@ func TestClusterWrongPinFailsBothSides(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": portB, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" || len(inv.Pin) != 6 {
-		t.Fatalf("invite-node = %+v, want pending + six-digit pin", inv)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node (%v)", inv)
+	require.Len(t, inv.Pin, 6, "invite-node (%v)", inv)
 
 	// B is prompted and briefly holds a pending-inbound member for A.
 	b.waitNotify("cluster:invite-received")
@@ -1026,38 +901,26 @@ func TestClusterWrongPinFailsBothSides(t *testing.T) {
 	failed := decodeResult[inviteResult](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": true, "pin": mutatePin(inv.Pin),
 	}))
-	if failed.State != "failed" {
-		t.Fatalf("respond-to-invite wrong-pin state = %q, want failed", failed.State)
-	}
-	if failed.Reason != "incorrect-pin" {
-		t.Fatalf("respond-to-invite wrong-pin reason = %q, want incorrect-pin", failed.Reason)
-	}
+	require.Equal(t, "failed", failed.State, "respond-to-invite wrong-pin state")
+	require.Equal(t, "incorrect-pin", failed.Reason, "respond-to-invite wrong-pin reason")
 
 	// Joiner clears the pending-inbound member and stays unclustered.
 	waitMembers(t, b, 0)
 	bAfter := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bAfter.ClusterID != "" {
-		t.Fatalf("B clustered after wrong pin: %q", bAfter.ClusterID)
-	}
+	require.Equal(t, "", bAfter.ClusterID, "B clustered after wrong pin")
 
 	// Inviter learns about the failure (with the reason), then leaves the
 	// invite-created solo cluster so both sides end standalone.
 	a.waitNotify("cluster:invite-failed")
 	waitInviteState(t, a, inv.InviteID, "failed")
 	aStatus := decodeResult[inviteResult](t, a.call("cluster:invite-status", map[string]any{"inviteId": inv.InviteID}))
-	if aStatus.Reason != "incorrect-pin" {
-		t.Fatalf("inviter invite-status reason = %q, want incorrect-pin", aStatus.Reason)
-	}
+	require.Equal(t, "incorrect-pin", aStatus.Reason, "inviter invite-status reason")
 	waitUnclustered(t, a)
 	waitMembers(t, a, 0)
 
 	// Neither side pinned the other.
-	if memberUUIDs(t, a)[bInfo.NodeUUID] {
-		t.Fatal("A paired with B despite the wrong pin")
-	}
-	if memberUUIDs(t, b)[aInfo.NodeUUID] {
-		t.Fatal("B paired with A despite the wrong pin")
-	}
+	require.NotContains(t, memberUUIDs(t, a), bInfo.NodeUUID, "A paired with B despite the wrong pin")
+	require.NotContains(t, memberUUIDs(t, b), aInfo.NodeUUID, "B paired with A despite the wrong pin")
 }
 
 // TestClusterWrongPinPreservesIntentionalSolo verifies an explicitly created
@@ -1074,9 +937,7 @@ func TestClusterWrongPinPreservesIntentionalSolo(t *testing.T) {
 
 	a.call("cluster:create", map[string]any{"clusterFriendlyName": "Intentional Lab"})
 	before := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if before.ClusterID == "" {
-		t.Fatal("A should be clustered after create")
-	}
+	require.NotEqual(t, "", before.ClusterID, "A should be clustered after create")
 
 	type inviteResult struct {
 		InviteID string `json:"inviteId"`
@@ -1087,28 +948,20 @@ func TestClusterWrongPinPreservesIntentionalSolo(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": portB, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" {
-		t.Fatalf("invite-node state = %q, want pending", inv.State)
-	}
+	require.Equal(t, "pending", inv.State, "invite-node state")
 	b.waitNotify("cluster:invite-received")
 
 	failed := decodeResult[inviteResult](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": inv.InviteID, "accept": true, "pin": mutatePin(inv.Pin),
 	}))
-	if failed.State != "failed" {
-		t.Fatalf("wrong-pin state = %q, want failed", failed.State)
-	}
+	require.Equal(t, "failed", failed.State, "wrong-pin state")
 
 	a.waitNotify("cluster:invite-failed")
 	waitInviteState(t, a, inv.InviteID, "failed")
 
 	after := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if after.ClusterID != before.ClusterID {
-		t.Fatalf("intentional solo cluster changed: before=%q after=%q", before.ClusterID, after.ClusterID)
-	}
-	if got := memberCount(t, a); got != 1 {
-		t.Fatalf("A members = %d, want 1 (itself)", got)
-	}
+	require.Equal(t, before.ClusterID, after.ClusterID, "intentional solo cluster changed: before")
+	require.Equal(t, 1, memberCount(t, a), "A members")
 }
 
 // mutatePin returns a six-digit PIN guaranteed to differ from the input by
@@ -1139,7 +992,7 @@ func waitInviteState(t *testing.T, p *cmProc, inviteID, want string) {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	t.Fatalf("invite %s did not reach state %q", inviteID, want)
+	require.FailNow(t, fmt.Sprintf("invite %s did not reach state %q", inviteID, want))
 }
 
 // waitUnclustered blocks until cluster:get-node-id reports an empty clusterId.
@@ -1154,7 +1007,7 @@ func waitUnclustered(t *testing.T, p *cmProc) {
 		time.Sleep(150 * time.Millisecond)
 	}
 	got := decodeResult[cmNodeID](t, p.call("cluster:get-node-id", nil))
-	t.Fatalf("node did not leave cluster, still has clusterId %q", got.ClusterID)
+	require.FailNow(t, fmt.Sprintf("node did not leave cluster, still has clusterId %q", got.ClusterID))
 }
 
 func memberCount(t *testing.T, p *cmProc) int {
@@ -1178,7 +1031,7 @@ func waitUnclusteredWithin(t *testing.T, p *cmProc, timeout time.Duration) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Fatalf("node did not become unclustered within %s", timeout)
+	require.FailNow(t, fmt.Sprintf("node did not become unclustered within %s", timeout))
 }
 
 // TestClusterSelfRemoveWhenRemovedOffline covers the removal path the
@@ -1204,9 +1057,7 @@ func TestClusterSelfRemoveWhenRemovedOffline(t *testing.T) {
 	waitMembers(t, b, 2)
 
 	bClustered := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bClustered.ClusterID == "" {
-		t.Fatal("B should be clustered after pairing")
-	}
+	require.NotEqual(t, "", bClustered.ClusterID, "B should be clustered after pairing")
 
 	// B goes offline; A removes it. The direct members/remove notify fails (B is
 	// down), so A just drops B's pin + membership. B never learns of its eviction.
@@ -1224,17 +1075,13 @@ func TestClusterSelfRemoveWhenRemovedOffline(t *testing.T) {
 		"clusterId":           bClustered.ClusterID,
 		"clusterFriendlyName": "Offline Lab",
 	})
-	if got := decodeResult[cmNodeID](t, b2.call("cluster:get-node-id", nil)); got.ClusterID == "" {
-		t.Fatal("precondition: B should have a restored clusterId (the zombie state)")
-	}
+	require.NotEqual(t, "", decodeResult[cmNodeID](t, b2.call("cluster:get-node-id", nil)).ClusterID, "precondition: B should have a restored clusterId (the zombie state)")
 
 	// The periodic reconcile reaches A, gets a 403 with A's signed removal
 	// tombstone (A removed B, so it holds one). A is B's only peer, so the
 	// rejection is unanimous and proven, and B self-removes.
 	waitUnclusteredWithin(t, b2, 20*time.Second)
-	if got := memberCount(t, b2); got != 0 {
-		t.Fatalf("after self-remove B members = %d, want 0", got)
-	}
+	require.Equal(t, 0, memberCount(t, b2), "after self-remove B members")
 }
 
 // TestClusterNoSelfRemoveWhenPeerLeft is the survivor counterpart to
@@ -1262,9 +1109,7 @@ func TestClusterNoSelfRemoveWhenPeerLeft(t *testing.T) {
 	waitMembers(t, b, 2)
 
 	aClustered := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if aClustered.ClusterID == "" {
-		t.Fatal("A should be clustered after pairing")
-	}
+	require.NotEqual(t, "", aClustered.ClusterID, "A should be clustered after pairing")
 
 	// A goes offline; B leaves. B's departure push to A fails (A is down), and
 	// its teardown drops A's pin and clears its tombstones — so B holds no
@@ -1282,17 +1127,13 @@ func TestClusterNoSelfRemoveWhenPeerLeft(t *testing.T) {
 		"clusterId":           aClustered.ClusterID,
 		"clusterFriendlyName": "Survivor Lab",
 	})
-	if got := decodeResult[cmNodeID](t, a2.call("cluster:get-node-id", nil)); got.ClusterID == "" {
-		t.Fatal("precondition: A should have a restored clusterId")
-	}
+	require.NotEqual(t, "", decodeResult[cmNodeID](t, a2.call("cluster:get-node-id", nil)).ClusterID, "precondition: A should have a restored clusterId")
 
 	// A's reconcile reaches B and gets a bare 403 (B dropped A's pin on leave but
 	// holds no tombstone naming A). With no authenticated removal proof, A must
 	// keep its own cluster identity but de-pin B as the departed peer.
 	assertStillClustered(t, a2, 10*time.Second)
-	if got := memberCount(t, a2); got != 1 {
-		t.Fatalf("A members = %d, want 1 (surviving self only)", got)
-	}
+	require.Equal(t, 1, memberCount(t, a2), "A members")
 }
 
 // assertStillClustered waits past the first reconcile pass and fails if the node
@@ -1303,9 +1144,7 @@ func TestClusterNoSelfRemoveWhenPeerLeft(t *testing.T) {
 func assertStillClustered(t *testing.T, p *cmProc, wait time.Duration) {
 	t.Helper()
 	time.Sleep(wait)
-	if got := decodeResult[cmNodeID](t, p.call("cluster:get-node-id", nil)); got.ClusterID == "" {
-		t.Fatal("node self-removed but should have stayed clustered")
-	}
+	require.NotEqual(t, "", decodeResult[cmNodeID](t, p.call("cluster:get-node-id", nil)).ClusterID, "node self-removed but should have stayed clustered")
 }
 
 // TestClusterNoSelfRemoveWhenPeerAccepts is the soundness counterpart to
@@ -1329,9 +1168,7 @@ func TestClusterNoSelfRemoveWhenPeerAccepts(t *testing.T) {
 	waitMembers(t, b, 2)
 
 	bClustered := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bClustered.ClusterID == "" {
-		t.Fatal("B should be clustered after pairing")
-	}
+	require.NotEqual(t, "", bClustered.ClusterID, "B should be clustered after pairing")
 
 	// Restart B so its initial reconcile pass fires ~5s after startup (rather
 	// than a full heartbeat later). A stays up and never removed B, so B's
@@ -1345,9 +1182,7 @@ func TestClusterNoSelfRemoveWhenPeerAccepts(t *testing.T) {
 	})
 
 	assertStillClustered(t, b2, 10*time.Second)
-	if got := memberCount(t, b2); got != 2 {
-		t.Fatalf("B members = %d, want 2 (self + A); B wrongly self-removed?", got)
-	}
+	require.Equal(t, 2, memberCount(t, b2), "B members")
 }
 
 // TestClusterNoSelfRemoveWhenPeerUnreachable covers the other blocking branch:
@@ -1370,9 +1205,7 @@ func TestClusterNoSelfRemoveWhenPeerUnreachable(t *testing.T) {
 	waitMembers(t, b, 2)
 
 	bClustered := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bClustered.ClusterID == "" {
-		t.Fatal("B should be clustered after pairing")
-	}
+	require.NotEqual(t, "", bClustered.ClusterID, "B should be clustered after pairing")
 
 	// A goes down WITHOUT removing B (a transient outage). B restarts and its
 	// reconcile can't reach A → unreachable, not a 403 → teardown is blocked and
@@ -1387,9 +1220,7 @@ func TestClusterNoSelfRemoveWhenPeerUnreachable(t *testing.T) {
 	})
 
 	assertStillClustered(t, b2, 10*time.Second)
-	if got := memberCount(t, b2); got != 2 {
-		t.Fatalf("B members = %d, want 2 (self + A); B wrongly self-removed on a transient outage?", got)
-	}
+	require.Equal(t, 2, memberCount(t, b2), "B members")
 }
 
 // TestClusterInviteAlreadyClusteredRejected verifies the already-paired guard:
@@ -1421,15 +1252,9 @@ func TestClusterInviteAlreadyClusteredRejected(t *testing.T) {
 	reinv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14882, "nodeId": "node-b",
 	}))
-	if reinv.State != "rejected" {
-		t.Fatalf("re-invite of a paired node: state = %q, want rejected", reinv.State)
-	}
-	if reinv.Pin != "" {
-		t.Fatalf("re-invite must not mint a PIN, got %q", reinv.Pin)
-	}
-	if reinv.Reason != "already-clustered" {
-		t.Fatalf("re-invite reason = %q, want already-clustered", reinv.Reason)
-	}
+	require.Equal(t, "rejected", reinv.State, "re-invite of a paired node: state")
+	require.Equal(t, "", reinv.Pin, "re-invite must not mint a PIN")
+	require.Equal(t, "already-clustered", reinv.Reason, "re-invite reason")
 
 	// After B leaves the cluster it becomes invitable again: a fresh invite now
 	// yields a pending PIN (the guard is keyed on the joiner's cluster state).
@@ -1439,9 +1264,8 @@ func TestClusterInviteAlreadyClusteredRejected(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14882, "nodeId": "node-b",
 	}))
-	if inv.State != "pending" || len(inv.Pin) != 6 {
-		t.Fatalf("post-leave invite = %+v, want pending + six-digit PIN", inv)
-	}
+	require.Equal(t, "pending", inv.State, "post-leave invite (%v)", inv)
+	require.Len(t, inv.Pin, 6, "post-leave invite (%v)", inv)
 }
 
 // TestClusterInviteTwoPendingThenClustered reproduces the race where a joiner
@@ -1485,50 +1309,38 @@ func TestClusterInviteTwoPendingThenClustered(t *testing.T) {
 	invA := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14892, "nodeId": bInfo.NodeUUID,
 	}))
-	if invA.State != "pending" || len(invA.Pin) != 6 {
-		t.Fatalf("A invite = %+v, want pending + six-digit PIN", invA)
-	}
+	require.Equal(t, "pending", invA.State, "A invite (%v)", invA)
+	require.Len(t, invA.Pin, 6, "A invite (%v)", invA)
 	b.waitNotify("cluster:invite-received")
 
 	invC := decodeResult[inviteResult](t, c.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14892, "nodeId": bInfo.NodeUUID,
 	}))
-	if invC.State != "pending" || len(invC.Pin) != 6 {
-		t.Fatalf("C invite = %+v, want pending + six-digit PIN", invC)
-	}
+	require.Equal(t, "pending", invC.State, "C invite (%v)", invC)
+	require.Len(t, invC.Pin, 6, "C invite (%v)", invC)
 	b.waitNotify("cluster:invite-received")
 
 	// B accepts A first -> paired, adopts A's cluster.
 	respA := decodeResult[inviteResult](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": invA.InviteID, "accept": true, "pin": invA.Pin,
 	}))
-	if respA.State != "paired" {
-		t.Fatalf("B accept A = %q, want paired", respA.State)
-	}
+	require.Equal(t, "paired", respA.State, "B accept A")
 	waitInviteState(t, a, invA.InviteID, "paired")
 
 	bAfterA := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bAfterA.ClusterID != aClu.ClusterID {
-		t.Fatalf("B cluster after accepting A = %q, want A's %q", bAfterA.ClusterID, aClu.ClusterID)
-	}
+	require.Equal(t, aClu.ClusterID, bAfterA.ClusterID, "B cluster after accepting A")
 
 	// Now B accepts C's still-pending invite. B is already clustered, so the
 	// accept must be rejected -- the Completion Exchange must not run.
 	respC := decodeResult[inviteResult](t, b.call("cluster:respond-to-invite", map[string]any{
 		"inviteId": invC.InviteID, "accept": true, "pin": invC.Pin,
 	}))
-	if respC.State != "rejected" {
-		t.Fatalf("B accept C while clustered = %q, want rejected", respC.State)
-	}
+	require.Equal(t, "rejected", respC.State, "B accept C while clustered")
 
 	// B must still be in A's cluster, not C's, and must not trust C.
 	bAfterC := decodeResult[cmNodeID](t, b.call("cluster:get-node-id", nil))
-	if bAfterC.ClusterID != aClu.ClusterID {
-		t.Fatalf("B cluster after rejecting C = %q, want A's %q (must not adopt C)", bAfterC.ClusterID, aClu.ClusterID)
-	}
-	if memberUUIDs(t, b)[cInfo.NodeUUID] {
-		t.Fatal("B lists C as a member after a rejected accept")
-	}
+	require.Equal(t, aClu.ClusterID, bAfterC.ClusterID, "B cluster after rejecting C")
+	require.NotContains(t, memberUUIDs(t, b), cInfo.NodeUUID, "B lists C as a member after a rejected accept")
 }
 
 // TestClusterInviteRejectedDissolvesAutoFoundedSolo covers the interaction
@@ -1549,9 +1361,7 @@ func TestClusterInviteRejectedDissolvesAutoFoundedSolo(t *testing.T) {
 	// B is already in its own cluster; A stays standalone.
 	b.call("cluster:create", map[string]any{"clusterFriendlyName": "Cluster B"})
 	aBefore := decodeResult[cmNodeID](t, a.call("cluster:get-node-id", nil))
-	if aBefore.ClusterID != "" {
-		t.Fatalf("A should start unclustered, got %q", aBefore.ClusterID)
-	}
+	require.Equal(t, "", aBefore.ClusterID, "A should start unclustered")
 
 	// A invites B: A auto-founds a solo cluster for the invite, B rejects it
 	// because it is already clustered.
@@ -1563,12 +1373,9 @@ func TestClusterInviteRejectedDissolvesAutoFoundedSolo(t *testing.T) {
 	inv := decodeResult[inviteResult](t, a.call("cluster:invite-node", map[string]any{
 		"address": "127.0.0.1", "port": 14902, "nodeId": "node-b",
 	}))
-	if inv.State != "rejected" || inv.Reason != "already-clustered" {
-		t.Fatalf("invite of an already-clustered node = %+v, want rejected/already-clustered", inv)
-	}
-	if inv.Pin != "" {
-		t.Fatalf("rejected invite must not mint a PIN, got %q", inv.Pin)
-	}
+	require.Equal(t, "rejected", inv.State, "invite of an already-clustered node (%v)", inv)
+	require.Equal(t, "already-clustered", inv.Reason, "invite of an already-clustered node (%v)", inv)
+	require.Equal(t, "", inv.Pin, "rejected invite must not mint a PIN")
 
 	// A must dissolve the solo cluster it auto-founded for the rejected invite
 	// (nothing joined), ending unclustered again.

@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
@@ -18,9 +20,8 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 				broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
 					w.Header().Set("Vary", "Origin")
-					if _, err := io.WriteString(w, "{malformed"); err != nil {
-						t.Error(err)
-					}
+					_, err := io.WriteString(w, "{malformed")
+					assert.NoError(t, err)
 				}))
 				defer broken.Close()
 				status, origin := http.StatusOK, "http://app.test"
@@ -40,14 +41,11 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 				if denied {
 					wantStatus, wantOrigin = http.StatusForbidden, ""
 				}
-				if rec.Code != wantStatus || rec.Header().Get("Access-Control-Allow-Origin") != wantOrigin {
-					t.Fatalf("status=%d headers=%v, want %d origin %q", rec.Code, rec.Header(), wantStatus, wantOrigin)
-				}
-				if strings.Contains(rec.Body.String(), "private-model") {
-					t.Fatal("returned partial model inventory")
-				}
-				if !denied && !strings.Contains(rec.Body.String(), "model inventory unavailable") {
-					t.Fatalf("missing readable error: %s", rec.Body.String())
+				require.Equal(t, wantStatus, rec.Code, "status (%v, %v)", wantStatus, wantOrigin)
+				require.Equal(t, wantOrigin, rec.Header().Get("Access-Control-Allow-Origin"), "status (%v, %v)", wantStatus, wantOrigin)
+				require.NotContains(t, rec.Body.String(), "private-model", "returned partial model inventory")
+				if !denied {
+					require.Contains(t, rec.Body.String(), "model inventory unavailable", "missing readable error")
 				}
 			})
 		}
@@ -61,12 +59,10 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 func TestModelListStripsCredentialsWithoutOrigin(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
-				t.Error("caller credentials forwarded to model-list candidate")
-			}
-			if _, err := io.WriteString(w, corsModels(tc)); err != nil {
-				t.Error(err)
-			}
+			assert.Empty(t, r.Header.Get("Authorization"), "caller credentials forwarded to model-list candidate")
+			assert.Empty(t, r.Header.Get("Cookie"), "caller credentials forwarded to model-list candidate")
+			_, err := io.WriteString(w, corsModels(tc))
+			assert.NoError(t, err)
 		}))
 		defer upstream.Close()
 		p := proxyForCORSTargets(t, tc, upstream, upstream)
@@ -75,8 +71,6 @@ func TestModelListStripsCredentialsWithoutOrigin(t *testing.T) {
 		request.Header.Set("Cookie", "session=private")
 		rec := httptest.NewRecorder()
 		p.handlePlain(rec, request)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-		}
+		require.Equal(t, http.StatusOK, rec.Code, "status")
 	})
 }

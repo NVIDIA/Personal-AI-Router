@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -41,7 +43,7 @@ func drainFrames(t *testing.T, stdout io.Reader) []drainedFrame {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("drain neither consumed the stream nor returned")
+		require.FailNow(t, "drain neither consumed the stream nor returned")
 	}
 	return got
 }
@@ -49,9 +51,7 @@ func drainFrames(t *testing.T, stdout io.Reader) []drainedFrame {
 func addressesOf(t *testing.T, params json.RawMessage) []string {
 	t.Helper()
 	var p noderec.ObservedAddressesParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		t.Fatalf("decode params %s: %v", params, err)
-	}
+	require.NoError(t, json.Unmarshal(params, &p), "decode params %s", params)
 	return p.Addresses
 }
 
@@ -65,15 +65,9 @@ func TestNodeInfoDrainSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 	stream := oversized + "\n" + observedFrame("10.172.54.70") + "\n"
 
 	got := drainFrames(t, strings.NewReader(stream))
-	if len(got) != 1 {
-		t.Fatalf("delivered %d frames, want only the frame that followed the oversized one", len(got))
-	}
-	if got[0].method != noderec.NotifyObservedAddresses {
-		t.Fatalf("method = %q, want %q", got[0].method, noderec.NotifyObservedAddresses)
-	}
-	if addrs := addressesOf(t, got[0].params); len(addrs) != 1 || addrs[0] != "10.172.54.70" {
-		t.Fatalf("addresses = %v, want [10.172.54.70]", addrs)
-	}
+	require.Len(t, got, 1)
+	require.Equal(t, noderec.NotifyObservedAddresses, got[0].method, "method")
+	require.Equal(t, []string{"10.172.54.70"}, addressesOf(t, got[0].params), "addresses")
 }
 
 // An oversized frame that is also the last thing on the stream must end the drain
@@ -81,21 +75,15 @@ func TestNodeInfoDrainSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 func TestNodeInfoDrainStopsOnAnUnterminatedOversizedFrame(t *testing.T) {
 	oversized := `{"method":"x","params":"` + strings.Repeat("a", 2*maxNodeInfoLine) + `"}`
 
-	if got := drainFrames(t, strings.NewReader(oversized)); len(got) != 0 {
-		t.Fatalf("delivered %d frames, want none", len(got))
-	}
+	require.Empty(t, drainFrames(t, strings.NewReader(oversized)))
 }
 
 // node-info can exit having written a frame but not its newline; that frame is
 // still real output.
 func TestNodeInfoDrainDeliversAFinalFrameWithoutANewline(t *testing.T) {
 	got := drainFrames(t, strings.NewReader(observedFrame("10.172.54.71")))
-	if len(got) != 1 {
-		t.Fatalf("delivered %d frames, want the unterminated final frame", len(got))
-	}
-	if addrs := addressesOf(t, got[0].params); len(addrs) != 1 || addrs[0] != "10.172.54.71" {
-		t.Fatalf("addresses = %v, want [10.172.54.71]", addrs)
-	}
+	require.Len(t, got, 1)
+	require.Equal(t, []string{"10.172.54.71"}, addressesOf(t, got[0].params), "addresses")
 }
 
 // Responses to the broker's own control requests, blank lines, and anything that
@@ -109,10 +97,6 @@ func TestNodeInfoDrainSkipsFramesThatAreNotNotifications(t *testing.T) {
 	}, "\n") + "\n"
 
 	got := drainFrames(t, strings.NewReader(stream))
-	if len(got) != 1 {
-		t.Fatalf("delivered %d frames, want only the notification", len(got))
-	}
-	if got[0].method != noderec.NotifyObservedAddresses {
-		t.Fatalf("method = %q, want %q", got[0].method, noderec.NotifyObservedAddresses)
-	}
+	require.Len(t, got, 1)
+	require.Equal(t, noderec.NotifyObservedAddresses, got[0].method, "method")
 }

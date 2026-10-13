@@ -10,23 +10,18 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInstallMarkerRoundTrip(t *testing.T) {
 	installDir := filepath.Join(t.TempDir(), "lmstudio")
-	if installedByPAIR(installDir) {
-		t.Fatal("an install directory that does not exist cannot be ours")
-	}
-	if err := writeInstallMarker(installDir, "lmstudio"); err != nil {
-		t.Fatalf("writeInstallMarker: %v", err)
-	}
-	if !installedByPAIR(installDir) {
-		t.Error("marker written but not recognized")
-	}
+	require.False(t, installedByPAIR(installDir), "an install directory that does not exist cannot be ours")
+	require.NoError(t, writeInstallMarker(installDir, "lmstudio"), "writeInstallMarker")
+	assert.True(t, installedByPAIR(installDir), "marker written but not recognized")
 	clearInstallMarker(installDir)
-	if installedByPAIR(installDir) {
-		t.Error("marker survived clearInstallMarker; a stale claim lets PAIR remove a user's own install")
-	}
+	assert.False(t, installedByPAIR(installDir), "marker survived clearInstallMarker; a stale claim lets PAIR remove a user's own install")
 }
 
 // vendorEngineManifest describes one vendor-script engine whose files land
@@ -71,12 +66,8 @@ func vendorEngineOnDisk(t *testing.T, vendorRoot string) (binary, weights string
 	binary = filepath.Join(vendorRoot, "bin", "engine")
 	weights = filepath.Join(vendorRoot, "models", "publisher", "model.gguf")
 	for _, file := range []string{binary, weights} {
-		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+		require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
 	}
 	return binary, weights
 }
@@ -96,31 +87,22 @@ func TestUninstallManagedRemovesOnlyWhatPAIRInstalled(t *testing.T) {
 	// No marker: the user's own install, which PAIR must leave alone and must
 	// not report as a failure.
 	results := ex.UninstallManaged(context.Background())
-	if len(results) != 1 || results[0].Removed || results[0].Error != "" {
-		t.Fatalf("an unmarked engine should be skipped without error, got %+v", results)
-	}
-	if _, err := os.Stat(binary); err != nil {
-		t.Fatalf("removed an engine PAIR did not install: %v", err)
-	}
+	require.Len(t, results, 1, "unmarked engine outcome")
+	require.False(t, results[0].Removed, "an unmarked engine should be skipped")
+	require.Empty(t, results[0].Error, "an unmarked engine should be skipped without error")
+	require.FileExists(t, binary, "removed an engine PAIR did not install")
 
 	installDir := filepath.Join(ex.baseDir, "vendor")
-	if err := writeInstallMarker(installDir, "vendor"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeInstallMarker(installDir, "vendor"))
 	results = ex.UninstallManaged(context.Background())
 
-	if len(results) != 1 || !results[0].Removed || results[0].Error != "" {
-		t.Fatalf("expected the marked engine to be removed, got %+v", results)
-	}
-	if _, err := os.Stat(binary); !os.IsNotExist(err) {
-		t.Errorf("engine binary survived (err=%v)", err)
-	}
-	if _, err := os.Stat(weights); err != nil {
-		t.Errorf("removal deleted downloaded models: %v", err)
-	}
-	if installedByPAIR(installDir) {
-		t.Error("install marker not cleared after a successful removal")
-	}
+	require.Len(t, results, 1, "marked engine outcome")
+	assert.True(t, results[0].Removed, "expected the marked engine to be removed")
+	assert.Empty(t, results[0].Error, "marked engine removal")
+	_, err := os.Stat(binary)
+	assert.ErrorIs(t, err, os.ErrNotExist, "engine binary survived")
+	assert.FileExists(t, weights, "removal deleted downloaded models")
+	assert.False(t, installedByPAIR(installDir), "install marker not cleared after a successful removal")
 }
 
 // TestUninstallManagedKeepsTheMarkerWhenRemovalFails is the regression guard for
@@ -137,21 +119,15 @@ func TestUninstallManagedKeepsTheMarkerWhenRemovalFails(t *testing.T) {
 	// No remove targets, so the engine is still detected afterwards.
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), nil))
 	installDir := filepath.Join(ex.baseDir, "vendor")
-	if err := writeInstallMarker(installDir, "vendor"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeInstallMarker(installDir, "vendor"))
 
 	results := ex.UninstallManaged(context.Background())
 
-	if len(results) != 1 || results[0].Removed || results[0].Error == "" {
-		t.Fatalf("expected a reported failure, got %+v", results)
-	}
-	if _, err := os.Stat(binary); err != nil {
-		t.Errorf("engine binary vanished despite the reported failure: %v", err)
-	}
-	if !installedByPAIR(installDir) {
-		t.Error("marker cleared after a failed removal; the engine is now unremovable")
-	}
+	require.Len(t, results, 1, "expected a reported failure")
+	assert.False(t, results[0].Removed, "failed removal must not report success")
+	assert.NotEmpty(t, results[0].Error, "expected a reported failure")
+	assert.FileExists(t, binary, "engine binary vanished despite the reported failure")
+	assert.True(t, installedByPAIR(installDir), "marker cleared after a failed removal; the engine is now unremovable")
 }
 
 // TestUninstallManagedCarriesOnPastAPartialRemoval covers an engine whose files
@@ -173,17 +149,11 @@ func TestUninstallManagedCarriesOnPastAPartialRemoval(t *testing.T) {
 	stuckRoot := t.TempDir()
 	stuckBinary, stuckWeights := vendorEngineOnDisk(t, stuckRoot)
 	cache := filepath.Join(stuckRoot, "cache", "blob")
-	if err := os.MkdirAll(filepath.Dir(cache), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cache, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(cache), 0o755))
+	require.NoError(t, os.WriteFile(cache, []byte("x"), 0o644))
 	// The engine's bin directory cannot be emptied, so the binary survives and
 	// the engine is still detected. Its cache can be, and goes.
-	if err := os.Chmod(filepath.Dir(stuckBinary), 0o500); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(filepath.Dir(stuckBinary), 0o500))
 	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(stuckBinary), 0o700) })
 	stuck := vendorEngineManifest(stuckRoot, filepath.Join(stuckRoot, "models"), []string{stuckRoot})
 	stuck.Engine = "stuck"
@@ -199,9 +169,7 @@ func TestUninstallManagedCarriesOnPastAPartialRemoval(t *testing.T) {
 	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
 	ex.detectTimeout = 100 * time.Millisecond
 	for _, engine := range []string{stuck.Engine, clean.Engine} {
-		if err := writeInstallMarker(filepath.Join(ex.baseDir, engine), engine); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, writeInstallMarker(filepath.Join(ex.baseDir, engine), engine))
 	}
 
 	outcomes := map[string]ManagedUninstall{}
@@ -209,28 +177,18 @@ func TestUninstallManagedCarriesOnPastAPartialRemoval(t *testing.T) {
 		outcomes[outcome.Engine] = outcome
 	}
 
-	if got := outcomes[stuck.Engine]; got.Removed || got.Error == "" {
-		t.Errorf("the partly removed engine reported %+v, want a failure", got)
-	}
-	if !installedByPAIR(filepath.Join(ex.baseDir, stuck.Engine)) {
-		t.Error("the partly removed engine lost its marker, so nothing may finish removing it")
-	}
-	if _, err := os.Stat(stuckBinary); err != nil {
-		t.Errorf("the undeletable binary is gone, so this did not exercise a partial removal: %v", err)
-	}
-	if _, err := os.Stat(filepath.Dir(cache)); !os.IsNotExist(err) {
-		t.Errorf("the deletable part of the engine survived (err=%v)", err)
-	}
-	if _, err := os.Stat(stuckWeights); err != nil {
-		t.Errorf("a failed removal deleted downloaded models: %v", err)
-	}
+	assert.False(t, outcomes[stuck.Engine].Removed, "the partly removed engine must report a failure")
+	assert.NotEmpty(t, outcomes[stuck.Engine].Error, "the partly removed engine must report a failure")
+	assert.True(t, installedByPAIR(filepath.Join(ex.baseDir, stuck.Engine)), "the partly removed engine lost its marker, so nothing may finish removing it")
+	assert.FileExists(t, stuckBinary, "the undeletable binary is gone, so this did not exercise a partial removal")
+	_, err := os.Stat(filepath.Dir(cache))
+	assert.ErrorIs(t, err, os.ErrNotExist, "the deletable part of the engine survived")
+	assert.FileExists(t, stuckWeights, "a failed removal deleted downloaded models")
 
-	if got := outcomes[clean.Engine]; !got.Removed || got.Error != "" {
-		t.Errorf("the engine after the failure reported %+v, want it removed", got)
-	}
-	if _, err := os.Stat(cleanBinary); !os.IsNotExist(err) {
-		t.Errorf("the engine after the failure survived (err=%v)", err)
-	}
+	assert.True(t, outcomes[clean.Engine].Removed, "the engine after the failure must be removed")
+	assert.Empty(t, outcomes[clean.Engine].Error, "the engine after the failure must be removed")
+	_, err = os.Stat(cleanBinary)
+	assert.ErrorIs(t, err, os.ErrNotExist, "the engine after the failure survived")
 }
 
 // TestUninstallManagedWithoutDataDirRemovesNothing covers losing the app data
@@ -242,12 +200,8 @@ func TestUninstallManagedWithoutDataDirRemovesNothing(t *testing.T) {
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
 	ex.baseDir = ""
 
-	if results := ex.UninstallManaged(context.Background()); results != nil {
-		t.Errorf("expected no results without a data directory, got %+v", results)
-	}
-	if _, err := os.Stat(binary); err != nil {
-		t.Errorf("removed an engine with no ownership records available: %v", err)
-	}
+	assert.Empty(t, ex.UninstallManaged(context.Background()), "expected no results without a data directory")
+	assert.FileExists(t, binary, "removed an engine with no ownership records available")
 }
 
 // TestUninstallDeclinesUnmarkedCommandEngine pins the interactive refusal. A
@@ -260,12 +214,8 @@ func TestUninstallDeclinesUnmarkedCommandEngine(t *testing.T) {
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
 
 	err := ex.Uninstall(context.Background(), "vendor")
-	if err == nil {
-		t.Fatal("expected uninstall to decline an engine PAIR has no record of installing")
-	}
-	if _, statErr := os.Stat(filepath.Join(vendorRoot, "bin", "engine")); statErr != nil {
-		t.Errorf("declined but still removed files: %v", statErr)
-	}
+	require.Error(t, err, "expected uninstall to decline an engine PAIR has no record of installing")
+	assert.FileExists(t, filepath.Join(vendorRoot, "bin", "engine"), "declined but still removed files")
 }
 
 // TestUninstallClearsTheMarkerWhenAlreadyGone covers the engine removed by its
@@ -275,14 +225,8 @@ func TestUninstallClearsTheMarkerWhenAlreadyGone(t *testing.T) {
 	vendorRoot := t.TempDir() // nothing laid down, so detection fails
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
 	installDir := filepath.Join(ex.baseDir, "vendor")
-	if err := writeInstallMarker(installDir, "vendor"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeInstallMarker(installDir, "vendor"))
 
-	if err := ex.Uninstall(context.Background(), "vendor"); err != nil {
-		t.Fatalf("uninstalling an absent engine should succeed: %v", err)
-	}
-	if installedByPAIR(installDir) {
-		t.Error("stale marker left behind for an engine that is already gone")
-	}
+	require.NoError(t, ex.Uninstall(context.Background(), "vendor"), "uninstalling an absent engine should succeed")
+	assert.False(t, installedByPAIR(installDir), "stale marker left behind for an engine that is already gone")
 }
