@@ -515,6 +515,9 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 	case inviteCancelledMsg:
 		return v.handleInviteCancelled(msg)
 
+	case memberRemovedMsg:
+		return v.handleMemberRemoved(msg)
+
 	case NotificationMsg:
 		return v.handleNotification(msg.Msg)
 
@@ -1261,7 +1264,8 @@ func (v *nodesView) declineWaiting() []tea.Cmd {
 }
 
 // removeSelected drops the selected node's strongest relationship: cluster
-// membership if it is a member, otherwise the manual entry that added it.
+// membership if it is a member, along with the manual entry that added it,
+// otherwise that manual entry alone.
 func (v *nodesView) removeSelected() tea.Cmd {
 	row := v.selectedRow()
 	if row == nil {
@@ -1358,17 +1362,23 @@ func (v *nodesView) handleInviteCancelled(msg inviteCancelledMsg) tea.Cmd {
 	return nil
 }
 
-// removeMember un-pairs a confirmed peer.
+// removeMember un-pairs a confirmed peer, then forgets the manual entry that
+// added it, if there is one.
 //
 // Keyed by the stable nodeUuid rather than the display name: a member that
 // renamed its PC keeps its UUID, so matching on a possibly stale name would
 // silently fail. The row is looked up again by key so a list that re-sorted
 // between arming and confirming cannot redirect the removal at another node.
+//
+// The broker keeps manual entries on disk and re-adds them whenever it starts,
+// so one left behind brings the removed peer back as a manual row, here and in
+// the desktop app. It is forgotten only once the un-pairing succeeds: a peer
+// still in the cluster keeps the address that reaches it.
 func (v *nodesView) removeMember(key string) tea.Cmd {
-	name := key
+	name, manualID := key, ""
 	for _, n := range v.all {
 		if n.key == key {
-			name = n.name
+			name, manualID = n.name, n.manualID
 			break
 		}
 	}
@@ -1377,7 +1387,30 @@ func (v *nodesView) removeMember(key string) tea.Cmd {
 	v.status.busy("removing %s from the cluster...", name)
 	return call(v.client, "nodes:remove", map[string]string{"nodeUuid": key},
 		func(_ *rpc.Message, err error) tea.Msg {
-			return nodeActionMsg{what: "remove " + name, err: err}
+			return memberRemovedMsg{name: name, manualID: manualID, err: err}
+		})
+}
+
+// memberRemovedMsg is the outcome of nodes:remove, carrying the manual entry
+// still to be forgotten.
+type memberRemovedMsg struct {
+	name     string
+	manualID string
+	err      error
+}
+
+// handleMemberRemoved reports an un-pairing, forgetting the peer's manual entry
+// first when it has one.
+func (v *nodesView) handleMemberRemoved(msg memberRemovedMsg) tea.Cmd {
+	if msg.err != nil || msg.manualID == "" {
+		return func() tea.Msg { return nodeActionMsg{what: "remove " + msg.name, err: msg.err} }
+	}
+	return call(v.client, "node/remove", map[string]string{"id": msg.manualID},
+		func(_ *rpc.Message, err error) tea.Msg {
+			if err != nil {
+				return nodeActionMsg{what: "remove manual entry " + msg.name, err: err}
+			}
+			return nodeActionMsg{what: "remove " + msg.name}
 		})
 }
 
