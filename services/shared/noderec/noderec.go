@@ -474,6 +474,26 @@ type ServiceStatus struct {
 	Probe ProbeStatus `json:"probe,omitempty"`
 }
 
+// IdentityVerification records how the scanner established a record's identity.
+type IdentityVerification string
+
+const (
+	// IdentityLocal is assigned to this host's record published from the owned
+	// local registry, for example when scanner publishes registered local services.
+	// A discovered record claiming our UUID or a loopback address is not local.
+	IdentityLocal IdentityVerification = "local"
+
+	// IdentityPinned is assigned after a remote node-info read authenticates the
+	// endpoint against the exact currently approved certificate pin and validates
+	// the response identity, for example when promoting a discovered cluster peer.
+	IdentityPinned IdentityVerification = "pinned"
+
+	// IdentityUnverified is assigned when endpoint ownership has not been proved,
+	// for example for an mDNS announcement or a manually configured address before
+	// authentication. This includes announcements claiming an identity with a pin.
+	IdentityUnverified IdentityVerification = "unverified"
+)
+
 // DirectoryNode is one node in the consolidated directory served by
 // discovery:get-nodes, carried in the daemon's discovery:node-* events, and
 // listed in the broker's discovery:nodes snapshots. It replaces
@@ -481,9 +501,24 @@ type ServiceStatus struct {
 // derived from Services + Clustered (never carried), and node-info enrichment
 // decorates entries that advertise a node-info service.
 type DirectoryNode struct {
-	HostUUID string `json:"hostUuid"`
-	Name     string `json:"name"` // mDNS instance name (hostname)
-	IP       string `json:"ip"`   // canonical dialable LAN address
+	// DiscoveryRecordID is PAIR's tracking key for one mDNS discovery, local
+	// registry record, or manual configuration. HostUUID is the machine UUID
+	// that discovery or configuration *claims* to represent.
+	//
+	// For example, an announcement at 192.0.2.20 and an impersonating announcement
+	// at 192.0.2.30 can both advertise HostUUID="host-a". The scanner assigns them
+	// different DiscoveryRecordIDs because their connection candidates differ.
+	// The advertised HostUUID alone cannot distinguish those announcements.
+	//
+	// A separate DiscoveryRecordID means a separate candidate to track, not proof
+	// of a different physical machine. IdentityVerification records whether the
+	// host identity comes from our owned local registry, pinned authentication,
+	// or an unverified claim.
+	DiscoveryRecordID    string               `json:"discoveryRecordId"`
+	IdentityVerification IdentityVerification `json:"identityVerification"`
+	HostUUID             string               `json:"hostUuid"`
+	Name                 string               `json:"name"` // mDNS instance name (hostname)
+	IP                   string               `json:"ip"`   // canonical dialable LAN address
 	// IPs is every address this node published, in its own ranked order with IP
 	// first. A multi-homed node has no single address every peer can reach — a
 	// direct-connect link is reachable only from the machine on its far end — so

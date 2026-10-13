@@ -71,6 +71,10 @@ They do not imply a WebSocket connection. Browser clients are not supported.
   `name` (hostname), the reachable `ipAddress`/`port`, and the `trusted` and
   `clustered` flags. A `clustered` node already belongs to some cluster and is
   rendered non-invitable.
+  Broker records also carry `discoveryRecordId` and `identityVerification` (`local`,
+  `pinned`, or `unverified`). The bridge retains these provenance fields through
+  proxy updates and clears them when the broker withdraws the record; public
+  hardware readings cannot change them.
 - `onNodesChanged(callback)` reports discovery changes.
 
 ### `pairApi.engines`

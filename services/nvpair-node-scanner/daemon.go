@@ -876,14 +876,16 @@ func (d *daemon) publishSelfLocked() {
 		svcs[k] = noderec.ServiceStatus{Port: port}
 	}
 	node := noderec.DirectoryNode{
-		HostUUID:    rec.HostUUID,
-		Name:        d.instance,
-		IP:          ip,
-		IPs:         ips,
-		ClusterUUID: rec.ClusterUUID,
-		Trusted:     trusted,
-		Services:    svcs,
-		LastSeen:    time.Now().Unix(),
+		DiscoveryRecordID:    "local:" + rec.HostUUID,
+		IdentityVerification: noderec.IdentityLocal,
+		HostUUID:             rec.HostUUID,
+		Name:                 d.instance,
+		IP:                   ip,
+		IPs:                  ips,
+		ClusterUUID:          rec.ClusterUUID,
+		Trusted:              trusted,
+		Services:             svcs,
+		LastSeen:             time.Now().Unix(),
 	}
 	// Enrich over loopback, never the advertised LAN ip=: a first-run Windows
 	// firewall block on inbound to our own LAN address must not blank the local

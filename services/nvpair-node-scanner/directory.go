@@ -4,8 +4,11 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -50,17 +53,30 @@ func toDirectoryNode(raw RawNode, trusted bool) (noderec.DirectoryNode, bool) {
 		svcs[k] = noderec.ServiceStatus{Port: port}
 	}
 	return noderec.DirectoryNode{
-		HostUUID:    rec.HostUUID,
-		Name:        raw.ID,
-		IP:          ip,
-		IPs:         ips,
-		ClusterUUID: rec.ClusterUUID,
-		Trusted:     trusted,
-		Services:    svcs,
+		DiscoveryRecordID:    nodeDiscoveryRecordID(raw),
+		IdentityVerification: noderec.IdentityUnverified,
+		HostUUID:             rec.HostUUID,
+		Name:                 raw.ID,
+		IP:                   ip,
+		IPs:                  ips,
+		ClusterUUID:          rec.ClusterUUID,
+		Trusted:              trusted,
+		Services:             svcs,
 		// Models is enriched separately from engine-manager's em /v1/models
 		// (daemon.enrichModelsAt), not carried in the record's TXT.
 		LastSeen: time.Now().Unix(),
 	}, true
+}
+
+// nodeDiscoveryRecordID identifies a connection candidate, not its claimed owner.
+// Address ordering and UUID/principal claims do not change that identity.
+func nodeDiscoveryRecordID(raw RawNode) string {
+	rec := noderec.ParseTXT(raw.TXT)
+	addresses := append([]string(nil), netpick.Candidates(raw.TXT, raw.Addresses)...)
+	sort.Strings(addresses)
+	fields := []string{raw.ID, raw.Host, strconv.Itoa(rec.Services[noderec.ServiceNodeInfo])}
+	fields = append(fields, addresses...)
+	return fmt.Sprintf("observation:%x", sha256.Sum256([]byte(fmt.Sprintf("%q", fields))))
 }
 
 // directory is the daemon's view of all LAN nodes (this node included), keyed by

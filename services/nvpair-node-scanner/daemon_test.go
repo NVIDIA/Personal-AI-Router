@@ -333,3 +333,12 @@ func TestReachableSelf_DialsLoopback(t *testing.T) {
 	}
 	assert.False(t, d.reachable(peer), "a same-hostname peer advertising an unroutable LAN ip must not inherit the self loopback dial")
 }
+
+func TestPublishSelf_LocalRecordHasLocalVerificationAndDiscoveryRecordID(t *testing.T) {
+	d := newSelfTestDaemon("self-uuid", "192.0.2.10")
+	d.publishSelf()
+	node, ok := d.dir.get("self-uuid")
+	require.True(t, ok, "local registry record must exist")
+	assert.Equal(t, noderec.IdentityLocal, node.IdentityVerification)
+	assert.Equal(t, "local:self-uuid", node.DiscoveryRecordID)
+}

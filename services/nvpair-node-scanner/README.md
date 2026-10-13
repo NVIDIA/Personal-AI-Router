@@ -71,6 +71,13 @@ nothing to answer and the caller must not wait:
 
 Emitted as the directory changes. Each carries the affected `DirectoryNode` (identity, advertised service ports, enrichment, `trusted`).
 
+Records also carry `discoveryRecordId` and `identityVerification`. The local registry
+record is `local`; browsed records are `unverified`, including when their claimed
+principal has a pin. `pinned` denotes authenticated identity in the shared
+contract. Discovery record IDs identify connection candidates independently of UUID
+and principal claims. Their address order does not affect the ID. The existing
+`trusted` pin annotation alone does not prove endpoint ownership.
+
 - `discovery:node-discovered` — a new node entered the directory
 - `discovery:node-updated` — a known node's record or enrichment changed. A re-observation that changes nothing emits no event, so `lastSeen` is a last-*change* stamp rather than a liveness heartbeat
 - `discovery:node-removed` — a node aged out (identity + last-known fields)

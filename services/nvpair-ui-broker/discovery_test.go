@@ -270,3 +270,23 @@ func TestScannerProcess_RoutesAndRemovesTelemetry(t *testing.T) {
 	sp.handleNotify(noderec.NotifyNodeRemoved, nodeRemovedFrame(t, "peer", "peer-uuid"))
 	require.Equal(t, "peer-uuid", removed, "removed telemetry host")
 }
+
+func TestDiscoveryStore_SnapshotPreservesScannerIdentityFields(t *testing.T) {
+	const body = `{"hostUuid":"host-a","name":"workstation","discoveryRecordId":"observation:candidate-a","identityVerification":"unverified"}`
+	var node noderec.DirectoryNode
+	require.NoError(t, json.Unmarshal([]byte(body), &node))
+	store := newDiscoveryStore()
+	store.Upsert(directoryToEnriched(node), sourceScanner)
+	snapshot := store.Snapshot()
+	require.Len(t, snapshot, 1)
+	wire, err := json.Marshal(snapshot[0])
+	require.NoError(t, err)
+	type nodeIdentityFields struct {
+		DiscoveryRecordID    string `json:"discoveryRecordId"`
+		IdentityVerification string `json:"identityVerification"`
+	}
+	var got nodeIdentityFields
+	require.NoError(t, json.Unmarshal(wire, &got))
+	assert.Equal(t, "observation:candidate-a", got.DiscoveryRecordID)
+	assert.Equal(t, "unverified", got.IdentityVerification)
+}
