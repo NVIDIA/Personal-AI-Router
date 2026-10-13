@@ -237,15 +237,17 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 		hostUUID = s.ID
 	}
 	en := EnrichedNode{
-		ID:             s.ID,
-		HostUUID:       hostUUID,
-		Host:           s.Address,
-		Port:           s.NodeInfoPort,
-		GPUs:           s.GPUs,
-		CPU:            s.CPU,
-		Memory:         s.Memory,
-		Models:         mergeModels(s.OllamaModels, s.LMStudioModels),
-		ModelsByEngine: manualModelsByEngine(s),
+		DiscoveryRecordID:    "manual:" + s.ID,
+		IdentityVerification: noderec.IdentityUnverified,
+		ID:                   s.ID,
+		HostUUID:             hostUUID,
+		Host:                 s.Address,
+		Port:                 s.NodeInfoPort,
+		GPUs:                 s.GPUs,
+		CPU:                  s.CPU,
+		Memory:               s.Memory,
+		Models:               mergeModels(s.OllamaModels, s.LMStudioModels),
+		ModelsByEngine:       manualModelsByEngine(s),
 	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}

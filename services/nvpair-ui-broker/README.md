@@ -197,6 +197,12 @@ Emitted once on startup, after the scanner (and, when available, node-info and o
 
 **Opt-in.** Only delivered to a peer that has called `discovery:subscribe`; until then (and after `discovery:unsubscribe`) the stream is silent. Once subscribed, it's fired every time the discovery store mutates — that is, whenever the daemon reports a `discovery:node-discovered`, `discovery:node-updated`, or `discovery:node-removed` (or a manual node changes). The payload is the full current snapshot as a **bare array** of `AvailableNode` objects (same shape as the array element in `discovery:get-nodes`), sorted by `id`.
 
+Snapshots retain scanner-assigned `discoveryRecordId` and `identityVerification`
+(`local`, `pinned`, or `unverified`). Manual configuration records have their own
+discovery record IDs and are `unverified`. These fields describe provenance separately
+from the `trusted` pin annotation; a claimed UUID or an existing pin alone does
+not establish authenticated endpoint ownership.
+
 ```json
 {
   "jsonrpc":"2.0",

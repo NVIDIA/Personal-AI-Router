@@ -12,10 +12,12 @@ import "nvpair-shared/noderec"
 // availableNode mirrors the broker's discovery boundary shape (the
 // discovery:get-nodes element and discovery:nodes-changed payload entry).
 type availableNode struct {
-	ID        string `json:"id"`
-	HostUUID  string `json:"hostUuid"`
-	Name      string `json:"name"`
-	IPAddress string `json:"ipAddress"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	HostUUID             string                       `json:"hostUuid"`
+	Name                 string                       `json:"name"`
+	IPAddress            string                       `json:"ipAddress"`
 	// IPAddresses is every address the node published, in its own ranked order
 	// with IPAddress first. A multi-homed node has no single address every peer
 	// can reach — a direct-connect link only works from the machine on its far

@@ -70,8 +70,10 @@ type VersionResult struct {
 // the rest of the NVPAIR codebase uses snake_case, so this is the
 // deliberate camelCase island at the broker's outer boundary.
 type AvailableNode struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	Name                 string                       `json:"name"`
 	// HostUUID is the node's stable per-host identity (the daemon's uuid= TXT).
 	// It is invariant across a PC rename and unique per physical machine, so it
 	// is the key clients should dedup/track nodes by; id/name stay the hostname
