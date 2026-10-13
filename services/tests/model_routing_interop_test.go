@@ -48,9 +48,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	ineligible := newRoutingUpstream(t, http.StatusOK)
 
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
-		// No --proxy-engines: this test wants both engines fronted, which is
-		// the default.
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama,lmstudio",
 	)
 	t.Cleanup(cleanup)
 	go func() {

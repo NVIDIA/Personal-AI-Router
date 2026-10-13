@@ -241,9 +241,9 @@ type e2eManager struct {
 	stopped bool
 }
 
-func startE2EManager(t *testing.T, cfg, home string) *e2eManager {
+func startE2EManager(t *testing.T, cfg, home string, args ...string) *e2eManager {
 	t.Helper()
-	cmd := exec.Command(managerBin)
+	cmd := exec.Command(managerBin, args...)
 	cmd.Env = overrideEnv(map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

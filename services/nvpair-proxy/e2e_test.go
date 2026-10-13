@@ -279,6 +279,11 @@ func e2eSplitHostPort(t *testing.T, serverURL string) (string, int) {
 func TestE2EFailoverOverRealBinary(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		bin := proxyBinary(t)
+		// The child inherits this environment, so a persisted port it loads on
+		// facade/enable comes from a temp dir, never the developer's config.
+		// It runs after the build, because go derives its module and build
+		// caches from these variables.
+		redirectConfigDir(t)
 
 		var gotBody string
 		busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

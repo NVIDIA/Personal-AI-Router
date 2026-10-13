@@ -140,7 +140,7 @@ On Windows, run the underlying npm and `go test` commands directly.
 - **Sign off every commit** with `git commit -s`. The Developer Certificate of
   Origin trailer has to match the commit author, so a missing or mismatched
   sign-off means rewriting the commit rather than fixing it in review.
-- **Prefer small, focused commits.** Work from a fork on a branch off `main`, and
+- **Prefer small, focused commits.** Work from a fork on a branch off `develop`, and
   open a pull request; only maintainers merge.
 
 ## Platform Support

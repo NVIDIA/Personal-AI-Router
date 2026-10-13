@@ -66,8 +66,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 	lmstudioPort := portOfURL(t, lmstudio.URL)
 
 	stdin, msgs, _, cleanup := startBrokerWith(t,
-		// Both engines fronted, which is the default.
-		"--proxy-path", proxyBin,
+		"--proxy-path", proxyBin, "--proxy-engines", "ollama,lmstudio",
 		"--workload-manager-path", workloadMgrBin,
 	)
 	t.Cleanup(cleanup)

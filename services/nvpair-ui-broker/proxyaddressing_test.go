@@ -234,6 +234,89 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 	}
 }
 
+func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
+	for _, profile := range engineProxyProfiles {
+		t.Run(profile.Name, func(t *testing.T) {
+			client, server := net.Pipe()
+			t.Cleanup(func() {
+				_ = client.Close()
+				_ = server.Close()
+			})
+			payload := json.RawMessage(fmt.Sprintf(`{"version":"test","port":%d}`, profile.FacadePort))
+			proxy := &proxyProcess{facadeState: map[string]proxyFacadeState{
+				profile.Name: {
+					ready:  true,
+					port:   profile.FacadePort,
+					params: payload,
+				},
+			}}
+			b := &Broker{codec: NewCodec(server)}
+			b.setEngineProxyHandle(profile, proxy)
+			reader := NewCodec(client)
+			nextID := 0
+			call := func(method string, frameCount int) []*Message {
+				t.Helper()
+				nextID++
+				id := json.RawMessage(fmt.Sprintf("%d", nextID))
+				done := make(chan struct{})
+				go func() {
+					b.handleMessage(&Message{JSONRPC: "2.0", ID: &id, Method: profile.ComponentName() + ":" + method})
+					close(done)
+				}()
+				frames := make([]*Message, 0, frameCount)
+				for range frameCount {
+					if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+						t.Fatalf("set read deadline: %v", err)
+					}
+					frame, err := reader.Read()
+					if err != nil {
+						t.Fatalf("read %s frame: %v", method, err)
+					}
+					frames = append(frames, frame)
+				}
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("%s handler did not finish after %d frame(s)", method, frameCount)
+				}
+				return frames
+			}
+
+			statusFrames := call("get-status", 1)
+			var status ProxyStatusResult
+			if err := json.Unmarshal(statusFrames[0].Result, &status); err != nil {
+				t.Fatalf("decode status: %v", err)
+			}
+			if !status.Ready || status.Port != profile.FacadePort {
+				t.Fatalf("status = %+v, want ready on %d", status, profile.FacadePort)
+			}
+
+			subscribeFrames := call("subscribe", 2)
+			var subscribed SubscriptionResult
+			if err := json.Unmarshal(subscribeFrames[0].Result, &subscribed); err != nil || !subscribed.Subscribed {
+				t.Fatalf("subscribe response = %s, error %v", subscribeFrames[0].Result, err)
+			}
+			if subscribeFrames[1].Method != profile.ComponentName()+":ready" {
+				t.Fatalf("second subscribe frame = %q, want ready baseline after response", subscribeFrames[1].Method)
+			}
+			if string(subscribeFrames[1].Params) != string(payload) {
+				t.Fatalf("ready baseline = %s, want %s", subscribeFrames[1].Params, payload)
+			}
+
+			unsubscribeFrames := call("unsubscribe", 1)
+			if err := json.Unmarshal(unsubscribeFrames[0].Result, &subscribed); err != nil || subscribed.Subscribed {
+				t.Fatalf("unsubscribe response = %s, error %v", unsubscribeFrames[0].Result, err)
+			}
+			b.proxyMu.Lock()
+			stillSubscribed := b.engineProxySubscribed(profile)
+			b.proxyMu.Unlock()
+			if stillSubscribed {
+				t.Fatal("facade remained subscribed after unsubscribe")
+			}
+		})
+	}
+}
+
 // Each facade subscribes for its own engine's discovery service, so the broker
 // has to track a subscription per engine. A single id per process let the second
 // facade's subscribe replace the first's, which unsubscribed a live facade and

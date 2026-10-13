@@ -29,10 +29,8 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 }
 
 // gracefulSignal sends SIGTERM to the process group (falling back to the
-// process itself). It is the only stop signal engine-manager sends: stop()
-// sends this once and waits for the engine to exit, and never escalates to
-// SIGKILL. A well-behaved engine (Ollama, and the test fake, whose default
-// SIGTERM disposition is to exit) terminates on it.
+// process itself). managedProc.stop escalates to SIGKILL if the group remains
+// alive after the manifest's grace period.
 func gracefulSignal(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
@@ -111,9 +109,8 @@ func procImage(pid int) string {
 }
 
 // signalPID sends SIGTERM (or SIGKILL when force) to the process group when
-// possible. It is the PID-addressed kill used only by the orphan reclaim (a
-// process we lost the *exec.Cmd handle to), distinct from the normal
-// graceful-only stop() path; force reaches forked helpers (model runners, etc.).
+// possible. The owned-process escalation and orphan reclaim share it so forced
+// stops reach forked helpers (model runners, etc.).
 func signalPID(pid int, force bool) error {
 	if pid <= 0 {
 		return nil

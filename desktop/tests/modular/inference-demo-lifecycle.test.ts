@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { EngineType } from '@/shared/types/engines'
 
 /**
  * Lifecycle guarantees for the Inference Demo scheduler.
@@ -30,6 +31,7 @@ const spawned: SpawnRecord[] = []
 
 /** Options each `--list-models` discovery probe was invoked with. */
 const probeOptions: ChildOptions[] = []
+const probeArgs: string[][] = []
 
 /**
  * Poisoned parent environment. `INFERENCE_DISPATCHER_LOOP` would run the child
@@ -45,9 +47,10 @@ const POISONED_ENV: Record<string, string> = {
 }
 
 /** Proxy ports the fake broker reports. Mutable so a test can withhold one. */
-const proxyPorts: Record<'ollama' | 'lm-studio', number | null> = {
+const proxyPorts: Record<EngineType, number | null> = {
     ollama: 11434,
-    'lm-studio': 1234
+    'lm-studio': 1234,
+    'llama-cpp': 8080
 }
 
 /** Model inventory each probe returns. Mutable so a test can return none. */
@@ -96,6 +99,7 @@ vi.mock('node:child_process', () => ({
         options: ChildOptions,
         callback: (error: Error | null, stdout: string, stderr: string) => void
     ) => {
+        probeArgs.push(_args)
         probeOptions.push(options)
         callback(null, JSON.stringify(inventory), '')
         return { exitCode: null, once: () => {}, kill: () => true }
@@ -114,7 +118,7 @@ vi.mock('electron', () => ({
 
 vi.mock('@/electron/service-bridge/modular-state', () => ({
     getModularBridgeState: () => ({
-        getProxyPort: (engine: 'ollama' | 'lm-studio') => proxyPorts[engine]
+        getProxyPort: (engine: EngineType) => proxyPorts[engine]
     })
 }))
 
@@ -126,18 +130,24 @@ import {
 } from '@/electron/inference-demo'
 
 /** Ports the demo is allowed to target: proxy facades only. */
-const PROXY_FACADE_PORTS = [11434, 1234]
+const PROXY_FACADE_PORTS = [11434, 1234, 8080]
 
 function portOf(record: SpawnRecord): number {
     return Number(record.args[record.args.indexOf('--port') + 1])
 }
 
+function backendOf(record: SpawnRecord): string {
+    return record.args[record.args.indexOf('--backend') + 1] ?? ''
+}
+
 beforeEach(() => {
     spawned.length = 0
     probeOptions.length = 0
+    probeArgs.length = 0
     inventory = [{ name: 'demo-model', type: 'llm' }]
     proxyPorts.ollama = 11434
     proxyPorts['lm-studio'] = 1234
+    proxyPorts['llama-cpp'] = 8080
     Object.assign(process.env, POISONED_ENV)
     vi.useFakeTimers()
 })
@@ -203,14 +213,30 @@ describe('inference demo lifecycle', () => {
         }
     })
 
+    it('probes and schedules llama.cpp through its proxy facade', async () => {
+        await startInferenceDemo()
+        await vi.advanceTimersByTimeAsync(12_000)
+
+        expect(
+            probeArgs.some(
+                args =>
+                    args[args.indexOf('--backend') + 1] === 'llamacpp' &&
+                    args.includes('--list-models')
+            )
+        ).toBe(true)
+        const llamaCPPRequest = spawned.find(child => backendOf(child) === 'llamacpp')
+        expect(llamaCPPRequest).toBeDefined()
+        if (llamaCPPRequest) expect(portOf(llamaCPPRequest)).toBe(8080)
+    })
+
     it('skips an engine whose proxy has not reported a port', async () => {
-        proxyPorts['lm-studio'] = null
+        proxyPorts['llama-cpp'] = null
         await startInferenceDemo()
         await vi.advanceTimersByTimeAsync(70_000)
 
         expect(spawned.length).toBeGreaterThan(0)
         for (const child of spawned) {
-            expect(portOf(child)).toBe(11434)
+            expect(portOf(child)).not.toBe(8080)
         }
     })
 

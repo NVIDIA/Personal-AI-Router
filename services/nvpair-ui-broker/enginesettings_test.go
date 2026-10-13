@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
@@ -24,6 +25,7 @@ import (
 type settingsHarness struct {
 	b                   *Broker
 	applies             atomic.Int32
+	proxyRebinds        atomic.Int32
 	fail                atomic.Bool
 	failBeforeStop      atomic.Bool
 	loseProxyOnStop     atomic.Bool
@@ -38,7 +40,12 @@ type settingsHarness struct {
 
 func newSettingsHarness(t *testing.T) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 3)
+	return newSettingsHarnessForEngine(t, "ollama")
+}
+
+func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
+	t.Helper()
+	ports := make([]int, 4)
 	listeners := []net.Listener{}
 	for i := range ports {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -58,9 +65,11 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 	proxy := &proxyProcess{peer: proxyWorker.peer, facadeState: map[string]proxyFacadeState{
 		"ollama":   {ready: true, port: ports[1]},
 		"lmstudio": {ready: true, port: ports[2]},
+		"llamacpp": {ready: true, port: ports[3]},
 	}}
-	h.b.setProxy(proxy)
-	h.b.setLMStudioProxy(proxy)
+	for _, profile := range engineProxyProfiles {
+		h.b.setEngineProxyHandle(profile, proxy)
+	}
 	go func() {
 		for {
 			msg, err := proxyCodec.Read()
@@ -70,25 +79,26 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 			if !msg.IsRequest() {
 				continue
 			}
-			if msg.Method != "ollama:set-port" && msg.Method != "lmstudio:set-port" {
+			engine, method := engines.SplitAddressedMethod(msg.Method)
+			if engine == "" || method != "set-port" {
 				_ = proxyCodec.Respond(msg.ID, map[string]bool{"ok": true})
 				continue
 			}
 			var p struct {
 				Port int `json:"port"`
 			}
-			_ = json.Unmarshal(msg.Params, &p)
-			proxy.readyMu.Lock()
-			engine := "ollama"
-			if msg.Method == "lmstudio:set-port" {
-				engine = "lmstudio"
+			if err := json.Unmarshal(msg.Params, &p); err != nil {
+				t.Errorf("decode proxy port request: %v", err)
+				return
 			}
+			h.proxyRebinds.Add(1)
+			proxy.readyMu.Lock()
 			proxy.facadeState[engine] = proxyFacadeState{ready: true, port: p.Port}
 			proxy.readyMu.Unlock()
 			_ = proxyCodec.Respond(msg.ID, map[string]int{"port": p.Port})
 		}
 	}()
-	launch := settings.LaunchState{Engine: "ollama", ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
+	launch := settings.LaunchState{Engine: engine, ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
 	go func() {
 		for {
 			msg, err := codec.Read()
@@ -130,9 +140,9 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 					if h.failBeforeStop.Load() {
 						if h.loseProxyOnStop.Load() {
 							proxy.readyMu.Lock()
-							state := proxy.facadeState["ollama"]
+							state := proxy.facadeState[engine]
 							state.ready = false
-							proxy.facadeState["ollama"] = state
+							proxy.facadeState[engine] = state
 							proxy.readyMu.Unlock()
 						}
 						_ = codec.RespondError(msg.ID, -32000, "stop failure")

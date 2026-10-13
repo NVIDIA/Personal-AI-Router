@@ -51,6 +51,32 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 	test("chunked", true)
 }
 
+func TestProbeHTTPMatchesJSONIdentity(t *testing.T) {
+	test := func(name, body string, want bool) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			client, _ := testclient.New(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, body)
+			}))
+			ex := &Executor{client: client}
+			probe := &Probe{
+				HTTP:      "http://127.0.0.1:{port}/props",
+				JSONMatch: &ProbeJSONMatch{Field: "service.role", Value: "router"},
+			}
+			if got := ex.probe(context.Background(), probe, 1); got != want {
+				t.Fatalf("probe = %v, want %v", got, want)
+			}
+		})
+	}
+
+	test("matching nested string", `{"service":{"role":"router"}}`, true)
+	test("different string", `{"service":{"role":"worker"}}`, false)
+	test("missing field", `{"service":{}}`, false)
+	test("wrong field type", `{"service":{"role":true}}`, false)
+	test("malformed JSON", `{"service":`, false)
+}
+
 func TestProbeHTTPBoundsBodyDrain(t *testing.T) {
 	body := &healthProbeBody{reader: strings.NewReader(strings.Repeat("x", 4<<20))}
 	ex := &Executor{client: &http.Client{Transport: healthProbeTransport(func(*http.Request) (*http.Response, error) {
@@ -62,6 +88,23 @@ func TestProbeHTTPBoundsBodyDrain(t *testing.T) {
 	}
 	if body.read == 0 || body.read > 1<<20 || !body.closed {
 		t.Fatalf("body read = %d, closed = %v; want bounded drain and close", body.read, body.closed)
+	}
+}
+
+func TestProbeHTTPRejectsOversizedJSONIdentityBody(t *testing.T) {
+	body := &healthProbeBody{reader: strings.NewReader(strings.Repeat("x", 4<<20))}
+	ex := &Executor{client: &http.Client{Transport: healthProbeTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: body, Header: make(http.Header)}, nil
+	})}}
+	probe := &Probe{
+		HTTP:      "http://127.0.0.1:{port}/",
+		JSONMatch: &ProbeJSONMatch{Field: "role", Value: "router"},
+	}
+	if ex.probe(context.Background(), probe, 1) {
+		t.Fatal("oversized JSON identity body passed the probe")
+	}
+	if body.read == 0 || body.read > 2*maxProbeJSONBytes+1 || !body.closed {
+		t.Fatalf("body read = %d, closed = %v; want bounded read and close", body.read, body.closed)
 	}
 }
 

@@ -111,7 +111,7 @@ The script leaves the on-disk log exactly as written and replaces identifiers
 when it produces a copy. That ordering follows from three things.
 
 There is one implementation instead of one for each process. Replacing
-identifiers while logging would mean the same rules in Go for the 13 services and
+identifiers while logging would mean the same rules in Go for the 12 services and
 again in TypeScript for the desktop logger, because JSON-RPC traffic the Go side
 cannot rewrite feeds the desktop log file, which is functional data. Two
 implementations of the same rules drift, and nodes on different app versions would
@@ -154,10 +154,10 @@ The script replaces the following:
   name is the host name, it takes that node's token.
 
 Everything belonging to one machine shares that machine's label, so its host name,
-UUID, address, and account read as `node-a`, `node-a-uuid`, `node-a-ip`, and
-`node-a-user`. A service logs paths under the account it runs as and has no
-knowledge of a peer's home directory, so the script attributes an account found
-in one machine's log to that machine. A node seen only as a discovered peer
+address, and account read as `node-a`, `node-a-ip`, and `node-a-user`. Its UUID
+stays readable, as described below. A service logs paths under the account it
+runs as and has no knowledge of a peer's home directory, so the script attributes
+an account found in one machine's log to that machine. A node seen only as a discovered peer
 therefore has no account token, because the script never read anything from it.
 
 The script leaves the following readable, because they identify nobody and are
@@ -233,6 +233,7 @@ Gather them from these directories:
 | --- | --- |
 | Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\logs\` |
 | Linux | `$XDG_CONFIG_HOME/Nvidia Corporation/Personal AI Router/logs/` (else `~/.config/...`) |
+| macOS | `~/Library/Application Support/Nvidia Corporation/Personal AI Router/logs/` |
 
 Gather nothing else from the app data directory. Do not gather `settings.json` or
 `cluster/`. The sanitizer handles log records and has no rules for the contents of

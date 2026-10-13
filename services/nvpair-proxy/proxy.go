@@ -931,11 +931,11 @@ type modelListResult struct {
 // in candidate order, not completion order, so duplicate metadata is
 // deterministic while an unavailable peer cannot hide healthy inventories.
 //
-// role selects the wire dialect: which array the upstream envelope carries,
-// which field identifies a record, and how the federated response is shaped.
-func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role routeRole, candidates []candidate) (int, error) {
+// matchedRoute selects the wire dialect and the optional upstream path. The
+// client-facing path remains unchanged in telemetry and in the merged response.
+func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedRoute route, candidates []candidate) (int, error) {
 	p := f.host
-	openAI := role == roleModelListOpenAIGET
+	openAI := matchedRoute.Role == roleModelListOpenAIGET
 	writeJSON := func(status int, body []byte) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -946,8 +946,12 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role rou
 	var wg sync.WaitGroup
 	for i, cand := range candidates {
 		target := *cand.url
-		target.Path = r.URL.Path
-		target.RawPath = r.URL.RawPath
+		target.Path = matchedRoute.upstreamPath()
+		if matchedRoute.UpstreamPath == "" {
+			target.RawPath = r.URL.RawPath
+		} else {
+			target.RawPath = ""
+		}
 		target.RawQuery = r.URL.RawQuery
 		upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
 		if err != nil {
@@ -1208,13 +1212,13 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		p.releaseReservation(held)
 		held = reservation{}
 	}()
-	if role, ok := f.profile.roleFor(r.Method, r.URL.Path); ok && role.isModelList() {
+	if matchedRoute, ok := f.profile.routeFor(r.Method, r.URL.Path); ok && matchedRoute.Role.isModelList() {
 		if len(candidates) > 0 {
 			_ = f.notify("proxy/request-started", RequestStartedEvent{
 				ID: reqID, Method: r.Method, Path: r.URL.Path, Target: "cluster",
 			})
 		}
-		status, err := f.serveModelList(w, r, role, candidates)
+		status, err := f.serveModelList(w, r, matchedRoute, candidates)
 		errText := ""
 		if err != nil {
 			errText = err.Error()

@@ -22,11 +22,13 @@ type (
 	DecodeError = jsonrpc.DecodeError
 )
 
-// maxFrameBytes caps a single inbound JSON-RPC frame. The orchestrator is the
-// sole, trusted peer and only sends small engine:* requests, so 8 MiB is far
-// above any real frame. An inbound frame larger than this surfaces as a
-// terminal read error and manager.readLoop exits cleanly.
-const maxFrameBytes = 8 << 20 // 8 MiB
+// maxFrameBytes caps a single inbound JSON-RPC frame. It is the shared
+// worker-path cap so every hop agrees; the orchestrator only sends small
+// engine:* requests inbound, but this side's *replies* can be megabytes
+// (engine:catalog's model list), and a cap that differs per hop fails the whole
+// path. An inbound frame larger than this surfaces as a terminal read error and
+// manager.readLoop exits cleanly.
+const maxFrameBytes = jsonrpc.WorkerFrameBytes
 
 // NewCodec wraps rw with the shared codec at engine-manager's 8 MiB frame cap.
 func NewCodec(rw io.ReadWriter) *Codec { return jsonrpc.NewCodecMaxFrame(rw, maxFrameBytes) }

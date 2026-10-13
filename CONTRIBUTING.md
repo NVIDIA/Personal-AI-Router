@@ -373,7 +373,7 @@ sign-off is rejected. It usually means the commit was authored under a
 different name or address than the one configured now.
 
 If you forget the flag, `git commit --amend -s` fixes the most recent commit and
-`git rebase --signoff main` fixes every commit on your branch. Both rewrite
+`git rebase --signoff develop` fixes every commit on your branch. Both rewrite
 history, so force-push the branch in your fork afterward.
 
 This requirement is `--signoff`, which records the certification below. It is

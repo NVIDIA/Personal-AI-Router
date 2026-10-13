@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -131,6 +132,114 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	otherState.running = true
 	if _, err := otherEx.Action(context.Background(), "other", "run_model", json.RawMessage(`{"model":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
 		t.Fatalf("non-Ollama run_model error = %v, want ordinary response-header timeout", err)
+	}
+}
+
+func TestHTTPActionSendsStringParamsInQuery(t *testing.T) {
+	type observedRequest struct {
+		method      string
+		rawQuery    string
+		model       string
+		contentType string
+		body        []byte
+		readErr     error
+	}
+
+	observed := make(chan observedRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		observed <- observedRequest{
+			method:      r.Method,
+			rawQuery:    r.URL.RawQuery,
+			model:       r.URL.Query().Get("model"),
+			contentType: r.Header.Get("Content-Type"),
+			body:        body,
+			readErr:     err,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer srv.Close()
+
+	serverURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	port, err := strconv.Atoi(serverURL.Port())
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	m := testEngineManifest(fakeEngineBin)
+	m.Engine = "llamacpp"
+	platform := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
+	platform.Runtime.Port = port
+	m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = platform
+	m.Actions = map[string]Action{
+		"delete_model": {
+			HTTP: &ActionHTTP{
+				Method:   http.MethodDelete,
+				Path:     "/models",
+				ParamsIn: actionHTTPParamsQuery,
+			},
+		},
+	}
+
+	ex := newTestExecutor(t, m)
+	st, err := ex.state("llamacpp")
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	st.running = true
+
+	const model = "owner/repository:Q4_K_M"
+	res, err := ex.Action(
+		context.Background(),
+		"llamacpp",
+		"delete_model",
+		json.RawMessage(`{"model":"owner/repository:Q4_K_M"}`),
+	)
+	if err != nil {
+		t.Fatalf("delete_model: %v", err)
+	}
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("delete response = %s, want success", res)
+	}
+
+	got := <-observed
+	if got.readErr != nil {
+		t.Fatalf("read request body: %v", got.readErr)
+	}
+	if got.method != http.MethodDelete {
+		t.Errorf("method = %q, want %q", got.method, http.MethodDelete)
+	}
+	if got.model != model {
+		t.Errorf("model query = %q, want %q", got.model, model)
+	}
+	if got.rawQuery != "model=owner%2Frepository%3AQ4_K_M" {
+		t.Errorf("raw query = %q, want URL-encoded model id", got.rawQuery)
+	}
+	if len(got.body) != 0 {
+		t.Errorf("body = %q, want empty", got.body)
+	}
+	if got.contentType != "" {
+		t.Errorf("Content-Type = %q, want empty without a body", got.contentType)
+	}
+}
+
+func TestHTTPActionRejectsNonStringQueryParams(t *testing.T) {
+	_, err := actionQueryParams(json.RawMessage(`{"model":42}`))
+	if err == nil {
+		t.Fatal("non-string query param accepted")
+	}
+	if !strings.Contains(err.Error(), "string values") {
+		t.Fatalf("error = %q, want string-values requirement", err)
 	}
 }
 

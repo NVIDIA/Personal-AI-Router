@@ -116,6 +116,12 @@ func TestUninstallRetries(t *testing.T) {
 	m.Platforms[key] = p
 
 	ex := newTestExecutor(t, m)
+	// A command-mode engine's files live wherever its vendor script put them, so
+	// uninstall declines one PAIR has no record of installing. Claim it, to reach
+	// the retry behavior under test.
+	if err := writeInstallMarker(filepath.Join(ex.baseDir, "fake"), "fake"); err != nil {
+		t.Fatal(err)
+	}
 	err := ex.Uninstall(context.Background(), "fake")
 	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
 		t.Fatalf("expected uninstall failure after 3 attempts, got %v", err)
@@ -404,6 +410,7 @@ func TestExpandPathForms(t *testing.T) {
 		{"unix dollar", "linux", "a/$NVPAIR_TEST_VAR/b", "a/xyz/b"},
 		{"unix braced dollar", "linux", "a/${NVPAIR_TEST_VAR}/b", "a/xyz/b"},
 		{"unix percent", "linux", "a/%NVPAIR_TEST_VAR%/b", "a/%NVPAIR_TEST_VAR%/b"},
+		{"unix shell parameters", "linux", `tar -xzf "$1" -C "$3"`, `tar -xzf "$1" -C "$3"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := expandPathForOS(tc.input, tc.goos); got != tc.want {
@@ -453,7 +460,7 @@ func TestBundledManifestsGolden(t *testing.T) {
 	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
 		t.Fatalf("bundled manifests invalid: %v", err)
 	}
-	for _, want := range []string{"ollama", "lmstudio"} {
+	for _, want := range []string{"ollama", "lmstudio", "llamacpp"} {
 		m, ok := reg.Get(want)
 		if !ok {
 			t.Fatalf("missing bundled engine %q (have %v)", want, reg.Names())

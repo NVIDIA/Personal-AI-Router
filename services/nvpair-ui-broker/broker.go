@@ -133,11 +133,11 @@ type SubscriptionResult struct {
 	Subscribed bool `json:"subscribed"`
 }
 
-// ProxyStatusResult is the response to "ollama-proxy:get-status". Ready is false
-// (and Port 0) until the supervised ollama-proxy has emitted its "ready"
-// notification — or always, if no proxy is being supervised. Clients poll
-// this to learn where the local proxy is listening, since the proxy is
-// optional and comes up asynchronously after app:ready.
+// ProxyStatusResult is the response to "<engine>-proxy:get-status". Ready is
+// false (and Port 0) until that facade has emitted its "ready" notification —
+// or always, if no proxy is being supervised. Clients poll this to learn where
+// the local facade is listening, since the proxy is optional and comes up
+// asynchronously after app:ready.
 type ProxyStatusResult struct {
 	Ready bool `json:"ready"`
 	Port  int  `json:"port"`
@@ -537,14 +537,18 @@ func (b *Broker) restoreEnabledEnginesAfterPortGate(ctx context.Context) bool {
 
 func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
-	runOllama func(context.Context),
-	runLMStudio func(context.Context),
+	runners ...func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
-	go runOllama(ctx)
-	runLMStudio(ctx)
+	for index, run := range runners {
+		if index == len(runners)-1 {
+			run(ctx)
+			break
+		}
+		go run(ctx)
+	}
 	return true
 }
 
@@ -755,13 +759,30 @@ func (b *Broker) proxyBringUpContext() (context.Context, context.CancelFunc) {
 func (b *Broker) enableEngineFacade(
 	ctx context.Context, pp *proxyProcess, profile engineProxyProfile, alias ollamaHostAlias,
 ) error {
+	return b.enableEngineFacadeWithPortCheck(ctx, pp, profile, alias, tcpPortAvailable)
+}
+
+func (b *Broker) enableEngineFacadeWithPortCheck(
+	ctx context.Context,
+	pp *proxyProcess,
+	profile engineProxyProfile,
+	alias ollamaHostAlias,
+	available func(int) bool,
+) error {
 	switch profile.Name {
 	case ollamaProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.ollamaFacadeSpec(alias), b.ollamaFallbackPort)
 	case lmstudioProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.lmstudioFacadeSpec(), b.lmstudioFallbackPort)
 	default:
-		return fmt.Errorf("no facade spec for engine %q", profile.Name)
+		return b.enableProxyFacadeWithFallback(
+			ctx,
+			pp,
+			b.defaultEngineFacadeSpec(profile),
+			func(failed int) int {
+				return b.defaultEngineFallbackPortWithCheck(profile, failed, available)
+			},
+		)
 	}
 }
 
@@ -787,7 +808,7 @@ func (b *Broker) blockAndFinishEngineProxy(profile engineProxyProfile) {
 		}
 		b.finishLMStudioProxyTerminal()
 	default:
-		slog.Warn("no terminal handling for engine", "engine", profile.Name)
+		// Other engines have no compatibility-port claim or startup gate.
 	}
 }
 
@@ -981,8 +1002,13 @@ func (b *Broker) forwardProxyProcessNotification(
 			slog.Debug("ignoring unaddressed proxy notification", "method", bare)
 		}
 	default:
-		slog.Warn("proxy addressed a notification to an unknown engine",
-			"engine", engine, "method", bare)
+		profile, known := engineProxyProfileFor(engine)
+		if known {
+			b.forwardDefaultEngineProxyNotification(profile, method, params)
+			return
+		}
+		slog.Warn("proxy addressed a notification without a handler",
+			"engine", engine, "method", bare, "known", known)
 	}
 }
 
@@ -2196,11 +2222,24 @@ func (b *Broker) Serve(ctx context.Context) error {
 		}
 	}
 
-	// Restore engines and begin both advertising loops only after both proxy
+	// Restore engines and begin advertising only after both managed proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	availabilityRunners := []func(context.Context){b.runAutoAdvertise, b.runAutoAdvertiseLMStudio}
+	for _, profile := range engineProxyProfiles {
+		if !b.proxyEnabled(profile) {
+			continue
+		}
+		if profile.Name == ollamaProxyProfile.Name || profile.Name == lmstudioProxyProfile.Name {
+			continue
+		}
+		profile := profile
+		availabilityRunners = append(availabilityRunners, func(ctx context.Context) {
+			b.runAutoAdvertiseEngine(ctx, profile)
+		})
+	}
+	go b.runEngineAvailabilityAfterPortGates(ctx, availabilityRunners...)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -3142,6 +3181,13 @@ func (b *Broker) handleMessage(msg *Message) {
 		return
 	}
 
+	if profile, ok := engineProxyProfileForMethod(msg.Method); ok {
+		method := strings.TrimPrefix(msg.Method, profile.ComponentName()+":")
+		if b.handleEngineProxyBrokerRequest(profile, method, msg) {
+			return
+		}
+	}
+
 	switch msg.Method {
 	case "engine:get-settings", "engine:preview-settings", "engine:apply-settings":
 		go b.handleEngineSettings(msg)
@@ -3189,94 +3235,8 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to discovery:unsubscribe: %v", err)
 		}
 
-	case "ollama-proxy:get-status":
-		// Answered locally from the proxy handle's captured state — no
-		// round-trip to the proxy. When no proxy is supervised the
-		// zero value ({ready:false, port:0}) is a valid "not available"
-		// answer, so the method never errors.
-		var result ProxyStatusResult
-		if p := b.getProxy(); p != nil {
-			ready, port := p.Status(ollamaProxyProfile.Name)
-			result.Ready = ready
-			result.Port = port
-		}
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to respond to proxy:get-status: %v", err)
-		}
-
-	case "ollama-proxy:subscribe":
-		b.proxyMu.Lock()
-		wasSubscribed := b.setEngineProxySubscribed(ollamaProxyProfile, true)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
-			log.Printf("failed to respond to proxy:subscribe: %v", err)
-		}
-		// On a fresh subscription replay the proxy's last "ready" payload
-		// (if it has come up) as a baseline proxy:ready, so a subscriber
-		// learns the port without a separate proxy:get-status. Sent after
-		// the ack. A redundant re-subscribe doesn't re-emit.
-		if !wasSubscribed {
-			if p := b.getProxy(); p != nil {
-				if rp := p.ReadyParams(ollamaProxyProfile.Name); rp != nil {
-					if err := b.codec.Notify("ollama-proxy:ready", rp); err != nil {
-						slog.Warn("emit baseline proxy:ready failed", "err", err)
-					}
-				}
-			}
-		}
-
-	case "ollama-proxy:unsubscribe":
-		b.proxyMu.Lock()
-		b.setEngineProxySubscribed(ollamaProxyProfile, false)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
-			log.Printf("failed to respond to proxy:unsubscribe: %v", err)
-		}
-
 	case "engine:set-port":
 		go b.handleSettingsPortRPC(msg, "")
-	case "ollama-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "ollama")
-	case "lmstudio-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "lmstudio")
-
-	case "lmstudio-proxy:get-status":
-		// Answered locally from the lmstudio-proxy handle's captured state,
-		// mirroring proxy:get-status. Zero value when none is supervised.
-		var result ProxyStatusResult
-		if p := b.getLMStudioProxy(); p != nil {
-			ready, port := p.Status(lmstudioProxyProfile.Name)
-			result.Ready = ready
-			result.Port = port
-		}
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to respond to lmstudio-proxy:get-status: %v", err)
-		}
-
-	case "lmstudio-proxy:subscribe":
-		b.proxyMu.Lock()
-		wasSubscribed := b.setEngineProxySubscribed(lmstudioProxyProfile, true)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
-			log.Printf("failed to respond to lmstudio-proxy:subscribe: %v", err)
-		}
-		if !wasSubscribed {
-			if p := b.getLMStudioProxy(); p != nil {
-				if rp := p.ReadyParams(lmstudioProxyProfile.Name); rp != nil {
-					if err := b.codec.Notify("lmstudio-proxy:ready", rp); err != nil {
-						slog.Warn("emit baseline lmstudio-proxy:ready failed", "err", err)
-					}
-				}
-			}
-		}
-
-	case "lmstudio-proxy:unsubscribe":
-		b.proxyMu.Lock()
-		b.setEngineProxySubscribed(lmstudioProxyProfile, false)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
-			log.Printf("failed to respond to lmstudio-proxy:unsubscribe: %v", err)
-		}
 
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
@@ -3364,8 +3324,8 @@ func (b *Broker) handleMessage(msg *Message) {
 	default:
 		// Any remaining method under an engine's <component>: prefix is
 		// relayed verbatim to that engine's proxy (the reserved broker-local
-		// ones — get-status and the subscription methods — are handled by
-		// their own cases above). This makes the broker a thin pass-through
+		// ones — get-status, set-port and the subscription methods — are handled by
+		// the profile-driven block above). This makes the broker a thin pass-through
 		// for each proxy's whole control plane without enumerating methods.
 		//
 		// The prefixes are the engines' ComponentName values, so this loop

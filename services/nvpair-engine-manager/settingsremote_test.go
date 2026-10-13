@@ -64,6 +64,44 @@ func settingsPin(t *testing.T, dir, id string, cert []byte) {
 	}
 }
 
+func TestNotifyPeerSettingsForwardsEverySupportedEngine(t *testing.T) {
+	emitted := []settings.Snapshot{}
+	exec := &Executor{emit: func(method string, value any) {
+		if method != "engine:settings-changed" {
+			t.Fatalf("notification method = %q, want engine:settings-changed", method)
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal notification: %v", err)
+		}
+		var snapshot settings.Snapshot
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			t.Fatalf("decode notification: %v", err)
+		}
+		emitted = append(emitted, snapshot)
+	}}
+	manager := &Manager{exec: exec}
+	manager.notifyPeerSettings("peer-node", []settings.Snapshot{
+		{NodeID: "untrusted-node", Engine: "ollama"},
+		{NodeID: "untrusted-node", Engine: "lmstudio"},
+		{NodeID: "untrusted-node", Engine: "llamacpp"},
+		{NodeID: "untrusted-node", Engine: "unsupported"},
+	})
+
+	wantEngines := []string{"ollama", "lmstudio", "llamacpp"}
+	if len(emitted) != len(wantEngines) {
+		t.Fatalf("emitted %d snapshots, want %d: %+v", len(emitted), len(wantEngines), emitted)
+	}
+	for i, wantEngine := range wantEngines {
+		if emitted[i].Engine != wantEngine {
+			t.Errorf("snapshot %d engine = %q, want %q", i, emitted[i].Engine, wantEngine)
+		}
+		if emitted[i].NodeID != "peer-node" {
+			t.Errorf("snapshot %d nodeId = %q, want peer-node", i, emitted[i].NodeID)
+		}
+	}
+}
+
 func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 	a, certA := settingsMesh(t, "a")
 	b, certB := settingsMesh(t, "b")
