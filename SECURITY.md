@@ -48,7 +48,10 @@ PAIR is a LAN-first, multi-process application:
   JSON-RPC 2.0 over the broker's standard input and output.
 - The broker supervises Go workers and relays their control-plane methods and
   notifications.
-- Discovery and selected metadata endpoints operate on the local network.
+- Discovery and selected metadata endpoints operate on the local network, or on
+  an encrypted overlay network the operator configured, such as a Tailscale
+  tailnet. Discovery itself is multicast and does not cross one; a node on the
+  far side is added by address.
 - Ollama-compatible and OpenAI-compatible local HTTP proxies carry inference
   traffic and may route a request to another paired node.
 - The cluster manager uses a six-digit PIN to bootstrap trust. Cluster-scoped
@@ -76,7 +79,7 @@ open relay for inference to anything that can route to it. Run an application on
 a node and use that node's local endpoint. Exposing an engine to the network
 directly is outside PAIR and is the operator's decision and risk.
 
-### Local Network Is a Trust-Relevant Boundary
+### The Network You Route Over Is a Trust-Relevant Boundary
 
 PAIR discovers nodes and exposes service metadata on the LAN. Some discovery
 enrichment and node-information traffic can use plain HTTP. Treat an untrusted
@@ -84,9 +87,18 @@ Wi-Fi, shared office network, compromised router, and hostile local process as
 potentially adversarial. Network segmentation and host firewall rules remain
 the operator's responsibility.
 
+Nodes joined by an encrypted overlay network such as a Tailscale tailnet, rather
+than by a local link, are the same boundary reached a different way. The overlay
+carries its own encryption and its own admission policy, and PAIR's inter-node
+traffic is certificate-pinned mutual TLS in either case; what changes is that
+everyone admitted to the overlay is on this boundary, so who may join it is the
+operator's decision. Refer to
+[Running PAIR across a Tailscale tailnet](docs/remote-networks.mdx).
+
 “Local-first” describes the intended topology. It does not prove that no data
-leaves the machine or LAN. Inference engines, model catalogs, update systems,
-applications, and user configuration may contact external services.
+leaves the machine, the LAN, or an overlay you configured. Inference engines,
+model catalogs, update systems, applications, and user configuration may contact
+external services.
 
 ### Pairing PIN Is a Bootstrap Convenience
 

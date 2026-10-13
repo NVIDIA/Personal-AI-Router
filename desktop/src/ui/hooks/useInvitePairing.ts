@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Invite } from '@/shared/types/cluster'
+import type { ManualServicePorts } from '@/shared/types/manual-node'
 import { MODULAR_INVITE_STATUS_POLL_INTERVAL_MS } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 import { formatClusterInviteError } from '@/ui/utils/cluster-invite-error'
@@ -13,8 +14,12 @@ interface InvitePairing {
     /** True while the initial `cluster:invite-node` request is in flight. */
     submitting: boolean
     error: string | null
-    /** Begin PIN pairing with a node, then poll its status until it resolves. */
-    start: (ipAddress: string) => Promise<void>
+    /**
+     * Add a node by address and begin PIN pairing with it, then poll its status
+     * until it resolves. `ports` overrides the assumed port of any single service
+     * on that host.
+     */
+    start: (address: string, ports?: ManualServicePorts) => Promise<void>
     /**
      * Cancel a still-pending outbound invite: tell the backend to tear down the
      * pairing session (invalidating the PIN so a remote user can no longer
@@ -73,12 +78,12 @@ export function useInvitePairing(): InvitePairing {
     }, [reset, stopPolling])
 
     const start = useCallback(
-        async (ipAddress: string) => {
+        async (address: string, ports?: ManualServicePorts) => {
             setSubmitting(true)
             setError(null)
             stopPolling()
             try {
-                const result = await window.pairApi.cluster.inviteNode(ipAddress)
+                const result = await window.pairApi.cluster.inviteNode(address, ports)
                 setInvite(result)
                 if (result.state === 'pending' && result.inviteId) {
                     inviteIdRef.current = result.inviteId

@@ -215,6 +215,7 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 				},
 				"",
 				nil,
+				nil,
 				now,
 			)
 			var typed NodeInfoResponse
@@ -247,7 +248,7 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 // with no "cpu" key at all, not `"cpu":null`.
 func buildResponseDecode(t *testing.T, static []GPUInfo, cpu *CPUInfo, memTotal uint64, snap statsSnapshot) (NodeInfoResponse, map[string]any) {
 	t.Helper()
-	body := buildResponse(static, cpu, memTotal, snap, "", nil)
+	body := buildResponse(static, cpu, memTotal, snap, "", nil, nil)
 	var typed NodeInfoResponse
 	if err := json.Unmarshal(body, &typed); err != nil {
 		t.Fatalf("typed decode: %v", err)

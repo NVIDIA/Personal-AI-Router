@@ -13,12 +13,15 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
+	"nvpair-shared/netpick"
+	"nvpair-shared/noderec"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -41,6 +44,18 @@ const (
 	// would defeat ack-until-reemit. A subsequent successful probe
 	// resets the counter; the next failure cycle is its own event.
 	probeFailThreshold = 3
+)
+
+// Default service ports for a manual node. A manual node is remote, so its ports
+// are assumed rather than resolved (the engine manager governs only the local
+// engine) — an entry's "ports" object overrides any of them for a host that runs
+// something somewhere else.
+const (
+	defaultOllamaPort   = 11434
+	defaultLMStudioPort = 1234
+	defaultVLLMPort     = 8000
+	defaultNodeInfoPort = 14318
+	defaultClusterPort  = 14321
 )
 
 type GPUInfo struct {
@@ -78,6 +93,26 @@ type NodeInfoResponse struct {
 	// machine if it's also discovered over mDNS. Empty when the remote
 	// predates this field or isn't a NVPAIR node-info server.
 	HostUUID string `json:"hostUuid,omitempty"`
+	// ClusterUUID is the remote's cluster principal. Tri-state on the wire and
+	// therefore a pointer here: absent means the remote does not know its own
+	// membership, present-and-empty means it belongs to no cluster, and a value is
+	// that principal. Reading absent as unclustered would have this node clear a
+	// correct annotation and dial a clustered peer's mTLS surfaces in plaintext.
+	ClusterUUID *string `json:"clusterUuid,omitempty"`
+	// Services is the remote's {service key: port} set. Its presence is what
+	// identifies the remote as a PAIR node: a bare Ollama or LM Studio host serves
+	// no /v1/node-info at all, and a PAIR node too old to report the set is
+	// treated as a bare host, which is what it can be reached as.
+	Services map[noderec.ServiceKey]int `json:"services,omitempty"`
+}
+
+// peerModels is the inventory read from a paired PAIR node's engine-manager. It
+// is the same body the node-scanner fetches for a discovered peer, so a manual
+// peer's models reach the fleet through the same shape.
+type peerModels struct {
+	Models         []string            `json:"models"`
+	ModelsByEngine map[string][]string `json:"modelsByEngine"`
+	LoadedByEngine map[string][]string `json:"loadedByEngine"`
 }
 
 // ManualEntry is the user-supplied identity of a manually added
@@ -93,6 +128,80 @@ type ManualEntry struct {
 	Name    string `json:"name"`
 	TLSPort int    `json:"tls_port,omitempty"`
 	MTLS    bool   `json:"mtls,omitempty"`
+	// Ports overrides the assumed port of any single service on this host. It
+	// exists because the defaults are assumptions about a machine this process
+	// cannot introspect: a peer may run its engine on a second port, a whole PAIR
+	// node may be reachable on a forwarded range, and two nodes may share one
+	// loopback in a test. A zero or absent field keeps that service's default, so
+	// an entry overrides only what it means to.
+	Ports *ManualPorts `json:"ports,omitempty"`
+}
+
+// ManualPorts is the per-service port override set for one manual entry. Field
+// names follow the service names manual-nodes already uses rather than the
+// compact mDNS TXT keys, because this is what an operator types.
+//
+// VLLM is carried and persisted but not probed here yet; it is in the set so an
+// entry written today keeps its meaning when the vLLM leg lands.
+type ManualPorts struct {
+	NodeInfo int `json:"node_info,omitempty"`
+	Cluster  int `json:"cluster,omitempty"`
+	Ollama   int `json:"ollama,omitempty"`
+	LMStudio int `json:"lmstudio,omitempty"`
+	VLLM     int `json:"vllm,omitempty"`
+}
+
+// resolved returns this entry's ports with every unset field filled from the
+// default for that service, so probe code reads one value per service and never
+// repeats the defaulting rule.
+func (e ManualEntry) resolved() ManualPorts {
+	p := ManualPorts{}
+	if e.Ports != nil {
+		p = *e.Ports
+	}
+	p.NodeInfo = portOr(p.NodeInfo, defaultNodeInfoPort)
+	p.Cluster = portOr(p.Cluster, defaultClusterPort)
+	p.Ollama = portOr(p.Ollama, defaultOllamaPort)
+	p.LMStudio = portOr(p.LMStudio, defaultLMStudioPort)
+	p.VLLM = portOr(p.VLLM, defaultVLLMPort)
+	return p
+}
+
+func portOr(override, fallback int) int {
+	if override > 0 {
+		return override
+	}
+	return fallback
+}
+
+// validateManualAddress rejects what cannot work as a manual address, with the
+// reason rather than a silent permanently-down entry.
+//
+// A "host:port" string is the common mistake: every probe appends its own
+// service port to this value, so such an entry dials host:port:port and reads
+// down forever. Per-service ports belong in "ports". Bare IPv6 literals are
+// accepted in both plain and bracketed form; net.JoinHostPort re-brackets on the
+// way out.
+func validateManualAddress(addr string) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", fmt.Errorf("address is required")
+	}
+	if unbracketed, ok := strings.CutPrefix(addr, "["); ok {
+		if inner, closed := strings.CutSuffix(unbracketed, "]"); closed {
+			addr = inner
+		}
+	}
+	if net.ParseIP(addr) != nil {
+		return addr, nil
+	}
+	if host, port, err := net.SplitHostPort(addr); err == nil && host != "" && port != "" {
+		return "", fmt.Errorf("address %q carries a port; give the host on its own (%q) and put per-service ports in \"ports\" — a service port is appended to this value, so a host:port entry can never be reached", addr, host)
+	}
+	if !netpick.Hostname(addr) {
+		return "", fmt.Errorf("address %q is neither an IP address nor a host name", addr)
+	}
+	return addr, nil
 }
 
 // ManualNodeStatus mirrors a manual entry plus the latest probe
@@ -128,6 +237,29 @@ type ManualNodeStatus struct {
 	// manual node carries the same permanent identity the rest of the system
 	// keys on. Empty when node-info didn't report one.
 	HostUUID string `json:"hostUuid,omitempty"`
+	// Ports echoes the entry's port overrides so a caller can render what it
+	// configured without holding its own copy.
+	Ports *ManualPorts `json:"ports,omitempty"`
+	// PairNode is true when node-info answered AND reported a service map — the
+	// remote is a PAIR node, not a bare inference host. It is the switch between
+	// the two kinds of manual node: a PAIR node is folded into the directory as a
+	// peer and reached through its proxies over cluster mTLS, and a bare host is
+	// bridged into the local proxies by its raw engine ports. The engine fields
+	// below stay zero for a PAIR node, because its 11434 / 1234 are proxy facades
+	// that refuse plaintext from anything but loopback.
+	PairNode bool `json:"pair_node"`
+	// ClusterUUID is the remote's cluster principal, carried through with its
+	// three states intact (see NodeInfoResponse.ClusterUUID). A consumer keys the
+	// peer's certificate pin on it.
+	ClusterUUID *string `json:"cluster_uuid,omitempty"`
+	// Services is the remote's {service key: port} set, verbatim from node-info.
+	Services map[noderec.ServiceKey]int `json:"services,omitempty"`
+	// Models / ModelsByEngine / LoadedByEngine are a paired PAIR node's inventory,
+	// read from its engine manager over cluster mTLS. Empty until this node holds
+	// a pin for the peer: model names are not served to a stranger.
+	Models         []string            `json:"models,omitempty"`
+	ModelsByEngine map[string][]string `json:"models_by_engine,omitempty"`
+	LoadedByEngine map[string][]string `json:"loaded_by_engine,omitempty"`
 }
 
 type ReadyParams struct {
@@ -247,59 +379,102 @@ func (m *Manager) probeAll(ctx context.Context) {
 	}
 }
 
+// lastProbe returns a node's previous status and consecutive-failure count, and
+// whether it is still tracked at all (it can be removed mid-probe).
+func (m *Manager) lastProbe(id string) (ManualNodeStatus, int, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tn, ok := m.nodes[id]
+	if !ok {
+		return ManualNodeStatus{}, 0, false
+	}
+	return tn.status, tn.consecutiveFails, true
+}
+
 func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
+	ports := entry.resolved()
 
-	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
-	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
+	// node-info is asked FIRST, because its answer decides what kind of node this
+	// is and therefore what else may be probed at all.
+	//
+	// A PAIR node's 11434 and 1234 are its proxy facades, not its engines: the
+	// engines bind loopback and the facades refuse plaintext from anything but
+	// loopback. Probing them would 403 every cycle and report a healthy peer as
+	// having no engines, so a node that identifies itself as PAIR is never probed
+	// there. Its engines are read from its engine manager instead, and it is
+	// routed to through those same facades over cluster mTLS.
+	nodeInfoUp, info := m.probeNodeInfo(entry, ports)
 
-	// Pick scheme + port + client based on the entry's TLS hint.
-	// The operator decides which scheme this manual node uses; we
-	// don't probe both. TLSPort > 0 means HTTPS on that port via
-	// the TLS client (which carries the operator's client cert,
-	// if configured). Otherwise it's plain HTTP on the historical
-	// 14318.
-	scheme := "http"
-	nodeInfoPort := 14318
-	probeClient := m.client
-	if entry.TLSPort > 0 {
-		scheme = "https"
-		nodeInfoPort = entry.TLSPort
-		probeClient = m.tlsClient
-		// Clustered: a TLS manual node is a cluster peer whose node-info is
-		// pin-gated mTLS with no plaintext listener. Dial it with our cluster
-		// leaf, accepting any currently-pinned server cert (a manual node has no
-		// cluster-uuid= TXT to key a specific pin on). Refresh first so a cluster
-		// joined, or a peer paired, after startup is seen; falls back to the BYO
-		// tlsClient while unclustered.
-		m.mesh.Refresh()
-		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
-			probeClient = &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
-		}
+	// What this node was on the previous cycle, read before anything else runs:
+	// the sticky decision below has to be made before the engine legs, not after.
+	last, lastFails, tracked := m.lastProbe(id)
+	if !tracked {
+		return
 	}
-	nodeInfoUp, info := m.probeNodeInfo(probeClient, scheme, addr, nodeInfoPort)
+
+	// A single missed node-info answer must not turn a peer back into a stranger.
+	// Three seconds is a routine gap across an overlay network — a relayed path, a
+	// wake from sleep, a peer under load — and without hysteresis that gap would
+	// probe the peer's proxy facades in plaintext, blank its service map and
+	// withdraw it from every consumer, only to restore it 10 seconds later.
+	// Discovery tolerates three consecutive misses before evicting an mDNS node;
+	// this is the same tolerance, bounded by the same counter, so a node that
+	// genuinely stops being a PAIR node still reverts within one failure episode.
+	pairNode := nodeInfoUp && len(info.Services) > 0
+	sticky := !pairNode && last.PairNode && lastFails < probeFailThreshold
+	if sticky {
+		pairNode = true
+	}
 
 	newStatus := ManualNodeStatus{
 		ID:             id,
 		Name:           entry.Name,
 		Address:        addr,
-		OllamaUp:       ollamaUp,
-		OllamaPort:     11434,
-		OllamaModels:   ollamaModels,
-		LMStudioUp:     lmStudioUp,
-		LMStudioPort:   lmStudioPort,
-		LMStudioModels: lmStudioModels,
+		OllamaPort:     ports.Ollama,
+		LMStudioPort:   ports.LMStudio,
 		NodeInfoUp:     nodeInfoUp,
-		NodeInfoPort:   nodeInfoPort,
+		NodeInfoPort:   m.nodeInfoProbePort(entry, ports),
 		TLSEnabled:     entry.TLSPort > 0,
 		MTLSRequired:   entry.TLSPort > 0 && entry.MTLS,
+		Ports:          entry.Ports,
+		PairNode:       pairNode,
+		ClusterUUID:    info.ClusterUUID,
+		Services:       info.Services,
 		GPUs:           info.GPUs,
 		CPU:            info.CPU,
 		Memory:         info.Memory,
 		TelemetryValid: info.TelemetryValid,
 		MSSince:        info.MSSince,
 		HostUUID:       info.HostUUID,
+	}
+
+	if sticky {
+		// Carry the peer's identity forward across the gap, exactly as HostUUID is
+		// carried below: what a consumer holds must not oscillate because one
+		// probe timed out. NodeInfoUp stays false, so the node still reads as
+		// unreachable and the failure counter still runs.
+		newStatus.ClusterUUID = last.ClusterUUID
+		newStatus.Services = last.Services
+		newStatus.Models = last.Models
+		newStatus.ModelsByEngine = last.ModelsByEngine
+		newStatus.LoadedByEngine = last.LoadedByEngine
+		newStatus.GPUs = last.GPUs
+		newStatus.CPU = last.CPU
+		newStatus.Memory = last.Memory
+	} else if pairNode {
+		models := m.fetchPeerModels(addr, info)
+		newStatus.Models = models.Models
+		newStatus.ModelsByEngine = models.ModelsByEngine
+		newStatus.LoadedByEngine = models.LoadedByEngine
+	} else {
+		// A bare inference host: the engines themselves are on these ports, in
+		// plaintext, which is what manual nodes were originally for.
+		for _, leg := range m.engineLegs(ports) {
+			up, models := leg.probe(addr, leg.port)
+			leg.apply(&newStatus, up, models)
+		}
 	}
 
 	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
@@ -333,6 +508,12 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		prev.LMStudioUp != newStatus.LMStudioUp ||
 		prev.NodeInfoUp != newStatus.NodeInfoUp ||
 		prev.HostUUID != newStatus.HostUUID ||
+		prev.PairNode != newStatus.PairNode ||
+		!clusterUUIDEqual(prev.ClusterUUID, newStatus.ClusterUUID) ||
+		!servicesEqual(prev.Services, newStatus.Services) ||
+		!sliceEqual(prev.Models, newStatus.Models) ||
+		!byEngineEqual(prev.ModelsByEngine, newStatus.ModelsByEngine) ||
+		!byEngineEqual(prev.LoadedByEngine, newStatus.LoadedByEngine) ||
 		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
 		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
@@ -397,11 +578,36 @@ func probeFailedID(nodeID string) string {
 	return "manual-nodes:probe-failed:" + nodeID
 }
 
-// lmStudioPort is LM Studio's default OpenAI-API server port, probed the same
-// way Ollama is hardcoded to 11434. A manual node is remote, so (like Ollama)
-// we assume the engine's default port rather than resolving it via the engine
-// manager (which only governs the local engine).
-const lmStudioPort = 1234
+// engineLeg is one plain-HTTP inference-engine probe against a bare host. The
+// legs are a table rather than a sequence of calls so adding an engine is one
+// entry: its port, how it is probed, and where its result lands on the status.
+type engineLeg struct {
+	name  string
+	port  int
+	probe func(addr string, port int) (bool, []string)
+	apply func(s *ManualNodeStatus, up bool, models []string)
+}
+
+func (m *Manager) engineLegs(ports ManualPorts) []engineLeg {
+	return []engineLeg{
+		{
+			name:  "ollama",
+			port:  ports.Ollama,
+			probe: m.probeOllama,
+			apply: func(s *ManualNodeStatus, up bool, models []string) {
+				s.OllamaUp, s.OllamaModels = up, models
+			},
+		},
+		{
+			name:  "lmstudio",
+			port:  ports.LMStudio,
+			probe: m.probeLMStudio,
+			apply: func(s *ManualNodeStatus, up bool, models []string) {
+				s.LMStudioUp, s.LMStudioModels = up, models
+			},
+		},
+	}
+}
 
 // probeLMStudio checks LM Studio's OpenAI-compatible server on addr:port. A
 // single GET /v1/models doubles as the liveness check and the model list (the
@@ -496,7 +702,83 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 	return names
 }
 
-func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port int) (bool, NodeInfoResponse) {
+// nodeInfoProbePort is the port node-info is actually reached on: the entry's
+// tls_port when one is set (it names an HTTPS listener, so it also names the
+// port), otherwise the resolved plain node-info port.
+func (m *Manager) nodeInfoProbePort(entry ManualEntry, ports ManualPorts) int {
+	if entry.TLSPort > 0 {
+		return entry.TLSPort
+	}
+	return ports.NodeInfo
+}
+
+// nodeInfoClient picks the scheme, port and transport for the node-info probe.
+// The operator decides which scheme a manual node uses; we do not probe both.
+// tls_port > 0 means HTTPS on that port via the TLS client (carrying the
+// operator's client cert, if configured), or over cluster mTLS while this node is
+// a cluster member — a clustered peer running node-info standalone serves its
+// inventory only to pinned peers. Otherwise it is plain HTTP on the resolved
+// node-info port, which is what a peer under the broker serves: node-info is the
+// one inter-node surface deliberately left readable by any peer.
+func (m *Manager) nodeInfoClient(entry ManualEntry, ports ManualPorts) (*http.Client, string, int) {
+	if entry.TLSPort == 0 {
+		return m.client, "http", ports.NodeInfo
+	}
+	// Refresh first so a cluster joined, or a peer paired, after startup is seen;
+	// falls back to the BYO tlsClient while unclustered.
+	m.mesh.Refresh()
+	if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
+		return &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}, "https", entry.TLSPort
+	}
+	return m.tlsClient, "https", entry.TLSPort
+}
+
+// fetchPeerModels reads a paired PAIR node's model inventory from its engine
+// manager, the same body the node-scanner fetches for a discovered peer.
+//
+// It is pinned mTLS or nothing: engine-manager's LAN surface serves plaintext
+// only over loopback, and a peer we hold no pin for is a stranger. An empty
+// result is therefore the correct answer before pairing, not a failure — the node
+// still appears with its hardware, and its models arrive once it is paired.
+func (m *Manager) fetchPeerModels(addr string, info NodeInfoResponse) peerModels {
+	port, ok := info.Services[noderec.ServiceEngineManager]
+	if !ok || port <= 0 {
+		return peerModels{}
+	}
+	if info.ClusterUUID == nil || *info.ClusterUUID == "" {
+		slog.Debug("manual peer model fetch skipped: peer reports no cluster principal", "addr", addr)
+		return peerModels{}
+	}
+	m.mesh.Refresh()
+	cfg, ok := m.mesh.ClientTLSConfig(*info.ClusterUUID)
+	if !ok {
+		slog.Debug("manual peer model fetch skipped: no pin held for peer", "addr", addr)
+		return peerModels{}
+	}
+	client := &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
+	url := "https://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
+	resp, err := client.Get(url)
+	if err != nil {
+		slog.Debug("manual peer model fetch failed", "addr", addr, "port", port, "err", err)
+		return peerModels{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("manual peer model fetch non-OK", "addr", addr, "port", port, "status", resp.StatusCode)
+		return peerModels{}
+	}
+	var models peerModels
+	if err := json.NewDecoder(resp.Body).Decode(&models); err != nil {
+		slog.Debug("manual peer model fetch decode failed", "addr", addr, "port", port, "err", err)
+		return peerModels{}
+	}
+	slog.Debug("manual peer models fetched", "addr", addr, "port", port, "models", len(models.Models))
+	return models
+}
+
+func (m *Manager) probeNodeInfo(entry ManualEntry, ports ManualPorts) (bool, NodeInfoResponse) {
+	client, scheme, port := m.nodeInfoClient(entry, ports)
+	addr := entry.Address
 	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/node-info"
 	start := time.Now()
 	resp, err := client.Get(url)
@@ -531,18 +813,17 @@ func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port i
 func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 	id := nodeID(entry)
 
-	nodeInfoPort := 14318
-	if entry.TLSPort > 0 {
-		nodeInfoPort = entry.TLSPort
-	}
+	ports := entry.resolved()
 	status := ManualNodeStatus{
 		ID:           id,
 		Name:         entry.Name,
 		Address:      entry.Address,
-		OllamaPort:   11434,
-		NodeInfoPort: nodeInfoPort,
+		OllamaPort:   ports.Ollama,
+		LMStudioPort: ports.LMStudio,
+		NodeInfoPort: m.nodeInfoProbePort(entry, ports),
 		TLSEnabled:   entry.TLSPort > 0,
 		MTLSRequired: entry.TLSPort > 0 && entry.MTLS,
+		Ports:        entry.Ports,
 	}
 
 	m.mu.Lock()
@@ -648,10 +929,12 @@ func (m *Manager) handleMessage(msg *Message) {
 			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"address\": \"...\"}")
 			return
 		}
-		if entry.Address == "" {
-			m.codec.RespondError(msg.ID, -32602, "address is required")
+		address, err := validateManualAddress(entry.Address)
+		if err != nil {
+			m.codec.RespondError(msg.ID, -32602, err.Error())
 			return
 		}
+		entry.Address = address
 		status := m.addNode(entry)
 		if err := m.codec.Respond(msg.ID, status); err != nil {
 			log.Printf("failed to respond to node/add: %v", err)
@@ -699,6 +982,41 @@ func nodeID(entry ManualEntry) string {
 		return entry.Name
 	}
 	return "manual:" + entry.Address
+}
+
+// clusterUUIDEqual compares the tri-state principal by value, so a peer that
+// went from "unknown" to "unclustered" reports as changed rather than as the same
+// empty string.
+func clusterUUIDEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func servicesEqual(a, b map[noderec.ServiceKey]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func byEngineEqual(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		other, ok := b[k]
+		if !ok || !sliceEqual(v, other) {
+			return false
+		}
+	}
+	return true
 }
 
 func sliceEqual(a, b []string) bool {

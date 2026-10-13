@@ -54,7 +54,10 @@ func TestRankRemote_PrivateBeatsPublic(t *testing.T) {
 }
 
 func TestRankRemote_DropsUnparseableAndStableTie(t *testing.T) {
-	got := RankRemote([]string{"not-an-ip", "192.168.0.9", "192.168.0.3", ""})
+	// "not an ip" holds a space and "gpu:11434" a colon; neither is a legal DNS
+	// name, so neither survives. A bare "not-an-ip" WOULD survive — it is a valid
+	// single-label name — which is the point of the hostname admission.
+	got := RankRemote([]string{"not an ip", "gpu:11434", "192.168.0.9", "192.168.0.3", ""})
 	want := []string{"192.168.0.3", "192.168.0.9"} // equal score -> string order, junk dropped
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("RankRemote = %v, want %v", got, want)
@@ -70,7 +73,7 @@ func TestPrimary_TXTWins(t *testing.T) {
 }
 
 func TestPrimary_InvalidTXTFallsBackToRanked(t *testing.T) {
-	if got := Primary([]string{"ip=garbage", "other=x"}, []string{"10.0.0.1", "192.168.1.5"}); got != "10.0.0.1" {
+	if got := Primary([]string{"ip=not a name", "other=x"}, []string{"10.0.0.1", "192.168.1.5"}); got != "10.0.0.1" {
 		t.Fatalf("Primary fallback = %q, want the top-ranked advertised address", got)
 	}
 }
@@ -79,7 +82,7 @@ func TestPrimary_Empty(t *testing.T) {
 	if got := Primary(nil, nil); got != "" {
 		t.Fatalf("Primary(nil,nil) = %q, want empty", got)
 	}
-	if got := Primary(nil, []string{"junk"}); got != "" {
+	if got := Primary(nil, []string{"not a name"}); got != "" {
 		t.Fatalf("Primary with only junk = %q, want empty", got)
 	}
 }
@@ -94,7 +97,7 @@ func TestIPFromTXT(t *testing.T) {
 }
 
 func TestIPsFromTXT(t *testing.T) {
-	got := IPsFromTXT([]string{"uuid=abc", "ips=10.172.54.70,192.168.240.2, 192.168.240.6 ,junk"})
+	got := IPsFromTXT([]string{"uuid=abc", "ips=10.172.54.70,192.168.240.2, 192.168.240.6 ,not a name"})
 	want := []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"}
 	if len(got) != len(want) {
 		t.Fatalf("IPsFromTXT = %v, want %v (junk dropped, whitespace trimmed)", got, want)
@@ -518,5 +521,89 @@ func TestRouteSourceIP_Smoke(t *testing.T) {
 	ip := net.ParseIP(got)
 	if ip == nil || ip.To4() == nil || ip.IsLoopback() {
 		t.Fatalf("routeSourceIP = %q, want empty or a non-loopback IPv4", got)
+	}
+}
+
+// --- Overlay networks: a peer reachable only over an encrypted overlay ---
+//
+// A Tailscale tailnet carries no multicast, so such a peer is never discovered;
+// it is added by address. Its addresses are a 100.64/10 CGNAT literal, an IPv6
+// ULA out of fd7a:115c:a1e0::/48, or a MagicDNS name. Each of those is demoted
+// by scoreIP relative to a LAN literal — deliberately, because a LAN peer's own
+// literal is the better answer when both exist — but a node whose ONLY address
+// is one of them must still be dialable. Demotion, never exclusion.
+
+func TestCandidates_CGNATOnlyNodeIsDialable(t *testing.T) {
+	got := Candidates([]string{"ip=100.101.102.103"}, []string{"100.101.102.103"})
+	if len(got) != 1 || got[0] != "100.101.102.103" {
+		t.Fatalf("Candidates for a CGNAT-only node = %v, want [100.101.102.103]", got)
+	}
+	if Primary([]string{"ip=100.101.102.103"}, nil) != "100.101.102.103" {
+		t.Fatal("Primary must answer a CGNAT-only node's single address")
+	}
+}
+
+func TestCandidates_IPv6ULAOnlyNodeIsDialable(t *testing.T) {
+	const ula = "fd7a:115c:a1e0::1701:b2c3" // Tailscale's IPv6 ULA prefix
+	got := Candidates([]string{"ip=" + ula}, []string{ula})
+	if len(got) != 1 || got[0] != ula {
+		t.Fatalf("Candidates for a ULA-only node = %v, want [%s]", got, ula)
+	}
+}
+
+func TestCandidates_HostnameOnlyNodeIsDialable(t *testing.T) {
+	const magicDNS = "gpu-box.tail1234.ts.net"
+	got := Candidates(nil, []string{magicDNS})
+	if len(got) != 1 || got[0] != magicDNS {
+		t.Fatalf("Candidates for a MagicDNS-only node = %v, want [%s]", got, magicDNS)
+	}
+	if Primary([]string{"ip=" + magicDNS}, nil) != magicDNS {
+		t.Fatal("Primary must answer a node whose canonical address is a DNS name")
+	}
+}
+
+func TestRankRemote_LANLiteralStillOutranksOverlayAddresses(t *testing.T) {
+	got := RankRemote([]string{"gpu-box.tail1234.ts.net", "100.101.102.103", "192.168.1.10"})
+	if len(got) != 3 || got[0] != "192.168.1.10" {
+		t.Fatalf("RankRemote = %v, want the LAN literal first", got)
+	}
+	// A name outranks a CGNAT literal: it re-resolves, so it survives the
+	// renumbering that strands the literal.
+	if got[1] != "gpu-box.tail1234.ts.net" || got[2] != "100.101.102.103" {
+		t.Fatalf("RankRemote = %v, want the name ahead of the CGNAT literal", got)
+	}
+}
+
+func TestHostname(t *testing.T) {
+	valid := []string{
+		"gpu-box.tail1234.ts.net",
+		"gpu-box",
+		"node.local",
+		"node.local.", // one trailing root dot is canonical
+		"a1-b2.example.com",
+	}
+	for _, h := range valid {
+		if !Hostname(h) {
+			t.Errorf("Hostname(%q) = false, want true", h)
+		}
+	}
+	invalid := []string{
+		"",
+		"192.168.1.1",                   // an IP literal is not a name
+		"fd7a:115c:a1e0::1",             // nor is an IPv6 literal
+		"gpu-box.tail1234.ts.net:14318", // a colon: ports are appended by the caller
+		"gpu box",                       // space
+		"-lead.example",                 // leading hyphen in a label
+		"trail-.example",                // trailing hyphen in a label
+		"a..b",                          // empty label
+		"under_score.example",           // underscore
+		".",                             // root alone
+		strings.Repeat("a", 64),         // label over 63 bytes
+		strings.Repeat("a.", 200),       // name over 253 bytes
+	}
+	for _, h := range invalid {
+		if Hostname(h) {
+			t.Errorf("Hostname(%q) = true, want false", h)
+		}
 	}
 }

@@ -99,6 +99,18 @@ type NodeInfoResponse struct {
 	// evidence would have a peer clear a correct annotation and offer an invite
 	// its target will reject.
 	ClusterUUID *string `json:"clusterUuid,omitempty"`
+	// Services is this node's {service key: port} set — node-info, both proxies,
+	// engine manager, engine control, errors, workloads, cluster manager — the
+	// same set the node-scanner carries on this host's mDNS record.
+	//
+	// It is here because that record is the only other place it exists, and
+	// multicast does not cross a routed or overlay network. A peer that reached
+	// this node by a typed address (a Tailscale MagicDNS name, say) can read this
+	// and learn that the node is a PAIR node and where each of its services
+	// listens, which is everything a discovered peer knows. Absent means the
+	// parent has not pushed the set yet, or that this is not a PAIR node at all —
+	// a bare inference host answers no /v1/node-info.
+	Services map[noderec.ServiceKey]int `json:"services,omitempty"`
 }
 
 // clusterIdentity is the cluster principal this node reports, kept current by
@@ -147,6 +159,61 @@ func handleClusterIdentity(msg applog.StdinMessage, identity *clusterIdentity) {
 	slog.Info("cluster identity updated", "clustered", params.ClusterUUID != "")
 }
 
+// serviceMap is this node's {service key: port} set, kept current by the parent
+// broker over stdin (noderec.MethodSetServices). node-info cannot derive it: the
+// ports belong to sibling processes the broker owns and re-assigns. Guarded
+// because the stdin reader and every HTTP handler touch it.
+type serviceMap struct {
+	mu       sync.RWMutex
+	services map[noderec.ServiceKey]int
+}
+
+// set replaces the whole set. The broker always sends it complete, so a service
+// that stopped is expressed by its key being absent — merging would leave a
+// departed service advertised forever.
+func (s *serviceMap) set(services map[noderec.ServiceKey]int) {
+	next := make(map[noderec.ServiceKey]int, len(services))
+	for k, port := range services {
+		if k != "" && port > 0 {
+			next[k] = port
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.services = next
+}
+
+// get returns a copy, or nil when nothing has been pushed. A copy because the
+// value is marshaled outside the lock on every request.
+func (s *serviceMap) get() map[noderec.ServiceKey]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.services) == 0 {
+		return nil
+	}
+	out := make(map[noderec.ServiceKey]int, len(s.services))
+	for k, v := range s.services {
+		out[k] = v
+	}
+	return out
+}
+
+// handleSetServices applies a MethodSetServices notification. Like the cluster
+// identity push, a malformed payload is dropped rather than latching a wrong
+// set: the broker re-pushes on every change, so the next one corrects us.
+func handleSetServices(msg applog.StdinMessage, services *serviceMap) {
+	if msg.Method != noderec.MethodSetServices {
+		return
+	}
+	var params noderec.ServicesParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		slog.Warn("ignoring malformed service map push", "err", err)
+		return
+	}
+	services.set(params.Services)
+	slog.Info("service map updated", "services", len(params.Services))
+}
+
 // detectGPUs lives in gpu_windows.go (DXGI), gpu_linux.go (nvidia-smi with a
 // ghw fallback), gpu_darwin.go (IORegistry), and gpu_other.go (ghw fallback).
 // detectCPU lives in cpu_detect.go; memory detection is split so macOS can use
@@ -169,11 +236,11 @@ func handleClusterIdentity(msg applog.StdinMessage, identity *clusterIdentity) {
 // cpuStatic is nil when static CPU introspection failed; memTotal is zero when
 // physical-memory introspection failed. Both conditions omit their respective
 // top-level object from the JSON entirely.
-func buildResponse(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string) []byte {
-	return buildResponseAt(gpus, cpuStatic, memTotal, snap, hostUUID, clusterUUID, time.Now())
+func buildResponse(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, services map[noderec.ServiceKey]int) []byte {
+	return buildResponseAt(gpus, cpuStatic, memTotal, snap, hostUUID, clusterUUID, services, time.Now())
 }
 
-func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, now time.Time) []byte {
+func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, services map[noderec.ServiceKey]int, now time.Time) []byte {
 	outGPUs := mergeGPUInventory(gpus, snap.GPUInventory)
 	for i := range outGPUs {
 		gpu := &outGPUs[i]
@@ -195,6 +262,7 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 		MSSince:        msSince,
 		HostUUID:       hostUUID,
 		ClusterUUID:    clusterUUID,
+		Services:       services,
 	}
 	if cpuStatic != nil {
 		cpu := *cpuStatic
@@ -392,6 +460,7 @@ func main() {
 	// push the answer is genuinely unknown and the field is omitted. The two
 	// sources are mutually exclusive by construction.
 	identity := &clusterIdentity{}
+	services := &serviceMap{}
 	clusterPrincipal := func() *string {
 		if !clusterGated {
 			uuid, told := identity.get()
@@ -409,7 +478,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func() []byte {
-		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal())
+		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal(), services.get())
 	}))
 
 	// Listener layout (set up below depending on flags). Exactly one of the two
@@ -549,6 +618,7 @@ func main() {
 
 	go applog.StdinRPC(notifier, func(msg applog.StdinMessage) {
 		handleClusterIdentity(msg, identity)
+		handleSetServices(msg, services)
 	}, func() {
 		log.Print("stdin closed, shutting down")
 		cancel()

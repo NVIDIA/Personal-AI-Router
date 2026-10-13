@@ -9,6 +9,7 @@ import type {
     ClusterNode,
     Invite
 } from '@/shared/types/cluster'
+import type { ManualServicePorts } from '@/shared/types/manual-node'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
@@ -51,7 +52,7 @@ export interface IClusterApi {
     /** Fetch cluster bootstrap state: identity, settings, and membership. */
     getInitial(): Promise<ClusterInitialSnapshot>
     /** Start PIN pairing with a remote node; the returned invite carries the PIN to display. */
-    inviteNode(ipAddress: string): Promise<Invite>
+    inviteNode(ipAddress: string, ports?: ManualServicePorts): Promise<Invite>
     /** Poll the state of an outbound pairing session. */
     inviteStatus(inviteId: string): Promise<Invite>
     /** Respond to an inbound invite: accept with the PIN from the inviter, or decline. */
@@ -152,7 +153,8 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
         },
         cluster: {
             getInitial: () => transport.invoke('cluster:get-initial'),
-            inviteNode: ipAddress => transport.invoke('cluster:invite-node', { ipAddress }),
+            inviteNode: (ipAddress, ports) =>
+                transport.invoke('cluster:invite-node', { ipAddress, ports }),
             inviteStatus: inviteId => transport.invoke('cluster:invite-status', { inviteId }),
             respondToInvite: (inviteId, accept, pin) =>
                 transport.invoke('cluster:respond-to-invite', { inviteId, accept, pin }),

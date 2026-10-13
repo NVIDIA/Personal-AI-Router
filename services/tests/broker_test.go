@@ -41,9 +41,12 @@ import (
 type availableNode struct {
 	ID             string              `json:"id"`
 	Name           string              `json:"name"`
+	HostUUID       string              `json:"hostUuid"`
 	IPAddress      string              `json:"ipAddress"`
 	Port           int                 `json:"port"`
 	LastSeen       int64               `json:"lastSeen"`
+	Trusted        bool                `json:"trusted"`
+	Clustered      bool                `json:"clustered"`
 	Models         []string            `json:"models,omitempty"`
 	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
