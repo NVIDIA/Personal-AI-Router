@@ -89,8 +89,7 @@ flowchart LR
 ```
 
 Between paired machines, PAIR encrypts both the request out and the reply in, so
-the whole round trip stays protected rather than the outbound half alone. A node
-you add manually without pairing it may be reached over plaintext HTTP. Your
+the whole round trip stays protected rather than the outbound half alone. Your
 application sees an ordinary reply and never learns which machine served it,
 though you can see that yourself.
 
@@ -122,8 +121,7 @@ Discovery is deliberately not a trust decision. Every machine on the network is
 visible. Pairing is the trust decision, and it is explicit and mutual. It
 requires an invitation and a PIN that a person enters. After pairing,
 node-to-node traffic runs over mutual TLS restricted to nodes in the cluster,
-and the cluster refuses a machine that is not a member. The exception is a node
-you add manually without pairing: PAIR may reach it over plaintext HTTP.
+and the cluster refuses a machine that is not a member.
 
 The PIN is a short convenience code for bootstrapping that exchange, not a strong
 authenticator, so pair only over networks and with machines you trust. Local
@@ -144,9 +142,8 @@ PAIR provides these capabilities:
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between paired machines: a request sent to a paired node
   travels over mutual TLS restricted to the nodes you have paired, and the cluster
-  refuses a machine that is not a member. A manually added node that is not
-  paired may be reached over plaintext HTTP. Local applications reach the proxy
-  over loopback.
+  refuses a machine that is not a member. Local applications reach the proxy over
+  loopback.
 - A desktop application, plus a terminal interface for headless machines, driving
   the same services.
 - Visibility into nodes, engines, models, workloads, and service errors.
