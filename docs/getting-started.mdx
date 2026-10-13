@@ -113,14 +113,15 @@ available for your platform.
 
 The first start takes a little longer than later ones, because PAIR is starting
 its background services for the first time. If **Overview** is still showing
-**Loading...** after a minute or two, something did not come up. Refer to
+**Starting service...** or **Fetching nodes** after a minute or two, something
+did not come up. Refer to
 [PAIR Does Not Become Ready](troubleshooting.mdx#pair-does-not-become-ready).
 
 You can revisit engine settings later by selecting a node in **Overview**.
 PAIR's first-run window also points to **Settings > Cluster**, where systems can
 be paired at any time.
 
-![PAIR's Overview showing one node card for this machine, with its engine running.](assets/onboarding/getting-started/02-overview-single-node.png)
+![PAIR's Overview showing one node card for this machine, with Ollama, LM Studio, and llama.cpp running.](assets/onboarding/getting-started/02-overview-single-node.png)
 
 ## 3. Form a Cluster by Pairing Systems
 
@@ -159,7 +160,7 @@ For each node that should serve a model:
 4. Download a model and wait for the operation to complete.
 5. Load the model when the engine requires an explicit load step.
 
-![A node card with Engine settings expanded, showing the engine's install state, its start switch, and its port.](assets/onboarding/getting-started/06-engine-settings.png)
+![A node card with Engine settings expanded, showing Ollama's start switch and its downloaded models above the Add model button.](assets/onboarding/getting-started/06-engine-settings.png)
 
 ![An engine's model list on the node card, with one model pulling and its progress shown.](assets/onboarding/getting-started/07-add-model.png)
 
@@ -331,7 +332,7 @@ manually if you run a restrictive firewall.
 | Port | Purpose |
 | --- | --- |
 | `5353/udp` | Discovery of other nodes on the local network (mDNS) |
-| `14318` | Node hardware and model inventory |
+| `14318` | Node hardware and telemetry |
 | `14319` | Service-error synchronization |
 | `14320` | Workload propagation |
 | `14321` | Pairing and cluster membership |
@@ -343,21 +344,22 @@ manually if you run a restrictive firewall.
 Both the proxy port and the engine port are editable in PAIR:
 
 1. Open **Overview** and expand **Engine settings** on the node's card.
-2. Expand **Ports** under the engine you want to change.
-3. Edit **Proxy**, **Server**, or both, then select **Apply ports**.
+2. Expand **Settings** under the engine you want to change.
+3. Edit **Server port**, **Proxy port**, or both, then select **Apply**.
 
-![The Ports fields under Engine settings, showing the Proxy and Server ports and the Apply ports action.](assets/onboarding/getting-started/10-engine-ports.png)
+![Ollama's Settings section under Engine settings, showing the Server port, Proxy port, and Engine arguments fields with the Refresh and Apply buttons.](assets/onboarding/getting-started/10-engine-ports.png)
 
 PAIR applies the change as one operation, so you do not have to update the two
 fields in a particular order, even when you are swapping their values. The new
 ports are remembered and restored the next time PAIR starts.
 
-Ports are editable on the machine you are using. On a node's card viewed from
-another system the values are shown read-only, so change a node's ports from that
-node.
+You can also change a paired node's ports from another system in the cluster, as
+long as that node is online and running a version of PAIR that supports it. For
+engine arguments, validation, and when an engine restarts, refer to
+[Engine Settings](engine-settings.mdx).
 
-If something PAIR does not manage is already using a port you want, you have two
-options, and **Settings > Service** reports the conflict either way:
+If something PAIR does not manage is already using a port you want, PAIR shows a
+**Warning** dialog describing the conflict, and you have two options:
 
 - Move PAIR to a different port using the steps above. This is usually the easier
   choice, and nothing else on the machine has to change.
@@ -408,9 +410,9 @@ official installer: `~/.lmstudio/bin/lms`, or
 **Set the port explicitly for Ollama.** Set `OLLAMA_HOST` to the engine's own
 port. Otherwise, the CLI connects to `11434`, which is PAIR's proxy, and
 `ollama list` returns the cluster's view instead of the local machine's. Use the
-**Server** value under **Engine settings > Ports** to address the local engine
-directly. It defaults to `11435` for Ollama, `1235` for LM Studio, and `8081`
-for llama.cpp.
+**Server port** value in the engine's **Settings** section to address the local
+engine directly. It defaults to `11435` for Ollama, `1235` for LM Studio, and
+`8081` for llama.cpp.
 
 Use the proxy port to check what your cluster can serve. Use the engine port to
 check what is installed on the local machine.
@@ -495,12 +497,15 @@ thing that fails tells you where the problem is.
 
 ### 1. Check Service Health
 
-Open **Settings → Service**. It reports the service connection, the nodes it
-knows about, and engine state without involving inference at all. If this is
-unhealthy, nothing below will work. Refer to
+Open **Settings → Service** and confirm that **Status** reads **Running**. That
+checks the background services without involving inference at all. If it reads
+anything else, nothing below will work. Refer to
 [PAIR does not become ready](troubleshooting.mdx#pair-does-not-become-ready).
 
-![Settings > Service reporting a healthy service connection, the known nodes, and engine state.](assets/onboarding/getting-started/11-service-health.png)
+![Settings > Service with Status reading Running, beside the Test, Stop, and Restart controls and the log options.](assets/onboarding/getting-started/11-service-health.png)
+
+Then open **Overview** and confirm that the nodes you expect are listed and their
+engines are running.
 
 ### 2. Confirm Endpoint Response
 

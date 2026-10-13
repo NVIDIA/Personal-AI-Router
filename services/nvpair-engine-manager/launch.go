@@ -38,6 +38,11 @@ func validEnvironmentKey(key string) bool {
 	return true
 }
 
+// literalEnvironment parses explicit KEY=value assignments into an environment
+// map. For example, {"MODEL_DIR={install_dir}/models", "TOKEN=a=b"} becomes
+// MODEL_DIR="{install_dir}/models" and TOKEN="a=b". Values are not expanded
+// as manifest templates: preserving user input literally prevents a path or
+// secret containing braces, dollar signs, or spaces from changing at launch.
 func literalEnvironment(assignments []string) (map[string]string, error) {
 	if _, err := formatLaunchText(append([]string{"environment"}, assignments...)); err != nil {
 		return nil, err

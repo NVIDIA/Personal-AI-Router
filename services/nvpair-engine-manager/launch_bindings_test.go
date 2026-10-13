@@ -47,8 +47,8 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 			require.NoError(t, err, "policy (%v, %v)", policy, err)
 			assert.Equal(t, tc.Policy, policy)
 			request.Settings = preview.Settings
-			require.Equal(t, previewSettings(t, e, request), preview, "preview does not round-trip")
-			rt.LaunchArgs, rt.LaunchEnv = &preview.Args, &preview.Env
+			assert.Equal(t, preview, previewSettings(t, e, request), "preview does not round-trip")
+			rt.LaunchArgs, rt.LaunchEnv = preview.Args, preview.Env
 			launch, err := launchForState(settingsState(t, e), 23456)
 			require.NoError(t, err)
 			require.NoError(t, validateEffectiveLaunch(*rt, launch, tc.Host, "23456"))

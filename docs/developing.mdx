@@ -147,7 +147,7 @@ These are not style preferences. Reviews and tooling catch them.
 The pairing PIN is the one exception that needs explaining. The cluster manager
 returns it in results and notifications that travel the broker's stdout, so it
 *does* reach the log path. `src/electron/service-bridge/json-rpc-subprocess.ts`
-strips it with `redactSensitiveLogText` from `src/shared/utils/redact-log.ts`
+strips it with `redactSensitiveLogText` from `src/electron/redact-log.ts`
 before any sink sees it. That choke point makes the guarantee hold, so a new path
 from subprocess output to a log or export must go through it.
 

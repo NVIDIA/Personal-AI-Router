@@ -38,7 +38,7 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 			preview := previewSettings(t, e, request)
 			require.Empty(t, preview.Errors, " (%v)", preview)
 			require.Nil(t, preview.Conflict, " (%v)", preview)
-			rt.LaunchArgs, rt.LaunchEnv = &preview.Args, &preview.Env
+			rt.LaunchArgs, rt.LaunchEnv = preview.Args, preview.Env
 			launch, err := launchForState(settingsState(t, e), preview.Settings.ServerPort)
 			require.NoError(t, err)
 			require.NoError(t, validateEffectiveLaunch(*rt, launch, "127.0.0.1", "23456"))
@@ -74,10 +74,10 @@ func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
 		require.Error(t, validateEffectiveLaunch(rt, launch, "127.0.0.1", fmt.Sprint(request.Settings.ServerPort)), "unsafe saved launch accepted")
 		if command {
 			args := []string{"-p0"}
-			rt.LaunchArgs = &args
+			rt.LaunchArgs = args
 		} else {
 			env := []string{`OLLAMA_ORIGINS="*"`}
-			rt.LaunchEnv = &env
+			rt.LaunchEnv = env
 		}
 		settingsState(t, e).plat.Runtime = rt
 		state, err := e.LaunchSettings("fake")

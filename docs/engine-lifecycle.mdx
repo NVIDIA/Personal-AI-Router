@@ -42,8 +42,6 @@ From there you can install or remove an engine, turn it on or off, change its
 port when PAIR manages it, download models, and review progress while long
 operations run.
 
-Updating an engine to a newer version needs the UI.
-
 In the terminal:
 
 On a machine with no desktop, the [terminal interface](terminal-interface.mdx)
@@ -80,8 +78,10 @@ When you install an engine, consider the following:
   that install instead of downloading another copy. Adoption helps when the
   usual engine port is already in use.
 - llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
-  checksum-pinned CUDA server/runtime archives; macOS downloads the standard
-  Metal-capable archive. The roughly 0.6–0.8 GiB engine download happens on
+  checksum-pinned CUDA server/runtime archives. Apple silicon Macs download the
+  standard Metal-enabled archive, and Intel Macs download the CPU-only build,
+  because upstream builds it without Metal. The engine download, roughly
+  0.3–0.7 GiB for the CUDA archives and about 11 MiB on macOS, happens on
   demand and is not part of the PAIR installer. Package choice is not
   driver-aware; llama.cpp retains CPU fallback when GPU acceleration is
   unavailable.
@@ -116,14 +116,15 @@ first.
 
 ## Updating and Uninstalling an Engine
 
-Both actions apply only to an engine PAIR installed:
+PAIR does not currently offer to update an engine, because it does not yet detect
+newer engine versions. To move an NVPAIR-installed Ollama or LM Studio to the
+vendor's current release, uninstall it and install it again, which keeps your
+models as described below. llama.cpp installs the build pinned by your version of
+PAIR. Update an engine you installed yourself with its own installer.
 
-- **Update** (when offered) updates an NVPAIR-installed engine, and like install
-  it usually leaves the engine running. PAIR only updates engines it installed.
-  It leaves one you installed yourself alone, though it may offer an NVPAIR
-  install alongside it.
-- **Uninstall** removes the NVPAIR-installed copy of that engine. Use it when you
-  no longer want PAIR to own that engine on the machine.
+**Uninstall** removes the NVPAIR-installed copy of an engine, and applies only to
+an engine PAIR installed. Use it when you no longer want PAIR to own that engine
+on the machine.
 
 Uninstalling an engine does **not** remove its models. Downloaded model files stay
 on disk in the engine's own storage — `~/.ollama`, `~/.llamacpp`, or
@@ -216,8 +217,7 @@ brings it back without fetching it again.
 
 On a headless machine the terminal interface covers installing, starting,
 stopping, restarting, and uninstalling an engine; pulling a model; and listing,
-loading, unloading, or deleting models. Updating an engine needs the desktop
-application on that machine.
+loading, unloading, or deleting models.
 
 PAIR does **not** warm models. Starting an engine does not pre-load models into
 memory, and it holds nothing ready in advance. Depending on the engine, a model

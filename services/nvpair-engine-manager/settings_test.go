@@ -207,14 +207,18 @@ func TestSettingsArgumentsDoNotIncludeExecutableOrSubcommand(t *testing.T) {
 		require.Empty(t, result.Errors, "positional arguments rejected (%v)", result)
 		st := settingsState(t, e)
 		rt := st.plat.Runtime
-		rt.LaunchArgs = &result.Args
-		rt.LaunchEnv = &result.Env
+		rt.LaunchArgs = result.Args
+		rt.LaunchEnv = result.Env
 		launch, err := launchForState(st, p.Settings.ServerPort)
 		require.NoError(t, err)
 		actual, err := applyLiteralLaunch(rt, launch, map[string]string{"host": "127.0.0.1", "port": fmt.Sprint(p.Settings.ServerPort)})
-		require.NoError(t, err, "arguments changed the executable/subcommand (%v, %v)", actual, err)
-		require.Equal(t, fakeEngineBin, actual.Bin, "arguments changed the executable/subcommand (%v, %v)", actual, err)
-		assert.Equal(t, rt.EditableLaunch.FixedArgs, actual.Args[:len(rt.EditableLaunch.FixedArgs)], "arguments changed the executable/subcommand")
+		require.NoError(t, err, "apply literal launch")
+		fixed := rt.EditableLaunch.FixedArgs
+		require.Equal(t, fakeEngineBin, actual.Bin, "arguments changed the executable")
+		require.GreaterOrEqual(t, len(actual.Args), len(fixed), "fixed arguments missing")
+		assert.Equal(t, fixed, actual.Args[:len(fixed)], "subcommand changed")
+		require.GreaterOrEqual(t, len(actual.Args), len(result.Args), "user arguments missing")
+		assert.Equal(t, result.Args, actual.Args[len(actual.Args)-len(result.Args):], "user arguments changed")
 	})
 }
 
@@ -308,7 +312,7 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 			require.Equal(t, preview.Settings.ServerPort, result.ServerPort, "port")
 			override := readSettingsOverride(t, e)
 			require.NotNil(t, override.LaunchArgs, "persisted arguments")
-			require.Equal(t, preview.Args, *override.LaunchArgs, "persisted arguments")
+			require.Equal(t, preview.Args, override.LaunchArgs, "persisted arguments")
 			if want != staysStopped {
 				data, err := os.ReadFile(startLog)
 				require.NoError(t, err)
@@ -358,7 +362,7 @@ func TestSettingsNoOpApplyKeepsEngineLogCapture(t *testing.T) {
 	persisted := st.plat.Runtime.LaunchEnv
 	st.mu.Unlock()
 	require.NotNil(t, persisted, "expected a no-op Apply to leave an empty launch_env")
-	require.Empty(t, *persisted, "expected a no-op Apply to leave an empty launch_env (%v)", persisted)
+	require.Empty(t, persisted, "expected a no-op Apply to leave an empty launch_env")
 	require.NoError(t, e.Stop("fake"))
 	before := len(st.logs.snapshot())
 	require.NoError(t, e.Start(context.Background(), "fake"))
@@ -398,70 +402,94 @@ func TestEarlyExitHasOneStartError(t *testing.T) {
 }
 
 func TestSettingsCORSOriginsValidationAndNormalization(t *testing.T) {
-	test := func(name, origins, wantError string) {
+	preview := func(t *testing.T, origins string) (*Executor, settings.Preview) {
+		t.Helper()
+		e := settingsExecutor(t, false)
+		request := settingsRequest(t, e)
+		request.Settings.LaunchText = `OLLAMA_ORIGINS="` + origins + `" ` + request.Settings.LaunchText
+		return e, previewSettings(t, e, request)
+	}
+	accept := func(name, origins string) {
 		t.Run(name, func(t *testing.T) {
-			e := settingsExecutor(t, false)
-			request := settingsRequest(t, e)
-			request.Settings.LaunchText = `OLLAMA_ORIGINS="` + origins + `" ` + request.Settings.LaunchText
-			result := previewSettings(t, e, request)
-			if wantError != "" {
-				require.Contains(t, result.Errors["launchText"], wantError, "expected (%v, %v)", wantError, result)
-			} else {
-				require.Empty(t, result.Errors, "valid origins rejected (%v)", result)
-				env, err := literalEnvironment(result.Env)
-				require.NoError(t, err)
-				require.Contains(t, env, "OLLAMA_ORIGINS", "origins")
-				require.Equal(t, origins, env["OLLAMA_ORIGINS"], "origins")
-			}
+			e, result := preview(t, origins)
+			require.Empty(t, result.Errors, "valid origins rejected")
+			env, err := literalEnvironment(result.Env)
+			require.NoError(t, err)
+			require.Contains(t, env, "OLLAMA_ORIGINS")
+			assert.Equal(t, origins, env["OLLAMA_ORIGINS"])
 			assertNoSettingsOverride(t, e)
 		})
 	}
-	test("rejects origin without scheme", "localhost", `"http://localhost"`)
-	test("rejects mixed valid and invalid origins", "http://localhost,invalid", `"http://localhost"`)
-	test("rejects bare wildcard", "*", "every origin")
-	test("rejects wildcard host", "http://*", "every origin")
-	test("rejects wildcard scheme and host", "*://*", "every origin")
-	test("rejects wildcard in origin list", "http://localhost,*", "every origin")
-	test("accepts localhost URL", "http://localhost", "")
-	test("accepts explicit origin list", "https://example.test,http://localhost", "")
-	test("accepts wildcard subdomain", "https://*.example.test", "")
-	test("accepts empty origins", "", "")
+	reject := func(name, origins, wantMessage string) {
+		t.Run(name, func(t *testing.T) {
+			e, result := preview(t, origins)
+			assert.Contains(t, result.Errors["launchText"], wantMessage)
+			assertNoSettingsOverride(t, e)
+		})
+	}
+
+	accept("localhost URL", "http://localhost")
+	accept("explicit origin list", "https://example.test,http://localhost")
+	accept("wildcard subdomain", "https://*.example.test")
+	accept("empty origins", "")
+
+	reject("origin without scheme", "localhost", `"http://localhost"`)
+	reject("mixed valid and invalid origins", "http://localhost,invalid", `"http://localhost"`)
+	reject("bare wildcard", "*", "every origin")
+	reject("wildcard host", "http://*", "every origin")
+	reject("wildcard scheme and host", "*://*", "every origin")
+	reject("wildcard in origin list", "http://localhost,*", "every origin")
 }
 
 func TestSettingsCORSIsOptionalAndIndependentOfEngine(t *testing.T) {
-	test := func(name, corsEnv, corsFlag, prefix, suffix string, wantError bool) {
-		t.Run(name, func(t *testing.T) {
-			e := settingsExecutor(t, false)
-			rt := &settingsState(t, e).plat.Runtime
-			rt.Env = map[string]string{"FUTURE_BIND": "{host}:{port}"}
-			rt.EditableLaunch = &EditableLaunch{FixedArgs: []string{"serve"}, Controls: []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"FUTURE_BIND"}}}}
-			if corsEnv != "" {
-				rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Env: []string{corsEnv}})
-			}
-			if corsFlag != "" {
-				rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Flags: []string{corsFlag}})
-			}
+	setup := func(t *testing.T, corsEnv, corsFlag, prefix, suffix string) (*Executor, settings.Request, settings.Preview) {
+		t.Helper()
+		e := settingsExecutor(t, false)
+		rt := &settingsState(t, e).plat.Runtime
+		rt.Env = map[string]string{"FUTURE_BIND": "{host}:{port}"}
+		rt.EditableLaunch = &EditableLaunch{FixedArgs: []string{"serve"}, Controls: []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"FUTURE_BIND"}}}}
+		if corsEnv != "" {
+			rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Env: []string{corsEnv}})
+		}
+		if corsFlag != "" {
+			rt.EditableLaunch.Controls = append(rt.EditableLaunch.Controls, LaunchControl{Value: "{cors.origins}", Flags: []string{corsFlag}})
+		}
 
-			request := settingsRequest(t, e)
-			request.Settings.LaunchText = prefix + request.Settings.LaunchText + suffix
-			preview := previewSettings(t, e, request)
-			if wantError {
-				require.NotEmpty(t, preview.Errors, "preview errors")
-			} else {
-				require.Empty(t, preview.Errors, "preview errors")
-				_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
-				require.NoError(t, err)
-			}
+		request := settingsRequest(t, e)
+		request.Settings.LaunchText = prefix + request.Settings.LaunchText + suffix
+		return e, request, previewSettings(t, e, request)
+	}
+	accept := func(name, corsEnv, corsFlag, prefix, suffix string) {
+		t.Run(name, func(t *testing.T) {
+			e, request, preview := setup(t, corsEnv, corsFlag, prefix, suffix)
+			require.Empty(t, preview.Errors, "valid launch settings rejected")
+			_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
+			require.NoError(t, err)
 		})
 	}
-	test("no CORS option required", "", "", "", " --future-option arbitrary", false)
-	test("undeclared CORS configuration stays opaque", "", "", "FUTURE_ORIGINS=* ", " --cors", false)
-	test("declared environment accepts origins", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=https://example.test ", "", false)
-	test("declared environment rejects wildcard", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=* ", "", true)
-	test("declared flag accepts origins", "", "--browser-origins", "", " --browser-origins https://example.test", false)
-	test("declared flag accepts equals form", "", "--browser-origins", "", " --browser-origins=https://example.test", false)
-	test("declared flag rejects wildcard", "", "--browser-origins", "", " --browser-origins=*", true)
-	test("declared flag rejects missing value", "", "--browser-origins", "", " --browser-origins", true)
+	reject := func(name, corsEnv, corsFlag, prefix, suffix, wantMessage string) {
+		t.Run(name, func(t *testing.T) {
+			e, request, preview := setup(t, corsEnv, corsFlag, prefix, suffix)
+			assert.Contains(t, preview.Errors["launchText"], wantMessage)
+			_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error {
+				t.Fatal("invalid settings reached the rebind callback")
+				return nil
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "authoritative validation")
+			assertNoSettingsOverride(t, e)
+		})
+	}
+
+	accept("no CORS option required", "", "", "", " --future-option arbitrary")
+	accept("undeclared CORS configuration stays opaque", "", "", "FUTURE_ORIGINS=* ", " --cors")
+	accept("declared environment accepts origins", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=https://example.test ", "")
+	accept("declared flag accepts origins", "", "--browser-origins", "", " --browser-origins https://example.test")
+	accept("declared flag accepts equals form", "", "--browser-origins", "", " --browser-origins=https://example.test")
+
+	reject("declared environment rejects wildcard", "FUTURE_ORIGINS", "", "FUTURE_ORIGINS=* ", "", "every origin")
+	reject("declared flag rejects wildcard", "", "--browser-origins", "", " --browser-origins=*", "every origin")
+	reject("declared flag rejects missing value", "", "--browser-origins", "", " --browser-origins", "missing its value")
 }
 
 func TestSettingsPassesUnknownEnvironmentNamesAndValues(t *testing.T) {
@@ -509,9 +537,9 @@ func TestSettingsManifestEnvironmentCanBeOverridden(t *testing.T) {
 			_, err = e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil })
 			require.NoError(t, err)
 			override := readSettingsOverride(t, e)
-			env, err := literalEnvironment(*override.LaunchEnv)
-			require.NoError(t, err, "saved environment (%v, %v)", env, err)
-			require.Equal(t, replacement, env["LD_LIBRARY_PATH"], "saved environment (%v, %v)", env, err)
+			env, err := literalEnvironment(override.LaunchEnv)
+			require.NoError(t, err, "saved environment")
+			require.Equal(t, replacement, env["LD_LIBRARY_PATH"], "saved environment")
 		})
 	}
 	test("amd64 custom directory", "linux/amd64", "/custom/libraries")
@@ -580,11 +608,9 @@ func TestSavedLaunchOverridesManifestEnvironmentLiterally(t *testing.T) {
 		EditableLaunch: &EditableLaunch{FixedArgs: []string{"serve"}},
 		Env:            map[string]string{"LD_LIBRARY_PATH": "{install_dir}/lib"},
 	}
-	args := []string{}
-	rt.LaunchArgs = &args
+	rt.LaunchArgs = []string{}
 	for _, value := range []string{"/custom", "", "{install_dir}/other"} {
-		env := []string{"LD_LIBRARY_PATH=" + value}
-		rt.LaunchEnv = &env
+		rt.LaunchEnv = []string{"LD_LIBRARY_PATH=" + value}
 		launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"})
 		assert.NoError(t, err, "saved launch environment (%v, %v)", err, value)
 		assert.Equal(t, value, launch.Env["LD_LIBRARY_PATH"], "saved launch environment (%v)", err)
@@ -705,7 +731,7 @@ func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) 
 			require.Equal(t, "", readEnv()["OLLAMA_ORIGINS"], "removed environment variable survived")
 			override := readSettingsOverride(t, e)
 			require.NotNil(t, override.LaunchEnv, "launch environment missing from override")
-			env, err = literalEnvironment(*override.LaunchEnv)
+			env, err = literalEnvironment(override.LaunchEnv)
 			require.NoError(t, err)
 			require.NotContains(t, env, "OLLAMA_ORIGINS", "removed environment variable remains in override")
 			require.Equal(t, captureEnv, env["PAIR_TEST_ENV_FILE"], "unrelated environment values lost (%v)", env)
