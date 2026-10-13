@@ -845,6 +845,137 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 	})
 }
 
+// TestHandleHTTP_ShowRoutesToModelOwner: Ollama's /api/show names its model in
+// "name" or "model", and the lookup must reach a node that has that model even
+// when the scheduler ranks a node without it first. A non-owner answers 404,
+// which a client like Hermes reads as "model unknown" (issue #94).
+func TestHandleHTTP_ShowRoutesToModelOwner(t *testing.T) {
+	tc := ollamaCase(t)
+	for _, c := range []struct{ name, body string }{
+		{"name", `{"name":"qwen3"}`},
+		{"model", `{"model":"qwen3"}`},
+		{"model wins", `{"model":"qwen3","name":"other"}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			nonOwnerHits := 0
+			nonOwner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nonOwnerHits++
+				w.WriteHeader(http.StatusNotFound)
+				if _, err := io.WriteString(w, `{"error":"model not found"}`); err != nil {
+					t.Errorf("write missing-model response: %v", err)
+				}
+			}))
+			defer nonOwner.Close()
+
+			ownerHits := 0
+			var gotBody, gotPath string
+			owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ownerHits++
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read forwarded request body: %v", err)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				gotBody = string(body)
+				gotPath = r.URL.Path
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer owner.Close()
+
+			disc := NewDiscovery()
+			disc.AddManual(nodeForModel(t, "a-missing", nonOwner.URL, "other:latest"))
+			disc.AddManual(nodeForModel(t, "b-owner", owner.URL, tc.advertisedModel))
+			events := &recRW{}
+			p := newTestProxy(tc.profile, NewCodec(events), disc, tc.profile.FacadePort)
+			p.SetPriority([]string{"a-missing", "b-owner"})
+
+			rec := httptest.NewRecorder()
+			p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(c.body)))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 from the owner", rec.Code)
+			}
+			if ownerHits != 1 || nonOwnerHits != 0 {
+				t.Fatalf("owner hits = %d, non-owner hits = %d; want 1 and 0", ownerHits, nonOwnerHits)
+			}
+			if gotPath != "/api/show" || gotBody != c.body {
+				t.Errorf("owner got %s %q, want /api/show %q", gotPath, gotBody, c.body)
+			}
+			if events.has("workload:") {
+				t.Errorf("a model lookup must not emit workload events: %s", events.b)
+			}
+		})
+	}
+}
+
+// TestHandleHTTP_ShowWithNoOwnerAnswers404Locally: when no node has the model,
+// the proxy answers the lookup itself instead of asking a node that lacks it.
+func TestHandleHTTP_ShowWithNoOwnerAnswers404Locally(t *testing.T) {
+	tc := ollamaCase(t)
+	hits := 0
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer other.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "other", other.URL, "other:latest"))
+	events := &recRW{}
+	p := newTestProxy(tc.profile, NewCodec(events), disc, tc.profile.FacadePort)
+
+	rec := httptest.NewRecorder()
+	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)))
+
+	if rec.Code != http.StatusNotFound ||
+		!strings.Contains(rec.Body.String(), "no available node advertises the requested model") {
+		t.Fatalf("response = %d %s, want local 404", rec.Code, rec.Body.String())
+	}
+	if hits != 0 {
+		t.Fatalf("node without the model received %d requests, want 0", hits)
+	}
+	if !events.has("no node advertises requested model") {
+		t.Fatalf("missing rejected request event: %s", events.b)
+	}
+	if events.has("workload:") {
+		t.Errorf("a model lookup must not emit workload events: %s", events.b)
+	}
+}
+
+// TestHandleHTTP_ShowFailsOverOnOwner404: an advertised owner that answers 404
+// has a stale inventory, so the lookup moves on to the next owner.
+func TestHandleHTTP_ShowFailsOverOnOwner404(t *testing.T) {
+	tc := ollamaCase(t)
+	staleHits, goodHits := 0, 0
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		staleHits++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer stale.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		goodHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer good.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "a-stale", stale.URL, tc.advertisedModel))
+	disc.AddManual(nodeForModel(t, "b-good", good.URL, tc.advertisedModel))
+	p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+	p.SetPriority([]string{"a-stale", "b-good"})
+
+	rec := httptest.NewRecorder()
+	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after 404 failover", rec.Code)
+	}
+	if staleHits != 1 || goodHits != 1 {
+		t.Fatalf("stale hits = %d, good hits = %d; want 1 and 1", staleHits, goodHits)
+	}
+}
+
 // TestResolveCandidates_SelfGuard: a node resolving to the proxy's own
 // listen address is dropped so we never self-forward.
 func TestResolveCandidates_SelfGuard(t *testing.T) {
