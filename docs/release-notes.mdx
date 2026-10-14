@@ -5,9 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # Release Notes
 
-What changed in each release of PAIR. If you are updating from an earlier
-version, read the [Upgrade Guide](upgrade-guide.mdx) as well: it covers the
-steps some machines need.
+This page lists what changed in each release of PAIR. If you are updating from
+an earlier version, read the [Upgrade Guide](upgrade-guide.mdx) as well. It
+covers the steps some machines need.
 
 Notes for releases before 1.0.0 are on
 [GitHub Releases](https://github.com/NVIDIA/Personal-AI-Router/releases).
@@ -41,11 +41,13 @@ its public development and contribution workflow on GitHub.
 ### Compatibility Notes
 
 - **Browser clients.** PAIR's local endpoints now follow each engine's CORS
-  policy instead of allowing every browser origin. A browser-based client may
-  need the engine configured to allow it — for Ollama, set `OLLAMA_ORIGINS` in
-  the engine's launch options.
+  policy instead of allowing every browser origin. A browser-based client might
+  need the engine configured to allow it. For Ollama, set `OLLAMA_ORIGINS` in
+  the engine's launch options. For llama.cpp, add the origin to
+  `--cors-origins`, because managed llama.cpp allows no browser origins until
+  you add one.
 - **The macOS app is now NVIDIA PAIR.** The new `NVIDIA PAIR.app` installs
-  beside the old `PAIR.app`, so remove the old one to keep just one copy. Your
+  beside the old `PAIR.app`, so remove the old one to keep only one copy. Your
   settings, cluster membership, and downloaded models carry over.
 - **LM Studio installed by an earlier PAIR.** It keeps working as before. PAIR
   now removes only engines it has a record of installing, and earlier versions
@@ -60,7 +62,7 @@ The [Upgrade Guide](upgrade-guide.mdx) walks through each of these.
 
 - Uninstalling LM Studio from PAIR, or uninstalling PAIR with its data, no
   longer deletes the models you downloaded. They stay in `~/.lmstudio/models`,
-  just as Ollama's stay in `~/.ollama` and llama.cpp's in `~/.llamacpp`.
+  as Ollama's stay in `~/.ollama` and llama.cpp's in `~/.llamacpp`.
 
 ### Community Contributions
 
@@ -90,7 +92,7 @@ The [Upgrade Guide](upgrade-guide.mdx) walks through each of these.
 - Updated the contributor instructions to branch from and rebase onto
   `develop`. Thanks [@somtri](https://github.com/somtri)!
   ([#126](https://github.com/NVIDIA/Personal-AI-Router/pull/126))
-- Fixed node cards showing only the first GPU on multi-GPU systems; they now
+- Fixed node cards showing only the first GPU on multi-GPU systems. They now
   show every GPU. Thanks [@CryptoJones](https://github.com/CryptoJones)!
   ([#34](https://github.com/NVIDIA/Personal-AI-Router/pull/34))
 
