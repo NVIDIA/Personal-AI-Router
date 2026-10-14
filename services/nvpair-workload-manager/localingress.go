@@ -15,8 +15,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	"nvpair-shared/appdir"
 )
@@ -42,6 +44,14 @@ const (
 	localIngressBodyCap     = 1 << 20
 	localIngressReadTimeout = 10 * time.Second
 	localIngressIdleTimeout = 60 * time.Second
+
+	// maxIngressIDLen bounds a workload id in bytes. Ids are opaque, and one is
+	// kept in the re-sync set, in the removal memory (which is keyed by it) and
+	// in every peer's dedup index, so this bounds the id and, with
+	// maxRemovedIngress, the removal memory. It does not bound the other fields
+	// of a frame or the number of workloads being tracked: only
+	// localIngressBodyCap limits a single frame.
+	maxIngressIDLen = 256
 )
 
 // errBrokerWrite marks an ingest failure on the UPWARD write to the broker (as
@@ -54,6 +64,20 @@ var errBrokerWrite = errors.New("broker write failed")
 // origin of a frame. The ingress reports workloads that run here; a frame for
 // another node's workload would be re-asserted to peers as this node's own.
 var errIngressOrigin = errors.New("originatedFrom must be empty or this node's UUID")
+
+// errIngressKey is a frame whose JSON object spells a field name differently
+// from the canonical spelling. encoding/json matches keys case-insensitively
+// (with Unicode simple folding), so a variant such as "originatedfrom" would be
+// decoded as the field while slipping past a check on the exact key.
+var errIngressKey = errors.New("field names must use their exact spelling, once")
+
+// errIngressResync is a frame carrying a "resync" key in any spelling. That flag
+// is the peers' own marker for an anti-entropy re-assertion, and a producer
+// never needs it.
+var errIngressResync = errors.New(`"resync" is not accepted from a producer`)
+
+// errIngressID is a workload id over maxIngressIDLen bytes.
+var errIngressID = fmt.Errorf("workload id is longer than %d bytes", maxIngressIDLen)
 
 // localIngress is the optional plaintext loopback listener for third-party
 // workload producers on THIS machine: an external scheduler, a local inference
@@ -268,10 +292,16 @@ func validateIngressFrame(f localFrame, selfUUID string) error {
 		if !isWorkloadState(f.wl.State) {
 			return fmt.Errorf("workloadInfo.state %q is not a known state", f.wl.State)
 		}
+		if len(f.wl.ID) > maxIngressIDLen {
+			return errIngressID
+		}
 		return nil
 	}
 	if f.removeNode != selfUUID {
 		return errIngressOrigin
+	}
+	if len(f.removeID) > maxIngressIDLen {
+		return errIngressID
 	}
 	return nil
 }
@@ -290,6 +320,14 @@ func isWorkloadState(s WorkloadState) bool {
 // params.workloadInfo; removals carry it at the top level. The params are edited
 // as generic JSON so this file never duplicates the Workload schema; unknown
 // fields inside them are passed through unchanged.
+//
+// Every object it reads is first checked for field names that encoding/json
+// would match to a field of the frame but that are not spelt exactly like it
+// ("originatedfrom", "WorkloadInfo"), and for two names that are one name under
+// case folding: the checks below look at the exact keys, so a variant would
+// otherwise be decoded as the field without being checked. A "resync" key in any
+// spelling is refused, since it is the peers' own marker for an anti-entropy
+// re-assertion and would make a producer's frame bypass their dedup.
 func normalizeIngressParams(method string, params json.RawMessage, selfUUID string) (json.RawMessage, error) {
 	var top map[string]json.RawMessage
 	if len(params) > 0 {
@@ -304,14 +342,25 @@ func normalizeIngressParams(method string, params json.RawMessage, selfUUID stri
 	if err != nil {
 		return nil, err
 	}
+	for k := range top {
+		if strings.EqualFold(k, "resync") {
+			return nil, errIngressResync
+		}
+	}
 	switch {
 	case method == MethodRemove:
+		if err := checkIngressKeys(top, removeParamNames, "params"); err != nil {
+			return nil, err
+		}
 		if err := checkIngressOrigin(top["originatedFrom"], selfUUID); err != nil {
 			return nil, err
 		}
 		top["originatedFrom"] = self
 		return json.Marshal(top)
 	case isLifecycleMethod(method):
+		if err := checkIngressKeys(top, lifecycleParamNames, "params"); err != nil {
+			return nil, err
+		}
 		var info map[string]json.RawMessage
 		if raw, ok := top["workloadInfo"]; ok && len(raw) > 0 {
 			if err := json.Unmarshal(raw, &info); err != nil {
@@ -320,6 +369,9 @@ func normalizeIngressParams(method string, params json.RawMessage, selfUUID stri
 		}
 		if info == nil {
 			return nil, fmt.Errorf("missing params.workloadInfo")
+		}
+		if err := checkIngressKeys(info, workloadFieldNames, "params.workloadInfo"); err != nil {
+			return nil, err
 		}
 		if err := checkIngressOrigin(info["originatedFrom"], selfUUID); err != nil {
 			return nil, err
@@ -333,6 +385,67 @@ func normalizeIngressParams(method string, params json.RawMessage, selfUUID stri
 		return json.Marshal(top)
 	}
 	return nil, fmt.Errorf("unknown method: %s", method)
+}
+
+// The field names encoding/json decodes for each frame shape, read from the
+// structs themselves so a field added to the schema is covered without an edit
+// here.
+var (
+	lifecycleParamNames = jsonFieldNames(lifecycleParams{})
+	removeParamNames    = jsonFieldNames(removeParams{})
+	workloadFieldNames  = jsonFieldNames(Workload{})
+)
+
+// jsonFieldNames lists the JSON names of a struct's exported fields.
+func jsonFieldNames(v any) []string {
+	t := reflect.TypeOf(v)
+	var names []string
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// checkIngressKeys refuses an object with a key that folds to one of the
+// canonical field names without being spelt exactly like it, and an object with
+// two keys that are the same name under folding. It looks at the spelling of
+// the keys only; the values are validated on the decoded frame.
+func checkIngressKeys(obj map[string]json.RawMessage, canonical []string, where string) error {
+	folded := make(map[string]string, len(obj))
+	for k := range obj {
+		fk := foldKey(k)
+		if other, dup := folded[fk]; dup {
+			return fmt.Errorf("%s: %w: %q and %q", where, errIngressKey, other, k)
+		}
+		folded[fk] = k
+	}
+	for _, name := range canonical {
+		if k, ok := folded[foldKey(name)]; ok && k != name {
+			return fmt.Errorf("%s: %w: %q must be spelt %q", where, errIngressKey, k, name)
+		}
+	}
+	return nil
+}
+
+// foldKey maps a name to a representative of its case-folding class: each rune
+// becomes the smallest member of its unicode.SimpleFold orbit. Two names are
+// equal under strings.EqualFold, which is the matching encoding/json applies to
+// struct keys, exactly when their foldKeys are equal.
+func foldKey(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < least {
+				least = f
+			}
+		}
+		b.WriteRune(least)
+	}
+	return b.String()
 }
 
 // checkIngressOrigin accepts an absent, null or empty origin, or this node's.

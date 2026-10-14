@@ -984,6 +984,143 @@ func TestStdioLifecycleKeepsAcceptingAnyState(t *testing.T) {
 	}
 }
 
+func TestIngestLocalRejectsResyncKey(t *testing.T) {
+	info := `"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"self-uuid","createdAt":1}`
+	for _, key := range []string{"resync", "Resync", "RESYNC", "reSync", `reſync`} {
+		for name, tc := range map[string]struct{ method, params string }{
+			"lifecycle": {MethodStarted, `{"` + key + `":true,` + info + `}`},
+			"remove":    {MethodRemove, `{"` + key + `":true,"workloadId":"W","originatedFrom":"self-uuid"}`},
+		} {
+			t.Run(name+"/"+key, func(t *testing.T) {
+				m, rw := newTestManager(t)
+				if err := m.ingestLocal(tc.method, json.RawMessage(tc.params)); !errors.Is(err, errIngressResync) {
+					t.Fatalf("err = %v, want errIngressResync", err)
+				}
+				assertIngressUntouched(t, m, rw)
+			})
+		}
+	}
+}
+
+func TestIngestLocalTrackedFrameCarriesNoResyncFlag(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodStarted, ingestFrame("W", 1)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := m.activeSnapshot()
+	if len(snapshot) != 1 || isResyncFrame(snapshot[0].params) {
+		t.Fatalf("the re-sync set holds a re-sync tagged frame: %+v", snapshot)
+	}
+}
+
+// assertIngressUntouched fails when a rejected frame left any trace: a broker
+// write, a queued peer frame or a re-sync entry.
+func assertIngressUntouched(t *testing.T, m *Manager, rw *captureRW) {
+	t.Helper()
+	if out := rw.String(); out != "" {
+		t.Fatalf("a rejected frame reached the broker: %s", out)
+	}
+	if got := len(m.broadcastCh); got != 0 {
+		t.Fatalf("peer queue = %d frames, want 0", got)
+	}
+	if got := len(m.activeSnapshot()); got != 0 {
+		t.Fatalf("re-sync set = %d, want 0", got)
+	}
+}
+
+// The frames a producer could use to name another node as the origin, or hide
+// the resync flag, by spelling a field name differently from the canonical one.
+// encoding/json decodes each of these into the field.
+var foldedKeyFrames = map[string]struct {
+	method, params string
+	want           error
+}{
+	"workloadInfo.originatedfrom beside an empty canonical key": {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"","originatedfrom":"victim","createdAt":1}}`, errIngressKey},
+	"workloadInfo.originatedfrom alone":                         {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedfrom":"victim","createdAt":1}}`, errIngressKey},
+	"workloadInfo.originatedfRom":                               {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedfRom":"victim","createdAt":1}}`, errIngressKey},
+	"workloadInfo.OriginatedFrom":                               {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","OriginatedFrom":"victim","createdAt":1}}`, errIngressKey},
+	"workloadInfo.ORIGINATEDFROM":                               {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","ORIGINATEDFROM":"victim","createdAt":1}}`, errIngressKey},
+	"workloadInfo.ID":                                           {MethodStarted, `{"workloadInfo":{"ID":"W","model":"m","engine":"e","state":"running","createdAt":1}}`, errIngressKey},
+	"workloadInfo long-s state":                                 {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","ſtate":"running","createdAt":1}}`, errIngressKey},
+	"second top-level workloadinfo":                             {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"self-uuid","createdAt":1},"workloadinfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"victim","createdAt":1}}`, errIngressKey},
+	"top-level WorkloadInfo alone":                              {MethodStarted, `{"WorkloadInfo":{"id":"W","model":"m","engine":"e","state":"running","createdAt":1}}`, errIngressKey},
+	"two unknown keys that fold together":                       {MethodStarted, `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","createdAt":1,"note":1,"NOTE":2}}`, errIngressKey},
+	"remove originatedfrom":                                     {MethodRemove, `{"workloadId":"W","originatedfrom":"victim"}`, errIngressKey},
+	"remove originatedfrom beside the canonical key":            {MethodRemove, `{"workloadId":"W","originatedFrom":"self-uuid","originatedfrom":"victim"}`, errIngressKey},
+	"remove WorkloadID":                                         {MethodRemove, `{"WorkloadID":"W"}`, errIngressKey},
+	"top-level Resync":                                          {MethodStarted, `{"Resync":true,"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"self-uuid","createdAt":1}}`, errIngressResync},
+	"top-level long-s resync":                                   {MethodStarted, `{"reſync":true,"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"self-uuid","createdAt":1}}`, errIngressResync},
+	"remove RESYNC":                                             {MethodRemove, `{"RESYNC":true,"workloadId":"W","originatedFrom":"self-uuid"}`, errIngressResync},
+}
+
+func TestIngestLocalRejectsFoldedFieldNames(t *testing.T) {
+	for name, tc := range foldedKeyFrames {
+		t.Run(name, func(t *testing.T) {
+			m, rw := newTestManager(t)
+			if err := m.ingestLocal(tc.method, json.RawMessage(tc.params)); !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			assertIngressUntouched(t, m, rw)
+		})
+	}
+}
+
+func TestLocalIngressFoldedFieldNamesAre400(t *testing.T) {
+	for name, tc := range foldedKeyFrames {
+		t.Run(name, func(t *testing.T) {
+			m, rw := newTestManager(t)
+			_, url := startIngress(t, m)
+			body := `{"jsonrpc":"2.0","method":"` + tc.method + `","params":` + tc.params + `}`
+			if code := postIngress(t, url, body, nil); code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", code, http.StatusBadRequest)
+			}
+			assertIngressUntouched(t, m, rw)
+		})
+	}
+}
+
+// foldKey has to agree with what encoding/json matches, or a spelling could be
+// decoded as a field without being seen as one.
+func TestFoldKeyAgreesWithJSONFieldMatching(t *testing.T) {
+	names := []string{"originatedFrom", "state", "k", "workloadInfo"}
+	for _, key := range []string{"originatedfrom", "ORIGINATEDFROM", "originatedFRom", "ſtate", "K", "workloadinfo", "state", "STATE", "stat", "originated_from"} {
+		t.Run(key, func(t *testing.T) {
+			var got struct {
+				OriginatedFrom string `json:"originatedFrom"`
+				State          string `json:"state"`
+				K              string `json:"k"`
+				WorkloadInfo   string `json:"workloadInfo"`
+			}
+			quoted, err := json.Marshal(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(`{`+string(quoted)+`:"x"}`), &got); err != nil {
+				t.Fatal(err)
+			}
+			decoded := got.OriginatedFrom != "" || got.State != "" || got.K != "" || got.WorkloadInfo != ""
+			folds := false
+			for _, name := range names {
+				folds = folds || foldKey(key) == foldKey(name)
+			}
+			if decoded != folds {
+				t.Errorf("encoding/json decoded a field = %v, foldKey matched a name = %v", decoded, folds)
+			}
+		})
+	}
+}
+
+// The same key spelt exactly twice is one key to encoding/json (the last wins),
+// and the ingress re-marshals a single one, so the origin check sees what is sent.
+func TestIngestLocalRepeatedExactKeyUsesTheLastValue(t *testing.T) {
+	m, rw := newTestManager(t)
+	foreign := `{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"self-uuid","originatedFrom":"victim","createdAt":1}}`
+	if err := m.ingestLocal(MethodStarted, json.RawMessage(foreign)); !errors.Is(err, errIngressOrigin) {
+		t.Fatalf("err = %v, want errIngressOrigin", err)
+	}
+	assertIngressUntouched(t, m, rw)
+}
+
 // The canonical frame a well-behaved producer sends, with every field the schema
 // has and one field of its own, is accepted, and the extra field is passed through.
 func TestLocalIngressAcceptsCanonicalFrameAndPassesUnknownFieldsThrough(t *testing.T) {
@@ -1049,4 +1186,70 @@ func TestValidateIngressFrameChecksDecodedValues(t *testing.T) {
 			t.Fatalf("err = %v, want the unknown-state error", err)
 		}
 	})
+}
+
+// A frame whose case-variant origin key was not caught by the spelling check
+// still decodes to the foreign origin, and the decoded-value check refuses it.
+func TestValidateIngressFrameRefusesAnOriginTheKeyCheckMissed(t *testing.T) {
+	t.Run("lifecycle", func(t *testing.T) {
+		frame, err := parseLocalFrame(MethodStarted, json.RawMessage(`{"workloadInfo":{"id":"W","model":"m","engine":"e","state":"running","originatedFrom":"self-uuid","originatedfrom":"victim","createdAt":1}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateIngressFrame(frame, "self-uuid"); !errors.Is(err, errIngressOrigin) {
+			t.Fatalf("err = %v, want errIngressOrigin (decoded origin %q)", err, frame.wl.OriginatedFrom)
+		}
+	})
+	t.Run("removal", func(t *testing.T) {
+		frame, err := parseLocalFrame(MethodRemove, json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid","originatedfrom":"victim"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateIngressFrame(frame, "self-uuid"); !errors.Is(err, errIngressOrigin) {
+			t.Fatalf("err = %v, want errIngressOrigin (decoded node %q)", err, frame.removeNode)
+		}
+	})
+}
+
+func TestIngestLocalAcceptsWorkloadIDAtTheLimit(t *testing.T) {
+	atLimit := strings.Repeat("a", maxIngressIDLen)
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodStarted, ingestFrame(atLimit, 1)); err != nil {
+		t.Fatalf("id of %d bytes refused: %v", maxIngressIDLen, err)
+	}
+	if err := m.ingestLocal(MethodRemove, json.RawMessage(`{"workloadId":"`+atLimit+`"}`)); err != nil {
+		t.Fatalf("removal of an id of %d bytes refused: %v", maxIngressIDLen, err)
+	}
+}
+
+func TestIngestLocalRejectsOverlongWorkloadID(t *testing.T) {
+	overLimit := strings.Repeat("a", maxIngressIDLen+1)
+	for name, tc := range map[string]struct{ method, params string }{
+		"lifecycle": {MethodStarted, string(ingestFrame(overLimit, 1))},
+		"remove":    {MethodRemove, `{"workloadId":"` + overLimit + `"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, rw := newTestManager(t)
+			if err := m.ingestLocal(tc.method, json.RawMessage(tc.params)); !errors.Is(err, errIngressID) {
+				t.Fatalf("err = %v, want errIngressID", err)
+			}
+			assertIngressUntouched(t, m, rw)
+		})
+	}
+}
+
+func TestLocalIngressOverlongWorkloadIDIs400(t *testing.T) {
+	overLimit := strings.Repeat("a", maxIngressIDLen+1)
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			m, rw := newTestManager(t)
+			_, url := startIngress(t, m)
+			if code := postIngress(t, url, body, nil); code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", code, http.StatusBadRequest)
+			}
+			assertIngressUntouched(t, m, rw)
+		})
+	}
+	test("upsert", `{"jsonrpc":"2.0","method":"workload:started","params":`+string(ingestFrame(overLimit, 1))+`}`)
+	test("remove", `{"jsonrpc":"2.0","method":"workloads:remove","params":{"workloadId":"`+overLimit+`"}}`)
 }
