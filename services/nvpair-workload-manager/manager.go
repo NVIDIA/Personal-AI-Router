@@ -4,6 +4,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,6 +68,25 @@ type workloadEvent struct {
 	expiresAt time.Time
 }
 
+// removedKey is the identity an ingress removal tombstones: the (origin, id)
+// pair the removal wire carries, which has no engine or runId.
+type removedKey struct {
+	origin string
+	id     string
+}
+
+// removedEntry is one tombstone in Manager.removedOrder.
+type removedEntry struct {
+	key       removedKey
+	expiresAt time.Time
+}
+
+// maxRemovedIngress bounds the removal memory. A producer can remove workloads
+// it never reported, so without a bound the memory would grow with the removal
+// rate for as long as terminalRetention. At the bound the oldest tombstone is
+// evicted, which only means a very old removal can no longer suppress a replay.
+const maxRemovedIngress = 4096
+
 // ReadyParams is the payload of the startup "ready" notification, matching
 // the convention used by the other subprocesses.
 type ReadyParams struct {
@@ -92,6 +112,20 @@ type Manager struct {
 	// to this node's authoritative state. Guarded by activeMu.
 	activeMu    sync.Mutex
 	activeLocal map[workloadKey]workloadEvent
+
+	// removedIngress tombstones the workloads a producer removed through the
+	// loopback ingress, keyed by the (origin, id) pair a removal carries, until
+	// terminalRetention has passed. The broker replays its store to a restarted
+	// worker, and that replay can land after the removal, when nothing is
+	// tracked yet; a replayed lifecycle frame for a tombstoned pair is dropped
+	// instead of re-tracked and re-broadcast. A fresh ingress lifecycle frame
+	// for the pair clears the tombstone. At most maxRemovedIngress are kept:
+	// removedOrder holds them oldest first (every entry expires terminalRetention
+	// after it was written or refreshed, so that is also expiry order), which makes
+	// pruning and eviction amortized O(1). Guarded by activeMu, and only written or read under
+	// broadcastMu (commitLocal), so it stays ordered with activeLocal.
+	removedIngress map[removedKey]*list.Element
+	removedOrder   *list.List
 
 	// broadcastMu keeps snapshot enqueueing ordered with local lifecycle and
 	// removal updates. Always acquire it before activeMu.
@@ -384,13 +418,15 @@ func (m *Manager) applyDiscovery(msg *Message) {
 }
 
 // localFrame is a validated local-origin lifecycle or removal frame. Exactly
-// one of wl (lifecycle) and removeID (removal) is set.
+// one of wl (lifecycle) and removeID (removal) is set. ingress marks a frame
+// that came in through the loopback ingress rather than from the broker.
 type localFrame struct {
 	method     string
 	params     json.RawMessage
 	wl         *Workload
 	removeID   string
 	removeNode string
+	ingress    bool
 }
 
 // parseLocalFrame validates a local-origin frame without side effects, so a
@@ -421,15 +457,29 @@ func parseLocalFrame(method string, params json.RawMessage) (localFrame, error) 
 // is preserved for peers' dedup. The removal wire carries only (workloadId,
 // originatedFrom) — no engine/runId — so a removal drops every composite key
 // matching that pair.
+//
+// A removal through the ingress also tombstones its (origin, id) pair, and a
+// non-ingress lifecycle frame for a tombstoned pair is skipped entirely (see
+// Manager.removedIngress). A re-sync-tagged frame is an explicit re-assertion
+// rather than a replay, so it is not skipped.
 func (m *Manager) commitLocal(f localFrame) {
 	m.broadcastMu.Lock()
 	defer m.broadcastMu.Unlock()
 	if f.wl != nil {
 		key := workloadKey{origin: f.wl.OriginatedFrom, engine: f.wl.Engine, runID: f.wl.RunID, id: f.wl.ID}
+		if f.ingress {
+			m.clearRemoved(f.wl.OriginatedFrom, f.wl.ID)
+		} else if !isResyncFrame(f.params) && m.wasRemoved(f.wl.OriginatedFrom, f.wl.ID) {
+			slog.Debug("dropping replayed lifecycle for a workload removed through the ingress", "method", f.method, "id", f.wl.ID)
+			return
+		}
 		m.trackActive(key, f.method, f.params, f.wl.State)
 		slog.Debug("broadcasting local lifecycle", "method", f.method, "id", f.wl.ID, "state", f.wl.State, "peers", m.peers.count())
 	} else {
 		m.untrackActive(f.removeNode, f.removeID)
+		if f.ingress {
+			m.markRemoved(f.removeNode, f.removeID)
+		}
 		slog.Debug("broadcasting local removal", "workloadId", f.removeID, "node", f.removeNode, "peers", m.peers.count())
 	}
 	m.broadcastFrame(f.method, f.params)
@@ -570,6 +620,59 @@ func (m *Manager) untrackActive(origin, id string) {
 		}
 	}
 	m.activeMu.Unlock()
+}
+
+// markRemoved tombstones the (origin, id) pair of an ingress removal, whether
+// or not anything was tracked for it. It drops the tombstones that have expired
+// and, when the memory is still full, the oldest ones (maxRemovedIngress).
+func (m *Manager) markRemoved(origin, id string) {
+	now := time.Now()
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	if m.removedIngress == nil {
+		m.removedIngress = make(map[removedKey]*list.Element)
+		m.removedOrder = list.New()
+	}
+	for front := m.removedOrder.Front(); front != nil && now.After(front.Value.(removedEntry).expiresAt); front = m.removedOrder.Front() {
+		m.dropRemoved(front)
+	}
+	key := removedKey{origin, id}
+	if el, ok := m.removedIngress[key]; ok {
+		m.dropRemoved(el)
+	}
+	for len(m.removedIngress) >= maxRemovedIngress {
+		m.dropRemoved(m.removedOrder.Front())
+	}
+	m.removedIngress[key] = m.removedOrder.PushBack(removedEntry{key: key, expiresAt: now.Add(terminalRetention)})
+}
+
+// dropRemoved removes one tombstone. The caller holds activeMu.
+func (m *Manager) dropRemoved(el *list.Element) {
+	delete(m.removedIngress, m.removedOrder.Remove(el).(removedEntry).key)
+}
+
+// wasRemoved reports whether (origin, id) holds an unexpired ingress-removal
+// tombstone.
+func (m *Manager) wasRemoved(origin, id string) bool {
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	el, ok := m.removedIngress[removedKey{origin, id}]
+	if !ok {
+		return false
+	}
+	if time.Now().After(el.Value.(removedEntry).expiresAt) {
+		m.dropRemoved(el)
+		return false
+	}
+	return true
+}
+
+func (m *Manager) clearRemoved(origin, id string) {
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	if el, ok := m.removedIngress[removedKey{origin, id}]; ok {
+		m.dropRemoved(el)
+	}
 }
 
 // activeSnapshot copies the current re-sync set (active + not-yet-expired

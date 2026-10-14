@@ -275,6 +275,7 @@ func parseIngressFrame(method string, params json.RawMessage, selfUUID string) (
 	if err := validateIngressFrame(f, selfUUID); err != nil {
 		return localFrame{}, err
 	}
+	f.ingress = true
 	return f, nil
 }
 

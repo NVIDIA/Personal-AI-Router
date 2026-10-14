@@ -1014,7 +1014,7 @@ func TestIngestLocalTrackedFrameCarriesNoResyncFlag(t *testing.T) {
 }
 
 // assertIngressUntouched fails when a rejected frame left any trace: a broker
-// write, a queued peer frame or a re-sync entry.
+// write, a queued peer frame, a re-sync entry or a removal tombstone.
 func assertIngressUntouched(t *testing.T, m *Manager, rw *captureRW) {
 	t.Helper()
 	if out := rw.String(); out != "" {
@@ -1025,6 +1025,149 @@ func assertIngressUntouched(t *testing.T, m *Manager, rw *captureRW) {
 	}
 	if got := len(m.activeSnapshot()); got != 0 {
 		t.Fatalf("re-sync set = %d, want 0", got)
+	}
+	if got := len(m.removedIngress); got != 0 {
+		t.Fatalf("removal memory = %d, want 0", got)
+	}
+}
+
+// stdioReplay is the broker replaying a stored lifecycle event to the worker.
+func stdioReplay(m *Manager, method, id string, seq int) {
+	m.handleMessage(&Message{JSONRPC: "2.0", Method: method, Params: ingestFrame(id, seq)})
+}
+
+// TestIngressRemovalBlocksStaleStdioReplay: the broker replays its store to a
+// restarted worker, and the replay can land after the producer's removal.
+func TestIngressRemovalBlocksStaleStdioReplay(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodStarted, ingestFrame("W", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ingestLocal(MethodRemove, json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid"}`)); err != nil {
+		t.Fatal(err)
+	}
+	queuedFrames(m)
+
+	stdioReplay(m, MethodStarted, "W", 1)
+	m.broadcastSnapshot("heartbeat")
+
+	if got := len(m.activeSnapshot()); got != 0 {
+		t.Fatalf("re-sync set = %d, want 0: the removed workload was tracked again", got)
+	}
+	if frames := queuedFrames(m); len(frames) != 0 {
+		t.Fatalf("peer queue = %v, want empty: the stale replay was re-broadcast", frames)
+	}
+}
+
+func TestIngressLifecycleClearsRemovalTombstone(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodStarted, ingestFrame("W", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ingestLocal(MethodRemove, json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ingestLocal(MethodStarted, ingestFrame("W", 2)); err != nil {
+		t.Fatal(err)
+	}
+	queuedFrames(m)
+
+	stdioReplay(m, MethodCompleted, "W", 3)
+
+	if frames := queuedFrames(m); len(frames) != 1 {
+		t.Fatalf("peer queue = %d frames, want the broker's next event for the re-reported workload", len(frames))
+	}
+}
+
+func TestRemovalTombstoneExpires(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodStarted, ingestFrame("W", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ingestLocal(MethodRemove, json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for el := m.removedOrder.Front(); el != nil; el = el.Next() {
+		entry := el.Value.(removedEntry)
+		entry.expiresAt = time.Now().Add(-time.Second)
+		el.Value = entry
+	}
+	queuedFrames(m)
+
+	stdioReplay(m, MethodStarted, "W", 2)
+
+	if got := len(m.activeSnapshot()); got != 1 {
+		t.Fatalf("re-sync set = %d, want 1: an expired tombstone must not block", got)
+	}
+	if len(m.removedIngress) != 0 {
+		t.Fatalf("expired tombstone kept: %v", m.removedIngress)
+	}
+}
+
+// TestIngressRemovalBeforeReplayOnFreshWorker is the restart case itself: the
+// worker has just started, so nothing is tracked when the producer's removal
+// arrives, and the broker's replay of the workload follows it.
+func TestIngressRemovalBeforeReplayOnFreshWorker(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodRemove, json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid"}`)); err != nil {
+		t.Fatal(err)
+	}
+	queuedFrames(m)
+
+	stdioReplay(m, MethodStarted, "W", 1)
+	m.broadcastSnapshot("heartbeat")
+
+	if got := len(m.activeSnapshot()); got != 0 {
+		t.Fatalf("re-sync set = %d, want 0: the removed workload was tracked again", got)
+	}
+	if frames := queuedFrames(m); len(frames) != 0 {
+		t.Fatalf("peer queue = %v, want empty: the stale replay was re-broadcast", frames)
+	}
+}
+
+// The tombstone is the (origin, id) pair a removal carries, so a workload with
+// another id is unaffected.
+func TestRemovalTombstoneCoversOnlyTheRemovedPair(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodRemove, json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid"}`)); err != nil {
+		t.Fatal(err)
+	}
+	queuedFrames(m)
+
+	stdioReplay(m, MethodStarted, "V", 1)
+
+	if got := len(m.activeSnapshot()); got != 1 {
+		t.Fatalf("re-sync set = %d, want 1: a different workload was blocked", got)
+	}
+}
+
+func TestStdioRemovalLeavesNoTombstone(t *testing.T) {
+	m, _ := newTestManager(t)
+	stdioReplay(m, MethodStarted, "W", 1)
+	m.handleMessage(&Message{JSONRPC: "2.0", Method: MethodRemove, Params: json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid"}`)})
+	queuedFrames(m)
+
+	stdioReplay(m, MethodStarted, "W", 2)
+
+	if got := len(m.activeSnapshot()); got != 1 {
+		t.Fatalf("re-sync set = %d, want 1: only ingress removals are tombstoned", got)
+	}
+}
+
+func TestRemovalTombstoneDoesNotBlockResyncTaggedFrame(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.ingestLocal(MethodStarted, ingestFrame("W", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ingestLocal(MethodRemove, json.RawMessage(`{"workloadId":"W","originatedFrom":"self-uuid"}`)); err != nil {
+		t.Fatal(err)
+	}
+	queuedFrames(m)
+
+	m.handleMessage(&Message{JSONRPC: "2.0", Method: MethodStarted, Params: json.RawMessage(`{"resync":true,"workloadInfo":{"id":"W","model":"qwen","engine":"llamacpp","runId":"W","state":"running","originatedFrom":"self-uuid","createdAt":1}}`)})
+
+	if got := len(m.activeSnapshot()); got != 1 {
+		t.Fatalf("re-sync set = %d, want 1: an explicit re-assertion must not be treated as a replay", got)
 	}
 }
 
@@ -1252,4 +1395,140 @@ func TestLocalIngressOverlongWorkloadIDIs400(t *testing.T) {
 	}
 	test("upsert", `{"jsonrpc":"2.0","method":"workload:started","params":`+string(ingestFrame(overLimit, 1))+`}`)
 	test("remove", `{"jsonrpc":"2.0","method":"workloads:remove","params":{"workloadId":"`+overLimit+`"}}`)
+}
+
+func TestRemovalMemoryIsBounded(t *testing.T) {
+	m, _ := newTestManager(t)
+	for i := 0; i < maxRemovedIngress+10; i++ {
+		m.markRemoved("self-uuid", fmt.Sprintf("w%d", i))
+	}
+	if got := len(m.removedIngress); got != maxRemovedIngress {
+		t.Fatalf("removal memory = %d, want the cap %d", got, maxRemovedIngress)
+	}
+	if got := m.removedOrder.Len(); got != maxRemovedIngress {
+		t.Fatalf("removal order list = %d, want the cap %d", got, maxRemovedIngress)
+	}
+}
+
+func TestRemovalMemoryEvictsTheOldestFirst(t *testing.T) {
+	m, _ := newTestManager(t)
+	const extra = 10
+	for i := 0; i < maxRemovedIngress+extra; i++ {
+		m.markRemoved("self-uuid", fmt.Sprintf("w%d", i))
+	}
+	for i := 0; i < extra; i++ {
+		if m.wasRemoved("self-uuid", fmt.Sprintf("w%d", i)) {
+			t.Errorf("w%d is among the oldest and should have been evicted", i)
+		}
+	}
+	for i := extra; i < maxRemovedIngress+extra; i++ {
+		if !m.wasRemoved("self-uuid", fmt.Sprintf("w%d", i)) {
+			t.Fatalf("w%d was evicted but is newer than an evicted entry", i)
+		}
+	}
+}
+
+// Removing the same workload again refreshes its entry instead of adding one,
+// and makes it the newest, so a repeated removal is not evicted before older ones.
+func TestRemovalMemoryRefreshesARepeatedRemoval(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.markRemoved("self-uuid", "first")
+	for i := 0; i < maxRemovedIngress-1; i++ {
+		m.markRemoved("self-uuid", fmt.Sprintf("w%d", i))
+	}
+	m.markRemoved("self-uuid", "first")
+	m.markRemoved("self-uuid", "newest")
+	if got := len(m.removedIngress); got != maxRemovedIngress {
+		t.Fatalf("removal memory = %d, want %d", got, maxRemovedIngress)
+	}
+	if !m.wasRemoved("self-uuid", "first") {
+		t.Error("the refreshed removal was evicted ahead of older ones")
+	}
+	if m.wasRemoved("self-uuid", "w0") {
+		t.Error("the oldest removal outlived the refreshed one")
+	}
+}
+
+// Expired entries are dropped from the front of the order list when a removal
+// is marked, so the memory does not keep them until the cap evicts them.
+func TestRemovalMemoryPrunesExpiredEntriesOnMark(t *testing.T) {
+	m, _ := newTestManager(t)
+	for i := 0; i < 5; i++ {
+		m.markRemoved("self-uuid", fmt.Sprintf("old%d", i))
+	}
+	for el := m.removedOrder.Front(); el != nil; el = el.Next() {
+		entry := el.Value.(removedEntry)
+		entry.expiresAt = time.Now().Add(-time.Second)
+		el.Value = entry
+	}
+	m.markRemoved("self-uuid", "fresh")
+	if got := len(m.removedIngress); got != 1 || !m.wasRemoved("self-uuid", "fresh") {
+		t.Fatalf("removal memory = %d entries, want only the fresh one", got)
+	}
+}
+
+// Removing the same pair again below the cap replaces its entry in the order
+// list as well as in the map. A list element left behind keeps the first
+// removal's expiry, and dropping it when that expiry passes would delete the map
+// entry of the refreshed removal.
+func TestRemovalMemoryRepeatedRemovalBelowTheCapHoldsOneEntry(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.markRemoved("self-uuid", "W")
+	m.markRemoved("self-uuid", "W")
+	if got := len(m.removedIngress); got != 1 {
+		t.Fatalf("removal memory = %d entries, want 1", got)
+	}
+	if got := m.removedOrder.Len(); got != 1 {
+		t.Fatalf("removal order list = %d entries, want 1 like the map", got)
+	}
+}
+
+// ageRemovals moves every removal's expiry d earlier, as if d had passed since
+// it was marked. The removal memory reads the clock directly, so this is how a
+// test lets time go by.
+func ageRemovals(m *Manager, d time.Duration) {
+	for el := m.removedOrder.Front(); el != nil; el = el.Next() {
+		entry := el.Value.(removedEntry)
+		entry.expiresAt = entry.expiresAt.Add(-d)
+		el.Value = entry
+	}
+}
+
+// A repeated removal renews its tombstone: once the first removal's own expiry
+// has passed, and until the renewed one does, a stale replay is still blocked,
+// even after another removal has pruned the expired entries in between.
+func TestRemovalMemoryRepeatedRemovalBlocksPastTheFirstExpiry(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.markRemoved("self-uuid", "W")
+	// Three quarters of the retention pass, and the producer removes it again.
+	ageRemovals(m, terminalRetention*3/4)
+	m.markRemoved("self-uuid", "W")
+	// Half of the retention passes: the first removal expired a quarter of it ago
+	// and the second has half of it left. Marking another removal prunes what has
+	// expired.
+	ageRemovals(m, terminalRetention/2)
+	m.markRemoved("self-uuid", "other")
+
+	stdioReplay(m, MethodStarted, "W", 1)
+
+	if got := len(m.activeSnapshot()); got != 0 {
+		t.Fatalf("re-sync set = %d, want 0: the renewed tombstone stopped blocking before it expired", got)
+	}
+	if frames := queuedFrames(m); len(frames) != 0 {
+		t.Fatalf("peer queue = %v, want empty: the stale replay was re-broadcast", frames)
+	}
+}
+
+// A tombstone lasts terminalRetention from the removal: the window in which the
+// broker's replay of its store can still arrive, and as long as a finished
+// workload stays in the re-sync set.
+func TestRemovalMemoryTombstoneLivesForTheTerminalRetention(t *testing.T) {
+	m, _ := newTestManager(t)
+	before := time.Now()
+	m.markRemoved("self-uuid", "W")
+	after := time.Now()
+	lifetime := m.removedOrder.Front().Value.(removedEntry).expiresAt.Sub(before)
+	if lifetime < terminalRetention || lifetime > terminalRetention+after.Sub(before) {
+		t.Fatalf("tombstone expires %v after the removal, want %v", lifetime, terminalRetention)
+	}
 }
