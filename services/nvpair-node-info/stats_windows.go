@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,15 +104,8 @@ const (
 	// which came up before its display stack was ready reports its GPUs within
 	// seconds of them becoming visible, and the retry is a DXGI enumeration
 	// plus a registry read: cheap enough to repeat, far too slow to put on the
-	// 1 s stats tick.
+	// 1 s stats tick. The retries end at the first non-empty detection.
 	gpuInventoryRecoverInterval = 10 * time.Second
-
-	// gpuInventoryRefreshInterval is the steady-state re-detect cadence once
-	// at least one adapter is known. It exists so an adapter that appears
-	// after startup (hot-plugged, or a clone a remote session brought in) is
-	// picked up without a restart; a refresh that finds the same statsKeys
-	// publishes nothing.
-	gpuInventoryRefreshInterval = 60 * time.Second
 )
 
 var (
@@ -209,24 +201,25 @@ type statsCollector struct {
 	// the previous one.
 	latest atomic.Pointer[statsSnapshot]
 
-	// gpuInventory is the latest adapter list re-detected off the tick by
-	// runGPUInventory, published into every Snapshot() as GPUInventory and
-	// folded into the startup list by main.go's mergeGPUInventory. nil until a
-	// detection returns at least one adapter.
+	// gpuInventory is the adapter list runGPUInventory recovered after an
+	// empty startup enumeration, published into every Snapshot() as
+	// GPUInventory and folded into the startup list by main.go's
+	// mergeGPUInventory. nil until a detection returns at least one adapter;
+	// stored once and never replaced.
 	gpuInventory atomic.Pointer[[]GPUInfo]
 
 	// detect enumerates the host's adapters. Always detectGPUs in production;
 	// injected in tests so the recovery loop runs without DXGI.
 	detect func() []GPUInfo
 
-	// Re-detection cadences. Fields rather than constants so tests can run the
-	// loop at millisecond speed.
+	// inventoryRecoverEvery is the retry cadence while the inventory is empty.
+	// A field rather than a constant so tests can run the loop at millisecond
+	// speed.
 	inventoryRecoverEvery time.Duration
-	inventoryRefreshEvery time.Duration
 
 	stop chan struct{}
-	// wg covers both long-lived goroutines the collector owns: the 1 s stats
-	// tick and the GPU inventory re-detect loop.
+	// wg covers the goroutines the collector owns: the 1 s stats tick and the
+	// GPU inventory loop, which ends on its own once it has published.
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 }
@@ -239,7 +232,6 @@ func newStatsCollector(detect func() []GPUInfo) *statsCollector {
 		stop:                  make(chan struct{}),
 		detect:                detect,
 		inventoryRecoverEvery: gpuInventoryRecoverInterval,
-		inventoryRefreshEvery: gpuInventoryRefreshInterval,
 	}
 	c.latest.Store(&statsSnapshot{})
 	return c
@@ -276,31 +268,31 @@ func startStatsCollector() *statsCollector {
 	return c
 }
 
-// startGPUInventory launches the re-detect loop. Separate from
+// startGPUInventory launches the inventory recovery loop. Separate from
 // startStatsCollector so a test can run this loop on its own.
 func (c *statsCollector) startGPUInventory() {
 	c.wg.Add(1)
 	go c.runGPUInventory()
 }
 
-// runGPUInventory re-detects the host adapters off the 1 s tick and publishes
-// the result through the snapshot.
+// runGPUInventory repairs an inventory that came up empty, off the 1 s tick, and
+// stops as soon as it has.
 //
-// It repairs two states that previously needed a service restart:
+// Windows reassigns adapter LUIDs on every boot but rewrites the DirectX
+// registry keys about a minute later, so a service that enumerated inside that
+// window could gate every real adapter away against the previous boot's LUIDs
+// (the stale-registry case selectPhysicalAdapters now refuses) or simply lose a
+// race with the display driver, and then served an empty GPU list for as long as
+// it ran. This retries every inventoryRecoverEvery until a detection returns at
+// least one adapter, publishes that list once, and exits.
 //
-//   - An inventory that came up empty. Windows reassigns adapter LUIDs on
-//     every boot but rewrites the DirectX registry keys about a minute later,
-//     so a service that enumerated inside that window could gate every real
-//     adapter away against the previous boot's LUIDs (the stale-registry case
-//     selectPhysicalAdapters now refuses) or simply lose a race with the
-//     display driver, and then served an empty GPU list for as long as it ran.
-//     While nothing has been detected this retries every inventoryRecoverEvery.
-//   - A set that changed after startup: an adapter hot-plugged, or a clone a
-//     remote session brought in. Once adapters are known this re-detects every
-//     inventoryRefreshEvery and republishes only when the statsKey set differs,
-//     so the steady state is one enumeration a minute and no snapshot churn.
-//     Only additions reach the response: mergeGPUInventory never drops an
-//     adapter the startup enumeration already reported.
+// It deliberately does not keep refreshing afterwards. An adapter's statsKey is
+// its LUID, and Windows reissues LUIDs mid-session (a driver update or restart,
+// a GPU timeout and recovery). mergeGPUInventory appends any adapter whose
+// statsKey it has not seen, so a later re-detection would list one physical card
+// twice, once under the key it held at startup and once under the reissued one.
+// Publishing a single detection means the inventory can only ever add adapters
+// the startup enumeration missed.
 //
 // Detection walks COM and reads the registry, which is why it lives on its own
 // goroutine rather than on the stats tick. Recovered adapters need no extra
@@ -309,34 +301,20 @@ func (c *statsCollector) startGPUInventory() {
 // inventory knew, so VRAM and utilization land on them at the next tick.
 func (c *statsCollector) runGPUInventory() {
 	defer c.wg.Done()
-	var published []string
-	attempts := 0
-	for {
-		attempts++
+	for attempts := 1; ; attempts++ {
 		if gpus := c.detect(); len(gpus) > 0 {
-			if keys := gpuStatsKeys(gpus); !slices.Equal(keys, published) {
-				switch {
-				case published != nil:
-					slog.Info("GPU inventory changed; republishing",
-						"adapters", len(gpus), "previous", len(published))
-				case attempts > 1:
-					// The state this loop exists for: the host enumerated no
-					// adapter at startup and now has some.
-					slog.Info("GPU inventory recovered after an empty enumeration",
-						"adapters", len(gpus), "attempts", attempts)
-				default:
-					slog.Debug("GPU inventory detected", "adapters", len(gpus))
-				}
-				published = keys
-				inventory := gpus
-				c.gpuInventory.Store(&inventory)
+			if attempts > 1 {
+				// The state this loop exists for: the host enumerated no
+				// adapter at startup and now has some.
+				slog.Info("GPU inventory recovered after an empty enumeration",
+					"adapters", len(gpus), "attempts", attempts)
+			} else {
+				slog.Debug("GPU inventory detected", "adapters", len(gpus))
 			}
+			c.gpuInventory.Store(&gpus)
+			return
 		}
-		wait := c.inventoryRefreshEvery
-		if published == nil {
-			wait = c.inventoryRecoverEvery
-		}
-		timer := time.NewTimer(wait)
+		timer := time.NewTimer(c.inventoryRecoverEvery)
 		select {
 		case <-c.stop:
 			timer.Stop()
@@ -344,19 +322,6 @@ func (c *statsCollector) runGPUInventory() {
 		case <-timer.C:
 		}
 	}
-}
-
-// gpuStatsKeys returns the sorted statsKeys of an inventory, the identity
-// runGPUInventory compares two detections by. A name or a VRAM size is a
-// property of an adapter that is already in the set, so only the set itself
-// decides whether a republish is worth it.
-func gpuStatsKeys(gpus []GPUInfo) []string {
-	keys := make([]string, 0, len(gpus))
-	for _, gpu := range gpus {
-		keys = append(keys, gpu.statsKey)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 func (c *statsCollector) open() error {
@@ -662,8 +627,9 @@ func (c *statsCollector) Snapshot() statsSnapshot {
 	return snap
 }
 
-// Stop signals both owned goroutines (the stats tick and the GPU inventory
-// re-detect loop) to exit, waits for them, and closes the PDH query. Safe to call any number of times from any number of
+// Stop signals the owned goroutines (the stats tick and, if it is still
+// retrying, the GPU inventory loop) to exit, waits for them, and closes the PDH
+// query. Safe to call any number of times from any number of
 // goroutines — sync.Once guarantees the shutdown body runs exactly
 // once. (A naive `select { case <-c.stop: default: }` guard would race
 // two concurrent callers past the guard before either ran the close,

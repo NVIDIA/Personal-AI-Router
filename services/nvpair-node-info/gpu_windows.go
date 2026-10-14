@@ -28,8 +28,9 @@ import (
 // it is a UINT32 capped at 4 GiB and is wrong for every modern dGPU.
 //
 // VRAM is a hardware property and never changes at runtime, but WHICH adapters
-// enumerate is not settled at boot, so detection runs at startup and is then
-// re-run on a timer by the stats collector (stats_windows.go).
+// enumerate is not settled at boot, so detection runs at startup and, if that
+// came up empty, is retried on a timer by the stats collector until it finds
+// an adapter (stats_windows.go).
 
 // IID_IDXGIFactory1 = {770aae78-f26f-4dba-a829-253c83d1b387}
 // https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nn-dxgi-idxgifactory1
@@ -225,10 +226,10 @@ type adapterCandidate struct {
 	luidHigh int32
 }
 
-// One-shot warning latches. Adapter detection now re-runs on a timer
-// (stats_windows.go), and each of these conditions persists until something
-// outside this process changes, so a plain slog.Warn in the path would repeat
-// the same line for the life of the service.
+// One-shot warning latches. While the inventory is empty, adapter detection
+// is retried on a timer (stats_windows.go), and each of these conditions
+// persists until something outside this process changes, so a plain slog.Warn
+// in the path would repeat the same line on every retry.
 var (
 	dxgiFactoryWarned        atomic.Bool
 	luidGateUnreadableWarned atomic.Bool
@@ -251,8 +252,7 @@ var (
 // adapter matches, and the gate drops the entire inventory. A machine that
 // just enumerated real adapters never has zero GPUs, so an empty result is
 // proof the registry is stale rather than proof the adapters are phantoms:
-// keep them all and let a later refresh apply the gate normally once the keys
-// catch up.
+// keep them all.
 func selectPhysicalAdapters(candidates []adapterCandidate, physical map[uint64]struct{}) []adapterCandidate {
 	if len(candidates) == 0 || len(physical) == 0 {
 		return candidates
@@ -365,8 +365,8 @@ func enumerateAdapterCandidates() []adapterCandidate {
 
 // detectGPUs enumerates the host's display adapters and returns the ones that
 // should be reported as node GPUs. Safe to call repeatedly: the Windows stats
-// collector re-runs it on a timer so an enumeration that came up empty at boot
-// recovers without a restart (stats_windows.go).
+// collector retries it on a timer while it comes up empty, so an enumeration
+// that found nothing at boot recovers without a restart (stats_windows.go).
 func detectGPUs() []GPUInfo {
 	candidates := enumerateAdapterCandidates()
 	if len(candidates) == 0 {
