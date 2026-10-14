@@ -215,15 +215,11 @@ func keepPhysicalAdapter(luid uint64, physical map[uint64]struct{}) bool {
 
 // adapterCandidate is one DXGI adapter that has already passed the
 // DXGI_ADAPTER_FLAG_SOFTWARE and virtual-display-name checks, i.e. everything
-// that depends only on the adapter itself. Its LUID is carried in both forms
-// a consumer may need: the packed QWORD the DirectX registry gate is keyed
-// by, and the DWORD halves D3DKMT takes when a per-adapter query (a PCI
-// address lookup for a vendor tool) resolves it.
+// that depends only on the adapter itself. luid is the packed value the
+// DirectX registry gate is keyed by.
 type adapterCandidate struct {
-	gpu      GPUInfo
-	luid     uint64
-	luidLow  uint32
-	luidHigh int32
+	gpu  GPUInfo
+	luid uint64
 }
 
 // One-shot warning latches. While the inventory is empty, adapter detection
@@ -299,9 +295,8 @@ func physicalAdapterGate() map[uint64]struct{} {
 
 // enumerateAdapterCandidates walks DXGI once and returns every adapter that is
 // neither a software renderer nor a Microsoft remoting/virtual display. The
-// registry gate is left to the caller so every consumer of this list
-// (detectGPUs today; any per-adapter join later) shares one enumeration and
-// cannot drift apart on what counts as an adapter.
+// registry gate is left to the caller so selectPhysicalAdapters can be tested
+// without DXGI.
 func enumerateAdapterCandidates() []adapterCandidate {
 	var factory unsafe.Pointer
 	hr, _, _ := procCreateDXGIFactory1.Call(
@@ -355,9 +350,7 @@ func enumerateAdapterCandidates() []adapterCandidate {
 				VramBytes: uint64(desc.DedicatedVideoMemory),
 				statsKey:  luidKey(desc.AdapterLuidLow, desc.AdapterLuidHigh),
 			},
-			luid:     luidUint64(desc.AdapterLuidLow, desc.AdapterLuidHigh),
-			luidLow:  desc.AdapterLuidLow,
-			luidHigh: desc.AdapterLuidHigh,
+			luid: luidUint64(desc.AdapterLuidLow, desc.AdapterLuidHigh),
 		})
 	}
 	return candidates
