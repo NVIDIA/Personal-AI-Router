@@ -5,10 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # Upgrade Guide
 
-Updating to PAIR 1.0.0 works the same way as any other update. Your settings,
-cluster membership, and downloaded models all carry over, so for most machines
-there is nothing extra to do. Install the update as described in
-[Keeping PAIR Up to Date](getting-started.mdx#keeping-pair-up-to-date), and
+Updating to NVIDIA Personal AI Router (PAIR) 1.0.0 works the same way as any
+other update. Your settings, cluster membership, and downloaded models all carry
+over, so for most machines there is nothing extra to do. Install the update as
+described in [Keeping PAIR Up to Date](getting-started.mdx#keeping-pair-up-to-date), and
 update each machine in your cluster so they all run the same version.
 
 A few situations call for a small extra step. Each section below says who it
@@ -25,7 +25,7 @@ For everything that is new in this release, refer to
 
 The macOS application is now called **NVIDIA PAIR**. Earlier versions were
 installed as `PAIR.app`, and because the name changed, the new disk image adds
-`NVIDIA PAIR.app` beside the old app instead of replacing it. Keep just one by
+`NVIDIA PAIR.app` beside the old app instead of replacing it. Keep only one by
 removing the old app with the uninstaller it includes. The uninstaller keeps
 your settings, cluster membership, engines, and models.
 
@@ -44,12 +44,12 @@ your settings, cluster membership, engines, and models.
 The uninstaller is a better choice than dragging the old app to the Trash,
 because it also removes PAIR's firewall rules and the helper that manages them.
 
-If you updated from within PAIR using **Restart & install**, the update was
-applied to your existing app, which keeps working under the `PAIR.app` name.
+If you updated from within PAIR using **Restart & install**, PAIR applied the
+update to your existing app, which keeps working under the `PAIR.app` name.
 PAIR finds its files and data from wherever the app is, not by its name, so
-there is nothing more to do unless you also install `NVIDIA PAIR.app` from the
-disk image, in which case remove `PAIR.app` as above. If PAIR does not reopen
-after **Restart & install**, open it from **Applications**.
+there is nothing more to do. If you also install `NVIDIA PAIR.app` from the
+disk image, remove `PAIR.app` as described earlier in this section. If PAIR
+does not reopen after **Restart & install**, open it from **Applications**.
 
 ## If an Earlier PAIR Installed LM Studio for You
 
@@ -109,27 +109,28 @@ This applies only to browser-based clients. Command-line tools, IDEs, agents,
 and desktop applications are not affected.
 
 PAIR's local endpoints now use each engine's own browser access setting, known
-as CORS, rather than allowing every website. That means a web page can reach
-your models through PAIR only if you have allowed it in the engine. If a
+as cross-origin resource sharing (CORS), rather than allowing every website.
+That means a web page can reach your models through PAIR only if you have
+allowed it in the engine. If a
 browser-based client stopped connecting after the update, allow it in the
-engine's launch options. Ollama and llama.cpp take a list of allowed addresses;
-LM Studio has an on/off switch instead:
+engine's launch options. Ollama and llama.cpp take a list of allowed addresses,
+and LM Studio has an on/off switch instead:
 
 | Engine | Setting |
 | --- | --- |
 | Ollama | Add the address to `OLLAMA_ORIGINS`, for example `OLLAMA_ORIGINS="https://example.com"` |
-| LM Studio | Add the `--cors` switch. It takes no address; LM Studio decides which origins it allows. |
+| LM Studio | Add the `--cors` switch. It takes no address, and LM Studio decides which origins it allows. |
 | llama.cpp | Add the address to `--cors-origins` |
 
 Make the change on the machine that runs the engine. For Ollama and llama.cpp,
-include the address's scheme, such as `https://`; a wildcard on its own (`*`)
+include the address's scheme, such as `https://`. A wildcard on its own (`*`)
 or a bare `localhost` is not accepted. If requests can be routed to other
 machines in your cluster, make the change on each of them.
 [Engine Settings](engine-settings.mdx) has the details.
 
 ## Checking Everything Is Working
 
-After updating each machine, you can confirm that **Settings → Service** shows
+After updating each machine, you can confirm that **Settings > Service** shows
 the new version, its engines are running in **Overview**, and its paired
 machines are still listed. If anything looks wrong,
 [Troubleshooting](troubleshooting.mdx) can help.
