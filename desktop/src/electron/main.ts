@@ -16,12 +16,7 @@ import {
     isMacHelperSetupComplete,
     setMacHelperSetupComplete
 } from '@/electron/config/ui-config'
-import {
-    applyLoginItem,
-    readLoginItem,
-    shouldStartHidden,
-    wasOpenedAtLogin
-} from '@/electron/login-item'
+import { reconcileLoginItem, shouldStartHidden, wasOpenedAtLogin } from '@/electron/login-item'
 import { currentPlatform } from '@/shared/utils/platform'
 import { APP_DISPLAY_NAME, APP_EXIT_ARGUMENT, APP_ID } from '@/shared/constants/app'
 import { migrateAppData } from '@/electron/path'
@@ -190,7 +185,7 @@ if (!gotTheLock || exitRequested) {
         }
         initTray()
 
-        reconcileLoginItem()
+        reconcileLoginItemAtLaunch()
 
         void runMacPrivilegedSetup(hiddenLaunch)
 
@@ -206,23 +201,23 @@ if (!gotTheLock || exitRequested) {
     const log = createStructuredLogger('app')
 
     /**
-     * Rewrite the OS login item from the persisted preferences, once per launch.
+     * Bring the OS login item in line with the persisted preferences, once per
+     * launch.
      *
      * The registered entry names an executable, and an app update moves that
      * executable, so an entry written by the previous version can point at a
-     * path that no longer exists. Re-applying on every ready keeps it current
-     * without the user touching the toggle again, and costs nothing when the
-     * preference is off — `openAtLogin: false` simply leaves no entry behind.
+     * path that no longer exists. Reconciling on every ready keeps it current
+     * without the user touching the toggle again. It writes only when the entry
+     * differs from the preference, and never re-enables an entry the user
+     * disabled in Task Manager or Windows Settings.
      */
-    function reconcileLoginItem(): void {
+    function reconcileLoginItemAtLaunch(): void {
         const startup = getStartupSettings()
         try {
-            applyLoginItem(startup)
-            const applied = readLoginItem(startup)
-            if (!applied) return
+            const outcome = reconcileLoginItem(startup)
             log.info({
                 sublevel: 'login-item',
-                message: `Login item reconciled: requested openAtLogin=${startup.launchAtLogin} startHidden=${startup.startHidden}, reported openAtLogin=${applied.openAtLogin}`
+                message: `Login item ${outcome}: launchAtLogin=${startup.launchAtLogin} startHidden=${startup.startHidden}`
             })
         } catch (err) {
             // Autostart is a convenience; a registry or SMAppService failure must

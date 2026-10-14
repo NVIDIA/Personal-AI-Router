@@ -22,7 +22,7 @@ import {
     setModularLogLevel,
     setStartupSettings
 } from '@/electron/config/ui-config'
-import { applyLoginItem, isLoginItemSupported } from '@/electron/login-item'
+import { isLoginItemSupported, reconcileLoginItem } from '@/electron/login-item'
 import {
     getModularSupervisor,
     readCliBinManifest
@@ -114,15 +114,15 @@ export function registerServiceIpc(): void {
     })
 
     safeHandle('service:set-startup', async (_event, payload): Promise<StartupState> => {
-        // Persist first, then write the login item from the merged result: the
-        // config is what the next launch reconciles from, so a login item that
-        // matched a payload the config never took would be undone on restart.
-        // `applyLoginItem` no-ops where the OS has no login item, which leaves
-        // the preference stored for a platform that does.
-        setStartupSettings(payload)
-        const state = startupState()
-        applyLoginItem(state)
-        return state
+        // Persist first, then reconcile the login item from the merged result:
+        // the config is what the next launch reconciles from, so a login item
+        // that matched a payload the config never took would be undone on
+        // restart. The reconcile writes only when the OS entry differs from the
+        // preference (and never re-enables an entry the user disabled), and
+        // no-ops where the OS has no login item, which leaves the preference
+        // stored for a platform that does.
+        reconcileLoginItem(setStartupSettings(payload))
+        return startupState()
     })
 
     safeHandle('service:open-log-file', async () => {
