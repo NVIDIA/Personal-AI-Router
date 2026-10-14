@@ -221,8 +221,8 @@ export default function ServiceSettings() {
     }, [])
 
     /**
-     * Flip the switch immediately, then reconcile against what main actually
-     * wrote. Writing a login item touches the registry (or SMAppService), which
+     * Flip the switch immediately, then reconcile against what main reads back
+     * from the OS. Writing a login item touches the registry (or SMAppService), which
      * can fail on a locked-down machine — a switch left where the user put it
      * after that would claim an autostart that does not exist.
      */

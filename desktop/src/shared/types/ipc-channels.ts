@@ -118,10 +118,11 @@ export interface IpcChannelMap {
     /** Startup switches as the OS reports them, plus whether this OS supports a login item. */
     'service:get-startup': { request: void; response: StartupState }
     /**
-     * Persist the given startup preferences and rewrite the OS login item from
-     * the merged result. Omitted keys keep their stored value; the response is
-     * the state that was actually written, so the UI reconciles against it
-     * rather than against what it asked for.
+     * Persist the given startup preferences and write the OS login item for the
+     * switch that changed. Omitted keys keep their stored value, and a request
+     * that repeats what the switch showed writes nothing. The response is read
+     * back from the OS, so the UI reconciles against what it took rather than
+     * against what was asked for.
      */
     'service:set-startup': { request: Partial<StartupSettings>; response: StartupState }
     'service:open-log-file': { request: void; response: void }

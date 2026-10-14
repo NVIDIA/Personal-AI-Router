@@ -21,7 +21,7 @@ export interface IServiceApi {
     setLogLevel(level: ModularLogLevel): Promise<void>
     /** Launch-at-login preferences, plus whether this OS supports a login item. */
     getStartup(): Promise<StartupState>
-    /** Persist the given keys and rewrite the login item; resolves with what was written. */
+    /** Persist the given keys and write the login item for the one that changed; resolves with the state read back from the OS. */
     setStartup(settings: Partial<StartupSettings>): Promise<StartupState>
     openLogFile(): Promise<void>
     openLogDir(): Promise<void>
