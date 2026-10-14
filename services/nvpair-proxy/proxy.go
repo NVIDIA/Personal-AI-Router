@@ -710,15 +710,20 @@ func awaitFirstBody(body io.ReadCloser, budget time.Duration) (io.ReadCloser, er
 		ch <- peeked{b: one[:n], err: err}
 	}()
 
-	timer := time.NewTimer(budget)
-	defer timer.Stop()
+	// A zero budget waits indefinitely: a nil channel never fires.
+	var expired <-chan time.Time
+	if budget > 0 {
+		timer := time.NewTimer(budget)
+		defer timer.Stop()
+		expired = timer.C
+	}
 	select {
 	case p := <-ch:
 		if len(p.b) == 0 && p.err != nil && !stderrors.Is(p.err, io.EOF) {
 			return nil, p.err
 		}
 		return bodyWithPeek{Reader: io.MultiReader(bytes.NewReader(p.b), body), Closer: body}, nil
-	case <-timer.C:
+	case <-expired:
 		return nil, errFirstBodyTimeout
 	}
 }
@@ -728,7 +733,6 @@ func awaitFirstBody(body io.ReadCloser, budget time.Duration) (io.ReadCloser, er
 const (
 	proxyDialTimeout     = 10 * time.Second
 	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
 	proxyMaxIdleConns    = 50
 	proxyIdleConnTimeout = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
@@ -752,17 +756,47 @@ const (
 // deadline against a real socket; production never reassigns it.
 var idleClientWriteTimeout = 30 * time.Second
 
+// defaultResponseTimeout bounds how long one attempt waits for an upstream
+// engine or peer to start answering: first for response headers, then for the
+// first content byte. The header clock starts when the request is sent, so for
+// a non-streaming completion it covers queueing, prefill and the whole
+// generation, because the engine sends nothing until the answer is complete.
+// The old 120s failed any non-streaming request that queued behind other jobs
+// or ran a long reasoning model, and a peer's ingress hop applied the same
+// limit again. Unreachable hosts are still cut off by proxyDialTimeout, dead
+// clients by idleClientWriteTimeout, and a client that gives up cancels the
+// upstream request through its context, so this deadline is only a backstop
+// for an engine that accepted the request and never answers. Overridable per
+// install; see setResponseTimeout.
+const defaultResponseTimeout = 30 * time.Minute
+
+// responseHeaderTimeout is the transport's ResponseHeaderTimeout on every
+// inference transport (plain, manual and mTLS peer alike); 0 disables it.
+//
 // firstBodyTimeout bounds how long awaitFirstBody waits for an engine to emit
-// its first content byte. It matches proxyResponseTimeout, the budget the
-// transport applies to headers, because from the caller's point of view the two
-// bound the same thing: how long we wait for a node to start the work. Keeping
-// it generous is deliberate — it also covers a cold model load, which is real
+// its first content byte; 0 waits indefinitely. It matches
+// responseHeaderTimeout, because from the caller's point of view the two bound
+// the same thing: how long we wait for a node to start the work. Keeping it
+// generous is deliberate — it also covers a cold model load, which is real
 // work rather than a stall, and which cannot be told apart from a queue wait
 // from outside the engine.
 //
-// It is a var (not a const) only so a test can shorten it; production never
-// reassigns it.
-var firstBodyTimeout = proxyResponseTimeout
+// Both are vars so main can set them once, before serving, through
+// setResponseTimeout, and so a test can shorten them. Transports are built
+// lazily, so the value must be final by the first forwarded request.
+var (
+	responseHeaderTimeout = defaultResponseTimeout
+	firstBodyTimeout      = defaultResponseTimeout
+)
+
+// setResponseTimeout applies the configured --response-header-timeout to both
+// the header wait and the first-content wait. Raising only the header wait
+// would leave a streaming request whose engine sent headers early (LM Studio)
+// to be cut off by the first-content wait at the old value.
+func setResponseTimeout(d time.Duration) {
+	responseHeaderTimeout = d
+	firstBodyTimeout = d
+}
 
 var modelListClient = &http.Client{
 	Transport: &http.Transport{
@@ -829,7 +863,7 @@ func newProxyTransport(tlsCfg *tls.Config) *http.Transport {
 			Timeout:   proxyDialTimeout,
 			KeepAlive: proxyKeepAlive,
 		}).DialContext,
-		ResponseHeaderTimeout: proxyResponseTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		MaxIdleConns:          proxyMaxIdleConns,
 		MaxIdleConnsPerHost:   proxyMaxIdleConns,
 		IdleConnTimeout:       proxyIdleConnTimeout,
