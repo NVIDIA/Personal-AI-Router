@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { App } from 'electron'
+import type { App, LoginItemSettings } from 'electron'
 import type { currentPlatform } from '@/shared/utils/platform'
 
 /**
@@ -28,8 +28,24 @@ import {
     applyLoginItem,
     isLoginItemSupported,
     readLoginItem,
-    shouldOpenOverviewOnStart
+    shouldStartHidden,
+    wasOpenedAtLogin
 } from '@/electron/login-item'
+
+/** What the OS reports for an app with no login item, with `overrides` on top. */
+function osState(overrides: Partial<LoginItemSettings> = {}): LoginItemSettings {
+    return {
+        openAtLogin: false,
+        openAsHidden: false,
+        wasOpenedAtLogin: false,
+        wasOpenedAsHidden: false,
+        restoreState: false,
+        status: 'not-registered',
+        executableWillLaunchAtLogin: false,
+        launchItems: [],
+        ...overrides
+    }
+}
 
 describe('login item registration', () => {
     beforeEach(() => {
@@ -108,16 +124,79 @@ describe('login item registration', () => {
     })
 })
 
-describe('overview window on startup', () => {
+describe('who opened the app at login', () => {
+    it('reports a macOS launch by the login item', () => {
+        mocks.currentPlatform.mockReturnValue('darwin')
+        mocks.app.getLoginItemSettings.mockReturnValue(osState({ wasOpenedAtLogin: true }))
+        expect(wasOpenedAtLogin()).toBe(true)
+    })
+
+    it('reports a macOS launch by hand', () => {
+        mocks.currentPlatform.mockReturnValue('darwin')
+        mocks.app.getLoginItemSettings.mockReturnValue(osState({ wasOpenedAtLogin: false }))
+        expect(wasOpenedAtLogin()).toBe(false)
+    })
+
+    it('does not ask the OS on Windows, where the argument carries the answer', () => {
+        mocks.currentPlatform.mockReturnValue('win32')
+        expect(wasOpenedAtLogin()).toBe(false)
+        expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
+    })
+})
+
+describe('staying in the tray at startup', () => {
+    type StartHiddenInput = Parameters<typeof shouldStartHidden>[0]
+
+    /** A launch by hand on Windows with the preference on; each case changes what it tests. */
+    const startsHidden = (overrides: Partial<StartHiddenInput>): boolean =>
+        shouldStartHidden({
+            argv: ['/path/to/app'],
+            platform: 'win32',
+            wasOpenedAtLogin: false,
+            startHidden: true,
+            ...overrides
+        })
+
+    it('stays in the tray when the login item passes the hidden argument', () => {
+        expect(startsHidden({ argv: ['/path/to/app', APP_HIDDEN_ARGUMENT] })).toBe(true)
+    })
+
+    it('stays in the tray on macOS when the OS opened the app at login', () => {
+        expect(startsHidden({ platform: 'darwin', wasOpenedAtLogin: true })).toBe(true)
+    })
+
+    it('stays in the tray on macOS when the hidden argument is present', () => {
+        expect(
+            startsHidden({ platform: 'darwin', argv: ['/path/to/app', APP_HIDDEN_ARGUMENT] })
+        ).toBe(true)
+    })
+
     it('opens the window for a launch by hand', () => {
-        expect(shouldOpenOverviewOnStart(['/path/to/app'])).toBe(true)
+        expect(startsHidden({})).toBe(false)
     })
 
-    it('stays in the tray for a launch by the login item', () => {
-        expect(shouldOpenOverviewOnStart(['/path/to/app', APP_HIDDEN_ARGUMENT])).toBe(false)
+    it('opens the window for a launch by hand on macOS', () => {
+        expect(startsHidden({ platform: 'darwin', wasOpenedAtLogin: false })).toBe(false)
     })
 
-    it('is not fooled by an unrelated switch', () => {
-        expect(shouldOpenOverviewOnStart(['/path/to/app', '--enable-logging'])).toBe(true)
+    it('ignores an unrelated switch', () => {
+        expect(startsHidden({ argv: ['/path/to/app', '--enable-logging'] })).toBe(false)
+    })
+
+    it('ignores wasOpenedAtLogin off macOS, where the OS does not report it', () => {
+        expect(startsHidden({ platform: 'win32', wasOpenedAtLogin: true })).toBe(false)
+        expect(startsHidden({ platform: 'linux', wasOpenedAtLogin: true })).toBe(false)
+    })
+
+    it('opens the window at login once start minimized is switched off', () => {
+        expect(
+            startsHidden({ argv: ['/path/to/app', APP_HIDDEN_ARGUMENT], startHidden: false })
+        ).toBe(false)
+    })
+
+    it('opens the window on a macOS login launch once start minimized is switched off', () => {
+        expect(
+            startsHidden({ platform: 'darwin', wasOpenedAtLogin: true, startHidden: false })
+        ).toBe(false)
     })
 })

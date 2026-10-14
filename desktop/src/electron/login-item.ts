@@ -4,6 +4,7 @@
 import { app } from 'electron'
 import { APP_HIDDEN_ARGUMENT } from '@/shared/constants/app'
 import type { StartupSettings } from '@/shared/types/ipc-channels'
+import type { SupportedPlatform } from '@/shared/types/platform'
 import { currentPlatform } from '@/shared/utils/platform'
 
 /**
@@ -75,12 +76,43 @@ export function readLoginItem(settings: StartupSettings): Electron.LoginItemSett
 }
 
 /**
- * Whether a process started with `argv` should open the Overview window.
+ * Whether the OS started this process as a login item. macOS only: Windows
+ * reports it through {@link APP_HIDDEN_ARGUMENT} instead, and the field does not
+ * exist there.
  *
- * Only the login item passes {@link APP_HIDDEN_ARGUMENT}, so its absence means a
- * person started the app and expects to see it. Kept pure and separate from the
- * `app.whenReady()` body so the startup decision is testable without Electron.
+ * Read once at launch. It describes how this process was started, so it says
+ * nothing about a later second launch that reaches this process as an event.
  */
-export function shouldOpenOverviewOnStart(argv: readonly string[]): boolean {
-    return !argv.includes(APP_HIDDEN_ARGUMENT)
+export function wasOpenedAtLogin(): boolean {
+    if (currentPlatform() !== 'darwin') return false
+    return app.getLoginItemSettings().wasOpenedAtLogin
+}
+
+/**
+ * Whether a launch should stay in the tray with no window.
+ *
+ * Only when the user asked for it (`startHidden`), and only for a launch the
+ * login item made, which the platforms report differently:
+ *
+ * - Windows and Linux: the login item carries {@link APP_HIDDEN_ARGUMENT} and
+ *   nothing else adds it, so a launch by hand still opens the window.
+ * - macOS: a login item carries no arguments, so the OS reports
+ *   `wasOpenedAtLogin` instead.
+ *
+ * Pure and separate from the `app.whenReady()` body so the decision is testable
+ * without Electron.
+ */
+export function shouldStartHidden({
+    argv,
+    platform,
+    wasOpenedAtLogin: openedAtLogin,
+    startHidden
+}: {
+    argv: readonly string[]
+    platform: SupportedPlatform
+    wasOpenedAtLogin: boolean
+    startHidden: boolean
+}): boolean {
+    if (!startHidden) return false
+    return argv.includes(APP_HIDDEN_ARGUMENT) || (platform === 'darwin' && openedAtLogin)
 }
