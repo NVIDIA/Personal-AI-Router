@@ -554,6 +554,8 @@ If no cluster-manager is being supervised (or it has exited), the broker replies
 
 Acknowledges, then terminates the broker. The proxy is stopped first, then engine-manager is asked to stop its engines (`engine:prepare-shutdown`), then every running worker subprocess is torn down by closing its stdin and waiting for it to exit — no grace timer, no force-kill (each worker bounds its own shutdown).
 
+The broker's teardown sends `engine:prepare-shutdown`, and closing engine-manager's stdin afterwards reaches the same engine sweep. Engine-manager sweeps its engines once; later callers wait for that sweep rather than starting another, and retry only an engine whose stop failed through a process handle or a stop command.
+
 ```json
 {"jsonrpc":"2.0","id":4,"method":"shutdown"}
 ```
