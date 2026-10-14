@@ -137,6 +137,9 @@ func TestWindowsCollectorRetriesEmptyGPUInventory(t *testing.T) {
 	waitForStats(t, "the recovered inventory", func() bool {
 		return len(c.Snapshot().GPUInventory) == len(recovered)
 	})
+	// Count only once the loop has exited, so a loop that kept detecting
+	// fails here instead of racing the read below.
+	waitForInventoryLoopExit(t, c)
 
 	if got := calls.Load(); got != emptyDetections+1 {
 		t.Fatalf("detect ran %d times, want %d empty detections and the one that found the adapters",
