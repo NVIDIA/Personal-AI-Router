@@ -27,9 +27,9 @@ type gpuStat struct {
 // GPUInventory is normally nil. It carries an adapter list a collector
 // re-detected after startup, which main.go's mergeGPUInventory folds into the
 // list detected once at boot: the Darwin collector fills it from its retrying
-// ioreg sample, and the Windows collector from its re-detect loop, so an
-// enumeration that failed or came up empty at boot recovers without restarting
-// the service.
+// ioreg sample, and the Windows collector from its empty-inventory retry loop,
+// so an enumeration that failed or came up empty at boot recovers without
+// restarting the service.
 //
 // Unsupported collectors publish a zero-valued snapshot — GPU is a nil map
 // (omitempty semantics for downstream lookups come from the per-GPU omitempty
