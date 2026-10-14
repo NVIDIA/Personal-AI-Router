@@ -83,6 +83,14 @@ type LoginItemPlan =
     // `enabled` only matters on Windows; see planLoginItem.
     | { kind: 'register'; enabled: boolean }
 
+/**
+ * Whether a macOS login item exists. One waiting on approval in System Settings
+ * counts: it is registered, and writing again does not approve it.
+ */
+function isMacItemRegistered(current: LoginItemSettings): boolean {
+    return current.openAtLogin || current.status === 'requires-approval'
+}
+
 /** Windows paths are case-insensitive, and the Run value may keep its quotes. */
 function normalizeWindowsPath(value: string): string {
     return path.win32.normalize(value.replace(/^"|"$/g, '')).toLowerCase()
@@ -147,7 +155,7 @@ export function planLoginItem({
     execPath: string
 }): LoginItemPlan {
     if (platform !== 'win32') {
-        const registered = current.openAtLogin || current.status === 'requires-approval'
+        const registered = isMacItemRegistered(current)
         if (settings.launchAtLogin) {
             return registered ? { kind: 'keep' } : { kind: 'register', enabled: true }
         }
@@ -178,35 +186,46 @@ function readLoginItem(settings: StartupSettings, platform: SupportedPlatform): 
 }
 
 /**
- * Bring the OS login item in line with `settings`, writing only what differs.
- * Returns what it did: `skipped` where there is nothing to write.
- *
- * Windows: Electron writes the `HKCU\...\Run` entry itself, defaulting the
- * executable to `process.execPath` and the value name to the AppUserModelId, so
- * neither `path` nor `name` is passed — pinning them would freeze the entry on a
- * path an app update moves. `args` carries the hidden-start argument.
- * {@link planLoginItem} decides whether to write at all.
- *
- * macOS: the entry is the app itself; the hidden start is decided at launch by
- * {@link shouldStartHidden}.
- *
- * An unpackaged build writes nothing. There `process.execPath` is the Electron
- * binary inside `node_modules` and the AppUserModelId is that same path, so a
- * `npm start` on a machine where the installed app already launches at login
- * would add a second entry that starts a bare Electron at sign-in. The
- * preference is still persisted, and the installed build applies it.
+ * Whether this process manages the OS login item at all. An unpackaged build
+ * writes nothing: there `process.execPath` is the Electron binary inside
+ * `node_modules` and the AppUserModelId is that same path, so a `npm start` on a
+ * machine where the installed app already launches at login would add a second
+ * entry that starts a bare Electron at sign-in. The preference is still
+ * persisted, and the installed build applies it.
  */
-export function reconcileLoginItem(settings: StartupSettings): LoginItemPlan['kind'] | 'skipped' {
-    if (!isLoginItemSupported() || !app.isPackaged) return 'skipped'
+function managesLoginItem(): boolean {
+    return isLoginItemSupported() && app.isPackaged
+}
 
+/**
+ * Whether the OS will start this app at login, as Settings shows it.
+ *
+ * The OS is asked, not the stored preference, because the entry is not only ours
+ * to change: on Windows the user can disable it in Task Manager or Windows
+ * Settings, and on macOS in System Settings. A switch that kept reading the
+ * preference would claim an autostart that never happens.
+ *
+ * - Windows: `executableWillLaunchAtLogin`, which is false for an entry the user
+ *   disabled and ignores the arguments, so it holds whichever hidden-start
+ *   setting the entry was written under.
+ * - macOS: an entry exists, including one waiting on approval.
+ * - Where {@link reconcileLoginItem} writes nothing (Linux, an unpackaged build)
+ *   there is no OS entry of ours to report, so the stored preference is returned
+ *   and the switch keeps what the user set.
+ */
+export function readLaunchAtLogin(settings: StartupSettings): boolean {
+    if (!managesLoginItem()) return settings.launchAtLogin
     const platform = currentPlatform()
-    const plan = planLoginItem({
-        settings,
-        current: readLoginItem(settings, platform),
-        platform,
-        execPath: process.execPath
-    })
+    const current = readLoginItem(settings, platform)
+    return platform === 'win32' ? current.executableWillLaunchAtLogin : isMacItemRegistered(current)
+}
 
+/** Carry out `plan`, writing nothing for `keep`. */
+function writeLoginItem(
+    plan: LoginItemPlan,
+    settings: StartupSettings,
+    platform: SupportedPlatform
+): void {
     switch (plan.kind) {
         case 'keep':
             break
@@ -225,5 +244,118 @@ export function reconcileLoginItem(settings: StartupSettings): LoginItemPlan['ki
             )
             break
     }
+}
+
+/**
+ * Decide what the OS login item needs after the user changed a Startup switch.
+ *
+ * Unlike the launch reconcile this is the user acting, so it writes only for the
+ * switch that was touched:
+ *
+ * - Launch at login, when the request differs from what the switch showed (the
+ *   OS state {@link readLaunchAtLogin} reported, not the stored preference).
+ *   Turning it on writes an enabled entry, which also re-enables one the user had
+ *   disabled outside the app; that is what flipping the switch asks for. Turning
+ *   it off removes the entry.
+ * - Start minimized, on Windows only, because the argument lives in the Run
+ *   entry. An entry that exists is rewritten with the new argument, keeping it
+ *   disabled if the user disabled it. With no entry nothing is written: the
+ *   preference is stored, and the next launch reconciles it.
+ *
+ * Anything else, such as a request that repeats the current value, writes
+ * nothing.
+ *
+ * `registered` is what {@link readLaunchAtLogin} returned before the change;
+ * `current` is the OS entry read under the arguments `next` would register.
+ */
+export function planStartupChange({
+    requested,
+    previous,
+    next,
+    registered,
+    current,
+    platform,
+    execPath
+}: {
+    requested: Partial<StartupSettings>
+    previous: StartupSettings
+    next: StartupSettings
+    registered: boolean
+    current: LoginItemSettings
+    platform: SupportedPlatform
+    execPath: string
+}): LoginItemPlan {
+    if (typeof requested.launchAtLogin === 'boolean' && requested.launchAtLogin !== registered) {
+        return requested.launchAtLogin ? { kind: 'register', enabled: true } : { kind: 'remove' }
+    }
+
+    const hiddenChanged =
+        typeof requested.startHidden === 'boolean' && requested.startHidden !== previous.startHidden
+    if (platform === 'win32' && hiddenChanged && next.launchAtLogin) {
+        const hasEntry =
+            current.openAtLogin || ownedWindowsItems(current.launchItems, execPath).length > 0
+        if (hasEntry) return planLoginItem({ settings: next, current, platform, execPath })
+    }
+    return { kind: 'keep' }
+}
+
+/**
+ * Write the login item for a change to the Startup switches. `previous` and
+ * `registered` are read before the preference is stored, `next` is the stored
+ * result. Returns what it did, `skipped` where nothing is managed.
+ */
+export function applyStartupChange({
+    requested,
+    previous,
+    next,
+    registered
+}: {
+    requested: Partial<StartupSettings>
+    previous: StartupSettings
+    next: StartupSettings
+    registered: boolean
+}): LoginItemPlan['kind'] | 'skipped' {
+    if (!managesLoginItem()) return 'skipped'
+
+    const platform = currentPlatform()
+    const plan = planStartupChange({
+        requested,
+        previous,
+        next,
+        registered,
+        current: readLoginItem(next, platform),
+        platform,
+        execPath: process.execPath
+    })
+    writeLoginItem(plan, next, platform)
+    return plan.kind
+}
+
+/**
+ * Bring the OS login item in line with `settings`, writing only what differs.
+ * Returns what it did: `skipped` where there is nothing to write.
+ *
+ * Windows: Electron writes the `HKCU\...\Run` entry itself, defaulting the
+ * executable to `process.execPath` and the value name to the AppUserModelId, so
+ * neither `path` nor `name` is passed — pinning them would freeze the entry on a
+ * path an app update moves. `args` carries the hidden-start argument.
+ * {@link planLoginItem} decides whether to write at all.
+ *
+ * macOS: the entry is the app itself; the hidden start is decided at launch by
+ * {@link shouldStartHidden}.
+ *
+ * Nothing is written where {@link managesLoginItem} is false.
+ */
+export function reconcileLoginItem(settings: StartupSettings): LoginItemPlan['kind'] | 'skipped' {
+    if (!managesLoginItem()) return 'skipped'
+
+    const platform = currentPlatform()
+    const plan = planLoginItem({
+        settings,
+        current: readLoginItem(settings, platform),
+        platform,
+        execPath: process.execPath
+    })
+    writeLoginItem(plan, settings, platform)
     return plan.kind
 }

@@ -3,12 +3,15 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { App, LaunchItems, LoginItemSettings } from 'electron'
+import type { StartupSettings } from '@/shared/types/ipc-channels'
+import type { SupportedPlatform } from '@/shared/types/platform'
 import type { currentPlatform } from '@/shared/utils/platform'
 
 /**
  * The OS side of launching at login, checked against what actually consumes it:
- * the registered argument list, the entry the OS reports back, and the startup
- * decision that keeps the window closed.
+ * the registered argument list, the entry the OS reports back, what a launch or a
+ * switch in Settings is allowed to write, and the startup decision that keeps the
+ * window closed.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -25,8 +28,11 @@ vi.mock('@/shared/utils/platform', () => ({ currentPlatform: mocks.currentPlatfo
 
 import { APP_HIDDEN_ARGUMENT, APP_ID } from '@/shared/constants/app'
 import {
+    applyStartupChange,
     isLoginItemSupported,
     planLoginItem,
+    planStartupChange,
+    readLaunchAtLogin,
     reconcileLoginItem,
     shouldStartHidden,
     wasOpenedAtLogin
@@ -410,5 +416,381 @@ describe('staying in the tray at startup', () => {
         expect(
             startsHidden({ platform: 'darwin', wasOpenedAtLogin: true, startHidden: false })
         ).toBe(false)
+    })
+})
+
+describe('reading launch at login from the OS', () => {
+    beforeEach(() => {
+        mocks.currentPlatform.mockReturnValue('win32')
+        mocks.app.isPackaged = true
+        mocks.app.getLoginItemSettings.mockReturnValue(osState())
+    })
+
+    describe('on Windows', () => {
+        it('reads on for an entry that will launch at login', () => {
+            mocks.app.getLoginItemSettings.mockReturnValue(
+                osState({
+                    openAtLogin: true,
+                    executableWillLaunchAtLogin: true,
+                    launchItems: [runEntry()]
+                })
+            )
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
+        })
+
+        it('reads off for an entry the user disabled in Task Manager', () => {
+            mocks.app.getLoginItemSettings.mockReturnValue(
+                osState({
+                    openAtLogin: true,
+                    executableWillLaunchAtLogin: false,
+                    launchItems: [runEntry({ enabled: false })]
+                })
+            )
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(false)
+        })
+
+        it('reads off when the stored preference is on but there is no entry', () => {
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(false)
+        })
+
+        it('reads on when the stored preference is off but an entry exists', () => {
+            mocks.app.getLoginItemSettings.mockReturnValue(
+                osState({ executableWillLaunchAtLogin: true, launchItems: [runEntry()] })
+            )
+            expect(readLaunchAtLogin(OFF)).toBe(true)
+        })
+
+        it('reads on whichever hidden-start setting the entry was written under', () => {
+            mocks.app.getLoginItemSettings.mockReturnValue(
+                osState({
+                    executableWillLaunchAtLogin: true,
+                    launchItems: [runEntry({ args: [] })]
+                })
+            )
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
+        })
+
+        it('asks the OS under the arguments the preference registers', () => {
+            readLaunchAtLogin(ON_HIDDEN)
+            expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({ args: ['--hidden'] })
+        })
+    })
+
+    describe('on macOS', () => {
+        beforeEach(() => {
+            mocks.currentPlatform.mockReturnValue('darwin')
+        })
+
+        it('reads on for an enabled login item', () => {
+            mocks.app.getLoginItemSettings.mockReturnValue(
+                osState({ openAtLogin: true, status: 'enabled' })
+            )
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
+        })
+
+        it('reads on for a login item waiting for approval in System Settings', () => {
+            mocks.app.getLoginItemSettings.mockReturnValue(osState({ status: 'requires-approval' }))
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
+        })
+
+        it('reads off when the user removed the login item', () => {
+            mocks.app.getLoginItemSettings.mockReturnValue(osState({ status: 'not-registered' }))
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(false)
+        })
+    })
+
+    describe('where nothing is written', () => {
+        it('returns the stored preference from an unpackaged build', () => {
+            mocks.app.isPackaged = false
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
+            expect(readLaunchAtLogin(OFF)).toBe(false)
+        })
+
+        it('does not ask the OS from an unpackaged build', () => {
+            mocks.app.isPackaged = false
+            readLaunchAtLogin(ON_HIDDEN)
+            expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
+        })
+
+        it('returns the stored preference on a platform Electron cannot register', () => {
+            mocks.currentPlatform.mockReturnValue('linux')
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
+            expect(readLaunchAtLogin(OFF)).toBe(false)
+            expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
+        })
+    })
+})
+
+describe('planning a change to the Startup switches', () => {
+    /** What the switches showed and what the OS holds before the change. */
+    interface Before {
+        previous: StartupSettings
+        /** Launch at login as readLaunchAtLogin reported it. */
+        registered: boolean
+        current?: Partial<LoginItemSettings>
+        platform?: SupportedPlatform
+    }
+
+    const plan = (requested: Partial<StartupSettings>, before: Before) =>
+        planStartupChange({
+            requested,
+            previous: before.previous,
+            next: { ...before.previous, ...requested },
+            registered: before.registered,
+            current: osState(before.current),
+            platform: before.platform ?? 'win32',
+            execPath: WINDOWS_EXE
+        })
+
+    describe('the Launch at login switch', () => {
+        it('writes an enabled entry when it is turned on', () => {
+            expect(plan({ launchAtLogin: true }, { previous: OFF, registered: false })).toEqual({
+                kind: 'register',
+                enabled: true
+            })
+        })
+
+        it('re-enables an entry the user disabled outside the app when it is turned on', () => {
+            // The switch read off because the OS entry is disabled, so turning
+            // it on is a change even though the stored preference is already on.
+            const before = {
+                previous: ON_HIDDEN,
+                registered: false,
+                current: { openAtLogin: true, launchItems: [runEntry({ enabled: false })] }
+            }
+            expect(plan({ launchAtLogin: true }, before)).toEqual({
+                kind: 'register',
+                enabled: true
+            })
+        })
+
+        it('removes the entry when it is turned off', () => {
+            const before = {
+                previous: ON_HIDDEN,
+                registered: true,
+                current: { openAtLogin: true, launchItems: [runEntry()] }
+            }
+            expect(plan({ launchAtLogin: false }, before)).toEqual({ kind: 'remove' })
+        })
+
+        it('writes nothing when a request repeats what the switch showed as on', () => {
+            const before = { previous: ON_HIDDEN, registered: true }
+            expect(plan({ launchAtLogin: true }, before)).toEqual({ kind: 'keep' })
+        })
+
+        it('writes nothing when a request repeats what the switch showed as off', () => {
+            const before = { previous: OFF, registered: false }
+            expect(plan({ launchAtLogin: false }, before)).toEqual({ kind: 'keep' })
+        })
+
+        it('writes an enabled entry when both switches change together', () => {
+            expect(
+                plan(
+                    { launchAtLogin: true, startHidden: false },
+                    { previous: OFF, registered: false }
+                )
+            ).toEqual({ kind: 'register', enabled: true })
+        })
+    })
+
+    describe('the Start minimized switch on Windows', () => {
+        // The entry is read under the arguments the new setting would register,
+        // so the entry written under the old setting reads as not matching.
+        const staleEntry = (overrides: Partial<LaunchItems> = {}) => ({
+            openAtLogin: false,
+            launchItems: [runEntry(overrides)]
+        })
+
+        it('rewrites the entry with the new argument', () => {
+            const before = { previous: ON_HIDDEN, registered: true, current: staleEntry() }
+            expect(plan({ startHidden: false }, before)).toEqual({
+                kind: 'register',
+                enabled: true
+            })
+        })
+
+        it('rewrites an entry the user disabled without re-enabling it', () => {
+            const before = {
+                previous: ON_HIDDEN,
+                registered: false,
+                current: staleEntry({ enabled: false })
+            }
+            expect(plan({ startHidden: false }, before)).toEqual({
+                kind: 'register',
+                enabled: false
+            })
+        })
+
+        it('writes nothing when there is no entry to rewrite', () => {
+            // The preference is stored and the next launch reconciles it.
+            const before = { previous: ON_HIDDEN, registered: false }
+            expect(plan({ startHidden: false }, before)).toEqual({ kind: 'keep' })
+        })
+
+        it('writes nothing while launch at login is off', () => {
+            const before = { previous: OFF, registered: false, current: staleEntry() }
+            expect(plan({ startHidden: false }, before)).toEqual({ kind: 'keep' })
+        })
+
+        it('writes nothing when a request repeats the stored value', () => {
+            const before = { previous: ON_HIDDEN, registered: true, current: staleEntry() }
+            expect(plan({ startHidden: true }, before)).toEqual({ kind: 'keep' })
+        })
+
+        it('writes nothing for an entry that already carries the new argument', () => {
+            const before = {
+                previous: ON_HIDDEN,
+                registered: true,
+                current: { openAtLogin: true, launchItems: [runEntry({ args: [] })] }
+            }
+            expect(plan({ startHidden: false }, before)).toEqual({ kind: 'keep' })
+        })
+    })
+
+    describe('on macOS', () => {
+        it('writes a login item when launch at login is turned on', () => {
+            const before = { previous: OFF, registered: false, platform: 'darwin' as const }
+            expect(plan({ launchAtLogin: true }, before)).toEqual({
+                kind: 'register',
+                enabled: true
+            })
+        })
+
+        it('removes the login item when launch at login is turned off', () => {
+            const before = { previous: ON_HIDDEN, registered: true, platform: 'darwin' as const }
+            expect(plan({ launchAtLogin: false }, before)).toEqual({ kind: 'remove' })
+        })
+
+        it('writes nothing when start minimized changes, since a login item has no arguments', () => {
+            const before = {
+                previous: ON_HIDDEN,
+                registered: true,
+                current: { openAtLogin: true, status: 'enabled' as const },
+                platform: 'darwin' as const
+            }
+            expect(plan({ startHidden: false }, before)).toEqual({ kind: 'keep' })
+        })
+    })
+})
+
+describe('applying a change to the Startup switches', () => {
+    beforeEach(() => {
+        mocks.currentPlatform.mockReturnValue('win32')
+        mocks.app.isPackaged = true
+        mocks.app.getLoginItemSettings.mockReturnValue(osState())
+    })
+
+    it('registers the entry with the hidden argument when launch at login is turned on', () => {
+        const outcome = applyStartupChange({
+            requested: { launchAtLogin: true },
+            previous: OFF,
+            next: ON_HIDDEN,
+            registered: false
+        })
+        expect(outcome).toBe('register')
+        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith({
+            openAtLogin: true,
+            args: ['--hidden'],
+            enabled: true
+        })
+    })
+
+    it('removes the entry when launch at login is turned off', () => {
+        const outcome = applyStartupChange({
+            requested: { launchAtLogin: false },
+            previous: ON_HIDDEN,
+            next: OFF,
+            registered: true
+        })
+        expect(outcome).toBe('remove')
+        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: false })
+    })
+
+    it('writes nothing when a request repeats what the switch showed', () => {
+        const outcome = applyStartupChange({
+            requested: { launchAtLogin: true },
+            previous: ON_HIDDEN,
+            next: ON_HIDDEN,
+            registered: true
+        })
+        expect(outcome).toBe('keep')
+        expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
+    })
+
+    it('reads the entry under the arguments the new setting would register', () => {
+        applyStartupChange({
+            requested: { startHidden: false },
+            previous: ON_HIDDEN,
+            next: ON_VISIBLE,
+            registered: true
+        })
+        expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({ args: [] })
+    })
+
+    it('rewrites an existing entry when start minimized changes', () => {
+        mocks.app.getLoginItemSettings.mockReturnValue(osState({ launchItems: [runEntry()] }))
+        const outcome = applyStartupChange({
+            requested: { startHidden: false },
+            previous: ON_HIDDEN,
+            next: ON_VISIBLE,
+            registered: true
+        })
+        expect(outcome).toBe('register')
+        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith({
+            openAtLogin: true,
+            args: [],
+            enabled: true
+        })
+    })
+
+    it('keeps a rewritten entry disabled when the user had disabled it', () => {
+        mocks.app.getLoginItemSettings.mockReturnValue(
+            osState({ launchItems: [runEntry({ enabled: false })] })
+        )
+        applyStartupChange({
+            requested: { startHidden: false },
+            previous: ON_HIDDEN,
+            next: ON_VISIBLE,
+            registered: false
+        })
+        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith(
+            expect.objectContaining({ enabled: false })
+        )
+    })
+
+    it('writes nothing when start minimized changes with no entry registered', () => {
+        applyStartupChange({
+            requested: { startHidden: false },
+            previous: ON_HIDDEN,
+            next: ON_VISIBLE,
+            registered: false
+        })
+        expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
+    })
+
+    it('touches nothing from an unpackaged build', () => {
+        mocks.app.isPackaged = false
+        const outcome = applyStartupChange({
+            requested: { launchAtLogin: true },
+            previous: OFF,
+            next: ON_HIDDEN,
+            registered: false
+        })
+        expect(outcome).toBe('skipped')
+        expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
+        expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
+    })
+
+    it('touches nothing on a platform Electron cannot register', () => {
+        mocks.currentPlatform.mockReturnValue('linux')
+        const outcome = applyStartupChange({
+            requested: { launchAtLogin: true },
+            previous: OFF,
+            next: ON_HIDDEN,
+            registered: false
+        })
+        expect(outcome).toBe('skipped')
+        expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
+        expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 })

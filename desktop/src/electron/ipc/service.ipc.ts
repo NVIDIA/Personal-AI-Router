@@ -22,7 +22,7 @@ import {
     setModularLogLevel,
     setStartupSettings
 } from '@/electron/config/ui-config'
-import { isLoginItemSupported, reconcileLoginItem } from '@/electron/login-item'
+import { applyStartupChange, isLoginItemSupported, readLaunchAtLogin } from '@/electron/login-item'
 import {
     getModularSupervisor,
     readCliBinManifest
@@ -42,9 +42,22 @@ function resolveShippedFile(name: string): string {
     return path.join(base, name)
 }
 
-/** Persisted startup preferences plus whether this OS has a login item to write. */
+/**
+ * The startup switches as Settings should show them, plus whether this OS has a
+ * login item to write.
+ *
+ * `launchAtLogin` is what the OS reports, not the stored preference, so an entry
+ * the user disabled outside the app does not read as on. `startHidden` has no OS
+ * state of its own (macOS login items carry no arguments), so it is the stored
+ * preference.
+ */
 function startupState(): StartupState {
-    return { ...getStartupSettings(), supported: isLoginItemSupported() }
+    const stored = getStartupSettings()
+    return {
+        launchAtLogin: readLaunchAtLogin(stored),
+        startHidden: stored.startHidden,
+        supported: isLoginItemSupported()
+    }
 }
 
 /** Open a shipped file in the OS default handler, falling back to revealing it. */
@@ -114,14 +127,16 @@ export function registerServiceIpc(): void {
     })
 
     safeHandle('service:set-startup', async (_event, payload): Promise<StartupState> => {
-        // Persist first, then reconcile the login item from the merged result:
-        // the config is what the next launch reconciles from, so a login item
-        // that matched a payload the config never took would be undone on
-        // restart. The reconcile writes only when the OS entry differs from the
-        // preference (and never re-enables an entry the user disabled), and
-        // no-ops where the OS has no login item, which leaves the preference
-        // stored for a platform that does.
-        reconcileLoginItem(setStartupSettings(payload))
+        // What the switches showed, read before anything changes: a request that
+        // repeats it is not a change and must not touch the OS entry.
+        const previous = getStartupSettings()
+        const registered = readLaunchAtLogin(previous)
+        // Persist first, then write the login item: the config is what the next
+        // launch reconciles from, so a login item that matched a payload the
+        // config never took would be undone on restart. The response is read back
+        // from the OS, so a switch the OS did not take reverts in the UI.
+        const next = setStartupSettings(payload)
+        applyStartupChange({ requested: payload, previous, next, registered })
         return startupState()
     })
 

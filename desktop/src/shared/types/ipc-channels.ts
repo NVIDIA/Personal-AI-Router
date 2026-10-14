@@ -67,7 +67,12 @@ export interface StartupSettings {
     startHidden: boolean
 }
 
-/** {@link StartupSettings} plus whether this OS has a login item Electron can write. */
+/**
+ * {@link StartupSettings} as the main process reports them, plus whether this OS
+ * has a login item Electron can write. `launchAtLogin` is what the OS reports
+ * where a login item is managed, so it reads off for an entry the user disabled
+ * in Task Manager or System Settings; elsewhere it is the stored preference.
+ */
 export interface StartupState extends StartupSettings {
     /** False on Linux, where autostart is not Electron's to manage. */
     supported: boolean
@@ -110,7 +115,7 @@ export interface IpcChannelMap {
     'service:restart': { request: void; response: void }
     'service:get-log-level': { request: void; response: ModularLogLevel }
     'service:set-log-level': { request: { level: ModularLogLevel }; response: void }
-    /** Launch-at-login preferences plus whether this OS supports a login item. */
+    /** Startup switches as the OS reports them, plus whether this OS supports a login item. */
     'service:get-startup': { request: void; response: StartupState }
     /**
      * Persist the given startup preferences and rewrite the OS login item from
