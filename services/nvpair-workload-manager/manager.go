@@ -105,6 +105,23 @@ type Manager struct {
 	// could resurrect a workload on peers that had already removed it.
 	broadcastCh chan []byte
 
+	// selfUUID is this node's stable UUID; the loopback ingress stamps it as
+	// originatedFrom on frames whose producer left it empty and refuses any
+	// other origin.
+	selfUUID string
+
+	// ingress is the optional loopback listener for third-party local
+	// producers (localingress.go); nil unless EnableLocalIngress was called.
+	ingress *localIngress
+
+	// ingestMu serializes ingress frames from validation through the enqueue
+	// for peers, so for one workload the order frames reach the broker equals
+	// the order peers are queued. Lock order: ingestMu, then broadcastMu, then
+	// activeMu. Only the ingress takes ingestMu, so a broker write that stalls
+	// under it holds up other ingress POSTs but never the stdio read loop or
+	// the re-sync heartbeat.
+	ingestMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -138,9 +155,23 @@ func NewManager(codec *Codec, port int, selfUUID, clusterDir string) *Manager {
 		relaySource: relaySource,
 		activeLocal: make(map[workloadKey]workloadEvent),
 		broadcastCh: make(chan []byte, broadcastQueueDepth),
+		selfUUID:    selfUUID,
 	}
 	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove)
 	return m
+}
+
+// EnableLocalIngress turns on the plaintext loopback workload ingress for
+// third-party local producers, bound to addr when Run starts. It must be called
+// before Run. A non-loopback address is an error, because that listener is
+// plaintext by design.
+func (m *Manager) EnableLocalIngress(addr string) error {
+	li, err := newLocalIngress(addr, m.ingestLocal)
+	if err != nil {
+		return err
+	}
+	m.ingress = li
+	return nil
 }
 
 func (m *Manager) Run(ctx context.Context) error {
@@ -168,6 +199,19 @@ func (m *Manager) Run(ctx context.Context) error {
 			serverErrCh <- err
 		}
 	}()
+
+	// The loopback ingress binds synchronously so a port already in use is a
+	// startup failure the broker's supervisor sees, not a silent no-listener.
+	if m.ingress != nil {
+		if err := m.ingress.Listen(); err != nil {
+			return err
+		}
+		go func() {
+			if err := m.ingress.Serve(ctx); err != nil {
+				serverErrCh <- err
+			}
+		}()
+	}
 
 	go m.discoveryLoop(ctx)
 	go m.resyncLoop(ctx)
@@ -410,6 +454,37 @@ func (m *Manager) handleLocalRemove(msg *Message) {
 		return
 	}
 	m.commitLocal(f)
+}
+
+// ingestLocal is the loopback ingress's entry: a frame from a local producer
+// that is NOT the broker. The broker only applies what this process sends it,
+// so the frame is first emitted UP as the translated workloads:upsert /
+// workloads:remove — that upward path is what updates the local store, the Jobs
+// list, the persisted history and the scheduler's counts — and only on success
+// committed like a Broker-originated frame (re-sync set + peer broadcast).
+//
+// A failed broker write therefore leaves nothing tracked and nothing queued, so
+// peers never show a workload the origin broker does not hold; the producer
+// gets an error and may retry. ingestMu keeps concurrent POSTs in one order at
+// the broker and in the peer queue, and is deliberately not broadcastMu: the
+// broker write can block, and broadcastMu is taken by the stdio read loop.
+func (m *Manager) ingestLocal(method string, params json.RawMessage) error {
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
+	f, err := parseIngressFrame(method, params, m.selfUUID)
+	if err != nil {
+		return err
+	}
+	if f.wl != nil {
+		err = m.emitUpsert(f.wl)
+	} else {
+		err = m.emitRemove(f.removeID, f.removeNode)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", errBrokerWrite, err)
+	}
+	m.commitLocal(f)
+	return nil
 }
 
 // broadcastQueueDepth bounds how many outbound frames can wait for the
