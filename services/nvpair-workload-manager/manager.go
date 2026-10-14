@@ -339,38 +339,77 @@ func (m *Manager) applyDiscovery(msg *Message) {
 	m.relaySource.set(res.Nodes)
 }
 
-// handleLocalLifecycle validates a Broker-originated lifecycle notification
-// and broadcasts it to peers. Malformed payloads are dropped-and-logged and
-// never broadcast (spec §7).
+// localFrame is a validated local-origin lifecycle or removal frame. Exactly
+// one of wl (lifecycle) and removeID (removal) is set.
+type localFrame struct {
+	method     string
+	params     json.RawMessage
+	wl         *Workload
+	removeID   string
+	removeNode string
+}
+
+// parseLocalFrame validates a local-origin frame without side effects, so a
+// malformed payload is rejected before anything is tracked, broadcast or
+// emitted (spec §7).
+func parseLocalFrame(method string, params json.RawMessage) (localFrame, error) {
+	switch {
+	case isLifecycleMethod(method):
+		wl, err := parseLifecycle(params)
+		if err != nil {
+			return localFrame{}, err
+		}
+		return localFrame{method: method, params: params, wl: wl}, nil
+	case method == MethodRemove:
+		id, node, err := parseRemove(params)
+		if err != nil {
+			return localFrame{}, err
+		}
+		return localFrame{method: method, params: params, removeID: id, removeNode: node}, nil
+	}
+	return localFrame{}, fmt.Errorf("unknown method: %s", method)
+}
+
+// commitLocal records a validated frame in the re-sync set and enqueues it for
+// peers. broadcastMu is held across both steps, so a snapshot can never
+// interleave and enqueue a workload after its removal was enqueued. The
+// original params are broadcast unchanged so any nodeId the producer supplied
+// is preserved for peers' dedup. The removal wire carries only (workloadId,
+// originatedFrom) — no engine/runId — so a removal drops every composite key
+// matching that pair.
+func (m *Manager) commitLocal(f localFrame) {
+	m.broadcastMu.Lock()
+	defer m.broadcastMu.Unlock()
+	if f.wl != nil {
+		key := workloadKey{origin: f.wl.OriginatedFrom, engine: f.wl.Engine, runID: f.wl.RunID, id: f.wl.ID}
+		m.trackActive(key, f.method, f.params, f.wl.State)
+		slog.Debug("broadcasting local lifecycle", "method", f.method, "id", f.wl.ID, "state", f.wl.State, "peers", m.peers.count())
+	} else {
+		m.untrackActive(f.removeNode, f.removeID)
+		slog.Debug("broadcasting local removal", "workloadId", f.removeID, "node", f.removeNode, "peers", m.peers.count())
+	}
+	m.broadcastFrame(f.method, f.params)
+}
+
+// handleLocalLifecycle applies a Broker-originated lifecycle notification.
+// The broker has already applied it to its own store before forwarding, so
+// nothing is emitted back up.
 func (m *Manager) handleLocalLifecycle(msg *Message) {
-	wl, err := parseLifecycle(msg.Params)
+	f, err := parseLocalFrame(msg.Method, msg.Params)
 	if err != nil {
 		slog.Warn("dropping malformed local lifecycle", "method", msg.Method, "err", err)
 		return
 	}
-	key := workloadKey{origin: wl.OriginatedFrom, engine: wl.Engine, runID: wl.RunID, id: wl.ID}
-	m.broadcastMu.Lock()
-	defer m.broadcastMu.Unlock()
-	m.trackActive(key, msg.Method, msg.Params, wl.State)
-	slog.Debug("broadcasting local lifecycle", "method", msg.Method, "id", wl.ID, "state", wl.State, "peers", m.peers.count())
-	m.broadcastFrame(msg.Method, msg.Params)
+	m.commitLocal(f)
 }
 
 func (m *Manager) handleLocalRemove(msg *Message) {
-	workloadID, nodeID, err := parseRemove(msg.Params)
+	f, err := parseLocalFrame(msg.Method, msg.Params)
 	if err != nil {
 		slog.Warn("dropping malformed local removal", "err", err)
 		return
 	}
-	// Broadcast the original params unchanged so any nodeId the broker supplied
-	// is preserved for peers' dedup. The removal wire carries only
-	// (workloadId, originatedFrom) — no engine/runId — so drop every composite
-	// key matching that pair.
-	m.broadcastMu.Lock()
-	defer m.broadcastMu.Unlock()
-	m.untrackActive(nodeID, workloadID)
-	slog.Debug("broadcasting local removal", "workloadId", workloadID, "node", nodeID, "peers", m.peers.count())
-	m.broadcastFrame(msg.Method, msg.Params)
+	m.commitLocal(f)
 }
 
 // broadcastQueueDepth bounds how many outbound frames can wait for the
