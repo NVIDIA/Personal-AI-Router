@@ -6,10 +6,20 @@ import { EngineType } from '@/shared/types/engines'
 
 export type WorkloadState = (typeof WorkloadStates)[number]
 
+/**
+ * The engine a workload ran on. PAIR's own engine facades produce the closed
+ * `EngineType` union; a third-party producer reporting through the workload
+ * manager's local ingress stamps an identifier of its own (`vllm`, `comfyui`,
+ * …). The service layer treats `engine` as an opaque string and the broker
+ * stores those workloads, so the desktop keeps the identifier instead of
+ * dropping the card.
+ */
+export type WorkloadEngine = EngineType | (string & {})
+
 export interface Workload {
     id: string
     model: string
-    engine: EngineType
+    engine: WorkloadEngine
     state: WorkloadState
     /**
      * Owner/origin node of the workload — the node whose proxy received the
