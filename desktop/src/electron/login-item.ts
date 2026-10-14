@@ -38,10 +38,9 @@ function loginItemArgs(settings: StartupSettings): string[] {
  * neither `path` nor `name` is passed — pinning them would freeze the entry on a
  * path an app update moves. `args` is the only field that must be supplied.
  *
- * macOS: a login item carries no arguments, so `openAsHidden` is the only way to
- * ask for a hidden start. It is deprecated and has no effect on macOS 13 and up,
- * where the app opens its window at login as if it had been started by hand —
- * a platform limitation, not a configuration error.
+ * macOS: a login item carries no arguments, so there is nothing to pass there.
+ * `openAsHidden` is deprecated and ignored on macOS 13 and up, and Electron 44
+ * removes it, so it is not written at all.
  *
  * `openAtLogin: false` removes the entry, so this is also the "turn it off" path
  * and is safe to call unconditionally.
@@ -57,7 +56,6 @@ export function applyLoginItem(settings: StartupSettings): void {
 
     app.setLoginItemSettings({
         openAtLogin: settings.launchAtLogin,
-        openAsHidden: settings.startHidden,
         args: loginItemArgs(settings)
     })
 }

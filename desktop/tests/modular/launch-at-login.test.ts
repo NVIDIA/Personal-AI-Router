@@ -41,7 +41,6 @@ describe('login item registration', () => {
         applyLoginItem({ launchAtLogin: true, startHidden: true })
         expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith({
             openAtLogin: true,
-            openAsHidden: true,
             args: ['--hidden']
         })
     })
@@ -56,7 +55,6 @@ describe('login item registration', () => {
         applyLoginItem({ launchAtLogin: true, startHidden: false })
         expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith({
             openAtLogin: true,
-            openAsHidden: false,
             args: []
         })
     })
@@ -68,13 +66,12 @@ describe('login item registration', () => {
         )
     })
 
-    it('asks macOS to open hidden, where a login item carries no arguments', () => {
+    it('registers macOS without the removed openAsHidden option', () => {
         mocks.currentPlatform.mockReturnValue('darwin')
         applyLoginItem({ launchAtLogin: true, startHidden: true })
         expect(isLoginItemSupported()).toBe(true)
-        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith(
-            expect.objectContaining({ openAsHidden: true })
-        )
+        const [written] = mocks.app.setLoginItemSettings.mock.calls[0]
+        expect(written).not.toHaveProperty('openAsHidden')
     })
 
     it('writes nothing from an unpackaged build', () => {
