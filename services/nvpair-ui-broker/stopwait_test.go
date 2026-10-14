@@ -4,9 +4,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"os/exec"
+	"regexp"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -359,6 +364,47 @@ func TestStopWorkersStopsTheProxyFirst(t *testing.T) {
 	got := []string{<-order, <-order}
 	if got[0] != engines.ProxyComponent {
 		t.Fatalf("stop order = %v, want %s first", got, engines.ProxyComponent)
+	}
+}
+
+// TestTeardownReportCoversThePhasesAheadOfTheJoins checks the slow-teardown
+// report times from the start of teardown and names the phases ahead of the
+// joins. Here the joins are instant and the engine sweep is what took the time,
+// so a report that timed only the joins would stay silent.
+func TestTeardownReportCoversThePhasesAheadOfTheJoins(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	setTeardownStart(time.Now().Add(-3 * time.Second))
+	t.Cleanup(resetTeardownClock)
+
+	b := &Broker{teardownPhases: []teardownStep{
+		{name: "proxy", took: 100 * time.Millisecond},
+		{name: "engine-sweep", took: 2500 * time.Millisecond},
+	}}
+	sup := newSupervisor("scanner", noRestartPolicy(), func() (supervisedHandle, error) { return newSlowStopHandle(0), nil })
+	if err := sup.Start(); err != nil {
+		t.Fatalf("start scanner: %v", err)
+	}
+	b.trackWorker(sup)
+
+	b.stopWorkers()
+
+	out := logs.String()
+	if !strings.Contains(out, "teardown was slow") {
+		t.Fatalf("no slow-teardown report for a 3s teardown; got %q", out)
+	}
+	if !strings.Contains(out, `phases="proxy=100ms engine-sweep=2500ms"`) {
+		t.Fatalf("report does not name the phases ahead of the joins: %q", out)
+	}
+	m := regexp.MustCompile(`totalMs=(\d+)`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("report has no totalMs: %q", out)
+	}
+	if total, _ := strconv.Atoi(m[1]); total < 3000 {
+		t.Fatalf("totalMs = %d, want at least 3000: it must count from the start of teardown", total)
 	}
 }
 

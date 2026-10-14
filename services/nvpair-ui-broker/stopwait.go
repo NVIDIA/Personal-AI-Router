@@ -4,10 +4,14 @@
 package main
 
 import (
+	"cmp"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -54,6 +58,12 @@ const (
 	// remains the backstop for a tree where several workers hang at once.
 	teardownBudget = 10 * time.Second
 
+	// teardownReportAfter is the teardown time, from beginTeardown to the last
+	// worker join, past which the slow-teardown breakdown is logged. A healthy
+	// quit, engine sweep included, finishes under it, so anything past this is
+	// worth naming.
+	teardownReportAfter = 2 * time.Second
+
 	// minWorkerGrace is the floor every worker keeps even once the budget is
 	// spent, so a worker milliseconds away from exiting is not signalled purely
 	// because the phases ahead of it — the proxy join and the engine StopAll
@@ -98,6 +108,16 @@ func teardownRemaining() (time.Duration, bool) {
 		return 0, false
 	}
 	return teardownBudget - time.Since(teardownClock.start), true
+}
+
+// teardownElapsed reports how long ago teardown began, or zero outside it.
+func teardownElapsed() time.Duration {
+	teardownClock.mu.Lock()
+	defer teardownClock.mu.Unlock()
+	if teardownClock.start.IsZero() {
+		return 0
+	}
+	return time.Since(teardownClock.start)
 }
 
 func resetTeardownClock() {
@@ -226,7 +246,15 @@ func waitForStdinClose(name string, cmd *exec.Cmd, stdin io.Closer, done <-chan 
 	slog.Warn("worker killed", "worker", name, "waitedMs", time.Since(started).Milliseconds())
 }
 
-// stopWorkers joins every worker the broker started, concurrently.
+// teardownStep records how long one step of teardown took: a phase ahead of
+// the worker joins, or one worker's join.
+type teardownStep struct {
+	name string
+	took time.Duration
+}
+
+// stopWorkers joins every worker the broker started, concurrently, then
+// reports the teardown if it was slow.
 //
 // Go runs deferred calls one at a time, so the joins live here rather than in
 // one defer per worker: fanned out, they cost the slowest worker instead of the
@@ -256,15 +284,52 @@ func (b *Broker) stopWorkers() {
 		b.proxySup.Stop()
 	}
 
+	joins := make([]teardownStep, len(b.startedWorkers))
 	var wg sync.WaitGroup
-	for _, sup := range b.startedWorkers {
+	for i, sup := range b.startedWorkers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			at := time.Now()
 			sup.Stop()
+			joins[i] = teardownStep{name: sup.name, took: time.Since(at)}
 		}()
 	}
 	wg.Wait()
+
+	reportTeardown(teardownElapsed(), b.teardownPhases, joins)
+}
+
+// reportTeardown names where teardown time went, once it is worth naming.
+//
+// This logs at warn deliberately. The desktop runs the broker at --log-level
+// warn, so an info-level report is missing from exactly the logs that get
+// collected when a user complains that quitting is slow. It is the only line
+// that accounts for the whole teardown: supervisor.Stop names a single worker
+// that takes longer than workerStopReportAfter, and the escalation warnings a
+// worker that misses its grace, but neither covers the engine sweep that
+// engine:prepare-shutdown waits for, nor phases that are each prompt yet
+// together cross the threshold. The breakdown is one line, so a slow teardown
+// is a single grep away from its cause.
+func reportTeardown(total time.Duration, phases, joins []teardownStep) {
+	if total < teardownReportAfter {
+		return
+	}
+	slices.SortFunc(joins, func(a, b teardownStep) int { return cmp.Compare(b.took, a.took) })
+	slog.Warn("teardown was slow",
+		"totalMs", total.Milliseconds(),
+		"phases", formatTeardownSteps(phases),
+		"workers", len(joins),
+		"joins", formatTeardownSteps(joins))
+}
+
+// formatTeardownSteps renders steps as "name=Nms" pairs in their given order.
+func formatTeardownSteps(steps []teardownStep) string {
+	parts := make([]string, 0, len(steps))
+	for _, s := range steps {
+		parts = append(parts, fmt.Sprintf("%s=%dms", s.name, s.took.Milliseconds()))
+	}
+	return strings.Join(parts, " ")
 }
 
 // waitClosed reports whether done closed within d.
