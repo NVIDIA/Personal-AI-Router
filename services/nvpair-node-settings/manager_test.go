@@ -231,6 +231,27 @@ func TestClusterAutoSyncRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEngineAllowLANBindRoundTrip(t *testing.T) {
+	m, rw, _ := newTestManager(t)
+
+	got := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-engine-allow-lan-bind", nil)
+	if got["value"] != false {
+		t.Fatalf("default engine-allow-lan-bind = %v, want false", got["value"])
+	}
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-engine-allow-lan-bind", map[string]bool{"value": true})
+	got = callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-engine-allow-lan-bind", nil)
+	if got["value"] != true {
+		t.Fatalf("after set, value = %v, want true", got["value"])
+	}
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-engine-allow-lan-bind", map[string]bool{"value": false})
+	got = callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-engine-allow-lan-bind", nil)
+	if got["value"] != false {
+		t.Fatalf("after unset, value = %v, want false", got["value"])
+	}
+}
+
 // TestClusterIDRoundTrip locks down the basic get/set contract for
 // the cluster identifier. Empty is the default; the round-trip is
 // byte-for-byte (no normalization, no trimming) so a future
