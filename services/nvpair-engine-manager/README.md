@@ -278,6 +278,10 @@ cluster traffic. Managed engines bind **loopback by default**, but a manifest's
 `runtime.bind` may open an inference engine to the LAN — Ollama ships
 `0.0.0.0` to serve the cluster — overridable per call via
 `engine:start {bind}`; readiness/health probes always target loopback.
+The `bind` parameter is validated before anything launches: it must be a
+well-formed IP address, and a non-loopback address is rejected with
+`-32602` (`bind must be a loopback address`) unless `engine_allow_lan_bind`
+is on. Loopback addresses pass through to the executor unchanged.
 Downloads are **HTTPS-only** (plain `http` only from loopback) and verified
 against the manifest's `sha256` when one is pinned; an unpinned fetch runs
 with a loud warning.

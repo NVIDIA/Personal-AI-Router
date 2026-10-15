@@ -159,6 +159,14 @@ non-empty is the verbatim id. Live cluster-membership changes
 come from `connection/cluster-identity` push notifications, not
 from polling this getter.
 
+`settings/get-engine-allow-lan-bind` returns whether local engine starts
+may bind to non-loopback addresses (`{"value": <bool>}`, default `false`).
+PAIR keeps engine starts on loopback unless the operator opts in here: the
+setting is read live on every start, so no restart is needed. It is
+deliberately a node-level switch rather than a per-call flag — opening an
+unauthenticated engine API to the LAN should be a conscious, persistent
+decision about the machine, not something a single broker call can slip in.
+
 ### Removed methods
 
 The schema update removed four method pairs. They return `-32601`
