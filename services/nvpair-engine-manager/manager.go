@@ -68,10 +68,6 @@ type Manager struct {
 	peers         *peerDirectory
 	addrs         *reach.Chooser
 	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
-	// lanBindForTest overrides the engine_allow_lan_bind node-setting read
-	// in unit tests. Nil in production, where the live setting is read
-	// through the relay on every check.
-	lanBindForTest func() bool
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
@@ -293,9 +289,6 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 // Any read failure denies (fail closed). The loopback-only default holds
 // unless the setting is affirmatively on.
 func (m *Manager) lanBindAllowed(ctx context.Context) bool {
-	if m.lanBindForTest != nil {
-		return m.lanBindForTest()
-	}
 	raw, err := m.settingsRelay.call(ctx, "settings/get-engine-allow-lan-bind", enginesettings.Request{}, "engine:start")
 	if err != nil {
 		slog.Warn("failed to read engine-allow-lan-bind setting; denying LAN bind", "err", err)

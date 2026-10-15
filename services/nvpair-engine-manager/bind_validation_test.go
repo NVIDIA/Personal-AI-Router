@@ -26,8 +26,8 @@ func (c *codecCapture) Write(p []byte) (int, error) { return c.buf.Write(p) }
 // JSON-RPC error frame it emitted, or "" if it emitted none. reachedExec is
 // true when validation passed and runOp proceeded to the (nil, in tests)
 // executor — the test only cares that no -32602 bind rejection was emitted.
-// lanBind sets the engine_allow_lan_bind node setting for the call; the relay
-// is stubbed so no broker round-trip happens.
+// lanBind sets the engine_allow_lan_bind node setting for the call, answered
+// through the real settings relay path — the same code production runs.
 func runOpError(t *testing.T, method, params string, lanBind bool) (out string, reachedExec bool) {
 	t.Helper()
 	cap := &codecCapture{}
@@ -36,9 +36,13 @@ func runOpError(t *testing.T, method, params string, lanBind bool) (out string, 
 	// non-nil one at construction; nil it back out right after to keep the
 	// fixture's panic-on-reach signal for validation-passing calls.
 	m.exec = nil
-	// Stub the node-setting read: the real path goes through the relay to
-	// the broker, which has no test double here.
-	m.lanBindForTest = func() bool { return lanBind }
+	// Answer the node-setting read the way the broker would, through the
+	// relay — no test-only hook in the Manager struct.
+	setting := json.RawMessage(`{"value": false}`)
+	if lanBind {
+		setting = json.RawMessage(`{"value": true}`)
+	}
+	m.settingsRelay.send = replyWith(m, setting)
 	msg := &Message{Method: method, Params: json.RawMessage(params)}
 	id := json.RawMessage(`"test-1"`)
 	msg.ID = &id
@@ -99,9 +103,9 @@ func TestRunOpAllowsNonLoopbackBindWhenSettingOn(t *testing.T) {
 	}
 }
 
-// runOpWithRelaySend drives Manager.runOp like runOpError, but leaves the
-// lanBindForTest stub unset so lanBindAllowed takes the real relay path, with
-// send standing in for the broker round-trip.
+// runOpWithRelaySend drives Manager.runOp with a custom relay send func
+// standing in for the broker round-trip, for cases where the caller needs
+// to control the relay behavior directly (errors, garbage replies).
 func runOpWithRelaySend(t *testing.T, params string, send func(string, any) error) (out string, reachedExec bool) {
 	t.Helper()
 	cap := &codecCapture{}
