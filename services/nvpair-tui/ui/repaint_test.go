@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"nvpair-tui/pairing"
 )
 
 // The shell sizes the active view inside View, so SetSize runs on every frame
@@ -22,7 +24,7 @@ import (
 // Cost measured at the time of writing: about 0.5ms per frame with a full
 // 5000-line log buffer, which is why the simplicity is worth the repeated work.
 func TestScrollSurvivesEveryFrame(t *testing.T) {
-	m := newTestModel(defaultViews(nil)...)
+	m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 	m.width, m.height = 120, 40
 	m.resizeViews()
 	m.selectTab(4)
@@ -69,7 +71,7 @@ func TestScrollSurvivesEveryFrame(t *testing.T) {
 
 // The same question for the tables: the cursor must survive a repaint.
 func TestTableCursorSurvivesEveryFrame(t *testing.T) {
-	m := newTestModel(defaultViews(nil)...)
+	m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 	m.width, m.height = 120, 40
 	m.resizeViews()
 

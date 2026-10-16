@@ -11,6 +11,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"nvpair-tui/pairing"
 )
 
 // withReleaseVersion stamps a version for one test and restores it after.
@@ -178,7 +180,7 @@ func send(m Model, msg tea.Msg) Model {
 func TestBannerAnnouncesOnlyANewerRelease(t *testing.T) {
 	withReleaseVersion(t, "0.91.7")
 
-	m := newTestModel(defaultViews(nil)...)
+	m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 	m.width, m.height = 120, 30
 
 	if got := m.banner(); got != "" {
@@ -213,7 +215,7 @@ func TestBannerShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
 	// for is the one who never opens that tab.
 	withReleaseVersion(t, "0.91.7")
 
-	m := newTestModel(defaultViews(nil)...)
+	m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 	m.width, m.height = 120, 30
 	m = send(m, updateCheckMsg{latest: "0.92.0"})
 
@@ -279,7 +281,7 @@ func TestBannerComesOutOfTheContentBudget(t *testing.T) {
 	// every view keeps its messages.
 	withReleaseVersion(t, "0.91.7")
 
-	m := newTestModel(defaultViews(nil)...)
+	m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 	m.width, m.height = 120, 30
 
 	before := m.contentHeight()

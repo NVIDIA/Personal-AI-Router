@@ -12,6 +12,7 @@ import (
 
 	"nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -713,7 +714,7 @@ func TestSettingsErrorsReadTheSameEveryTime(t *testing.T) {
 func TestNoBindingRequiresShift(t *testing.T) {
 	bindings := map[string][]key.Binding{
 		"global":         globalBindings(),
-		"nodes":          newNodesView(nil).Help(),
+		"nodes":          newNodesView(nil, pairing.NewService(nil)).Help(),
 		"jobs":           newJobsView(nil).Help(),
 		"service":        newServiceView(nil).Help(),
 		"logs":           newLogsView(nil).Help(),
@@ -1082,7 +1083,7 @@ func TestSettingsWriteFollowsTheFieldNotTheCursor(t *testing.T) {
 // whichever detail screen was open by then, opened that node's field prefilled
 // with the first node's value, and cached the first node's revision against it.
 func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	open := func(key string) *nodeDetail {
 		d := newNodeDetail(nil, nodeRow{key: key, name: key, presence: presenceOnline})
@@ -1313,7 +1314,7 @@ func TestHiddenListsRefuseTheirKeys(t *testing.T) {
 // the network went on reading "Member" and "Online" until the screen was
 // reopened, with its engine controls still offered.
 func TestOpenDetailFollowsPresenceAndMembership(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	peer := availableNode{HostUUID: "peer", Name: "peer-host", IPAddress: "10.0.0.2", Port: 9000, Trusted: true}
 	v.feeds.discovered = []availableNode{peer}
@@ -1515,7 +1516,7 @@ func TestNodeKeysDoNotCollide(t *testing.T) {
 		}
 	}
 
-	shell := newGlobalKeyMap(len(defaultViews(nil)))
+	shell := newGlobalKeyMap(len(defaultViews(Deps{Pairing: pairing.NewService(nil)})))
 	for _, g := range []key.Binding{shell.NextTab, shell.PrevTab, shell.JumpTab, shell.Help, shell.Quit} {
 		for _, k := range g.Keys() {
 			if verb, clash := seen[k]; clash {
@@ -1529,7 +1530,7 @@ func TestNodeKeysDoNotCollide(t *testing.T) {
 // globalBindings is the shell's own key set, for the shift audit above, built
 // for the real tab count so the digit binding matches what ships.
 func globalBindings() []key.Binding {
-	k := newGlobalKeyMap(len(defaultViews(nil)))
+	k := newGlobalKeyMap(len(defaultViews(Deps{Pairing: pairing.NewService(nil)})))
 	return []key.Binding{k.NextTab, k.PrevTab, k.JumpTab, k.Help, k.Quit}
 }
 

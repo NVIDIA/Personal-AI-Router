@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -52,6 +54,18 @@ const (
 type nodesView struct {
 	client *rpc.Client
 	table  table.Model
+
+	// pairs is the process-wide pairing service. Answers to inbound requests go
+	// through it, the same call the control socket makes, so the two can never
+	// disagree about what is still waiting; events reports answers given from
+	// the command line, so a request settled there leaves this screen too.
+	pairs       *pairing.Service
+	events      <-chan pairing.Event
+	unsubscribe func()
+	// answeredHere is the invites this view answered itself. The service
+	// reports those back as events too, and the outcome is already handled by
+	// pairingResultMsg, so they are skipped rather than handled twice.
+	answeredHere map[string]bool
 
 	feeds nodeFeeds
 	rows  []nodeRow
@@ -261,9 +275,17 @@ var (
 	nodeConfirmKey = key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "confirm"))
 )
 
-func newNodesView(client *rpc.Client) *nodesView {
+func newNodesView(client *rpc.Client, pairs *pairing.Service) *nodesView {
 	ti := textinput.New()
-	v := &nodesView{client: client, input: ti}
+	events, unsubscribe := pairs.Subscribe()
+	v := &nodesView{
+		client:       client,
+		pairs:        pairs,
+		events:       events,
+		unsubscribe:  unsubscribe,
+		answeredHere: map[string]bool{},
+		input:        ti,
+	}
 	v.table = newTable(nodesColumns(defaultTableWidth))
 	return v
 }
@@ -312,7 +334,84 @@ func (v *nodesView) Init() tea.Cmd {
 		v.membersCmd(),
 		v.manualCmd(),
 		v.manualTickCmd(),
+		waitForPairingEvent(v.events),
 	)
+}
+
+// close stops the pairing event subscription.
+func (v *nodesView) close() { v.unsubscribe() }
+
+// waitForPairingEvent delivers the next pairing event as a pairingEventMsg. The
+// view re-arms it after each one; a closed channel ends the loop.
+func waitForPairingEvent(events <-chan pairing.Event) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-events
+		if !ok {
+			return nil
+		}
+		return pairingEventMsg{event: ev}
+	}
+}
+
+// pairingEventMsg carries one pairing service event to the Nodes view.
+type pairingEventMsg struct{ event pairing.Event }
+
+// applyPairingEvent clears an inbound request that was answered somewhere
+// else — `nvpair-tui accept` or `decline` over the control socket. Every other
+// pairing change already reaches this view as a broker notification.
+func (v *nodesView) applyPairingEvent(ev pairing.Event) {
+	if ev.Kind == pairing.EventRespondFailed {
+		// This view's own failure arrives as a pairingResultMsg; nothing else
+		// is left to track for it.
+		delete(v.answeredHere, ev.Invite.InviteID)
+		return
+	}
+	if ev.Kind != pairing.EventResponded {
+		return
+	}
+	id := ev.Invite.InviteID
+	if v.answeredHere[id] {
+		delete(v.answeredHere, id)
+		return
+	}
+	from := ev.Invite.FromNodeName
+	if v.inbound != nil && v.inbound.InviteID == id && from == "" {
+		from = v.inbound.FromNodeName
+	}
+	if !v.dropInbound(id) {
+		v.dropQueued(id)
+		return
+	}
+	switch {
+	case !ev.Accept:
+		v.status.info("pairing request from %s declined from the command line", from)
+	case ev.Invite.State == inviteStatePaired:
+		v.status.info("paired with %s from the command line", from)
+	default:
+		v.status.info("pairing request from %s answered from the command line: %s", from, ev.Invite.State)
+	}
+}
+
+// dropQueued forgets a request waiting behind the one on screen.
+func (v *nodesView) dropQueued(id string) {
+	for i, inv := range v.queued {
+		if inv.InviteID == id {
+			v.queued = append(v.queued[:i], v.queued[i+1:]...)
+			return
+		}
+	}
+}
+
+// respondCmd answers an inbound request through the pairing service.
+func (v *nodesView) respondCmd(id string, accept bool, pin string, finish func(pairing.Result, error) tea.Msg) tea.Cmd {
+	v.answeredHere[id] = true
+	pairs := v.pairs
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		defer cancel()
+		res, err := pairs.Respond(ctx, id, accept, pin)
+		return finish(res, err)
+	}
 }
 
 func (v *nodesView) clusterNameCmd() tea.Cmd {
@@ -501,6 +600,10 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 
 	case pairingResultMsg:
 		return v.handlePairingResult(msg)
+
+	case pairingEventMsg:
+		v.applyPairingEvent(msg.event)
+		return waitForPairingEvent(v.events)
 
 	case waitingDeclinedMsg:
 		if msg.err != nil {
@@ -1119,29 +1222,22 @@ func (v *nodesView) respondToInvite(accept bool, pin string) tea.Cmd {
 		return nil
 	}
 	id, from := v.inbound.InviteID, v.inbound.FromNodeName
-	params := map[string]any{"inviteId": id, "accept": accept}
-	if accept && pin != "" {
-		params["pin"] = pin
-	}
 	// Held on screen, not cleared, until the answer settles. The prompt says
 	// the answer is in flight — the handshake crosses to another machine and
 	// is the slowest call this tab makes — and the request stays answerable
 	// if the cluster manager hands it back.
 	v.answering = id
-	return call(v.client, "cluster:respond-to-invite", params,
-		func(msg *rpc.Message, err error) tea.Msg {
-			if err != nil {
-				return pairingResultMsg{inviteID: id, from: from, err: err}
-			}
-			// A wrong PIN is NOT a JSON-RPC error. The cluster manager tears the
-			// session down and replies successfully with the invite, whose state
-			// is "failed" and whose reason says why. Reading only the transport
-			// error would report success for a pairing that had just been
-			// rejected.
-			var res inviteNodeResult
-			decodeOrLog("cluster:respond-to-invite", msg.Result, &res)
-			return pairingResultMsg{inviteID: id, from: from, state: res.State, reason: res.Reason}
-		})
+	return v.respondCmd(id, accept, pin, func(res pairing.Result, err error) tea.Msg {
+		if err != nil {
+			return pairingResultMsg{inviteID: id, from: from, err: err}
+		}
+		// A wrong PIN is NOT a JSON-RPC error. The cluster manager tears the
+		// session down and replies successfully with the invite, whose state
+		// is "failed" and whose reason says why. Reading only the transport
+		// error would report success for a pairing that had just been
+		// rejected.
+		return pairingResultMsg{inviteID: id, from: from, state: res.Invite.State, reason: res.Invite.Reason}
+	})
 }
 
 // The pairing session states nvpair-cluster-manager reports, spelled as its
@@ -1251,9 +1347,8 @@ func (v *nodesView) declineWaiting() []tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(waiting))
 	for _, inv := range waiting {
 		from := inv.FromNodeName
-		cmds = append(cmds, call(v.client, "cluster:respond-to-invite",
-			map[string]any{"inviteId": inv.InviteID, "accept": false},
-			func(_ *rpc.Message, err error) tea.Msg {
+		cmds = append(cmds, v.respondCmd(inv.InviteID, false, "",
+			func(_ pairing.Result, err error) tea.Msg {
 				return waitingDeclinedMsg{from: from, err: err}
 			}))
 	}

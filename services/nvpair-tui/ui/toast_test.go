@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -122,7 +123,7 @@ func notify(method string) NotificationMsg {
 // pairing dead end: a PIN pinned on the Nodes tab must be replaced once the
 // cluster manager reports the invite is no longer pending.
 func TestNodesViewRetiresPinOnInviteDeclined(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.invitedKey = "peer-uuid"
 	v.outboundInviteID = "inv-1"
 	v.status.pin("invite sent to peer - PIN 123456")
@@ -144,7 +145,7 @@ func TestNodesViewRetiresPinOnInviteDeclined(t *testing.T) {
 // TestNodesViewRetiresPinOnPairingSuccess covers the one outcome with no
 // terminal notification: success shows up as the invited node becoming a member.
 func TestNodesViewRetiresPinOnPairingSuccess(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.invitedKey = "peer-uuid"
 	v.status.pin("invite sent to peer - PIN 123456")
 
@@ -162,7 +163,7 @@ func TestNodesViewRetiresPinOnPairingSuccess(t *testing.T) {
 // TestNodesViewKeepsPinWhileInvitePending checks an unrelated snapshot does not
 // retire a PIN that is still live.
 func TestNodesViewKeepsPinWhileInvitePending(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.invitedKey = "peer-uuid"
 	v.status.pin("invite sent to peer - PIN 123456")
 
@@ -203,7 +204,7 @@ func inviteReceived(inviteID, from string) NotificationMsg {
 // fact read as two requests, and the pinned one also outranked the status
 // line, so nothing that happened next could be reported there.
 func TestInboundPairingIsPromptedOnce(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("inv-1", "M2GT9CR405"))
 
@@ -226,7 +227,7 @@ func TestInboundPairingIsPromptedOnce(t *testing.T) {
 // Both used to be pinned to the status line, which holds one message, so the
 // inbound request replaced the PIN the operator was about to read out.
 func TestInboundInviteDoesNotHideOutboundPIN(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "outbound", pin: "123456"})
 	if !contains(v.View(), "PIN 123456") {
@@ -253,7 +254,7 @@ func TestInboundInviteDoesNotHideOutboundPIN(t *testing.T) {
 // prompt still offering "a to accept" told the operator to do what they had
 // just done, while the PIN it actually wanted sat on the line below.
 func TestAcceptingPairingChangesThePrompt(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("inv-2", "M2GT9CR405"))
 	v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(nodePairKey.Help().Key)})
@@ -280,7 +281,7 @@ func TestAcceptingPairingChangesThePrompt(t *testing.T) {
 // stamps an inviteId on every terminal event, so an unrelated invite's decline
 // must not clear the PIN or prompt belonging to a different session.
 func TestInviteOutcomeMatchesBySession(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.outboundInviteID = "mine"
 	v.invitedKey = "peer-uuid"
 	v.status.pin("invite sent to peer - PIN 123456")
@@ -324,7 +325,7 @@ func TestInviteOutcomeMatchesBySession(t *testing.T) {
 // path: it has no node UUID, so without matching on the address the PIN it
 // pinned stayed on screen forever after the peer joined.
 func TestInviteByAddressRetiresItsPin(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.Update(nodeInviteMsg{
 		name: "10.0.0.7", address: "10.0.0.7", inviteID: "inv", pin: "123456",
 	})
@@ -373,7 +374,7 @@ func TestAddressMatches(t *testing.T) {
 // than immediate, matching leave-cluster. It acts on someone else's row, so a
 // stray keystroke is worse there, not better.
 func TestRemoveMemberRequiresConfirmation(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.feeds.discovered = []availableNode{{
 		HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.2", Trusted: true,
 	}}
@@ -408,7 +409,7 @@ func TestRemoveMemberRequiresConfirmation(t *testing.T) {
 // responses from the operator — wait, or go look at the service — so the screen
 // has to say which one it is.
 func TestNodesViewExplainsAnEmptyTable(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 
 	// Nothing wrong, just nothing found yet.
@@ -433,7 +434,7 @@ func TestNodesViewExplainsAnEmptyTable(t *testing.T) {
 // reported too. A table with rows in it looks authoritative, so a missing feed
 // there is more misleading than an empty one, not less.
 func TestNodesViewWarnsWhenPopulatedButIncomplete(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	v.feeds.discovered = []availableNode{{HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.2"}}
 	v.rebuild()
@@ -448,7 +449,7 @@ func TestNodesViewWarnsWhenPopulatedButIncomplete(t *testing.T) {
 // condition, not a permanent mark: a feed that starts working again stops
 // being reported.
 func TestNodesViewClearsFeedWarningOnRecovery(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 
 	v.Update(manualNodesMsg{err: errors.New("transient")})
@@ -467,7 +468,7 @@ func TestNodesViewClearsFeedWarningOnRecovery(t *testing.T) {
 // check are about the cluster, not about what the operator is looking at, so a
 // filter must not shrink the member count or strand a pinned PIN.
 func TestNodesFilterNarrowsWithoutLosingTheCluster(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	v.identity.ClusterID = "cluster-1"
 	v.feeds.members = []clusterNode{
@@ -501,7 +502,7 @@ func TestNodesFilterNarrowsWithoutLosingTheCluster(t *testing.T) {
 // filtered out still retires its PIN. The pairing completed; whether the
 // operator can currently see the row is irrelevant.
 func TestNodesFilterRetiresPinForAHiddenPeer(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	v.Update(nodeInviteMsg{name: "beta", inviteID: "inv", pin: "123456"})
 	v.invitedKey = "b"
@@ -526,7 +527,7 @@ func TestNodesFilterRetiresPinForAHiddenPeer(t *testing.T) {
 // first was pending could show one peer's PIN while watching for the other to
 // join, or have the older request's failure cancel the newer one.
 func TestSecondInviteWaitsForTheFirst(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	v.feeds.discovered = []availableNode{
 		{HostUUID: "a", Name: "alpha", IPAddress: "10.0.0.1", Port: 9000},
@@ -580,7 +581,7 @@ func TestSecondInviteWaitsForTheFirst(t *testing.T) {
 // arrive by different paths, and a reply landing second put the older roster
 // back until the next change.
 func TestRosterReadDoesNotOverwriteANewerPush(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	// A read sent before the push, whose reply lands after it.
 	stale := clusterMembersMsg{nodes: []clusterNode{{NodeUUID: "gone", Name: "gone", State: "member"}}, pushes: v.membersPushes}
@@ -606,7 +607,7 @@ func TestRosterReadDoesNotOverwriteANewerPush(t *testing.T) {
 // an error and leaves the session open, but the prompt was cleared before the
 // answer went out, so there was nothing left to answer again.
 func TestMalformedPINKeepsTheRequest(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("inv-1", "peer"))
 
@@ -641,7 +642,7 @@ func TestMalformedPINKeepsTheRequest(t *testing.T) {
 // is waiting on; the newer one used to overwrite the one being read, leaving
 // no way back to it.
 func TestInboundRequestsWaitTheirTurn(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("first", "alpha"))
 	v.Update(inviteReceived("second", "beta"))
@@ -668,7 +669,7 @@ func TestInboundRequestsWaitTheirTurn(t *testing.T) {
 // PIN field was open, the next one came up under the same field, and enter
 // sent the first request's PIN as the answer to the second.
 func TestDroppedRequestTakesItsPINWithIt(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("first", "alpha"))
 	v.Update(inviteReceived("second", "beta"))
@@ -729,7 +730,7 @@ func TestJoiningDeclinesEveryOtherRequest(t *testing.T) {
 		}
 	}()
 
-	v := newNodesView(client)
+	v := newNodesView(client, pairing.NewService(client))
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("a", "alpha"))
 	v.Update(inviteReceived("b", "beta"))
@@ -771,7 +772,7 @@ func TestJoiningDeclinesEveryOtherRequest(t *testing.T) {
 // TestJoiningWithNothingWaitingDeclinesNothing checks the ordinary case still
 // reads as it did: one request, accepted, and nothing else said.
 func TestJoiningWithNothingWaitingDeclinesNothing(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("a", "alpha"))
 	v.Update(pairingResultMsg{inviteID: "a", from: "alpha", state: inviteStatePaired})
@@ -785,7 +786,7 @@ func TestJoiningWithNothingWaitingDeclinesNothing(t *testing.T) {
 // open, which replaces the list they are shown on.
 func TestPairingStaysVisibleOverTheDetailScreen(t *testing.T) {
 	const height = 30
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, height)
 	v.feeds.discovered = []availableNode{{HostUUID: "u1", Name: "host", IPAddress: "10.0.0.1", Port: 1}}
 	v.rebuild()
@@ -811,7 +812,7 @@ func TestPairingStaysVisibleOverTheDetailScreen(t *testing.T) {
 // out, so a failure left a live invite with nothing on screen and nothing to
 // press.
 func TestFailedCancelCanBeRetried(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "inv", pin: "123456"})
 
@@ -837,7 +838,7 @@ func TestFailedCancelCanBeRetried(t *testing.T) {
 // first" was attached to every rejection, including ones with no relationship
 // to remove.
 func TestRejectionAdviceMatchesTheReason(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 
 	v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reasonAlreadyClustered})
@@ -863,7 +864,7 @@ func TestRejectionAdviceMatchesTheReason(t *testing.T) {
 // was reported as "invite sent" and left pending.
 func TestInviteThatDidNotGoOutIsNotReportedSent(t *testing.T) {
 	for _, state := range []string{"failed", "canceled"} {
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.SetSize(120, 30)
 		v.invitedKey, v.inviteSending = "peer-uuid", true
 
@@ -878,7 +879,7 @@ func TestInviteThatDidNotGoOutIsNotReportedSent(t *testing.T) {
 	}
 
 	pin := "123456"
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(120, 30)
 	v.Update(inviteResultMsg("peer", "", inviteNodeResult{InviteID: "inv", State: "pending", Pin: &pin}, nil))
 	if got := v.status.render(); !contains(got, "PIN 123456") {
@@ -890,7 +891,7 @@ func TestInviteThatDidNotGoOutIsNotReportedSent(t *testing.T) {
 // Without it a PIN read to the wrong person could only be retired by waiting
 // for it to expire, staying answerable the whole time.
 func TestCancelInviteClearsThePinImmediately(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "inv-1", pin: "123456"})
 	if !contains(v.status.render(), "123456") {
@@ -923,7 +924,7 @@ func TestCancelInviteClearsThePinImmediately(t *testing.T) {
 // because the prompt is cleared by then, nothing later corrected it. The
 // operator would go looking for a peer that was never going to appear.
 func TestWrongPinIsNotReportedAsSuccess(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.SetSize(100, 30)
 
 	v.Update(pairingResultMsg{from: "peer", state: "failed", reason: reasonIncorrectPIN})
@@ -953,7 +954,7 @@ func TestPairingOutcomesAreDistinguished(t *testing.T) {
 		{state: "declined", want: "declined"},
 	}
 	for _, tc := range cases {
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.SetSize(100, 30)
 		v.Update(pairingResultMsg{from: "peer", state: tc.state, reason: tc.reason})
 		if got := v.status.render(); !contains(got, tc.want) {
@@ -972,7 +973,7 @@ func TestNodesViewClearsInboundInviteOnExpiry(t *testing.T) {
 	// it failed for a reason unrelated to what it tests.
 	accept := nodePairKey.Help().Key
 
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.Update(inviteReceived("inv-1", "peer"))
 	if !contains(v.inboundPrompt(), "to accept") {
 		t.Fatal("no prompt after a pairing request arrived")
@@ -1000,7 +1001,7 @@ func TestNodesViewClearsInboundInviteOnExpiry(t *testing.T) {
 // key rather than row index: the list re-sorts as nodes come and go, and an
 // index would quietly move the operator onto a different machine.
 func TestNodesViewSelectionSurvivesReorder(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.feeds.discovered = []availableNode{
 		{HostUUID: "a", Name: "aaa", LastSeen: time.Now().Unix()},
 		{HostUUID: "z", Name: "zzz", LastSeen: time.Now().Unix()},
@@ -1037,7 +1038,7 @@ func TestNodesViewGuardsInviteOnEveryPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v := newNodesView(nil)
+			v := newNodesView(nil, pairing.NewService(nil))
 			v.feeds.discovered = []availableNode{tc.node}
 			v.rebuild()
 			v.selectedKey = "k"
@@ -1058,7 +1059,7 @@ func TestNodesViewGuardsInviteOnEveryPath(t *testing.T) {
 // TestNodesViewRefusesSelfInvite checks this machine cannot be invited to its
 // own cluster.
 func TestNodesViewRefusesSelfInvite(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.feeds.discovered = []availableNode{{HostUUID: "me", Name: "this", LastSeen: time.Now().Unix()}}
 	v.feeds.selfUUID = "me"
 	v.rebuild()

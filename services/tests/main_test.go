@@ -34,6 +34,8 @@ var (
 	clusterMgrBin   string
 	schedulerBin    string
 	testsConfigBase string
+	tuiBin          string
+	stubBrokerBin   string
 )
 
 func TestMain(m *testing.M) {
@@ -58,6 +60,8 @@ func TestMain(m *testing.M) {
 	manualNodesBin = filepath.Join(tmpDir, "nvpair-manual-nodes"+ext)
 	clusterMgrBin = filepath.Join(tmpDir, "nvpair-cluster-manager"+ext)
 	schedulerBin = filepath.Join(tmpDir, "nvpair-job-scheduler"+ext)
+	tuiBin = filepath.Join(tmpDir, "nvpair-tui"+ext)
+	stubBrokerBin = filepath.Join(tmpDir, "stubbroker"+ext)
 
 	// One process fronts every engine, with a facade enabled per engine, so
 	// both the Ollama and LM Studio bridge tests run against this build.
@@ -137,6 +141,22 @@ func TestMain(m *testing.M) {
 	if err := goBuild(filepath.Join("..", "nvpair-job-scheduler"), schedulerBin); err != nil {
 		os.RemoveAll(tmpDir)
 		log.Fatalf("build nvpair-job-scheduler: %v", err)
+	}
+
+	// The headless-pairing test drives the real nvpair-tui binary and its
+	// subcommands. Its broker is the stubbroker fixture rather than the real
+	// one, because every broker-owned port is a compiled-in constant and that
+	// test needs two independent nodes on one machine.
+	log.Println("building nvpair-tui...")
+	if err := goBuild(filepath.Join("..", "nvpair-tui"), tuiBin); err != nil {
+		os.RemoveAll(tmpDir)
+		log.Fatalf("build nvpair-tui: %v", err)
+	}
+
+	log.Println("building the stubbroker fixture...")
+	if err := goBuild(filepath.Join("fixtures", "stubbroker"), stubBrokerBin); err != nil {
+		os.RemoveAll(tmpDir)
+		log.Fatalf("build stubbroker: %v", err)
 	}
 
 	// Every child binary inherits this environment, so its persisted state

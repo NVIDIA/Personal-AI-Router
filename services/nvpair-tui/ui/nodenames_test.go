@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 )
 
@@ -166,7 +167,7 @@ func TestJobsUnplacedWorkShowsPending(t *testing.T) {
 // name must appear somewhere once set, or naming a cluster has no visible
 // effect anywhere in the interface.
 func TestClusterLabelIsShown(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.identity = clusterIdentity{ClusterID: "abcdef0123456789", Name: "host-a"}
 
 	// With no label, the id stands in — it is what anything operational uses.
@@ -184,7 +185,7 @@ func TestClusterLabelIsShown(t *testing.T) {
 // TestClusterLabelFromIdentityPush checks the label follows the notification, so
 // renaming on one machine is reflected without a restart.
 func TestClusterLabelFromIdentityPush(t *testing.T) {
-	v := newNodesView(nil)
+	v := newNodesView(nil, pairing.NewService(nil))
 	v.Update(NotificationMsg{Msg: identityChanged("cid-1", "Lab 3 desks")})
 
 	if v.clusterName != "Lab 3 desks" {
@@ -200,7 +201,7 @@ func TestClusterLabelFromIdentityPush(t *testing.T) {
 // changes, and the Nodes tab read it once at startup, so flipping back after a
 // rename showed the old name.
 func TestRenameOnServiceTabReachesNodesTab(t *testing.T) {
-	nodes := newNodesView(nil)
+	nodes := newNodesView(nil, pairing.NewService(nil))
 	nodes.Update(clusterNameMsg{name: "old name"})
 
 	svc := newServiceView(nil)

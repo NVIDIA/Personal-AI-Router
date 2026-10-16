@@ -13,6 +13,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"nvpair-tui/pairing"
 )
 
 // These tests measure what a view *renders*, before the shell clamps it.
@@ -38,7 +40,7 @@ func renderedRows(s string) int {
 // contentBudget is the row budget the shell gives a view at the given size.
 func contentBudget(t *testing.T, w, h int) int {
 	t.Helper()
-	m := newTestModel(defaultViews(nil)...)
+	m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 	m.width, m.height = w, h
 	m.resizeViews()
 	return m.contentHeight()
@@ -52,7 +54,7 @@ func TestNodesViewNeverOverflowsItsBudget(t *testing.T) {
 	budget := contentBudget(t, w, h)
 
 	build := func() *nodesView {
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.SetSize(w, budget)
 		nodes := make([]availableNode, 12)
 		for i := range nodes {
@@ -366,7 +368,7 @@ func TestDetailSurvivesAManyGpuHost(t *testing.T) {
 func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 	// Armed through the real key paths, so the prompt is set the way it is at
 	// runtime rather than by poking the flag.
-	nodesLeave := newNodesView(nil)
+	nodesLeave := newNodesView(nil, pairing.NewService(nil))
 	nodesLeave.SetSize(80, 20)
 	nodesLeave.identity.ClusterID = "cluster-1"
 	nodesLeave.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
@@ -374,7 +376,7 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 		t.Fatal("leave did not arm")
 	}
 
-	nodesRemove := newNodesView(nil)
+	nodesRemove := newNodesView(nil, pairing.NewService(nil))
 	nodesRemove.SetSize(80, 20)
 	nodesRemove.feeds.discovered = []availableNode{{
 		HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.2", Trusted: true,
@@ -481,7 +483,7 @@ func TestDetailStaysInBudgetWithAStaleEngineList(t *testing.T) {
 // reached the shell. In a port field the digits are what you are meant to type,
 // and q typed a q instead of quitting.
 func TestFooterHidesGlobalsWhileCapturing(t *testing.T) {
-	m := newTestModel(defaultViews(nil)...)
+	m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 	m.width, m.height = 80, 24
 	m.resizeViews()
 
@@ -519,7 +521,7 @@ func TestFooterHidesGlobalsWhileCapturing(t *testing.T) {
 func populatedViews(t *testing.T) []View {
 	t.Helper()
 
-	nodes := newNodesView(nil)
+	nodes := newNodesView(nil, pairing.NewService(nil))
 	discovered := make([]availableNode, 12)
 	for i := range discovered {
 		discovered[i] = availableNode{
@@ -656,7 +658,7 @@ func TestNarrowAndShortTerminalsStayInBudget(t *testing.T) {
 			continue
 		}
 
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.SetSize(w, budget)
 		v.feeds.discovered = []availableNode{
 			{HostUUID: "a", Name: "alpha", IPAddress: "10.0.0.1"},

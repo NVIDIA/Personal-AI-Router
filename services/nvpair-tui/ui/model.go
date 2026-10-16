@@ -28,10 +28,10 @@ const (
 // header showing broker status, and a footer of contextual help. It owns
 // the broker notification loop and routes messages to the views.
 type Model struct {
-	client *rpc.Client
-	logCh  <-chan string
-	keys   globalKeyMap
-	help   help.Model
+	notifications <-chan *rpc.Message
+	logCh         <-chan string
+	keys          globalKeyMap
+	help          help.Model
 
 	views  []View
 	active int
@@ -78,18 +78,18 @@ type Outcome struct {
 	WipeData bool
 }
 
-// New builds the root model over a connected broker client, the broker's
+// New builds the root model over the broker's notification stream, its
 // captured stderr line channel, and the set of views (tabs) to present,
 // in tab order.
-func New(client *rpc.Client, logCh <-chan string, views []View) Model {
+func New(notifications <-chan *rpc.Message, logCh <-chan string, views []View) Model {
 	h := help.New()
 	styleHelp(&h)
 	return Model{
-		client: client,
-		logCh:  logCh,
-		keys:   newGlobalKeyMap(len(views)),
-		help:   h,
-		views:  views,
+		notifications: notifications,
+		logCh:         logCh,
+		keys:          newGlobalKeyMap(len(views)),
+		help:          h,
+		views:         views,
 	}
 }
 
@@ -98,7 +98,7 @@ func New(client *rpc.Client, logCh <-chan string, views []View) Model {
 func (m Model) Init() tea.Cmd {
 	// Both are nil when the check is disabled or the build is unstamped, and
 	// tea.Batch drops nils, so this needs no guard.
-	cmds := []tea.Cmd{waitForNotification(m.client), waitForLog(m.logCh), uiTick(),
+	cmds := []tea.Cmd{waitForNotification(m.notifications), waitForLog(m.logCh), uiTick(),
 		checkUpdateCmd(), updateCheckTickCmd()}
 	for _, v := range m.views {
 		if c := v.Init(); c != nil {
@@ -173,7 +173,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.brokerVersion = readyVersion(msg.Msg)
 		}
 		cmds := m.broadcast(msg)
-		cmds = append(cmds, waitForNotification(m.client))
+		cmds = append(cmds, waitForNotification(m.notifications))
 		return m, tea.Batch(cmds...)
 
 	case TickMsg:

@@ -41,6 +41,11 @@
 - ⚠️ nvpair-proxy → facade/enable
 - ⚠️ nvpair-proxy → node/selected
 - ⚠️ nvpair-proxy → node/set-local-backend
+- ⚠️ nvpair-tui → pair:invite
+- ⚠️ nvpair-tui → pair:invite-status
+- ⚠️ nvpair-tui → pair:members
+- ⚠️ nvpair-tui → pair:pending
+- ⚠️ nvpair-tui → pair:respond
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:configure-launch
 - ⚠️ nvpair-ui-broker → engine:set-port
@@ -243,6 +248,11 @@
 | `error` | request (we call) | ✅ yes |
 | `errors:update` | request (we call) | ✅ yes |
 | `nodes:changed` | request (we call) | ✅ yes |
+| `pair:invite` | request (we call) | ⚠️ not called |
+| `pair:invite-status` | request (we call) | ⚠️ not called |
+| `pair:members` | request (we call) | ⚠️ not called |
+| `pair:pending` | request (we call) | ⚠️ not called |
+| `pair:respond` | request (we call) | ⚠️ not called |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:upsert` | request (we call) | ✅ yes |
 

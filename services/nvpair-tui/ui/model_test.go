@@ -13,6 +13,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"nvpair-tui/pairing"
 )
 
 // stubView renders a fixed block of rows, optionally far more (and far wider)
@@ -95,16 +97,16 @@ func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
 			build func() Model
 		}
 		out := make([]screen, 0, 8)
-		for i, v := range defaultViews(nil) {
+		for i, v := range defaultViews(Deps{Pairing: pairing.NewService(nil)}) {
 			out = append(out, screen{v.Title(), func() Model {
-				m := New(nil, nil, defaultViews(nil))
+				m := New(nil, nil, defaultViews(Deps{Pairing: pairing.NewService(nil)}))
 				m.selectTab(i)
 				return m
 			}})
 		}
 		for _, pane := range []detailPane{detailEngines, detailModels} {
 			out = append(out, screen{"node detail", func() Model {
-				nodes := newNodesView(nil)
+				nodes := newNodesView(nil, pairing.NewService(nil))
 				nodes.feeds.discovered = []availableNode{{HostUUID: "u1", Name: "host", IPAddress: "10.0.0.1", Port: 1}}
 				nodes.feeds.selfUUID = "u1"
 				nodes.rebuild()
@@ -153,7 +155,7 @@ func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
 // off the right, and the footer, truncated from the right, ended at "shift+tab
 // prev" — with quit and help both cut off.
 func TestMinimumWidthKeepsNavigationVisible(t *testing.T) {
-	m := New(nil, nil, defaultViews(nil))
+	m := New(nil, nil, defaultViews(Deps{Pairing: pairing.NewService(nil)}))
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: minTerminalWidth, Height: minTerminalHeight})
 	m = updated.(Model)
 
@@ -203,8 +205,8 @@ func TestFrameStaysExactWithTheUpdateBanner(t *testing.T) {
 	withReleaseVersion(t, "0.91.7")
 
 	for h := minTerminalHeight; h <= 44; h++ {
-		for i := range defaultViews(nil) {
-			m := newTestModel(defaultViews(nil)...)
+		for i := range defaultViews(Deps{Pairing: pairing.NewService(nil)}) {
+			m := newTestModel(defaultViews(Deps{Pairing: pairing.NewService(nil)})...)
 			m.width, m.height = 80, h
 			m.selectTab(i)
 
@@ -232,7 +234,7 @@ func TestFrameStaysExactWithTheUpdateBanner(t *testing.T) {
 // again rather than on the list they asked for — the list one more keypress
 // away, with nothing on screen explaining why.
 func TestLeavingATabReturnsItToItsOwnFirstScreen(t *testing.T) {
-	nodes := newNodesView(nil)
+	nodes := newNodesView(nil, pairing.NewService(nil))
 	nodes.feeds.discovered = []availableNode{
 		{HostUUID: "u1", Name: "this-host", IPAddress: "10.0.0.1", Port: 1},
 	}
@@ -289,7 +291,7 @@ func TestViewBeforeFirstResize(t *testing.T) {
 // which is the more common failure, because the range is a string a reader has
 // to remember to update.
 func TestJumpDigitsMatchTheTabsExactly(t *testing.T) {
-	views := defaultViews(nil)
+	views := defaultViews(Deps{Pairing: pairing.NewService(nil)})
 	keys := newGlobalKeyMap(len(views)).JumpTab
 
 	if got, want := len(keys.Keys()), len(views); got != want {
@@ -345,7 +347,7 @@ func TestMoreTabsThanDigitsIsRefused(t *testing.T) {
 // TestTheShellFitsItsDigitKeys keeps the real tab set inside that limit, so the
 // panic above is never what finds it.
 func TestTheShellFitsItsDigitKeys(t *testing.T) {
-	if n := len(defaultViews(nil)); n > maxTabs {
+	if n := len(defaultViews(Deps{Pairing: pairing.NewService(nil)})); n > maxTabs {
 		t.Errorf("%d tabs, but only %d have a digit key", n, maxTabs)
 	}
 }

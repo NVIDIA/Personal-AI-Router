@@ -10,6 +10,8 @@ import (
 	svcerrors "nvpair-shared/errors"
 
 	"github.com/charmbracelet/bubbles/table"
+
+	"nvpair-tui/pairing"
 )
 
 // TestTruncate covers the cut and its edges. It counts runes, not bytes: GPU
@@ -162,17 +164,17 @@ func TestLayoutColumnsHonoursMinimum(t *testing.T) {
 // first row rather than rendering empty.
 func TestViewsAcceptRowsBeforeResize(t *testing.T) {
 	t.Run("nodes from discovery", func(t *testing.T) {
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.feeds.discovered = []availableNode{{HostUUID: "u", Name: "n", IPAddress: "10.0.0.1", Port: 1}}
 		v.rebuild()
 	})
 	t.Run("nodes from cluster roster", func(t *testing.T) {
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.feeds.members = []clusterNode{{ID: "id", NodeUUID: "u", Name: "n", State: "joined", Port: 1}}
 		v.rebuild()
 	})
 	t.Run("nodes from manual list", func(t *testing.T) {
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.feeds.manual = []manualNode{{ID: "id", Name: "n", Address: "10.0.0.1"}}
 		v.rebuild()
 	})
@@ -232,7 +234,7 @@ func TestEveryTableViewHasColumnsAtConstruction(t *testing.T) {
 // removed the node table's timestamp column.
 func TestRowsMatchTheirColumns(t *testing.T) {
 	t.Run("nodes", func(t *testing.T) {
-		v := newNodesView(nil)
+		v := newNodesView(nil, pairing.NewService(nil))
 		v.feeds.discovered = []availableNode{
 			{HostUUID: "u", Name: "n", IPAddress: "10.0.0.1", Port: 1},
 		}

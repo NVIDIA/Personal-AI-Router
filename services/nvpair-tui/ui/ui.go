@@ -7,23 +7,40 @@ import (
 	"bufio"
 	"io"
 
+	"nvpair-tui/pairing"
 	"nvpair-tui/rpc"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Run builds the tabbed program over a connected broker client and the broker's
-// stderr stream, and blocks until the user quits. The caller is responsible for
-// shutting the broker down afterwards, and for honouring the returned Outcome
-// once it has.
-func Run(client *rpc.Client, stderr io.Reader) (Outcome, error) {
+// Deps is everything the tabbed program is built over. The broker's
+// notification stream arrives as a channel rather than straight off the
+// client, because the process fans those pushes out to the pairing service
+// first — the Nodes tab is one consumer of pairing state, not its owner.
+type Deps struct {
+	// Client issues broker requests.
+	Client *rpc.Client
+	// Notifications carries the broker's pushes. Closed when the broker goes
+	// away, which is how the UI learns it disconnected.
+	Notifications <-chan *rpc.Message
+	// Stderr is the broker's captured stderr, shown in the Logs tab.
+	Stderr io.Reader
+	// Pairing is the process-wide pairing service, shared with the control
+	// socket so a request answered from a script leaves the screen too.
+	Pairing *pairing.Service
+}
+
+// Run builds the tabbed program over its dependencies, and blocks until the
+// user quits. The caller is responsible for shutting the broker down
+// afterwards, and for honouring the returned Outcome once it has.
+func Run(deps Deps) (Outcome, error) {
 	logCh := make(chan string, 2000)
-	go scanLines(stderr, logCh)
+	go scanLines(deps.Stderr, logCh)
 	logOut.attach(logCh)
 	defer logOut.detach()
 
-	views := defaultViews(client)
-	p := tea.NewProgram(New(client, logCh, views), tea.WithAltScreen())
+	views := defaultViews(deps)
+	p := tea.NewProgram(New(deps.Notifications, logCh, views), tea.WithAltScreen())
 	final, err := p.Run()
 	// Before returning, so a demo still inside its window does not leave
 	// dispatcher processes behind for the shell to inherit.
@@ -63,9 +80,10 @@ func scanLines(r io.Reader, out chan<- string) {
 // shadowed a view's own verb or a digit that looked like a tab number without
 // being one. Its count rides on the tab label instead, so the tab bar is the
 // indicator and there is nothing extra to learn.
-func defaultViews(client *rpc.Client) []View {
+func defaultViews(deps Deps) []View {
+	client := deps.Client
 	return []View{
-		newNodesView(client),
+		newNodesView(client, deps.Pairing),
 		newJobsView(client),
 		newServiceView(client),
 		newErrorsView(client),
