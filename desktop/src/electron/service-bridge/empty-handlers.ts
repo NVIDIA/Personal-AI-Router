@@ -260,18 +260,26 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
             // LM Studio and llama.cpp declare real `load_model` manifest actions.
+            // vLLM's `load_model` switches the served model by restarting the
+            // engine on it, which takes minutes and can fail (the model may not
+            // fit), so like Ollama's its rejection is observed and attributed
+            // to the pending model row.
             // All require the engine running (HTTP/CLI action), matching the
             // disabled rule in ModelRow.tsx.
             // See docs/services-parity.md#models.
             if (payload.model) {
-                if (payload.engineType === 'ollama') {
+                if (payload.engineType === 'ollama' || payload.engineType === 'vllm') {
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',
                         {
                             engine,
-                            action: 'run_model',
-                            params: { model: payload.model, stream: false }
+                            ...(payload.engineType === 'ollama'
+                                ? {
+                                      action: 'run_model',
+                                      params: { model: payload.model, stream: false }
+                                  }
+                                : { action: 'load_model', params: { model: payload.model } })
                         },
                         failAction('load model', {
                             nodeId: payload.nodeId,

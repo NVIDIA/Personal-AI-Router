@@ -35,7 +35,7 @@ inference; two or more on the same local network let you try pairing and routing
 
 Nothing else has to be in place first:
 
-- **Engines.** PAIR installs and starts Ollama, LM Studio, or llama.cpp for you
+- **Engines.** PAIR installs and starts Ollama, LM Studio, llama.cpp, or (on Linux) vLLM for you
   in step 4. Existing Ollama and LM Studio installations can also be detected
   and used.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
@@ -210,6 +210,7 @@ engine would normally listen on:
 - `11434` for Ollama.
 - `1234` for LM Studio.
 - `8080` for llama.cpp.
+- `8000` for vLLM.
 
 Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
@@ -239,6 +240,7 @@ The engine therefore has to understand the style you send.
 | Ollama | Works | Works |
 | LM Studio | Works | Not available |
 | llama.cpp | Works | Not available |
+| vLLM | Works | Not available |
 
 **If you are unsure, send the OpenAI-style request.** It works with every
 supported engine, and most tools and SDKs use it. Use the Ollama style

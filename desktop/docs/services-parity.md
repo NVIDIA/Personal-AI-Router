@@ -25,6 +25,7 @@ history.
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
 | llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                            |
+| vLLM backend               | Integrated (Linux)              | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), endpoints and routing; no eject, delete, pull or catalog; no demo traffic |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
@@ -181,6 +182,28 @@ The TUI keeps its direct exact-ID download prompt.
 Current limits are explicit: the manual-node worker does not probe llama.cpp,
 the catalog offers no alternate quantizations, and package selection is fixed
 rather than driver-aware or offline-repacked.
+
+### vLLM support
+
+The bundled `vllm` manifest is Linux only. It installs a pinned `vllm` wheel
+into a private virtualenv through a checksum-pinned `uv` bootstrap, or adopts a
+`vllm` already installed at a detected path, then runs `vllm serve` on `8001`
+behind the proxy facade on `8000`. vLLM serves one model per process and has no
+load, unload, pull or delete API, so the desktop hides Eject, Delete and Add
+model for it and offers no catalog. Its model list is the Hugging Face cache
+(`list_models` is an `hf_cache` action, so it works while the engine is
+stopped), and Load switches the served model through `load_model` (a
+`launch_model` action): it saves `--model <id>` into the launch arguments and
+restarts the engine, restoring the previous model if the new one does not start.
+Only the served model is advertised to peers and the proxy
+(`advertised_models: loaded`), since a request for any other cached model would
+fail at the engine. Weights live in the shared
+Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
+never remove.
+
+Current limits are explicit: the manual-node worker does not probe vLLM, the
+Inference Demo does not use it, and the icon is a placeholder lettermark rather
+than the vLLM project logo.
 
 ## Engine lifecycle
 

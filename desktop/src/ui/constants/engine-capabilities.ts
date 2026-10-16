@@ -20,6 +20,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
         hasDeleteModel: true,
+        hasPullModel: true,
         engineHub: { label: 'Ollama', url: 'https://ollama.com/library' }
     },
     'lm-studio': {
@@ -38,6 +39,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
         hasDeleteModel: true,
+        hasPullModel: true,
         // LM Studio answers /v1/models from an index it builds at startup and
         // exposes no rescan, so nvpair-engine-manager's delete_model restarts the
         // server. Deleting therefore interrupts inference and needs a warning.
@@ -57,9 +59,31 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         modelOpsWhenStopped: false,
         // The router removes cached models in-process via DELETE /models.
         hasDeleteModel: true,
+        hasPullModel: true,
         engineHub: {
             label: 'llama.cpp',
             url: 'https://huggingface.co/models?library=gguf'
         }
+    },
+    vllm: {
+        hasExpiry: false,
+        // vLLM serves one model per process and has no unload API; changing
+        // the model means restarting the engine with different launch arguments.
+        hasEject: false,
+        // Linux only: vLLM has no native Windows or macOS GPU path.
+        hasInstall: ['linux'],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: true,
+        modelOpsWhenStopped: false,
+        // The engine manager declares no delete_model for vLLM; weights live in
+        // the shared Hugging Face cache.
+        hasDeleteModel: false,
+        // No pull_model either. The model list is what the Hugging Face cache
+        // already holds, and Load switches the served model by restarting vLLM.
+        hasPullModel: false
     }
 }

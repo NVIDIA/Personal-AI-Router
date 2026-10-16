@@ -37,6 +37,13 @@ export interface EngineCaps {
     /** When true, show the Delete action in the model action menu. */
     hasDeleteModel: boolean
     /**
+     * When true, the engine can download a model on request (a `pull_model`
+     * action), so the model list offers "Add model". An engine that serves one
+     * model per process has no such call: it lists what is already on disk and
+     * switches between those models with Load.
+     */
+    hasPullModel: boolean
+    /**
      * When true, the engine restarts as part of deleting a model, so Delete asks
      * for confirmation first. The engine manager owns the restart; this flag only
      * tells the UI that deleting has that side effect.

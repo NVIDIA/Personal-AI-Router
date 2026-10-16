@@ -99,7 +99,11 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
-`EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
+`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and `vllm`.
+vLLM serves one model per process, so it offers no eject, delete, Add model or
+catalog search. Its model list is the Hugging Face cache, and `loadModel` on one
+of them switches the served model by restarting vLLM on it (the capability flag
+`hasPullModel: false` hides Add model).
 `searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
 live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
 query performs an explicit bounded search across public Hugging Face GGUF

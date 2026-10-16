@@ -244,6 +244,26 @@ describe('pending-actions store: model actions', () => {
         ).toBeUndefined()
     })
 
+    it('keeps a vLLM load locked while the engine restarts on the new model', () => {
+        usePendingActionsStore.getState().begin({
+            command: 'loadModel',
+            engineType: 'vllm',
+            nodeId: 'local-node',
+            model: 'Qwen/Qwen3-8B'
+        })
+
+        // Well past the default net: readiness alone can take 8 minutes.
+        vi.advanceTimersByTime(12 * 60_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        ).toBe('loadModel')
+
+        vi.advanceTimersByTime(8 * 60_000 + 1_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        ).toBeUndefined()
+    })
+
     it('leaves the default net in place for LM Studio loads', () => {
         usePendingActionsStore.getState().begin({
             command: 'loadModel',

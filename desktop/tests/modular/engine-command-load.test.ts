@@ -70,6 +70,40 @@ describe('local model load command', () => {
         )
     })
 
+    it('switches the vLLM model through load_model and attributes a failure to the model row', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'loadModel',
+            engineType: 'vllm',
+            nodeId: 'local-node',
+            model: 'Qwen/Qwen3-8B'
+        })
+
+        expect(mocks.supervisor.sendProcess).toHaveBeenCalledOnce()
+        const [name, method, params, onFailure, observeResponse] =
+            mocks.supervisor.sendProcess.mock.calls[0]
+        // Observed: the switch restarts the engine and can fail, and the
+        // backend reports that failure only through this response.
+        expect([name, method, params, observeResponse]).toEqual([
+            'broker',
+            'engine:action',
+            { engine: 'vllm', action: 'load_model', params: { model: 'Qwen/Qwen3-8B' } },
+            true
+        ])
+
+        onFailure('did not become ready; the previous model was restored', true)
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Failed to load model on vllm: did not become ready; the previous model was restored',
+            'error',
+            'engine-cmd:load model:vllm',
+            {
+                nodeId: 'local-node',
+                engineType: 'vllm',
+                operation: 'load',
+                modelName: 'Qwen/Qwen3-8B'
+            }
+        )
+    })
+
     it('leaves the LM Studio load path unobserved', async () => {
         await handleServiceBridgeInvoke('engine:command', {
             command: 'loadModel',

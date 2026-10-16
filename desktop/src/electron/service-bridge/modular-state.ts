@@ -168,7 +168,8 @@ function emptyEngines(): Record<ProxyEngine, EnginePresence> {
     return {
         ollama: emptyPresence(),
         'lm-studio': emptyPresence(),
-        'llama-cpp': emptyPresence()
+        'llama-cpp': emptyPresence(),
+        vllm: emptyPresence()
     }
 }
 
@@ -890,7 +891,8 @@ class ModularBridgeState {
     private proxyPorts: Record<ProxyEngine, number> = {
         ollama: 0,
         'lm-studio': 0,
-        'llama-cpp': 0
+        'llama-cpp': 0,
+        vllm: 0
     }
     private selfId: string | null = null
     /**

@@ -40,6 +40,12 @@ const PENDING_TIMEOUT_MS = 60_000
 /** Keep Ollama Load locked one safety-net interval beyond the longest (11m) backend path. */
 const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 12 * 60_000
 /**
+ * vLLM Load restarts the engine on the new model: up to 8 minutes of readiness
+ * plus the same again if the previous model has to be restored. Keep the row
+ * locked past that.
+ */
+const VLLM_LOAD_PENDING_TIMEOUT_MS = 20 * 60_000
+/**
  * Safety net for a delete on an engine whose backend restarts to pick the
  * deletion up (`EngineCaps.restartsOnModelDelete` / the manifest's
  * `restart_after`). That delete does not reply until the engine has stopped and
@@ -109,6 +115,9 @@ interface PendingAction {
 function timeoutFor(command: EngineCommandType, engineType: EngineType): number {
     if (command === 'loadModel' && engineType === 'ollama') {
         return OLLAMA_LOAD_PENDING_TIMEOUT_MS
+    }
+    if (command === 'loadModel' && engineType === 'vllm') {
+        return VLLM_LOAD_PENDING_TIMEOUT_MS
     }
     if (command === 'deleteModel' && EngineCapabilities[engineType]?.restartsOnModelDelete) {
         return RESTART_DELETE_TIMEOUT_MS
