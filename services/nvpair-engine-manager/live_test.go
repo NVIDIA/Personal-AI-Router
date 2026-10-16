@@ -187,9 +187,10 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 	if os.Getenv("NVPAIR_LIVE_LMSTUDIO") == "" {
 		t.Skip("set NVPAIR_LIVE_LMSTUDIO=1 to run the LM Studio clean-room install test (this installs LM Studio)")
 	}
-	// The bundled manifest installs into (and uninstalls) the real
-	// ~/.lmstudio. Refuse to run if one already exists, so we never delete
-	// a user's pre-existing LM Studio.
+	// The bundled manifest installs into (and uninstalls) ~/.lmstudio. The
+	// manager runs with an isolated home, so that is a throwaway directory,
+	// but the vendor installer is not ours: refuse to run if a real
+	// ~/.lmstudio exists, so a user's LM Studio can never be deleted.
 	if home, _ := os.UserHomeDir(); home != "" {
 		if _, err := os.Stat(filepath.Join(home, ".lmstudio")); err == nil {
 			t.Skip("~/.lmstudio already exists; skipping so we don't uninstall a real LM Studio install")
@@ -197,8 +198,7 @@ func TestLiveLMStudioCleanRoom(t *testing.T) {
 	}
 
 	// Empty config dir so only the bundled lmstudio manifest is loaded.
-	cfg := t.TempDir()
-	frames, stdin, stop := startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	frames, stdin, stop := startManager(t, newIsolatedConfig(t).env())
 	defer stop()
 
 	send(t, stdin, 1, "engine:get-installed", nil)
@@ -274,16 +274,19 @@ func startManager(t *testing.T, env map[string]string) (chan frame, io.WriteClos
 // the manager pointed at it (so the override manifest shadows bundled).
 func startManagerWithManifest(t *testing.T, m Manifest) (chan frame, io.WriteCloser, func()) {
 	t.Helper()
-	cfg := t.TempDir()
-	engdir := filepath.Join(cfg, configSubdir, "engines")
-	if err := os.MkdirAll(engdir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	iso := newIsolatedConfig(t)
 	data, _ := json.MarshalIndent(m, "", "  ")
-	if err := os.WriteFile(filepath.Join(engdir, m.Engine+".json"), data, 0o644); err != nil {
-		t.Fatal(err)
+	// Written to every candidate location, because which one the child resolves
+	// depends on its platform and the manifest has to shadow the bundled one.
+	for _, engdir := range iso.engineDirs() {
+		if err := os.MkdirAll(engdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(engdir, m.Engine+".json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return startManager(t, map[string]string{"APPDATA": cfg, "XDG_CONFIG_HOME": cfg})
+	return startManager(t, iso.env())
 }
 
 func sha256File(t *testing.T, path string) string {

@@ -145,7 +145,7 @@ func TestMain(m *testing.M) {
 	// through on each platform. They are set after the builds, because go
 	// derives its module and build caches from these variables.
 	testsConfigBase = filepath.Join(tmpDir, "config")
-	for _, key := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA", "LOCALAPPDATA"} {
+	for _, key := range configEnvKeys {
 		if err := os.Setenv(key, testsConfigBase); err != nil {
 			os.RemoveAll(tmpDir)
 			log.Fatalf("set %s: %v", key, err)

@@ -107,16 +107,23 @@ func (mp *managedProc) stop(grace time.Duration) {
 	<-mp.done
 }
 
-// terminatePID stops the process with the given PID (and its tree on
-// Windows, or its process group on Unix when available): a graceful signal
-// first, escalating to a forced kill if the process hasn't exited within
-// grace; a non-positive grace kills immediately. It exists to reclaim a
-// PAIR-managed engine orphan adopted on our own port — an instance a prior run
-// spawned and then lost the handle to, so we can only address it by PID rather
-// than through the *exec.Cmd handle managedProc.stop needs. Best-effort: a
-// process that's already gone counts as success. The platform primitives
-// (signalPID, pidAlive) live in proc_windows.go / proc_unix.go.
-func terminatePID(pid int, grace time.Duration) {
+// terminatePID stops the process with the given PID (and its tree on Windows,
+// or its process group on Unix when it leads one): a graceful signal first,
+// escalating to a forced kill if the process hasn't exited within grace; a
+// non-positive grace kills immediately. It exists to reclaim a PAIR-managed
+// engine orphan adopted on our own port — an instance a prior run spawned and
+// then lost the handle to, so we can only address it by PID rather than
+// through the *exec.Cmd handle managedProc.stop needs. Best-effort: a process
+// that's already gone counts as success. The platform primitives (signalPID,
+// pidAlive) live in proc_windows.go / proc_unix.go.
+//
+// stillOurs re-confirms the target before escalating, because the identity
+// check that authorized this kill ran before the graceful signal: if the
+// confirmed process exits during the wait and the OS recycles its PID, the
+// forced kill would land on whatever now holds it, and on Unix it can signal a
+// whole process group. The re-check compares the image, so a recycled PID
+// running the same managed binary would still pass it.
+func terminatePID(pid int, grace time.Duration, stillOurs func(int) bool) {
 	if pid <= 0 {
 		return
 	}
@@ -132,17 +139,47 @@ func terminatePID(pid int, grace time.Duration) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if pidAlive(pid) {
-		_ = signalPID(pid, true)
+	if !pidAlive(pid) {
+		return
 	}
+	if stillOurs != nil && !stillOurs(pid) {
+		// It outlived the graceful signal but is no longer the process we
+		// identified, so it is not ours to force.
+		return
+	}
+	_ = signalPID(pid, true)
 }
 
-// normalizeEngineImage cleans an executable path for comparison. Linux
-// /proc/<pid>/exe can suffix " (deleted)" when the file was replaced while
-// the process still runs.
-func normalizeEngineImage(path string) string {
-	path = strings.TrimSuffix(path, " (deleted)")
+// resolveForCompare cleans a path and resolves symlinks so two names for one
+// location compare equal.
+//
+// Every ownership comparison here has one side the OS reported and one side
+// that came from configuration. The OS side is already canonical: macOS
+// reports /private/var/... where the configured path says /var/..., because
+// /var is a symlink. So the configured side goes through this, and the OS side
+// does not: resolving it too would let a symlink created after exec change
+// which configured binary a running process appears to be.
+//
+// Resolution is best-effort: a path that no longer exists on disk cannot be
+// resolved, and its cleaned form is still the most specific thing available.
+//
+// Cleaning happens only on that fallback, never before resolution.
+// filepath.Clean collapses ".." lexically, which is wrong across a symlink:
+// "<dir>/link/../x" is cleaned to "<dir>/x", while the true path follows link
+// to its target first and can land somewhere else entirely. Cleaning first
+// could therefore make an outside path look contained.
+func resolveForCompare(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
 	return filepath.Clean(path)
+}
+
+// normalizeEngineImage cleans an OS-reported executable path for comparison.
+// It is not resolved; see resolveForCompare. Linux /proc/<pid>/exe can suffix
+// " (deleted)" when the file was replaced while the process still runs.
+func normalizeEngineImage(path string) string {
+	return filepath.Clean(strings.TrimSuffix(path, " (deleted)"))
 }
 
 // isOurEngineImage reports whether the listener on our managed port is
@@ -155,7 +192,17 @@ func isOurEngineImage(image, binPath string) bool {
 	if image == "" || binPath == "" {
 		return false
 	}
-	return strings.EqualFold(normalizeEngineImage(image), normalizeEngineImage(binPath))
+	return strings.EqualFold(normalizeEngineImage(image), resolveForCompare(binPath))
+}
+
+// declinedExecutable names a declined process's executable for an error that
+// can leave this node: the file name identifies the application, and the
+// directory, which can contain a username, is left out.
+func declinedExecutable(image string) string {
+	if image == "" {
+		return "unidentified executable"
+	}
+	return filepath.Base(image)
 }
 
 // isManagedInstallPath reports whether binPath is inside this engine's
@@ -166,11 +213,11 @@ func isManagedInstallPath(binPath, installDir string) bool {
 	if binPath == "" || installDir == "" {
 		return false
 	}
-	binAbs, err := filepath.Abs(normalizeEngineImage(binPath))
+	binAbs, err := filepath.Abs(resolveForCompare(binPath))
 	if err != nil {
 		return false
 	}
-	dirAbs, err := filepath.Abs(installDir)
+	dirAbs, err := filepath.Abs(resolveForCompare(installDir))
 	if err != nil {
 		return false
 	}

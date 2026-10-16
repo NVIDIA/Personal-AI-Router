@@ -20,6 +20,10 @@ func TestIPCTransport(t *testing.T) {
 	defer ln.Close()
 
 	cmd := exec.Command(managerBin, "--ipc", path)
+	// A real manager resolves its engines and engine-bin directories through
+	// appdir on startup, so without this it reads the developer's actual
+	// installed engines. e2e_test.go isolates for the same reason.
+	cmd.Env = overrideEnv(newIsolatedConfig(t).env())
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

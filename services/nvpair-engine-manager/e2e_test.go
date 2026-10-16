@@ -22,19 +22,15 @@ import (
 // it (spawning the fake-engine child), runs an action, stops it, and
 // shuts down — the same path the supervising broker uses.
 func TestE2EOverStdio(t *testing.T) {
-	cfg := t.TempDir()
-	home := t.TempDir()
+	iso := newIsolatedConfig(t)
 	// Drop the test manifest in every location os.UserConfigDir might
 	// resolve to, so the child finds it regardless of OS.
-	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),                                    // Windows %LocalAppData%, Linux $XDG_CONFIG_HOME
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"), // macOS
-	} {
+	for _, dir := range iso.engineDirs() {
 		writeFakeManifest(t, dir)
 	}
 
 	cmd := exec.Command(managerBin)
-	cmd.Env = overrideEnv(map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
+	cmd.Env = overrideEnv(iso.env())
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +80,7 @@ func TestE2EOverStdio(t *testing.T) {
 // Saving a bundled engine's port through the real worker must preserve the
 // rest of its override across a new worker process, not just in-memory state.
 func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
-	cfg, home := t.TempDir(), t.TempDir()
+	iso := newIsolatedConfig(t)
 	override := map[string]any{
 		"engine": "ollama",
 		"runtime": map[string]any{
@@ -92,10 +88,7 @@ func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
 			"env":  map[string]string{"CUSTOM_SETTING": "retained"},
 		},
 	}
-	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
-	} {
+	for _, dir := range iso.engineDirs() {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -103,14 +96,14 @@ func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	first := startE2EManager(t, cfg, home)
+	first := startE2EManager(t, iso)
 	send(t, first.stdin, 1, "engine:set-port", map[string]any{"engine": "ollama", "port": 26001})
 	var saved EngineStatus
 	if err := json.Unmarshal(waitResult(t, first.frames, "1", 10*time.Second), &saved); err != nil || saved.Port != 26001 || saved.Running {
 		t.Fatalf("saved status=%+v, err=%v", saved, err)
 	}
 	first.stop(t)
-	second := startE2EManager(t, cfg, home)
+	second := startE2EManager(t, iso)
 	send(t, second.stdin, 1, "engine:describe", map[string]any{"engine": "ollama"})
 	var manifest Manifest
 	if err := json.Unmarshal(waitResult(t, second.frames, "1", 10*time.Second), &manifest); err != nil {
@@ -124,16 +117,12 @@ func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
 }
 
 func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
-	cfg := t.TempDir()
-	home := t.TempDir()
-	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
-	} {
+	iso := newIsolatedConfig(t)
+	for _, dir := range iso.engineDirs() {
 		writeFakeManifest(t, dir)
 	}
 
-	first := startE2EManager(t, cfg, home)
+	first := startE2EManager(t, iso)
 	send(t, first.stdin, 1, "engine:start", map[string]any{"engine": "fake"})
 	var started EngineStatus
 	if err := json.Unmarshal(waitResult(t, first.frames, "1", 20*time.Second), &started); err != nil || !started.Running {
@@ -146,7 +135,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	}
 	first.stop(t)
 
-	second := startE2EManager(t, cfg, home)
+	second := startE2EManager(t, iso)
 	notify(t, second.stdin, restoreEnabledMethod, nil)
 	waitNotify(t, second.frames, "engine:state-changed", 20*time.Second)
 	send(t, second.stdin, 1, "engine:status", map[string]any{"engine": "fake"})
@@ -157,7 +146,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	waitResult(t, second.frames, "2", 10*time.Second)
 	second.stop(t)
 
-	third := startE2EManager(t, cfg, home)
+	third := startE2EManager(t, iso)
 	notify(t, third.stdin, restoreEnabledMethod, nil)
 	send(t, third.stdin, 1, "engine:status", map[string]any{"engine": "fake"})
 	if r := waitResult(t, third.frames, "1", 5*time.Second); !strings.Contains(string(r), `"running":false`) {
@@ -171,8 +160,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 // responds while the manager transport remains alive, and joins the child
 // before reporting completion.
 func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
-	cfg := t.TempDir()
-	home := t.TempDir()
+	iso := newIsolatedConfig(t)
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
 	manifest := testEngineManifest(fakeEngineBin)
 	platform := manifest.Platforms[hostKey()]
@@ -180,14 +168,11 @@ func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
 	platform.Runtime.Env["FAKE_START_DELAY"] = "1m"
 	platform.Runtime.Ready.TimeoutS = 120
 	manifest.Platforms[hostKey()] = platform
-	for _, dir := range []string{
-		filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"),
-		filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
-	} {
+	for _, dir := range iso.engineDirs() {
 		writeE2EManifest(t, dir, manifest)
 	}
 
-	manager := startE2EManager(t, cfg, home)
+	manager := startE2EManager(t, iso)
 	send(t, manager.stdin, 1, "engine:start", map[string]any{"engine": "fake"})
 
 	var pid int
@@ -241,10 +226,10 @@ type e2eManager struct {
 	stopped bool
 }
 
-func startE2EManager(t *testing.T, cfg, home string, args ...string) *e2eManager {
+func startE2EManager(t *testing.T, iso isolatedConfig, args ...string) *e2eManager {
 	t.Helper()
 	cmd := exec.Command(managerBin, args...)
-	cmd.Env = overrideEnv(map[string]string{"APPDATA": cfg, "LOCALAPPDATA": cfg, "XDG_CONFIG_HOME": cfg, "HOME": home})
+	cmd.Env = overrideEnv(iso.env())
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -411,13 +396,13 @@ func waitNotify(t *testing.T, frames <-chan frame, method string, timeout time.D
 // Configure can request a parent rebind while both stdio readers continue
 // servicing unrelated messages; literal settings survive a fresh worker.
 func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
-	cfg, home := t.TempDir(), t.TempDir()
+	iso := newIsolatedConfig(t)
 	fixture := settingsExecutor(t, false)
 	manifest, _ := fixture.reg.Get("fake")
-	for _, dir := range []string{filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"), filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines")} {
+	for _, dir := range iso.engineDirs() {
 		writeE2EManifest(t, dir, manifest)
 	}
-	manager := startE2EManager(t, cfg, home)
+	manager := startE2EManager(t, iso)
 	send(t, manager.stdin, 1, "engine:get-installed", nil)
 	waitResult(t, manager.frames, "1", 5*time.Second)
 	send(t, manager.stdin, 2, "engine:get-launch", map[string]string{"engine": "fake"})
@@ -455,7 +440,7 @@ func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
 	}
 	saved := launch.LaunchText
 	manager.stop(t)
-	restored := startE2EManager(t, cfg, home)
+	restored := startE2EManager(t, iso)
 	send(t, restored.stdin, 1, "engine:get-installed", nil)
 	waitResult(t, restored.frames, "1", 5*time.Second)
 	send(t, restored.stdin, 2, "engine:get-launch", map[string]string{"engine": "fake"})

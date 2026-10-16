@@ -53,6 +53,7 @@ func startProxyWithLog(t *testing.T, level string) (stdin io.WriteCloser, msgs <
 	// takes engines over facade/enable. Log level is process-scoped, so this
 	// needs no facade at all.
 	cmd := exec.Command(proxyBin, "--log-level", level)
+	cmd.Env = isolatedConfigEnv(t)
 	stderrBuf := &safeBuffer{}
 	cmd.Stderr = stderrBuf
 
@@ -230,7 +231,7 @@ func TestLogLevelEnvFallback(t *testing.T) {
 	// --log-level deliberately omitted, so the env fallback is what this
 	// exercises. No engine needed: log level is process-scoped.
 	cmd := exec.Command(proxyBin)
-	cmd.Env = append(cmd.Environ(), "NVPAIR_LOG_LEVEL=debug")
+	cmd.Env = isolatedConfigEnv(t, "NVPAIR_LOG_LEVEL=debug")
 	stderrBuf := &safeBuffer{}
 	cmd.Stderr = stderrBuf
 

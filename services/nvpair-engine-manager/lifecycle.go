@@ -464,7 +464,12 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 				}
 				st.mu.Unlock()
 				grace := stopGrace(rt)
-				terminatePID(pid, grace)
+				// Re-confirmed before the forced kill: the identity check
+				// above ran before the graceful signal, and a PID freed
+				// during the wait can be reused by an unrelated process.
+				terminatePID(pid, grace, func(p int) bool {
+					return isOurEngineImage(procImage(p), binPath)
+				})
 				if !pidAlive(pid) {
 					e.markStopped(st, engine)
 					return nil
@@ -476,7 +481,14 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			}
 			e.emitState(engine)
 			if ok {
-				return fmt.Errorf("cannot stop engine %q: it is running under external management (pid %d, %s); stop it in its own application, then retry", engine, pid, image)
+				// This error reaches paired peers, through the remote stop
+				// response and nvpair-errors sync, so it names the executable,
+				// which tells the operator which application to close, and
+				// leaves the full path, which can contain a username, to the
+				// local log.
+				slog.Warn("declined to stop a process on the managed port that NVPAIR does not own",
+					"engine", engine, "pid", pid, "image", image)
+				return fmt.Errorf("cannot stop engine %q: it is running under external management (pid %d, %s); stop it in its own application, then retry", engine, pid, declinedExecutable(image))
 			}
 			return fmt.Errorf("cannot stop engine %q: it is running under external management; stop it in its own application, then retry", engine)
 		}
