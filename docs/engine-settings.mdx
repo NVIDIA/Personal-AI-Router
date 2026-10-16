@@ -98,7 +98,9 @@ or `-hf` switch it to an incompatible single-model server and fail readiness.
 vLLM always serves one model: its launch arguments name that model with
 `--model <Hugging Face id>`, and changing it restarts the engine. By default it
 uses at most half of the GPU's memory (`--gpu-memory-utilization 0.5`) so other
-engines can run alongside it; raise that value for a larger model.
+engines can run alongside it; raise that value for a larger model. It also caps
+the context at 32K tokens (`--max-model-len 32768`), because models with a very
+long default context would otherwise not fit in that memory and fail to start.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation

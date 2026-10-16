@@ -54,6 +54,9 @@ The default launch serves `Qwen/Qwen2.5-0.5B-Instruct` through
 The default launch also passes `--gpu-memory-utilization 0.5`: vLLM reserves 92%
 of GPU memory by default, even for a tiny model, which would starve every other
 engine on the machine. Raise it in the launch arguments for a larger model.
+It also passes `--max-model-len 32768`: many current models advertise a context of
+256K tokens or more, and vLLM refuses to start unless the KV cache for that full
+length fits in the memory it was given. Raise it only if the GPU has room.
 The environment sets `VLLM_USE_FLASHINFER_SAMPLER=0`. vLLM's FlashInfer sampler
 compiles GPU kernels on first start, and that build cannot handle the spaces in
 PAIR's app-data folder (`Nvidia Corporation/Personal AI Router`), so the

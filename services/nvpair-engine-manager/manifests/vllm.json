@@ -16,7 +16,7 @@
         { "flags": ["--port"], "value": "{server.port}" }
       ]
     },
-    "args": ["serve", "--model", "Qwen/Qwen2.5-0.5B-Instruct", "--gpu-memory-utilization", "0.5", "--host", "{host}", "--port", "{port}"],
+    "args": ["serve", "--model", "Qwen/Qwen2.5-0.5B-Instruct", "--gpu-memory-utilization", "0.5", "--max-model-len", "32768", "--host", "{host}", "--port", "{port}"],
     "env": { "HF_HOME": "{models_dir}", "VLLM_USE_FLASHINFER_SAMPLER": "0" },
     "bind": "127.0.0.1",
     "port": 8001,
