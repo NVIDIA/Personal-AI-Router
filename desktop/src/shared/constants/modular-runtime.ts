@@ -79,6 +79,14 @@ export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 14 * 60_000
 // docs/services-parity.md.
 export const MODULAR_MODEL_ACTION_TIMEOUT_MS = 120_000
 
+/**
+ * How long a model switch on an engine that restarts to change model (vLLM) may
+ * take before the app stops waiting for it. The restart can need up to eight
+ * minutes to become ready, and a failed switch restores the previous model with a
+ * second restart.
+ */
+export const MODEL_SWITCH_TIMEOUT_MS = 20 * 60_000
+
 // Upper bound for `engine:catalog`. The engine manager allows its own LM Studio
 // fetch 20s, and only replies once that resolves, so the RPC envelope has to sit
 // outside that budget or a slow catalogue rejects here while the backend is

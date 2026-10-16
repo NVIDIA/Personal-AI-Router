@@ -197,7 +197,10 @@ stopped), and Load switches the served model through `load_model` (a
 restarts the engine, restoring the previous model if the new one does not start.
 Only the served model is advertised to peers and the proxy
 (`advertised_models: loaded`), since a request for any other cached model would
-fail at the engine. Weights live in the shared
+fail at the engine. A switch passes through a stopped engine for the length of the
+restart, so the desktop marks the engine as switching: its card shows starting
+rather than stopped, and its model list is kept, until the load request finishes
+(success, or failure with the previous model restored). Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
 never remove.
 

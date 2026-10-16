@@ -1990,6 +1990,10 @@ class ModularSupervisor {
         if (!engineType) return
 
         if (!booleanValue(obj.running)) {
+            // A model switch restarts the engine, so it reports stopped on the
+            // way. The list of models does not change, and clearing it made the
+            // card empty until the engine was back.
+            if (getModularBridgeState().isLocalModelSwitching(engineType)) return
             this.beginModelRefresh(engineType)
             this.stoppedModelEngines.add(engineType)
             this.stoppedModelSentinels.add(engineType)

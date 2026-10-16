@@ -506,3 +506,54 @@ describe('LM Studio model reconciliation', () => {
         hasProcess.mockRestore()
     })
 })
+
+describe('model list during a vLLM model switch', () => {
+    const nodeId = 'vllm-switch-list-node'
+
+    function vllmModels() {
+        return getModularBridgeState()
+            .getEngineInitialState()
+            .models.find(models => models.nodeId === nodeId && models.engineType === 'vllm')
+            ?.models.map(model => model.name)
+    }
+
+    it('keeps the cached-model list while the engine restarts, and clears it when it is turned off', () => {
+        const state = getModularBridgeState()
+        const supervisor = getModularSupervisor()
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'vllm-switch-host',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            running: true,
+            healthy: true,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', ['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+
+        // A switch restarts the engine, which reports stopped on its way down. The
+        // list of models has not changed, so the card must not empty out.
+        state.beginLocalModelSwitch('vllm')
+        supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+
+        // Without a switch, stopping the engine clears the list as it does for every engine.
+        state.clearLocalModelSwitch('vllm')
+        supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
+        expect(vllmModels()).toEqual([])
+    })
+})

@@ -7,6 +7,7 @@ import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cl
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import {
+    MODEL_SWITCH_TIMEOUT_MS,
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
@@ -268,18 +269,36 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // disabled rule in ModelRow.tsx.
             // See docs/services-parity.md#models.
             if (payload.model) {
-                if (payload.engineType === 'ollama' || payload.engineType === 'vllm') {
+                if (payload.engineType === 'vllm') {
+                    // vLLM switches model by restarting, so the engine passes through
+                    // "stopped" on the way. Show that as starting rather than as
+                    // turned off, and end it when the request finishes: the reply
+                    // arrives once the new model is serving (or the old one restored).
+                    state.beginLocalModelSwitch('vllm')
+                    void supervisor
+                        .callProcess(
+                            'broker',
+                            'engine:action',
+                            { engine, action: 'load_model', params: { model: payload.model } },
+                            MODEL_SWITCH_TIMEOUT_MS
+                        )
+                        .catch(err =>
+                            failAction('load model', {
+                                nodeId: payload.nodeId,
+                                engineType: payload.engineType,
+                                operation: 'load',
+                                modelName: payload.model
+                            })(getErrorString(err))
+                        )
+                        .finally(() => state.clearLocalModelSwitch('vllm'))
+                } else if (payload.engineType === 'ollama') {
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',
                         {
                             engine,
-                            ...(payload.engineType === 'ollama'
-                                ? {
-                                      action: 'run_model',
-                                      params: { model: payload.model, stream: false }
-                                  }
-                                : { action: 'load_model', params: { model: payload.model } })
+                            action: 'run_model',
+                            params: { model: payload.model, stream: false }
                         },
                         failAction('load model', {
                             nodeId: payload.nodeId,
