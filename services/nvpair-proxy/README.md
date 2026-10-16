@@ -230,3 +230,37 @@ Add one entry to `nvpair-shared/engines` for the cross-process identity, one to
 proxy-unification plan for the full checklist, including the one-liners that are
 still per-engine (a `noderec.ServiceKey`, the TUI health label, the desktop
 engine-type constants, and an engine-manager manifest).
+
+## Request hardening
+
+Three fixes to the request path, all in the proxy. Nothing here changes the
+JSON-RPC surface or the endpoints clients use.
+
+**Request bodies are capped at 32 MiB.** `handleHTTP` buffers the entire
+request body so each failover attempt can replay it. The read was uncapped,
+so any loopback client could grow the proxy until it OOMed, and the
+permissive loopback CORS posture made this reachable from any web page the
+user visits. `maxInferenceBodyBytes = 32 << 20` now caps a single body.
+`bufferBodyAndModel` reads through a limit reader: bodies over the cap get
+a 413 with a JSON error before candidate selection or any engine work, and a
+`proxy/request` notification marked rejected. Bodies at or under the cap
+behave exactly as before. The proxy never holds more than cap+1 bytes per
+in-flight request body.
+
+**The local engine address must be loopback.** The old per-engine
+`localBackendTarget()` built a dial URL from whatever host the broker
+supplied via `set-local-backend`, so a compromised or buggy broker could
+point the cluster mTLS ingress at an arbitrary LAN address. `setLocalBackend()`
+in `ingress.go` now refuses a non-loopback host outright and returns an
+error, so a bad value never reaches the dial path. `127.0.0.1`, `::1`,
+other `127.x` addresses, and the empty default are accepted as before.
+
+**Unpinned peers fail closed.** `peerHTTPTransport()` used to return an
+unpinned transport when the cluster pin was absent, so a request could
+silently reach a peer with no mutual-TLS authentication. It now returns a
+fail-closed transport whose dial always fails with `errPeerUnpinned`.
+Dial errors flow through the existing failover path: the request tries the
+next candidate, or the proxy answers 502 when none remain.
+
+Validation: `proxy_hardening_test.go` covers all three fixes. Run with
+`go test -race ./...` from the component directory.
