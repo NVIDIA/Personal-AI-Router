@@ -6,14 +6,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httptrace"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/clustertrust"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 )
@@ -89,7 +96,7 @@ type nodeInfoTestProcess struct {
 
 // startNodeInfoForTest builds and starts node-info on an available port.
 // It registers cleanup and bounds the child's lifetime so stalled reads end.
-func startNodeInfoForTest(t *testing.T, hostUUID string) *nodeInfoTestProcess {
+func startNodeInfoForTest(t *testing.T, hostUUID string, extraArgs ...string) *nodeInfoTestProcess {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "nvpair-node-info")
 	if runtime.GOOS == "windows" {
@@ -107,7 +114,8 @@ func startNodeInfoForTest(t *testing.T, hostUUID string) *nodeInfoTestProcess {
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, path, "--node-id", hostUUID, "--port", portString)
+	args := append([]string{"--node-id", hostUUID, "--port", portString}, extraArgs...)
+	cmd := exec.CommandContext(ctx, path, args...)
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()
@@ -183,14 +191,14 @@ func TestInfoUpdates_PublishesStartupAndPeriodicSnapshots(t *testing.T) {
 	ticks <- time.Now()
 	var output bytes.Buffer
 	var calls int
-	body := func() []byte {
+	snapshot := func() NodeInfoResponse {
 		calls++
 		if calls == 2 {
 			cancel()
 		}
 		return buildResponse(nil, nil, 0, statsSnapshot{}, "owned-host", nil)
 	}
-	publishInfoUpdates(ctx, applog.NewNotifier(&output), body, ticks)
+	publishInfoUpdates(ctx, applog.NewNotifier(&output), snapshot, ticks)
 	decoder := json.NewDecoder(&output)
 	for i := 0; i < 2; i++ {
 		var frame jsonrpc.Message
@@ -254,4 +262,195 @@ func TestPeerMetadata_RejectsMalformedOrForeignIdentity(t *testing.T) {
 	}
 	test("malformed object", `"invalid"`)
 	test("foreign host", `{"hostUuid":"someone-else","peer":{"name":"copied-name"}}`)
+}
+
+type pairedNodeInfoProcess struct {
+	process    *nodeInfoTestProcess
+	clusterDir string
+	client     *http.Client
+	peerURL    string
+}
+
+func startPairedNodeInfoForTest(t *testing.T) pairedNodeInfoProcess {
+	t.Helper()
+	serverCert, serverKey := genLeaf(t, "uuid-a")
+	clientCert, clientKey := genLeaf(t, "uuid-b")
+	serverDir := setupNode(t, serverCert, serverKey, map[string][]byte{"uuid-b": clientCert})
+	// Keep membership active when the client's pin alone is removed or replaced.
+	require.NoError(t, os.WriteFile(filepath.Join(serverDir, "admission.json"), []byte(`{"clusterId":"test-cluster","epoch":1}`), 0o600))
+	clientDir := setupNode(t, clientCert, clientKey, map[string][]byte{"uuid-a": serverCert})
+	cfg, ok := clustertrust.Open(clientDir).ClientTLSConfig("uuid-a")
+	require.True(t, ok, "pinned client configuration must be available")
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
+	t.Cleanup(client.CloseIdleConnections)
+	process := startNodeInfoForTest(t, "uuid-a", "--cluster-dir", serverDir)
+	process.nextSnapshot(t) // startup has bound both listener personalities
+	return pairedNodeInfoProcess{process: process, clusterDir: serverDir, client: client, peerURL: strings.Replace(process.inventoryURL, "http://", "https://", 1)}
+}
+
+func nodeInfoMetadataForTest(port int) noderec.PeerMetadataParams {
+	return noderec.PeerMetadataParams{
+		HostUUID: "uuid-a", ClusterUUID: "uuid-a",
+		Peer: noderec.PeerMetadata{
+			Name: "workstation", Addresses: []string{"192.0.2.20"},
+			Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: port, noderec.ServiceOllama: 11434},
+		},
+	}
+}
+
+type nodeInfoTestInventory struct {
+	NodeInfoResponse
+	Peer *noderec.PeerMetadata `json:"peer,omitempty"`
+}
+
+type nodeInfoHTTPResult struct {
+	status    int
+	inventory nodeInfoTestInventory
+	reused    bool
+}
+
+func getNodeInfoForTest(t *testing.T, client *http.Client, endpoint string) nodeInfoHTTPResult {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	require.NoError(t, err)
+	var reused bool
+	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}
+	response, err := client.Do(request.WithContext(httptrace.WithClientTrace(request.Context(), trace)))
+	require.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	result := nodeInfoHTTPResult{status: response.StatusCode, reused: reused}
+	if response.StatusCode == http.StatusOK {
+		require.NoError(t, json.Unmarshal(body, &result.inventory))
+	}
+	return result
+}
+
+func TestNodeInfo_PublicInventoryRemainsAvailableWhileClustered(t *testing.T) {
+	// Verify that a clustered node still serves public hardware over HTTP while
+	// omitting the peer registry metadata served by the mTLS handler.
+	paired := startPairedNodeInfoForTest(t)
+	public := &http.Client{Timeout: 3 * time.Second}
+	t.Cleanup(public.CloseIdleConnections)
+	result := getNodeInfoForTest(t, public, paired.process.inventoryURL)
+	assert.Equal(t, http.StatusOK, result.status)
+	assert.Equal(t, "uuid-a", result.inventory.HostUUID)
+	assert.Nil(t, result.inventory.Peer)
+}
+
+func TestNodeInfo_PeerNodeInventoryServesCompleteMatchingNodeDetails(t *testing.T) {
+	// Verify that a pinned client receives inventory with complete registry
+	// details matching the serving node's certificate identity.
+	paired := startPairedNodeInfoForTest(t)
+	metadata := nodeInfoMetadataForTest(paired.process.port)
+	paired.process.requestPeerMetadata(t, metadata)
+	result := getNodeInfoForTest(t, paired.client, paired.peerURL)
+	require.Equal(t, http.StatusOK, result.status)
+	assert.Equal(t, "uuid-a", result.inventory.HostUUID)
+	require.NotNil(t, result.inventory.ClusterUUID)
+	assert.Equal(t, "uuid-a", *result.inventory.ClusterUUID)
+	assert.Equal(t, &metadata.Peer, result.inventory.Peer)
+}
+
+func TestNodeInfo_PeerNodeInventoryRejectsIncompleteOrMismatchedNodeDetails(t *testing.T) {
+	// Verify 503 before any node details arrive and when replacement details
+	// are incomplete or identify a different node.
+	paired := startPairedNodeInfoForTest(t)
+	assert.Equal(t, http.StatusServiceUnavailable, getNodeInfoForTest(t, paired.client, paired.peerURL).status)
+	reject := func(name string, incomplete noderec.PeerMetadataParams) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			// Replace a complete snapshot so each case also rejects stale details
+			// left over from a previously valid state.
+			paired.process.requestPeerMetadata(t, nodeInfoMetadataForTest(paired.process.port))
+			paired.process.requestPeerMetadata(t, incomplete)
+			assert.Equal(t, http.StatusServiceUnavailable, getNodeInfoForTest(t, paired.client, paired.peerURL).status)
+		})
+	}
+	principal := nodeInfoMetadataForTest(paired.process.port)
+	principal.ClusterUUID = "different-principal"
+	reject("mismatched node identity", principal)
+
+	name := nodeInfoMetadataForTest(paired.process.port)
+	name.Peer.Name = ""
+	reject("missing name", name)
+
+	addresses := nodeInfoMetadataForTest(paired.process.port)
+	addresses.Peer.Addresses = nil
+	reject("missing addresses", addresses)
+
+	service := nodeInfoMetadataForTest(paired.process.port)
+	delete(service.Peer.Services, noderec.ServiceNodeInfo)
+	reject("missing node-info registration", service)
+}
+
+func TestNodeInfo_RechecksTrustOnReusedConnections(t *testing.T) {
+	// Reuse a TLS connection after pin removal, replacement, or local departure.
+	// The next inventory request must be forbidden while public HTTP still
+	// serves hardware without a peer object.
+	test := func(name string, changeTrust func(*testing.T, string)) {
+		t.Run(name, func(t *testing.T) {
+			paired := startPairedNodeInfoForTest(t)
+			paired.process.requestPeerMetadata(t, nodeInfoMetadataForTest(paired.process.port))
+			require.Equal(t, http.StatusOK, getNodeInfoForTest(t, paired.client, paired.peerURL).status)
+			changeTrust(t, paired.clusterDir)
+			result := getNodeInfoForTest(t, paired.client, paired.peerURL)
+			assert.True(t, result.reused)
+			assert.Equal(t, http.StatusForbidden, result.status)
+			public := &http.Client{Timeout: 3 * time.Second}
+			t.Cleanup(public.CloseIdleConnections)
+			result = getNodeInfoForTest(t, public, paired.process.inventoryURL)
+			assert.Equal(t, http.StatusOK, result.status)
+			assert.Nil(t, result.inventory.Peer)
+		})
+	}
+	removePin := func(t *testing.T, dir string) {
+		t.Helper()
+		require.NoError(t, os.Remove(filepath.Join(dir, "trusted", "uuid-b.json")))
+	}
+	test("pin removal", removePin)
+	test("pin replacement with the same UUID", func(t *testing.T, dir string) {
+		t.Helper()
+		cert, _ := genLeaf(t, "uuid-b")
+		type trustedPeer struct {
+			NodeUUID string `json:"nodeUuid"`
+			CertPEM  string `json:"certPem"`
+		}
+		data, err := json.Marshal(trustedPeer{NodeUUID: "uuid-b", CertPEM: string(cert)})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "trusted", "uuid-b.json"), data, 0o600))
+	})
+	test("local departure retaining the keypair", func(t *testing.T, dir string) {
+		t.Helper()
+		removePin(t, dir)
+		require.NoError(t, os.Remove(filepath.Join(dir, "admission.json")))
+	})
+}
+
+func TestNodeInfoHandler_RejectsInventoryIfTrustChangesDuringCollection(t *testing.T) {
+	// Revoke the client's pin during response collection and verify that the
+	// in-flight request is rejected instead of serving the completed inventory.
+	serverCert, serverKey := genLeaf(t, "uuid-a")
+	clientCert, clientKey := genLeaf(t, "uuid-b")
+	serverDir := setupNode(t, serverCert, serverKey, map[string][]byte{"uuid-b": clientCert})
+	clientDir := setupNode(t, clientCert, clientKey, map[string][]byte{"uuid-a": serverCert})
+	mesh := clustertrust.Open(serverDir)
+	clientConfig, ok := clustertrust.Open(clientDir).ClientTLSConfig("uuid-a")
+	require.True(t, ok, "client certificate fixture must be available")
+	require.NotEmpty(t, clientConfig.Certificates)
+	require.NotNil(t, clientConfig.Certificates[0].Leaf)
+	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318), known: true}
+	// Call the handler synchronously with the authenticated client's TLS state
+	// so trust can be changed deterministically while it builds the response.
+	request := httptest.NewRequest(http.MethodGet, "https://localhost/v1/node-info", nil)
+	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{clientConfig.Certificates[0].Leaf}}
+	principal := "uuid-a"
+	snapshot := func() NodeInfoResponse {
+		require.NoError(t, os.Remove(filepath.Join(serverDir, "trusted", "uuid-b.json")))
+		return buildResponse(nil, nil, 0, statsSnapshot{}, principal, &principal)
+	}
+	response := httptest.NewRecorder()
+	nodeInfoHandler(mesh, metadata, snapshot)(response, request)
+	assert.Equal(t, http.StatusForbidden, response.Code)
 }

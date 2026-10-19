@@ -35,6 +35,24 @@ func TestSampleAging_PreservesValidityAndFreshness(t *testing.T) {
 	test("age saturates", NodeInfo{TelemetryValid: true, MSSince: 1<<63 - 2}, time.Second, 1<<63-1)
 }
 
+func TestNodeInfo_PeerMetadataIsOptionalOnTheWire(t *testing.T) {
+	test := func(name string, peer *PeerMetadata) {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(NodeInfo{HostUUID: "host-a", Peer: peer})
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(body, &fields))
+			_, present := fields["peer"]
+			assert.Equal(t, peer != nil, present)
+			var decoded NodeInfo
+			require.NoError(t, json.Unmarshal(body, &decoded))
+			assert.Equal(t, peer, decoded.Peer)
+		})
+	}
+	test("public hardware", nil)
+	test("peer node inventory", &PeerMetadata{Name: "workstation", Addresses: []string{"192.0.2.20"}, Services: map[ServiceKey]int{ServiceNodeInfo: 14318}})
+}
+
 func TestEngineModels_PrefersPerEngineInventoryAndFallsBackToLegacyModels(t *testing.T) {
 	// Attribution present: each engine gets exactly its own list, never the union.
 	attributed := DirectoryNode{

@@ -34,7 +34,7 @@ It exists as a separate binary because the readout is inherently platform-specif
 - **Local enrichment**: startup and two-second `nodeinfo:info-updated` snapshots travel through the broker as `discovery:local-node-info`. Scanner attaches them to its owned registry record, without a loopback HTTP service read.
 - **Peer enrichment**: a remote scanner authenticates the node-info endpoint over exact-pin mTLS before promoting an announcement. Protected metadata supplies the peer's name, addresses, service ports, and hardware. Failed authentication never triggers public HTTP fallback.
 - **Desktop telemetry poll**: Electron polls public HTTP every 2000 ms with a 1500 ms per-attempt timeout, existing address failover, and failure backoff capped at 30 s. It updates hardware display fields only, independently of verified broker snapshots. It reads this host over loopback. Public responses cannot change identity, trust, addresses, service ports, or models.
-- **Terminal telemetry poll**: TUI polls the open node detail screen over public HTTP at the same cadence and timeout. It retains its response-size limit and refuses redirects. Verified rows require a matching response `hostUuid`; an unverified row's display preview does not turn the response's UUID into verified identity.
+- **Terminal telemetry poll**: TUI polls the open node detail screen over public HTTP at the same cadence and timeout. It retains its response-size limit and refuses redirects. Both clients require a matching response `hostUuid` for verified rows, including the local row; a missing or different UUID is rejected. An unverified row's display preview may omit `hostUuid` and never turns the response's UUID into verified identity.
 - **Scheduler GPU pressure**: scanner uses owned IPC locally and pinned mTLS remotely; manual-node hardware also requires pinned mTLS. They supply maximum GPU utilization with validity and elapsed age through the broker. Unknown or stale data follows the scheduler's existing freshness and pressure rules, and never becomes freshly idle through a failed read or replay.
 - **Observed local addresses**: a non-loopback request records the real local address it reached. Every 30 s the service sends the current set as `nodeinfo:observed-addresses`; broker relays it to scanner. This is reachability evidence, including public requests, and does not authenticate the requester.
 - **Manual node identification**: the manual worker probes `14318`, or the configured node-info port, over pinned mTLS every ten seconds. Matching response host/principal and certificate identities allow the broker to join that source to the same verified host. Explicit engine routes remain independent of hardware authentication.
@@ -175,7 +175,7 @@ Outbound, the service sends these notifications to its owning parent:
 Local snapshots have the public hardware shape and omit protected `peer` metadata. Broker forwards them privately to scanner; they are not frontend HTTP readings.
 
 ### 7.1 Response schema
-`buildResponse` copies the static `[]GPUInfo` detected at startup, folds in any adapters the snapshot's own `GPUInventory` carries (`mergeGPUInventory` enriches a matching `statsKey` in place and appends an unseen one), overlays the latest snapshot by `statsKey`, and marshals. Field semantics:
+`buildResponse` copies the static `[]GPUInfo` detected at startup, folds in any adapters the snapshot's own `GPUInventory` carries (`mergeGPUInventory` enriches a matching `statsKey` in place and appends an unseen one), and overlays the latest snapshot by `statsKey`. The resulting typed snapshot is encoded at the HTTP and IPC boundaries. Field semantics:
 
 | JSON tag | Go type | `omitempty` | Source |
 |----------|---------|-------------|--------|
@@ -271,7 +271,7 @@ A multi-homed host cannot tell from its own side which of its addresses a given 
 - `nvidia-smi`, when present, is on `PATH` and returns within 3 s; a wedged driver is bounded by the timeout, not waited out.
 - `/usr/sbin/ioreg` exists on every supported macOS release, runs unprivileged, and returns within 3 s; its `IOAccelerator` `PerformanceStatistics` keys are undocumented and may be renamed by a macOS release.
 - With a cluster directory, live membership supplies the cluster principal. Standalone without that directory, the parent's identity push is unknown until first supplied. Public claims never override established identity or trust.
-- Consumers treat an absent field as unknown and never as zero, ignore `msSince` while `telemetryValid` is `false`, and tolerate a response that carries only `{"GPUs":[],"telemetryValid":false,"msSince":0}`.
+- Consumers treat an absent measurement field as unknown and never as zero, and ignore `msSince` while `telemetryValid` is `false`. An unverified frontend preview may accept a response containing only `{"GPUs":[],"telemetryValid":false,"msSince":0}`. A verified frontend row additionally requires its matching `hostUuid`; protected service readers also require the authenticated identity and peer metadata described above.
 - Discovery is somebody else's job: the record advertising this port is published by the node-scanner daemon, and this process never touches mDNS.
 
 ## 12. Failure Modes and Mitigations
@@ -285,7 +285,7 @@ A multi-homed host cannot tell from its own side which of its addresses a given 
 - **Unpinned peer reads protected inventory**: the TLS handler returns `403` unless the client has a current matching pin. Public HTTP hardware remains available and omits registry metadata.
 - **Owned metadata is absent or inconsistent**: protected inventory returns `503` until broker metadata agrees with the current host and cluster principal. Public display and private local snapshots remain available.
 - **Malformed cluster-identity push in standalone mode**: the payload is dropped with a warning. An absent field stays unknown; public responses do not authorize service membership changes.
-- **Address reuse or wrong host answers a poll**: remote service readers reject certificate or response-identity mismatches and never retry public HTTP. Frontend public reads remain hardware display data, and a verified row requires matching response identity. An unverified preview cannot promote a claim.
+- **Address reuse or wrong host answers a poll**: remote service readers reject certificate or response-identity mismatches and never retry public HTTP. Frontend public reads remain hardware display data, and a verified row rejects a missing or mismatched response `hostUuid` while trying its remaining addresses. An unverified preview cannot promote a claim.
 - **Port already bound**: the process cannot serve. → `log.Fatalf` with the port in the message; the broker's supervisor restarts it and the failure is visible in the shared stderr stream.
 
 ## 13. Observability
