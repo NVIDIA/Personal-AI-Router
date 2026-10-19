@@ -166,10 +166,18 @@ func TestModelNaming(t *testing.T) {
 		{ollama, "llama3:8b", "llama3:8b"},
 		{ollama, "registry.example/llama3", "registry.example/llama3:latest"},
 		{ollama, "llama3@sha256:abc", "llama3@sha256:abc"},
+		{ollama, "library/qwen3:latest", "qwen3:latest"},
+		{ollama, "registry.ollama.ai/library/qwen3:latest", "qwen3:latest"},
+		{ollama, "https://registry.ollama.ai/library/qwen3", "qwen3:latest"},
+		{ollama, "Qwen3", "qwen3:latest"},
+		{ollama, "registry.ollama.ai/qwen3", "registry.ollama.ai/qwen3:latest"},
+		{ollama, "hf.co/Org/Model:Q4_K_M", "hf.co/org/model:q4_k_m"},
+		{ollama, "localhost:5000/ns/m", "localhost:5000/ns/m:latest"},
 		{ollama, "", ""},
 
 		{lmstudio, "qwen3-8b", "qwen3-8b"},
 		{lmstudio, "qwen3-8b:latest", "qwen3-8b:latest"},
+		{lmstudio, "Qwen3-8B", "Qwen3-8B"},
 		{lmstudio, "", ""},
 	} {
 		if got := tc.profile.normalizeModel(tc.in); got != tc.want {

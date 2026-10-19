@@ -265,14 +265,37 @@ func (r routeRole) isModelList() bool {
 
 // normalizeModel applies the engine's naming convention to a model
 // identifier, so the federated list's dedupe key and the routing gate agree.
+// Ollama names reduce to the shortest form Ollama itself matches on: the
+// default registry.ollama.ai host and library namespace are dropped, an
+// untagged name gets ":latest", and case is folded.
 func (p engineProfile) normalizeModel(model string) string {
 	model = strings.TrimSpace(model)
-	if p.ModelNaming != impliedLatestTag || model == "" {
+	if p.ModelNaming != impliedLatestTag || model == "" || strings.Contains(model, "@") {
 		return model
 	}
-	name := model[strings.LastIndex(model, "/")+1:]
-	if name != "" && !strings.ContainsAny(name, ":@") {
-		return model + ":latest"
+	rest, tag := model, "latest"
+	if i := strings.LastIndex(model, ":"); i > strings.LastIndex(model, "/") {
+		rest, tag = model[:i], model[i+1:]
 	}
-	return model
+	host, namespace, name := "registry.ollama.ai", "library", rest
+	if i := strings.LastIndex(rest, "/"); i >= 0 {
+		namespace, name = rest[:i], rest[i+1:]
+		if j := strings.LastIndex(namespace, "/"); j >= 0 {
+			host, namespace = namespace[:j], namespace[j+1:]
+			if _, h, ok := strings.Cut(host, "://"); ok {
+				host = h
+			}
+		}
+	}
+	if name == "" {
+		return model
+	}
+	prefix := ""
+	switch {
+	case !strings.EqualFold(host, "registry.ollama.ai"):
+		prefix = host + "/" + namespace + "/"
+	case !strings.EqualFold(namespace, "library"):
+		prefix = namespace + "/"
+	}
+	return strings.ToLower(prefix + name + ":" + tag)
 }

@@ -896,6 +896,8 @@ func TestHandleHTTP_ShowRoutesToModelOwner(t *testing.T) {
 		{"name", `{"name":"qwen3"}`},
 		{"model", `{"model":"qwen3"}`},
 		{"model wins", `{"model":"qwen3","name":"other"}`},
+		{"library namespace", `{"model":"library/qwen3:latest"}`},
+		{"registry name, mixed case", `{"name":"registry.ollama.ai/library/Qwen3"}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			nonOwnerHits := 0
