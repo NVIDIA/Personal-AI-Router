@@ -73,51 +73,56 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 		t.Fatal("llamacpp profile missing")
 	}
 
-	for _, tc := range []struct {
-		name     string
-		profile  engineProfile
-		method   string
-		path     string
-		wantRole routeRole
-		wantOK   bool
-	}{
-		{"ollama native chat", ollama, "POST", "/api/chat", roleInferencePOST, true},
-		{"ollama openai chat", ollama, "POST", "/v1/chat/completions", roleInferencePOST, true},
-		{"ollama anthropic messages", ollama, "POST", "/v1/messages", roleInferencePOST, true},
-		{"ollama native list", ollama, "GET", "/api/tags", roleModelListNativeGET, true},
-		{"ollama openai list", ollama, "GET", "/v1/models", roleModelListOpenAIGET, true},
-		{"ollama show", ollama, "POST", "/api/show", roleModelLookupPOST, true},
-		{"ollama passthrough", ollama, "POST", "/api/pull", 0, false},
-		{"ollama version passthrough", ollama, "GET", "/api/version", 0, false},
-		{"ollama models passthrough", ollama, http.MethodGet, "/models", 0, false},
-
-		{"lmstudio chat", lmstudio, "POST", "/v1/chat/completions", roleInferencePOST, true},
-		{"lmstudio anthropic messages", lmstudio, "POST", "/v1/messages", roleInferencePOST, true},
-		{"lmstudio list", lmstudio, "GET", "/v1/models", roleModelListOpenAIGET, true},
-		{"lmstudio models passthrough", lmstudio, http.MethodGet, "/models", 0, false},
-		// LM Studio serves no native Ollama routes, so /api/chat is not
-		// inference for it — it is forwarded verbatim like any other path.
-		{"lmstudio has no native routes", lmstudio, "POST", "/api/chat", 0, false},
-		{"lmstudio has no show", lmstudio, "POST", "/api/show", 0, false},
-
-		// The method is part of the classification. Without it a POST to the
-		// model-list path would be served as a list, and a GET to an
-		// inference path would emit a workload.
-		{"wrong method on list", ollama, "POST", "/v1/models", 0, false},
-		{"wrong method on inference", ollama, "GET", "/api/chat", 0, false},
-		{"wrong method on show", ollama, "GET", "/api/show", 0, false},
-		{"llamacpp models post passthrough", llamacpp, http.MethodPost, "/models", 0, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			role, ok := tc.profile.roleFor(tc.method, tc.path)
-			if ok != tc.wantOK {
-				t.Fatalf("roleFor(%s %s) ok = %v, want %v", tc.method, tc.path, ok, tc.wantOK)
+	accept := func(name string, profile engineProfile, method, path string, wantRole routeRole) {
+		t.Run(name, func(t *testing.T) {
+			role, ok := profile.roleFor(method, path)
+			if !ok {
+				t.Fatalf("roleFor(%s %s) did not classify a declared route", method, path)
 			}
-			if ok && role != tc.wantRole {
-				t.Fatalf("roleFor(%s %s) role = %v, want %v", tc.method, tc.path, role, tc.wantRole)
+			if role != wantRole {
+				t.Fatalf("roleFor(%s %s) role = %v, want %v", method, path, role, wantRole)
 			}
 		})
 	}
+	reject := func(name string, profile engineProfile, method, path string) {
+		t.Run(name, func(t *testing.T) {
+			if role, ok := profile.roleFor(method, path); ok {
+				t.Fatalf("roleFor(%s %s) classified an undeclared route with role %v", method, path, role)
+			}
+		})
+	}
+
+	accept("ollama native chat", ollama, http.MethodPost, "/api/chat", roleInferencePOST)
+	accept("ollama openai chat", ollama, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
+	accept("ollama openai responses", ollama, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("ollama anthropic messages", ollama, http.MethodPost, "/v1/messages", roleInferencePOST)
+	accept("ollama native list", ollama, http.MethodGet, "/api/tags", roleModelListNativeGET)
+	accept("ollama openai list", ollama, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
+	accept("ollama show", ollama, http.MethodPost, "/api/show", roleModelLookupPOST)
+
+	accept("lmstudio chat", lmstudio, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
+	accept("lmstudio responses", lmstudio, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("lmstudio anthropic messages", lmstudio, http.MethodPost, "/v1/messages", roleInferencePOST)
+	accept("lmstudio list", lmstudio, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
+	accept("lmstudio openai responses", lmstudio, http.MethodPost, "/v1/responses", roleInferencePOST)
+
+	accept("llamacpp responses", llamacpp, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("llamacpp openai responses", llamacpp, http.MethodPost, "/v1/responses", roleInferencePOST)
+
+	reject("ollama passthrough", ollama, http.MethodPost, "/api/pull")
+	reject("ollama version passthrough", ollama, http.MethodGet, "/api/version")
+	reject("ollama models passthrough", ollama, http.MethodGet, "/models")
+	reject("wrong method on list", ollama, http.MethodPost, "/v1/models")
+	reject("wrong method on inference", ollama, http.MethodGet, "/api/chat")
+	reject("wrong method on responses", ollama, http.MethodGet, "/v1/responses")
+	reject("wrong method on show", ollama, http.MethodGet, "/api/show")
+
+	reject("lmstudio models passthrough", lmstudio, http.MethodGet, "/models")
+	// LM Studio serves no native Ollama routes, so /api/chat is forwarded verbatim.
+	reject("lmstudio has no native routes", lmstudio, http.MethodPost, "/api/chat")
+	reject("lmstudio has no show", lmstudio, http.MethodPost, "/api/show")
+
+	reject("llamacpp models post passthrough", llamacpp, http.MethodPost, "/models")
 }
 
 func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
@@ -126,6 +131,12 @@ func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
 
 	if !isInferenceRequest(ollama, "POST", "/api/generate") {
 		t.Error("ollama /api/generate must be inference")
+	}
+	if !isInferenceRequest(ollama, "POST", "/v1/responses") {
+		t.Error("ollama /v1/responses must be inference so model-owner filtering applies")
+	}
+	if !isInferenceRequest(lmstudio, "POST", "/v1/responses") {
+		t.Error("lmstudio /v1/responses must be inference so model-owner filtering applies")
 	}
 	if isInferenceRequest(lmstudio, "POST", "/api/generate") {
 		t.Error("lmstudio serves no native routes, so /api/generate is not inference for it")

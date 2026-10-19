@@ -23,10 +23,11 @@ can tell "working as built" from "broken."
 
 ## PAIR Does Not Become Ready
 
-If **Overview** stays on **Loading...** or reports a service error, everything you
-need is in one place. Open **Settings > Service**, where you can:
+If **Overview** stays on **Starting service...** or **Fetching nodes**, or reports
+a service error, everything you need is in one place. Open **Settings > Service**,
+where you can:
 
-1. Read the current service status. It should say connected.
+1. Read the current service status. It should read **Running**.
 2. Select **Restart** to start the background services again. Try this first.
 3. Select **Open log file** to see what happened during startup. Refer to
    [Where the Logs Are](#where-the-logs-are) for the other log controls and the
@@ -108,13 +109,13 @@ Refer to
 If **Endpoints** shows **No engines are running**, start at least one compatible
 engine in the cluster first.
 
-If something PAIR does not manage already holds a port PAIR needs,
-**Settings > Service** reports the conflict. You can either move PAIR to a
+If something PAIR does not manage already holds a port PAIR needs, PAIR shows a
+**Warning** dialog describing the conflict. You can either move PAIR to a
 different port or stop whatever holds the port and restart the service. To move
-PAIR's port, expand **Engine settings > Ports** on the node's card in
-**Overview**, edit **Proxy** or **Server**, and select **Apply ports**. Changing
-PAIR's port is usually easier and leaves the other application alone. Refer to
-[Changing a Port](getting-started.mdx#changing-a-port).
+PAIR's port, expand **Engine settings** on the node's card in **Overview**, expand
+the engine's **Settings** section, edit **Server port** or **Proxy port**, and
+select **Apply**. Changing PAIR's port is usually easier and leaves the other
+application alone. Refer to [Changing a Port](getting-started.mdx#changing-a-port).
 
 ## Requests Work but PAIR Shows No Jobs
 
@@ -131,12 +132,14 @@ To fix it:
 
 1. Quit the Ollama desktop application completely, including any tray or
    menu-bar icon.
-2. In PAIR, open **Overview**, expand **Engine settings** on that node, and
-   toggle the Ollama engine off and back on.
+2. In PAIR, open **Settings > Service** and select **Restart**, or quit and
+   reopen PAIR.
 
-That relaunches PAIR's proxy on `11434`. Send another request and the job should
-appear. This is about the Ollama *desktop application* specifically. PAIR can
-manage or adopt an Ollama it starts itself.
+PAIR's proxy takes `11434` back when its background services start. Toggling the
+Ollama engine off and on is not enough, because that restarts only the engine.
+Send another request and the job should appear. This is about the Ollama
+*desktop application* specifically. PAIR can manage or adopt an Ollama it starts
+itself.
 
 The same thing happens with llama.cpp when a `llama-server` you started yourself
 is on `8080`, which is both its default and the port PAIR's llama.cpp proxy
@@ -175,6 +178,7 @@ To find them yourself:
 | --- | --- |
 | Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\logs\` |
 | Linux | `~/.config/Nvidia Corporation/Personal AI Router/logs/` |
+| macOS | `~/Library/Application Support/Nvidia Corporation/Personal AI Router/logs/` |
 
 The current log is `nvpair.jsonl` and the previous one is `nvpair.1.jsonl`. Each
 line is a JSON object, so `grep` and `jq` work well on them. PAIR never writes

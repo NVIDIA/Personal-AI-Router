@@ -396,6 +396,47 @@ func TestHandleHTTP_404FailoverInferenceOnly(t *testing.T) {
 	})
 }
 
+// Both nodes own the model, but the older engine lacks the Responses API.
+func TestHandleHTTP_ResponsesFailsOverFromOlderEngine(t *testing.T) {
+	tc := ollamaCase(t)
+	var oldHits, newHits atomic.Int32
+	oldEngine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oldHits.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer oldEngine.Close()
+
+	const response = `{"id":"response-id","object":"response","output":[]}`
+	newRoutes := http.NewServeMux()
+	newRoutes.HandleFunc("POST /v1/responses", func(w http.ResponseWriter, _ *http.Request) {
+		newHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.WriteString(w, response); err != nil {
+			t.Errorf("write Responses result: %v", err)
+		}
+	})
+	newEngine := httptest.NewServer(newRoutes)
+	defer newEngine.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "old", oldEngine.URL, tc.advertisedModel))
+	disc.AddManual(nodeForModel(t, "new", newEngine.URL, tc.advertisedModel))
+	p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+	t.Cleanup(p.closeIdleTransports)
+	p.SetPriority([]string{"old", "new"})
+
+	body := fmt.Sprintf(`{"model":%q,"input":"Hello"}`, tc.requestedModel)
+	rec := httptest.NewRecorder()
+	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK || rec.Body.String() != response {
+		t.Fatalf("response = %d %s, want %d %s from newer engine", rec.Code, rec.Body.String(), http.StatusOK, response)
+	}
+	if oldHits.Load() != 1 || newHits.Load() != 1 {
+		t.Fatalf("requests old=%d new=%d, want one request to each", oldHits.Load(), newHits.Load())
+	}
+}
+
 // TestHandleHTTP_AggregatesNativeModelList is Ollama-scoped because the
 // native "models" dialect is Ollama's alone — LM Studio serves no /api/tags.
 // The OpenAI dialect both engines share is covered by the sibling test below.

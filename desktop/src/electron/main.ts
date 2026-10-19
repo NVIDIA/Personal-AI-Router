@@ -121,10 +121,12 @@ if (!gotTheLock || exitRequested) {
         registerAllIpc()
         initializeUpdater()
 
-        // Bound startup on authoritative broker + proxy readiness before opening
-        // the normal Overview. A failure queues Overview navigation to
-        // Settings > Service, then rejects so startup can continue with retry
-        // and log controls available instead of an indefinite loading screen.
+        // Bound startup on broker `app:ready` before opening the normal Overview.
+        // Proxy readiness is not part of this gate — it is an asynchronous
+        // capability signal the bridge reports later. A failure queues Overview
+        // navigation to Settings > Service, then rejects so startup can continue
+        // with retry and log controls available instead of an indefinite loading
+        // screen.
         try {
             await initializeConnector()
         } catch (err) {

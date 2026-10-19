@@ -13,9 +13,8 @@ desktop environment, or over SSH, where the desktop application cannot run. If a
 desktop is available, use the desktop application.
 
 **It has known limitations.** It is an operations tool, not a full replacement.
-It cannot update an engine or send an inference request for you, and it stops
-when your connection drops unless you run it under a terminal multiplexer. The
-full list is in
+It cannot send an inference request for you, and it stops when your connection
+drops unless you run it under a terminal multiplexer. The full list is in
 [What the Terminal Interface Cannot Do](#what-the-terminal-interface-cannot-do),
 and it is worth reading before you depend on it.
 
@@ -93,9 +92,11 @@ Tell it instead:
 
 `dark` forces the other way, and `auto` is the default.
 
-A terminal that never answers also makes PAIR wait for the reply before it
-starts, which is a pause of a few seconds on the way in. That wait comes from
-the terminal library and applies whether or not you pass `--appearance`.
+A terminal that never answers also makes PAIR wait up to five seconds for the
+reply before the interface appears. PAIR asks while its background services are
+starting, so much of that wait overlaps with startup. Passing
+`--appearance light` or `--appearance dark` skips the question, and the wait
+with it.
 
 Press `q` to quit. Quitting shuts the services down cleanly rather than leaving
 them running.
@@ -495,7 +496,6 @@ will need to pair again afterwards.
 
 It is an operations tool, not a full replacement for the desktop application:
 
-- It cannot update an engine to a newer version. Use the desktop application.
 - It has no built-in way to send an inference request of your own. Use `curl`
   or another client against the endpoint port, as in
   [Getting Started](getting-started.mdx#6-run-your-first-inference). The

@@ -186,8 +186,8 @@ PAIR on a network where that is unacceptable.
 
 ### Two Personalities on One Port
 
-The proxies and `nvpair-cluster-manager` serve two different things on a single
-port, chosen by the connection's first byte. A TLS handshake record starts with
+Each inference proxy serves plaintext HTTP and mutual TLS on the same port,
+distinguished by the connection's first byte. A TLS handshake record starts with
 `0x16`, and no HTTP method does:
 
 | First Byte | Personality | Who Uses It |
@@ -197,13 +197,16 @@ port, chosen by the connection's first byte. A TLS handshake record starts with
 
 This is why an endpoint is `http://127.0.0.1:11434` for an application on the
 machine itself while the same port serves authenticated TLS to the network. Local
-clients need no certificates, and routed inference between nodes is never
-plaintext.
+clients need no certificates. Routed inference between paired nodes uses mutual
+TLS; explicitly added unpaired engines may use plaintext HTTP.
 
 The loopback restriction is enforced, not merely conventional. The listener binds
 all interfaces so the TLS personality can accept peers, but a plaintext request
 from any non-loopback address is refused with `403`. Without that check the port
 would be an open relay for anything on the network.
+
+The cluster manager uses the same protocol split, but its plaintext endpoint
+serves pairing requests from the LAN.
 
 Two consequences follow, and together they define how clients are expected to
 reach PAIR:
@@ -475,12 +478,13 @@ Starting is similarly deferential. If something is already serving the engine's
 port, PAIR **adopts** that instance instead of spawning a second copy, and reports
 it as running even though it did not start it.
 
-Adoption is a real distinction, not a label. PAIR cannot stop or move a process
-it did not start, so it refuses operations that need process ownership rather
-than faking them. Changing the port of an adopted engine returns an error
-instead of leaving two listeners on different ports. To get an instance PAIR can
-fully manage, stop the engine in its own application and let PAIR start it on a
-port nothing else is serving.
+Adoption is a real distinction, not a label. PAIR does not kill a process it did
+not start, so it refuses operations that would need to rather than faking them.
+The exception is an engine with an official stop command: PAIR stops an adopted
+LM Studio with `lms server stop` and brings it back on the new port. Changing the
+port of an adopted Ollama returns an error instead of leaving two listeners on
+different ports. To get an instance PAIR can fully manage, stop the engine in its
+own application and let PAIR start it on a port nothing else is serving.
 
 ### Port Takeover
 
@@ -528,7 +532,7 @@ A default installation listens on these ports:
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
 | `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
-| `14318` | Node hardware and model inventory |
+| `14318` | Node hardware and telemetry |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
 | `14321` | Pairing and cluster membership |
@@ -623,9 +627,10 @@ distinguish a paired node from a stranger it can merely see.
 
 ### Node Eviction
 
-The scanner scans every five seconds and tolerates three consecutive misses
-before it treats a node as gone. Even then it does not drop the node right away.
-It runs these checks and keeps the node if any of them answers:
+The scanner scans every five seconds. Once a node has missed three scans in a
+row, about fifteen seconds, the scanner checks on it at every scan, and any answer
+resets the count. It drops the node only after twelve consecutive misses, about a
+minute, with every check along the way failing. These are the checks:
 
 - Inference the node served in the last minute, which the proxies report
 - Recent telemetry from that node

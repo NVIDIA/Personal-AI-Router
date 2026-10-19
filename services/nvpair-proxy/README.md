@@ -102,8 +102,18 @@ and the health crash key are matched against each other, so they move together
 | Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 |
 | Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` |
 | Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) |
-| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/messages` | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` |
+| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below |
 | Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte |
+
+All three facades classify these OpenAI-compatible POST routes as inference:
+
+- `/v1/chat/completions` — [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+- `/v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
+- `/v1/embeddings` — [Embeddings](https://developers.openai.com/api/reference/resources/embeddings/methods/create)
+- `/v1/responses` — [Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
+
+The [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create) set is `POST /v1/messages`, classified as inference by
+the Ollama and LM Studio facades.
 
 The route table is a **classifier, not an allowlist**. An unlisted path is
 forwarded verbatim, which is how `/api/show`, `/api/pull`, `/api/ps`,

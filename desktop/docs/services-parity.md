@@ -21,7 +21,7 @@ history.
 | Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                      |
 | Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                 |
 | Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                 |
-| Manual nodes               | Complete with local persistence | Broker owns probing and proxy registration; Electron persists entries for replay                                                                |
+| Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                     |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
 | llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                            |
@@ -161,9 +161,11 @@ and KV-cache memory, and wake on the next request. The router child remains aliv
 and can retain a residual backend GPU context.
 
 Windows and Linux installs use checksum-pinned server and CUDA-runtime archive
-pairs; macOS uses the standard Metal-capable archive. The on-demand download is
-roughly 0.6–0.8 GiB and is not part of the application installer. GPU layers
-remain `auto`, allowing supported NVIDIA/Metal acceleration and dynamic CPU
+pairs. Apple silicon Macs use the standard Metal-enabled archive; Intel Macs use
+the upstream x64 archive, which is built without Metal and runs on the CPU. The
+on-demand download is roughly 0.3–0.7 GiB for the CUDA archive pairs and about
+11 MiB on macOS, and is not part of the application installer. GPU layers remain
+`auto`, allowing supported NVIDIA/Metal acceleration and dynamic CPU
 fallback; hardware acceptance is still required to confirm acceleration.
 
 The facade is in the default broker and TUI set: local OpenAI-compatible clients
@@ -485,7 +487,6 @@ provide an equivalent client-facing contract:
 | Responsibility                                              | Location                                         |
 | ----------------------------------------------------------- | ------------------------------------------------ |
 | Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                            |
-| Persist and replay manual node entries                      | `manual-nodes-store.ts`, `modular-supervisor.ts` |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
 | Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |

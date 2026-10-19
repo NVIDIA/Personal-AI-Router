@@ -96,8 +96,8 @@ you want by its full filename instead.
   background services and gives you a full-screen view in the terminal.
 
 - **Let it finish starting.** **Overview** shows this machine once the services
-  are up. If it stays on **Loading...**, open **Settings → Service** and read the
-  status there.
+  are up. If it stays on **Starting service...** or **Fetching nodes**, open
+  **Settings → Service** and read the status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
   select **Install** next to Ollama, LM Studio, or llama.cpp. PAIR downloads and

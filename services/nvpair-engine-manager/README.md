@@ -30,12 +30,14 @@ mode and releases its model and KV-cache memory; the next request wakes it. The
 router child remains alive and can retain a residual backend GPU context.
 
 Windows and Linux installs download checksum-pinned server and CUDA-runtime
-archive pairs (CUDA 12.x for x64 and CUDA 13.4 for arm64); macOS uses the
-standard Metal-capable archive. These on-demand downloads are roughly
-0.6–0.8 GiB and do not enlarge the PAIR installer. llama.cpp keeps its `auto`
-GPU-layer policy: supported NVIDIA/Metal devices can accelerate, while the
-dynamic CPU backend remains the fallback. Hardware acceptance, not `/health`
-alone, is required to claim GPU activation.
+archive pairs (CUDA 12.x for x64 and CUDA 13.4 for arm64). Apple silicon Macs use
+the standard Metal-enabled archive; Intel Macs use the upstream x64 archive,
+which is built without Metal and runs on the CPU. These on-demand downloads are
+roughly 0.3–0.7 GiB for the CUDA archive pairs and about 11 MiB on macOS, and do
+not enlarge the PAIR installer. llama.cpp keeps its `auto` GPU-layer policy:
+supported NVIDIA/Metal devices can accelerate, while the dynamic CPU backend
+remains the fallback. Hardware acceptance, not `/health` alone, is required to
+claim GPU activation.
 
 ## Communication
 

@@ -88,8 +88,8 @@ flowchart LR
     Node --> Engine["Inference engine"]
 ```
 
-Between machines, PAIR encrypts both the request out and the reply in, so the
-whole round trip stays protected rather than the outbound half alone. Your
+Between paired machines, PAIR encrypts both the request out and the reply in, so
+the whole round trip stays protected rather than the outbound half alone. Your
 application sees an ordinary reply and never learns which machine served it,
 though you can see that yourself.
 
@@ -140,9 +140,10 @@ PAIR provides these capabilities:
   Messages API requests.
 - Pairing and cluster membership managed by the background services.
 - Model-aware, workload-informed routing of independent requests.
-- Encrypted routing between machines: a request sent to another node travels over
-  mutual TLS restricted to the nodes you have paired, and the cluster refuses a
-  machine that is not a member. Local applications reach the proxy over loopback.
+- Encrypted routing between paired machines: a request sent to a paired node
+  travels over mutual TLS restricted to the nodes you have paired, and the cluster
+  refuses a machine that is not a member. Local applications reach the proxy over
+  loopback.
 - A desktop application, plus a terminal interface for headless machines, driving
   the same services.
 - Visibility into nodes, engines, models, workloads, and service errors.

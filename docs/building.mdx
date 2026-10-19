@@ -181,20 +181,23 @@ programmatically rather than through the desktop or terminal interface:
 Linux and macOS:
 
 ```bash
-cd services
-./build/bin/nvpair-ui-broker
+cd services/build/bin
+./nvpair-ui-broker
 ```
 
 Windows Command Prompt:
 
 ```bat
-cd services
-build\bin\nvpair-ui-broker.exe
+cd services\build\bin
+nvpair-ui-broker.exe
 ```
 
-The broker speaks newline-delimited JSON-RPC on stdout and logs to stderr, and it
-expects the worker binaries beside it. A programmatic client normally spawns it
-with piped stdio. A quick check that it came up, on Linux or macOS:
+The broker speaks newline-delimited JSON-RPC on stdout and logs to stderr. It
+looks for the worker binaries in the directory it is started from, not the one it
+lives in, so start it from `build/bin/`. Started anywhere else, it cannot start
+the node scanner and exits. Alternatively, pass each worker's location with its
+`--*-path` flag, such as `--scanner-path`. A programmatic client normally spawns
+it with piped stdio. A quick check that it came up, on Linux or macOS:
 
 ```bash
 cd services/build/bin
