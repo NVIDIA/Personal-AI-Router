@@ -7,10 +7,33 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSampleAging_PreservesValidityAndFreshness(t *testing.T) {
+	// Aging must retain sample validity and add elapsed time without making
+	// negative ages, backward clock movement, or overflow produce fresh samples.
+	test := func(name string, info NodeInfo, elapsed time.Duration, wantAge int64) {
+		t.Run(name, func(t *testing.T) {
+			got := info.Aged(elapsed)
+			assert.Equal(t, info.TelemetryValid, got.TelemetryValid)
+			assert.Equal(t, wantAge, got.MSSince)
+
+			telemetry := NodeTelemetry{HostUUID: "host-a", GPUUtilizationPct: 84, TelemetryValid: info.TelemetryValid, MSSince: info.MSSince}
+			want := telemetry
+			want.MSSince = wantAge
+			assert.Equal(t, want, telemetry.Aged(elapsed), "compact scheduling samples share the hardware age rules")
+		})
+	}
+	test("queue time", NodeInfo{TelemetryValid: true, MSSince: 137}, 250*time.Millisecond, 387)
+	test("unavailable sample", NodeInfo{MSSince: 137}, time.Second, 0)
+	test("negative source age", NodeInfo{TelemetryValid: true, MSSince: -1}, time.Second, 1000)
+	test("clock moves backwards", NodeInfo{TelemetryValid: true, MSSince: 137}, -time.Second, 137)
+	test("age saturates", NodeInfo{TelemetryValid: true, MSSince: 1<<63 - 2}, time.Second, 1<<63-1)
+}
 
 func TestEngineModels_PrefersPerEngineInventoryAndFallsBackToLegacyModels(t *testing.T) {
 	// Attribution present: each engine gets exactly its own list, never the union.

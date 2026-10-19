@@ -14,8 +14,6 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
-const maxTelemetryMilliseconds = int64(1<<63 - 1)
-
 type telemetryObservation struct {
 	value      noderec.NodeTelemetry
 	receivedAt time.Time
@@ -133,24 +131,7 @@ func (c *telemetryCache) Snapshot(now time.Time) []noderec.NodeTelemetry {
 }
 
 func observedTelemetryAt(observation telemetryObservation, now time.Time) noderec.NodeTelemetry {
-	value := observation.value
-	if !value.TelemetryValid {
-		value.MSSince = 0
-		return value
-	}
-	if value.MSSince < 0 {
-		value.MSSince = 0
-	}
-	elapsed := now.Sub(observation.receivedAt).Milliseconds()
-	if elapsed <= 0 {
-		return value
-	}
-	if elapsed > maxTelemetryMilliseconds-value.MSSince {
-		value.MSSince = maxTelemetryMilliseconds
-	} else {
-		value.MSSince += elapsed
-	}
-	return value
+	return observation.value.Aged(now.Sub(observation.receivedAt))
 }
 
 func (b *Broker) ingestTelemetry(source nodeSource, value noderec.NodeTelemetry) {
