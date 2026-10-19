@@ -22,6 +22,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
 	"nvpair-shared/splitlisten"
@@ -145,6 +146,70 @@ func handleClusterIdentity(msg applog.StdinMessage, identity *clusterIdentity) {
 	}
 	identity.set(params.ClusterUUID)
 	slog.Info("cluster identity updated", "clustered", params.ClusterUUID != "")
+}
+
+// peerMetadata holds complete, immutable snapshots supplied by the broker from
+// scanner's owned local registry. Public HTTP responses never populate it.
+type peerMetadata struct {
+	// Readers must see a complete snapshot rather than partially replaced fields.
+	mu    sync.RWMutex
+	value noderec.PeerMetadataParams
+	known bool
+}
+
+// get returns the latest registry snapshot and whether the broker supplied one.
+func (m *peerMetadata) get() (noderec.PeerMetadataParams, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.value, m.known
+}
+
+// handlePeerMetadata replaces registry metadata from the broker, rejecting
+// malformed payloads or a different host identity. Id-bearing requests receive
+// an acknowledgement or invalid-params error.
+func handlePeerMetadata(msg applog.StdinMessage, hostUUID string, metadata *peerMetadata, out *applog.Notifier) {
+	if msg.Method != noderec.MethodSetPeerMetadata {
+		return
+	}
+	var params noderec.PeerMetadataParams
+	err := json.Unmarshal(msg.Params, &params)
+	valid := err == nil && hostUUID != "" && params.HostUUID == hostUUID
+	if valid {
+		metadata.mu.Lock()
+		metadata.value, metadata.known = params, true
+		metadata.mu.Unlock()
+	}
+	if len(msg.ID) == 0 {
+		return
+	}
+	response := jsonrpc.Message{JSONRPC: "2.0", ID: &msg.ID}
+	if valid {
+		response.Result = json.RawMessage(`{"ok":true}`)
+	} else {
+		response.Error = &jsonrpc.RPCError{Code: -32602, Message: "invalid local peer metadata"}
+	}
+	if err := json.NewEncoder(out).Encode(response); err != nil {
+		slog.Warn("failed to acknowledge peer metadata", "err", err)
+	}
+}
+
+type infoUpdateParams struct {
+	Info json.RawMessage `json:"info"`
+}
+
+// publishInfoUpdates sends inventory directly to the owning broker at startup
+// and on each tick until cancellation, using the same builder as public HTTP.
+func publishInfoUpdates(ctx context.Context, out *applog.Notifier, body func() []byte, ticks <-chan time.Time) {
+	for {
+		if err := out.Notify(noderec.NotifyInfoUpdated, infoUpdateParams{Info: body()}); err != nil {
+			slog.Warn("failed to publish local inventory", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+		}
+	}
 }
 
 // detectGPUs lives in gpu_windows.go (DXGI), gpu_linux.go (nvidia-smi with a
@@ -407,10 +472,11 @@ func main() {
 		return &principal
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func() []byte {
+	responseBody := func() []byte {
 		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal())
-	}))
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, responseBody))
 
 	// Listener layout (set up below depending on flags). Exactly one of the two
 	// blocks that own *port runs:
@@ -546,9 +612,14 @@ func main() {
 	// interleave.
 	notifier := applog.NewNotifier(os.Stdout)
 	go observer.reportLoop(ctx.Done(), notifier)
+	infoTicks := time.NewTicker(2 * time.Second)
+	defer infoTicks.Stop()
+	go publishInfoUpdates(ctx, notifier, responseBody, infoTicks.C)
+	metadata := &peerMetadata{}
 
 	go applog.StdinRPC(notifier, func(msg applog.StdinMessage) {
 		handleClusterIdentity(msg, identity)
+		handlePeerMetadata(msg, hostUUID, metadata, notifier)
 	}, func() {
 		log.Print("stdin closed, shutting down")
 		cancel()

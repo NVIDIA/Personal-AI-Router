@@ -84,12 +84,12 @@ type daemon struct {
 	// can never invite it back.
 	clusterDir string
 
-	// selfMu serializes every mutation of this node's own directory entry
-	// (publishSelf / reloadIdentity / dropSelf) so a burst of service
-	// registrations and a concurrent network/identity change can't interleave
-	// into a torn self entry. The self key is written nowhere else — onBrowse
-	// ignores our own uuid — so this is the sole self-key writer lock.
+	// selfMu serializes registry publications, identity/address changes and owned
+	// hardware snapshots so they agree on this node's identity. Background model
+	// refreshes use dir.mu independently.
 	selfMu sync.Mutex
+	// localInfo is supplied only by the owned worker IPC path, under selfMu.
+	localInfo *noderec.NodeInfo
 
 	// lastInfo / lastModels cache each node's last successful enrichment (keyed by
 	// hostUuid) — GPU/CPU/memory from node-info and the model list from
@@ -133,8 +133,6 @@ type daemon struct {
 	enrichHosts hostMemory
 	// telemetryRetries owns one active telemetry attempt per node and suppresses
 	// repeated remote attempts after failures at the same node-info target.
-	// Local results always finish successfully so loopback stays on the healthy
-	// cadence.
 	telemetryRetries telemetryRetryGate
 
 	// observedMu guards observed, this host's own addresses that remote peers
@@ -887,16 +885,51 @@ func (d *daemon) publishSelfLocked() {
 		Services:             svcs,
 		LastSeen:             time.Now().Unix(),
 	}
-	// Enrich over loopback, never the advertised LAN ip=: a first-run Windows
-	// firewall block on inbound to our own LAN address must not blank the local
-	// node's metrics/models (the "no metrics" failure mode).
-	d.enrichAt(&node, loopbackHost)
+	if d.localInfo != nil && d.localInfo.HostUUID == rec.HostUUID {
+		node.GPUs, node.CPU, node.Memory = d.localInfo.GPUs, d.localInfo.CPU, d.localInfo.Memory
+	}
+	// Models still come from the locally owned engine-manager over loopback.
+	d.enrichModelsCandidates(&node, []string{loopbackHost})
 
 	method := noderec.NotifyNodeUpdated
 	if isNew := d.dir.upsert(node); isNew {
 		method = noderec.NotifyNodeDiscovered
 	}
 	d.emit(method, node)
+}
+
+// acceptLocalNodeInfo applies an owned IPC snapshot to its matching local
+// registry record. It updates changed inventory and emits maximum GPU usage
+// for scheduling, including time spent processing the sample in its age.
+func (d *daemon) acceptLocalNodeInfo(info noderec.NodeInfo) {
+	receivedAt := time.Now()
+	d.selfMu.Lock()
+	defer d.selfMu.Unlock()
+	self := d.reg.record().HostUUID
+	if self == "" || info.HostUUID != self {
+		return
+	}
+	info = info.Aged(0)
+	d.localInfo = &info
+	node, result := d.dir.applyLocalInfo(info)
+	switch result {
+	case localInfoMissing:
+		// Build identity and services from the registry, not the hardware snapshot.
+		d.publishSelfLocked()
+	case localInfoUpdated:
+		d.emit(noderec.NotifyNodeUpdated, node)
+	}
+	var utilization uint32
+	for _, gpu := range info.GPUs {
+		if gpu.UtilizationPercent > utilization {
+			utilization = gpu.UtilizationPercent
+		}
+	}
+	info = info.Aged(time.Since(receivedAt))
+	d.emitTelemetry(noderec.NodeTelemetry{
+		HostUUID: self, GPUUtilizationPct: utilization,
+		TelemetryValid: info.TelemetryValid, MSSince: info.MSSince,
+	})
 }
 
 // watchAddress re-derives the advertised ip= whenever the host's network changes
@@ -949,10 +982,8 @@ const reachableInfoFreshness = 10 * time.Second
 // is to cover a whole burst of load rather than to require continuous traffic.
 const activityFreshness = 60 * time.Second
 
-// loopbackHost is the address the daemon uses to reach THIS node's own services.
-// Loopback is never firewalled, so enriching/probing self over it (rather than
-// the advertised LAN ip=) makes the local node immune to a first-run Windows
-// firewall block on inbound to its own LAN address.
+// loopbackHost reaches the owned engine-manager for model inventory. Local
+// node-info inventory and telemetry arrive over private worker IPC.
 const loopbackHost = "127.0.0.1"
 
 // reachable reports whether a threshold-missed node is still THERE — an mDNS
@@ -992,12 +1023,12 @@ const loopbackHost = "127.0.0.1"
 // nothing to probe and evicts normally.
 func (d *daemon) reachable(n RawNode) bool {
 	rec := noderec.ParseTXT(n.TXT)
+	if rec.HostUUID != "" && d.reg != nil && rec.HostUUID == d.reg.record().HostUUID {
+		return false // an mDNS advertisement cannot establish this host's local identity
+	}
 	candidates := netpick.Candidates(n.TXT, n.Addresses)
 	if len(candidates) == 0 {
 		return false
-	}
-	if rec.HostUUID != "" && d.reg != nil && rec.HostUUID == d.reg.record().HostUUID {
-		candidates = []string{loopbackHost}
 	}
 
 	if rec.HostUUID != "" {
@@ -1137,22 +1168,11 @@ func (d *daemon) probeIdentity(ip string, port int) (NodeInfoResponse, bool) {
 // policy, and its engine-manager model list, which is cluster data and so is
 // fetched from a peer only over cluster mTLS (see fetchModels). Both are
 // independent (a node may advertise one without the other). Peers are dialed at
-// each address they published until one answers for the expected identity; self
-// is dialed over loopback (see enrichAt).
+// each address they published until one answers for the expected identity.
 func (d *daemon) enrich(node *noderec.DirectoryNode) {
 	hosts := node.CandidateIPs()
 	d.enrichInfoCandidates(node, hosts)
 	d.enrichModelsCandidates(node, hosts)
-}
-
-// enrichAt is enrich against an explicit dial host. onBrowse enriches a peer at
-// its advertised ip=; publishSelf enriches this node over loopbackHost so a
-// first-run firewall block on our own LAN address can't blank the local card.
-// The enrichment cache stays keyed by hostUuid, so the resilience
-// (reuse-last-good on a transient miss) is identical for self and peers.
-func (d *daemon) enrichAt(node *noderec.DirectoryNode, host string) {
-	d.enrichInfoCandidates(node, []string{host})
-	d.enrichModelsCandidates(node, []string{host})
 }
 
 // enrichInfoAt decorates a node that advertises node-info (ni) with its
@@ -1322,7 +1342,7 @@ func (d *daemon) fetchNodeInfoWithin(ctx context.Context, ip string, port int) (
 // pin for it — which models a machine holds is cluster data. A transient failure
 // reuses the last successful list rather than blanking it; a node advertising no em
 // has no model list (nothing is carried in the record). Self is dialed over
-// loopback (see enrichAt), which stays plaintext, peers at their advertised address.
+// loopback (see publishSelfLocked), which stays plaintext, peers at their advertised address.
 func (d *daemon) enrichModelsAt(node *noderec.DirectoryNode, host string) {
 	d.enrichModelsCandidates(node, []string{host})
 }
@@ -1543,10 +1563,10 @@ func (d *daemon) dispatchTelemetry(
 		if !ok {
 			continue
 		}
-		hosts := append([]string(nil), n.CandidateIPs()...)
 		if n.HostUUID == self {
-			hosts = []string{loopbackHost}
+			continue // local telemetry arrives through discovery:local-node-info
 		}
+		hosts := append([]string(nil), n.CandidateIPs()...)
 		if len(hosts) == 0 {
 			continue
 		}
@@ -1557,7 +1577,7 @@ func (d *daemon) dispatchTelemetry(
 		}
 
 		workers.Add(1)
-		go func(hostUUID string, hosts []string, port int, token uint64, backoff bool) {
+		go func(hostUUID string, hosts []string, port int, token uint64) {
 			defer workers.Done()
 			select {
 			case sem <- struct{}{}:
@@ -1567,11 +1587,11 @@ func (d *daemon) dispatchTelemetry(
 				return
 			}
 			ok := d.refreshNodeTelemetryCandidates(ctx, hostUUID, hosts, port)
-			if !backoff || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				ok = true
 			}
 			d.telemetryRetries.finish(hostUUID, token, ok, time.Now())
-		}(n.HostUUID, hosts, ni.Port, retryToken, n.HostUUID != self)
+		}(n.HostUUID, hosts, ni.Port, retryToken)
 	}
 }
 
@@ -1928,6 +1948,15 @@ func (d *daemon) activitySince(hostUUID string) (time.Duration, bool) {
 // filtered directory snapshot.
 func (d *daemon) handle(msg *Message) bool {
 	switch msg.Method {
+	case noderec.MethodLocalNodeInfo:
+		var params noderec.LocalNodeInfoParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			slog.Warn("invalid local node-info snapshot", "err", err)
+			return true
+		}
+		d.acceptLocalNodeInfo(params.Info)
+		return true
+
 	case noderec.MethodRegister, noderec.MethodUpdateTXT:
 		var p noderec.RegisterParams
 		if err := json.Unmarshal(msg.Params, &p); err != nil {

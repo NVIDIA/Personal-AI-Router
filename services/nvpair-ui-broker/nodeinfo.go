@@ -10,23 +10,24 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"sync"
+	"time"
+
+	"nvpair-shared/jsonrpc"
+	"nvpair-shared/noderec"
 )
 
-// maxNodeInfoLine caps one stdout frame from node-info. Its frames are a handful
-// of addresses or a control-request response, so this is generous; the cap only
-// exists so a wedged child cannot grow the broker's buffer without bound.
+// maxNodeInfoLine caps inventory snapshots, observed addresses and control
+// responses so a wedged child cannot grow the broker's buffer without bound.
 const maxNodeInfoLine = 64 * 1024
 
 // nodeInfoProcess is the broker's handle on its child nvpair-node-info.
-// Unlike the scanner, node-info is a *server* (HTTP node-info endpoint +
-// mDNS advertiser), not an event source: the broker doesn't consume its
-// stdout into the discovery store. The broker spawns it so the broker's
-// own host advertises
-// its GPU / CPU / memory inventory on the network, where the scanner
-// (also spawned by the broker) and remote peers can then discover it.
+// It serves public hardware inventory and publishes owned hardware snapshots
+// over stdout. The broker relays those snapshots to its local scanner.
 //
 // The handle owns the OS process, the stdin pipe used to signal clean
 // shutdown (via EOF) and to forward runtime control frames
@@ -34,8 +35,8 @@ const maxNodeInfoLine = 64 * 1024
 type nodeInfoProcess struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
-	// stdinMu serializes log-level forwarding writes against the Close()
-	// in Stop() (this handle stays notify-only, not on jsonrpc.Peer).
+	// stdinMu keeps control frames from interleaving on the pipe. Stop closes
+	// stdin without this lock so it can interrupt a blocked write.
 	stdinMu sync.Mutex
 	done    chan struct{}
 }
@@ -56,6 +57,131 @@ func (n *nodeInfoProcess) SetLogLevel(level string) error {
 // stop treating this node as unavailable for pairing.
 func (n *nodeInfoProcess) SetClusterIdentity(clusterUUID string) error {
 	return writeClusterIdentityFrame(&n.stdinMu, n.stdin, clusterUUID)
+}
+
+type localInfoObservation struct {
+	info       noderec.NodeInfo
+	receivedAt time.Time
+}
+
+// acceptLocalInfo caches an owned-worker snapshot matching this host and queues
+// it for a running scanner. Receipt time is retained for age-preserving replay.
+func (b *Broker) acceptLocalInfo(params json.RawMessage) {
+	receivedAt := time.Now()
+	var snapshot noderec.LocalNodeInfoParams
+	if err := json.Unmarshal(params, &snapshot); err != nil {
+		slog.Warn("bad owned node-info snapshot", "err", err)
+		return
+	}
+	if b.nodeID == "" || snapshot.Info.HostUUID != b.nodeID {
+		slog.Warn("owned node-info snapshot has an unexpected host identity")
+		return
+	}
+	observation := localInfoObservation{info: snapshot.Info, receivedAt: receivedAt}
+	b.localInfoMu.Lock()
+	b.localInfo = &observation
+	b.localInfoMu.Unlock()
+	if scanner := b.getScanner(); scanner != nil {
+		scanner.reportLocalInfo(observation)
+	}
+}
+
+// replayLocalInfo queues the cached snapshot for a restarted scanner, retaining
+// its original receipt time so the relay includes time spent in the cache.
+func (b *Broker) replayLocalInfo(scanner *scannerProcess) {
+	b.localInfoMu.Lock()
+	defer b.localInfoMu.Unlock()
+	if b.localInfo != nil {
+		scanner.reportLocalInfo(*b.localInfo)
+	}
+}
+
+// updateLocalPeerMetadata projects this host's owned registry record into peer
+// metadata, caching it for restart replay and forwarding changes to node-info.
+func (b *Broker) updateLocalPeerMetadata(node noderec.DirectoryNode) {
+	if node.IdentityVerification != noderec.IdentityLocal || node.HostUUID != b.nodeID {
+		return
+	}
+	// Copy mutable fields so the writer can use this snapshot after releasing
+	// the cache lock, even if scanner supplies another registry update.
+	services := make(map[noderec.ServiceKey]int, len(node.Services))
+	for key, status := range node.Services {
+		services[key] = status.Port
+	}
+	metadata := noderec.PeerMetadataParams{
+		HostUUID: node.HostUUID, ClusterUUID: node.ClusterUUID,
+		Peer: noderec.PeerMetadata{Name: node.Name, Addresses: append([]string(nil), node.CandidateIPs()...), Services: services},
+	}
+	b.peerMetadataMu.Lock()
+	previous := b.localPeerMetadata
+	changed := previous == nil || previous.HostUUID != metadata.HostUUID ||
+		previous.ClusterUUID != metadata.ClusterUUID || previous.Peer.Name != metadata.Peer.Name ||
+		!slices.Equal(previous.Peer.Addresses, metadata.Peer.Addresses) ||
+		!maps.Equal(previous.Peer.Services, metadata.Peer.Services)
+	b.localPeerMetadata = &metadata
+	b.peerMetadataMu.Unlock()
+	if changed {
+		b.pushPeerMetadata()
+	}
+}
+
+// pushPeerMetadata queues the latest registry snapshot. One sender handles all
+// updates, with at most one pending update while the child's stdin is blocked.
+func (b *Broker) pushPeerMetadata() {
+	if b.getNodeInfo() == nil {
+		return
+	}
+	b.peerMetadataMu.Lock()
+	b.peerMetadataPending = true
+	if b.peerMetadataSending {
+		b.peerMetadataMu.Unlock()
+		return
+	}
+	b.peerMetadataSending = true
+	b.peerMetadataMu.Unlock()
+	go b.drainPeerMetadata()
+}
+
+// drainPeerMetadata exits when caught up. Restart replay queues another send;
+// closing a stopped worker's stdin releases any write still using that worker.
+func (b *Broker) drainPeerMetadata() {
+	for {
+		b.peerMetadataMu.Lock()
+		if !b.peerMetadataPending {
+			b.peerMetadataSending = false
+			b.peerMetadataMu.Unlock()
+			return
+		}
+		b.peerMetadataPending = false
+		b.peerMetadataMu.Unlock()
+		b.sendPeerMetadata()
+	}
+}
+
+// sendPeerMetadata reads the cache after taking the current worker's pipe lock,
+// then releases the cache lock before I/O so registry updates never wait for it.
+func (b *Broker) sendPeerMetadata() {
+	process := b.getNodeInfo()
+	if process == nil {
+		return
+	}
+	process.stdinMu.Lock()
+	defer process.stdinMu.Unlock()
+	b.peerMetadataMu.Lock()
+	metadata := b.localPeerMetadata
+	b.peerMetadataMu.Unlock()
+	if metadata == nil {
+		return
+	}
+	params, err := json.Marshal(metadata)
+	if err != nil {
+		slog.Warn("failed to encode local peer metadata", "err", err)
+		return
+	}
+	frame := jsonrpc.Message{JSONRPC: "2.0", Method: noderec.MethodSetPeerMetadata, Params: params}
+	if err := json.NewEncoder(process.stdin).Encode(frame); err != nil {
+		slog.Warn("failed to push local peer metadata", "err", err)
+	}
 }
 
 // Done implements supervisedHandle: the returned channel closes once the

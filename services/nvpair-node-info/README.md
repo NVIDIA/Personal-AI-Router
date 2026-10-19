@@ -12,9 +12,35 @@ A Go service that exposes this machine's hardware inventory (GPUs, CPU, physical
 Two surfaces:
 
 - **HTTP(S)** — serves the node inventory at `/v1/node-info`. Plaintext HTTP on `:14318` by default; optional HTTPS (with optional mTLS) on `:14319` when a cert/key pair is supplied.
-- **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `nodeinfo:set-cluster-identity`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
+- **stdio JSON-RPC 2.0** — newline-delimited, used for local inventory snapshots, registry metadata, lifecycle/control, and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
 
-It does **not** advertise itself over mDNS. Discovery is centralized in the `nvpair-node-scanner` daemon: the broker registers this service's `ni` port with the daemon, which carries it on the node's one `_nvpair-node` record and fetches `/v1/node-info` over plain HTTP to enrich each node.
+It does **not** advertise itself over mDNS. Discovery is centralized in the
+`nvpair-node-scanner` daemon: the broker registers this service's `ni` port on
+the node's one `_nvpair-node` record. Remote scanners currently read its public
+HTTP inventory; the owned local scanner receives private IPC snapshots.
+
+### Private inventory IPC
+
+`nodeinfo:info-updated {info}` publishes the hardware response at startup and
+every two seconds over stdout. The broker relays it as
+`discovery:local-node-info {info}` to its owned scanner for local inventory and
+scheduling. Local service measurements work before joining and after leaving a
+cluster, without a loopback HTTP read. Public HTTP hardware displays are unchanged.
+The broker adds cache and queue time to `info.msSince` on forwarding or replay;
+invalid samples remain invalid.
+
+`nodeinfo:set-peer-metadata {hostUuid, clusterUuid, peer}` accepts the local
+scanner registry snapshot over stdin, with `{ok:true}` for an id-bearing request.
+`peer` contains `{name, addresses, services}`; `services` maps service keys to
+ports. A mismatched host identity or malformed payload returns invalid params
+(`-32602`). Each accepted snapshot replaces the previous one completely, so a
+removed service or address is cleared. An empty `clusterUuid` explicitly clears
+membership. The broker refreshes this metadata on local registry changes and
+resends it after node-info restarts. Metadata is retained for the protected
+inventory handler described in scanner's spec; it is not added to public HTTP.
+
+`nodeinfo:set-cluster-identity {clusterUuid}` continues to update the public
+membership field. `log/set-level` is also accepted.
 
 ## CLI Flags
 

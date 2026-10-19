@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -123,44 +126,84 @@ func TestBrowse_DoesNotEvictLocalNode(t *testing.T) {
 	}
 }
 
-// TestPublishSelfEnrichesOverLoopback covers the "no metrics" failure mode:
-// self enrichment must dial loopback, not the advertised LAN ip=, so a firewall
-// block on inbound to our own LAN address can't blank the local card. The stub
-// listens on loopback while the node advertises an (unreachable-in-test) LAN IP.
-func TestPublishSelf_EnrichesOverLoopback(t *testing.T) {
+func TestLocalNodeInfo_AttachesOwnedMeasurements(t *testing.T) {
+	// Verify that private worker samples populate the local registry record and
+	// scheduling telemetry before membership and after departure. Re-publishing
+	// local service registrations must retain that owned inventory.
 	want := NodeInfoResponse{
-		GPUs:   []GPUInfo{{Name: "NVIDIA GeForce RTX 5090"}},
-		CPU:    &CPUInfo{Name: "AMD Ryzen 7 9800X3D", Cores: 8},
-		Memory: &MemoryInfo{TotalBytes: 68719476736},
+		HostUUID:       "self-uuid",
+		GPUs:           []GPUInfo{{Name: "NVIDIA GeForce RTX 5090"}},
+		CPU:            &CPUInfo{Name: "AMD Ryzen 7 9800X3D", Cores: 8},
+		Memory:         &MemoryInfo{TotalBytes: 68719476736},
+		TelemetryValid: true,
+		MSSince:        137,
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/node-info" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		assert.NoError(t, json.NewEncoder(w).Encode(want))
-	}))
-	defer srv.Close()
-	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
-	require.NoError(t, err, "split stub addr")
-	port, err := strconv.Atoi(portStr)
-	require.NoError(t, err)
+	want.GPUs[0].UtilizationPercent = 61
+	type localInfoParams struct {
+		Info NodeInfoResponse `json:"info"`
+	}
+	test := func(name string, leftCluster bool) {
+		t.Run(name, func(t *testing.T) {
+			d := newSelfTestDaemon("self-uuid", "192.0.2.17")
+			if leftCluster {
+				d.reg.setIdentity("self-uuid", "former-principal", selfAddrs("192.0.2.17"))
+				d.reg.setIdentity("self-uuid", "", selfAddrs("192.0.2.17"))
+			}
+			d.reg.register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318})
+			params, err := json.Marshal(localInfoParams{Info: want})
+			require.NoError(t, err)
+			var output bytes.Buffer
+			d.codec = NewCodec(&output)
+			require.True(t, d.handle(&Message{Method: "discovery:local-node-info", Params: params}))
+			node, ok := d.dir.get("self-uuid")
+			require.True(t, ok)
+			assert.Equal(t, noderec.IdentityLocal, node.IdentityVerification)
+			assert.Equal(t, "192.0.2.17", node.IP)
+			assert.Equal(t, want.GPUs, node.GPUs)
+			assert.Equal(t, want.CPU, node.CPU)
+			assert.Equal(t, want.Memory, node.Memory)
+			// A later registration must retain the owned hardware sample.
+			d.reg.register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 11434})
+			d.publishSelf()
+			node, _ = d.dir.get("self-uuid")
+			assert.Equal(t, want.GPUs, node.GPUs, "registration must retain local inventory")
+			var telemetry noderec.NodeTelemetry
+			decoder := json.NewDecoder(&output)
+			for decoder.More() {
+				var msg Message
+				require.NoError(t, decoder.Decode(&msg))
+				if msg.Method == noderec.NotifyNodeTelemetry {
+					require.NoError(t, json.Unmarshal(msg.Params, &telemetry))
+				}
+			}
+			assert.Equal(t, "self-uuid", telemetry.HostUUID)
+			assert.True(t, telemetry.TelemetryValid)
+			assert.Equal(t, uint32(61), telemetry.GPUUtilizationPct)
+			assert.GreaterOrEqual(t, telemetry.MSSince, int64(137))
+		})
+	}
+	test("before joining", false)
+	test("after leaving", true)
+}
 
-	// The node advertises the LAN address (which no server answers on in the
-	// test); enrichment must still succeed via loopback, where the stub listens.
-	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
+func TestLocalNodeInfo_NeverPollsPublicInventory(t *testing.T) {
+	// Provide a public endpoint that would answer local reads, then verify that
+	// local publication and telemetry sampling issue no requests to it.
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"hostUuid":"self-uuid","GPUs":[{"name":"unverified hardware"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(serverURL.Port())
+	require.NoError(t, err)
+	d := newSelfTestDaemon("self-uuid", "192.0.2.17")
 	d.reg.register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: port})
 	d.publishSelf()
-
-	n, ok := d.dir.get("self-uuid")
-	require.True(t, ok, "self missing from directory")
-	assert.Equal(t, "192.168.1.17", n.IP, "self display IP")
-	require.Len(t, n.GPUs, 1, "self GPUs")
-	assert.Equal(t, "NVIDIA GeForce RTX 5090", n.GPUs[0].Name, "self GPUs")
-	require.NotNil(t, n.CPU, "self CPU")
-	assert.Equal(t, "AMD Ryzen 7 9800X3D", n.CPU.Name, "self CPU")
-	require.NotNil(t, n.Memory, "self Memory")
-	assert.Equal(t, uint64(68719476736), n.Memory.TotalBytes, "self Memory")
+	d.refreshTelemetryOnce(context.Background())
+	assert.Equal(t, int32(0), requests.Load())
 }
 
 // TestPublishSelfLoopbackIPFallback covers the "IP unknown at startup" case: when
@@ -299,39 +342,16 @@ func TestEnrich_FallsBackToASecondPublishedAddress(t *testing.T) {
 	require.Equal(t, "GPU from reachable address", node.GPUs[0].Name)
 }
 
-// TestReachableSelfDialsLoopback pins the uuid-keyed self probe: when the
-// threshold-missed record is this host, reachable dials loopbackHost rather than
-// the advertised LAN ip=. A hostname-keyed browse filter is not required — and
-// would wrongly drop a peer that merely shares our instance name.
-func TestReachableSelf_DialsLoopback(t *testing.T) {
+func TestReachable_RejectsAdvertisementsClaimingTheLocalHost(t *testing.T) {
+	// Reject a discovery claim to our UUID even when a fresh cached sample
+	// would otherwise make that UUID reachable, without any network probe.
 	const selfUUID = "self-uuid"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/node-info" {
-			http.NotFound(w, r)
-			return
-		}
-		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: selfUUID}))
-	}))
-	defer srv.Close()
-	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
-	require.NoError(t, err, "split stub addr")
-	port, err := strconv.Atoi(portStr)
-	require.NoError(t, err, "stub port")
-
 	d := newSelfTestDaemon(selfUUID, "192.0.2.1")
-	// Advertise an unroutable DOCUMENTATION address so a LAN dial cannot succeed;
-	// the stub only listens on loopback.
+	d.lastInfoAt[selfUUID] = time.Now()
 	self := RawNode{
-		ID:  "myhost",
-		TXT: []string{"v=1", "uuid=" + selfUUID, "ip=192.0.2.1", fmt.Sprintf("ni=%d", port)},
+		TXT: []string{"uuid=" + selfUUID, "ip=192.0.2.1"},
 	}
-	require.True(t, d.reachable(self), "self record must stay reachable via loopback when LAN ip= is unroutable")
-
-	peer := RawNode{
-		ID:  "myhost", // same instance name as self — must not be treated as us
-		TXT: []string{"v=1", "uuid=peer-uuid", "ip=192.0.2.1", fmt.Sprintf("ni=%d", port)},
-	}
-	assert.False(t, d.reachable(peer), "a same-hostname peer advertising an unroutable LAN ip must not inherit the self loopback dial")
+	assert.False(t, d.reachable(self), "an advertisement claiming our UUID must be rejected despite a fresh cached sample")
 }
 
 func TestPublishSelf_LocalRecordHasLocalVerificationAndDiscoveryRecordID(t *testing.T) {
