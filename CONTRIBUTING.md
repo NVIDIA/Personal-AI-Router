@@ -3,13 +3,13 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Contributing to NVIDIA Personal AI Router
+# Contributing to NVIDIA PAIR
 
-Thank you for helping improve NVIDIA Personal AI Router (PAIR). PAIR routes
+Thank you for helping improve NVIDIA PAIR, or PAIR for short. PAIR routes
 independent inference requests across compatible systems on a local network.
 Contributions should keep that behavior reliable, understandable, and secure.
 
-Report suspected vulnerabilities through [SECURITY.md](SECURITY.md), not a
+Report suspected vulnerabilities through [SECURITY.md](SECURITY.md), **not** a
 public issue or pull request.
 
 ## Before You Start

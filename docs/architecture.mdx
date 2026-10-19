@@ -35,9 +35,8 @@ flowchart TB
     EngineB1 --- ModelB1
 ```
 
-- A **cluster** is a set of nodes that have paired with each other. There is no
-  founder, no primary, and membership is symmetric. A node belongs to at most
-  one cluster.
+- A **cluster** is a set of mutually trusted nodes. There is no founder, no
+  primary, and membership is symmetric. A node belongs to at most one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
 - An **engine** is an inference server on a node: Ollama, LM Studio, or
@@ -211,10 +210,9 @@ serves pairing requests from the LAN.
 Two consequences follow, and together they define how clients are expected to
 reach PAIR:
 
-- **A machine that is not a node has no way in.** It cannot use the plaintext
-  personality, because it is not loopback, and it cannot use the TLS personality,
-  because it holds no pinned cluster certificate. Pointing an application at
-  another machine's proxy port does not work by design.
+- **A remote machine without current cluster credentials cannot use a node's
+  inference proxy.** Plaintext requests from other machines are rejected, and TLS
+  requests require a certificate trusted as a current member.
 - **A peer request is served, not re-routed.** The mTLS ingress forwards straight
   to that node's own engine and never re-enters candidate selection, so a peer
   cannot chain a request onward through a third node.
@@ -671,7 +669,7 @@ to the peer's real UUID as soon as that node reports it.
 
 ```mermaid
 flowchart TB
-    subgraph Host["local operating-system account"]
+    subgraph Host["PAIR runtime and data (per OS account)"]
         Renderer["renderer"]
         Main["preload and Electron main"]
         Broker["broker and worker processes"]
@@ -687,7 +685,7 @@ flowchart TB
     Renderer -->|"allowlisted IPC"| Main
     Main -->|"stdio JSON-RPC"| Broker
     Broker --> Data
-    Loopback -->|"promoted proxy traffic after pairing"| Peer
+    Loopback -->|"cluster inference over mutual TLS"| Peer
     Broker <-->|"discovery and selected metadata"| Lan
     Unknown --> Lan
     Broker -->|"configuration-dependent"| External
