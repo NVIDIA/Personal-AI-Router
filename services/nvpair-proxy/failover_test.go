@@ -363,9 +363,8 @@ func TestHandleHTTP_ResponsesFailsOverFromOlderEngine(t *testing.T) {
 	newRoutes.HandleFunc("POST /v1/responses", func(w http.ResponseWriter, _ *http.Request) {
 		newHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := io.WriteString(w, response); err != nil {
-			t.Errorf("write Responses result: %v", err)
-		}
+		_, err := io.WriteString(w, response)
+		assert.NoError(t, err, "write Responses result")
 	})
 	newEngine := httptest.NewServer(newRoutes)
 	defer newEngine.Close()
@@ -381,12 +380,10 @@ func TestHandleHTTP_ResponsesFailsOverFromOlderEngine(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
 
-	if rec.Code != http.StatusOK || rec.Body.String() != response {
-		t.Fatalf("response = %d %s, want %d %s from newer engine", rec.Code, rec.Body.String(), http.StatusOK, response)
-	}
-	if oldHits.Load() != 1 || newHits.Load() != 1 {
-		t.Fatalf("requests old=%d new=%d, want one request to each", oldHits.Load(), newHits.Load())
-	}
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, response, rec.Body.String(), "response from newer engine")
+	require.Equal(t, int32(1), oldHits.Load(), "requests to older engine")
+	require.Equal(t, int32(1), newHits.Load(), "requests to newer engine")
 }
 
 // TestHandleHTTP_AggregatesNativeModelList is Ollama-scoped because the

@@ -480,29 +480,25 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 // 200. That record must fail the operation even when reading the stream succeeds.
 func TestPullModelStreamRejectsOllamaNDJSONError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/pull" {
-			t.Errorf("request = %s %s, want POST /api/pull", r.Method, r.URL.Path)
+		methodOK := assert.Equal(t, http.MethodPost, r.Method)
+		pathOK := assert.Equal(t, "/api/pull", r.URL.Path)
+		if !methodOK || !pathOK {
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.WriteHeader(http.StatusOK)
-		if _, err := io.WriteString(w, `{"status":"pulling manifest"}
+		_, err := io.WriteString(w, `{"status":"pulling manifest"}
 {"error":"model not found"}
-`); err != nil {
-			t.Errorf("write pull response: %v", err)
-		}
+`)
+		assert.NoError(t, err, "write pull response")
 	}))
 	t.Cleanup(srv.Close)
 
 	_, portText, err := net.SplitHostPort(srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("parse test server address: %v", err)
-	}
+	require.NoError(t, err, "parse test server address")
 	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
+	require.NoError(t, err, "parse test server port")
 
 	m := testEngineManifest(fakeEngineBin)
 	m.Engine = "ollama"
@@ -510,19 +506,12 @@ func TestPullModelStreamRejectsOllamaNDJSONError(t *testing.T) {
 	ex := newTestExecutor(t, m)
 	ex.client = srv.Client()
 	st, err := ex.state(m.Engine)
-	if err != nil {
-		t.Fatalf("initialize engine state: %v", err)
-	}
+	require.NoError(t, err, "initialize engine state")
 	st.running = true
 	st.port = port
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	result, err := ex.PullModelStream(ctx, m.Engine, "missing:latest", nil)
-	if err == nil {
-		t.Fatalf("pull returned success with result %s for an NDJSON error record", result)
-	}
-	if !strings.Contains(err.Error(), "model not found") {
-		t.Fatalf("pull error = %q, want the engine's model not found message", err)
-	}
+	_, err = ex.PullModelStream(ctx, m.Engine, "missing:latest", nil)
+	require.ErrorContains(t, err, "model not found")
 }

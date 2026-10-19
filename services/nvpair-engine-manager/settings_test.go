@@ -472,7 +472,7 @@ func TestSettingsCORSIsOptionalAndIndependentOfEngine(t *testing.T) {
 			e, request, preview := setup(t, corsEnv, corsFlag, prefix, suffix)
 			assert.Contains(t, preview.Errors["launchText"], wantMessage)
 			_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error {
-				t.Fatal("invalid settings reached the rebind callback")
+				require.FailNow(t, "invalid settings reached the rebind callback")
 				return nil
 			})
 			require.Error(t, err)

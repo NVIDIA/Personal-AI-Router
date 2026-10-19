@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -28,9 +27,7 @@ import (
 func mustPinPath(t *testing.T, ts *TrustStore, uuid string) string {
 	t.Helper()
 	path, err := ts.pinPath(uuid)
-	if err != nil {
-		t.Fatalf("pin path: %v", err)
-	}
+	require.NoError(t, err, "pin path")
 	return path
 }
 
@@ -39,9 +36,7 @@ func mustPinPath(t *testing.T, ts *TrustStore, uuid string) string {
 func pinWithCommonName(t *testing.T, uuid string) *TrustedPin {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	require.NoError(t, err, "generate key")
 	cert := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: uuid},
@@ -49,9 +44,7 @@ func pinWithCommonName(t *testing.T, uuid string) *TrustedPin {
 		NotAfter:     time.Now().Add(time.Hour),
 	}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, priv)
-	if err != nil {
-		t.Fatalf("create certificate: %v", err)
-	}
+	require.NoError(t, err, "create certificate")
 	return &TrustedPin{
 		NodeUUID:  uuid,
 		ClusterID: "cluster-1",
@@ -64,26 +57,16 @@ func TestTrustStoreRejectsUnsafePinIdentifiers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ts, count := newAnnouncingStore(t)
 			victim := filepath.Join(filepath.Dir(ts.dir), "victim.json")
-			if err := os.WriteFile(victim, []byte("preserve me"), 0o600); err != nil {
-				t.Fatalf("write victim: %v", err)
-			}
-			if err := ts.Pin(pinWithCommonName(t, uuid)); err == nil {
-				t.Fatal("unsafe principal was pinned")
-			}
+			require.NoError(t, os.WriteFile(victim, []byte("preserve me"), 0o600), "write victim")
+			require.Error(t, ts.Pin(pinWithCommonName(t, uuid)), "unsafe principal was pinned")
 			data, err := os.ReadFile(victim)
-			if err != nil {
-				t.Fatalf("read victim: %v", err)
-			}
-			if string(data) != "preserve me" {
-				t.Errorf("victim file changed: %q", data)
-			}
+			require.NoError(t, err, "read victim")
+			assert.Equal(t, "preserve me", string(data), "victim file changed")
 			entries, err := os.ReadDir(ts.dir)
-			if err != nil {
-				t.Fatalf("read trusted directory: %v", err)
-			}
-			if len(entries) != 0 || len(ts.List()) != 0 || count() != 0 {
-				t.Errorf("rejected pin mutated store: files=%d pins=%d announcements=%d", len(entries), len(ts.List()), count())
-			}
+			require.NoError(t, err, "read trusted directory")
+			assert.Empty(t, entries, "rejected pin changed files")
+			assert.Empty(t, ts.List(), "rejected pin changed live state")
+			assert.Zero(t, count(), "rejected pin announced a change")
 		})
 	}
 	test("empty principal", "")
@@ -110,26 +93,17 @@ func TestTrustStoreRejectsUnsafeRemoveIdentifiers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ts, count := newAnnouncingStore(t)
 			pin := testPin(t, "safe-peer")
-			if err := ts.Pin(pin); err != nil {
-				t.Fatalf("pin safe peer: %v", err)
-			}
+			require.NoError(t, ts.Pin(pin), "pin safe peer")
 			victim := filepath.Join(filepath.Dir(ts.dir), "victim.json")
-			if err := os.WriteFile(victim, []byte("preserve me"), 0o600); err != nil {
-				t.Fatalf("write victim: %v", err)
-			}
-			if err := ts.Remove(uuid); err == nil {
-				t.Fatal("unsafe removal succeeded")
-			}
+			require.NoError(t, os.WriteFile(victim, []byte("preserve me"), 0o600), "write victim")
+			require.Error(t, ts.Remove(uuid), "unsafe removal succeeded")
 			data, err := os.ReadFile(victim)
-			if err != nil {
-				t.Fatalf("read victim: %v", err)
-			}
-			if string(data) != "preserve me" {
-				t.Errorf("victim file changed: %q", data)
-			}
-			if _, ok := ts.Get(pin.NodeUUID); !ok || len(ts.List()) != 1 || count() != 1 {
-				t.Errorf("rejected removal mutated store: safePeer=%t pins=%d announcements=%d", ok, len(ts.List()), count())
-			}
+			require.NoError(t, err, "read victim")
+			assert.Equal(t, "preserve me", string(data), "victim file changed")
+			_, ok := ts.Get(pin.NodeUUID)
+			assert.True(t, ok, "rejected removal removed the safe peer")
+			assert.Len(t, ts.List(), 1, "rejected removal changed live state")
+			assert.Equal(t, 1, count(), "rejected removal announced a change")
 		})
 	}
 	test("empty principal", "")
@@ -155,23 +129,13 @@ func TestTrustStoreLoadSkipsUnsafePinIdentifiers(t *testing.T) {
 	test := func(name, uuid string) {
 		t.Run(name, func(t *testing.T) {
 			ts, err := newTrustStore(t.TempDir())
-			if err != nil {
-				t.Fatalf("open store: %v", err)
-			}
+			require.NoError(t, err, "open store")
 			data, err := json.Marshal(pinWithCommonName(t, uuid))
-			if err != nil {
-				t.Fatalf("encode pin: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(ts.dir, uuid+".json"), data, 0o600); err != nil {
-				t.Fatalf("write unsafe pin: %v", err)
-			}
+			require.NoError(t, err, "encode pin")
+			require.NoError(t, os.WriteFile(filepath.Join(ts.dir, uuid+".json"), data, 0o600), "write unsafe pin")
 			reloaded, err := newTrustStore(filepath.Dir(ts.dir))
-			if err != nil {
-				t.Fatalf("reload store: %v", err)
-			}
-			if len(reloaded.List()) != 0 {
-				t.Fatal("unsafe pin was loaded")
-			}
+			require.NoError(t, err, "reload store")
+			require.Empty(t, reloaded.List(), "unsafe pin was loaded")
 		})
 	}
 	test("empty principal", "")
@@ -181,26 +145,16 @@ func TestTrustStoreLoadSkipsUnsafePinIdentifiers(t *testing.T) {
 
 func TestTrustStoreOpaqueSafeIdentifierSurvivesReload(t *testing.T) {
 	ts, err := newTrustStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	require.NoError(t, err, "open store")
 	pin := testPin(t, "peer.name-1")
-	if err := ts.Pin(pin); err != nil {
-		t.Fatalf("pin safe opaque identifier: %v", err)
-	}
+	require.NoError(t, ts.Pin(pin), "pin safe opaque identifier")
 	reloaded, err := newTrustStore(filepath.Dir(ts.dir))
-	if err != nil {
-		t.Fatalf("reload store: %v", err)
-	}
-	if got, ok := reloaded.Get(pin.NodeUUID); !ok || got.CertPem != pin.CertPem {
-		t.Fatal("safe opaque identifier did not survive reload")
-	}
-	if err := reloaded.Remove(pin.NodeUUID); err != nil {
-		t.Fatalf("remove safe pin: %v", err)
-	}
-	if err := reloaded.Remove(pin.NodeUUID); err != nil {
-		t.Fatalf("repeat safe removal: %v", err)
-	}
+	require.NoError(t, err, "reload store")
+	got, ok := reloaded.Get(pin.NodeUUID)
+	require.True(t, ok, "safe opaque identifier did not survive reload")
+	require.Equal(t, pin.CertPem, got.CertPem, "safe opaque identifier's certificate changed")
+	require.NoError(t, reloaded.Remove(pin.NodeUUID), "remove safe pin")
+	require.NoError(t, reloaded.Remove(pin.NodeUUID), "repeat safe removal")
 }
 
 func TestMergeRosterRejectsTraversalPrincipal(t *testing.T) {
@@ -209,14 +163,10 @@ func TestMergeRosterRejectsTraversalPrincipal(t *testing.T) {
 	pinTrusted(t, m, peerUUID, peerCert, peerFP)
 	identityPath := filepath.Join(filepath.Dir(m.trust.dir), "identity.json")
 	before, err := os.ReadFile(identityPath)
-	if err != nil {
-		t.Fatalf("read identity before merge: %v", err)
-	}
+	require.NoError(t, err, "read identity before merge")
 	pin := pinWithCommonName(t, "../identity")
 	fingerprint, err := certFingerprintFromPEM([]byte(pin.CertPem))
-	if err != nil {
-		t.Fatalf("fingerprint crafted certificate: %v", err)
-	}
+	require.NoError(t, err, "fingerprint crafted certificate")
 	endorsement := signEndorsement(peerKey, peerUUID, pin.NodeUUID, fingerprint, "cluster-1", time.Now().UnixMilli(), 1, 1)
 	m.mergeRoster(&Roster{
 		ClusterID: "cluster-1",
@@ -225,19 +175,13 @@ func TestMergeRosterRejectsTraversalPrincipal(t *testing.T) {
 			AdmissionEpoch: 1, Endorsements: []Endorsement{endorsement},
 		}},
 	}, peerUUID)
-	if _, ok := m.trust.Get(pin.NodeUUID); ok {
-		t.Error("trusted endorsement admitted a traversal principal")
-	}
-	if _, ok := m.memberByNodeID(pin.NodeUUID); ok {
-		t.Error("traversal principal became a member")
-	}
+	_, ok := m.trust.Get(pin.NodeUUID)
+	assert.False(t, ok, "trusted endorsement admitted a traversal principal")
+	_, ok = m.memberByNodeID(pin.NodeUUID)
+	assert.False(t, ok, "traversal principal became a member")
 	after, err := os.ReadFile(identityPath)
-	if err != nil {
-		t.Fatalf("read identity after merge: %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Error("roster merge overwrote identity.json")
-	}
+	require.NoError(t, err, "read identity after merge")
+	assert.Equal(t, before, after, "roster merge overwrote identity.json")
 }
 
 // newAnnouncingStore returns a trust store wired to count change announcements.
