@@ -20,7 +20,6 @@ import (
 
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
-	"nvpair-shared/clustertrust"
 	"nvpair-shared/engines"
 	"nvpair-shared/errors"
 	"nvpair-shared/nodeid"
@@ -646,27 +645,17 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 	return sp, nil
 }
 
-// spawnNodeInfo starts the owned inventory worker, restores identity and peer
-// metadata, and registers its service port with scanner.
+// spawnNodeInfo starts the owned inventory worker, restores peer metadata,
+// and registers its service port with scanner.
 func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
-	// Keep public HTTP available for desktop and TUI hardware displays. The
-	// current --cluster-dir mode gates that endpoint while clustered, so do not
-	// enable it here. Local service measurements use the owned worker's stdio,
-	// independent of whether this host belongs to a cluster.
-	//
-	// Do pass --node-id: node-info reports the broker's already-resolved UUID so
-	// /v1/node-info agrees with the identity the fleet keys on, even on a custom
-	// --cluster-dir data root (node-info gets no cluster-dir, so it would
-	// otherwise resolve the default root and could report a different UUID).
-	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.forwardNodeInfoNotification, "--node-id", b.nodeID)
+	// One port serves public display HTTP and pinned peer mTLS. Local service
+	// measurements still use the owned worker's stdio, independent of membership.
+	extra := append(b.clusterDirArgs(), "--node-id", b.nodeID)
+	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.forwardNodeInfoNotification, extra...)
 	if err != nil {
 		return nil, err
 	}
 	b.setNodeInfo(np)
-	// Tell it our membership: node-info reports the cluster principal on
-	// /v1/node-info but holds no cluster dir to read it from, so this push is the
-	// only source. It runs on every spawn, which also covers a supervised restart.
-	b.pushClusterIdentityToNodeInfo()
 	b.pushPeerMetadata()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
@@ -1394,10 +1383,8 @@ func (b *Broker) clusterManagerConfigDir() string {
 // configured, else nil. Threaded into every worker that does cluster-scoped
 // inter-node mTLS (nvpair-errors, nvpair-workload-manager, nvpair-node-scanner,
 // nvpair-manual-nodes, nvpair-engine-manager) so each serves/dials pinned cluster
-// peers once this node is clustered; absent it, those workers stay on plain HTTP
-// (or, for engine-manager's ec surface, don't bind it at all). nvpair-node-info is
-// deliberately excluded — it stays plain HTTP even on a clustered node (see the
-// spawnNodeInfo call site), so it is never passed --cluster-dir.
+// peers once this node is clustered. Node-info also receives this directory for
+// its peer node inventory handler, alongside independent public display HTTP.
 func (b *Broker) clusterDirArgs() []string {
 	if b.clusterDir == "" {
 		return nil
@@ -1443,14 +1430,9 @@ func resolveLocalNodeID(clusterDir string) string {
 // the rest of its life — in the roster and ranked by the scheduler, yet
 // exchanging no cluster traffic.
 //
-// Two workers are told directly, because they publish this node's membership
-// rather than deriving it. The scanner owns the mDNS record: cluster-uuid= is how
-// a peer finds the pin for this node, so it should flip now rather than at the
-// scanner's next membership poll. node-info carries the same fact over plain
-// HTTP, which is a peer's only way to learn it when this node's mDNS record does
-// not reach it — and it holds no cluster dir, so the value has to be pushed. Both
-// are idempotent and run on their own goroutine, because they are
-// bounded-but-blocking writes and the caller is the cluster-manager's reader.
+// Scanner updates its local announcement immediately. Node-info reads the shared
+// cluster directory itself. The scanner write is asynchronous because this is
+// cluster-manager's reader.
 func (b *Broker) applyClusterIdentityChange() {
 	if b.clusterDir == "" {
 		return
@@ -1458,38 +1440,6 @@ func (b *Broker) applyClusterIdentityChange() {
 	slog.Info("cluster identity changed; converging this node's advertised cluster identity")
 	if sc := b.getScanner(); sc != nil {
 		go sc.reloadIdentity()
-	}
-	go b.pushClusterIdentityToNodeInfo()
-}
-
-// clusterPrincipal is the cluster principal this node currently holds, or empty
-// when it belongs to no cluster. It is read from the trust store on each call
-// rather than cached: membership changes under the broker while it runs, and this
-// is the value peers key their pins on.
-func (b *Broker) clusterPrincipal() string {
-	if b.clusterDir == "" {
-		return ""
-	}
-	mesh := clustertrust.Open(b.clusterDir)
-	mesh.Refresh()
-	if !mesh.Clustered() {
-		return ""
-	}
-	return mesh.NodeUUID()
-}
-
-// pushClusterIdentityToNodeInfo sends node-info the current cluster principal.
-// Best-effort on a node-info that isn't running (never spawned, or mid-restart):
-// the next spawn pushes again. A failed write is warned about rather than traced,
-// because until the next push lands peers cannot learn this node's membership
-// over HTTP — which is the whole point of reporting it.
-func (b *Broker) pushClusterIdentityToNodeInfo() {
-	np := b.getNodeInfo()
-	if np == nil {
-		return
-	}
-	if err := np.SetClusterIdentity(b.clusterPrincipal()); err != nil {
-		slog.Warn("failed to push cluster identity to node-info", "err", err)
 	}
 }
 
@@ -2785,24 +2735,13 @@ func (b *Broker) forwardClusterManagerNotification(method string, params json.Ra
 	}
 }
 
-// applyClusterTrustChange re-derives the scanner's per-peer trust annotation
-// after nvpair-cluster-manager reports a pin-set change. Fire-and-forget on its
-// own goroutine, for the same reason as applyClusterIdentityChange: it is a
-// bounded-but-blocking RPC and the caller is the cluster-manager's reader.
-//
-// node-info is pushed here too, not only from applyClusterIdentityChange: a pin
-// on its own can decide membership (a cluster dir predating admission.json is
-// clustered on pins alone — see clustertrust.Mesh), so this event can change the
-// principal we publish without any identity change being reported. Peers now
-// read that value over HTTP in preference to our mDNS record, so it must not have
-// fewer refresh triggers than the record does — otherwise a peer converges on a
-// principal we have already stopped advertising.
+// applyClusterTrustChange asks scanner to rederive trust after the pin set changes.
+// Node-info follows live membership from the same cluster directory.
 func (b *Broker) applyClusterTrustChange() {
 	slog.Info("cluster pin set changed; re-deriving peer trust")
 	if sc := b.getScanner(); sc != nil {
 		go sc.reloadTrust()
 	}
-	go b.pushClusterIdentityToNodeInfo()
 }
 
 // forwardWorkloadManagerNotification is the hook startWorkloadManager

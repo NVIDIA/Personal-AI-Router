@@ -461,6 +461,8 @@ type NodeInfo struct {
 	MSSince        int64       `json:"msSince"`
 	HostUUID       string      `json:"hostUuid,omitempty"`
 	ClusterUUID    *string     `json:"clusterUuid,omitempty"`
+	// Peer is included only in peer node inventory served over pinned mTLS.
+	Peer *PeerMetadata `json:"peer,omitempty"`
 }
 
 // Aged returns a copy whose sample age includes time spent in a queue or cache.

@@ -171,17 +171,22 @@ Not every surface is gated, and the exceptions are deliberate:
 | Workload replication, error synchronization | Mutual TLS |
 | Cluster membership | Mutual TLS, after pairing |
 | Pairing itself | Plaintext, authenticated by the PIN |
-| Host and GPU telemetry | Plaintext HTTP, **not** authenticated |
+| Host and GPU hardware displays | Plaintext HTTP, **not** authenticated |
+| Peer node inventory and registry metadata | Pinned mutual TLS on the node-info port |
 
 Pairing is plaintext because no trust exists yet at that point. The six-digit PIN
 is what authenticates the exchange that establishes the pinned certificates.
 
-Node telemetry is a considered trade-off, not an oversight. It is treated as the
-lowest-sensitivity inter-node surface and is read by consumers that are not
-cluster members, so it stays plaintext even on a clustered node. The practical
-consequence is that hostname, hardware inventory, and utilization for a node
-running PAIR are readable by anything on the same subnet that asks. Do not run
-PAIR on a network where that is unacceptable.
+Public hardware displays remain available over unauthenticated HTTP, including
+while clustered. Any machine that can reach this endpoint can read the node's
+hardware inventory and utilization. Do not run PAIR on a network where that is
+unacceptable.
+
+The same node-info port also serves peer node inventory over pinned mutual
+TLS. This response includes the serving host's local registry metadata. It requires
+current membership, the client's exact approved certificate, and registry
+metadata matching the serving identity. Public HTTP continues to return the
+hardware display response independently of this peer node inventory handler.
 
 ### Two Personalities on One Port
 
@@ -540,7 +545,7 @@ A default installation listens on these ports:
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
 | `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
-| `14318` | Node hardware and telemetry |
+| `14318` | Public hardware displays and peer node inventory |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
 | `14321` | Pairing and cluster membership |
@@ -619,19 +624,27 @@ long-lived receiver.
 
 ### Node Enrichment
 
-Announcements establish that a node exists and which ports it serves. PAIR
-fetches the interesting facts afterwards, for each node, over HTTP:
+Announcements supply discovery candidates and advertised service ports. Scanner
+enriches node records with details from two services:
 
-- GPU, CPU, and memory inventory from its node-info port
-- Its model list from its engine-manager port, as a flat union, a per-engine
-  breakdown, and the per-engine set of models currently loaded in memory
+- GPU, CPU, and memory inventory from node-info, currently over public HTTP for
+  remote nodes and private worker IPC for the local host
+- Its model list from engine-manager, over pinned mutual TLS for remote peers or
+  loopback HTTP for the local host, as a flat union, a per-engine breakdown, and
+  the per-engine set of models currently loaded in memory
+
+The peer node inventory handler is available, but migrating remote hardware
+reads to pinned mutual TLS and promoting verified records remain pending work
+in the [scanner specification](../services/nvpair-node-scanner/spec.md).
 
 Each enrichment keeps a last-good value, so one failed fetch dims nothing. A
 node's card does not blank out because a single poll timed out.
 
 With a cluster directory configured, a browsed peer whose `cluster-uuid=` matches
 a pin this node holds is annotated as trusted, which is how the interface can
-distinguish a paired node from a stranger it can merely see.
+distinguish a paired node from a stranger it can merely see. This annotation
+matches an advertised identity to a saved pin; it does not authenticate the
+announcing endpoint.
 
 ### Node Eviction
 

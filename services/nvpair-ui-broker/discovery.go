@@ -674,29 +674,3 @@ func writeSetLevelFrame(mu *sync.Mutex, w io.Writer, level string) error {
 	_, err = w.Write(data)
 	return err
 }
-
-// writeClusterIdentityFrame marshals a newline-delimited
-// nodeinfo:set-cluster-identity notification and writes it to a child's stdin
-// under mu. An empty principal is a real value ("this node is in no cluster"),
-// so it is sent like any other.
-func writeClusterIdentityFrame(mu *sync.Mutex, w io.Writer, clusterUUID string) error {
-	frame := struct {
-		JSONRPC string                        `json:"jsonrpc"`
-		Method  string                        `json:"method"`
-		Params  noderec.ClusterIdentityParams `json:"params"`
-	}{
-		JSONRPC: "2.0",
-		Method:  noderec.MethodSetClusterIdentity,
-		Params:  noderec.ClusterIdentityParams{ClusterUUID: clusterUUID},
-	}
-	data, err := json.Marshal(frame)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
-	mu.Lock()
-	defer mu.Unlock()
-	_, err = w.Write(data)
-	return err
-}

@@ -102,12 +102,15 @@ type NodeInfoResponse struct {
 	ClusterUUID *string `json:"clusterUuid,omitempty"`
 }
 
-// clusterIdentity is the cluster principal this node reports, kept current by
-// the parent broker over stdin (noderec.MethodSetClusterIdentity). node-info
-// cannot derive it under the broker: it is spawned without a cluster dir so its
-// inventory stays readable by any LAN peer, which also denies it the trust store
-// membership is read from. Guarded because the stdin reader and every HTTP
-// handler touch it.
+type peerNodeInfoResponse struct {
+	NodeInfoResponse
+	Peer noderec.PeerMetadata `json:"peer"`
+}
+
+// clusterIdentity holds the principal supplied over private broker IPC for
+// launches without a cluster directory. With --cluster-dir, responses use live
+// mesh membership instead. Guarded because the stdin reader and HTTP handlers
+// can access it concurrently.
 //
 // `told` distinguishes "the broker says we hold no principal" from "the broker
 // has not said anything yet", which are the same empty string but must not be
@@ -194,14 +197,14 @@ func handlePeerMetadata(msg applog.StdinMessage, hostUUID string, metadata *peer
 }
 
 type infoUpdateParams struct {
-	Info json.RawMessage `json:"info"`
+	Info NodeInfoResponse `json:"info"`
 }
 
 // publishInfoUpdates sends inventory directly to the owning broker at startup
 // and on each tick until cancellation, using the same builder as public HTTP.
-func publishInfoUpdates(ctx context.Context, out *applog.Notifier, body func() []byte, ticks <-chan time.Time) {
+func publishInfoUpdates(ctx context.Context, out *applog.Notifier, snapshot func() NodeInfoResponse, ticks <-chan time.Time) {
 	for {
-		if err := out.Notify(noderec.NotifyInfoUpdated, infoUpdateParams{Info: body()}); err != nil {
+		if err := out.Notify(noderec.NotifyInfoUpdated, infoUpdateParams{Info: snapshot()}); err != nil {
 			slog.Warn("failed to publish local inventory", "err", err)
 		}
 		select {
@@ -220,8 +223,8 @@ func publishInfoUpdates(ctx context.Context, out *applog.Notifier, body func() [
 // in stats_windows.go / stats_linux.go / stats_darwin.go / stats_other.go.
 
 // buildResponse merges the static identity pulled once at startup with
-// the latest dynamic stats snapshot and returns the marshaled
-// NodeInfoResponse body. Kept as a free function so unit tests can
+// the latest dynamic stats snapshot and returns a typed hardware response.
+// HTTP and IPC writers encode it at their boundaries. Unit tests can
 // exercise the merge without standing up a collector or HTTP server.
 //
 // GPUs whose statsKey doesn't appear in snap.GPU (host with no dynamic GPU
@@ -234,11 +237,11 @@ func publishInfoUpdates(ctx context.Context, out *applog.Notifier, body func() [
 // cpuStatic is nil when static CPU introspection failed; memTotal is zero when
 // physical-memory introspection failed. Both conditions omit their respective
 // top-level object from the JSON entirely.
-func buildResponse(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string) []byte {
+func buildResponse(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string) NodeInfoResponse {
 	return buildResponseAt(gpus, cpuStatic, memTotal, snap, hostUUID, clusterUUID, time.Now())
 }
 
-func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, now time.Time) []byte {
+func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, now time.Time) NodeInfoResponse {
 	outGPUs := mergeGPUInventory(gpus, snap.GPUInventory)
 	for i := range outGPUs {
 		gpu := &outGPUs[i]
@@ -272,8 +275,7 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 			UsedBytes:  snap.MemUsedBytes,
 		}
 	}
-	body, _ := json.Marshal(resp)
-	return body
+	return resp
 }
 
 func telemetryStatus(sampledAt, now time.Time) (bool, int64) {
@@ -315,24 +317,48 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 	return merged
 }
 
-// nodeInfoHandler serves the marshaled node inventory from body(). While this
-// node is a cluster member the endpoint is cluster-gated: the authenticated
-// client must present a cert pinned for its UUID (or this node's own leaf, for a
-// local self-read), or it gets a 403 — so a non-cluster peer can't read this
-// host's GPU inventory in the clear, and neither can a plain-HTTP caller on the
-// shared port. Refresh picks up a membership change or a peer paired after
-// startup.
-func nodeInfoHandler(mesh *clustertrust.Mesh, body func() []byte) http.HandlerFunc {
+// publicNodeInfoHandler preserves the display response, including while this
+// node is clustered. Public readings carry no authoritative peer metadata.
+func publicNodeInfoHandler(mesh *clustertrust.Mesh, snapshot func() NodeInfoResponse) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mesh.Refresh()
-		if mesh.Clustered() {
-			if _, ok := mesh.VerifyClientPin(r); !ok {
-				http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
-				return
-			}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(snapshot()); err != nil {
+			slog.Warn("failed to serve public node inventory", "err", err)
+		}
+	}
+}
+
+// nodeInfoHandler serves peer node inventory only to currently authenticated peers.
+// Metadata and hardware must agree with this node's live certificate identity.
+func nodeInfoHandler(mesh *clustertrust.Mesh, metadata *peerMetadata, snapshot func() NodeInfoResponse) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mesh.Refresh()
+		if _, ok := mesh.VerifyClientPin(r); !ok {
+			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
+			return
+		}
+		info := snapshot()
+		// Recheck after building the response: departure or pin replacement must
+		// also revoke a request that was already in progress on an old connection.
+		mesh.Refresh()
+		if _, ok := mesh.VerifyClientPin(r); !ok {
+			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
+			return
+		}
+		local, known := metadata.get()
+		principal := mesh.NodeUUID()
+		port := local.Peer.Services[noderec.ServiceNodeInfo]
+		if !known || local.HostUUID != principal || local.ClusterUUID != principal ||
+			info.HostUUID != principal || info.ClusterUUID == nil || *info.ClusterUUID != principal ||
+			local.Peer.Name == "" || len(local.Peer.Addresses) == 0 || port <= 0 || port > 65535 {
+			http.Error(w, "local peer metadata is not ready", http.StatusServiceUnavailable)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body())
+		if err := json.NewEncoder(w).Encode(peerNodeInfoResponse{NodeInfoResponse: info, Peer: local.Peer}); err != nil {
+			slog.Warn("failed to serve peer node inventory", "err", err)
+		}
 	}
 }
 
@@ -343,8 +369,7 @@ var Version = "dev"
 // resolveHostUUID returns the stable per-host UUID node-info reports. An
 // explicit --node-id (which the broker passes as its own already-resolved
 // b.nodeID) wins verbatim, so node-info reports exactly the identity the rest of
-// the fleet keys on — even when the broker runs on a custom --cluster-dir data
-// root while node-info is spawned plaintext with no cluster-dir of its own.
+// the fleet keys on, including deployments with a custom cluster directory.
 // Standalone (no --node-id) it resolves the shared local identity
 // itself, preferring the --cluster-dir parent when set.
 func resolveHostUUID(nodeID, clusterDir string) string {
@@ -359,13 +384,13 @@ func resolveHostUUID(nodeID, clusterDir string) string {
 }
 
 func main() {
-	port := flag.Int("port", 14318, "HTTP port to listen on")
-	tlsPort := flag.Int("tls-port", 14319, "HTTPS port to listen on (only used when --cert and --key are set)")
-	certPath := flag.String("cert", "", "path to TLS server certificate (PEM); enables HTTPS when set together with --key")
-	keyPath := flag.String("key", "", "path to TLS server private key (PEM); enables HTTPS when set together with --cert")
-	clientCAPath := flag.String("client-ca", "", "path to PEM bundle of CAs trusted to sign client certificates; enables mTLS when set")
-	acceptHTTP := flag.Bool("accept-http", false, "keep the plaintext HTTP listener alive even when TLS is enabled (default: HTTPS-only when --cert is set)")
-	clusterDir := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/); when set, /v1/node-info is served only over mTLS scoped to pinned cluster peers instead of plaintext")
+	port := flag.Int("port", 14318, "primary port for public HTTP and, with --cluster-dir, peer node inventory over pinned mTLS")
+	tlsPort := flag.Int("tls-port", 14319, "operator HTTPS port (requires --cert and --key; ignored with --cluster-dir)")
+	certPath := flag.String("cert", "", "path to operator TLS server certificate (PEM); requires --key; ignored with --cluster-dir")
+	keyPath := flag.String("key", "", "path to operator TLS server private key (PEM); requires --cert; ignored with --cluster-dir")
+	clientCAPath := flag.String("client-ca", "", "PEM CA bundle for operator HTTPS client authentication; requires --cert and --key; ignored with --cluster-dir")
+	acceptHTTP := flag.Bool("accept-http", false, "keep public HTTP on --port alongside operator HTTPS; --cluster-dir always keeps public HTTP available")
+	clusterDir := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/); serves public hardware displays over HTTP and peer node inventory over pinned mTLS, both at /v1/node-info on the primary port")
 	nodeID := flag.String("node-id", "", "stable per-host UUID to report on /v1/node-info; when empty it is resolved from the local identity store. The broker passes its own resolved node UUID so both agree even on a custom data root")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
@@ -384,14 +409,8 @@ func main() {
 	// the address it was added under.
 	hostUUID := resolveHostUUID(*nodeID, *clusterDir)
 
-	// With a --cluster-dir, /v1/node-info is served on one port that carries both
-	// personalities (first-byte split): while this node is a cluster member only
-	// pin-gated mTLS callers are admitted, closing the plaintext GPU-inventory leak
-	// to non-cluster peers, and while it is not a member the plaintext inventory is
-	// served as usual. The membership answer is live, so a node that joins or
-	// leaves while this process runs changes personality in place. Without a
-	// --cluster-dir the bring-your-own --cert path and the plaintext default are
-	// unchanged.
+	// The cluster listener keeps public HTTP displays available while serving
+	// peer node inventory to pinned peers over mTLS on the same primary port.
 	mesh := clustertrust.Open(*clusterDir)
 	clusterGated := *clusterDir != ""
 
@@ -404,17 +423,15 @@ func main() {
 		log.Fatalf("invalid TLS configuration: %v", err)
 	}
 
-	// httpEnabled: when no cert is configured the only listener the
-	// service has *is* HTTP, so the flag is meaningless and we don't
-	// pay attention to it. With TLS on, --accept-http opts into
-	// keeping the legacy port alive alongside HTTPS for clients that
-	// haven't migrated.
+	// httpEnabled controls the separate public HTTP listener used without
+	// --cluster-dir. It runs by default; operator certificates disable it unless
+	// --accept-http is set. The cluster directory mode supplies its own public
+	// HTTP listener through the split listener below.
 	httpEnabled := !tlsOpts.Enabled() || *acceptHTTP
 	if clusterGated {
-		// The cluster-gated listener below owns *port and serves both
-		// personalities on it, so there is no separate plaintext listener to
-		// start. A member admits only pinned peers (the local scanner reads us
-		// over mTLS via self-trust); a non-member serves the plaintext inventory.
+		// The split listener below owns *port and serves both public HTTP and
+		// peer node inventory over pinned mTLS. Skip the separate HTTP listener;
+		// public HTTP remains available regardless of membership.
 		if tlsOpts.Enabled() {
 			log.Print("--cluster-dir set: ignoring --cert/--key (cluster mTLS takes precedence)")
 		}
@@ -448,14 +465,11 @@ func main() {
 	collector := startStatsCollector()
 	defer collector.Stop()
 
-	// Where the reported cluster principal comes from is decided by the
-	// deployment, not by a fallback chain. With --cluster-dir this process holds
-	// the trust store and reads membership itself, so the answer is always known
-	// (the handler refreshes the mesh before building the body). Under the broker
-	// (no cluster dir, so the inventory stays plain for every LAN peer) it cannot
-	// read membership at all and the broker pushes it instead — until that first
-	// push the answer is genuinely unknown and the field is omitted. The two
-	// sources are mutually exclusive by construction.
+	// With --cluster-dir, clusterUuid comes from the mesh: this node's principal
+	// while clustered, or an empty string otherwise. HTTP handlers refresh the
+	// mesh per request, and the watcher below also updates it for TLS handshakes
+	// and private inventory snapshots. Without a cluster directory, use the
+	// identity sent over stdin and omit the field until the first update arrives.
 	identity := &clusterIdentity{}
 	clusterPrincipal := func() *string {
 		if !clusterGated {
@@ -472,30 +486,25 @@ func main() {
 		return &principal
 	}
 
-	responseBody := func() []byte {
+	snapshot := func() NodeInfoResponse {
 		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal())
 	}
+	metadata := &peerMetadata{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, responseBody))
+	mux.HandleFunc("/v1/node-info", publicNodeInfoHandler(mesh, snapshot))
 
-	// Listener layout (set up below depending on flags). Exactly one of the two
-	// blocks that own *port runs:
-	//   * With --cluster-dir: one cluster-gated listener on *port (default
-	//     14318) carrying both personalities behind a first-byte split. Which
-	//     callers it admits follows live cluster membership.
-	//   * Otherwise: httpServer on *port when httpEnabled, and, with
-	//     --cert/--key, tlsServer on *tlsPort (default 14319) — a separate port
-	//     so clients can be migrated independently.
-	// At least one listener is always running (the flag validation above
-	// guarantees we don't end up with none: --accept-http only matters when TLS
-	// is on, and the default with no TLS keeps HTTP on).
+	// With --cluster-dir, one split listener on *port (default 14318) serves
+	// public HTTP and peer node inventory over pinned mTLS. Otherwise, public
+	// HTTP uses *port when httpEnabled, and operator HTTPS uses *tlsPort (default
+	// 14319) when --cert/--key are configured. Operator HTTPS-only mode leaves
+	// *port unbound. At least one listener is enabled in every valid mode.
 	var httpServer, tlsServer *http.Server
-	// split is the first-byte dispatcher behind the cluster-gated listener; it is
-	// closed on shutdown so both sub-listeners unwind.
+	// split dispatches public HTTP and peer mTLS connections on the primary port.
+	// Closing it during shutdown releases both sub-listeners.
 	var split *splitlisten.Splitter
 
-	// Every listener feeds the same observer: which local address a peer reached
-	// is evidence regardless of which personality served the request.
+	// Observe local addresses reached by non-loopback HTTP clients on either
+	// transport. These reports describe reachability rather than peer identity.
 	observer := newAddressObserver()
 
 	if httpEnabled {
@@ -516,35 +525,42 @@ func main() {
 		}()
 	}
 
-	// The cluster-gated listener takes over the *primary* node-info port (*port)
-	// rather than the separate *tlsPort. That deliberately avoids colliding with
-	// nvpair-errors, which the broker also spawns on :14319 — node-info's default
-	// --tls-port. The BYO --cert path keeps its own *tlsPort so a plaintext and a
-	// TLS listener can coexist there.
+	// With --cluster-dir, public HTTP and peer node inventory over pinned mTLS
+	// share the primary node-info port (*port). This avoids colliding with
+	// nvpair-errors on :14319, node-info's default --tls-port.
+	// Without --cluster-dir, operator-supplied --cert/--key enable HTTPS on
+	// *tlsPort; --accept-http keeps public HTTP available on *port.
 	if clusterGated {
 		base, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 		if err != nil {
 			log.Fatalf("failed to listen on port %d: %v", *port, err)
 		}
 		split = splitlisten.New(base)
-		tlsServer = &http.Server{
+		peerMux := http.NewServeMux()
+		peerMux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, metadata, snapshot))
+		httpServer = &http.Server{
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 			ConnState:         observer.connState,
 			IdleTimeout:       clustertrust.PeerListenerIdleTimeout,
 		}
+		tlsServer = &http.Server{
+			Handler:           peerMux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ConnState:         observer.connState,
+			IdleTimeout:       clustertrust.PeerListenerIdleTimeout,
+		}
 		// The cluster leaf is resolved per handshake from the live mesh, so a
-		// non-member presents none and the handshake is refused; the plain
-		// sub-listener carries unclustered callers, whom the handler admits only
-		// while this node is not a member.
-		serve := func(l net.Listener) {
-			if err := tlsServer.Serve(l); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
+		// non-member presents none and the handshake is refused. The independent
+		// plain sub-listener continues serving frontend hardware displays.
+		serve := func(server *http.Server, l net.Listener) {
+			if err := server.Serve(l); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
 				log.Fatalf("node-info server error: %v", err)
 			}
 		}
-		log.Printf("node-info listening on :%d (cluster-gated; clustered=%v)", *port, mesh.Clustered())
-		go serve(tls.NewListener(split.TLS(), mesh.ServerTLSConfig()))
-		go serve(split.Plain())
+		log.Printf("node-info listening on :%d (public HTTP and pinned mTLS; clustered=%v)", *port, mesh.Clustered())
+		go serve(tlsServer, tls.NewListener(split.TLS(), mesh.ServerTLSConfig()))
+		go serve(httpServer, split.Plain())
 	} else if tlsOpts.Enabled() {
 		tlsCfg, err := buildTLSConfig(tlsOpts)
 		if err != nil {
@@ -574,22 +590,17 @@ func main() {
 		}()
 	}
 
-	// Discovery consolidation: node-info no longer advertises its own
-	// _nvpair-node-info mDNS record. It's discovered through the node-scanner
-	// daemon's single _nvpair-node record (the broker registers this node's ni=
-	// port) and enriched over plain HTTP at that port. node-info is now a
-	// headless inventory server — the identity/address (uuid=/ip=) it used to
-	// stamp is carried by the daemon for the whole node.
+	// The broker registers this service's ni port with scanner, which advertises
+	// it in this host's single _nvpair-node record. Public HTTP supports hardware
+	// displays, pinned mTLS serves peer node inventory, and private stdout
+	// notifications supply local service measurements.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Keep membership converging on its own when cluster-gated. Every other gate
-	// here is refreshed by the request handler, but the TLS personality is chosen
-	// during the handshake — which happens BEFORE any handler runs — so without an
-	// independent watch a node that joined while this process ran could not present
-	// a leaf until some plaintext caller happened to arrive and refresh membership
-	// as a side effect. That would make the cluster surface unreachable exactly
-	// when it is supposed to take over.
+	// Refresh membership and certificate identity even without HTTP requests.
+	// TLS chooses the server certificate during the handshake, before a handler
+	// can refresh the mesh. The watcher makes membership changes visible to new
+	// handshakes and private snapshots without requiring a public HTTP read.
 	if clusterGated {
 		go mesh.Watch(ctx, nil)
 	}
@@ -607,15 +618,13 @@ func main() {
 		}
 	}()
 
-	// One writer for both directions of stdout traffic: request responses and the
-	// observed-address reports below share its lock so their frames never
-	// interleave.
+	// Serialize RPC replies, inventory snapshots, and observed-address reports
+	// through one stdout writer so JSON-RPC frames cannot interleave.
 	notifier := applog.NewNotifier(os.Stdout)
 	go observer.reportLoop(ctx.Done(), notifier)
 	infoTicks := time.NewTicker(2 * time.Second)
 	defer infoTicks.Stop()
-	go publishInfoUpdates(ctx, notifier, responseBody, infoTicks.C)
-	metadata := &peerMetadata{}
+	go publishInfoUpdates(ctx, notifier, snapshot, infoTicks.C)
 
 	go applog.StdinRPC(notifier, func(msg applog.StdinMessage) {
 		handleClusterIdentity(msg, identity)

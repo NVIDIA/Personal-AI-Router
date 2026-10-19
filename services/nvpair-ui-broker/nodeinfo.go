@@ -31,7 +31,8 @@ const maxNodeInfoLine = 64 * 1024
 //
 // The handle owns the OS process, the stdin pipe used to signal clean
 // shutdown (via EOF) and to forward runtime control frames
-// (log/set-level), and a done channel that closes after cmd.Wait returns.
+// (logging and peer metadata), and a done channel that closes after
+// cmd.Wait returns.
 type nodeInfoProcess struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
@@ -47,16 +48,6 @@ type nodeInfoProcess struct {
 // request, so no response comes back on the stdout the drain below reads.
 func (n *nodeInfoProcess) SetLogLevel(level string) error {
 	return writeSetLevelFrame(&n.stdinMu, n.stdin, level)
-}
-
-// SetClusterIdentity tells node-info the cluster principal this node currently
-// holds, so /v1/node-info can report it. node-info is spawned without a cluster
-// dir (see spawnNodeInfo) and so cannot read membership for itself; this is the
-// only thing that tells it. Sent on spawn and on every membership change, since
-// an empty principal — a departure — is exactly the value peers need in order to
-// stop treating this node as unavailable for pairing.
-func (n *nodeInfoProcess) SetClusterIdentity(clusterUUID string) error {
-	return writeClusterIdentityFrame(&n.stdinMu, n.stdin, clusterUUID)
 }
 
 type localInfoObservation struct {

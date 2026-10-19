@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 The [engine settings protocol](ENGINE_SETTINGS.md) documents local/paired
 launch and port editing, revision checks, serialized application and recovery.
 
-A Go service that exposes the NVIDIA Personal AI Router API to **UI processes**
+A Go service that exposes the NVIDIA PAIR API to **UI processes**
 and other clients (CLIs, dashboards, mobile companions, scripts, tests, etc.).
 The shipped graphical UI is bundled alongside the backend services and launches
 the broker from the same installation directory. The broker is the parent
@@ -22,7 +22,7 @@ namespace:
 | Worker | Role | Client namespace |
 | --- | --- | --- |
 | `nvpair-node-scanner` | Discovery daemon: advertises this host's one `_nvpair-node._tcp` record and browses the LAN | `discovery:*` |
-| `nvpair-node-info` | Local GPU / CPU / memory inventory over HTTP at `/v1/node-info` | — (HTTP only) |
+| `nvpair-node-info` | Owned inventory IPC, public display HTTP, and peer node inventory over pinned mTLS at `/v1/node-info` | _internal_ |
 | `nvpair-proxy` | One process hosting an inference proxy and router facade per enabled engine | `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*` |
 | `nvpair-engine-manager` | Local engine and model control plane; also serves `GET /v1/models` to peers | `engine:*` |
 | `nvpair-cluster-manager` | Node identity, trusted-node store, PIN pairing | `cluster:*`, `nodes:*` |
@@ -96,7 +96,7 @@ worker IPC; desktop and TUI continue using public HTTP for hardware displays.
 | `--settings-path <path>` | `./nvpair-node-settings[.exe]` in the CWD | Explicit path to the `nvpair-node-settings` binary the broker spawns for the typed settings store. Same optional semantics as `--node-info-path` |
 | `--cluster-manager-path <path>` | `./nvpair-cluster-manager[.exe]` in the CWD | Explicit path to the `nvpair-cluster-manager` binary the broker spawns for cluster pairing / membership. Same optional semantics as `--node-info-path` |
 | `--scheduler-path <path>` | `./nvpair-job-scheduler[.exe]` in the CWD | Explicit path to the `nvpair-job-scheduler` binary the broker spawns for responsive, node-wide workload and GPU-pressure ranking. Same optional semantics as `--node-info-path` |
-| `--cluster-dir <path>` | `cluster/` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) | Cluster config dir (`node.crt`/`node.key` + `trusted/`, minted by `nvpair-cluster-manager`). Threaded to the cluster-scoped workers (`nvpair-errors`, `nvpair-workload-manager`, `nvpair-node-scanner`, `nvpair-manual-nodes`, and `nvpair-engine-manager`), each of which derives its membership from it continuously — so a create, join, or leave takes effect in place and the broker does **not** restart them. The broker also passes the parent of this path to `nvpair-cluster-manager` as `--config-dir`, so the only writer of the cluster dir and the workers reading it cannot resolve different directories. `nvpair-node-info` is excluded — it stays plain HTTP even when clustered (see the repository-root `SECURITY.md`). Defaults so cluster mTLS auto-activates with nothing to pass; with an empty or cert-less dir this node is not a member, so it serves and dials no inter-node cluster traffic at all |
+| `--cluster-dir <path>` | `cluster/` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) | Cluster identity and pins, threaded to the cluster-scoped workers including node-info. Membership changes take effect without worker restarts. The cluster manager receives its parent as `--config-dir` so readers and the sole writer agree on one directory. Node-info keeps public display HTTP available independently of its peer node inventory handler |
 | `--log-level <lvl>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
 | `--version` | | Print version and exit |
 
@@ -108,7 +108,11 @@ On startup — **before** emitting `app:ready` — the broker spawns the scanner
 
 **`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`lc` from the engine poller) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
 
-**`nvpair-node-info`** is spawned next. It's a server, not an event source: it stands up the local `/v1/node-info` HTTP endpoint (GPU/CPU/memory inventory). It does not advertise itself — the broker registers its `ni` port with the scanner daemon, which carries it in the node record, and a peer's daemon fetches `/v1/node-info` over plain HTTP to enrich the node. The broker doesn't read anything back from node-info's stdout (drained and discarded). Spawning it is **optional**: if the binary can't be resolved (and no `--node-info-path` override was given) the broker logs a warning and continues serving discovery without it.
+**`nvpair-node-info`** serves public display HTTP and peer node inventory over
+pinned mTLS on its registered `ni` port. The broker passes its cluster directory and host UUID,
+relays owned hardware snapshots from stdout to scanner, and sends local registry
+metadata back for peer node inventory responses. Spawning it is optional: if no binary
+is resolved and no explicit path was given, the broker continues without it.
 
 **Engine advertising.** The broker runs an internal 5 s poll loop against local
 Ollama (`GET /`), LM Studio (`GET /v1/models`), and llama.cpp (`GET /health`)
@@ -641,10 +645,18 @@ Attach to a pre-existing endpoint:
   `lm`, or `lc` with the daemon while each is up. There's no manual-advertise
   RPC (custom service, port, name, or TXT), and no way to advertise anything
   other than the detected engines.
-- **node-info control surface.** node-info is spawned and torn down with the broker, and the broker pushes it only two things over stdin: the log level, and this node's cluster principal (`nodeinfo:set-cluster-identity`, sent on spawn and on every membership or pin-set change, because node-info holds no cluster dir and so cannot read membership itself). Otherwise it's hands-off: the broker registers its port with the daemon (which enriches over plain HTTP) but doesn't pass through TLS material (`--cert` / `--key` / `--client-ca`) or a custom `--port`, and exposes no RPC to query or reconfigure it. It runs with its own defaults plus those two pushes.
+- **node-info control surface.** The broker passes node-info its cluster directory
+  and host UUID, relays hardware snapshots from stdout, and sends registry
+  metadata and log-level updates over stdin. Membership comes from the live trust
+  store. The broker registers the fixed `ni` port and
+  exposes no client RPC to query or reconfigure node-info, or to supply operator
+  TLS flags or a custom port.
 - **Manual-node persistence across restarts.** `nvpair-manual-nodes` remains an in-memory worker; the broker owns `configs/manual-nodes.json`, clears stale live projections when the worker exits, and replays the durable entries into its replacement.
 - **Per-event push semantics.** `discovery:nodes-changed` always carries the full current snapshot, not a delta. For small N this is fine and lets the client treat the payload as authoritative without state reconciliation. `errors:update` is likewise a full snapshot.
-- **BYO-TLS node-info discovery.** The daemon enriches peers over plain HTTP per the consolidated transport policy (node-info is plain on the broker path). Reading a node-info served over operator-configured BYO-TLS / mTLS is not supported through the broker; discovery works for the plain-HTTP case (the common one).
+- **BYO-TLS node-info discovery.** The broker does not expose scanner's operator
+  TLS flags. Scanner's remote hardware reads currently use public HTTP, even
+  though node-info also offers peer node inventory over pinned mTLS.
+  Migrating those reads remains pending work in the [scanner spec](../nvpair-node-scanner/spec.md).
 - **Per-worker log-level granularity.** `log/set-level` fans the broker's single level out to every running child, but there's no way to set a different level per worker — it's one level for the whole process tree.
 - **AuthN / AuthZ.** Transport security relies on the parent's pipe / socket ACL. There is no per-message token.
 - **HTTP / WebSocket transport.** JSON-RPC over stdio or pipe only — no web bridge yet. Likely lives in a separate component if/when added.
