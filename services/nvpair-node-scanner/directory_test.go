@@ -12,6 +12,29 @@ import (
 	"nvpair-shared/noderec"
 )
 
+func TestApplyLocalInfo_UpdatesOnlyHardware(t *testing.T) {
+	dir := newDirectory()
+	node := noderec.DirectoryNode{
+		HostUUID: "owned-host", DiscoveryRecordID: "local:owned-host",
+		IdentityVerification: noderec.IdentityLocal, Trusted: true,
+		Name: "workstation", IP: "192.0.2.20", ClusterUUID: "principal",
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14322}},
+		Models:   []string{"current-model"}, LastSeen: 1,
+	}
+	dir.upsert(node)
+	info := noderec.NodeInfo{
+		HostUUID: "owned-host", GPUs: []GPUInfo{{Name: "GPU", UtilizationPercent: 61}},
+		CPU: &CPUInfo{Name: "CPU"}, Memory: &MemoryInfo{TotalBytes: 1024},
+	}
+	got, result := dir.applyLocalInfo(info)
+	require.Equal(t, localInfoUpdated, result)
+	want := node
+	want.GPUs, want.CPU, want.Memory = info.GPUs, info.CPU, info.Memory
+	// Ignore the refresh timestamp when checking preservation of other fields.
+	want.LastSeen = got.LastSeen
+	assert.Equal(t, want, got)
+}
+
 func TestToDirectoryNode_ProjectsIdentityServicesAndTrust(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostA",

@@ -208,6 +208,12 @@ type Broker struct {
 	lmstudioReadyMu                  sync.Mutex
 	store                            *discoveryStore
 	telemetry                        *telemetryCache
+	localInfoMu                      sync.Mutex
+	localInfo                        *localInfoObservation
+	peerMetadataMu                   sync.Mutex
+	localPeerMetadata                *noderec.PeerMetadataParams
+	peerMetadataSending              bool // guarded by peerMetadataMu
+	peerMetadataPending              bool // guarded by peerMetadataMu
 	// relayDir is the discovery directory, fed by the promoted daemon's
 	// discovery:node-* stream. It runs alongside the legacy store during the
 	// migration; the client-facing get-nodes/subscribe path moves onto it at the
@@ -613,6 +619,7 @@ func (b *Broker) getClusterMgr() *clusterManagerProcess {
 // and returns it as a supervisedHandle for the supervisor to watch. A
 // spawn failure returns the error without storing a handle, leaving the
 // previous (dead) handle in place until the next successful (re)start.
+// spawnScanner also replays cached local inventory and service registrations.
 func (b *Broker) spawnScanner() (supervisedHandle, error) {
 	sp, err := startScanner(
 		b.scannerPath,
@@ -622,12 +629,14 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 		b.failWorkloadsForNode,
 		func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
 		func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
+		b.updateLocalPeerMetadata,
 		b.clusterDirArgs()...,
 	)
 	if err != nil {
 		return nil, err
 	}
 	b.setScanner(sp)
+	b.replayLocalInfo(sp)
 	// Replay cached registrations to the (re)started daemon so it re-advertises
 	// this node's services without any worker reconnect logic (epoch replay).
 	for _, p := range b.regCache.Snapshot() {
@@ -637,21 +646,13 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 	return sp, nil
 }
 
+// spawnNodeInfo starts the owned inventory worker, restores identity and peer
+// metadata, and registers its service port with scanner.
 func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
-	// Deliberately NOT passed b.clusterDirArgs(): node-info stays plain HTTP even
-	// when clustered, and is the ONE documented exception to "the inter-node
-	// cluster data plane is always mTLS" (errors and workload-manager admit only
-	// pinned members, in either direction). Its GPU/CPU/memory inventory is the
-	// lowest-sensitivity inter-node surface and is read directly by consumers that
-	// hold no cluster identity — the desktop app's two-second telemetry poll and
-	// baseline LAN discovery — so gating it would remove node telemetry from the UI.
-	// The accepted risk and its compensating controls are recorded under
-	// "Documented Risk Acceptances" in desktop/SECURITY.md.
-	//
-	// node-info still implements the cluster-gated mode (pass it --cluster-dir and
-	// it admits only pinned peers). It is kept, unenabled, on purpose: it is the
-	// swap point if the desktop telemetry read is ever solved another way. Enabling
-	// it here without solving that first WILL blank the UI's node cards.
+	// Keep public HTTP available for desktop and TUI hardware displays. The
+	// current --cluster-dir mode gates that endpoint while clustered, so do not
+	// enable it here. Local service measurements use the owned worker's stdio,
+	// independent of whether this host belongs to a cluster.
 	//
 	// Do pass --node-id: node-info reports the broker's already-resolved UUID so
 	// /v1/node-info agrees with the identity the fleet keys on, even on a custom
@@ -666,6 +667,7 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// /v1/node-info but holds no cluster dir to read it from, so this push is the
 	// only source. It runs on every spawn, which also covers a supervised restart.
 	b.pushClusterIdentityToNodeInfo()
+	b.pushPeerMetadata()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.
@@ -1797,12 +1799,14 @@ func (b *Broker) forwardSchedulerNotification(method string, params json.RawMess
 	slog.Debug("ignoring scheduler notification", "method", method)
 }
 
-// forwardNodeInfoNotification is the hook startNodeInfo invokes on node-info's
-// reader goroutine for every notification it emits. Its observed local addresses
-// go to the scanner, which owns what this node advertises: node-info learns which
-// addresses peers actually reach us on, and that is the only direct evidence
-// address selection can have about reachability from somewhere else.
+// forwardNodeInfoNotification routes owned hardware snapshots and observed
+// addresses to scanner from node-info's stdout reader. Hardware supplies local
+// service measurements; observed addresses help rank this host's interfaces.
 func (b *Broker) forwardNodeInfoNotification(method string, params json.RawMessage) {
+	if method == noderec.NotifyInfoUpdated {
+		b.acceptLocalInfo(params)
+		return
+	}
 	if method != noderec.NotifyObservedAddresses {
 		slog.Debug("ignoring node-info notification", "method", method)
 		return

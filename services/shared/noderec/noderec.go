@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -326,6 +327,9 @@ const (
 	// cluster-uuid= TXT key, and a consumer that stops receiving this node's mDNS
 	// record keeps its last observed value indefinitely.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
+	MethodSetPeerMetadata    = "nodeinfo:set-peer-metadata"
+	NotifyInfoUpdated        = "nodeinfo:info-updated"
+	MethodLocalNodeInfo      = "discovery:local-node-info"
 
 	// NotifyObservedAddresses is nvpair-node-info -> broker: the local addresses
 	// peers have actually reached this node on, learned from its own accepted
@@ -445,6 +449,61 @@ type CPUInfo struct {
 type MemoryInfo struct {
 	TotalBytes uint64 `json:"total_bytes,omitempty"`
 	UsedBytes  uint64 `json:"used_bytes,omitempty"`
+}
+
+// NodeInfo is a hardware snapshot. Its identity fields do not establish source
+// ownership; the receiving service must establish that through IPC or pinned TLS.
+type NodeInfo struct {
+	GPUs           []GPUInfo   `json:"GPUs"`
+	CPU            *CPUInfo    `json:"cpu,omitempty"`
+	Memory         *MemoryInfo `json:"memory,omitempty"`
+	TelemetryValid bool        `json:"telemetryValid"`
+	MSSince        int64       `json:"msSince"`
+	HostUUID       string      `json:"hostUuid,omitempty"`
+	ClusterUUID    *string     `json:"clusterUuid,omitempty"`
+}
+
+// Aged returns a copy whose sample age includes time spent in a queue or cache.
+// It preserves validity and clamps age to avoid negative values or overflow.
+func (info NodeInfo) Aged(elapsed time.Duration) NodeInfo {
+	info.MSSince = agedMilliseconds(info.TelemetryValid, info.MSSince, elapsed)
+	return info
+}
+
+func agedMilliseconds(valid bool, age int64, elapsed time.Duration) int64 {
+	if !valid {
+		return 0
+	}
+	if age < 0 {
+		age = 0
+	}
+	const maxAge = int64(1<<63 - 1)
+	if ms := elapsed.Milliseconds(); ms > 0 {
+		if ms > maxAge-age {
+			return maxAge
+		}
+		age += ms
+	}
+	return age
+}
+
+// LocalNodeInfoParams is sent only on owned worker IPC, never from a client or
+// from a discovered endpoint. The scanner anchors it to its local registry.
+type LocalNodeInfoParams struct {
+	Info NodeInfo `json:"info"`
+}
+
+// PeerMetadata comes from this host's local scanner registry, not mDNS input.
+type PeerMetadata struct {
+	Name      string             `json:"name"`
+	Addresses []string           `json:"addresses"`
+	Services  map[ServiceKey]int `json:"services"`
+}
+
+type PeerMetadataParams struct {
+	HostUUID    string       `json:"hostUuid"`
+	ClusterUUID string       `json:"clusterUuid"`
+	Peer        PeerMetadata `json:"peer"`
 }
 
 // ProbeStatus is a service's per-service liveness facet. Liveness is kept
@@ -657,4 +716,10 @@ type NodeTelemetry struct {
 	GPUUtilizationPct uint32 `json:"gpuUtilizationPercent"`
 	TelemetryValid    bool   `json:"telemetryValid"`
 	MSSince           int64  `json:"msSince"`
+}
+
+// Aged advances the sample age without changing its identity or measurements.
+func (telemetry NodeTelemetry) Aged(elapsed time.Duration) NodeTelemetry {
+	telemetry.MSSince = agedMilliseconds(telemetry.TelemetryValid, telemetry.MSSince, elapsed)
+	return telemetry
 }

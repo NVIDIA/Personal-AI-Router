@@ -14,10 +14,11 @@ Concretely, the daemon:
 - **Enriches** each discovered node: GPU/CPU/memory inventory from its `ni` (node-info) port over plain HTTP, and the model list from its `em` (engine-manager) port (`GET /v1/models`) over cluster mTLS — a peer's model inventory is cluster data, so it is fetched only when this node holds a pin for the principal that peer advertises, while this node's own list is read over loopback in plaintext — the flat union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of models loaded in memory (`loadedByEngine`), all carried onto the node's directory entry so remote cards can show loaded state. Each enrichment has a last-good cache so a transient fetch miss doesn't blank the node's card. Node-info enrichment can optionally be moved onto HTTPS (see the TLS flags below) — off by default and gated only on operator flags, never inferred per-node.
 - **Samples scheduling telemetry** from healthy nodes every two seconds with
   stable per-node jitter. Consecutive remote failures back off to 4, 8, 16, then
-  30 seconds and reset on success; local loopback sampling stays at the healthy
-  cadence. It emits only host UUID, maximum GPU utilization, validity, and
-  source-reported sample age; it does not mutate the public directory for each
-  telemetry sample.
+  30 seconds and reset on success. Local inventory and samples arrive every two
+  seconds from the owned node-info worker over private broker/worker IPC.
+  It emits only host UUID, maximum GPU utilization, validity, and
+  source-reported sample age. Remote telemetry reads do not mutate the public
+  directory; local IPC also updates changed hardware inventory.
 - **Annotates trust:** with `--cluster-dir`, a browsed peer whose `cluster-uuid=` this node holds a pin for is marked `trusted` (via `nvpair-shared/clustertrust`). The annotation is re-derived on `discovery:reload-trust`, which the broker sends when `nvpair-cluster-manager` reports a pin-set change, as well as when a peer's mDNS record changes. Both triggers are needed: a peer that was already advertising when this node joined never moves its record again, so the browse path alone would leave it annotated from before this node's own pins existed. A change emits one `discovery:node-updated`; a reload that finds nothing to change is silent.
 - **Advertises live membership:** the same reload re-derives this node's own `cluster-uuid=` from the cluster dir and re-advertises when it differs from what is being published, so joining or leaving a cluster takes effect without a restart.
 - **Anti-flap:** a node has to be absent from every scan for the browser's full miss threshold (twelve scans at 5s, a full minute) before it is evicted, and from ~15s in it is TCP-probed on its advertised service ports on *every* scan — any answer resets the counter and recovers it outright. So neither a momentary multicast gap nor a sustained one drops a healthy node, and eviction rests on a run of ~10 consecutive failures rather than one dial on the deadline. The window is sized deliberately: a node saturated by its own inference load starves its control plane, so it stops answering mDNS *and* stops accepting probe connections for as long as the load runs, while still serving requests. Two signals can also vouch for a node without any probe — a node-info enrichment in the last 10s, and inference response bytes from it in the last 60s (`discovery:node-activity`, relayed by the broker from whichever proxy saw the bytes). The second is the only liveness evidence that gets stronger the busier a node is.
@@ -57,7 +58,7 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 
 `log/set-level` is also accepted.
 
-Two notifications are accepted rather than requests, because the daemon has
+These notifications are accepted rather than requests, because the daemon has
 nothing to answer and the caller must not wait:
 
 - `discovery:node-activity` `{hostUuid, msSince}` — a peer's engine returned
@@ -66,6 +67,13 @@ nothing to answer and the caller must not wait:
   id-bearing call would cost it a pending entry and a blocked goroutine per
   report in exchange for an ack nobody reads.
 - `log/set-level` (above).
+- `discovery:local-node-info` `{info}` — hardware received by the broker from its
+  own node-info worker. Scanner attaches it only to the matching local registry
+  record, updates inventory, and emits compact scheduling telemetry. It never
+  polls public node-info for local service data. A browsed UUID or loopback
+  address cannot enter this private path. Registration changes retain the owned
+  inventory; worker silence leaves scheduling samples aging rather than
+  generating fresh zero-usage samples.
 
 ### Notifications (daemon → caller)
 

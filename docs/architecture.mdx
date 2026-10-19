@@ -234,6 +234,16 @@ shows:
 
 Each of these listens on its own port. Refer to the [port map](#port-map) below.
 
+Local service inventory and scheduling samples arrive from the owned node-info
+worker over private stdio IPC, through the broker to scanner. IPC ties these
+measurements to the worker the broker started, rather than whichever process
+answers a local HTTP port. This works before joining and after leaving a cluster.
+The broker retains the latest snapshot for scanner restart replay and adds
+cache/queue time to its sample age so replay cannot make an old sample appear
+fresh. Scanner's owned local registry supplies node-info's peer metadata over the
+reverse IPC path; discovered announcements cannot supply local measurements or
+metadata.
+
 Electron polls every discovered node's `/v1/node-info` directly because that
 detail is richer than the broker's control surface exposes. Healthy nodes are
 sampled every two seconds; consecutive failures back off to 4, 8, 16, then 30

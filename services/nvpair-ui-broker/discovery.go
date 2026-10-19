@@ -354,6 +354,8 @@ type scannerProcess struct {
 	onNodeLost         func(uuid, name string)
 	onTelemetry        func(noderec.NodeTelemetry)
 	onTelemetryRemoved func(hostUUID string)
+	onLocalNode        func(noderec.DirectoryNode)
+	localInfo          chan localInfoObservation
 	// activity queues peer liveness reports for the scanner. It exists so the
 	// proxy-reader goroutine that receives them never waits on the scanner's
 	// pipe: reports arrive while inference is streaming, and a wedged scanner
@@ -400,6 +402,7 @@ func startScanner(
 	onNodeLost func(uuid, name string),
 	onTelemetry func(noderec.NodeTelemetry),
 	onTelemetryRemoved func(hostUUID string),
+	onLocalNode func(noderec.DirectoryNode),
 	extraArgs ...string,
 ) (*scannerProcess, error) {
 	cmd := exec.Command(binaryPath, append([]string{"--log-level", logLevel}, extraArgs...)...)
@@ -430,6 +433,8 @@ func startScanner(
 		onNodeLost:         onNodeLost,
 		onTelemetry:        onTelemetry,
 		onTelemetryRemoved: onTelemetryRemoved,
+		onLocalNode:        onLocalNode,
+		localInfo:          make(chan localInfoObservation, 1),
 		activity:           make(chan nodeActivityReport, activityQueueDepth),
 		done:               make(chan struct{}),
 	}
@@ -530,8 +535,17 @@ func (s *scannerProcess) reportNodeActivity(hostUUID string, observedAt time.Tim
 	}
 }
 
-// drainNodeActivity forwards queued liveness reports to the daemon until the
-// scanner exits.
+// reportLocalInfo queues an owned-worker snapshot without blocking the caller.
+// A full queue drops the new sample, allowing existing measurements to age.
+func (s *scannerProcess) reportLocalInfo(observation localInfoObservation) {
+	select {
+	case s.localInfo <- observation:
+	default:
+	}
+}
+
+// drainNodeActivity forwards queued liveness reports and owned inventory to the
+// daemon until the scanner exits.
 //
 // They go as notifications, not requests. The daemon has nothing to say back —
 // it records the report and returns — so an id-bearing call would buy a pending
@@ -541,6 +555,11 @@ func (s *scannerProcess) drainNodeActivity() {
 		select {
 		case <-s.done:
 			return
+		case observation := <-s.localInfo:
+			info := observation.info.Aged(time.Since(observation.receivedAt))
+			if err := s.peer.Notify(noderec.MethodLocalNodeInfo, noderec.LocalNodeInfoParams{Info: info}); err != nil {
+				slog.Debug("relay local node-info to daemon failed", "err", err)
+			}
 		case report := <-s.activity:
 			// Aged at send time, not enqueue time, so any wait in the queue is
 			// included: the daemon measures freshness against this number.
@@ -580,6 +599,9 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 		if err := json.Unmarshal(params, &ev); err != nil {
 			slog.Warn("daemon emitted invalid node event", "method", method, "err", err)
 			return
+		}
+		if method != noderec.NotifyNodeRemoved && s.onLocalNode != nil {
+			s.onLocalNode(ev.Node)
 		}
 		// Fold into the relay directory (internal subscribers: proxies, mesh
 		// services) and the client-facing store (discovery:get-nodes /

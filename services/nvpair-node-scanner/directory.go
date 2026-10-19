@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -79,9 +80,9 @@ func nodeDiscoveryRecordID(raw RawNode) string {
 	return fmt.Sprintf("observation:%x", sha256.Sum256([]byte(fmt.Sprintf("%q", fields))))
 }
 
-// directory is the daemon's view of all LAN nodes (this node included), keyed by
-// hostUuid. Mutations come from the browse-event goroutine; reads come from
-// discovery:get-nodes handlers, so it's an RWMutex map.
+// directory stores this node and discovered peers by hostUuid. Browse events,
+// IPC handlers and background refreshes access it concurrently, so reads and
+// mutations share mu.
 type directory struct {
 	mu    sync.RWMutex
 	nodes map[string]noderec.DirectoryNode
@@ -238,6 +239,41 @@ func (d *directory) snapshot(filter noderec.ServiceKey) []noderec.DirectoryNode 
 	d.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].HostUUID < out[j].HostUUID })
 	return out
+}
+
+type localInfoResult uint8
+
+const (
+	localInfoMissing localInfoResult = iota
+	localInfoUnchanged
+	localInfoUpdated
+)
+
+// applyLocalInfo changes only hardware under one directory lock. Background
+// model refreshes do not take selfMu, so separate get/upsert calls could overwrite
+// their newer model inventory with the hardware handler's earlier copy.
+func (d *directory) applyLocalInfo(info noderec.NodeInfo) (noderec.DirectoryNode, localInfoResult) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	node, present := d.nodes[info.HostUUID]
+	if !present {
+		return node, localInfoMissing
+	}
+	if slices.Equal(node.GPUs, info.GPUs) && equalOptional(node.CPU, info.CPU) && equalOptional(node.Memory, info.Memory) {
+		return node, localInfoUnchanged
+	}
+	node.GPUs, node.CPU, node.Memory = info.GPUs, info.CPU, info.Memory
+	node.LastSeen = time.Now().Unix()
+	d.nodes[info.HostUUID] = node
+	return node, localInfoUpdated
+}
+
+// equalOptional distinguishes an absent value from a present zero value.
+func equalOptional[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // applyModels atomically reconciles one node's model inventory from a completed
