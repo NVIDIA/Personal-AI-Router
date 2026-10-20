@@ -30,6 +30,8 @@ package noderec
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,8 +117,9 @@ var serviceKeyOrder = []ServiceKey{
 type Transport int
 
 const (
-	// TransportPlain: always plain HTTP, even on a clustered node (node-info and
-	// the local inference engines).
+	// TransportPlain describes public node-info hardware displays and local
+	// inference engines. Services read remote node-info separately over pinned
+	// mTLS; this public transport policy does not authorize service measurements.
 	TransportPlain Transport = iota
 	// TransportMTLSWhenClustered: cluster-scoped pin-based mTLS when the target
 	// node is clustered, else plain (nvpair-errors, nvpair-workload-manager).
@@ -140,8 +143,8 @@ func (s ServiceKey) Transport() Transport {
 }
 
 // UsesMTLS reports whether a consumer should dial this service over cluster
-// mTLS, given whether the target node is clustered. node-info is deliberately
-// plain even on a clustered node; errors/workload gate on the target's cluster
+// mTLS, given whether the target node is clustered. Public node-info displays
+// stay plain even on a clustered node; errors/workload gate on the target's cluster
 // state; the cluster-manager split channel's trusted plane is mTLS.
 func (s ServiceKey) UsesMTLS(targetClustered bool) bool {
 	switch s.Transport() {
@@ -302,30 +305,16 @@ const (
 	// converges on the cluster principal even though the scanner spawned (and
 	// minted its own node-id) before cluster-manager wrote identity.json.
 	MethodReloadIdentity = "discovery:reload-identity"
-	// MethodReloadTrust tells the daemon that this node's cluster pin set changed,
-	// so it must re-derive the trusted annotation on every directory entry. The
-	// daemon otherwise answers "do I hold a pin for this peer?" only when that
-	// peer's mDNS record moves, and a peer already advertising when we join never
-	// moves again — leaving it annotated from before our pins existed. The broker
-	// triggers this off nvpair-cluster-manager, which announces only after the pin
-	// is on disk, so the daemon always reads a directory at least as new as the
-	// event.
+	// MethodReloadTrust invalidates peer proofs whose exact pins changed and
+	// schedules authentication of pending discoveries. The broker sends it
+	// after cluster-manager writes pins; an announcement alone cannot grant trust.
 	MethodReloadTrust = "discovery:reload-trust"
 
 	// MethodSetClusterIdentity tells nvpair-node-info the cluster principal this
 	// node currently holds, so it can report it on /v1/node-info.
 	//
-	// node-info is spawned with no cluster dir on purpose — it is the one
-	// inter-node surface kept plain so any LAN peer can read this host's
-	// inventory (see the broker's spawnNodeInfo) — which also leaves it unable to
-	// read membership for itself. The broker owns that fact and pushes it here on
-	// startup and on every change, so node-info reports one live value rather
-	// than deriving a second one.
-	//
-	// The value is a peer's only mDNS-independent way to learn that this node has
-	// left a cluster: cluster membership otherwise reaches the fleet solely as the
-	// cluster-uuid= TXT key, and a consumer that stops receiving this node's mDNS
-	// record keeps its last observed value indefinitely.
+	// With --cluster-dir, node-info reads membership from the mesh. Standalone
+	// deployments without a directory receive the identity from their parent.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
 	MethodSetPeerMetadata    = "nodeinfo:set-peer-metadata"
 	NotifyInfoUpdated        = "nodeinfo:info-updated"
@@ -587,7 +576,7 @@ type DirectoryNode struct {
 	// only answer. Empty for a node that published one address.
 	IPs         []string                     `json:"ips,omitempty"`
 	ClusterUUID string                       `json:"clusterUuid,omitempty"`
-	Trusted     bool                         `json:"trusted"` // we hold a cluster pin for it
+	Trusted     bool                         `json:"trusted"` // verified peer with a current pin, or local membership
 	Services    map[ServiceKey]ServiceStatus `json:"services"`
 	GPUs        []GPUInfo                    `json:"gpus,omitempty"`
 	CPU         *CPUInfo                     `json:"cpu,omitempty"`
@@ -612,6 +601,42 @@ type DirectoryNode struct {
 	// didn't report loaded state for it. Omitted when the peer reports none.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
 	LastSeen       int64               `json:"lastSeen"` // Unix seconds
+}
+
+// Equals compares all fields by value. Slice order matters, and nil collections
+// differ from empty collections.
+func (n DirectoryNode) Equals(other DirectoryNode) bool {
+	return n.DiscoveryRecordID == other.DiscoveryRecordID &&
+		n.IdentityVerification == other.IdentityVerification &&
+		n.HostUUID == other.HostUUID &&
+		n.Name == other.Name &&
+		n.IP == other.IP &&
+		equalSlice(n.IPs, other.IPs) &&
+		n.ClusterUUID == other.ClusterUUID &&
+		n.Trusted == other.Trusted &&
+		(n.Services == nil) == (other.Services == nil) && maps.Equal(n.Services, other.Services) &&
+		equalSlice(n.GPUs, other.GPUs) &&
+		equalOptional(n.CPU, other.CPU) &&
+		equalOptional(n.Memory, other.Memory) &&
+		equalSlice(n.Models, other.Models) &&
+		(n.ModelsByEngine == nil) == (other.ModelsByEngine == nil) &&
+		maps.EqualFunc(n.ModelsByEngine, other.ModelsByEngine, equalSlice[string]) &&
+		(n.LoadedByEngine == nil) == (other.LoadedByEngine == nil) &&
+		maps.EqualFunc(n.LoadedByEngine, other.LoadedByEngine, equalSlice[string]) &&
+		n.LastSeen == other.LastSeen
+}
+
+// equalSlice compares ordered values while distinguishing nil from empty slices.
+func equalSlice[T comparable](a, b []T) bool {
+	return (a == nil) == (b == nil) && slices.Equal(a, b)
+}
+
+// equalOptional distinguishes an absent value from a present zero value.
+func equalOptional[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // Clustered reports whether the node advertises a cluster identity.

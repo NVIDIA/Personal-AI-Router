@@ -3,12 +3,9 @@
 
 package main
 
-// The mDNS browser now lives in the shared nvpair-shared/discovery package (the
-// mDNS dedup) — nvpair-node-scanner was the canonical source it was lifted from, so
-// behavior is identical (5s scans, the shared miss threshold, order-insensitive
-// compare, uuid= collision warning, evict at threshold). These aliases keep
-// scanner.go and main.go on the local names. The order-insensitivity and
-// UUIDFromTXT tests moved to the shared package.
+// These aliases expose the shared mDNS browser to the scanner. The daemon keys
+// discoveries by discoveryRecordId and supplies authenticated peer availability
+// checks. Scan timing and missed-scan limits use the shared defaults.
 
 import "nvpair-shared/discovery"
 
@@ -21,18 +18,16 @@ type (
 // NewDiscovery builds the node browser with the shared defaults.
 var NewDiscovery = discovery.New
 
-// WithLivenessProbe re-exports the shared option so the daemon can wire its
-// TCP-probe-before-evict anti-flap guard — the guard the proxies
-// used to run themselves before discovery was consolidated onto the daemon.
+// WithLivenessProbe lets the daemon retain a discovery using its verified peer's
+// authenticated inventory or approved inference activity.
 var WithLivenessProbe = discovery.WithLivenessProbe
 
-// WithKeyFunc re-exports the shared option so the daemon keys its node map by
-// uuid= rather than the mDNS instance name (matching cluster-manager). Two hosts
-// that share a hostname but hold distinct UUIDs must not collapse into one entry.
+// WithKeyFunc lets the daemon key discoveries by discoveryRecordId, independently
+// of their claimed UUIDs. Distinct connection candidates remain separate.
 var WithKeyFunc = discovery.WithKeyFunc
 
-// UUIDFromTXT re-exports the shared uuid= extractor, used as the browser's key
-// function (see WithKeyFunc).
+// UUIDFromTXT extracts the claimed host UUID, including for filtering this host's
+// own announcements. It does not determine the discovery record ID.
 var UUIDFromTXT = discovery.UUIDFromTXT
 
 // sameStringSet re-exports the shared order-insensitive multiset compare so the

@@ -61,10 +61,8 @@ func ClusterUUIDFromTXT(txt []string) string {
 //
 // Self-trust: a node always trusts its own leaf (it isn't pinned in trusted/,
 // which only holds peers). Without it a node could not reach its own gated
-// endpoints — e.g. nvpair-node-scanner reading the local nvpair-node-info over the
-// LAN, which it discovers via mDNS like any peer. With self-trust the local
-// read completes over the same mTLS path as a peer read, so node-info needs no
-// separate plaintext loopback listener.
+// endpoints. Scanner's local node-info measurements instead arrive from its
+// owned worker over private IPC, independently of membership or self-trust.
 //
 // A nil *Mesh reads as permanently unclustered so a service with no cluster dir
 // needs no special case.
@@ -234,6 +232,13 @@ func (m *Mesh) trustedDER(uuid string) ([]byte, bool) {
 func (m *Mesh) HasPin(uuid string) bool {
 	_, ok := m.trustedDER(uuid)
 	return ok
+}
+
+// VerifyPeerCertificate checks a completed read against the current exact pin.
+// Call Refresh before this check: a reused connection or an in-flight response
+// can outlive the pin that authorized its handshake.
+func (m *Mesh) VerifyPeerCertificate(uuid string, cert *x509.Certificate) bool {
+	return cert != nil && UUIDFromCert(cert) == uuid && m.matchDER(uuid, cert.Raw)
 }
 
 // matchDER is the server-side gate: accept der for uuid when it byte-for-byte

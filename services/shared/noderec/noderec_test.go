@@ -198,6 +198,64 @@ func TestDirectoryNode_ReportsMembershipAndServicePresence(t *testing.T) {
 	assert.False(t, (DirectoryNode{}).Clustered(), "empty node should not be Clustered")
 }
 
+func TestDirectoryNode_EqualsComparesValues(t *testing.T) {
+	original := DirectoryNode{
+		DiscoveryRecordID: "peer:host-1", IdentityVerification: IdentityPinned,
+		HostUUID: "host-1", ClusterUUID: "host-1", Trusted: true,
+		Name: "host", IP: "192.0.2.20", IPs: []string{"192.0.2.20"},
+		Services:       map[ServiceKey]ServiceStatus{ServiceNodeInfo: {Port: 14318}},
+		GPUs:           []GPUInfo{{Name: "GPU", VramBytes: 1024}},
+		CPU:            &CPUInfo{Name: "CPU", Cores: 8},
+		Memory:         &MemoryInfo{TotalBytes: 4096},
+		Models:         []string{"model-a"},
+		ModelsByEngine: map[string][]string{"ollama": {"model-a"}},
+		LoadedByEngine: map[string][]string{"ollama": {"model-a"}},
+		LastSeen:       123,
+	}
+	// Decoding produces separate allocations with the same values.
+	body, err := json.Marshal(original)
+	require.NoError(t, err)
+	var decoded DirectoryNode
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	assert.True(t, original.Equals(decoded))
+	assert.True(t, decoded.Equals(original))
+	assert.True(t, (DirectoryNode{}).Equals(DirectoryNode{}))
+}
+
+func TestDirectoryNode_EqualsDistinguishesRecordChanges(t *testing.T) {
+	test := func(name string, a, b DirectoryNode) {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, a.Equals(b))
+			assert.False(t, b.Equals(a))
+		})
+	}
+	test("verification changes", DirectoryNode{IdentityVerification: IdentityUnverified}, DirectoryNode{IdentityVerification: IdentityPinned})
+	test("address order changes", DirectoryNode{IPs: []string{"192.0.2.20", "192.0.2.21"}}, DirectoryNode{IPs: []string{"192.0.2.21", "192.0.2.20"}})
+	test("model list changes", DirectoryNode{Models: []string{"model-a"}}, DirectoryNode{Models: []string{"model-b"}})
+	test("model attribution changes", DirectoryNode{ModelsByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{ModelsByEngine: map[string][]string{"lmstudio": {"model-a"}}})
+	test("loaded models change", DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-b"}}})
+	test("timestamp changes", DirectoryNode{LastSeen: 1}, DirectoryNode{LastSeen: 2})
+}
+
+func TestDirectoryNode_EqualsDistinguishesAbsentAndEmptyValues(t *testing.T) {
+	test := func(name string, a, b DirectoryNode) {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, a.Equals(b))
+			assert.False(t, b.Equals(a))
+		})
+	}
+	test("addresses", DirectoryNode{}, DirectoryNode{IPs: []string{}})
+	test("services", DirectoryNode{}, DirectoryNode{Services: map[ServiceKey]ServiceStatus{}})
+	test("GPUs", DirectoryNode{}, DirectoryNode{GPUs: []GPUInfo{}})
+	test("CPU", DirectoryNode{}, DirectoryNode{CPU: &CPUInfo{}})
+	test("memory", DirectoryNode{}, DirectoryNode{Memory: &MemoryInfo{}})
+	test("models", DirectoryNode{}, DirectoryNode{Models: []string{}})
+	test("models by engine", DirectoryNode{}, DirectoryNode{ModelsByEngine: map[string][]string{}})
+	test("loaded models by engine", DirectoryNode{}, DirectoryNode{LoadedByEngine: map[string][]string{}})
+	test("engine model list", DirectoryNode{ModelsByEngine: map[string][]string{"ollama": nil}}, DirectoryNode{ModelsByEngine: map[string][]string{"ollama": {}}})
+	test("engine loaded model list", DirectoryNode{LoadedByEngine: map[string][]string{"ollama": nil}}, DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {}}})
+}
+
 func TestDirectoryNode_RoundTripsJSON(t *testing.T) {
 	orig := DirectoryNode{
 		HostUUID: "host-1", Name: "host", IP: "192.168.1.10", ClusterUUID: "clu",

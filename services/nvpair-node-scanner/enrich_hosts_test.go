@@ -82,6 +82,15 @@ func TestAskRemembered_AsksOnlyTheAddressThatAnswered(t *testing.T) {
 	}
 }
 
+func TestAskRemembered_SkipsWithdrawnAddresses(t *testing.T) {
+	var memory hostMemory
+	key := hostKey{hostUUID: "peer", service: noderec.ServiceNodeInfo}
+	memory.set(key, "old-address")
+	host, _, ok := askRemembered(&memory, key, []string{"new-address"}, func(host string) (string, bool) { return host, true })
+	require.True(t, ok)
+	assert.Equal(t, "new-address", host)
+}
+
 // TestAskRememberedKeepsAWorkingAddressWhenABetterRankedOneComesUp: nothing is
 // wrong with the address in use, and switching changes the address this node is
 // enriched and reported at to learn nothing.

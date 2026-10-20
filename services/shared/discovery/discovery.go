@@ -51,11 +51,14 @@ import (
 	"github.com/miekg/dns"
 )
 
+// EventType identifies a change to the discovered set.
+type EventType string
+
 // Event types emitted by Run.
 const (
-	Discovered = "discovered"
-	Updated    = "updated"
-	Removed    = "removed"
+	Discovered EventType = "discovered"
+	Updated    EventType = "updated"
+	Removed    EventType = "removed"
 )
 
 // probeConcurrency bounds how many liveness probes run at once. A probe against
@@ -147,7 +150,7 @@ type Node struct {
 
 // Event is a change to the discovered set.
 type Event struct {
-	Type string // Discovered, Updated, or Removed
+	Type EventType
 	Node Node
 }
 
