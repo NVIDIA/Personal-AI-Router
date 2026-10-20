@@ -797,21 +797,14 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 // which a client like Hermes reads as "model unknown" (issue #94).
 func TestHandleHTTP_ShowRoutesToModelOwner(t *testing.T) {
 	tc := ollamaCase(t)
-	for _, c := range []struct{ name, body string }{
-		{"name", `{"name":"qwen3"}`},
-		{"model", `{"model":"qwen3"}`},
-		{"model wins", `{"model":"qwen3","name":"other"}`},
-		{"library namespace", `{"model":"library/qwen3:latest"}`},
-		{"registry name, mixed case", `{"name":"registry.ollama.ai/library/Qwen3"}`},
-	} {
-		t.Run(c.name, func(t *testing.T) {
+	test := func(name, requestBody string) {
+		t.Run(name, func(t *testing.T) {
 			nonOwnerHits := 0
 			nonOwner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				nonOwnerHits++
 				w.WriteHeader(http.StatusNotFound)
-				if _, err := io.WriteString(w, `{"error":"model not found"}`); err != nil {
-					t.Errorf("write missing-model response: %v", err)
-				}
+				_, err := io.WriteString(w, `{"error":"model not found"}`)
+				assert.NoError(t, err, "write missing-model response")
 			}))
 			defer nonOwner.Close()
 
@@ -820,8 +813,7 @@ func TestHandleHTTP_ShowRoutesToModelOwner(t *testing.T) {
 			owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				ownerHits++
 				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Errorf("read forwarded request body: %v", err)
+				if !assert.NoError(t, err, "read forwarded request body") {
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
@@ -839,22 +831,21 @@ func TestHandleHTTP_ShowRoutesToModelOwner(t *testing.T) {
 			p.SetPriority([]string{"a-missing", "b-owner"})
 
 			rec := httptest.NewRecorder()
-			p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(c.body)))
+			p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(requestBody)))
 
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200 from the owner", rec.Code)
-			}
-			if ownerHits != 1 || nonOwnerHits != 0 {
-				t.Fatalf("owner hits = %d, non-owner hits = %d; want 1 and 0", ownerHits, nonOwnerHits)
-			}
-			if gotPath != "/api/show" || gotBody != c.body {
-				t.Errorf("owner got %s %q, want /api/show %q", gotPath, gotBody, c.body)
-			}
-			if events.has("workload:") {
-				t.Errorf("a model lookup must not emit workload events: %s", events.b)
-			}
+			require.Equal(t, http.StatusOK, rec.Code, "response from the owner")
+			require.Equal(t, 1, ownerHits, "requests to model owner")
+			require.Zero(t, nonOwnerHits, "requests to node without the model")
+			assert.Equal(t, "/api/show", gotPath)
+			assert.Equal(t, requestBody, gotBody, "forwarded request body")
+			assert.NotContains(t, events.String(), "workload:", "a model lookup must not emit workload events")
 		})
 	}
+	test("name", `{"name":"qwen3"}`)
+	test("model", `{"model":"qwen3"}`)
+	test("model wins", `{"model":"qwen3","name":"other"}`)
+	test("library namespace", `{"model":"library/qwen3:latest"}`)
+	test("registry name, mixed case", `{"name":"registry.ollama.ai/library/Qwen3"}`)
 }
 
 // TestHandleHTTP_ShowWithNoOwnerAnswers404Locally: when no node has the model,
@@ -876,19 +867,11 @@ func TestHandleHTTP_ShowWithNoOwnerAnswers404Locally(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)))
 
-	if rec.Code != http.StatusNotFound ||
-		!strings.Contains(rec.Body.String(), "no available node advertises the requested model") {
-		t.Fatalf("response = %d %s, want local 404", rec.Code, rec.Body.String())
-	}
-	if hits != 0 {
-		t.Fatalf("node without the model received %d requests, want 0", hits)
-	}
-	if !events.has("no node advertises requested model") {
-		t.Fatalf("missing rejected request event: %s", events.b)
-	}
-	if events.has("workload:") {
-		t.Errorf("a model lookup must not emit workload events: %s", events.b)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code, "local response")
+	require.Contains(t, rec.Body.String(), "no available node advertises the requested model")
+	require.Zero(t, hits, "requests to node without the model")
+	require.Contains(t, events.String(), "no node advertises requested model", "missing rejected request event")
+	assert.NotContains(t, events.String(), "workload:", "a model lookup must not emit workload events")
 }
 
 // TestHandleHTTP_ShowFailsOverOnOwner404: an advertised owner that answers 404
@@ -916,12 +899,9 @@ func TestHandleHTTP_ShowFailsOverOnOwner404(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 after 404 failover", rec.Code)
-	}
-	if staleHits != 1 || goodHits != 1 {
-		t.Fatalf("stale hits = %d, good hits = %d; want 1 and 1", staleHits, goodHits)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "response after 404 failover")
+	require.Equal(t, 1, staleHits, "requests to stale owner")
+	require.Equal(t, 1, goodHits, "requests to next owner")
 }
 
 // TestResolveCandidates_SelfGuard: a node resolving to the proxy's own
