@@ -46,18 +46,18 @@ func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
 	peer := NewPeer(PeerConfig{PreferDir: 2, PeerInfo: map[string]any{"role": "peer"}}, nil)
 
 	driveConversation(t, srv, peer)
-	assert.Equal(t, StateWaiting, srv.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
-	assert.Equal(t, StateWaiting, peer.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
+	require.Equal(t, StateWaiting, srv.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
+	require.Equal(t, StateWaiting, peer.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
 
 	noob := bytes.Repeat([]byte{0xAB}, 16)
 	_, err := srv.OOBOutputWith(noob)
 	require.NoError(t, err, "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(noob), "peer OOBInputNoob:")
-	assert.Equal(t, StateOOBReceived, peer.State(), "peer state %s, want OOBReceived", peer.State())
+	require.Equal(t, StateOOBReceived, peer.State(), "peer state %s, want OOBReceived", peer.State())
 
 	driveConversation(t, srv, peer)
-	assert.Equal(t, StateRegistered, srv.State(), "after Completion: server=%s peer=%s, want Registered", srv.State(), peer.State())
-	assert.Equal(t, StateRegistered, peer.State(), "after Completion: server=%s peer=%s, want Registered", srv.State(), peer.State())
+	require.Equal(t, StateRegistered, srv.State(), "after Completion: server=%s peer=%s, want Registered", srv.State(), peer.State())
+	require.Equal(t, StateRegistered, peer.State(), "after Completion: server=%s peer=%s, want Registered", srv.State(), peer.State())
 	assert.Equal(t, peer.Association().Kz, srv.Association().Kz, "Kz mismatch between server and peer")
 	s, err := srv.Export("cluster-mtls", nil, 32)
 	require.NoError(t, err, "server Export:")
@@ -111,7 +111,7 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	require.NoError(t, err, "server start completion:")
 	var peerOut Outcome
 	for {
-		assert.NotEmpty(t, msg, "server ended completion unexpectedly before the peer went terminal")
+		require.NotEmpty(t, msg, "server ended completion unexpectedly before the peer went terminal")
 		out, rerr := peer.Receive(msg)
 		// A wrong PIN must NOT come back as the returned error — the classifier
 		// only inspects out.Err.

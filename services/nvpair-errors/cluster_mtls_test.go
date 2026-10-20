@@ -110,9 +110,9 @@ func TestErrorsPeerSync_RequiresPinnedMutualTLS(t *testing.T) {
 	dirC := setupNode(t, cCert, cKey, map[string][]byte{"uuid-a": aCert})
 
 	mtlsA, mtlsB, mtlsC := clustertrust.Open(dirA), clustertrust.Open(dirB), clustertrust.Open(dirC)
-	assert.True(t, mtlsA.Clustered(), "a populated cluster dir must read as clustered")
-	assert.True(t, mtlsB.Clustered(), "a populated cluster dir must read as clustered")
-	assert.True(t, mtlsC.Clustered(), "a populated cluster dir must read as clustered")
+	require.True(t, mtlsA.Clustered(), "a populated cluster dir must read as clustered")
+	require.True(t, mtlsB.Clustered(), "a populated cluster dir must read as clustered")
+	require.True(t, mtlsC.Clustered(), "a populated cluster dir must read as clustered")
 
 	// A serves its errors ingest over mTLS.
 	mgrA := NewManager(NewCodec(struct {

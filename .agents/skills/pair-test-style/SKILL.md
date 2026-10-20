@@ -114,8 +114,10 @@ Keep helpers local unless reuse across tests justifies a shared fixture.
 
 - Prefer `assert` for independent expectations so a failure can report alongside
   later failures. Use `require` for prerequisites such as a non-nil pointer or
-  sufficient slice length before dereferencing or indexing. When unsure whether
-  continuation is safe, use `require`; preserving a fatal assertion is fine.
+  sufficient slice length before dereferencing or indexing. Protocol states and
+  cluster membership must also hold before continuing a handshake or making
+  authenticated requests. When unsure whether continuation is safe, use
+  `require`; preserving a fatal assertion is fine.
 - Prefer `assert.Equal` and `require.Equal` with expected values first. Avoid
   `EqualValues` when both arguments already have the same type. For numeric
   literals compared with typed values, use an explicitly typed expectation,
@@ -129,7 +131,9 @@ Keep helpers local unless reuse across tests justifies a shared fixture.
   `bytes.Equal` or `reflect.DeepEqual`. Compare slices directly with `Equal`
   where possible; avoid branching on an empty expected slice just to change
   assertion methods. Use `Empty` for an emptiness expectation instead of `Nil`
-  unless the nil distinction is an explicit contract. If direct equality would
+  unless the nil distinction is an explicit contract. Preserve both the non-nil
+  and empty checks when a result must encode as `[]` rather than `null`, and use
+  `Nil` when absence is part of the contract. If direct equality would
   distinguish nil from empty against the intended contract, normalize concisely
   or use `Empty` for that case.
 - Use `Same`/`NotSame` only when pointer identity is the behavior under test.

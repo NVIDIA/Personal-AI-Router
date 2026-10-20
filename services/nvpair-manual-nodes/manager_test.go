@@ -149,7 +149,7 @@ func TestProbeLMStudio_ReportsModels(t *testing.T) {
 
 	downUp, downModels := m.probeLMStudio("absent.local", lmStudioPort)
 	require.False(t, downUp, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
-	assert.Empty(t, downModels, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
+	assert.Nil(t, downModels, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
 }
 
 func requestMessage(id int, method string, params any) *Message {

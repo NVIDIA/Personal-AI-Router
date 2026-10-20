@@ -131,7 +131,7 @@ func TestMesh_UnreadableKeypairDoesNotDemoteAMember(t *testing.T) {
 	writeAdmission(t, dir, "cluster-abc", 1)
 
 	m := Open(dir)
-	assert.True(t, m.Clustered(), "a populated dir must be clustered")
+	require.True(t, m.Clustered(), "a populated dir must be clustered")
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "node.key")))
 	m.Refresh()

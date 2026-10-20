@@ -107,6 +107,7 @@ func TestExtractStringsResult_DistinguishesEmptyFromUnknown(t *testing.T) {
 	spec := &ActionResult{Array: "models", Field: "key"}
 	got, ok := extractStringsResult(json.RawMessage(`{"models":[]}`), spec)
 	require.True(t, ok, "explicit empty inventory (%v, %v)", got, ok)
+	require.NotNil(t, got, "explicit empty inventory must serialize as []")
 	assert.Empty(t, got, "explicit empty inventory")
 	for _, raw := range []string{
 		`{}`,
@@ -118,7 +119,7 @@ func TestExtractStringsResult_DistinguishesEmptyFromUnknown(t *testing.T) {
 	} {
 		got, ok := extractStringsResult(json.RawMessage(raw), spec)
 		assert.False(t, ok, "invalid inventory (%v, %v, %v)", raw, got, ok)
-		assert.Empty(t, got, "invalid inventory (%v)", raw)
+		assert.Nil(t, got, "invalid inventory (%v)", raw)
 	}
 }
 

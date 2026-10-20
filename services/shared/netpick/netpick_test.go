@@ -359,7 +359,7 @@ func TestLocalCandidates_ReturnsUsableLocalAddresses(t *testing.T) {
 	got := LocalCandidates(Evidence{})
 	for _, a := range got {
 		ip := net.ParseIP(a)
-		assert.NotEmpty(t, ip, "LocalCandidates returned")
+		require.NotEmpty(t, ip, "LocalCandidates returned")
 		assert.NotEmpty(t, ip.To4(), "LocalCandidates returned")
 		assert.False(t, ip.IsLoopback(), "LocalCandidates returned")
 		assert.False(t, ip.IsLinkLocalUnicast(), "LocalCandidates returned")

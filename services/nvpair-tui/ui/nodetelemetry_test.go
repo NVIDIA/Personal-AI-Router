@@ -112,7 +112,7 @@ func TestPollTelemetry_WalksEveryAddress(t *testing.T) {
 	cmd := pollTelemetryCmd("n1", 1, []string{"192.0.2.1", host}, p, "")
 	msg, ok := cmd().(nodeTelemetryMsg)
 	require.True(t, ok, "poll must produce nodeTelemetryMsg")
-	assert.NoError(t, msg.err, "poll failed despite a reachable second address")
+	require.NoError(t, msg.err, "poll failed despite a reachable second address")
 	assert.True(t, msg.telemetry.TelemetryValid, "no telemetry decoded from the address that answered")
 }
 

@@ -526,7 +526,7 @@ func TestSettingsRestart_IsConfirmed(t *testing.T) {
 	require.Equal(t, normalized.ServerPort, armed.Settings.ServerPort, "armed the wrong request")
 	// The identifier is minted when the change is judged, not when it is sent,
 	// so confirming is a replay of the arming rather than a second write.
-	assert.NotEmpty(t, armed.RequestID, "the armed request has no identifier, so confirming it would be refused")
+	require.NotEmpty(t, armed.RequestID, "the armed request has no identifier, so confirming it would be refused")
 	assert.NotNil(t, d.resolveSettingsConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}), "y did not apply the armed change")
 }
 

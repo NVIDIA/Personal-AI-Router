@@ -164,7 +164,7 @@ func TestMeshServerTLSConfig_TracksMembershipOnExistingListener(t *testing.T) {
 	writeAdmission(t, selfDir, "cluster-abc", 1)
 	writePin(t, selfDir, "uuid-peer", string(peerPEM))
 	selfMesh.Refresh()
-	assert.True(t, selfMesh.Clustered(), "the mesh must be clustered once the dir is populated")
+	require.True(t, selfMesh.Clustered(), "the mesh must be clustered once the dir is populated")
 
 	code, err = get()
 	require.NoError(t, err, "the same listener must serve the pinned peer after the join")
