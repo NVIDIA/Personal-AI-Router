@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Engines use different inventory shapes and loaded-model markers. Only rows
+// matching the configured path and filter may become model identifiers.
 func TestExtractStrings_ReadsConfiguredResultPath(t *testing.T) {
 	tests := []struct {
 		name string

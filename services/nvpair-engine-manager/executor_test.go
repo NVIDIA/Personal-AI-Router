@@ -76,6 +76,8 @@ func TestEngineHTTPClients_BoundResponseHeaderWait(t *testing.T) {
 	require.Equal(t, ollamaLoadResponseHeaderTimeout, responseHeaderTimeout(t, ex.ollamaLoadClient), "Ollama load response-header timeout")
 }
 
+// A cold Ollama model load can delay response headers. Only that action gets the
+// longer budget, so unrelated operations still detect an unresponsive engine quickly.
 func TestOnlyOllamaRunModel_UsesSlowResponseHeaderBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
@@ -229,6 +231,8 @@ func TestEngineLifecycle_DetectsStartsReportsHealthAndStops(t *testing.T) {
 	require.False(t, st.Running, "expected stopped (%v)", st)
 }
 
+// Another application can claim the port after a managed process crashes.
+// Restart must recognize that owner instead of spawning a competing process.
 func TestCrashThenExternalService_IsAdoptedWithoutRespawn(t *testing.T) {
 	port, err := freePort()
 	require.NoError(t, err)
@@ -595,6 +599,8 @@ func TestAdoptedEngine_ReportsObservedLiveness(t *testing.T) {
 	require.False(t, st.Healthy, "closed external listener remained present (%v)", st)
 }
 
+// The proxy also answers health requests on loopback. The identity probe must
+// distinguish it from Ollama, or forwarding can route requests back into the proxy.
 func TestProxyFacade_CannotIdentifyAsOllama(t *testing.T) {
 	var probes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -636,6 +642,8 @@ func TestProxyFacade_CannotIdentifyAsOllama(t *testing.T) {
 	require.NotEqual(t, int32(0), probes.Load(), "engine identity probe did not carry the proxy sentinel")
 }
 
+// A successful earlier identity check does not identify a new listener on the
+// same port. Losing that identity must block adoption and installation.
 func TestPreviouslyAdoptedForeignReplacement_FailsClosed(t *testing.T) {
 	var isOllama atomic.Bool
 	isOllama.Store(true)

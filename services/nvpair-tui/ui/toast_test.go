@@ -643,6 +643,8 @@ func TestJoining_DeclinesOtherPendingInvites(t *testing.T) {
 	assert.Contains(t, declined, "b", "decline the two still waiting")
 	assert.Contains(t, declined, "c", "decline the two still waiting")
 	assert.NotContains(t, declined, "a", "decline the two still waiting")
+	// Recording a request happens before its reply. Wait for the commands to
+	// receive their replies so cleanup cannot close the pipe during a write.
 	for range batch {
 		select {
 		case <-commandsDone:

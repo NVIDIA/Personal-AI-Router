@@ -46,6 +46,8 @@ func TestSetLoopbackAlias_RejectsUnsafeAddresses(t *testing.T) {
 	reject("malformed address", "not-an-address")
 }
 
+// The compatibility alias must share the primary listener's routing state.
+// Rebinding the primary port must not leave the alias disconnected from that router.
 func TestLoopbackAlias_UsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 	redirectConfigDir(t)
 	rec := &recRW{}

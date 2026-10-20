@@ -34,6 +34,8 @@ func TestClusterManagerConfigDir_TracksBrokerClusterDir(t *testing.T) {
 	require.Equal(t, "", (&Broker{}).clusterManagerConfigDir(), "clusterManagerConfigDir with no cluster dir")
 }
 
+// Restoring engines before both proxy ports are settled can bind an engine to a
+// compatibility port. Advertising must wait for the same startup decisions.
 func TestEngineAvailability_WaitsForBothProxyOutcomes(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	defer engineClient.Close()

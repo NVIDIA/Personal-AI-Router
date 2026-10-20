@@ -275,6 +275,8 @@ const (
 	restartsProcess
 )
 
+// Changing only the proxy port must preserve a running engine, while engine
+// launch changes require a restart. Editing stopped engines must not start them.
 func TestConfigureLaunch_AppliesSettingsForEachEngineLifecycleState(t *testing.T) {
 	test := func(name string, want lifecycle, edit func(*testing.T, *settings.Request)) {
 		t.Run(name, func(t *testing.T) {
@@ -443,6 +445,8 @@ func TestSettings_ValidatesAndNormalizesCORSOrigins(t *testing.T) {
 	reject("wildcard in origin list", "http://localhost,*", "every origin")
 }
 
+// Only controls declared by the manifest carry CORS meaning. Treating arbitrary
+// engine flags as CORS settings could reject valid options or bypass declared checks.
 func TestSettingsCORS_IsOptionalAndIndependentOfEngine(t *testing.T) {
 	setup := func(t *testing.T, corsEnv, corsFlag, prefix, suffix string) (*Executor, settings.Request, settings.Preview) {
 		t.Helper()

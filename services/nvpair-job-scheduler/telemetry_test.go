@@ -15,6 +15,8 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
+// Dropping to a lower pressure band requires more headroom than entering it.
+// This prevents small utilization fluctuations from repeatedly changing node order.
 func TestTelemetryPressure_UsesBandsAndDownwardHysteresis(t *testing.T) {
 	bands := []struct {
 		utilization float64

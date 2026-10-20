@@ -44,6 +44,8 @@ func newRoutingUpstream(t *testing.T, status int) *routingUpstream {
 	return upstream
 }
 
+// An eligible owner can fail while a node without the requested model remains
+// reachable. Failover must stay within model owners instead of using that other node.
 func TestModelRouting_RejectsNodesWithoutRequestedModelAcrossProcesses(t *testing.T) {
 	if portBusy(11435) || portBusy(1234) {
 		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")

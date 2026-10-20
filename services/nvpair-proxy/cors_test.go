@@ -242,6 +242,8 @@ func TestCORS_AppliesPolicyChangesToOrdinaryOptionsRequests(t *testing.T) {
 	})
 }
 
+// Model-list policy probes can contact several engines. They must not spread a
+// caller's credentials or follow a redirect to a different policy authority.
 func TestCORSModelList_StripsCredentialsAndDoesNotRedirect(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		var leaked atomic.Int32
@@ -286,6 +288,8 @@ func TestCORSModelList_StripsCredentialsAndDoesNotRedirect(t *testing.T) {
 	})
 }
 
+// A paired request has already selected its destination node. Its ingress must
+// preserve the local engine's CORS policy and must not route it onward again.
 func TestCORSPairedIngress_PreservesPolicyAndIsTerminal(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		aDir, bDir := t.TempDir(), t.TempDir()

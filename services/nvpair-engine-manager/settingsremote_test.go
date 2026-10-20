@@ -87,6 +87,8 @@ func TestNotifyPeerSettings_ForwardsEverySupportedEngine(t *testing.T) {
 	}
 }
 
+// Two pinned peers observe the same mutation, then one loses its pin. Revocation
+// must close its existing stream as well as reject new unauthenticated requests.
 func TestPairedSettings_PushesChangesAndRevokesObservers(t *testing.T) {
 	a, certA := settingsMesh(t, "a")
 	b, certB := settingsMesh(t, "b")
@@ -243,6 +245,8 @@ func TestSettingsRemoteOnlyCORS_IsLocalOnly(t *testing.T) {
 	}
 }
 
+// Replies arrive in reverse request order to expose accidental FIFO matching.
+// Cancellation must also remove its waiter so a later reply cannot retain it.
 func TestSettingsRelay_CorrelatesResponsesAndCleansUpCancelledRequests(t *testing.T) {
 	sent := make(chan settings.Relay, 2)
 	canceled := make(chan string, 1)

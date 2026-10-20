@@ -94,6 +94,8 @@ func TestNodeInfoTransport_BoundsConnectionsPerHost(t *testing.T) {
 	require.Equal(t, 1, transport.MaxIdleConnsPerHost)
 }
 
+// Two requests share one connection and each fits its own timeout. Time spent
+// waiting for that connection must not consume the second request's response budget.
 func TestNodeInfoFetches_UseIndependentRequestBudgets(t *testing.T) {
 	const responseDelay = 200 * time.Millisecond
 	var requests atomic.Int32

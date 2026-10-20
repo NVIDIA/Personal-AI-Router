@@ -58,6 +58,8 @@ func TestBrokerLlamaCPPProxySetPort_RejectsInvalidPorts(t *testing.T) {
 	test("oversized port", `{"port":65536}`, 7303)
 }
 
+// The router's native inventory determines model ownership even for the public
+// OpenAI route. Preserve the full model ID rather than applying Ollama tag rules.
 func TestLlamaCPPFacade_UsesRouterInventoryAndExactModelIDs(t *testing.T) {
 	const model = "org/router-model-GGUF:Q4_K_M"
 	var modelListHits atomic.Int32

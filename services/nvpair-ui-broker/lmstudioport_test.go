@@ -77,6 +77,8 @@ func TestLMStudioFacadeSpec_PreservesPortPolicyAndOmitsAliasAddresses(t *testing
 	require.Empty(t, b.lmstudioFacadeSpec().AliasAddresses, "LM Studio facade spec carried alias addresses")
 }
 
+// A proxy ready event alone does not identify the local engine's port. Publish
+// the reconciled engine target before releasing requests waiting on startup.
 func TestManagedLMStudioReady_OpensGateAndPushesBackend(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	proxyClient, proxyServer := net.Pipe()
@@ -142,6 +144,8 @@ func TestManagedLMStudioReady_OpensGateAndPushesBackend(t *testing.T) {
 	}
 }
 
+// Failure to reclaim the compatibility port must disable managed mode and choose
+// a safe proxy port. The warning preserves the reason the expected address changed.
 func TestLMStudioReady_FallsBackAndWarnsForUnexpectedPort(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	errorsClient, errorsServer := net.Pipe()
@@ -602,6 +606,8 @@ func TestManagedLMStudioStaleReady_DoesNotOpenCurrentGate(t *testing.T) {
 	requireGateStaysShut(t, b.lmstudioPortReady, "a stale proxy generation's ready")
 }
 
+// The proxy can initially occupy the custom engine's port. Move the proxy first
+// and retain the engine's configured port before allowing gated requests through.
 func TestUnmanagedLMStudioProxyCollision_RebindsBeforeGate(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
@@ -722,6 +728,8 @@ func TestUnknownLMStudioBackendFallback_SkipsUnprovenPorts(t *testing.T) {
 	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unknown-backend fallback selected unproven port")
 }
 
+// An unknown engine port can coincide with the proxy's listener. Move the proxy
+// before probing status so it cannot be mistaken for the engine being discovered.
 func TestUnknownLMStudioBackend_MovesProxyBeforeStatusProbe(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
@@ -825,6 +833,8 @@ func TestUnknownCustomBackend_KeepsRestoreGatedAfterStatusFailure(t *testing.T) 
 	}
 }
 
+// A failed status call must keep restoration gated. The replacement manager must
+// resolve the engine port and update the proxy before enabled engines are restored.
 func TestEngineManagerRespawn_ReconcilesUnknownCustomBackendBeforeRestore(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {

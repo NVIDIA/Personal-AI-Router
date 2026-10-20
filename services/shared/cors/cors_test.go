@@ -196,6 +196,8 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// All target probes block until cancellation, exposing the shared request limit.
+// A single browser preflight must not create unbounded work across cluster engines.
 func TestCORSFanout_BoundsConcurrentRequestsAndHonorsCancellation(t *testing.T) {
 	var active, max atomic.Int32
 	started := make(chan struct{}, 20)

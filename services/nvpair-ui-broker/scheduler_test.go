@@ -112,6 +112,8 @@ func workloadIDFromParams(t *testing.T, params json.RawMessage) string {
 	return env.WorkloadInfo.ID
 }
 
+// Hold one delivery while two newer rankings queue. The intermediate generation
+// must be dropped so delayed work cannot overwrite the latest scheduling state.
 func TestDeliverPriority_SkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 	b := &Broker{}
 	oldInput := schedulerwire.Priority{

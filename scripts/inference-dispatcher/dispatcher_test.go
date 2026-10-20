@@ -51,6 +51,8 @@ func configuredTestClient(t *testing.T, args []string, baseURL string, stderr *b
 	return cfg, client
 }
 
+// The inventory puts an embedding model first and chat models out of order.
+// Default selection must find a generation-capable model rather than use list order.
 func TestOmittedModel_SelectsAvailableGenerationModel(t *testing.T) {
 	var receivedModel string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +147,8 @@ func TestLMStudio_FallsBackToOpenAIInventory(t *testing.T) {
 	assert.Contains(t, stdout.String(), "live-model", "selected model missing from output")
 }
 
+// llama.cpp exposes OpenAI inventory and chat routes rather than Ollama's native
+// API. Auto-selection and dispatch must agree on that protocol.
 func TestLlamaCPP_UsesOpenAIInventoryAndChat(t *testing.T) {
 	type observedRequest struct {
 		method       string

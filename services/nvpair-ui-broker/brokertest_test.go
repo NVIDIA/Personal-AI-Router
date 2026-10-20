@@ -148,6 +148,8 @@ func brokerWithEngineInventory(t *testing.T, ports map[string]int) *Broker {
 }
 
 // assertRPCRead records malformed frames and accepts normal fixture shutdown.
+// Fixture readers run in worker goroutines, where require would call FailNow
+// outside the test goroutine instead of returning control to the reader.
 func assertRPCRead(t *testing.T, err error) bool {
 	t.Helper()
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {

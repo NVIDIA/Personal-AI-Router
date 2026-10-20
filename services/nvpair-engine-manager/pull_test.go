@@ -88,6 +88,8 @@ func newHTTPPullTestExecutor(t *testing.T, server *httptest.Server, action Actio
 	return executor
 }
 
+// A fast download can finish as soon as the start request arrives. Subscribe
+// first so its terminal event cannot be missed and leave the caller waiting.
 func TestPullModelLlamaCPP_SubscribesToProgressBeforeStartingDownload(t *testing.T) {
 	const model = "owner/repo:Q4_K_M"
 	subscribed := make(chan struct{})
@@ -169,6 +171,8 @@ func TestPullModelLlamaCPP_SubscribesToProgressBeforeStartingDownload(t *testing
 	require.Equal(t, 100, events[1].Percent)
 }
 
+// The complete download deliberately exceeds one idle interval. Advancing bytes
+// must extend the deadline so slow progress is not mistaken for a stalled download.
 func TestPullModelOllamaAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	const (
 		idleTimeout     = 400 * time.Millisecond
@@ -216,6 +220,8 @@ func TestPullModelOllamaAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	require.Contains(t, string(result), `"status":"success"`, "pull must report terminal success")
 }
 
+// The SSE stream keeps advancing beyond the initial idle deadline. Each progress
+// update must renew that budget instead of imposing a total download time limit.
 func TestPullModelLlamaCPPAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	const (
 		model           = "owner/repo:Q4_K_M"

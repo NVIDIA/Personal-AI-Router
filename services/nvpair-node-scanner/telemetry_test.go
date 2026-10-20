@@ -215,6 +215,8 @@ func TestTelemetryRetryGateRemoveRediscover_PreservesActiveClaim(t *testing.T) {
 	require.True(t, ok, "removed attempt's late failure backed off the re-discovered node")
 }
 
+// A failed peer's retry delay belongs to that peer alone. Skipping it must not
+// suppress the same refresh pass's request to a healthy node.
 func TestRefreshTelemetry_SkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing.T) {
 	var backedOffCalls atomic.Int32
 	backedOff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -270,6 +272,8 @@ func TestRefreshTelemetry_SkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testin
 	require.Equal(t, int32(1), healthyCalls.Load(), "healthy peer received")
 }
 
+// Changing peer-controlled TXT metadata does not create a new endpoint.
+// It must not reset failure backoff and let an unhealthy peer trigger extra polls.
 func TestBrowseTXTUpdate_PreservesTelemetryRetry(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -344,6 +348,8 @@ func TestBrowseRemoval_ClearsTelemetryRetry(t *testing.T) {
 	require.True(t, ok, "removed peer endpoint remained backed off")
 }
 
+// The old request completes after discovery has installed a replacement endpoint.
+// Its result must neither back off the replacement nor permit overlapping polls.
 func TestBrowseEndpointUpdate_WaitsForOldTelemetryBeforeClaimingReplacement(t *testing.T) {
 	newEntered := make(chan struct{}, 1)
 	releaseNew := make(chan struct{}, 1)
@@ -435,6 +441,8 @@ func TestBrowseEndpointUpdate_WaitsForOldTelemetryBeforeClaimingReplacement(t *t
 	require.True(t, ok, "old endpoint failure backed off the replacement endpoint")
 }
 
+// One peer holds its response open across several ticks. Other peers must keep
+// receiving fresh telemetry instead of waiting for that slow request to finish.
 func TestTelemetryLoop_KeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) {
 	slowStarted := make(chan struct{}, 1)
 	slow := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -512,6 +520,8 @@ func TestTelemetryLoop_KeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T)
 	}
 }
 
+// A tick can arrive while the preceding request is still running. The node must
+// keep its in-flight reservation until completion to avoid duplicate polls.
 func TestTelemetryLoop_DoesNotOverlapNodePolls(t *testing.T) {
 	var active atomic.Int32
 	var maxActive atomic.Int32
@@ -557,6 +567,8 @@ func TestTelemetryLoop_DoesNotOverlapNodePolls(t *testing.T) {
 	require.Equal(t, int32(1), maxActive.Load(), "maximum concurrent requests for one node")
 }
 
+// Requests remain blocked across multiple ticks to expose a per-tick worker limit.
+// The concurrency allowance must cover all outstanding work, including earlier ticks.
 func TestTelemetryLoop_BoundsConcurrentWorkAcrossTicks(t *testing.T) {
 	const nodeCount = telemetryRefreshConcurrency + 1
 	entered := make(chan struct{}, nodeCount)

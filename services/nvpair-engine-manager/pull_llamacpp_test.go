@@ -286,6 +286,8 @@ func TestLlamaCPPPull_PreservesOtherDownloadWhenStartIsRejected(t *testing.T) {
 	test("negative acknowledgement", http.StatusOK, `{"success":false}`)
 }
 
+// Cancellation can race an unreadable start acknowledgement. Without proof that
+// this request started the download, cleanup could unload another caller's model.
 func TestLlamaCPPPullUnconfirmedStart_DoesNotUnload(t *testing.T) {
 	test := func(name string, respond func(*testing.T, http.ResponseWriter, *http.Request)) {
 		t.Run(name, func(t *testing.T) {
