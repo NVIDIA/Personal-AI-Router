@@ -34,7 +34,8 @@ type engineCase struct {
 	// nonInferencePath is a real path this engine's clients call that is
 	// neither inference nor a model list, so the proxy forwards it verbatim.
 	// Bodies use it to prove that model-eligibility filtering and 404
-	// failover apply to inference alone. It must stay absent from Routes.
+	// failover apply to inference and model lookups alone. It must stay absent
+	// from Routes.
 	nonInferencePath string
 
 	// modelListPath is the path whose response the federated list serves.

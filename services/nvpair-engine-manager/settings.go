@@ -15,9 +15,16 @@ import (
 	settings "nvpair-shared/enginesettings"
 )
 
+// applyLiteralLaunch overlays saved user launch values onto the resolved
+// manifest command. For example, a literal LaunchEnv assignment
+// "MODEL_DIR={install_dir}/models" overrides that manifest default without
+// expanding the braces in the user's value; omitted manifest defaults still
+// resolve normally. This keeps defaults updateable while preserving exactly
+// what the user saved. Nil LaunchArgs inherits the manifest's Args or editable
+// Start command; a non-nil empty slice keeps only fixed and managed arguments.
 func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]string) (launchCommand, error) {
 	if rt.LaunchEnv != nil {
-		env, err := literalEnvironment(*rt.LaunchEnv)
+		env, err := literalEnvironment(rt.LaunchEnv)
 		if err != nil {
 			return launchCommand{}, err
 		}
@@ -77,7 +84,7 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 			command.Args = append(command.Args, control.flag(), value)
 		}
 	}
-	command.Args = append(command.Args, (*rt.LaunchArgs)...)
+	command.Args = append(command.Args, rt.LaunchArgs...)
 
 	return command, nil
 }
@@ -362,8 +369,8 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		result.Errors["serverPort"] = err.Error()
 		return result
 	}
-	rt.LaunchArgs = &result.Args
-	rt.LaunchEnv = &result.Env
+	rt.LaunchArgs = result.Args
+	rt.LaunchEnv = result.Env
 	vars["port"] = strconv.Itoa(result.Settings.ServerPort)
 	command, err := applyLiteralLaunch(rt, base, vars)
 	if err != nil {
@@ -414,15 +421,15 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 			return e.launchStateLocked(p.Engine, st), err
 		}
 	}
-	if changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, &preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, &preview.Env) {
+	if changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, preview.Env) {
 		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env); err != nil {
 			return e.launchStateLocked(p.Engine, st), err
 		}
 	}
 	st.mu.Lock()
 	st.plat.Runtime.Port = preview.Settings.ServerPort
-	st.plat.Runtime.LaunchArgs = &preview.Args
-	st.plat.Runtime.LaunchEnv = &preview.Env
+	st.plat.Runtime.LaunchArgs = preview.Args
+	st.plat.Runtime.LaunchEnv = preview.Env
 	st.port = preview.Settings.ServerPort
 	st.mu.Unlock()
 	if err := rebind(); err != nil {

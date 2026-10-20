@@ -448,9 +448,20 @@ What that base URL serves depends on the engine behind it:
 
 | Endpoint | Default base URL | Paths it serves |
 | --- | --- | --- |
-| Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — and the OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, plus the Anthropic Messages API `/v1/messages` |
-| LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`) and the Anthropic Messages API `/v1/messages` |
-| llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, plus `/models`). Not Ollama's `/api/...` and not the Anthropic Messages API |
+| Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — plus the OpenAI-compatible and Anthropic APIs listed below|
+| LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible and Anthropic APIs listed below |
+| llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible API listed below, plus `/models` for model listings |
+
+All three endpoints expose these OpenAI-compatible paths:
+
+- `POST /v1/chat/completions` — [Conversations](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+- `POST /v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
+- `POST /v1/embeddings` — [Embeddings](https://developers.openai.com/api/reference/resources/embeddings/methods/create)
+- `POST /v1/responses` — [Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- `GET /v1/models` — [available models](https://developers.openai.com/api/reference/resources/models/methods/list)
+
+Ollama and LM Studio support the following Anthropic APIs:
+- `POST /v1/messages` - [Messages](https://platform.claude.com/docs/en/api/messages/create)
 
 The distinction matters when you fill in an application's settings. A client
 written against the OpenAI API usually wants the `/v1` included, as in
@@ -574,7 +585,7 @@ want to observe.
 | Connection refused | Nothing is listening on that port. Check the port and service status. |
 | `502` with `no active node` | The proxy is running, but no routable engine node is available. |
 | `502` with `no available node advertises the requested model` | Current inventory has no routable owner for that model. Wait for inventory to update, or prepare the model on a node running that engine. |
-| `404` on an inference call | Every advertised owner tried by the proxy rejected the model, so its inventory is stale. |
+| `404` on an inference call | The serving engine could not find the model or requested API. Its model inventory may be stale, or its version may not support the endpoint. |
 | A reply, but **Jobs** is empty | Something else owns the proxy port. Refer to [Requests work but PAIR shows no jobs](troubleshooting.mdx#requests-work-but-pair-shows-no-jobs). |
 | `400` or `422` | The request is malformed. PAIR does not retry it because it would fail on every node. |
 

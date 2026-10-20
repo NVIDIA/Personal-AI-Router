@@ -11,6 +11,31 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.6 — Model lookups through PAIR reach a node that has the model (#163)
+
+- `/api/show` requests to PAIR's Ollama port now go only to a node that has the requested model. Before, they could reach a node without it and get a 404, so a client such as Hermes Agent could not read the model's details.
+- Ollama model names that include the default `library` namespace or `registry.ollama.ai` host, or that differ only in case, now match the same model when PAIR picks a node. Inference requests that use such names reach a node that has the model instead of failing with a 502.
+
+## 1.0.5 — Harden trusted-peer file paths (#159)
+
+- Reject unsafe peer identifiers before loading, writing, or removing trust-store files, protecting cluster data from path traversal.
+
+## 1.0.4 — Manual nodes persist across restarts (#60)
+
+- Manually added nodes are restored after the broker or manual-node worker restarts.
+
+## 1.0.3 — Report Ollama model download failures correctly (#138)
+
+- Ollama model downloads now report failures when the engine sends an error record after starting an HTTP 200 stream.
+
+## 1.0.2 — Route OpenAI Responses requests by model (#155)
+
+- POST /v1/responses now counts as inference. PAIR sends it to a node that advertises the requested model and records it as a workload. That path used to be forwarded with no model filter.
+
+## 1.0.1 — Add documentation for registry.go and refactor types/tests (#140)
+
+- Refactored saved engine launch settings while preserving literal arguments, environment values, and explicit empty overrides.
+
 ## 1.0.0 — Personal AI Router 1.0.0
 
 - Cuts release 1.0.0, which collects every change since 0.1.1 listed below. See the [1.0.0 release notes](docs/release-notes.mdx).
