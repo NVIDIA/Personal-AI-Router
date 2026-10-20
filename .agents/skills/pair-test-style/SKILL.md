@@ -21,16 +21,57 @@ They guide test structure; they do not require new coverage or unrelated rewrite
 
 - Give each top-level test one behavior to prove. Split long tests that combine
   validation, persistence, restart, and recovery into independently readable tests.
+- Use as many assertions as needed to prove that behavior. Keep assertions
+  focused on the relevant results or fields; check unrelated behavior in a
+  separate test so failures have a clear meaning.
+- Exercise the interface callers use and assert observable results. Internal
+  refactoring that preserves behavior should not require rewriting tests to
+  match private helpers, internal state, or incidental call order.
 - Keep a table-driven test dedicated to its related cases. Put an unrelated
   one-off assertion or scenario in its own test function.
 - Prefer explicit cases over nested loops and boolean mode matrices when the
   combinations obscure what is being checked. Keep a matrix when the combinations
   themselves are the behavior under test and the names explain them.
-- Name subtests after their scenario or outcome: `process mode`, `command mode`,
-  `rejects bind override`, or `preserves response body`, rather than `true`,
-  `false`, or an index.
+
+## Name the behavior being proved
+
+- Name Go tests `Test<Subject>_<ExpectedBehavior>`, for example
+  `TestParseAddress_RejectsMissingPort`. Include the condition when needed to
+  distinguish the behavior, as in `TestScheduler_SkipsNodesWhenEngineIsStopped`.
+- Consider three candidate names before selecting the one that most clearly
+  states the subject and expected behavior. Prefer concrete outcomes over vague
+  labels such as `Works`, `HandlesErrors`, or `EdgeCases`.
+- Name subtests after the condition or outcome that distinguishes each case:
+  `rejects missing port` or `preserves response body`, rather than `true`,
+  `false`, or an index. Read the parent and subtest names together to check that
+  a failure identifies what was expected.
+- For desktop tests, use natural-language names with the same subject and
+  expected behavior, such as `parseAddress rejects an address without a port`.
+
+## Make the test readable on its own
+
+- Keep setup, the action under test, and expectations in a clear reading order.
+  Separate them with blank lines when helpful; avoid comments that merely label
+  obvious steps.
+- Use descriptive fixture and variable names. Keep the relevant inputs and
+  expected values visible in the case so readers do not have to trace helpers
+  to understand what it proves.
+- Avoid jargon in test comments where possible. Explain necessary domain terms
+  or abbreviations on first use. For example, prefer `A stopped engine cannot
+  accept new requests` over `Exercise the ineligible-node path`.
+- Use comments to explain why a condition matters, why an expectation follows,
+  or why unusual setup is necessary. Do not narrate the code or describe an
+  abandoned implementation.
+- Make failure messages identify the failed expectation and relevant case
+  context. A reader should understand the failure without reconstructing an
+  unrelated scenario.
 
 ## Share setup without hiding the cases
+
+Prefer clarity over removing duplication. A little repeated setup is worthwhile
+when it makes each scenario understandable on its own. Extract helpers that
+remove distracting details while keeping the important inputs and expectations
+visible; avoid shared mutable fixtures that hide how those values are set.
 
 For Go cases with the same setup and assertions, prefer a local helper closure
 that captures shared setup and calls `t.Run`. List explicit, named calls below
@@ -50,6 +91,9 @@ Keep helpers local unless reuse across tests justifies a shared fixture.
 
 ## Check errors and structured results
 
+- State expected results directly using concrete values where practical. Avoid
+  computing expectations with the same logic or production helper being tested;
+  that can reproduce the implementation's bug and let an incorrect result pass.
 - Check setup, file I/O, encoding, decoding, and operation errors. Do not discard
   an error just because the fixture is expected to be valid. Fail at the operation
   that failed, with enough context to diagnose it.
@@ -99,6 +143,16 @@ Keep helpers local unless reuse across tests justifies a shared fixture.
   the failure, for example `assert.True(t, isHostname(s), "hostname %q", s)`.
   Although such lack of named subtests should be considered for rewrite.
 
+## Check effects before internal calls
+
+Prefer checking returned values or resulting state over verifying that internal
+methods were called. When using mocks, avoid verifying every read or lookup;
+check what the code does with the returned information. Verify an interaction
+when it is itself part of the requirement, such as sending a notification,
+avoiding repeated requests when caching, or preserving a required ordering.
+Keep mock argument checks focused on values relevant to the behavior being
+proved, and verify other requirements in separate tests.
+
 ## Fit the existing test suite
 
 For desktop tests, carry over the same focus, naming, error handling, and
@@ -109,5 +163,7 @@ Do not introduce a new framework or production-only test hooks for this style.
 
 Run the relevant existing tests and required repository checks. In review,
 verify that each changed test has a clear failure condition, names the behavior
-it proves, checks its setup errors, and can be understood without tracing an
-unrelated scenario. State any verification that could not be run.
+it proves, checks its setup errors, and uses comments that explain intent in
+plain language. Confirm that its inputs and expectations can be understood
+without tracing an unrelated scenario. State any verification that could not
+be run.
