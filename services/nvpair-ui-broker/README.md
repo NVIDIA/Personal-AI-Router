@@ -51,10 +51,17 @@ Two responsibilities live in the broker itself rather than in a worker:
   feeds the scheduler, and forwards them to the workload manager for broadcast.
   Peer-origin updates come back the other way as `workloads:upsert` /
   `workloads:remove` for subscribed clients.
-- **Scheduling telemetry.** Scanner and manual-node observations populate a
+- **Scheduling telemetry.** Owned local and pinned remote observations populate a
   source-aware cache keyed by `hostUuid`; scanner data takes precedence. The
   broker advances sample age locally, feeds compact maximum-GPU telemetry to the
   scheduler, and replays it after a scheduler restart.
+
+Unverified discoveries retain independent `discoveryRecordId` keys throughout
+the store and relay. They cannot overwrite a verified host, clear its telemetry,
+fail its workloads, or enter the scheduler's node universe. Explicit manual
+engine targets keep their own operational keys until authenticated. The broker
+caches and forwards scanner `discovery:node-info` hardware snapshots only when
+their record identity matches the current verified scanner record.
 
 ### Supervision & recovery
 
@@ -106,7 +113,7 @@ Logs go to **stderr** (shared `applog` format, same as every other NVPAIR binary
 
 On startup — **before** emitting `app:ready` — the broker spawns the scanner and (when available) node-info, `nvpair-proxy`, the workload-manager, and the cluster-manager as child processes over stdio. The proxy is spawned up front but doesn't gate `app:ready` — each of its facades announces its listen port asynchronously (see below). None of the auxiliary workers gate `app:ready`.
 
-**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`lc` from the engine poller) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
+**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by verified host identity or independent discovery record identity. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`lc` from the engine poller) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
 
 **`nvpair-node-info`** serves public display HTTP and peer node inventory over
 pinned mTLS on its registered `ni` port. The broker passes its cluster directory and host UUID,
@@ -562,7 +569,9 @@ Any `settings/*` request is forwarded to `nvpair-node-settings` and its response
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 
-Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, tls_port?, mtls? }`) registers a user-added node and probes it; `node/remove` (`{ id }`) drops it; `nodes/list` returns the tracked manual nodes. Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. The broker persists successful `node/add` operations to `configs/manual-nodes.json` in the per-user data directory and replays them into a replacement `nvpair-manual-nodes` worker after startup. Successful `node/remove` operations update the same durable list. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
+Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, tls_port?, mtls? }`) registers a user-added node and probes it; `node/remove` drops it; `nodes/list` returns the tracked manual nodes. For removal, supply exactly one of `{ id }` (the worker's exact entry ID, as used by the TUI) or `{ nodeId }` (the broker's node key, as used by the desktop). The broker resolves `nodeId` to an entry ID before forwarding `{ id }` to the worker. An unknown node key returns `{ removed: false }` without contacting the worker or changing saved entries. Missing or conflicting selectors return error `-32602`.
+
+Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. The broker persists successful `node/add` operations to `configs/manual-nodes.json` in the per-user data directory and replays them into a replacement `nvpair-manual-nodes` worker after startup. Successful `node/remove` operations update the same durable list. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
 
 **Manual → proxy bridge.** When the broker supervises both `nvpair-manual-nodes` and a proxy, it also bridges a manual node whose engine is reachable into that proxy via `node/add-manual` (host/port from the node's per-engine status), so inference can route to it through `ollama-proxy:node/select` / `lmstudio-proxy:node/select` just like a relay-discovered node. This is per-engine: a node whose `ollama_*` status is up is bridged into `ollama-proxy` (host/port from `ollama_port`), and one whose `lmstudio_*` status is up into `lmstudio-proxy` (from `lmstudio_port`) — a node running both is bridged into both. Manual nodes are by definition the ones that never appear via the daemon's `_nvpair-node` discovery, so this explicit add is what makes them routable. The bridge tracks reachability: an engine that goes down (or a node that is removed, or whose prober crashes) is pulled back out with `node/remove-manual`. A proxy that isn't supervised → that leg is a no-op; manual nodes still appear in the discovery snapshot as before.
 

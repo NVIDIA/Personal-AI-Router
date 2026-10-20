@@ -176,32 +176,34 @@ func (p *proxyProc) setLocalBackend(engine, host string, port int, healthy bool)
 func (p *proxyProc) pushOllamaPeer(name, ip, clusterUUID string, proxyPort int, models []string) {
 	p.notify(engines.AddressMethod("ollama", "discovery:nodes"), map[string]any{
 		"nodes": []map[string]any{{
-			"hostUuid":       name,
-			"name":           name,
-			"ip":             ip,
-			"clusterUuid":    clusterUUID,
-			"trusted":        true,
-			"services":       map[string]any{"ol": map[string]any{"port": proxyPort}},
-			"modelsByEngine": map[string]any{"ollama": models},
-			"lastSeen":       time.Now().Unix(),
+			"hostUuid":             clusterUUID,
+			"discoveryRecordId":    "peer:" + clusterUUID,
+			"identityVerification": "pinned",
+			"name":                 name,
+			"ip":                   ip,
+			"clusterUuid":          clusterUUID,
+			"trusted":              true,
+			"services":             map[string]any{"ol": map[string]any{"port": proxyPort}},
+			"modelsByEngine":       map[string]any{"ollama": models},
+			"lastSeen":             time.Now().Unix(),
 		}},
 	})
 }
 
-// waitForRoutableNode polls the proxy's nodes/list until it reports at least one
-// routable node, so the async discovery:nodes push has been applied before the
-// test issues a request.
-func (p *proxyProc) waitForRoutableNode(t *testing.T) {
+// waitForRoutableNode waits for the intended peer before issuing inference.
+func (p *proxyProc) waitForRoutableNode(t *testing.T, nodeUUID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		resp := p.call(engines.AddressMethod("ollama", "nodes/list"), nil)
 		var r struct {
-			Nodes []json.RawMessage `json:"nodes"`
+			Nodes []proxyNode `json:"nodes"`
 		}
 		require.NoError(t, json.Unmarshal(resp.Result, &r))
-		if len(r.Nodes) > 0 {
-			return
+		for _, node := range r.Nodes {
+			if node.ID == nodeUUID {
+				return
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -254,8 +256,7 @@ func TestClusterInference_RequiresPinnedMutualTLS(t *testing.T) {
 	aInfo := decodeResult[cmNodeID](t, cmA.call("cluster:get-node-id", nil))
 	bInfo := decodeResult[cmNodeID](t, cmB.call("cluster:get-node-id", nil))
 
-	// The cluster-manager listeners need a moment to bind before pairing.
-	time.Sleep(time.Second)
+	waitForPort(t, "127.0.0.1", cmBPort, 10*time.Second)
 
 	// A founds a cluster and pairs with B (mutual pins land on disk). C founds
 	// its own cluster and never pairs with A or B — it is a foreign node.
@@ -275,7 +276,7 @@ func TestClusterInference_RequiresPinnedMutualTLS(t *testing.T) {
 	defer proxyA.stop()
 	// Tell A that B runs ollama at B's promoted proxy port, as a trusted member.
 	proxyA.pushOllamaPeer("node-b", "127.0.0.1", bInfo.NodeUUID, proxyB.port, []string{"m:latest"})
-	proxyA.waitForRoutableNode(t)
+	proxyA.waitForRoutableNode(t, bInfo.NodeUUID)
 
 	genBody := []byte(`{"model":"m:latest","prompt":"hi","stream":false}`)
 

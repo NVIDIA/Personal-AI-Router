@@ -11,11 +11,10 @@ import {
     parseWorkloadsInitial
 } from '@/electron/service-bridge/modular-state'
 
-// The bridge keys every node by the backend's stable per-host UUID; the hostname
-// is display only. These tests lock in the two behaviours that migration exists
-// for: a broker view and a proxy view of the same machine collapse to one
-// UUID-keyed entry (no hostname ghost), and cross-domain attribution refuses a
-// telemetry response whose reported UUID does not match the polled node.
+// These cases cover rows keyed by the backend's stable host UUID, with hostnames
+// used only for display. Broker and proxy views of one host share a row, and a
+// response naming another UUID is rejected. Unverified discovery rows instead
+// use independent record IDs, covered in node-identity-contract.test.ts.
 describe('UUID node keying', () => {
     it('merges a broker node and a same-hostUuid proxy node into one UUID-keyed entry', () => {
         const state = getModularBridgeState()
@@ -26,6 +25,8 @@ describe('UUID node keying', () => {
                 nodes: [
                     {
                         hostUuid: 'uuid-merge-1',
+                        discoveryRecordId: 'peer:uuid-merge-1',
+                        identityVerification: 'pinned',
                         name: 'merge-host-1',
                         ipAddress: '192.0.2.11',
                         port: 14318,
@@ -52,10 +53,17 @@ describe('UUID node keying', () => {
         // No hostname-keyed ghost — that double-entry is exactly what UUID keying fixes.
         expect(nodes['merge-host-1']).toBeUndefined()
         expect(nodes['uuid-merge-1'].name).toBe('merge-host-1')
+        // The proxy port proves that engine presence reached the existing row.
+        expect(nodes['uuid-merge-1'].port).toBe(11434)
 
-        // Broker trust/cluster flags survive the proxy merge (the proxy feed has none).
+        // Broker identity and trust survive the proxy merge (the proxy feed has neither).
         const available = state.getAvailableNodes().find(node => node.id === 'uuid-merge-1')
-        expect(available).toMatchObject({ trusted: true, clustered: true })
+        expect(available).toMatchObject({
+            discoveryRecordId: 'peer:uuid-merge-1',
+            identityVerification: 'pinned',
+            trusted: true,
+            clustered: true
+        })
         // Clustered peers need authoritative facts before run state is inferred, even
         // after the proxy presence is merged onto the UUID-keyed entry.
         expect(state.isRemoteEngineRunning('uuid-merge-1', 'ollama')).toBe(false)
@@ -140,6 +148,39 @@ describe('UUID node keying', () => {
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.gpus).toHaveLength(1)
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.cpu.model).toBe('CPU-A')
     })
+
+    const rejectMissingIdentity = (name: string, verification: 'local' | 'pinned'): void => {
+        it(name, () => {
+            const hostUuid = `uuid-missing-identity-${verification}`
+            const state = getModularBridgeState()
+            state.handleNotification({
+                source: 'broker',
+                method: 'discovery:nodes-changed',
+                params: [
+                    {
+                        hostUuid,
+                        discoveryRecordId: `${verification}:${hostUuid}`,
+                        identityVerification: verification,
+                        name: 'verified host',
+                        ipAddress: '192.0.2.51',
+                        port: 14318
+                    }
+                ]
+            })
+            state.mergeNodeInfoResponse(hostUuid, {
+                hostUuid,
+                GPUs: [{ name: 'Verified host GPU' }]
+            })
+
+            state.mergeNodeInfoResponse(hostUuid, { GPUs: [{ name: 'Unidentified GPU' }] })
+
+            expect(
+                state.getNodesInitial().nodes[hostUuid].topology.gpus.map(gpu => gpu.name)
+            ).toEqual(['Verified host GPU'])
+        })
+    }
+    rejectMissingIdentity('preserves local hardware when a response omits hostUuid', 'local')
+    rejectMissingIdentity('preserves pinned hardware when a response omits hostUuid', 'pinned')
 
     it('gives the node-info poller every published address in ranked order', () => {
         const state = getModularBridgeState()

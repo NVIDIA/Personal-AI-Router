@@ -36,7 +36,12 @@ func TestRunRemoteNotClustered(t *testing.T) {
 	// pinned dial can't be built.
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
 	m.peers.set([]noderec.DirectoryNode{{
-		HostUUID: "uuid-b", Name: "nodeB", IP: "192.168.1.42", ClusterUUID: "cuuid-b",
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		HostUUID:             "uuid-b",
+		Name:                 "nodeB",
+		IP:                   "192.168.1.42",
+		ClusterUUID:          "cuuid-b",
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 			noderec.ServiceEngineControl: {Port: 14323},
 		},

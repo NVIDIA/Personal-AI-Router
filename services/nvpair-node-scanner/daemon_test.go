@@ -328,6 +328,29 @@ func TestPublishSelf_LocalRecordHasLocalVerificationAndDiscoveryRecordID(t *test
 	assert.Equal(t, "local:self-uuid", node.DiscoveryRecordID)
 }
 
+// Replace the local identity and inspect the old record's removal event. Its
+// local provenance and discovery record ID must survive so consumers invalidate
+// the correct source instead of treating it as an unverified disappearance.
+func TestDropSelf_PreservesRecordIdentityInRemoval(t *testing.T) {
+	const oldUUID = "old-self"
+	d := newSelfTestDaemon(oldUUID, "192.0.2.20")
+	d.publishSelf()
+	var output bytes.Buffer
+	d.codec = NewCodec(&output)
+
+	d.selfMu.Lock()
+	d.dropSelf(oldUUID, "new-self")
+	d.selfMu.Unlock()
+
+	message, err := NewCodec(&output).Read()
+	require.NoError(t, err)
+	var event noderec.NodeEvent
+	require.NoError(t, json.Unmarshal(message.Params, &event))
+	assert.Equal(t, noderec.NotifyNodeRemoved, message.Method)
+	assert.Equal(t, "local:old-self", event.Node.DiscoveryRecordID)
+	assert.Equal(t, noderec.IdentityLocal, event.Node.IdentityVerification)
+}
+
 type discoveryPeerFixture struct {
 	daemon      *daemon
 	selfDir     string
@@ -414,6 +437,81 @@ func TestDiscovery_ReplacesUnverifiedDiscoveryWithVerifiedPeer(t *testing.T) {
 	assert.Equal(t, fakePeerPort, node.Services[noderec.ServiceOllama].Port)
 	assert.Equal(t, f.info.GPUs, node.GPUs)
 	assert.Len(t, f.daemon.dir.snapshot(""), 1)
+}
+
+// Authenticate a real pinned test peer and inspect the scanner's outbound
+// notifications. Exactly one full hardware snapshot must carry that verified
+// record's identity and the hardware supplied by its authenticated response.
+func TestDiscovery_PublishesAuthenticatedHardwareSnapshots(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	var output bytes.Buffer
+	f.daemon.codec = NewCodec(&output)
+
+	f.discover(t)
+
+	codec := NewCodec(&output)
+	var snapshots int
+	for {
+		message, err := codec.Read()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		if message.Method != "discovery:node-info" {
+			continue
+		}
+		type hardwareSnapshot struct {
+			DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+			IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+			Info                 noderec.NodeInfo             `json:"info"`
+		}
+		var snapshot hardwareSnapshot
+		require.NoError(t, json.Unmarshal(message.Params, &snapshot))
+		assert.Equal(t, "peer:peer-uuid", snapshot.DiscoveryRecordID)
+		assert.Equal(t, noderec.IdentityPinned, snapshot.IdentityVerification)
+		assert.Equal(t, f.info.GPUs, snapshot.Info.GPUs)
+		snapshots++
+	}
+	assert.Equal(t, 1, snapshots)
+}
+
+type delayedNodeEventsWriter struct {
+	bytes.Buffer
+}
+
+func (w *delayedNodeEventsWriter) Write(frame []byte) (int, error) {
+	var message Message
+	if err := json.Unmarshal(frame, &message); err != nil {
+		return 0, err
+	}
+	if message.Method == noderec.NotifyNodeDiscovered {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return w.Buffer.Write(frame)
+}
+
+// Delay the directory notification ahead of the hardware notification by
+// 100 ms. The later snapshot must include that delay in its GPU sample age,
+// preventing a blocked notification write from making old data look fresh.
+func TestDiscovery_SnapshotAgeIncludesNotificationWait(t *testing.T) {
+	const peerUUID = "peer-uuid"
+	f := newDiscoveryPeerFixture(t, peerUUID)
+	output := &delayedNodeEventsWriter{}
+	f.daemon.codec = NewCodec(output)
+
+	f.discover(t)
+
+	decoder := json.NewDecoder(&output.Buffer)
+	var snapshot noderec.NodeInfoEvent
+	for decoder.More() {
+		var message Message
+		require.NoError(t, decoder.Decode(&message))
+		if message.Method == noderec.NotifyNodeInfo {
+			require.NoError(t, json.Unmarshal(message.Params, &snapshot))
+		}
+	}
+	assert.Equal(t, peerUUID, snapshot.HostUUID)
+	assert.GreaterOrEqual(t, snapshot.Info.MSSince, int64(fakePeerSampleAgeMillis+100))
 }
 
 func TestDiscovery_FetchesModelsAfterAuthentication(t *testing.T) {
@@ -929,8 +1027,7 @@ func TestDiscovery_SlowAuthenticationDoesNotBlockVerifiedPeerTelemetry(t *testin
 	var output bytes.Buffer
 	f.daemon.codec = NewCodec(&output)
 	f.daemon.refreshTelemetryOnce(context.Background())
-	var message Message
-	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message))
+	message := readTelemetryMessage(t, json.NewDecoder(&output))
 	var sample noderec.NodeTelemetry
 	require.NoError(t, json.Unmarshal(message.Params, &sample))
 	assert.Equal(t, "peer-uuid", sample.HostUUID)
@@ -948,9 +1045,7 @@ func TestDiscovery_TelemetryIncludesSampleAgeAndReusesConnection(t *testing.T) {
 	}
 	decoder := json.NewDecoder(&output)
 	for range 3 {
-		var message Message
-		require.NoError(t, decoder.Decode(&message))
-		require.Equal(t, noderec.NotifyNodeTelemetry, message.Method)
+		message := readTelemetryMessage(t, decoder)
 		var sample noderec.NodeTelemetry
 		require.NoError(t, json.Unmarshal(message.Params, &sample))
 		assert.Equal(t, "peer-uuid", sample.HostUUID)
@@ -989,8 +1084,7 @@ func TestDiscovery_InvalidTelemetryStaysInvalidAndReportsNoAge(t *testing.T) {
 	var output bytes.Buffer
 	f.daemon.codec = NewCodec(&output)
 	f.daemon.refreshTelemetryOnce(context.Background())
-	var message Message
-	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message))
+	message := readTelemetryMessage(t, json.NewDecoder(&output))
 	var sample noderec.NodeTelemetry
 	require.NoError(t, json.Unmarshal(message.Params, &sample))
 	assert.False(t, sample.TelemetryValid)

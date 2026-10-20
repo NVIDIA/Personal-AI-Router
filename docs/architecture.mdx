@@ -646,8 +646,8 @@ enriches node records with details from two services:
 Authenticated node-info supplies the canonical peer's name, addresses, and
 registered ports as well as hardware. Scanner replaces only the successful
 discovery with this verified record. Other observations remain independently
-unverified. Consumer merge and replay enforcement remain subsequent work in the
-[scanner specification](../services/nvpair-node-scanner/spec.md).
+unverified. The broker retains record provenance through caches and relays;
+unverified claims cannot replace service endpoints or supply scheduling data.
 
 Each enrichment keeps a last-good value, so one failed fetch dims nothing. A
 node's card does not blank out because a single poll timed out.
@@ -681,8 +681,9 @@ identity reports and open TCP ports cannot remove or retain verified peers.
 Some networks block or filter multicast, so discovery is not the only path in.
 `nvpair-manual-nodes` takes an address you enter directly and probes it on a
 fixed interval, and a manual node that answers is folded into the same directory
-as a discovered one. It is initially keyed by the address you typed, and re-keyed
-to the peer's real UUID as soon as that node reports it.
+as a discovered one. A manual configuration has its own key until a pinned mTLS
+read proves the peer's UUID. Public hardware responses remain display-only;
+explicit manual engine configuration does not authorize their use for scheduling.
 
 ## Trust Boundaries
 

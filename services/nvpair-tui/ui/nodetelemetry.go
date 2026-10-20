@@ -115,10 +115,10 @@ func pollTelemetryCmd(key string, gen int, addresses []string, port int, expect 
 		var lastErr error
 		for _, address := range addresses {
 			t, err := fetchTelemetry(nodeInfoURL(address, port))
-			if err == nil && expect != "" && t.HostUUID != "" && t.HostUUID != expect {
+			if err == nil && expect != "" && t.HostUUID != expect {
 				// An address outlives the machine it was published for. Taken,
 				// this showed another machine's hardware under this one's name.
-				err = fmt.Errorf("%s answered as another machine", address)
+				err = fmt.Errorf("%s did not identify the expected machine", address)
 			}
 			if err == nil {
 				return nodeTelemetryMsg{nodeKey: key, gen: gen, address: address, telemetry: t}
@@ -145,10 +145,10 @@ func preferAddress(addresses []string, last string) []string {
 }
 
 // telemetryIdentity is the machine a node's readings must come from, or empty
-// when there is nothing to check an answer against: a row keyed by a stand-in
-// rather than a UUID, or this machine, which is reached over loopback.
+// when there is nothing to check an answer against: an unverified discovery or
+// a row keyed by a stand-in rather than a UUID. Local rows also require a match.
 func telemetryIdentity(node nodeRow) string {
-	if node.self || !hasHostIdentity(node.key) {
+	if node.identityVerification == noderec.IdentityUnverified || !hasHostIdentity(node.key) {
 		return ""
 	}
 	return node.key

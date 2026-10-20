@@ -92,19 +92,3 @@ export const MODULAR_CATALOG_CALL_TIMEOUT_MS = 30_000
 // Also drives the pending-invite reconciliation sweep, the backstop for a missed
 // receiver-side `cluster:invite-canceled` / `cluster:invite-expired` push.
 export const MODULAR_INVITE_STATUS_POLL_INTERVAL_MS = 1_500
-
-// Minimum `lastSeen` gap before one node record is treated as having superseded
-// another that shares its address and hostname — a machine whose appdata was
-// wiped rejoins under a fresh hostUuid and would otherwise show twice.
-//
-// Matches `supersedeMinAge` in `services/nvpair-node-scanner/directory.go`
-// (300 seconds), but note the two are no longer the same rule. There, address,
-// hostname and age only NOMINATE a record: they come from an unauthenticated
-// mDNS advertisement, and a healthy peer's `lastSeen` freezes exactly as a
-// ghost's does, so the scanner deletes nothing until node-info names a
-// different host. The bridge collapses on the nomination alone, which is why
-// this stays a display-side concern — it hides a row, it does not evict from
-// the directory the TUI, the CLI, and every other consumer read. Hardcoded
-// pending backend exposure — see
-// docs/services-parity.md#current-client-side-responsibilities
-export const MODULAR_SUPERSEDE_MIN_AGE_MS = 300_000

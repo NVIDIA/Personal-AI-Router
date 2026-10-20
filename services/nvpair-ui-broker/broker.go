@@ -629,6 +629,15 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 		func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
 		func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
 		b.updateLocalPeerMetadata,
+		func(value noderec.NodeInfoEvent) {
+			cached, ok := b.store.nodeInfo(value.HostUUID, time.Now())
+			if !ok {
+				return
+			}
+			if err := b.codec.Notify(noderec.NotifyNodeInfo, cached); err != nil {
+				slog.Warn("forward node-info failed", "host_uuid", value.HostUUID, "err", err)
+			}
+		},
 		b.clusterDirArgs()...,
 	)
 	if err != nil {
@@ -1200,7 +1209,7 @@ func (b *Broker) spawnJobScheduler() (supervisedHandle, error) {
 	b.setScheduler(w)
 	replayed := b.replayActiveWorkloadsToScheduler(w)
 	telemetryReplayed := b.replayTelemetryToScheduler(w)
-	if err := w.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
+	if err := w.Notify("discovery:nodes-changed", b.store.SchedulingSnapshot()); err != nil {
 		slog.Warn("push discovery baseline to scheduler failed", "err", err)
 	}
 	b.schedulerFeedMu.Unlock()
@@ -1604,7 +1613,11 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	b.manualMu.Unlock()
 
 	b.store.Upsert(en, sourceManual)
-	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
+	if s.IdentityVerification == noderec.IdentityPinned && s.HostUUID != "" {
+		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, s.HostUUID), receivedAt)
+	} else {
+		b.removeTelemetry(sourceManual, key)
+	}
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
 	// lmstudio-proxy) so inference can route to it; an unreachable engine is
 	// pulled back out. No-op for a proxy the broker doesn't supervise.
@@ -1650,7 +1663,9 @@ func (b *Broker) reprojectOrRelease(key string) {
 	if ok {
 		b.store.Upsert(manualToEnriched(survivor.status), sourceManual)
 		b.bridgeManualNode(survivor.status, key)
-		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
+		if survivor.status.IdentityVerification == noderec.IdentityPinned {
+			b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
+		}
 		return
 	}
 	b.store.Remove(key, sourceManual)
@@ -2330,9 +2345,11 @@ func (b *Broker) emitNodesChanged() {
 	b.pushNodesChanged()
 }
 
-// fanDiscoveryToScheduler pushes the current discovery snapshot to the scheduler
-// child as a discovery:nodes-changed notification (same bare-array shape the
-// client stream uses). A no-op when no scheduler is running.
+// fanDiscoveryToScheduler sends SchedulingSnapshot to the scheduler child as a
+// discovery:nodes-changed notification. That snapshot includes local and verified
+// discoveries plus explicitly configured manual engine targets, excluding
+// unverified scanner claims. It uses the client's bare-array wire shape and is
+// a no-op when no scheduler is running.
 func (b *Broker) fanDiscoveryToScheduler() {
 	b.schedulerFeedMu.Lock()
 	defer b.schedulerFeedMu.Unlock()
@@ -2341,7 +2358,7 @@ func (b *Broker) fanDiscoveryToScheduler() {
 	if sc == nil {
 		return
 	}
-	if err := sc.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
+	if err := sc.Notify("discovery:nodes-changed", b.store.SchedulingSnapshot()); err != nil {
 		slog.Warn("fan discovery:nodes-changed to scheduler failed", "err", err)
 	}
 }
@@ -3047,7 +3064,7 @@ func (b *Broker) nodeDisplayNames() map[string]string {
 	nodes := b.store.Snapshot()
 	names := make(map[string]string, len(nodes))
 	for _, n := range nodes {
-		if n.HostUUID != "" && n.Name != "" {
+		if n.IdentityVerification != noderec.IdentityUnverified && n.HostUUID != "" && n.Name != "" {
 			names[n.HostUUID] = n.Name
 		}
 	}
@@ -3454,6 +3471,15 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 	id := msg.ID
 	method := msg.Method
 	params := append(json.RawMessage(nil), msg.Params...)
+	var remove manualNodeRemoveParams
+	if method == "node/remove" {
+		if err := json.Unmarshal(params, &remove); err != nil || (remove.ID == "") == (remove.NodeID == "") {
+			if err := b.codec.RespondError(id, -32602, "exactly one of id or nodeId is required"); err != nil {
+				log.Printf("failed to respond to invalid node/remove: %v", err)
+			}
+			return
+		}
+	}
 	mutates := method == "node/add" || method == "node/remove"
 	if mutates {
 		b.manualMutationMu.Lock()
@@ -3464,13 +3490,18 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 		_ = json.Unmarshal(params, &added)
 	}
 	if method == "node/remove" {
-		var remove struct {
-			ID string `json:"id"`
+		removeID = remove.ID
+		if remove.NodeID != "" {
+			removeID = b.manualAliasForKey(remove.NodeID)
 		}
-		if json.Unmarshal(params, &remove) == nil && remove.ID != "" {
-			removeID = b.manualAliasForKey(remove.ID)
-			params, _ = json.Marshal(map[string]string{"id": removeID})
+		if removeID == "" {
+			b.manualMutationMu.Unlock()
+			if err := b.codec.Respond(id, map[string]bool{"removed": false}); err != nil {
+				log.Printf("failed to respond to unmatched node/remove: %v", err)
+			}
+			return
 		}
+		params, _ = json.Marshal(manualNodeRemoveParams{ID: removeID})
 	}
 	relayErr := mn.RelayRequest(method, params, func(result json.RawMessage, rpcErr *RPCError, err error) {
 		if mutates {

@@ -362,6 +362,7 @@ const (
 	NotifyNodeUpdated    = "discovery:node-updated"
 	NotifyNodeRemoved    = "discovery:node-removed"
 	NotifyNodeTelemetry  = "discovery:node-telemetry"
+	NotifyNodeInfo       = "discovery:node-info"
 
 	// NotifyNodes is the broker relay -> subscriber push: the subscriber's full
 	// filtered node set, re-sent on every change. Consumers replace their set
@@ -482,6 +483,16 @@ func agedMilliseconds(valid bool, age int64, elapsed time.Duration) int64 {
 // from a discovered endpoint. The scanner anchors it to its local registry.
 type LocalNodeInfoParams struct {
 	Info NodeInfo `json:"info"`
+}
+
+// NodeInfoEvent carries hardware from an owned worker or authenticated peer.
+// Record identity is assigned by the scanner, never taken from public HTTP.
+type NodeInfoEvent struct {
+	DiscoveryRecordID    string               `json:"discoveryRecordId"`
+	HostUUID             string               `json:"hostUuid"`
+	ClusterUUID          string               `json:"clusterUuid,omitempty"`
+	IdentityVerification IdentityVerification `json:"identityVerification"`
+	Info                 NodeInfo             `json:"info"`
 }
 
 // PeerMetadata comes from this host's local scanner registry, not mDNS input.
