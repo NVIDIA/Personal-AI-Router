@@ -262,34 +262,33 @@ func (d *directory) applyModels(hostUUID, ip string, emPort int, models []string
 	return n, true, true
 }
 
-// applyInfo updates a node's node-info enrichment — GPUs, CPU and memory — in
-// place, mirroring applyModels: the record is only touched when a figure actually
-// changed, so a caller emits one notification per real change rather than one per
-// poll.
+// applyInfo writes a node's node-info enrichment — GPUs, CPU and memory — in
+// place. Unlike applyModels it does not compare before writing: the three facets
+// are a handful of scalars, so a field-by-field compare costs about what the
+// write does, and a caller that republishes figures which happen to be unchanged
+// does no harm downstream.
 //
 // The guard is the node-info service and the endpoint the caller read the figures
 // from. A node whose address or port moved between the fetch and this call is left
 // alone, because the figures in hand came from the old endpoint; the next refresh
-// re-reads it where it lives now.
-func (d *directory) applyInfo(hostUUID, ip string, niPort int, gpus []noderec.GPUInfo, cpu *noderec.CPUInfo, memory *noderec.MemoryInfo) (node noderec.DirectoryNode, changed, ok bool) {
+// re-reads it where it lives now. ok == false means the result is stale (node gone
+// or re-addressed) and the caller must not cache or emit it.
+func (d *directory) applyInfo(hostUUID, ip string, niPort int, gpus []noderec.GPUInfo, cpu *noderec.CPUInfo, memory *noderec.MemoryInfo) (node noderec.DirectoryNode, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	n, present := d.nodes[hostUUID]
 	if !present {
-		return noderec.DirectoryNode{}, false, false
+		return noderec.DirectoryNode{}, false
 	}
 	ni, has := n.Services[noderec.ServiceNodeInfo]
 	if !has || n.IP != ip || ni.Port != niPort {
-		return n, false, false
-	}
-	if sameGPUs(n.GPUs, gpus) && sameCPUInfo(n.CPU, cpu) && sameMemoryInfo(n.Memory, memory) {
-		return n, false, true
+		return n, false
 	}
 	n.GPUs = gpus
 	n.CPU = cpu
 	n.Memory = memory
 	d.nodes[hostUUID] = n
-	return n, true, true
+	return n, true
 }
 
 // applyClusterIdentity sets one node's cluster principal and the trust annotation
@@ -352,42 +351,4 @@ func sameByEngine(a, b map[string][]string) bool {
 		}
 	}
 	return true
-}
-
-// sameGPUs, sameCPUInfo and sameMemoryInfo report whether two node-info
-// enrichments are equal. GPUInfo, CPUInfo and MemoryInfo hold only scalars, so ==
-// is a complete value compare.
-//
-// The GPU slice is compared element-wise rather than as a set: its order is the
-// adapter order node-info reports, and a card appearing, vanishing or swapping
-// position is a real change a client should see.
-//
-// A nil pointer and a zeroed one are deliberately NOT equal. nil means node-info
-// has never answered for this facet, which is a different statement from a reading
-// of zero, and collapsing the two would let a node that stopped reporting look
-// like one reporting idle hardware.
-func sameGPUs(a, b []noderec.GPUInfo) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func sameCPUInfo(a, b *noderec.CPUInfo) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
-}
-
-func sameMemoryInfo(a, b *noderec.MemoryInfo) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
 }

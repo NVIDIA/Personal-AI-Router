@@ -1780,8 +1780,9 @@ func (d *daemon) refreshModelsOnce() {
 	wg.Wait()
 }
 
-// refreshSelfInfoOnce re-reads our own node-info over loopback and applies just
-// the GPU, CPU and memory figures to the directory entry for this host.
+// refreshSelfInfoOnce re-reads our own node-info over loopback, applies just the
+// GPU, CPU and memory figures to the directory entry for this host, and
+// republishes the entry.
 //
 // Self is the odd one out in the refresh loops. onBrowse returns early on our own
 // uuid, so self never gets the per-browse re-enrichment every peer gets, and
@@ -1794,9 +1795,12 @@ func (d *daemon) refreshModelsOnce() {
 // the true value every two seconds the whole time.
 //
 // This is deliberately narrower than calling publishSelf on a timer. It pulls the
-// same loopback node-info a peer would, then moves three fields through applyInfo,
-// so the record is republished only when a figure actually changed instead of on
-// every tick. Returns whether anything changed, which the tests assert on.
+// same loopback node-info a peer would and moves three fields through applyInfo;
+// the rest of the self record — identity, addresses, services, models — stays
+// with the paths that own it. The entry is republished on every tick, unchanged
+// figures included: a repeated node-updated carrying the same three facets is
+// harmless to its consumers and spares a compare. Returns whether the entry was
+// refreshed, which the tests assert on.
 func (d *daemon) refreshSelfInfoOnce() bool {
 	rec := d.reg.record()
 	if rec.HostUUID == "" {
@@ -1816,14 +1820,12 @@ func (d *daemon) refreshSelfInfoOnce() bool {
 	probe := node
 	d.enrichInfoCandidates(&probe, []string{loopbackHost})
 
-	updated, changed, valid := d.dir.applyInfo(rec.HostUUID, node.IP, ni.Port, probe.GPUs, probe.CPU, probe.Memory)
+	updated, valid := d.dir.applyInfo(rec.HostUUID, node.IP, ni.Port, probe.GPUs, probe.CPU, probe.Memory)
 	if !valid {
 		return false
 	}
-	if changed {
-		d.emit(noderec.NotifyNodeUpdated, updated)
-	}
-	return changed
+	d.emit(noderec.NotifyNodeUpdated, updated)
+	return true
 }
 
 // refreshNodeModels fetches one peer's /v1/models and, on success, applies it to
