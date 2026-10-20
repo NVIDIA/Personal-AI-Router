@@ -87,6 +87,9 @@ func (r *relayPeerSource) set(nodes []noderec.DirectoryNode) {
 // dialed by its ip=/Addresses, not its ID. cluster-uuid= is reconstructed into
 // TXT so the broadcaster's mTLS pin lookup is unchanged.
 func directoryToPeerNode(n noderec.DirectoryNode) (PeerNode, bool) {
+	if n.IdentityVerification != noderec.IdentityPinned || !n.Trusted {
+		return PeerNode{}, false
+	}
 	svc, ok := n.Services[noderec.ServiceWorkload]
 	addresses := n.CandidateIPs()
 	if !ok || len(addresses) == 0 {

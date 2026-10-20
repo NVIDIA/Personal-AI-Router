@@ -23,9 +23,9 @@ export function useInvitablePeers(): AvailableNode[] {
     const selfId = useConnectionStore(state => state.selfId)
 
     return useMemo(() => {
-        // Correlate on the node UUID: `AvailableNode.id` = `ClusterNode.nodeUuid`
-        // = `selfId`. The hostname (`ClusterNode.id`) is display only and must
-        // never be used to match a discovered node against a member or self.
+        // Verified host rows match members and self by UUID. Unverified rows
+        // have separate discovery record IDs, so a copied UUID claim cannot
+        // make one disappear as a member or self. Hostnames are display only.
         const memberUuids = new Set(members.map(m => m.nodeUuid))
         return discoveredNodes.filter(node => !memberUuids.has(node.id) && node.id !== selfId)
     }, [discoveredNodes, members, selfId])

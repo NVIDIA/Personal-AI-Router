@@ -38,12 +38,11 @@ type EnrichedNode struct {
 	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
 	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
 	ID                   string                       `json:"id"`
-	// HostUUID is the node's stable per-host identity (the daemon's uuid= TXT).
-	// It's the discovery-store key, so a PC rename — which changes the hostname
-	// (ID) but not the UUID — updates the existing entry in place instead of
-	// leaving a ghost under the old name. It stays off the wire; the
-	// client-facing id/name remain the hostname. Empty for manual nodes, which
-	// fall back to keying by their own ID.
+	// HostUUID identifies the host for local or pinned records.
+	// For unverified mDNS records it is the advertised UUID, which is only a claim.
+	// For unverified manual entries it is "manual:" + the entry ID, matching the
+	// configured engine route's key. The store uses DiscoveryRecordID for both
+	// kinds of unverified record so they stay separate from verified hosts.
 	HostUUID  string      `json:"-"`
 	Host      string      `json:"host"`
 	Port      int         `json:"port"`
@@ -81,11 +80,8 @@ type EnrichedNode struct {
 	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
 }
 
-// directoryToEnriched projects the promoted daemon's DirectoryNode onto the
-// broker's EnrichedNode so the client-facing store (which already merges manual
-// nodes and serves discovery:get-nodes) can be fed by the new pipeline. ID is
-// the mDNS instance name (hostname), matching the legacy node/* key so the two
-// feeds dedup during the migration; Port is the node-info port.
+// directoryToEnriched preserves scanner provenance in the client-facing store.
+// ID remains the display name; Port is the node-info port.
 //
 // The node's whole ranked address list travels through, both as Addresses and as
 // the ip= / ips= TXT the netpick projection reads, so its own order survives to
@@ -123,14 +119,13 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 	}
 }
 
-// storeKey is the discovery-store key for a node: its stable host UUID. Every
-// node carries one by the time it reaches the store — a real UUID for mDNS and
-// manual nodes alike (manual nodes learn theirs from the peer's node-info),
-// computed at each ingestion boundary — so keying is uniform and a hostname
-// change never duplicates or splits an entry. No id fallback: an empty
-// key is rejected by Upsert rather than silently keyed by name.
+// storeKey merges only proved host identities. Unverified discoveries and
+// manual configurations retain independent record keys.
 func (n EnrichedNode) storeKey() string {
-	return n.HostUUID
+	if n.IdentityVerification == noderec.IdentityLocal || n.IdentityVerification == noderec.IdentityPinned {
+		return n.HostUUID
+	}
+	return n.DiscoveryRecordID
 }
 
 // nodeSource identifies which feed contributed a store record. The same node
@@ -154,6 +149,74 @@ type storedNode struct {
 	scanner  *EnrichedNode
 	manual   *EnrichedNode
 	lastSeen time.Time
+	info     *nodeInfoObservation
+}
+
+type nodeInfoObservation struct {
+	value      noderec.NodeInfoEvent
+	receivedAt time.Time
+}
+
+// AcceptInfo binds the complete snapshot to the scanner's current record. A
+// candidate with the same claimed UUID cannot populate this cache.
+func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sn, ok := s.nodes[value.HostUUID]
+	if !ok || sn.scanner == nil {
+		return false
+	}
+	node := sn.scanner
+	if node.DiscoveryRecordID != value.DiscoveryRecordID || node.IdentityVerification != value.IdentityVerification || value.Info.HostUUID != value.HostUUID {
+		return false
+	}
+	if value.IdentityVerification != noderec.IdentityLocal {
+		if value.IdentityVerification != noderec.IdentityPinned || !node.Trusted {
+			// Remote hardware needs both proved identity and current trust.
+			return false
+		}
+		if value.ClusterUUID != value.HostUUID {
+			// The event's authenticated principal must identify this same host.
+			return false
+		}
+		if value.Info.ClusterUUID == nil || *value.Info.ClusterUUID != value.ClusterUUID {
+			// The hardware body must name that principal too; a missing or
+			// conflicting identity cannot populate the verified cache.
+			return false
+		}
+	}
+	sn.info = &nodeInfoObservation{value: value, receivedAt: now}
+	s.nodes[value.HostUUID] = sn
+	return true
+}
+
+func (s *discoveryStore) nodeInfo(hostUUID string, now time.Time) (noderec.NodeInfoEvent, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sn, ok := s.nodes[hostUUID]
+	if !ok || sn.info == nil {
+		return noderec.NodeInfoEvent{}, false
+	}
+	value := sn.info.value
+	value.Info = value.Info.Aged(now.Sub(sn.info.receivedAt))
+	return value, true
+}
+
+func (s *discoveryStore) verifiedSource(hostUUID string, source nodeSource) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sn := s.nodes[hostUUID]
+	node := sn.scanner
+	if source == sourceManual {
+		node = sn.manual
+	}
+	if node == nil {
+		return false
+	}
+	if node.IdentityVerification == noderec.IdentityLocal {
+		return true
+	}
+	return node.IdentityVerification == noderec.IdentityPinned && node.Trusted
 }
 
 // projected returns the EnrichedNode a consumer sees. When both sources claim
@@ -269,6 +332,9 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 		return false
 	}
 	sn.setSource(source, nil)
+	if source == sourceScanner {
+		sn.info = nil
+	}
 	gone := !sn.claimed()
 	if gone {
 		delete(s.nodes, key)
@@ -290,13 +356,40 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 // for future RPCs; only the fields the external schema requires are
 // projected out here.
 func (s *discoveryStore) Snapshot() []AvailableNode {
+	return s.snapshot(false)
+}
+
+// SchedulingSnapshot includes local discoveries, pinned and trusted peers,
+// and explicitly configured manual engine targets. Unverified scanner claims
+// are excluded. Manual hardware still requires separate authentication.
+func (s *discoveryStore) SchedulingSnapshot() []AvailableNode {
+	return s.snapshot(true)
+}
+
+func (s *discoveryStore) snapshot(scheduling bool) []AvailableNode {
 	s.mu.RLock()
 	out := make([]AvailableNode, 0, len(s.nodes))
 	for _, sn := range s.nodes {
+		// Explicit manual configurations independently authorize engine routing.
+		if scheduling && sn.manual == nil {
+			verification := sn.scanner.IdentityVerification
+			if verification != noderec.IdentityLocal && verification != noderec.IdentityPinned {
+				// An unverified advertisement cannot create a scheduling target.
+				continue
+			}
+			if verification == noderec.IdentityPinned && !sn.scanner.Trusted {
+				// Proving a remote identity is insufficient without current trust.
+				// Local records come from the owned worker and need no peer pin.
+				continue
+			}
+		}
 		out = append(out, sn.toAvailable())
 	}
 	s.mu.RUnlock()
 	slices.SortFunc(out, func(a, b AvailableNode) int {
+		if a.ID == b.ID {
+			return cmp.Compare(a.DiscoveryRecordID, b.DiscoveryRecordID)
+		}
 		return cmp.Compare(a.ID, b.ID)
 	})
 	return out
@@ -333,7 +426,7 @@ func (sn storedNode) toAvailable() AvailableNode {
 		IPAddresses:          candidates,
 		Port:                 n.Port,
 		LastSeen:             sn.lastSeen.Unix(),
-		Trusted:              n.Trusted,
+		Trusted:              n.Trusted && n.IdentityVerification != noderec.IdentityUnverified,
 		Clustered:            n.Clustered,
 		Models:               n.Models,
 		ModelsByEngine:       n.ModelsByEngine,
@@ -365,6 +458,7 @@ type scannerProcess struct {
 	onTelemetry        func(noderec.NodeTelemetry)
 	onTelemetryRemoved func(hostUUID string)
 	onLocalNode        func(noderec.DirectoryNode)
+	onNodeInfo         func(noderec.NodeInfoEvent)
 	localInfo          chan localInfoObservation
 	// activity queues peer liveness reports for the scanner. It exists so the
 	// proxy-reader goroutine that receives them never waits on the scanner's
@@ -413,6 +507,7 @@ func startScanner(
 	onTelemetry func(noderec.NodeTelemetry),
 	onTelemetryRemoved func(hostUUID string),
 	onLocalNode func(noderec.DirectoryNode),
+	onNodeInfo func(noderec.NodeInfoEvent),
 	extraArgs ...string,
 ) (*scannerProcess, error) {
 	cmd := exec.Command(binaryPath, append([]string{"--log-level", logLevel}, extraArgs...)...)
@@ -444,6 +539,7 @@ func startScanner(
 		onTelemetry:        onTelemetry,
 		onTelemetryRemoved: onTelemetryRemoved,
 		onLocalNode:        onLocalNode,
+		onNodeInfo:         onNodeInfo,
 		localInfo:          make(chan localInfoObservation, 1),
 		activity:           make(chan nodeActivityReport, activityQueueDepth),
 		done:               make(chan struct{}),
@@ -619,7 +715,8 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 		if s.relayDir != nil {
 			s.relayDir.Apply(method, ev.Node)
 		}
-		if method == noderec.NotifyNodeRemoved && s.onTelemetryRemoved != nil {
+		verified := ev.Node.IdentityVerification == noderec.IdentityLocal || ev.Node.IdentityVerification == noderec.IdentityPinned
+		if method == noderec.NotifyNodeRemoved && verified && s.onTelemetryRemoved != nil {
 			s.onTelemetryRemoved(ev.Node.HostUUID)
 		}
 		if s.store != nil {
@@ -633,7 +730,7 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 				// present, so we must not fail its jobs. Identify the departed
 				// node by HostUUID, the value workloads are stamped/keyed with,
 				// not the display hostname.
-				if s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner) && s.onNodeLost != nil {
+				if s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner) && verified && s.onNodeLost != nil {
 					s.onNodeLost(ev.Node.HostUUID, ev.Node.Name)
 				}
 			} else {
@@ -650,8 +747,16 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 			slog.Warn("daemon emitted node telemetry without hostUuid")
 			return
 		}
-		if s.onTelemetry != nil {
+		if s.store != nil && s.store.verifiedSource(telemetry.HostUUID, sourceScanner) && s.onTelemetry != nil {
 			s.onTelemetry(telemetry)
+		}
+	case noderec.NotifyNodeInfo:
+		var value noderec.NodeInfoEvent
+		if json.Unmarshal(params, &value) != nil || s.store == nil || !s.store.AcceptInfo(value, time.Now()) {
+			return
+		}
+		if s.onNodeInfo != nil {
+			s.onNodeInfo(value)
 		}
 	case "ready":
 		slog.Info("scanner reported ready", "params", string(params))

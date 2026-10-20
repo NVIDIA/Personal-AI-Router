@@ -673,6 +673,7 @@ func (d *daemon) publishPeerInfo(candidateID string, sample peerInfoSample) {
 	}
 	info = sample.info.Aged(time.Since(sample.receivedAt))
 	d.emitTelemetry(noderec.NodeTelemetry{HostUUID: info.HostUUID, GPUUtilizationPct: utilization, TelemetryValid: info.TelemetryValid, MSSince: info.MSSince})
+	d.emitNodeInfo(node, sample.info.Aged(time.Since(sample.receivedAt)))
 }
 
 // onBrowse stores each discovery independently. Network claims never mutate a
@@ -835,6 +836,18 @@ func (d *daemon) emitTelemetry(telemetry noderec.NodeTelemetry) {
 	}
 }
 
+func (d *daemon) emitNodeInfo(node noderec.DirectoryNode, info noderec.NodeInfo) {
+	if d.codec == nil {
+		return
+	}
+	if err := d.codec.Notify(noderec.NotifyNodeInfo, noderec.NodeInfoEvent{
+		DiscoveryRecordID: node.DiscoveryRecordID, HostUUID: node.HostUUID,
+		ClusterUUID: node.ClusterUUID, IdentityVerification: node.IdentityVerification, Info: info,
+	}); err != nil {
+		slog.Warn("failed to emit node-info", "host_uuid", node.HostUUID, "err", err)
+	}
+}
+
 // reloadIdentity re-resolves this node's advertised identity (hostUuid,
 // clusterUuid, ip) and re-advertises if any of it changed. It has three triggers:
 //
@@ -994,7 +1007,7 @@ func (d *daemon) dropSelf(oldHostUUID, newHostUUID string) {
 	delete(d.lastInfoAt, oldHostUUID)
 	d.infoMu.Unlock()
 	if existed {
-		d.emit(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: oldHostUUID, Name: node.Name})
+		d.emit(noderec.NotifyNodeRemoved, node)
 	}
 }
 
@@ -1097,11 +1110,14 @@ func (d *daemon) acceptLocalNodeInfo(info noderec.NodeInfo) {
 			utilization = gpu.UtilizationPercent
 		}
 	}
-	info = info.Aged(time.Since(receivedAt))
+	aged := info.Aged(time.Since(receivedAt))
 	d.emitTelemetry(noderec.NodeTelemetry{
 		HostUUID: self, GPUUtilizationPct: utilization,
-		TelemetryValid: info.TelemetryValid, MSSince: info.MSSince,
+		TelemetryValid: aged.TelemetryValid, MSSince: aged.MSSince,
 	})
+	if current, ok := d.dir.get(self); ok {
+		d.emitNodeInfo(current, info.Aged(time.Since(receivedAt)))
+	}
 }
 
 // watchAddress re-derives the advertised ip= whenever the host's network changes

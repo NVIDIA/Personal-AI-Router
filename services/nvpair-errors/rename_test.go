@@ -27,18 +27,26 @@ func (nopReadWriter) Write(p []byte) (int, error) { return len(p), nil }
 // never conflate two same-named peers. Host stays the hostname for dialing /
 // display.
 func TestDirectoryToPeer_KeysByHostUUID(t *testing.T) {
+	const hostUUID = "uuid-x"
+	const hostName = "host-x"
+	const primaryAddress = "10.0.0.4"
+	const secondaryAddress = "192.168.1.4"
 	n := noderec.DirectoryNode{
-		HostUUID: "uuid-x",
-		Name:     "host-x",
-		IP:       "10.0.0.4",
-		IPs:      []string{"10.0.0.4", "192.168.1.4"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}},
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		HostUUID:             hostUUID,
+		Name:                 hostName,
+		IP:                   primaryAddress,
+		IPs:                  []string{primaryAddress, secondaryAddress},
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceErrors: {Port: 14319},
+		},
 	}
 	p, ok := directoryToPeer(n)
 	require.True(t, ok, "node advertising er with an IP should project")
-	assert.Equal(t, "uuid-x", p.ID, "peer ID")
-	assert.Equal(t, "host-x", p.Host, "peer Host")
-	assert.Equal(t, []string{"10.0.0.4", "192.168.1.4"}, p.Addresses, "peer addresses")
+	assert.Equal(t, hostUUID, p.ID, "peer ID")
+	assert.Equal(t, hostName, p.Host, "peer Host")
+	assert.Equal(t, []string{primaryAddress, secondaryAddress}, p.Addresses, "peer addresses")
 }
 
 // TestSetLocalNodeID: the broker's --node-id override replaces the hostname
